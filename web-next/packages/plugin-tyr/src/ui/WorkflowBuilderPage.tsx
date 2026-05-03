@@ -20,10 +20,12 @@ import {
 import { usePersonasBrowser } from './settings/usePersonasBrowser';
 import { WorkflowBuilder } from './WorkflowBuilder';
 import type { PersonaEntry } from './WorkflowBuilder/LibraryPanel';
+import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
 
 export function WorkflowBuilderPage() {
   const { data: workflows, isLoading, isError, error } = useWorkflows();
   const { data: personas } = usePersonasBrowser();
+  const { data: registryMounts = [] } = useWorkflowRegistryMounts();
   const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
   const createMutation = useCreateWorkflow();
   const saveMutation = useSaveWorkflow();
@@ -173,6 +175,7 @@ export function WorkflowBuilderPage() {
             key={displayed.id}
             initialWorkflow={displayed}
             personas={workflowPersonas}
+            registryMounts={registryMounts}
             onSave={(updated) =>
               saveMutation.mutate(updated, {
                 onSuccess: (saved) => setActiveWorkflow(saved),

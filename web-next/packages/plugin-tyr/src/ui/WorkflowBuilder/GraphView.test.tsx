@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { GraphView } from './GraphView';
 import type { WorkflowNode, WorkflowEdge } from '../../domain/workflow';
+import { MIMIR_MOUNT_MIME, serializeWorkflowRegistryMount } from './mimirRegistry';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -65,6 +66,7 @@ function defaultProps() {
     onSelectNode: vi.fn(),
     onInspectNode: vi.fn(),
     onAddNode: vi.fn(),
+    onAddMimirResource: vi.fn(),
     onDeleteNode: vi.fn(),
     onMoveNode: vi.fn(),
     onStartConnect: vi.fn(),
@@ -129,6 +131,11 @@ describe('GraphView', () => {
     expect(screen.getByTestId('add-gate')).toBeInTheDocument();
   });
 
+  it('renders add-resource toolbar button', () => {
+    render(<GraphView {...defaultProps()} />);
+    expect(screen.getByTestId('add-resource')).toBeInTheDocument();
+  });
+
   it('renders add-cond toolbar button', () => {
     render(<GraphView {...defaultProps()} />);
     expect(screen.getByTestId('add-cond')).toBeInTheDocument();
@@ -153,6 +160,39 @@ describe('GraphView', () => {
     render(<GraphView {...props} />);
     fireEvent.click(screen.getByTestId('add-cond'));
     expect(props.onAddNode).toHaveBeenCalledWith('cond');
+  });
+
+  it('routes dropped Mimir mount payloads to onAddMimirResource', () => {
+    const props = defaultProps();
+    render(<GraphView {...props} />);
+    fireEvent.drop(screen.getByTestId('graph-canvas'), {
+      clientX: 140,
+      clientY: 160,
+      dataTransfer: {
+        getData: (key: string) => {
+          if (key === MIMIR_MOUNT_MIME) {
+            return serializeWorkflowRegistryMount({
+              id: 'shared-mimir',
+              name: 'Shared Mimir',
+              kind: 'remote',
+              lifecycle: 'registered',
+              role: 'shared',
+              url: 'https://mimir.example',
+              path: '/shared',
+              categories: ['decision'],
+              authRef: 'mimir-secret',
+              defaultReadPriority: 5,
+              enabled: true,
+              healthStatus: 'healthy',
+              healthMessage: 'ok',
+              desc: 'Shared team mount',
+            });
+          }
+          return '';
+        },
+      },
+    });
+    expect(props.onAddMimirResource).toHaveBeenCalledTimes(1);
   });
 
   it('shows delete-selected button when a node is selected', () => {

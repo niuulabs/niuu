@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { WorkflowBuilder } from './WorkflowBuilder';
 import type { Workflow } from '../../domain/workflow';
+import type { WorkflowRegistryMount } from './mimirRegistry';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -39,6 +40,54 @@ function makeWorkflow(): Workflow {
     ],
   };
 }
+
+function makeResourceWorkflow(): Workflow {
+  return {
+    id: '00000000-0000-0000-0000-000000000099',
+    name: 'Knowledge Workflow',
+    nodes: [
+      {
+        id: 'resource-1',
+        kind: 'resource',
+        label: 'Shared Mimir',
+        resourceType: 'mimir',
+        bindingMode: 'registry',
+        registryEntryId: 'shared-mimir',
+        categories: ['decision'],
+        position: { x: 120, y: 160 },
+      },
+    ],
+    edges: [],
+    resourceBindings: [
+      {
+        id: 'binding-1',
+        resourceNodeId: 'resource-1',
+        targetType: 'workflow',
+        targetId: '00000000-0000-0000-0000-000000000099',
+        access: 'read',
+        writePrefixes: [],
+        readPriority: 5,
+      },
+    ],
+  };
+}
+
+const REGISTRY_MOUNT: WorkflowRegistryMount = {
+  id: 'shared-mimir',
+  name: 'Shared Mimir',
+  kind: 'remote',
+  lifecycle: 'registered',
+  role: 'shared',
+  url: 'https://mimir.example',
+  path: '/shared',
+  categories: ['decision'],
+  authRef: 'mimir-secret',
+  defaultReadPriority: 5,
+  enabled: true,
+  healthStatus: 'healthy',
+  healthMessage: 'ok',
+  desc: 'Shared team mount',
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -114,8 +163,40 @@ describe('WorkflowBuilder', () => {
   });
 
   it('shows library panel in graph view', () => {
-    render(<WorkflowBuilder initialWorkflow={makeWorkflow()} />);
+    render(<WorkflowBuilder initialWorkflow={makeWorkflow()} registryMounts={[REGISTRY_MOUNT]} />);
     expect(screen.getByTestId('library-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('mimir-mount-shared-mimir')).toBeInTheDocument();
+  });
+
+  it('shows the resource inspector when a Mimir resource node is selected', () => {
+    render(
+      <WorkflowBuilder initialWorkflow={makeResourceWorkflow()} registryMounts={[REGISTRY_MOUNT]} />,
+    );
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-resource-1'));
+    expect(screen.getByText('Registry mount')).toBeInTheDocument();
+    expect(screen.getByText('Bindings')).toBeInTheDocument();
+  });
+
+  it('shows the explicit ephemeral local guidance for ephemeral Mimir resources', () => {
+    render(
+      <WorkflowBuilder
+        initialWorkflow={{
+          ...makeResourceWorkflow(),
+          nodes: [
+            {
+              ...makeResourceWorkflow().nodes[0]!,
+              bindingMode: 'ephemeral_local',
+              registryEntryId: null,
+              role: 'local',
+            },
+          ],
+        }}
+        registryMounts={[REGISTRY_MOUNT]}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-resource-1'));
+    expect(screen.getByText('Ephemeral local Mimir')).toBeInTheDocument();
+    expect(screen.getByText(/path is fixed by the runtime/i)).toBeInTheDocument();
   });
 
   it('hides library panel in pipeline view', () => {

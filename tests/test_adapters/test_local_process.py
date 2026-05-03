@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+import yaml
 
 from niuu.mesh.ipc import skuld_mesh_addresses
 from volundr.adapters.outbound.local_process import (
@@ -1157,6 +1158,96 @@ class TestProcessSpawning:
         assert "iteration_budget: 40" in node_config
         assert "enabled: true" in node_config
         assert "broker_url: ws://127.0.0.1:9101/ws/ravn" in node_config
+
+    async def test_start_flock_materializes_mimir_runtime_and_local_paths(
+        self,
+        manager: LocalProcessPodManager,
+        tmp_workspaces: Path,
+    ) -> None:
+        workspace = tmp_workspaces / "session-with-mimir"
+        workspace.mkdir(parents=True)
+        flock_dir = workspace / ".flock"
+        flock_dir.mkdir()
+        (flock_dir / "cluster.yaml").write_text("peers: []\n", encoding="utf-8")
+        (flock_dir / "node-coder.yaml").write_text("persona: coder\n", encoding="utf-8")
+
+        registry_path = tmp_workspaces / "shared-mimir"
+        spec = SessionSpec(
+            values={
+                "flock": {
+                    "personas": [{"name": "coder"}],
+                    "llm_config": {"model": "google/gemma-4-26B-A4B-it"},
+                    "max_concurrent_tasks": 3,
+                },
+                "mimir": {
+                    "registryRefs": [
+                        {
+                            "registry_entry_id": "shared-team",
+                            "mount_name": "shared-team",
+                            "path": str(registry_path),
+                            "role": "shared",
+                            "categories": ["decision"],
+                        }
+                    ],
+                    "ephemeralLocals": [{"mount_name": "scratchpad"}],
+                    "bindings": [
+                        {
+                            "mount_name": "scratchpad",
+                            "access": "read_write",
+                            "write_prefixes": ["draft/"],
+                        }
+                    ],
+                },
+            },
+            pod_spec=PodSpecAdditions(
+                env=(
+                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
+                ),
+                extra_containers=(
+                    {"name": "ravn-coder"},
+                ),
+            ),
+        )
+
+        with (
+            patch("subprocess.run"),
+            patch("ravn.adapters.personas.loader.FilesystemPersonaAdapter") as loader_cls,
+        ):
+            loader_cls.return_value.load.return_value = MagicMock(allowed_tools=["file", "git"])
+            await manager._start_flock(
+                spec,
+                workspace,
+                FlockPortPlan(
+                    session_base_port=7484,
+                    ravn_base_port=7486,
+                    skuld_pub_port=7484,
+                    skuld_rep_port=7485,
+                    skuld_handshake_port=7584,
+                ),
+                skuld_port=9101,
+            )
+
+        node_config = yaml.safe_load((flock_dir / "node-coder.yaml").read_text(encoding="utf-8"))
+        mimir_cfg = node_config["mimir"]
+        assert mimir_cfg["enabled"] is True
+        assert {
+            "name": "shared-team",
+            "path": str(registry_path),
+            "role": "shared",
+            "categories": ["decision"],
+        } in mimir_cfg["instances"]
+        local_instance = next(
+            instance for instance in mimir_cfg["instances"] if instance["name"] == "local"
+        )
+        scratch_instance = next(
+            instance for instance in mimir_cfg["instances"] if instance["name"] == "scratchpad"
+        )
+        assert local_instance["path"] == str(flock_dir / "mimir" / "local")
+        assert scratch_instance["path"] == str(flock_dir / "mimir" / "local" / "scratchpad")
+        assert Path(local_instance["path"]).is_dir()
+        assert Path(scratch_instance["path"]).is_dir()
+        assert mimir_cfg["write_routing"]["default"] == ["local"]
+        assert {"prefix": "draft/", "mounts": ["scratchpad"]} in mimir_cfg["write_routing"]["rules"]
 
     async def test_start_flock_enriches_cluster_peers_with_persona_metadata(
         self,

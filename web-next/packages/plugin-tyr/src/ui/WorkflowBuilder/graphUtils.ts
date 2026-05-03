@@ -214,6 +214,21 @@ export function workflowToYaml(
         lines.push(
           `    categories: ${(node.categories ?? []).length === 0 ? '[]' : `[${(node.categories ?? []).map((cat) => JSON.stringify(cat)).join(', ')}]`}`,
         );
+        if (node.path) {
+          lines.push(`    path: ${JSON.stringify(node.path)}`);
+        }
+        if (node.url) {
+          lines.push(`    url: ${JSON.stringify(node.url)}`);
+        }
+        if (node.role) {
+          lines.push(`    role: ${JSON.stringify(node.role)}`);
+        }
+        if (node.authRef) {
+          lines.push(`    authRef: ${JSON.stringify(node.authRef)}`);
+        }
+        if (typeof node.defaultReadPriority === 'number') {
+          lines.push(`    defaultReadPriority: ${node.defaultReadPriority}`);
+        }
       }
       lines.push(`    position: {x: ${node.position.x}, y: ${node.position.y}}`);
     }

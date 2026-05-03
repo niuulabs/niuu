@@ -183,6 +183,67 @@ describe('useWorkflowBuilder — addNode', () => {
       expect(added.dispatchEvent).toBe('code.requested');
     }
   });
+
+  it('adds a Mimir resource node with a default workflow binding', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() =>
+      result.current.addMimirResource(
+        {
+          id: 'shared-mimir',
+          name: 'Shared Mimir',
+          kind: 'remote',
+          lifecycle: 'registered',
+          role: 'shared',
+          url: 'https://mimir.example',
+          path: '/shared',
+          categories: ['decision', 'entity'],
+          authRef: 'mimir-secret',
+          defaultReadPriority: 3,
+          enabled: true,
+          healthStatus: 'healthy',
+          healthMessage: 'ok',
+          desc: 'Shared team mount',
+        },
+        { x: 420, y: 240 },
+      ),
+    );
+    const resourceNode = result.current.workflow.nodes.find((node) => node.kind === 'resource');
+    expect(resourceNode).toBeDefined();
+    expect(resourceNode?.label).toBe('Shared Mimir');
+    expect(resourceNode?.position).toEqual({ x: 420, y: 240 });
+    expect(result.current.workflow.resourceBindings).toHaveLength(1);
+    expect(result.current.workflow.resourceBindings?.[0]?.targetType).toBe('workflow');
+  });
+
+  it('adds an explicit ephemeral local Mimir resource node', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() =>
+      result.current.addMimirResource(
+        {
+          id: '__ephemeral_local__',
+          name: 'Ephemeral Local Mimir',
+          kind: 'local',
+          lifecycle: 'ephemeral',
+          role: 'local',
+          url: '',
+          path: '',
+          categories: ['scratch'],
+          authRef: null,
+          defaultReadPriority: 10,
+          enabled: true,
+          healthStatus: 'unknown',
+          healthMessage: 'runtime',
+          desc: 'Workspace-local scratch',
+        },
+        { x: 300, y: 180 },
+      ),
+    );
+    const resourceNode = result.current.workflow.nodes.find((node) => node.kind === 'resource');
+    expect(resourceNode).toBeDefined();
+    expect(resourceNode?.bindingMode).toBe('ephemeral_local');
+    expect(resourceNode?.registryEntryId).toBeNull();
+    expect(resourceNode?.role).toBe('local');
+  });
 });
 
 // ---------------------------------------------------------------------------

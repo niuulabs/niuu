@@ -33,6 +33,12 @@ from typing import Any
 
 from niuu.domain.llm_merge import merge_llm
 from niuu.mesh.ipc import cleanup_skuld_mesh_sockets, skuld_mesh_addresses
+from volundr.adapters.outbound.contributors.ravn_flock import (
+    _MIMIR_MOUNT_PATH as _FLOCK_MIMIR_MOUNT_PATH,
+)
+from volundr.adapters.outbound.contributors.ravn_flock import (
+    _resolve_mimir_runtime as _resolve_flock_mimir_runtime,
+)
 from volundr.domain.models import (
     GitSource,
     LocalMountSource,
@@ -280,6 +286,63 @@ def _workflow_event_metadata(
         consumes.extend(trigger_events)
 
     return _dedupe_preserve_order(consumes), _dedupe_preserve_order(emits)
+
+
+def _normalize_local_mimir_spec(raw: object) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    if hosted_url := raw.get("hostedUrl"):
+        normalized["hosted_url"] = hosted_url
+    if registry_refs := raw.get("registryRefs"):
+        normalized["registry_refs"] = registry_refs
+    if ephemeral_locals := raw.get("ephemeralLocals"):
+        normalized["ephemeral_locals"] = ephemeral_locals
+    if bindings := raw.get("bindings"):
+        normalized["bindings"] = bindings
+    if instances := raw.get("instances"):
+        normalized["instances"] = instances
+    if write_routing := raw.get("writeRouting"):
+        normalized["write_routing"] = write_routing
+    if default_mounts := raw.get("defaultMounts"):
+        normalized["default_mounts"] = default_mounts
+    return normalized
+
+
+def _localize_mimir_path(path: str, flock_dir: Path) -> str:
+    trimmed = path.strip()
+    if not trimmed:
+        return trimmed
+    if trimmed == _FLOCK_MIMIR_MOUNT_PATH:
+        return str(flock_dir / "mimir" / "local")
+    prefix = f"{_FLOCK_MIMIR_MOUNT_PATH.rstrip('/')}/"
+    if trimmed.startswith(prefix):
+        suffix = trimmed[len(prefix) :]
+        return str((flock_dir / "mimir" / "local" / suffix).resolve())
+    return trimmed
+
+
+def _materialize_local_mimir_config(spec: SessionSpec, flock_dir: Path) -> dict[str, Any] | None:
+    mimir_cfg = _normalize_local_mimir_spec(spec.values.get("mimir"))
+    if not mimir_cfg:
+        return None
+
+    instances, write_routing = _resolve_flock_mimir_runtime(mimir_cfg)
+    localized_instances: list[dict[str, Any]] = []
+    for raw_instance in instances:
+        instance = dict(raw_instance)
+        path = instance.get("path")
+        if isinstance(path, str) and path.strip():
+            localized_path = _localize_mimir_path(path, flock_dir)
+            Path(localized_path).mkdir(parents=True, exist_ok=True)
+            instance["path"] = localized_path
+        localized_instances.append(instance)
+
+    return {
+        "enabled": True,
+        "instances": localized_instances,
+        "write_routing": write_routing,
+    }
 
 
 class LocalProcessPodManager(PodManager):
@@ -883,6 +946,23 @@ class LocalProcessPodManager(PodManager):
                 node_path.write_text(yaml.safe_dump(node_config, default_flow_style=False))
             logger.info(
                 "Injected workflow graph config into local flock node configs: %s",
+                flock_dir,
+            )
+
+        mimir_runtime_cfg = _materialize_local_mimir_config(spec, flock_dir)
+        if mimir_runtime_cfg is not None:
+            for persona in personas:
+                node_path = flock_dir / f"node-{persona}.yaml"
+                if not node_path.exists():
+                    continue
+                node_config = yaml.safe_load(node_path.read_text()) or {}
+                node_config["mimir"] = mimir_runtime_cfg
+                node_path.write_text(
+                    yaml.safe_dump(node_config, default_flow_style=False),
+                    encoding="utf-8",
+                )
+            logger.info(
+                "Injected Mimir runtime config into local flock node configs: %s",
                 flock_dir,
             )
 

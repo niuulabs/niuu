@@ -30,6 +30,7 @@ import type {
 import type { WorkflowIssue } from '../../domain/workflowValidation';
 import type { WorkflowBuilderActions } from './useWorkflowBuilder';
 import type { PersonaEntry } from './LibraryPanel';
+import { MIMIR_MOUNT_MIME, parseWorkflowRegistryMount } from './mimirRegistry';
 import {
   STAGE_WIDTH,
   GATE_SIZE,
@@ -277,7 +278,7 @@ function StageNode({
         fontFamily="var(--font-mono)"
         className="niuu-pointer-events-none niuu-select-none"
       >
-        {(node.executionMode ?? 'parallel').toUpperCase()} · {stageMembers.length} RAVN
+        ACTOR STAGE · {(node.executionMode ?? 'parallel').toUpperCase()} · {stageMembers.length} RAVN
         {stageMembers.length !== 1 ? 'S' : ''}
       </text>
       {stageMembers.map((member, index) => (
@@ -811,6 +812,13 @@ function ResourceNode({
         ? C.warnStroke
         : 'var(--color-brand)';
   const sw = selected || issueLevel ? 2 : 1;
+  const modeLabel = node.bindingMode === 'ephemeral_local' ? 'EPHEMERAL' : 'REGISTRY';
+  const modeStroke =
+    node.bindingMode === 'ephemeral_local' ? 'var(--status-emerald)' : 'var(--color-brand)';
+  const modeFill =
+    node.bindingMode === 'ephemeral_local'
+      ? 'color-mix(in srgb, var(--status-emerald) 14%, var(--color-bg-primary))'
+      : 'color-mix(in srgb, var(--color-brand) 14%, var(--color-bg-primary))';
 
   return (
     <g
@@ -826,12 +834,29 @@ function ResourceNode({
       }}
       style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
     >
+      <ellipse
+        cx={x + RESOURCE_WIDTH / 2}
+        cy={y + 10}
+        rx={RESOURCE_WIDTH / 2}
+        ry={10}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={sw}
+      />
       <rect
         x={x}
-        y={y}
+        y={y + 10}
         width={RESOURCE_WIDTH}
-        height={RESOURCE_HEIGHT}
-        rx={8}
+        height={RESOURCE_HEIGHT - 20}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={sw}
+      />
+      <ellipse
+        cx={x + RESOURCE_WIDTH / 2}
+        cy={y + RESOURCE_HEIGHT - 10}
+        rx={RESOURCE_WIDTH / 2}
+        ry={10}
         fill={fill}
         stroke={stroke}
         strokeWidth={sw}
@@ -847,7 +872,27 @@ function ResourceNode({
         {node.label.length > 20 ? node.label.slice(0, 18) + '…' : node.label}
       </text>
       <text x={x + 14} y={y + 38} fill={C.textMuted} fontSize={8.5} fontFamily="var(--font-mono)">
-        {node.bindingMode === 'ephemeral_local' ? 'new local mimir' : 'registry mimir'}
+        RESOURCE · MIMIR
+      </text>
+      <rect
+        x={x + 14}
+        y={y + 46}
+        width={72}
+        height={14}
+        rx={7}
+        fill={modeFill}
+        stroke={modeStroke}
+      />
+      <text
+        x={x + 50}
+        y={y + 55.5}
+        textAnchor="middle"
+        fill={C.text}
+        fontSize={7.5}
+        fontWeight="600"
+        fontFamily="var(--font-mono)"
+      >
+        {modeLabel}
       </text>
       {selected && !isConnectingMode && (
         <DeleteButton nodeId={node.id} cx={x + RESOURCE_WIDTH / 2} cy={y - 10} onClick={onDelete} />
@@ -997,6 +1042,7 @@ export interface GraphViewProps {
   onSelectNode: WorkflowBuilderActions['selectNode'];
   onInspectNode: WorkflowBuilderActions['inspectNode'];
   onAddNode: WorkflowBuilderActions['addNode'];
+  onAddMimirResource?: WorkflowBuilderActions['addMimirResource'];
   onDeleteNode: WorkflowBuilderActions['deleteNode'];
   onDeleteEdge: WorkflowBuilderActions['deleteEdge'];
   onMoveNode: WorkflowBuilderActions['moveNode'];
@@ -1018,6 +1064,7 @@ export function GraphView({
   onSelectNode,
   onInspectNode,
   onAddNode,
+  onAddMimirResource,
   onDeleteNode,
   onDeleteEdge,
   onMoveNode,
@@ -1133,6 +1180,7 @@ export function GraphView({
     const position = eventToCanvasPosition(e.clientX, e.clientY);
     const personaId = e.dataTransfer.getData('application/niuu-persona-id');
     const nodeKind = e.dataTransfer.getData('application/niuu-node-kind');
+    const mimirMount = parseWorkflowRegistryMount(e.dataTransfer.getData(MIMIR_MOUNT_MIME));
 
     if (personaId) {
       const targetStage = findStageAtPoint(position.x, position.y);
@@ -1146,9 +1194,15 @@ export function GraphView({
       return;
     }
 
+    if (mimirMount) {
+      onAddMimirResource?.(mimirMount, position);
+      return;
+    }
+
     if (
       nodeKind === 'trigger' ||
       nodeKind === 'stage' ||
+      nodeKind === 'resource' ||
       nodeKind === 'gate' ||
       nodeKind === 'cond' ||
       nodeKind === 'end'
@@ -1198,6 +1252,14 @@ export function GraphView({
           title="Add stage node"
         >
           + Stage
+        </button>
+        <button
+          data-testid="add-resource"
+          onClick={() => onAddNode('resource')}
+          className={toolbarBtnClass}
+          title="Add resource node"
+        >
+          Resource
         </button>
         <button
           data-testid="add-gate"

@@ -1,10 +1,17 @@
 import { useState } from 'react';
 import { cn, SegmentedFilter } from '@niuulabs/ui';
-import type { Workflow, WorkflowNode, WorkflowStageNode } from '../../domain/workflow';
+import type {
+  Workflow,
+  WorkflowNode,
+  WorkflowResourceBinding,
+  WorkflowResourceNode,
+  WorkflowStageNode,
+} from '../../domain/workflow';
 import type { WorkflowIssue } from '../../domain/workflowValidation';
 import type { WorkflowBuilderActions } from './useWorkflowBuilder';
 import type { PersonaEntry } from './LibraryPanel';
 import { normalizedStageMembers } from './graphUtils';
+import { EPHEMERAL_LOCAL_MOUNT_ID, type WorkflowRegistryMount } from './mimirRegistry';
 
 export interface WorkflowDetailPanelProps {
   workflow: Workflow;
@@ -13,6 +20,7 @@ export interface WorkflowDetailPanelProps {
   warnCount: number;
   issues: WorkflowIssue[];
   personas: PersonaEntry[];
+  registryMounts: WorkflowRegistryMount[];
   onDeleteNode: WorkflowBuilderActions['deleteNode'];
   onUpdateNode: WorkflowBuilderActions['updateNode'];
   onUpdateLabel: WorkflowBuilderActions['updateNodeLabel'];
@@ -21,6 +29,9 @@ export interface WorkflowDetailPanelProps {
   onReplacePersona: WorkflowBuilderActions['replacePersonaInStage'];
   onUpdatePersonaBudget: WorkflowBuilderActions['updatePersonaBudget'];
   onRemovePersona: WorkflowBuilderActions['removePersonaFromStage'];
+  onAddResourceBinding: WorkflowBuilderActions['addResourceBinding'];
+  onUpdateResourceBinding: WorkflowBuilderActions['updateResourceBinding'];
+  onRemoveResourceBinding: WorkflowBuilderActions['removeResourceBinding'];
 }
 
 const SECTION_LABEL =
@@ -78,6 +89,28 @@ function triggerEventOptions(personas: PersonaEntry[], current: string): string[
       ].filter(Boolean),
     ),
   ].sort();
+}
+
+function uniquePersonaIds(workflow: Workflow): string[] {
+  return [
+    ...new Set(
+      workflow.nodes.flatMap((node) => {
+        if (node.kind !== 'stage') return [];
+        return normalizedStageMembers(node).map((member) => member.personaId);
+      }),
+    ),
+  ];
+}
+
+function defaultTargetIdForType(
+  workflow: Workflow,
+  targetType: WorkflowResourceBinding['targetType'],
+): string {
+  if (targetType === 'workflow') return workflow.id;
+  if (targetType === 'stage') {
+    return workflow.nodes.find((node) => node.kind === 'stage')?.id ?? '';
+  }
+  return uniquePersonaIds(workflow)[0] ?? '';
 }
 
 function WorkflowSummary({
@@ -467,6 +500,359 @@ function StageInspector({
   );
 }
 
+function ResourceInspector({
+  node,
+  workflow,
+  registryMounts,
+  onUpdateNode,
+  onUpdateLabel,
+  onDeleteNode,
+  onAddResourceBinding,
+  onUpdateResourceBinding,
+  onRemoveResourceBinding,
+}: {
+  node: WorkflowResourceNode;
+  workflow: Workflow;
+  registryMounts: WorkflowRegistryMount[];
+  onUpdateNode: WorkflowBuilderActions['updateNode'];
+  onUpdateLabel: WorkflowBuilderActions['updateNodeLabel'];
+  onDeleteNode: WorkflowBuilderActions['deleteNode'];
+  onAddResourceBinding: WorkflowBuilderActions['addResourceBinding'];
+  onUpdateResourceBinding: WorkflowBuilderActions['updateResourceBinding'];
+  onRemoveResourceBinding: WorkflowBuilderActions['removeResourceBinding'];
+}) {
+  const bindings = (workflow.resourceBindings ?? []).filter((binding) => binding.resourceNodeId === node.id);
+  const stages = workflow.nodes.filter((candidate) => candidate.kind === 'stage');
+  const personaIds = uniquePersonaIds(workflow);
+  const selectedMount = registryMounts.find((mount) => mount.id === node.registryEntryId) ?? null;
+  const isEphemeral = node.bindingMode === 'ephemeral_local';
+
+  function applyRegistryMount(mountId: string) {
+    const mount = registryMounts.find((candidate) => candidate.id === mountId);
+    if (!mount) {
+      onUpdateNode(node.id, { registryEntryId: mountId || null });
+      return;
+    }
+    onUpdateNode(node.id, {
+      label: mount.name,
+      bindingMode: 'registry',
+      registryEntryId: mount.id,
+      categories: [...(mount.categories ?? [])],
+      path: mount.path || null,
+      url: mount.url || null,
+      role: mount.role,
+      authRef: mount.authRef ?? null,
+      defaultReadPriority: mount.defaultReadPriority,
+    });
+  }
+
+  return (
+    <div className="niuu-px-4 niuu-py-3 niuu-flex niuu-flex-col niuu-gap-4">
+      <div>
+        <label className={SECTION_LABEL}>Resource name</label>
+        <input
+          className={INPUT}
+          value={node.label}
+          onChange={(e) => onUpdateLabel(node.id, e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className={SECTION_LABEL}>Binding mode</label>
+        <SegmentedFilter
+          options={[
+            { value: 'registry', label: 'registry' },
+            { value: 'ephemeral_local', label: 'ephemeral' },
+          ]}
+          value={node.bindingMode ?? 'registry'}
+          onChange={(mode) =>
+            onUpdateNode(node.id, {
+              bindingMode: mode,
+              registryEntryId:
+                mode === 'ephemeral_local'
+                  ? null
+                  : node.registryEntryId === EPHEMERAL_LOCAL_MOUNT_ID
+                    ? null
+                    : node.registryEntryId,
+              path: mode === 'ephemeral_local' ? null : node.path,
+              url: mode === 'ephemeral_local' ? null : node.url,
+              role: mode === 'ephemeral_local' ? 'local' : node.role,
+              seedFromRegistryId:
+                mode === 'ephemeral_local'
+                  ? node.seedFromRegistryId ?? node.registryEntryId
+                  : node.seedFromRegistryId,
+            })
+          }
+          aria-label="Resource binding mode"
+          className="niuu-mt-1 niuu-rounded-xl niuu-border niuu-border-border-subtle"
+        />
+      </div>
+
+      {node.bindingMode === 'ephemeral_local' ? (
+        <div className="niuu-flex niuu-flex-col niuu-gap-3">
+          <div className="niuu-rounded-md niuu-border niuu-border-status-emerald/40 niuu-bg-status-emerald/10 niuu-p-3 niuu-flex niuu-flex-col niuu-gap-1.5">
+            <div className={SECTION_LABEL}>Ephemeral local Mimir</div>
+            <div className="niuu-text-xs niuu-text-text-secondary niuu-leading-relaxed">
+              This Mimir is created inside the session workspace at runtime. Its local path is fixed
+              by the runtime and cannot be changed here.
+            </div>
+            <div className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
+              Path: workspace-local (.flock/mimir/local/...)
+            </div>
+          </div>
+
+          <div>
+            <label className={SECTION_LABEL}>Seed from registry mount</label>
+            <select
+              className={cn(INPUT, 'niuu-mt-0.5')}
+              value={node.seedFromRegistryId ?? ''}
+              onChange={(e) => onUpdateNode(node.id, { seedFromRegistryId: e.target.value || null })}
+            >
+              <option value="">No seed mount</option>
+              {registryMounts.map((mount) => (
+                <option key={mount.id} value={mount.id}>
+                  {mount.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      ) : (
+        <div className="niuu-flex niuu-flex-col niuu-gap-3">
+          <div>
+            <label className={SECTION_LABEL}>Registry mount</label>
+            <select
+              className={cn(INPUT, 'niuu-mt-0.5')}
+              value={node.registryEntryId ?? ''}
+              onChange={(e) => applyRegistryMount(e.target.value)}
+            >
+              <option value="">Select a Mimir registry mount…</option>
+              {registryMounts.map((mount) => (
+                <option key={mount.id} value={mount.id}>
+                  {mount.name} · {mount.role}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {selectedMount && (
+            <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-flex niuu-flex-col niuu-gap-1.5">
+              <div className={SECTION_LABEL}>Resolved mount</div>
+              <div className="niuu-text-xs niuu-text-text-secondary niuu-leading-relaxed">
+                {selectedMount.desc || 'Registry-backed Mimir instance'}
+              </div>
+              <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+                <span
+                  className={cn(
+                    TAG,
+                    'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-primary',
+                  )}
+                >
+                  {selectedMount.role}
+                </span>
+                <span
+                  className={cn(
+                    TAG,
+                    'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-primary',
+                  )}
+                >
+                  {selectedMount.kind}
+                </span>
+                <span
+                  className={cn(
+                    TAG,
+                    'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-primary',
+                  )}
+                >
+                  priority {selectedMount.defaultReadPriority}
+                </span>
+              </div>
+              {(selectedMount.categories ?? []).length > 0 && (
+                <div className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
+                  {(selectedMount.categories ?? []).join(', ')}
+                </div>
+              )}
+              {(selectedMount.path || selectedMount.url) && (
+                <div className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
+                  {selectedMount.path || selectedMount.url}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div>
+        <label className={SECTION_LABEL}>Categories</label>
+        <input
+          className={INPUT}
+          value={(node.categories ?? []).join(', ')}
+          onChange={(e) =>
+            onUpdateNode(node.id, {
+              categories: e.target.value
+                .split(',')
+                .map((part) => part.trim())
+                .filter(Boolean),
+            })
+          }
+        />
+      </div>
+
+      <div className="niuu-flex niuu-flex-col niuu-gap-2">
+        <div className="niuu-flex niuu-items-center niuu-justify-between">
+          <label className={SECTION_LABEL}>Bindings</label>
+          <button
+            type="button"
+            className={CHIP_BTN}
+            onClick={() =>
+              onAddResourceBinding(node.id, {
+                targetType: 'workflow',
+                targetId: workflow.id,
+                access: 'read',
+                readPriority: node.defaultReadPriority ?? 10,
+              })
+            }
+          >
+            + binding
+          </button>
+        </div>
+
+        {bindings.length === 0 ? (
+          <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-text-xs niuu-text-text-muted">
+            No workflow bindings yet. The resource exists in the graph, but nothing is attached to it.
+          </div>
+        ) : (
+          bindings.map((binding) => (
+            <div
+              key={binding.id}
+              className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3.5 niuu-flex niuu-flex-col niuu-gap-3"
+            >
+              <div className="niuu-flex niuu-items-center niuu-justify-between">
+                <span className="niuu-text-[11px] niuu-font-semibold niuu-text-text-primary">
+                  {binding.targetType} binding
+                </span>
+                <button
+                  type="button"
+                  className="niuu-bg-transparent niuu-border-none niuu-text-text-faint niuu-cursor-pointer"
+                  onClick={() => onRemoveResourceBinding(binding.id)}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+                <div>
+                  <label className={SECTION_LABEL}>Target type</label>
+                  <select
+                    className={cn(INPUT, 'niuu-mt-0.5')}
+                    value={binding.targetType}
+                    onChange={(e) => {
+                      const targetType = e.target.value as WorkflowResourceBinding['targetType'];
+                      onUpdateResourceBinding(binding.id, {
+                        targetType,
+                        targetId: defaultTargetIdForType(workflow, targetType),
+                      });
+                    }}
+                  >
+                    <option value="workflow">workflow</option>
+                    <option value="stage">stage</option>
+                    <option value="persona">persona</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={SECTION_LABEL}>Access</label>
+                  <select
+                    className={cn(INPUT, 'niuu-mt-0.5')}
+                    value={binding.access}
+                    onChange={(e) =>
+                      onUpdateResourceBinding(binding.id, {
+                        access: e.target.value as WorkflowResourceBinding['access'],
+                      })
+                    }
+                  >
+                    <option value="read">read</option>
+                    <option value="write">write</option>
+                    <option value="read_write">read_write</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className={SECTION_LABEL}>Target</label>
+                {binding.targetType === 'workflow' ? (
+                  <input className={INPUT} value={workflow.name} readOnly />
+                ) : binding.targetType === 'stage' ? (
+                  <select
+                    className={cn(INPUT, 'niuu-mt-0.5')}
+                    value={binding.targetId}
+                    onChange={(e) => onUpdateResourceBinding(binding.id, { targetId: e.target.value })}
+                  >
+                    {stages.map((stage) => (
+                      <option key={stage.id} value={stage.id}>
+                        {stage.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    className={cn(INPUT, 'niuu-mt-0.5')}
+                    value={binding.targetId}
+                    onChange={(e) => onUpdateResourceBinding(binding.id, { targetId: e.target.value })}
+                  >
+                    {personaIds.map((personaId) => (
+                      <option key={personaId} value={personaId}>
+                        {personaId}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+                <div>
+                  <label className={SECTION_LABEL}>Read priority</label>
+                  <input
+                    type="number"
+                    className={INPUT}
+                    value={binding.readPriority}
+                    onChange={(e) =>
+                      onUpdateResourceBinding(binding.id, {
+                        readPriority: Number.parseInt(e.target.value, 10) || 0,
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <label className={SECTION_LABEL}>Write prefixes</label>
+                  <input
+                    className={INPUT}
+                    value={(binding.writePrefixes ?? []).join(', ')}
+                    placeholder={isEphemeral ? 'scratch/, notes/' : 'project/, entity/'}
+                    onChange={(e) =>
+                      onUpdateResourceBinding(binding.id, {
+                        writePrefixes: e.target.value
+                          .split(',')
+                          .map((part) => part.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="niuu-border-t niuu-border-border niuu-pt-4">
+        <button type="button" className={DELETE_BTN} onClick={() => onDeleteNode(node.id)}>
+          Delete node
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function WorkflowDetailPanel({
   workflow,
   selectedNode,
@@ -474,6 +860,7 @@ export function WorkflowDetailPanel({
   warnCount,
   issues,
   personas,
+  registryMounts,
   onDeleteNode,
   onUpdateNode,
   onUpdateLabel,
@@ -482,6 +869,9 @@ export function WorkflowDetailPanel({
   onReplacePersona,
   onUpdatePersonaBudget,
   onRemovePersona,
+  onAddResourceBinding,
+  onUpdateResourceBinding,
+  onRemoveResourceBinding,
 }: WorkflowDetailPanelProps) {
   const title = selectedNode ? selectedNode.label : 'Workflow';
   const subtitle = selectedNode
@@ -627,6 +1017,18 @@ export function WorkflowDetailPanel({
             views.
           </div>
         </div>
+      ) : selectedNode?.kind === 'resource' ? (
+        <ResourceInspector
+          node={selectedNode}
+          workflow={workflow}
+          registryMounts={registryMounts}
+          onUpdateNode={onUpdateNode}
+          onUpdateLabel={onUpdateLabel}
+          onDeleteNode={onDeleteNode}
+          onAddResourceBinding={onAddResourceBinding}
+          onUpdateResourceBinding={onUpdateResourceBinding}
+          onRemoveResourceBinding={onRemoveResourceBinding}
+        />
       ) : (
         <WorkflowSummary
           workflow={workflow}

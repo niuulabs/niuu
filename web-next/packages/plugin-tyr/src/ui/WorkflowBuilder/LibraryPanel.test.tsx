@@ -1,6 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { LibraryPanel, DEFAULT_PERSONAS } from './LibraryPanel';
+import type { WorkflowRegistryMount } from './mimirRegistry';
+
+const REGISTRY_MOUNT: WorkflowRegistryMount = {
+  id: 'shared-mimir',
+  name: 'Shared Mimir',
+  kind: 'remote',
+  lifecycle: 'registered',
+  role: 'shared',
+  url: 'https://mimir.example',
+  path: '/shared',
+  categories: ['decision', 'entity'],
+  authRef: 'mimir-secret',
+  defaultReadPriority: 5,
+  enabled: true,
+  healthStatus: 'healthy',
+  healthMessage: 'ok',
+  desc: 'Shared team mount',
+};
 
 describe('LibraryPanel', () => {
   it('renders the library-panel container', () => {
@@ -38,6 +56,18 @@ describe('LibraryPanel', () => {
     render(<LibraryPanel personas={DEFAULT_PERSONAS} />);
     const chip = screen.getByTestId(`persona-chip-${DEFAULT_PERSONAS[0]!.id}`);
     expect(chip).toHaveAttribute('draggable', 'true');
+  });
+
+  it('renders registry-backed Mimir mounts when provided', () => {
+    render(<LibraryPanel personas={DEFAULT_PERSONAS} registryMounts={[REGISTRY_MOUNT]} />);
+    expect(screen.getByTestId('mimir-mount-shared-mimir')).toBeInTheDocument();
+    expect(screen.getByText('Shared Mimir')).toBeInTheDocument();
+  });
+
+  it('always renders the explicit ephemeral local Mimir resource', () => {
+    render(<LibraryPanel personas={DEFAULT_PERSONAS} />);
+    expect(screen.getByText('Ephemeral Local Mimir')).toBeInTheDocument();
+    expect(screen.getByText(/workspace-local scratch/i)).toBeInTheDocument();
   });
 
   it('DEFAULT_PERSONAS has 9 entries', () => {

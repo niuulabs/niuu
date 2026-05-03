@@ -112,6 +112,11 @@ export const workflowResourceNodeSchema = z.object({
   registryEntryId: z.string().nullable().default(null),
   seedFromRegistryId: z.string().nullable().default(null),
   categories: z.array(z.string()).default([]),
+  path: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+  role: z.string().nullable().optional(),
+  authRef: z.string().nullable().optional(),
+  defaultReadPriority: z.number().int().optional(),
   position: positionSchema,
 });
 export type WorkflowResourceNode = z.input<typeof workflowResourceNodeSchema>;

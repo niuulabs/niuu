@@ -9,6 +9,13 @@
  */
 
 import { useState } from 'react';
+import { cn } from '@niuulabs/ui';
+import {
+  EPHEMERAL_LOCAL_MOUNT,
+  MIMIR_MOUNT_MIME,
+  serializeWorkflowRegistryMount,
+  type WorkflowRegistryMount,
+} from './mimirRegistry';
 
 export interface PersonaEntry {
   id: string;
@@ -21,6 +28,7 @@ export interface PersonaEntry {
 
 export interface LibraryPanelProps {
   personas: PersonaEntry[];
+  registryMounts?: WorkflowRegistryMount[];
 }
 
 // Default mock persona library — used when no personas are passed.
@@ -99,7 +107,7 @@ export const DEFAULT_PERSONAS: PersonaEntry[] = [
   },
 ];
 
-const BLOCKS = [
+const FLOW_CONTROL_BLOCKS = [
   { id: 'stage', label: 'Stage', glyph: '◆' },
   { id: 'cond', label: 'Condition', glyph: '?' },
   { id: 'gate', label: 'Human gate', glyph: '⌘' },
@@ -131,8 +139,9 @@ function personaGlyph(role: string) {
   }
 }
 
-export function LibraryPanel({ personas }: LibraryPanelProps) {
+export function LibraryPanel({ personas, registryMounts = [] }: LibraryPanelProps) {
   const [search, setSearch] = useState('');
+  const resourceMounts = [EPHEMERAL_LOCAL_MOUNT, ...registryMounts];
   const filtered = search
     ? personas.filter(
         (p) =>
@@ -140,6 +149,16 @@ export function LibraryPanel({ personas }: LibraryPanelProps) {
           p.role.toLowerCase().includes(search.toLowerCase()),
       )
     : personas;
+  const filteredMounts = search
+    ? resourceMounts.filter(
+        (mount) =>
+          mount.name.toLowerCase().includes(search.toLowerCase()) ||
+          mount.role.toLowerCase().includes(search.toLowerCase()) ||
+          (mount.categories ?? []).some((category) =>
+            category.toLowerCase().includes(search.toLowerCase()),
+          ),
+      )
+    : resourceMounts;
   const groups = groupByRole(filtered);
 
   return (
@@ -166,7 +185,7 @@ export function LibraryPanel({ personas }: LibraryPanelProps) {
       <div className="niuu-px-4 niuu-py-3 niuu-border-b niuu-border-border">
         <input
           type="text"
-          placeholder="Search personas..."
+          placeholder="Search actors, resources, and mounts..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           data-testid="library-search"
@@ -176,14 +195,14 @@ export function LibraryPanel({ personas }: LibraryPanelProps) {
 
       {/* Scrollable content */}
       <div className="niuu-flex-1 niuu-overflow-y-auto niuu-px-4 niuu-pb-4">
-        {/* Blocks */}
+        {/* Flow control */}
         {!search && (
           <>
             <div className="niuu-text-[9px] niuu-font-semibold niuu-uppercase niuu-tracking-[0.22em] niuu-text-text-faint niuu-font-mono niuu-mb-2 niuu-mt-3">
-              BLOCKS
+              FLOW CONTROL
             </div>
             <div className="niuu-flex niuu-flex-col niuu-gap-1.5 niuu-mb-4">
-              {BLOCKS.map((b) => (
+              {FLOW_CONTROL_BLOCKS.map((b) => (
                 <div
                   key={b.id}
                   draggable
@@ -201,13 +220,67 @@ export function LibraryPanel({ personas }: LibraryPanelProps) {
           </>
         )}
 
+        {filteredMounts.length > 0 && (
+          <>
+            <div className="niuu-text-[9px] niuu-font-semibold niuu-uppercase niuu-tracking-[0.22em] niuu-text-text-faint niuu-font-mono niuu-mb-2 niuu-mt-3">
+              RESOURCES
+            </div>
+            <div className="niuu-flex niuu-flex-col niuu-gap-1.5 niuu-mb-4">
+              {filteredMounts.map((mount) => (
+                <div
+                  key={mount.id}
+                  data-testid={`mimir-mount-${mount.id}`}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(
+                      MIMIR_MOUNT_MIME,
+                      serializeWorkflowRegistryMount(mount),
+                    );
+                    e.dataTransfer.effectAllowed = 'copy';
+                  }}
+                  className={cn(
+                    'niuu-py-2.5 niuu-px-3 niuu-bg-bg-elevated niuu-rounded-lg niuu-border niuu-cursor-grab niuu-text-xs niuu-text-text-primary niuu-font-sans niuu-select-none niuu-flex niuu-items-start niuu-gap-2.5',
+                    mount.lifecycle === 'ephemeral'
+                      ? 'niuu-border-status-emerald/40'
+                      : 'niuu-border-border-subtle',
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'niuu-flex niuu-h-7 niuu-w-7 niuu-items-center niuu-justify-center niuu-font-mono niuu-text-[11px]',
+                      mount.lifecycle === 'ephemeral'
+                        ? 'niuu-rounded-full niuu-border niuu-border-status-emerald/60 niuu-text-status-emerald'
+                        : 'niuu-rounded-md niuu-border niuu-border-brand/60 niuu-text-brand',
+                    )}
+                  >
+                    {mount.lifecycle === 'ephemeral' ? 'E' : 'M'}
+                  </div>
+                  <div className="niuu-flex niuu-flex-col niuu-leading-tight niuu-min-w-0 niuu-flex-1">
+                    <span className="niuu-text-text-primary niuu-font-semibold niuu-truncate niuu-text-[11px]">
+                      {mount.name}
+                    </span>
+                    <span className="niuu-text-[9px] niuu-text-text-faint niuu-font-mono">
+                      {mount.lifecycle === 'ephemeral'
+                        ? 'workspace-local scratch'
+                        : `${mount.role} · ${mount.kind}`}
+                      {(mount.categories ?? []).length > 0
+                        ? ` · ${(mount.categories ?? []).slice(0, 2).join(', ')}`
+                        : ''}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
         {/* Persona groups */}
         {groups.map(([role, entries]) => (
           <div key={role}>
             <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-2 niuu-mb-1.5 niuu-mt-4 niuu-px-0.5">
               <div className="niuu-flex niuu-flex-col niuu-gap-0.5">
                 <span className="niuu-text-[9px] niuu-font-semibold niuu-uppercase niuu-tracking-[0.22em] niuu-text-text-faint niuu-font-mono">
-                  {role}
+                  ACTORS · {role}
                 </span>
               </div>
               <span className="niuu-text-[9px] niuu-text-text-faint niuu-font-mono niuu-mt-0.5">

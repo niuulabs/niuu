@@ -14,10 +14,15 @@ import type {
   Workflow,
   WorkflowNode,
   WorkflowNodeKind,
+  WorkflowResourceBinding,
   WorkflowStageNode,
 } from '../../domain/workflow';
 import type { PersonaEntry } from './LibraryPanel';
 import { makeNodeId, makeEdgeId, defaultBezierCPs } from './graphUtils';
+import {
+  EPHEMERAL_LOCAL_MOUNT_ID,
+  type WorkflowRegistryMount,
+} from './mimirRegistry';
 
 export type WorkflowView = 'graph' | 'pipeline' | 'yaml';
 
@@ -37,6 +42,7 @@ export interface WorkflowBuilderActions {
   selectNode(id: string | null): void;
   inspectNode(id: string | null): void;
   addNode(kind: WorkflowNodeKind, position?: { x: number; y: number }): void;
+  addMimirResource(mount: WorkflowRegistryMount, position?: { x: number; y: number }): void;
   addStageWithPersona(personaId: string, position?: { x: number; y: number }): void;
   deleteNode(id: string): void;
   deleteEdge(id: string): void;
@@ -50,6 +56,12 @@ export interface WorkflowBuilderActions {
   removePersonaFromStage(nodeId: string, personaId: string): void;
   updateNodeLabel(id: string, label: string): void;
   updateNode(id: string, patch: Partial<WorkflowNode>): void;
+  addResourceBinding(
+    resourceNodeId: string,
+    patch?: Partial<Omit<WorkflowResourceBinding, 'id' | 'resourceNodeId'>>,
+  ): void;
+  updateResourceBinding(id: string, patch: Partial<WorkflowResourceBinding>): void;
+  removeResourceBinding(id: string): void;
   updateWorkflowMeta(patch: Partial<Pick<Workflow, 'name' | 'description' | 'version'>>): void;
   setWorkflow(workflow: Workflow): void;
 }
@@ -112,9 +124,70 @@ function makeNewNode(kind: WorkflowNodeKind, position: { x: number; y: number })
         registryEntryId: null,
         seedFromRegistryId: null,
         categories: [],
+        path: null,
+        url: null,
+        role: null,
+        authRef: null,
+        defaultReadPriority: 10,
         position,
       };
   }
+}
+
+function makeResourceNodeFromMount(
+  mount: WorkflowRegistryMount,
+  position: { x: number; y: number },
+): WorkflowNode {
+  if (mount.lifecycle === 'ephemeral' || mount.id === EPHEMERAL_LOCAL_MOUNT_ID) {
+    return {
+      id: makeNodeId(),
+      kind: 'resource',
+      label: mount.name,
+      resourceType: 'mimir',
+      bindingMode: 'ephemeral_local',
+      registryEntryId: null,
+      seedFromRegistryId: null,
+      categories: [...(mount.categories ?? [])],
+      path: null,
+      url: null,
+      role: 'local',
+      authRef: null,
+      defaultReadPriority: mount.defaultReadPriority,
+      position,
+    };
+  }
+
+  return {
+    id: makeNodeId(),
+    kind: 'resource',
+    label: mount.name,
+    resourceType: 'mimir',
+    bindingMode: 'registry',
+    registryEntryId: mount.id,
+    seedFromRegistryId: null,
+    categories: [...(mount.categories ?? [])],
+    path: mount.path || null,
+    url: mount.url || null,
+    role: mount.role,
+    authRef: mount.authRef ?? null,
+    defaultReadPriority: mount.defaultReadPriority,
+    position,
+  };
+}
+
+function makeDefaultResourceBinding(
+  workflow: Workflow,
+  resourceNodeId: string,
+): WorkflowResourceBinding {
+  return {
+    id: makeEdgeId(),
+    resourceNodeId,
+    targetType: 'workflow',
+    targetId: workflow.id,
+    access: 'read',
+    writePrefixes: [],
+    readPriority: 10,
+  };
 }
 
 function syncStagePersonaIds(node: WorkflowStageNode): WorkflowStageNode {
@@ -316,6 +389,24 @@ export function useWorkflowBuilder(
     });
   }, []);
 
+  const addMimirResource = useCallback(
+    (mount: WorkflowRegistryMount, position?: { x: number; y: number }) => {
+      setWorkflowState((prev) => {
+        const pos = position ?? nextPosition(prev);
+        const node = makeResourceNodeFromMount(mount, pos);
+        return {
+          ...prev,
+          nodes: [...prev.nodes, node],
+          resourceBindings: [
+            ...(prev.resourceBindings ?? []),
+            makeDefaultResourceBinding(prev, node.id),
+          ],
+        };
+      });
+    },
+    [],
+  );
+
   const addStageWithPersona = useCallback(
     (personaId: string, position?: { x: number; y: number }) => {
       setWorkflowState((prev) => {
@@ -345,6 +436,9 @@ export function useWorkflowBuilder(
       ...prev,
       nodes: prev.nodes.filter((n) => n.id !== id),
       edges: prev.edges.filter((e) => e.source !== id && e.target !== id),
+      resourceBindings: (prev.resourceBindings ?? []).filter(
+        (binding) => binding.resourceNodeId !== id && binding.targetId !== id,
+      ),
     }));
     setSelectedNodeId((s) => (s === id ? null : s));
     if (connectingFromRef.current === id) {
@@ -526,6 +620,46 @@ export function useWorkflowBuilder(
     });
   }, []);
 
+  const addResourceBinding = useCallback(
+    (
+      resourceNodeId: string,
+      patch: Partial<Omit<WorkflowResourceBinding, 'id' | 'resourceNodeId'>> = {},
+    ) => {
+      setWorkflowState((prev) => ({
+        ...prev,
+        resourceBindings: [
+          ...(prev.resourceBindings ?? []),
+          {
+            ...makeDefaultResourceBinding(prev, resourceNodeId),
+            ...patch,
+            id: makeEdgeId(),
+            resourceNodeId,
+          },
+        ],
+      }));
+    },
+    [],
+  );
+
+  const updateResourceBinding = useCallback(
+    (id: string, patch: Partial<WorkflowResourceBinding>) => {
+      setWorkflowState((prev) => ({
+        ...prev,
+        resourceBindings: (prev.resourceBindings ?? []).map((binding) =>
+          binding.id === id ? { ...binding, ...patch, id: binding.id } : binding,
+        ),
+      }));
+    },
+    [],
+  );
+
+  const removeResourceBinding = useCallback((id: string) => {
+    setWorkflowState((prev) => ({
+      ...prev,
+      resourceBindings: (prev.resourceBindings ?? []).filter((binding) => binding.id !== id),
+    }));
+  }, []);
+
   const updateWorkflowMeta = useCallback(
     (patch: Partial<Pick<Workflow, 'name' | 'description' | 'version'>>) => {
       setWorkflowState((prev) => ({ ...prev, ...patch }));
@@ -544,6 +678,7 @@ export function useWorkflowBuilder(
     selectNode,
     inspectNode,
     addNode,
+    addMimirResource,
     addStageWithPersona,
     deleteNode,
     deleteEdge,
@@ -557,6 +692,9 @@ export function useWorkflowBuilder(
     removePersonaFromStage,
     updateNodeLabel,
     updateNode,
+    addResourceBinding,
+    updateResourceBinding,
+    removeResourceBinding,
     updateWorkflowMeta,
     setWorkflow,
   };

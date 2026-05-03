@@ -47,10 +47,15 @@ function wrap(service: Record<string, unknown>) {
     listPersonas: vi.fn().mockResolvedValue([]),
     getPersonaYaml: vi.fn().mockResolvedValue(''),
   };
+  const mimirService = {
+    mounts: {
+      listRegistryMounts: vi.fn().mockResolvedValue([]),
+    },
+  };
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={{ 'ravn.personas': personaService, ...service }}>
+        <ServicesProvider services={{ 'ravn.personas': personaService, mimir: mimirService, ...service }}>
           {children}
         </ServicesProvider>
       </QueryClientProvider>

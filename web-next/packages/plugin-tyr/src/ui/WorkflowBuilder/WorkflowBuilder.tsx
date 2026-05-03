@@ -25,6 +25,7 @@ import { YamlView } from './YamlView';
 import { ValidationPanel } from './ValidationPanel';
 import { LibraryPanel, DEFAULT_PERSONAS, type PersonaEntry } from './LibraryPanel';
 import { WorkflowDetailPanel } from './WorkflowDetailPanel';
+import type { WorkflowRegistryMount } from './mimirRegistry';
 
 export interface WorkflowBuilderProps {
   /** Initial workflow to edit. */
@@ -33,6 +34,8 @@ export interface WorkflowBuilderProps {
   onSave?: (workflow: Workflow) => void;
   /** Override persona library (defaults to DEFAULT_PERSONAS). */
   personas?: PersonaEntry[];
+  /** Registry-backed Mimir mounts available for drag/drop in the workflow editor. */
+  registryMounts?: WorkflowRegistryMount[];
 }
 
 const VIEWS: WorkflowView[] = ['graph', 'pipeline', 'yaml'];
@@ -47,7 +50,12 @@ const VIEW_OPTIONS = VIEWS.map((value) => ({ value, label: VIEW_LABELS[value] })
 const ACTION_BTN =
   'niuu-bg-transparent niuu-border niuu-border-solid niuu-border-border-subtle niuu-rounded-md niuu-text-text-secondary niuu-font-sans niuu-text-xs niuu-py-1.5 niuu-px-3 niuu-cursor-pointer niuu-whitespace-nowrap hover:niuu-border-border hover:niuu-text-text-primary niuu-transition-colors';
 
-export function WorkflowBuilder({ initialWorkflow, onSave, personas }: WorkflowBuilderProps) {
+export function WorkflowBuilder({
+  initialWorkflow,
+  onSave,
+  personas,
+  registryMounts = [],
+}: WorkflowBuilderProps) {
   const builder = useWorkflowBuilder(initialWorkflow, personas ?? DEFAULT_PERSONAS);
   const {
     workflow,
@@ -59,6 +67,7 @@ export function WorkflowBuilder({ initialWorkflow, onSave, personas }: WorkflowB
     selectNode,
     inspectNode,
     addNode,
+    addMimirResource,
     addStageWithPersona,
     deleteNode,
     deleteEdge,
@@ -72,6 +81,9 @@ export function WorkflowBuilder({ initialWorkflow, onSave, personas }: WorkflowB
     removePersonaFromStage,
     updateNodeLabel,
     updateNode,
+    addResourceBinding,
+    updateResourceBinding,
+    removeResourceBinding,
     updateWorkflowMeta,
     setWorkflow: _setWorkflow,
   } = builder;
@@ -94,7 +106,9 @@ export function WorkflowBuilder({ initialWorkflow, onSave, personas }: WorkflowB
       className="niuu-flex niuu-h-full niuu-min-h-[600px] niuu-font-sans"
     >
       {/* Library panel — left of canvas */}
-      {view === 'graph' && <LibraryPanel personas={personas ?? DEFAULT_PERSONAS} />}
+      {view === 'graph' && (
+        <LibraryPanel personas={personas ?? DEFAULT_PERSONAS} registryMounts={registryMounts} />
+      )}
 
       {/* Center: header + action bar + canvas + bottom bar */}
       <div className="niuu-flex-1 niuu-flex niuu-flex-col niuu-min-w-0">
@@ -197,6 +211,7 @@ export function WorkflowBuilder({ initialWorkflow, onSave, personas }: WorkflowB
               onSelectNode={selectNode}
               onInspectNode={inspectNode}
               onAddNode={addNode}
+              onAddMimirResource={addMimirResource}
               onDeleteNode={deleteNode}
               onDeleteEdge={deleteEdge}
               onMoveNode={moveNode}
@@ -237,6 +252,7 @@ export function WorkflowBuilder({ initialWorkflow, onSave, personas }: WorkflowB
         warnCount={warnCount}
         issues={issues}
         personas={personas ?? DEFAULT_PERSONAS}
+        registryMounts={registryMounts}
         onDeleteNode={deleteNode}
         onUpdateNode={updateNode}
         onUpdateLabel={updateNodeLabel}
@@ -245,6 +261,9 @@ export function WorkflowBuilder({ initialWorkflow, onSave, personas }: WorkflowB
         onReplacePersona={replacePersonaInStage}
         onUpdatePersonaBudget={updatePersonaBudget}
         onRemovePersona={removePersonaFromStage}
+        onAddResourceBinding={addResourceBinding}
+        onUpdateResourceBinding={updateResourceBinding}
+        onRemoveResourceBinding={removeResourceBinding}
       />
     </div>
   );
