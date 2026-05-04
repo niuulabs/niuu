@@ -22,6 +22,24 @@ spec:
     - host: {{ .host | quote }}
       http:
         paths:
+          {{- range .routeSets }}
+          {{- $routeSetName := . -}}
+          {{- range (index $.Values.ingress.routeSets $routeSetName) }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ include "niuu.ingressServiceName" (dict "root" $ "service" .service) }}
+                port:
+                  {{- if .portName }}
+                  name: {{ .portName }}
+                  {{- else if .portNumber }}
+                  number: {{ .portNumber }}
+                  {{- else }}
+                  name: http
+                  {{- end }}
+          {{- end }}
+          {{- end }}
           {{- range .routes }}
           - path: {{ .path }}
             pathType: {{ .pathType | default "Prefix" }}

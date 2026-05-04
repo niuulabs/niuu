@@ -791,10 +791,12 @@ config:
   sessionTimeout: "3600"
   # -- Maximum sessions per user
   maxSessionsPerUser: "5"
-  # -- CORS allowed origins
-  corsOrigins: "*"
-  # -- CORS allow credentials
-  corsAllowCredentials: "true"
+  cors:
+    # -- Allowed browser origins for cross-origin API requests
+    allowedOrigins:
+      - "*"
+    # -- Whether credentialed CORS requests are allowed
+    allowCredentials: true
   # -- Extra configuration values
   extra: {}
 
@@ -1207,6 +1209,80 @@ web:
       postLogoutRedirectUri: ""
       # -- OIDC scopes
       scope: "openid profile email"
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# Next-generation web UI (optional standalone frontend)
+webNext:
+  # -- Enable the composable Niuu web UI component
+  enabled: false
+
+  # -- Number of web-next replicas
+  replicaCount: 1
+
+  image:
+    # -- Web UI image registry
+    registry: ghcr.io
+    # -- Web UI image repository
+    repository: niuulabs/niuu-web
+    # -- Web UI image tag (defaults to Chart.appVersion)
+    tag: ""
+    # -- Web UI image pull policy
+    pullPolicy: Always
+
+  service:
+    # -- Web UI service type
+    type: ClusterIP
+    # -- Web UI service port
+    port: 80
+
+  ingress:
+    # -- Enable web-next ingress
+    enabled: false
+    # -- Ingress class name
+    className: ""
+    # -- Ingress annotations
+    annotations: {}
+    # -- Ingress hosts
+    hosts:
+      - host: niuu.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    # -- Ingress TLS
+    tls: []
+
+  config:
+    # -- Public origin used to render absolute same-origin service URLs
+    publicOrigin: "https://niuu.example.com"
+    # -- Public session gateway origin used for /s/{sessionId}/... traffic
+    sessionOrigin: ""
+    theme: "ice"
+    plugins:
+      login:
+        enabled: true
+        order: 0
+      volundr:
+        enabled: true
+        order: 1
+      tyr:
+        enabled: true
+        order: 2
+      mimir:
+        enabled: true
+        order: 3
+      settings:
+        enabled: true
+        order: 4
+    auth:
+      issuer: ""
+      clientId: ""
 
   resources:
     requests:

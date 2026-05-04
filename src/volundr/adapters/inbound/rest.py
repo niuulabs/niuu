@@ -917,9 +917,11 @@ def create_router(
     broadcaster: EventBroadcaster | None = None,
     repo_service: RepoService | None = None,
     chronicle_service: ChronicleService | None = None,
+    *,
+    prefix: str = "/api/v1/volundr",
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
-    router = APIRouter(prefix="/api/v1/volundr")
+    router = APIRouter(prefix=prefix)
     forge = ForgeService(
         session_service,
         stats_service=stats_service,

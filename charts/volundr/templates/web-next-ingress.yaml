@@ -1,0 +1,35 @@
+{{- if and .Values.webNext.enabled .Values.webNext.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "volundr.webNext.fullname" . }}
+  labels:
+    {{- include "volundr.webNext.labels" . | nindent 4 }}
+  {{- with .Values.webNext.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.webNext.ingress.className }}
+  ingressClassName: {{ .Values.webNext.ingress.className }}
+  {{- end }}
+  {{- if .Values.webNext.ingress.tls }}
+  tls:
+    {{- toYaml .Values.webNext.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.webNext.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "volundr.webNext.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+    {{- end }}
+{{- end }}

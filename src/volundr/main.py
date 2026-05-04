@@ -12,7 +12,8 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+
+from niuu.cors import apply_cors_middleware
 
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
@@ -816,6 +817,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 chronicle_service=chronicle_service,
             )
             app.include_router(router)
+            forge_router = create_router(
+                session_service,
+                stats_service,
+                token_service,
+                pricing_provider,
+                broadcaster=broadcaster,
+                repo_service=repo_service,
+                chronicle_service=chronicle_service,
+                prefix="/api/v1/forge",
+            )
+            app.include_router(forge_router)
 
             profiles_router = create_profiles_router(
                 profile_service, template_service, settings.session_definitions
@@ -1211,14 +1223,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.router.lifespan_context = lifespan
 
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    apply_cors_middleware(app, settings.cors)
 
     # PAT revocation enforcement
     from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware

@@ -73,7 +73,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["volundr","skuld","devrunner","volundr-web","vscode-reh","tyr","niuu","mimir","bifrost"]'
+      containers: '["volundr","skuld","devrunner","volundr-web","niuu-web","vscode-reh","tyr","niuu","mimir","bifrost"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ needs.meta.outputs.tag }}
       manifest-tags: "${{ needs.meta.outputs.tag }} ${{ needs.meta.outputs.tag }}-${{ needs.meta.outputs.short_sha }}"

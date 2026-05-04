@@ -228,7 +228,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["volundr","skuld","devrunner","volundr-web","vscode-reh","tyr","niuu","mimir","bifrost"]'
+      containers: '["volundr","skuld","devrunner","volundr-web","niuu-web","vscode-reh","tyr","niuu","mimir","bifrost"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
@@ -252,7 +252,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["volundr","skuld","devrunner","volundr-web","vscode-reh","tyr","niuu","mimir","bifrost"]'
+      containers: '["volundr","skuld","devrunner","volundr-web","niuu-web","vscode-reh","tyr","niuu","mimir","bifrost"]'
       tag: dev
 
   # ---------------------------------------------------------------------------

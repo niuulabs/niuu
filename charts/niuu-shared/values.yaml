@@ -46,6 +46,12 @@ config:
   logFormat: "json"
   host: "0.0.0.0"
   port: 8082
+  cors:
+    # -- Allowed browser origins for cross-origin API requests
+    allowedOrigins:
+      - "*"
+    # -- Whether credentialed CORS requests are allowed
+    allowCredentials: true
   extra: {}
 
 # Git provider configuration

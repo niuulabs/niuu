@@ -26,6 +26,7 @@ from pydantic_settings import (
 )
 
 from niuu.config import (
+    CorsConfig,
     GitHubConfig,  # noqa: F401
     GitHubInstance,  # noqa: F401
     GitLabConfig,  # noqa: F401
@@ -1209,6 +1210,7 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     git: GitConfig = Field(default_factory=GitConfig)

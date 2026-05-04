@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
 
+from niuu.cors import apply_cors_middleware
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.domain.models import Principal
@@ -674,6 +675,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.info("Tyr shutting down")
 
     app.router.lifespan_context = lifespan
+    apply_cors_middleware(app, settings.cors)
     app.add_middleware(PATRevocationMiddleware)
 
     @app.middleware("http")
