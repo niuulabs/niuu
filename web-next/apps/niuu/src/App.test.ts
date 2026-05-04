@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { publishServiceBackends, resolveConfigEndpoint } from './App';
+import { publishServiceBackends, resolveConfigEndpoint, shouldBypassAuthGate } from './App';
 
 function makeStorage(initial: Record<string, string> = {}) {
   const state = new Map(Object.entries(initial));
@@ -57,5 +57,19 @@ describe('publishServiceBackends', () => {
     publishServiceBackends(backends, target);
 
     expect(target.__NIUU_SERVICE_BACKENDS__).toBe(backends);
+  });
+});
+
+describe('shouldBypassAuthGate', () => {
+  it('allows the login entrypoints through without auth', () => {
+    expect(shouldBypassAuthGate('/login')).toBe(true);
+    expect(shouldBypassAuthGate('/login/callback')).toBe(true);
+    expect(shouldBypassAuthGate('/login/callback/provider')).toBe(true);
+  });
+
+  it('protects non-login routes', () => {
+    expect(shouldBypassAuthGate('/')).toBe(false);
+    expect(shouldBypassAuthGate('/volundr')).toBe(false);
+    expect(shouldBypassAuthGate('/tyr/dispatch')).toBe(false);
   });
 });
