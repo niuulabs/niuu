@@ -11,6 +11,7 @@ COPY web-next/pnpm-lock.yaml ./
 COPY web-next/pnpm-workspace.yaml ./
 COPY web-next/tsconfig.base.json ./
 COPY web-next/tsconfig.json ./
+COPY web-next/build ./build
 
 # Copy the app and workspace packages
 COPY web-next/apps ./apps
