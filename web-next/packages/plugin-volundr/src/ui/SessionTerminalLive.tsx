@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAccessToken } from '@niuulabs/query';
-import { cn } from '@niuulabs/ui';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import styles from './SessionTerminalLive.module.css';
+import { SessionTerminalTabBar } from './SessionTerminalTabBar';
 import { useWebSocket } from './hooks/useWebSocket';
 
 const FONT_LOAD_TIMEOUT_MS = 2_000;
@@ -105,12 +106,10 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
   const [connected, setConnected] = useState(false);
   const [fontReady, setFontReady] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
 
   const containerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const instanceRefs = useRef<Map<string, TerminalInstance>>(new Map());
   const initialisedRef = useRef(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
 
   const httpBase = useMemo(() => (url ? deriveHttpBase(url) : null), [url]);
 
@@ -365,19 +364,6 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
     return () => clearTimeout(timer);
   }, [activeTabId]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-
-    const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [menuOpen]);
-
   const handleAddCliTab = useCallback(
     async (cliType: string) => {
       if (!httpBase) return;
@@ -402,11 +388,13 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
         ];
       });
       setActiveTabId(created.terminalId);
-      setConnected(false);
-      setMenuOpen(false);
     },
     [httpBase],
   );
+
+  const handleAddTab = useCallback(() => {
+    void handleAddCliTab('shell');
+  }, [handleAddCliTab]);
 
   const handleCloseTab = useCallback(
     async (tabId: string) => {
@@ -422,7 +410,6 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
         if (tabId === activeTabId) {
           const nextActive = next[Math.min(closedIndex, next.length - 1)] ?? null;
           setActiveTabId(nextActive?.id ?? null);
-          setConnected(false);
         }
 
         const instance = instanceRefs.current.get(tabId);
@@ -440,7 +427,6 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
 
   const handleSelectTab = useCallback((tabId: string) => {
     setActiveTabId(tabId);
-    setConnected(false);
   }, []);
 
   if (!url) {
@@ -460,74 +446,23 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
   }
 
   return (
-    <div className="niuu-flex niuu-h-full niuu-min-h-0 niuu-flex-col niuu-bg-bg-primary">
-      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-3 niuu-py-2">
-        <div className="niuu-flex niuu-items-center niuu-gap-1.5" role="tablist">
-          {tabs.map((tab) => (
-            <div key={tab.id} className="niuu-flex niuu-items-center niuu-gap-1">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTabId === tab.id}
-                onClick={() => handleSelectTab(tab.id)}
-                className={cn(
-                  'niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px]',
-                  activeTabId === tab.id
-                    ? 'niuu-border-border niuu-bg-bg-elevated niuu-text-text-primary'
-                    : 'niuu-border-transparent niuu-text-text-muted hover:niuu-border-border-subtle hover:niuu-text-text-secondary',
-                )}
-              >
-                <span className="niuu-text-brand">{'>_'}</span>
-                <span>{tab.label}</span>
-              </button>
-              {tabs.length > 1 && (
-                <button
-                  type="button"
-                  aria-label={`Close ${tab.label}`}
-                  className="niuu-rounded niuu-px-1.5 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-muted hover:niuu-bg-bg-elevated hover:niuu-text-text-primary"
-                  onClick={() => void handleCloseTab(tab.id)}
-                >
-                  x
-                </button>
-              )}
-            </div>
-          ))}
-          <div className="niuu-relative" ref={menuRef}>
-            <button
-              type="button"
-              aria-label="New terminal"
-              aria-expanded={menuOpen}
-              aria-haspopup="menu"
-              className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-2.5 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-muted hover:niuu-text-text-primary"
-              onClick={() => setMenuOpen((prev) => !prev)}
-            >
-              +
-            </button>
-            {menuOpen && (
-              <div
-                role="menu"
-                className="niuu-absolute niuu-left-0 niuu-top-[calc(100%+6px)] niuu-z-20 niuu-min-w-32 niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-p-1 niuu-shadow-lg"
-              >
-                {CLI_OPTIONS.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    role="menuitem"
-                    className="niuu-flex niuu-w-full niuu-items-center niuu-justify-start niuu-rounded-sm niuu-px-2.5 niuu-py-1.5 niuu-text-left niuu-text-xs niuu-text-text-secondary hover:niuu-bg-bg-secondary hover:niuu-text-text-primary"
-                    onClick={() => void handleAddCliTab(option.id)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
-          {connected ? 'connected' : 'connecting…'}
+    <div className={styles.wrapper}>
+      <div className={styles.toolbar}>
+        <div className={styles.statusIndicator} data-connected={connected}>
+          <span>{connected ? 'Connected' : 'Disconnected'}</span>
         </div>
       </div>
-      <div className="niuu-min-h-0 niuu-flex-1 niuu-overflow-hidden">
+
+      <SessionTerminalTabBar
+        tabs={tabs}
+        activeTabId={activeTabId ?? ''}
+        onSelectTab={handleSelectTab}
+        onCloseTab={(tabId) => void handleCloseTab(tabId)}
+        onAddTab={handleAddTab}
+        onAddCliTab={(cliType) => void handleAddCliTab(cliType)}
+      />
+
+      <div className={styles.terminalArea}>
         {tabs.map((tab) => (
           <div
             key={tab.id}
@@ -535,10 +470,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
             aria-hidden={tab.id !== activeTabId}
             data-terminal-id={tab.id}
             data-visible={tab.id === activeTabId}
-            className={cn(
-              'niuu-h-full niuu-w-full niuu-p-2',
-              tab.id === activeTabId ? 'niuu-block' : 'niuu-hidden',
-            )}
+            className={styles.terminalContainer}
             ref={(element) => {
               if (element) {
                 mountTerminal(tab.id, element);
