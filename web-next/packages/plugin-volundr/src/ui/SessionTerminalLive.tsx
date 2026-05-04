@@ -5,6 +5,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import { useWebSocket } from './hooks/useWebSocket';
 
 interface SessionTerminalLiveProps {
   url: string | null;
@@ -15,6 +16,7 @@ interface TerminalTab {
   id: string;
   label: string;
   cliType: string;
+  restricted?: boolean;
 }
 
 interface ServerSession {
@@ -28,6 +30,16 @@ interface TerminalInstance {
   term: XTerm;
   fitAddon: FitAddon;
 }
+
+const CLI_OPTIONS = [
+  { id: 'shell', label: 'Shell' },
+  { id: 'bash', label: 'Bash' },
+  { id: 'zsh', label: 'Zsh' },
+  { id: 'fish', label: 'Fish' },
+  { id: 'claude', label: 'Claude' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'aider', label: 'Aider' },
+] as const;
 
 export function deriveHttpBase(wsUrl: string): string {
   const httpProto = wsUrl.startsWith('wss:') ? 'https:' : 'http:';
@@ -66,22 +78,76 @@ export async function spawnSession(
   return { terminalId: data.terminalId, label: data.label || data.terminalId };
 }
 
+export async function killSession(httpBase: string, terminalId: string): Promise<void> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = getAccessToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    await fetch(`${httpBase}/api/terminal/kill`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ terminalId }),
+    });
+  } catch {
+    // Best-effort only.
+  }
+}
+
 export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLiveProps) {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const containerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const instanceRefs = useRef<Map<string, TerminalInstance>>(new Map());
-  const socketRefs = useRef<Map<string, WebSocket>>(new Map());
   const initialisedRef = useRef(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   const httpBase = useMemo(() => (url ? deriveHttpBase(url) : null), [url]);
   const activeWsUrl = useMemo(() => {
     if (!url || !activeTabId) return null;
     return `${url.replace(/\/ws\/?$/, '')}/ws/${activeTabId}`;
   }, [activeTabId, url]);
+
+  const writeToTerminal = useCallback(
+    (data: string) => {
+      if (!activeTabId) return;
+      instanceRefs.current.get(activeTabId)?.term.write(data);
+    },
+    [activeTabId],
+  );
+
+  const { sendJson } = useWebSocket(activeWsUrl, {
+    onOpen: () => {
+      setConnected(true);
+      if (!activeTabId) return;
+      const instance = instanceRefs.current.get(activeTabId);
+      if (!instance) return;
+      sendJson({
+        type: 'resize',
+        cols: instance.term.cols,
+        rows: instance.term.rows,
+      });
+    },
+    onMessage: (raw: string) => {
+      try {
+        const msg = JSON.parse(raw) as { type: string; data?: string };
+        if (msg.type === 'output' && msg.data) {
+          writeToTerminal(msg.data);
+        }
+        if (msg.type === 'exit') {
+          writeToTerminal('\r\n[Process exited]\r\n');
+        }
+      } catch {
+        writeToTerminal(raw);
+      }
+    },
+    onClose: () => setConnected(false),
+    onError: () => setConnected(false),
+  });
 
   useEffect(() => {
     if (!httpBase || initialisedRef.current) return;
@@ -98,6 +164,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
           id: session.terminalId,
           label: session.label || `Terminal ${index + 1}`,
           cliType: session.cli_type,
+          restricted: false,
         }));
         setTabs(restored);
         setActiveTabId(restored[0]?.id ?? null);
@@ -109,7 +176,9 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
         setUnavailable(true);
         return;
       }
-      setTabs([{ id: created.terminalId, label: 'Terminal 1', cliType: 'shell' }]);
+      setTabs([
+        { id: created.terminalId, label: created.label || 'Terminal 1', cliType: 'shell' },
+      ]);
       setActiveTabId(created.terminalId);
     })();
   }, [httpBase]);
@@ -141,65 +210,140 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
       fitAddon.fit();
 
       instanceRefs.current.set(tabId, { term, fitAddon });
-
-      if (!readOnly) {
-        term.onData((data) => {
-          const socket = socketRefs.current.get(tabId);
-          if (socket?.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'input', data }));
-          }
-        });
-      }
     },
     [readOnly],
   );
 
   useEffect(() => {
-    if (!activeWsUrl || !activeTabId || unavailable) return;
-
-    const currentSocketRefs = socketRefs.current;
-    const socket = new WebSocket(
-      activeWsUrl +
-        (getAccessToken() ? `?access_token=${encodeURIComponent(getAccessToken()!)}` : ''),
-    );
-    currentSocketRefs.set(activeTabId, socket);
-
-    socket.onopen = () => {
-      setConnected(true);
-      const instance = instanceRefs.current.get(activeTabId);
-      if (instance) {
-        socket.send(
-          JSON.stringify({
-            type: 'resize',
-            cols: instance.term.cols,
-            rows: instance.term.rows,
-          }),
-        );
-      }
-    };
-
-    socket.onmessage = (event) => {
-      const instance = instanceRefs.current.get(activeTabId);
-      if (!instance) return;
-      try {
-        const msg = JSON.parse(String(event.data)) as { type: string; data?: string };
-        if (msg.type === 'output' && msg.data) instance.term.write(msg.data);
-        if (msg.type === 'exit') instance.term.write('\r\n[Process exited]\r\n');
-      } catch {
-        instance.term.write(String(event.data));
-      }
-    };
-
-    socket.onclose = () => {
-      setConnected(false);
-      currentSocketRefs.delete(activeTabId);
-    };
-
     return () => {
-      socket.close();
-      currentSocketRefs.delete(activeTabId);
+      for (const inst of instanceRefs.current.values()) {
+        inst.term.dispose();
+      }
+      instanceRefs.current.clear();
+      containerRefs.current.clear();
     };
-  }, [activeTabId, activeWsUrl, unavailable]);
+  }, []);
+
+  useEffect(() => {
+    if (!activeTabId || readOnly) return;
+    const instance = instanceRefs.current.get(activeTabId);
+    if (!instance) return;
+
+    const disposable = instance.term.onData((data) => {
+      sendJson({ type: 'input', data });
+    });
+    return () => disposable.dispose();
+  }, [activeTabId, readOnly, sendJson]);
+
+  useEffect(() => {
+    if (!activeTabId) return;
+    const instance = instanceRefs.current.get(activeTabId);
+    if (!instance) return;
+
+    const disposable = instance.term.onResize(({ cols, rows }) => {
+      sendJson({ type: 'resize', cols, rows });
+    });
+    return () => disposable.dispose();
+  }, [activeTabId, sendJson]);
+
+  useEffect(() => {
+    if (!activeTabId) return;
+    const container = containerRefs.current.get(activeTabId);
+    if (!container) return;
+
+    const observer = new ResizeObserver(() => {
+      try {
+        instanceRefs.current.get(activeTabId)?.fitAddon.fit();
+      } catch {
+        // Ignore fit errors during transitions.
+      }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [activeTabId]);
+
+  useEffect(() => {
+    if (!activeTabId) return;
+    const timer = setTimeout(() => {
+      try {
+        instanceRefs.current.get(activeTabId)?.fitAddon.fit();
+      } catch {
+        // Ignore fit errors during transitions.
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [activeTabId]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [menuOpen]);
+
+  const handleAddCliTab = useCallback(
+    async (cliType: string) => {
+      if (!httpBase) return;
+      const created = await spawnSession(httpBase, cliType);
+      if (!created) return;
+
+      const cliLabel =
+        CLI_OPTIONS.find((option) => option.id === cliType)?.label ??
+        created.label ??
+        `Terminal ${tabs.length + 1}`;
+
+      setTabs((prev) => [
+        ...prev,
+        {
+          id: created.terminalId,
+          label: created.label || cliLabel,
+          cliType,
+          restricted: false,
+        },
+      ]);
+      setActiveTabId(created.terminalId);
+      setConnected(false);
+      setMenuOpen(false);
+    },
+    [httpBase, tabs.length],
+  );
+
+  const handleCloseTab = useCallback(
+    async (tabId: string) => {
+      if (tabs.length <= 1) return;
+      if (httpBase) {
+        await killSession(httpBase, tabId);
+      }
+
+      const instance = instanceRefs.current.get(tabId);
+      if (instance) {
+        instance.term.dispose();
+        instanceRefs.current.delete(tabId);
+      }
+      containerRefs.current.delete(tabId);
+
+      setTabs((prev) => {
+        const closedIndex = prev.findIndex((tab) => tab.id === tabId);
+        const next = prev.filter((tab) => tab.id !== tabId);
+        if (tabId === activeTabId) {
+          const nextActive = next[Math.min(closedIndex, next.length - 1)] ?? null;
+          setActiveTabId(nextActive?.id ?? null);
+          setConnected(false);
+        }
+        return next;
+      });
+    },
+    [activeTabId, httpBase, tabs.length],
+  );
+
+  const handleSelectTab = useCallback((tabId: string) => {
+    setActiveTabId(tabId);
+    setConnected(false);
+  }, []);
 
   if (!url) {
     return (
@@ -220,23 +364,66 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
   return (
     <div className="niuu-flex niuu-h-full niuu-min-h-0 niuu-flex-col niuu-bg-bg-primary">
       <div className="niuu-flex niuu-items-center niuu-justify-between niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-3 niuu-py-2">
-        <div className="niuu-flex niuu-items-center niuu-gap-1.5">
+        <div className="niuu-flex niuu-items-center niuu-gap-1.5" role="tablist">
           {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTabId(tab.id)}
-              className={cn(
-                'niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px]',
-                activeTabId === tab.id
-                  ? 'niuu-border-border niuu-bg-bg-elevated niuu-text-text-primary'
-                  : 'niuu-border-transparent niuu-text-text-muted hover:niuu-border-border-subtle hover:niuu-text-text-secondary',
+            <div key={tab.id} className="niuu-flex niuu-items-center niuu-gap-1">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTabId === tab.id}
+                onClick={() => handleSelectTab(tab.id)}
+                className={cn(
+                  'niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px]',
+                  activeTabId === tab.id
+                    ? 'niuu-border-border niuu-bg-bg-elevated niuu-text-text-primary'
+                    : 'niuu-border-transparent niuu-text-text-muted hover:niuu-border-border-subtle hover:niuu-text-text-secondary',
+                )}
+              >
+                <span className="niuu-text-brand">{'>_'}</span>
+                <span>{tab.label}</span>
+              </button>
+              {tabs.length > 1 && (
+                <button
+                  type="button"
+                  aria-label={`Close ${tab.label}`}
+                  className="niuu-rounded niuu-px-1.5 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-muted hover:niuu-bg-bg-elevated hover:niuu-text-text-primary"
+                  onClick={() => void handleCloseTab(tab.id)}
+                >
+                  x
+                </button>
               )}
-            >
-              <span className="niuu-text-brand">{'>_'}</span>
-              <span>{tab.label}</span>
-            </button>
+            </div>
           ))}
+          <div className="niuu-relative" ref={menuRef}>
+            <button
+              type="button"
+              aria-label="New terminal"
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
+              className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-2.5 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-muted hover:niuu-text-text-primary"
+              onClick={() => setMenuOpen((prev) => !prev)}
+            >
+              +
+            </button>
+            {menuOpen && (
+              <div
+                role="menu"
+                className="niuu-absolute niuu-left-0 niuu-top-[calc(100%+6px)] niuu-z-20 niuu-min-w-32 niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-p-1 niuu-shadow-lg"
+              >
+                {CLI_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="menuitem"
+                    className="niuu-flex niuu-w-full niuu-items-center niuu-justify-start niuu-rounded-sm niuu-px-2.5 niuu-py-1.5 niuu-text-left niuu-text-xs niuu-text-text-secondary hover:niuu-bg-bg-secondary hover:niuu-text-text-primary"
+                    onClick={() => void handleAddCliTab(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
           {connected ? 'connected' : 'connecting…'}
