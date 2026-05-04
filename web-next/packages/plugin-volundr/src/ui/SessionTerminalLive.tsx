@@ -36,14 +36,6 @@ interface TerminalInstance {
   fitAddon: FitAddon;
 }
 
-interface LiveTerminalPaneProps {
-  active: boolean;
-  onConnectionChange: (connected: boolean) => void;
-  readOnly: boolean;
-  tabId: string;
-  wsBaseUrl: string;
-}
-
 const CLI_OPTIONS = [
   { id: 'shell', label: 'Shell' },
   { id: 'bash', label: 'Bash' },
@@ -107,24 +99,65 @@ export async function killSession(httpBase: string, terminalId: string): Promise
   }
 }
 
-function buildTerminalWsUrl(wsBaseUrl: string, tabId: string): string {
-  return `${wsBaseUrl.replace(/\/ws\/?$/, '')}/ws/${tabId}`;
-}
-
-function LiveTerminalPane({
-  active,
-  onConnectionChange,
-  readOnly,
-  tabId,
-  wsBaseUrl,
-}: LiveTerminalPaneProps) {
+export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLiveProps) {
+  const [tabs, setTabs] = useState<TerminalTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
   const [fontReady, setFontReady] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const instanceRef = useRef<TerminalInstance | null>(null);
+  const containerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const instanceRefs = useRef<Map<string, TerminalInstance>>(new Map());
+  const initialisedRef = useRef(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
-  const wsUrl = useMemo(() => buildTerminalWsUrl(wsBaseUrl, tabId), [tabId, wsBaseUrl]);
+  const httpBase = useMemo(() => (url ? deriveHttpBase(url) : null), [url]);
+
+  const activeWsUrl = useMemo(() => {
+    if (!url || !activeTabId) {
+      return null;
+    }
+    const base = url.replace(/\/ws\/?$/, '');
+    return `${base}/ws/${activeTabId}`;
+  }, [url, activeTabId]);
+
+  const writeToTerminal = useCallback(
+    (data: string) => {
+      if (!activeTabId) return;
+      instanceRefs.current.get(activeTabId)?.term.write(data);
+    },
+    [activeTabId],
+  );
+
+  const { sendJson } = useWebSocket(activeWsUrl, {
+    onOpen: () => {
+      setConnected(true);
+      if (!activeTabId) return;
+      const instance = instanceRefs.current.get(activeTabId);
+      if (!instance) return;
+      sendJson({ type: 'resize', cols: instance.term.cols, rows: instance.term.rows });
+    },
+    onMessage: (raw: string) => {
+      try {
+        const msg = JSON.parse(raw) as { type: string; data?: string };
+        if (msg.type === 'output' && msg.data) {
+          writeToTerminal(msg.data);
+          return;
+        }
+        if (msg.type === 'exit') {
+          writeToTerminal('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
+          return;
+        }
+      } catch {
+        // Fall through and write raw payload.
+      }
+
+      writeToTerminal(raw);
+    },
+    onClose: () => setConnected(false),
+    onError: () => setConnected(false),
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -157,181 +190,6 @@ function LiveTerminalPane({
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (!active) return;
-    onConnectionChange(isConnected);
-  }, [active, isConnected, onConnectionChange]);
-
-  useEffect(() => {
-    if (!containerRef.current || !fontReady || instanceRef.current) return;
-
-    const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
-    const term = new XTerm({
-      cursorBlink: true,
-      cursorStyle: 'block',
-      fontFamily: NERD_FONT_FAMILY,
-      fontSize: 13,
-      lineHeight: 1.4,
-      disableStdin: readOnly,
-      allowProposedApi: true,
-      scrollback: 5_000,
-      theme: {
-        background: '#09090b',
-        foreground: '#a1a1aa',
-        cursor: '#f97316',
-        cursorAccent: '#09090b',
-        selectionBackground: '#f9731640',
-        selectionForeground: '#fafafa',
-        black: '#09090b',
-        red: '#ef4444',
-        green: '#10b981',
-        yellow: '#f59e0b',
-        blue: '#3b82f6',
-        magenta: '#a855f7',
-        cyan: '#06b6d4',
-        white: '#a1a1aa',
-        brightBlack: '#52525b',
-        brightRed: '#f87171',
-        brightGreen: '#34d399',
-        brightYellow: '#fbbf24',
-        brightBlue: '#60a5fa',
-        brightMagenta: '#c084fc',
-        brightCyan: '#22d3ee',
-        brightWhite: '#fafafa',
-      },
-    });
-
-    term.loadAddon(fitAddon);
-    term.loadAddon(webLinksAddon);
-    term.open(containerRef.current);
-
-    try {
-      fitAddon.fit();
-    } catch {
-      // Container may not be visible yet.
-    }
-
-    instanceRef.current = { term, fitAddon };
-
-    const observer = new ResizeObserver(() => {
-      try {
-        instanceRef.current?.fitAddon.fit();
-      } catch {
-        // Ignore fit errors during layout transitions.
-      }
-    });
-    observer.observe(containerRef.current);
-
-    return () => {
-      observer.disconnect();
-      instanceRef.current?.term.dispose();
-      instanceRef.current = null;
-    };
-  }, [fontReady, readOnly]);
-
-  const { sendJson } = useWebSocket(wsUrl, {
-    onOpen: () => {
-      setIsConnected(true);
-      const instance = instanceRef.current;
-      if (!instance) return;
-      sendJson({
-        type: 'resize',
-        cols: instance.term.cols,
-        rows: instance.term.rows,
-      });
-    },
-    onMessage: (raw: string) => {
-      const instance = instanceRef.current;
-      if (!instance) return;
-
-      try {
-        const msg = JSON.parse(raw) as { type: string; data?: string };
-        if (msg.type === 'output' && msg.data) {
-          instance.term.write(msg.data);
-          return;
-        }
-        if (msg.type === 'exit') {
-          instance.term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
-          return;
-        }
-      } catch {
-        // Fall through and write raw payload.
-      }
-
-      instance.term.write(raw);
-    },
-    onClose: () => setIsConnected(false),
-    onError: () => setIsConnected(false),
-  });
-
-  useEffect(() => {
-    if (readOnly) return;
-    const instance = instanceRef.current;
-    if (!instance) return;
-
-    const disposable = instance.term.onData((data) => {
-      sendJson({ type: 'input', data });
-    });
-
-    return () => disposable.dispose();
-  }, [fontReady, readOnly, sendJson]);
-
-  useEffect(() => {
-    const instance = instanceRef.current;
-    if (!instance) return;
-
-    const disposable = instance.term.onResize(({ cols, rows }) => {
-      sendJson({ type: 'resize', cols, rows });
-    });
-
-    return () => disposable.dispose();
-  }, [fontReady, sendJson]);
-
-  useEffect(() => {
-    if (!active) return;
-
-    const timer = setTimeout(() => {
-      const instance = instanceRef.current;
-      if (!instance) return;
-
-      try {
-        instance.fitAddon.fit();
-        instance.term.focus();
-        if ('refresh' in instance.term && typeof instance.term.refresh === 'function') {
-          instance.term.refresh(0, Math.max(instance.term.rows - 1, 0));
-        }
-      } catch {
-        // Ignore fit errors during display transitions.
-      }
-    }, 50);
-
-    return () => clearTimeout(timer);
-  }, [active, fontReady]);
-
-  return (
-    <div
-      ref={containerRef}
-      role="tabpanel"
-      aria-hidden={!active}
-      data-visible={active}
-      className={cn('niuu-h-full niuu-w-full niuu-p-2', active ? 'niuu-block' : 'niuu-hidden')}
-    />
-  );
-}
-
-export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLiveProps) {
-  const [tabs, setTabs] = useState<TerminalTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [unavailable, setUnavailable] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-
-  const initialisedRef = useRef(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  const httpBase = useMemo(() => (url ? deriveHttpBase(url) : null), [url]);
 
   useEffect(() => {
     if (!httpBase || initialisedRef.current) return;
@@ -367,6 +225,146 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
     })();
   }, [httpBase]);
 
+  const mountTerminal = useCallback(
+    (tabId: string, container: HTMLDivElement | null) => {
+      if (!container || !fontReady) {
+        return;
+      }
+
+      if (instanceRefs.current.has(tabId)) {
+        return;
+      }
+
+      containerRefs.current.set(tabId, container);
+
+      const term = new XTerm({
+        cursorBlink: true,
+        cursorStyle: 'block',
+        fontFamily: NERD_FONT_FAMILY,
+        fontSize: 13,
+        lineHeight: 1.4,
+        disableStdin: readOnly,
+        allowProposedApi: true,
+        scrollback: 5_000,
+        theme: {
+          background: '#09090b',
+          foreground: '#a1a1aa',
+          cursor: '#f97316',
+          cursorAccent: '#09090b',
+          selectionBackground: '#f9731640',
+          selectionForeground: '#fafafa',
+          black: '#09090b',
+          red: '#ef4444',
+          green: '#10b981',
+          yellow: '#f59e0b',
+          blue: '#3b82f6',
+          magenta: '#a855f7',
+          cyan: '#06b6d4',
+          white: '#a1a1aa',
+          brightBlack: '#52525b',
+          brightRed: '#f87171',
+          brightGreen: '#34d399',
+          brightYellow: '#fbbf24',
+          brightBlue: '#60a5fa',
+          brightMagenta: '#c084fc',
+          brightCyan: '#22d3ee',
+          brightWhite: '#fafafa',
+        },
+      });
+
+      const fitAddon = new FitAddon();
+      const webLinksAddon = new WebLinksAddon();
+
+      term.loadAddon(fitAddon);
+      term.loadAddon(webLinksAddon);
+      term.open(container);
+
+      try {
+        fitAddon.fit();
+      } catch {
+        // Container might not be visible yet.
+      }
+
+      instanceRefs.current.set(tabId, { term, fitAddon });
+    },
+    [fontReady, readOnly],
+  );
+
+  useEffect(() => {
+    const instances = instanceRefs.current;
+    const containers = containerRefs.current;
+
+    return () => {
+      for (const instance of instances.values()) {
+        instance.term.dispose();
+      }
+      instances.clear();
+      containers.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeTabId) return;
+    const instance = instanceRefs.current.get(activeTabId);
+    if (!instance || readOnly) return;
+
+    const disposable = instance.term.onData((data: string) => {
+      sendJson({ type: 'input', data });
+    });
+
+    return () => disposable.dispose();
+  }, [activeTabId, readOnly, sendJson, fontReady]);
+
+  useEffect(() => {
+    if (!activeTabId) return;
+    const instance = instanceRefs.current.get(activeTabId);
+    if (!instance) return;
+
+    const disposable = instance.term.onResize(({ cols, rows }) => {
+      sendJson({ type: 'resize', cols, rows });
+    });
+
+    return () => disposable.dispose();
+  }, [activeTabId, sendJson, fontReady]);
+
+  useEffect(() => {
+    if (!activeTabId) return;
+    const container = containerRefs.current.get(activeTabId);
+    if (!container) return;
+
+    const observer = new ResizeObserver(() => {
+      try {
+        instanceRefs.current.get(activeTabId)?.fitAddon.fit();
+      } catch {
+        // Ignore fit errors during transitions.
+      }
+    });
+
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [activeTabId]);
+
+  useEffect(() => {
+    if (!activeTabId) return;
+
+    const timer = setTimeout(() => {
+      const instance = instanceRefs.current.get(activeTabId);
+      if (!instance) return;
+
+      try {
+        instance.fitAddon.fit();
+        instance.term.focus();
+        if ('refresh' in instance.term && typeof instance.term.refresh === 'function') {
+          instance.term.refresh(0, Math.max(instance.term.rows - 1, 0));
+        }
+      } catch {
+        // Ignore fit errors during display transitions.
+      }
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [activeTabId]);
+
   useEffect(() => {
     if (!menuOpen) return;
 
@@ -380,50 +378,65 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [menuOpen]);
 
-  const handleAddCliTab = useCallback(async (cliType: string) => {
-    if (!httpBase) return;
+  const handleAddCliTab = useCallback(
+    async (cliType: string) => {
+      if (!httpBase) return;
 
-    const created = await spawnSession(httpBase, cliType);
-    if (!created) return;
+      const created = await spawnSession(httpBase, cliType);
+      if (!created) return;
 
-    setTabs((prev) => {
-      const cliLabel =
-        CLI_OPTIONS.find((option) => option.id === cliType)?.label ??
-        created.label ??
-        `Terminal ${prev.length + 1}`;
+      setTabs((prev) => {
+        const cliLabel =
+          CLI_OPTIONS.find((option) => option.id === cliType)?.label ??
+          created.label ??
+          `Terminal ${prev.length + 1}`;
 
-      return [
-        ...prev,
-        {
-          id: created.terminalId,
-          label: created.label || cliLabel,
-          cliType,
-          restricted: false,
-        },
-      ];
-    });
-    setActiveTabId(created.terminalId);
-    setConnected(false);
-    setMenuOpen(false);
-  }, [httpBase]);
+        return [
+          ...prev,
+          {
+            id: created.terminalId,
+            label: created.label || cliLabel,
+            cliType,
+            restricted: false,
+          },
+        ];
+      });
+      setActiveTabId(created.terminalId);
+      setConnected(false);
+      setMenuOpen(false);
+    },
+    [httpBase],
+  );
 
-  const handleCloseTab = useCallback(async (tabId: string) => {
-    if (tabs.length <= 1) return;
-    if (httpBase) {
-      await killSession(httpBase, tabId);
-    }
-
-    setTabs((prev) => {
-      const closedIndex = prev.findIndex((tab) => tab.id === tabId);
-      const next = prev.filter((tab) => tab.id !== tabId);
-      if (tabId === activeTabId) {
-        const nextActive = next[Math.min(closedIndex, next.length - 1)] ?? null;
-        setActiveTabId(nextActive?.id ?? null);
-        setConnected(false);
+  const handleCloseTab = useCallback(
+    async (tabId: string) => {
+      if (tabs.length <= 1) return;
+      if (httpBase) {
+        await killSession(httpBase, tabId);
       }
-      return next;
-    });
-  }, [activeTabId, httpBase, tabs.length]);
+
+      setTabs((prev) => {
+        const closedIndex = prev.findIndex((tab) => tab.id === tabId);
+        const next = prev.filter((tab) => tab.id !== tabId);
+
+        if (tabId === activeTabId) {
+          const nextActive = next[Math.min(closedIndex, next.length - 1)] ?? null;
+          setActiveTabId(nextActive?.id ?? null);
+          setConnected(false);
+        }
+
+        const instance = instanceRefs.current.get(tabId);
+        if (instance) {
+          instance.term.dispose();
+          instanceRefs.current.delete(tabId);
+        }
+        containerRefs.current.delete(tabId);
+
+        return next;
+      });
+    },
+    [activeTabId, httpBase, tabs.length],
+  );
 
   const handleSelectTab = useCallback((tabId: string) => {
     setActiveTabId(tabId);
@@ -516,13 +529,21 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
       </div>
       <div className="niuu-min-h-0 niuu-flex-1 niuu-overflow-hidden">
         {tabs.map((tab) => (
-          <LiveTerminalPane
+          <div
             key={tab.id}
-            active={activeTabId === tab.id}
-            onConnectionChange={setConnected}
-            readOnly={readOnly}
-            tabId={tab.id}
-            wsBaseUrl={url}
+            role="tabpanel"
+            aria-hidden={tab.id !== activeTabId}
+            data-terminal-id={tab.id}
+            data-visible={tab.id === activeTabId}
+            className={cn(
+              'niuu-h-full niuu-w-full niuu-p-2',
+              tab.id === activeTabId ? 'niuu-block' : 'niuu-hidden',
+            )}
+            ref={(element) => {
+              if (element) {
+                mountTerminal(tab.id, element);
+              }
+            }}
           />
         ))}
       </div>
