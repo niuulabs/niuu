@@ -100,6 +100,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
   const [connected, setConnected] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [mountedTabIds, setMountedTabIds] = useState<string[]>([]);
 
   const containerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const instanceRefs = useRef<Map<string, TerminalInstance>>(new Map());
@@ -167,7 +168,9 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
           restricted: false,
         }));
         setTabs(restored);
-        setActiveTabId(restored[0]?.id ?? null);
+        const firstTabId = restored[0]?.id ?? null;
+        setActiveTabId(firstTabId);
+        setMountedTabIds(firstTabId ? [firstTabId] : []);
         return;
       }
 
@@ -180,6 +183,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
         { id: created.terminalId, label: created.label || 'Terminal 1', cliType: 'shell' },
       ]);
       setActiveTabId(created.terminalId);
+      setMountedTabIds([created.terminalId]);
     })();
   }, [httpBase]);
 
@@ -248,6 +252,11 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
 
   useEffect(() => {
     if (!activeTabId) return;
+    setMountedTabIds((prev) => (prev.includes(activeTabId) ? prev : [...prev, activeTabId]));
+  }, [activeTabId]);
+
+  useEffect(() => {
+    if (!activeTabId) return;
     const container = containerRefs.current.get(activeTabId);
     if (!container) return;
 
@@ -266,7 +275,13 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
     if (!activeTabId) return;
     const timer = setTimeout(() => {
       try {
-        instanceRefs.current.get(activeTabId)?.fitAddon.fit();
+        const instance = instanceRefs.current.get(activeTabId);
+        if (!instance) return;
+        instance.fitAddon.fit();
+        instance.term.focus();
+        if ('refresh' in instance.term && typeof instance.term.refresh === 'function') {
+          instance.term.refresh(0, Math.max(instance.term.rows - 1, 0));
+        }
       } catch {
         // Ignore fit errors during transitions.
       }
@@ -305,6 +320,9 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
           restricted: false,
         },
       ]);
+      setMountedTabIds((prev) =>
+        prev.includes(created.terminalId) ? prev : [...prev, created.terminalId],
+      );
       setActiveTabId(created.terminalId);
       setConnected(false);
       setMenuOpen(false);
@@ -325,6 +343,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
         instanceRefs.current.delete(tabId);
       }
       containerRefs.current.delete(tabId);
+      setMountedTabIds((prev) => prev.filter((id) => id !== tabId));
 
       setTabs((prev) => {
         const closedIndex = prev.findIndex((tab) => tab.id === tabId);
@@ -433,7 +452,13 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
         {tabs.map((tab) => (
           <div
             key={tab.id}
-            ref={(node) => mountTerminal(tab.id, node)}
+            role="tabpanel"
+            aria-hidden={activeTabId !== tab.id}
+            data-visible={activeTabId === tab.id}
+            ref={(node) => {
+              if (!mountedTabIds.includes(tab.id)) return;
+              mountTerminal(tab.id, node);
+            }}
             className={cn(
               'niuu-h-full niuu-w-full',
               activeTabId === tab.id ? 'niuu-block' : 'niuu-hidden',

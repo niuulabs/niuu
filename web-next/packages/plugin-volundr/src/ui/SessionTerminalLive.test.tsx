@@ -227,10 +227,14 @@ describe('SessionTerminalLive', () => {
 
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
 
+    await screen.findByRole('tab', { name: /tab 1/i });
+    expect(mockXtermOpen).toHaveBeenCalledTimes(1);
+
     const secondTab = await screen.findByRole('tab', { name: /tab 2/i });
     fireEvent.click(secondTab);
 
     expect(secondTab).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(mockXtermOpen).toHaveBeenCalledTimes(2));
   });
 
   it('closes a tab and keeps the remaining tab visible', async () => {
