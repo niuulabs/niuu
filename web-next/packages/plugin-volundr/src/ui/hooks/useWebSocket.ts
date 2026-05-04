@@ -115,6 +115,7 @@ export function useWebSocket(
       };
 
       ws.onmessage = (event: MessageEvent) => {
+        if (wsRef.current !== ws) return;
         onMessageRef.current?.(event.data as string);
       };
 
@@ -139,6 +140,7 @@ export function useWebSocket(
       };
 
       ws.onerror = (event: Event) => {
+        if (wsRef.current !== ws) return;
         onErrorRef.current?.(event);
       };
     };
