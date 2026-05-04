@@ -48,3 +48,51 @@ Selector labels
 app.kubernetes.io/name: {{ include "niuu.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Resolve a component fullname using the same rules as the child chart.
+*/}}
+{{- define "niuu.componentFullname" -}}
+{{- $root := .root -}}
+{{- $name := .name -}}
+{{- $values := .values | default dict -}}
+{{- if $values.fullnameOverride }}
+{{- $values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $componentName := default $name $values.nameOverride }}
+{{- if contains $componentName $root.Release.Name }}
+{{- $root.Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" $root.Release.Name $componentName | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Resolve a backend service name for the umbrella ingress.
+Known service keys point at subchart services; unknown keys are treated
+as literal service names to keep the route table extensible.
+*/}}
+{{- define "niuu.ingressServiceName" -}}
+{{- $root := .root -}}
+{{- $service := .service -}}
+{{- if eq $service "volundr" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr) }}
+{{- else if eq $service "volundr-web" -}}
+{{ printf "%s-web" (include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr)) }}
+{{- else if eq $service "tyr" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "tyr" "values" $root.Values.tyr) }}
+{{- else if eq $service "niuu-shared" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "niuu-shared" "values" (index $root.Values "niuu-shared")) }}
+{{- else if eq $service "bifrost" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "bifrost" "values" $root.Values.bifrost) }}
+{{- else if eq $service "mimir-shared" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-shared" "values" (index $root.Values "mimir-shared")) }}
+{{- else if eq $service "mimir-kanuck" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-kanuck" "values" (index $root.Values "mimir-kanuck")) }}
+{{- else if eq $service "mimir-research" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-research" "values" (index $root.Values "mimir-research")) }}
+{{- else -}}
+{{- $service -}}
+{{- end }}
+{{- end }}
