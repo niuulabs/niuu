@@ -7,6 +7,11 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useWebSocket } from './hooks/useWebSocket';
 
+const FONT_LOAD_TIMEOUT_MS = 2_000;
+const TERMINAL_FONT = '13px "JetBrainsMono NF"';
+const NERD_FONT_FAMILY =
+  '"JetBrainsMono NF", var(--font-mono), "JetBrains Mono", "Fira Code", monospace';
+
 interface SessionTerminalLiveProps {
   url: string | null;
   readOnly?: boolean;
@@ -29,6 +34,14 @@ interface ServerSession {
 interface TerminalInstance {
   term: XTerm;
   fitAddon: FitAddon;
+}
+
+interface LiveTerminalPaneProps {
+  active: boolean;
+  onConnectionChange: (connected: boolean) => void;
+  readOnly: boolean;
+  tabId: string;
+  wsBaseUrl: string;
 }
 
 const CLI_OPTIONS = [
@@ -94,38 +107,134 @@ export async function killSession(httpBase: string, terminalId: string): Promise
   }
 }
 
-export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLiveProps) {
-  const [tabs, setTabs] = useState<TerminalTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [unavailable, setUnavailable] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [mountedTabIds, setMountedTabIds] = useState<string[]>([]);
+function buildTerminalWsUrl(wsBaseUrl: string, tabId: string): string {
+  return `${wsBaseUrl.replace(/\/ws\/?$/, '')}/ws/${tabId}`;
+}
 
-  const containerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const instanceRefs = useRef<Map<string, TerminalInstance>>(new Map());
-  const initialisedRef = useRef(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+function LiveTerminalPane({
+  active,
+  onConnectionChange,
+  readOnly,
+  tabId,
+  wsBaseUrl,
+}: LiveTerminalPaneProps) {
+  const [fontReady, setFontReady] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
 
-  const httpBase = useMemo(() => (url ? deriveHttpBase(url) : null), [url]);
-  const activeWsUrl = useMemo(() => {
-    if (!url || !activeTabId) return null;
-    return `${url.replace(/\/ws\/?$/, '')}/ws/${activeTabId}`;
-  }, [activeTabId, url]);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const instanceRef = useRef<TerminalInstance | null>(null);
 
-  const writeToTerminal = useCallback(
-    (data: string) => {
-      if (!activeTabId) return;
-      instanceRefs.current.get(activeTabId)?.term.write(data);
-    },
-    [activeTabId],
-  );
+  const wsUrl = useMemo(() => buildTerminalWsUrl(wsBaseUrl, tabId), [tabId, wsBaseUrl]);
 
-  const { sendJson } = useWebSocket(activeWsUrl, {
+  useEffect(() => {
+    let cancelled = false;
+
+    async function waitForFont() {
+      const fonts = document.fonts;
+      if (!fonts) {
+        setFontReady(true);
+        return;
+      }
+
+      await fonts.ready;
+
+      try {
+        await Promise.race([
+          fonts.load(TERMINAL_FONT),
+          new Promise((resolve) => setTimeout(resolve, FONT_LOAD_TIMEOUT_MS)),
+        ]);
+      } catch {
+        // Proceed with fallback fonts.
+      }
+
+      if (!cancelled) {
+        setFontReady(true);
+      }
+    }
+
+    void waitForFont();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    onConnectionChange(isConnected);
+  }, [active, isConnected, onConnectionChange]);
+
+  useEffect(() => {
+    if (!containerRef.current || !fontReady || instanceRef.current) return;
+
+    const fitAddon = new FitAddon();
+    const webLinksAddon = new WebLinksAddon();
+    const term = new XTerm({
+      cursorBlink: true,
+      cursorStyle: 'block',
+      fontFamily: NERD_FONT_FAMILY,
+      fontSize: 13,
+      lineHeight: 1.4,
+      disableStdin: readOnly,
+      allowProposedApi: true,
+      scrollback: 5_000,
+      theme: {
+        background: '#09090b',
+        foreground: '#a1a1aa',
+        cursor: '#f97316',
+        cursorAccent: '#09090b',
+        selectionBackground: '#f9731640',
+        selectionForeground: '#fafafa',
+        black: '#09090b',
+        red: '#ef4444',
+        green: '#10b981',
+        yellow: '#f59e0b',
+        blue: '#3b82f6',
+        magenta: '#a855f7',
+        cyan: '#06b6d4',
+        white: '#a1a1aa',
+        brightBlack: '#52525b',
+        brightRed: '#f87171',
+        brightGreen: '#34d399',
+        brightYellow: '#fbbf24',
+        brightBlue: '#60a5fa',
+        brightMagenta: '#c084fc',
+        brightCyan: '#22d3ee',
+        brightWhite: '#fafafa',
+      },
+    });
+
+    term.loadAddon(fitAddon);
+    term.loadAddon(webLinksAddon);
+    term.open(containerRef.current);
+
+    try {
+      fitAddon.fit();
+    } catch {
+      // Container may not be visible yet.
+    }
+
+    instanceRef.current = { term, fitAddon };
+
+    const observer = new ResizeObserver(() => {
+      try {
+        instanceRef.current?.fitAddon.fit();
+      } catch {
+        // Ignore fit errors during layout transitions.
+      }
+    });
+    observer.observe(containerRef.current);
+
+    return () => {
+      observer.disconnect();
+      instanceRef.current?.term.dispose();
+      instanceRef.current = null;
+    };
+  }, [fontReady, readOnly]);
+
+  const { sendJson } = useWebSocket(wsUrl, {
     onOpen: () => {
-      setConnected(true);
-      if (!activeTabId) return;
-      const instance = instanceRefs.current.get(activeTabId);
+      setIsConnected(true);
+      const instance = instanceRef.current;
       if (!instance) return;
       sendJson({
         type: 'resize',
@@ -134,21 +243,95 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
       });
     },
     onMessage: (raw: string) => {
+      const instance = instanceRef.current;
+      if (!instance) return;
+
       try {
         const msg = JSON.parse(raw) as { type: string; data?: string };
         if (msg.type === 'output' && msg.data) {
-          writeToTerminal(msg.data);
+          instance.term.write(msg.data);
+          return;
         }
         if (msg.type === 'exit') {
-          writeToTerminal('\r\n[Process exited]\r\n');
+          instance.term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
+          return;
         }
       } catch {
-        writeToTerminal(raw);
+        // Fall through and write raw payload.
       }
+
+      instance.term.write(raw);
     },
-    onClose: () => setConnected(false),
-    onError: () => setConnected(false),
+    onClose: () => setIsConnected(false),
+    onError: () => setIsConnected(false),
   });
+
+  useEffect(() => {
+    if (readOnly) return;
+    const instance = instanceRef.current;
+    if (!instance) return;
+
+    const disposable = instance.term.onData((data) => {
+      sendJson({ type: 'input', data });
+    });
+
+    return () => disposable.dispose();
+  }, [fontReady, readOnly, sendJson]);
+
+  useEffect(() => {
+    const instance = instanceRef.current;
+    if (!instance) return;
+
+    const disposable = instance.term.onResize(({ cols, rows }) => {
+      sendJson({ type: 'resize', cols, rows });
+    });
+
+    return () => disposable.dispose();
+  }, [fontReady, sendJson]);
+
+  useEffect(() => {
+    if (!active) return;
+
+    const timer = setTimeout(() => {
+      const instance = instanceRef.current;
+      if (!instance) return;
+
+      try {
+        instance.fitAddon.fit();
+        instance.term.focus();
+        if ('refresh' in instance.term && typeof instance.term.refresh === 'function') {
+          instance.term.refresh(0, Math.max(instance.term.rows - 1, 0));
+        }
+      } catch {
+        // Ignore fit errors during display transitions.
+      }
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [active, fontReady]);
+
+  return (
+    <div
+      ref={containerRef}
+      role="tabpanel"
+      aria-hidden={!active}
+      data-visible={active}
+      className={cn('niuu-h-full niuu-w-full niuu-p-2', active ? 'niuu-block' : 'niuu-hidden')}
+    />
+  );
+}
+
+export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLiveProps) {
+  const [tabs, setTabs] = useState<TerminalTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const initialisedRef = useRef(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  const httpBase = useMemo(() => (url ? deriveHttpBase(url) : null), [url]);
 
   useEffect(() => {
     if (!httpBase || initialisedRef.current) return;
@@ -168,9 +351,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
           restricted: false,
         }));
         setTabs(restored);
-        const firstTabId = restored[0]?.id ?? null;
-        setActiveTabId(firstTabId);
-        setMountedTabIds(firstTabId ? [firstTabId] : []);
+        setActiveTabId(restored[0]?.id ?? null);
         return;
       }
 
@@ -183,135 +364,35 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
         { id: created.terminalId, label: created.label || 'Terminal 1', cliType: 'shell' },
       ]);
       setActiveTabId(created.terminalId);
-      setMountedTabIds([created.terminalId]);
     })();
   }, [httpBase]);
 
-  const mountTerminal = useCallback(
-    (tabId: string, container: HTMLDivElement | null) => {
-      if (!container || instanceRefs.current.has(tabId)) return;
-      containerRefs.current.set(tabId, container);
-
-      const term = new XTerm({
-        cursorBlink: true,
-        cursorStyle: 'block',
-        fontFamily: '"JetBrainsMono Nerd Font", "JetBrains Mono", monospace',
-        fontSize: 13,
-        lineHeight: 1.3,
-        disableStdin: readOnly,
-        theme: {
-          background: '#09090b',
-          foreground: '#fafafa',
-          cursor: '#a1a1aa',
-          selectionBackground: '#3f3f46',
-        },
-      });
-      const fitAddon = new FitAddon();
-      const webLinksAddon = new WebLinksAddon();
-      term.loadAddon(fitAddon);
-      term.loadAddon(webLinksAddon);
-      term.open(container);
-      fitAddon.fit();
-
-      instanceRefs.current.set(tabId, { term, fitAddon });
-    },
-    [readOnly],
-  );
-
-  useEffect(() => {
-    return () => {
-      for (const inst of instanceRefs.current.values()) {
-        inst.term.dispose();
-      }
-      instanceRefs.current.clear();
-      containerRefs.current.clear();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!activeTabId || readOnly) return;
-    const instance = instanceRefs.current.get(activeTabId);
-    if (!instance) return;
-
-    const disposable = instance.term.onData((data) => {
-      sendJson({ type: 'input', data });
-    });
-    return () => disposable.dispose();
-  }, [activeTabId, readOnly, sendJson]);
-
-  useEffect(() => {
-    if (!activeTabId) return;
-    const instance = instanceRefs.current.get(activeTabId);
-    if (!instance) return;
-
-    const disposable = instance.term.onResize(({ cols, rows }) => {
-      sendJson({ type: 'resize', cols, rows });
-    });
-    return () => disposable.dispose();
-  }, [activeTabId, sendJson]);
-
-  useEffect(() => {
-    if (!activeTabId) return;
-    setMountedTabIds((prev) => (prev.includes(activeTabId) ? prev : [...prev, activeTabId]));
-  }, [activeTabId]);
-
-  useEffect(() => {
-    if (!activeTabId) return;
-    const container = containerRefs.current.get(activeTabId);
-    if (!container) return;
-
-    const observer = new ResizeObserver(() => {
-      try {
-        instanceRefs.current.get(activeTabId)?.fitAddon.fit();
-      } catch {
-        // Ignore fit errors during transitions.
-      }
-    });
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, [activeTabId]);
-
-  useEffect(() => {
-    if (!activeTabId) return;
-    const timer = setTimeout(() => {
-      try {
-        const instance = instanceRefs.current.get(activeTabId);
-        if (!instance) return;
-        instance.fitAddon.fit();
-        instance.term.focus();
-        if ('refresh' in instance.term && typeof instance.term.refresh === 'function') {
-          instance.term.refresh(0, Math.max(instance.term.rows - 1, 0));
-        }
-      } catch {
-        // Ignore fit errors during transitions.
-      }
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [activeTabId]);
-
   useEffect(() => {
     if (!menuOpen) return;
+
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         setMenuOpen(false);
       }
     };
+
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [menuOpen]);
 
-  const handleAddCliTab = useCallback(
-    async (cliType: string) => {
-      if (!httpBase) return;
-      const created = await spawnSession(httpBase, cliType);
-      if (!created) return;
+  const handleAddCliTab = useCallback(async (cliType: string) => {
+    if (!httpBase) return;
 
+    const created = await spawnSession(httpBase, cliType);
+    if (!created) return;
+
+    setTabs((prev) => {
       const cliLabel =
         CLI_OPTIONS.find((option) => option.id === cliType)?.label ??
         created.label ??
-        `Terminal ${tabs.length + 1}`;
+        `Terminal ${prev.length + 1}`;
 
-      setTabs((prev) => [
+      return [
         ...prev,
         {
           id: created.terminalId,
@@ -319,45 +400,30 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
           cliType,
           restricted: false,
         },
-      ]);
-      setMountedTabIds((prev) =>
-        prev.includes(created.terminalId) ? prev : [...prev, created.terminalId],
-      );
-      setActiveTabId(created.terminalId);
-      setConnected(false);
-      setMenuOpen(false);
-    },
-    [httpBase, tabs.length],
-  );
+      ];
+    });
+    setActiveTabId(created.terminalId);
+    setConnected(false);
+    setMenuOpen(false);
+  }, [httpBase]);
 
-  const handleCloseTab = useCallback(
-    async (tabId: string) => {
-      if (tabs.length <= 1) return;
-      if (httpBase) {
-        await killSession(httpBase, tabId);
+  const handleCloseTab = useCallback(async (tabId: string) => {
+    if (tabs.length <= 1) return;
+    if (httpBase) {
+      await killSession(httpBase, tabId);
+    }
+
+    setTabs((prev) => {
+      const closedIndex = prev.findIndex((tab) => tab.id === tabId);
+      const next = prev.filter((tab) => tab.id !== tabId);
+      if (tabId === activeTabId) {
+        const nextActive = next[Math.min(closedIndex, next.length - 1)] ?? null;
+        setActiveTabId(nextActive?.id ?? null);
+        setConnected(false);
       }
-
-      const instance = instanceRefs.current.get(tabId);
-      if (instance) {
-        instance.term.dispose();
-        instanceRefs.current.delete(tabId);
-      }
-      containerRefs.current.delete(tabId);
-      setMountedTabIds((prev) => prev.filter((id) => id !== tabId));
-
-      setTabs((prev) => {
-        const closedIndex = prev.findIndex((tab) => tab.id === tabId);
-        const next = prev.filter((tab) => tab.id !== tabId);
-        if (tabId === activeTabId) {
-          const nextActive = next[Math.min(closedIndex, next.length - 1)] ?? null;
-          setActiveTabId(nextActive?.id ?? null);
-          setConnected(false);
-        }
-        return next;
-      });
-    },
-    [activeTabId, httpBase, tabs.length],
-  );
+      return next;
+    });
+  }, [activeTabId, httpBase, tabs.length]);
 
   const handleSelectTab = useCallback((tabId: string) => {
     setActiveTabId(tabId);
@@ -450,19 +516,13 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
       </div>
       <div className="niuu-min-h-0 niuu-flex-1 niuu-overflow-hidden">
         {tabs.map((tab) => (
-          <div
+          <LiveTerminalPane
             key={tab.id}
-            role="tabpanel"
-            aria-hidden={activeTabId !== tab.id}
-            data-visible={activeTabId === tab.id}
-            ref={(node) => {
-              if (!mountedTabIds.includes(tab.id)) return;
-              mountTerminal(tab.id, node);
-            }}
-            className={cn(
-              'niuu-h-full niuu-w-full',
-              activeTabId === tab.id ? 'niuu-block' : 'niuu-hidden',
-            )}
+            active={activeTabId === tab.id}
+            onConnectionChange={setConnected}
+            readOnly={readOnly}
+            tabId={tab.id}
+            wsBaseUrl={url}
           />
         ))}
       </div>
