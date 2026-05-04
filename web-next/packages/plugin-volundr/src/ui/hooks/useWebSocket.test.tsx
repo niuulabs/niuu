@@ -53,8 +53,7 @@ describe('useWebSocket', () => {
     MockWebSocket.instances = [];
     vi.restoreAllMocks();
     globalThis.WebSocket = originalWebSocket;
-  });
-
+});
   it('ignores close events from stale sockets after the url changes', () => {
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     const onOpen = vi.fn();
@@ -112,4 +111,5 @@ describe('useWebSocket', () => {
     second.emitMessage('fresh-output');
     expect(onMessage).toHaveBeenCalledWith('fresh-output');
   });
+
 });

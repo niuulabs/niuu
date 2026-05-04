@@ -212,6 +212,25 @@ describe('SessionTerminalLive', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: /claude/i })).toBeInTheDocument());
   });
 
+  it('offers a shell tab option in the new terminal menu', async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          sessions: [{ terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /new terminal/i }));
+
+    expect(screen.getByRole('menuitem', { name: /shell/i })).toBeInTheDocument();
+  });
+
   it('switches the active tab when a tab is clicked', async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce(
       new Response(
@@ -231,6 +250,9 @@ describe('SessionTerminalLive', () => {
     fireEvent.click(secondTab);
 
     expect(secondTab).toHaveAttribute('aria-selected', 'true');
+    const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels[0]).toHaveAttribute('aria-hidden', 'true');
+    expect(panels[1]).toHaveAttribute('aria-hidden', 'false');
   });
 
   it('closes a tab and keeps the remaining tab visible', async () => {
