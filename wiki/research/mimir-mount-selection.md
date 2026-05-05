@@ -35,14 +35,13 @@ The `CompositeMimirAdapter` (`src/ravn/adapters/mimir/composite.py`) implements 
 The `mimir_write` tool accepts an optional `mimir` parameter. When set, it bypasses all routing rules and writes directly to the named mount. Use this for deliberate promotion (e.g. "I'm confident this is ready for shared knowledge").
 
 **Tier 2 — Category-prefix rules** (configured via `WriteRouting`)
-Path prefixes map to mount names. First match wins:
+Path prefixes map to mount names. First match wins. Current production rules:
 ```
 ("self/",       ["local"])
-("research/",   ["local", "shared"])
 ("technical/",  ["local", "shared"])
 ("household/",  ["shared"])
 ```
-Agents writing to `research/` get dual-write (local + shared) automatically.
+Paths without a matching prefix (including `research/`) fall through to the default (`["local"]`). See the Recommendation section below for a proposed `research/` rule.
 
 **Tier 3 — Default fallback**
 Any path not matched by a prefix rule goes to `local`. This is the safe default — no unintended promotion.
@@ -111,13 +110,14 @@ An agent that applies `mimir="shared"` too freely floods the shared knowledge ba
 
 1. **Deploy one composite Mimir MCP server per agent persona** — never expose raw per-mount MCP servers to agents.
 2. **Use three mounts** — `local` (priority 0), `shared` (priority 1), and optionally one `domain-*` per specialized corpus.
-3. **Write routing config**:
+3. **Write routing config** (extends current rules with a `research/` dual-write):
    ```python
    WriteRouting(
        rules=[
            ("self/",       ["local"]),
            ("research/",   ["local", "shared"]),
            ("technical/",  ["local", "shared"]),
+           ("household/",  ["shared"]),
        ],
        default=["local"],
    )
