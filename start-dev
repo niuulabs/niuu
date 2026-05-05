@@ -9,8 +9,54 @@ PG_CTL="${ROOT_DIR}/build/pginstall/bin/pg_ctl"
 PG_DATA="${HOME}/.niuu/pgdata"
 PLATFORM_LOG="${LOG_DIR}/platform.log"
 PLATFORM_URL="http://127.0.0.1:8080/health"
+UI_VARIANT="${NIUU_WEB_UI:-new}"
 
 mkdir -p "${LOG_DIR}"
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [--ui old|new]
+
+Environment:
+  NIUU_WEB_UI=old|new   Select which web UI bundle to build and serve.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ui)
+      if [[ $# -lt 2 ]]; then
+        echo "--ui requires a value of 'old' or 'new'" >&2
+        usage >&2
+        exit 1
+      fi
+      UI_VARIANT="$2"
+      shift 2
+      ;;
+    --ui=*)
+      UI_VARIANT="${1#--ui=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+case "${UI_VARIANT}" in
+  old|new)
+    ;;
+  *)
+    echo "Invalid UI selection: ${UI_VARIANT}. Expected 'old' or 'new'." >&2
+    exit 1
+    ;;
+esac
 
 cleanup_on_error() {
   "${ROOT_DIR}/stop-dev" >/dev/null 2>&1 || true
@@ -69,20 +115,24 @@ trap cleanup_on_error ERR
 
 echo "Preparing workspace..."
 uv sync --extra dev
-pnpm --dir "${ROOT_DIR}/web-next" install
 make -C "${ROOT_DIR}" build-postgres
-pnpm --dir "${ROOT_DIR}/web-next" -r --filter "@niuulabs/*" --filter "!@niuulabs/niuu" build
-(
-  cd "${ROOT_DIR}/web-next/apps/niuu"
-  pnpm exec vite build
-)
+if [[ "${UI_VARIANT}" == "new" ]]; then
+  pnpm --dir "${ROOT_DIR}/web-next" install
+  pnpm --dir "${ROOT_DIR}/web-next" -r --filter "@niuulabs/*" --filter "!@niuulabs/niuu" build
+  (
+    cd "${ROOT_DIR}/web-next/apps/niuu"
+    pnpm exec vite build
+  )
+else
+  make -C "${ROOT_DIR}" build-web
+fi
 
 if [[ -x "${PG_CTL}" ]]; then
   "${PG_CTL}" -D "${PG_DATA}" stop -m fast >/dev/null 2>&1 || true
 fi
 
 echo "Starting platform..."
-nohup env PYTHONUNBUFFERED=1 uv run niuu platform up --skip-preflight \
+nohup env PYTHONUNBUFFERED=1 NIUU_WEB_UI="${UI_VARIANT}" uv run niuu platform up --skip-preflight \
   >"${PLATFORM_LOG}" 2>&1 &
 echo $! > "${PLATFORM_PID_FILE}"
 wait_for_platform "$(cat "${PLATFORM_PID_FILE}")" "${PLATFORM_URL}"
@@ -93,6 +143,7 @@ cat <<EOF
 Ready.
 
 UI:
+  variant: ${UI_VARIANT}
   http://localhost:8080/?config=/config.live.json
   http://localhost:8080/volundr?config=/config.live.json
 

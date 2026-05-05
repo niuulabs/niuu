@@ -1,3 +1,5 @@
+/// <reference path="../types/js-yaml.d.ts" />
+
 import yaml from 'js-yaml';
 import type {
   CliTool,

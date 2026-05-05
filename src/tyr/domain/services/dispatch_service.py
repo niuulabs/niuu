@@ -66,6 +66,11 @@ _ACTIVE_SESSION_STATUSES = {"running", "starting", "creating"}
 _COMPLETED_LINEAR_STATES = {"completed", "cancelled"}
 
 
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 def _normalize_mimir_workload_config(
     raw: dict[str, Any] | None = None,
     *,
@@ -1093,16 +1098,16 @@ class DispatchService:
         if flow_name_for_log:
             logger.info(
                 "flock dispatch session=%s flow=%s snapshot=%s personas=[%s]",
-                session_name,
-                flow_name_for_log,
-                snapshot_hash,
-                ", ".join(_format_persona_label(p) for p in personas),
+                _sanitize_log(session_name),
+                _sanitize_log(flow_name_for_log),
+                _sanitize_log(snapshot_hash),
+                ", ".join(_sanitize_log(_format_persona_label(p)) for p in personas),
             )
         else:
             logger.info(
                 "flock dispatch session=%s personas=[%s]",
-                session_name,
-                ", ".join(_format_persona_label(p) for p in personas),
+                _sanitize_log(session_name),
+                ", ".join(_sanitize_log(_format_persona_label(p)) for p in personas),
             )
 
         initiative_context = build_flock_prompt(

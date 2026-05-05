@@ -211,6 +211,57 @@ Web component image (global overrides local)
 {{- end }}
 
 {{/*
+Web Next component fullname
+*/}}
+{{- define "volundr.webNext.fullname" -}}
+{{- printf "%s-web-next" (include "volundr.fullname" .) }}
+{{- end }}
+
+{{/*
+Web Next component labels
+*/}}
+{{- define "volundr.webNext.labels" -}}
+helm.sh/chart: {{ include "volundr.chart" . }}
+{{ include "volundr.webNext.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/component: web-next
+app.kubernetes.io/part-of: volundr
+{{- end }}
+
+{{/*
+Web Next component selector labels
+*/}}
+{{- define "volundr.webNext.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "volundr.name" . }}-web-next
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Web Next component image (global overrides local)
+*/}}
+{{- define "volundr.webNext.image" -}}
+{{- $registryName := .Values.webNext.image.registry -}}
+{{- $repositoryName := .Values.webNext.image.repository -}}
+{{- $tag := .Values.webNext.image.tag | default .Chart.AppVersion -}}
+{{- if and .Values.global .Values.global.image -}}
+  {{- if .Values.global.image.registry -}}
+    {{- $registryName = .Values.global.image.registry -}}
+  {{- end -}}
+  {{- if .Values.global.image.tag -}}
+    {{- $tag = .Values.global.image.tag -}}
+  {{- end -}}
+{{- end -}}
+{{- if $registryName }}
+{{- printf "%s/%s:%s" $registryName $repositoryName $tag -}}
+{{- else }}
+{{- printf "%s:%s" $repositoryName $tag -}}
+{{- end }}
+{{- end }}
+
+{{/*
 Return the domain (global overrides local)
 */}}
 {{- define "volundr.domain" -}}

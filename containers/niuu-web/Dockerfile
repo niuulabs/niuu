@@ -1,46 +1,50 @@
-# Stage 1: Build the Volundr web UI
+# Stage 1: Build the next-generation Niuu web UI
 FROM node:24-alpine@sha256:7fddd9ddeae8196abf4a3ef2de34e11f7b1a722119f91f28ddf1e99dcafdf114 AS build
 
 WORKDIR /app
 
-# Copy package files for dependency caching
-COPY web/package.json web/package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN corepack enable
 
-# Copy source and build
-COPY web/ .
+# Copy workspace manifests for dependency resolution
+COPY web-next/package.json ./
+COPY web-next/pnpm-lock.yaml ./
+COPY web-next/pnpm-workspace.yaml ./
+COPY web-next/tsconfig.base.json ./
+COPY web-next/tsconfig.json ./
+COPY web-next/build ./build
+
+# Copy the app and workspace packages
+COPY web-next/apps ./apps
+COPY web-next/packages ./packages
+
 ARG APP_VERSION=dev
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 ENV VITE_APP_VERSION=${APP_VERSION}
-RUN npm run build
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm build
 
 # Stage 2: Serve with nginx
-FROM nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+FROM nginx:1.29.8-alpine@sha256:582c496ccf79d8aa6f8203a79d32aaf7ffd8b13362c60a701a2f9ac64886c93d
 
 # Patch base image vulnerabilities (CVE-2026-22184: zlib).
-# Fix CVE-2026-22184: zlib critical vulnerability.
 RUN apk upgrade --no-cache zlib
 
-LABEL org.opencontainers.image.title="volundr-web"
-LABEL org.opencontainers.image.description="Volundr Web — AI-native development platform UI"
+LABEL org.opencontainers.image.title="niuu-web"
+LABEL org.opencontainers.image.description="Niuu Web — composable plugin-based platform UI"
 LABEL org.opencontainers.image.vendor="Niuu Labs"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 
-# Create non-root user
 RUN addgroup -g 1001 -S volundr && \
     adduser -u 1001 -S volundr -G volundr && \
     chown -R volundr:volundr /var/cache/nginx /var/log/nginx /etc/nginx/conf.d && \
     touch /var/run/nginx.pid && \
     chown volundr:volundr /var/run/nginx.pid
 
-# Copy nginx config
 COPY containers/volundr-web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/apps/niuu/dist /usr/share/nginx/html
 
-# Copy built app
-COPY --from=build /app/dist /usr/share/nginx/html
-
-# Health check endpoint
 RUN echo "OK" > /usr/share/nginx/html/health
 
 USER 1001

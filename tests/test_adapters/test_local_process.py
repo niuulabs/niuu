@@ -359,10 +359,10 @@ class TestSdkPortAllocator:
         # Pick a high ephemeral port that is very likely free
         assert SdkPortAllocator._is_port_free(59999) is True
 
-    def test_is_port_free_detects_wildcard_listener(self) -> None:
-        """Wildcard listeners must block flock reuse of the same port."""
+    def test_is_port_free_detects_loopback_listener(self) -> None:
+        """Loopback listeners must block flock reuse of the same port."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("0.0.0.0", 0))
+            sock.bind(("127.0.0.1", 0))
             sock.listen(1)
             port = sock.getsockname()[1]
             assert SdkPortAllocator._is_port_free(port) is False

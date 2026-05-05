@@ -222,6 +222,22 @@ class TestListSessions:
         data = response.json()
         assert len(data) == 2
 
+    def test_forge_alias_prefix_renders_same_sessions_endpoint(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        """The canonical /api/v1/forge alias should expose the same routes."""
+        app = FastAPI()
+        app.include_router(create_router(service, stats_service, prefix="/api/v1/forge"))
+
+        client = TestClient(app)
+        try:
+            response = client.get("/api/v1/forge/sessions")
+        finally:
+            client.close()
+
+        assert response.status_code == 200
+        assert response.json() == []
+
 
 class TestCreateSession:
     """Tests for POST /api/v1/volundr/sessions.

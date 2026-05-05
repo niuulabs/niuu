@@ -6,6 +6,7 @@ interface UseWebSocketOptions {
   onMessage?: (data: string) => void;
   onClose?: (code: number, reason: string) => void;
   onError?: (event: Event) => void;
+  snapshotHandlersPerConnection?: boolean;
   reconnect?: boolean;
   maxReconnectAttempts?: number;
   reconnectBaseDelay?: number;
@@ -25,6 +26,7 @@ export function useWebSocket(
     onMessage,
     onClose,
     onError,
+    snapshotHandlersPerConnection = false,
     reconnect = true,
     maxReconnectAttempts = 10,
     reconnectBaseDelay = 1_000,
@@ -56,6 +58,12 @@ export function useWebSocket(
   useEffect(() => {
     onErrorRef.current = onError;
   }, [onError]);
+
+  const snapshotHandlersPerConnectionRef = useRef(snapshotHandlersPerConnection);
+
+  useEffect(() => {
+    snapshotHandlersPerConnectionRef.current = snapshotHandlersPerConnection;
+  }, [snapshotHandlersPerConnection]);
 
   const reconnectRef = useRef(reconnect);
   const maxReconnectAttemptsRef = useRef(maxReconnectAttempts);
@@ -108,13 +116,30 @@ export function useWebSocket(
 
       const ws = new WebSocket(finalUrl);
       wsRef.current = ws;
+      const handlers = snapshotHandlersPerConnectionRef.current
+        ? {
+            onOpen,
+            onMessage,
+            onClose,
+            onError,
+          }
+        : null;
 
       ws.onopen = () => {
         reconnectAttemptsRef.current = 0;
+        if (handlers) {
+          handlers.onOpen?.();
+          return;
+        }
         onOpenRef.current?.();
       };
 
       ws.onmessage = (event: MessageEvent) => {
+        if (wsRef.current !== ws) return;
+        if (handlers) {
+          handlers.onMessage?.(event.data as string);
+          return;
+        }
         onMessageRef.current?.(event.data as string);
       };
 
@@ -125,7 +150,11 @@ export function useWebSocket(
         // connection is already active.
         if (wsRef.current !== ws) return;
 
-        onCloseRef.current?.(event.code, event.reason);
+        if (handlers) {
+          handlers.onClose?.(event.code, event.reason);
+        } else {
+          onCloseRef.current?.(event.code, event.reason);
+        }
 
         if (intentionalCloseRef.current || !reconnectRef.current) return;
         if (reconnectAttemptsRef.current >= maxReconnectAttemptsRef.current) return;
@@ -139,6 +168,11 @@ export function useWebSocket(
       };
 
       ws.onerror = (event: Event) => {
+        if (wsRef.current !== ws) return;
+        if (handlers) {
+          handlers.onError?.(event);
+          return;
+        }
         onErrorRef.current?.(event);
       };
     };

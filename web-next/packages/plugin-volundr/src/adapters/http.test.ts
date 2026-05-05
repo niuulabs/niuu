@@ -23,6 +23,7 @@ const queryMocks = vi.hoisted(() => ({
     patch: vi.fn().mockResolvedValue({}),
     put: vi.fn().mockResolvedValue({}),
   })),
+  getAccessToken: vi.fn(() => 'token-123'),
 }));
 
 vi.mock('@niuulabs/query', async () => {
@@ -30,10 +31,11 @@ vi.mock('@niuulabs/query', async () => {
   return {
     ...actual,
     createApiClient: queryMocks.createApiClient,
+    getAccessToken: queryMocks.getAccessToken,
   };
 });
 
-import { buildVolundrHttpAdapter } from './http';
+import { buildVolundrFileSystemHttpAdapter, buildVolundrHttpAdapter } from './http';
 import type { IVolundrService } from '../ports/IVolundrService';
 
 function makeClient() {
@@ -62,6 +64,65 @@ function getDerivedClient(basePath: string) {
 afterEach(() => {
   vi.useRealTimers();
   queryMocks.createApiClient.mockClear();
+  queryMocks.getAccessToken.mockClear();
+});
+
+describe('buildVolundrFileSystemHttpAdapter', () => {
+  it('attaches bearer auth when listing session files', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ entries: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const fs = buildVolundrFileSystemHttpAdapter({
+      baseUrl: 'https://sessions.example.com',
+      fetchImpl,
+    });
+
+    await fs.listTree('sess-1');
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://sessions.example.com/s/sess-1/api/files?root=workspace',
+      expect.objectContaining({
+        headers: expect.any(Headers),
+      }),
+    );
+    const headers = fetchImpl.mock.calls[0]?.[1]?.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer token-123');
+  });
+
+  it('attaches bearer auth to download, mkdir, upload, and delete requests', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ entries: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(new Response('hello', { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 409 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    const fs = buildVolundrFileSystemHttpAdapter({
+      baseUrl: 'https://sessions.example.com',
+      fetchImpl,
+    });
+
+    await fs.expandDirectory('sess-1', '/workspace');
+    await fs.readFile('sess-1', '/workspace/README.md');
+    await fs.writeFile('sess-1', '/workspace/docs/readme.md', 'hello');
+    await fs.deletePaths('sess-1', ['/workspace/docs/readme.md']);
+
+    for (const call of fetchImpl.mock.calls) {
+      const options = call[1];
+      const headers = options?.headers as Headers | undefined;
+      expect(headers?.get('Authorization')).toBe('Bearer token-123');
+    }
+  });
 });
 
 describe('buildVolundrHttpAdapter', () => {

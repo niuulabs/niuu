@@ -26,14 +26,109 @@ global:
       name: "Haiku 4.5"
       costPerMillionTokens: 1.00
 
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  routeSets:
+    api:
+      - path: /api/v1/volundr
+        service: volundr
+      - path: /api/v1/forge
+        service: volundr
+      - path: /api/v1/users
+        service: volundr
+      - path: /api/v1/tokens
+        service: volundr
+      - path: /api/v1/identity
+        service: volundr
+      - path: /api/v1/integrations
+        service: volundr
+      - path: /api/v1/features
+        service: volundr
+      - path: /api/v1/credentials
+        service: volundr
+      - path: /api/v1/audit
+        service: volundr
+      - path: /audit
+        service: volundr
+      - path: /api/v1/webhooks
+        service: volundr
+      - path: /api/v1/tracker/status
+        service: volundr
+      - path: /api/v1/tracker/issues
+        service: volundr
+      - path: /api/v1/tracker/repo-mappings
+        service: volundr
+      - path: /api/v1/tyr
+        service: tyr
+      - path: /api/v1/tracker/projects
+        service: tyr
+      - path: /api/v1/tracker/import
+        service: tyr
+      - path: /api/v1/niuu
+        service: niuu-shared
+      - path: /mimir
+        service: mimir-shared
+      - path: /mcp
+        service: mimir-shared
+  hosts:
+    - host: api.example.com
+      routeSets:
+        - api
+  tls: []
+  # Example web UI hosts routed through the same umbrella ingress:
+  # hosts:
+  #   - host: old.volundr.example.com
+  #     routeSets:
+  #       - api
+  #     routes:
+  #       - path: /
+  #         service: volundr-web
+  #   - host: new.volundr.example.com
+  #     routeSets:
+  #       - api
+  #     routes:
+  #       - path: /
+  #         service: volundr-web-next
+
 volundr:
   enabled: true
+  ingress:
+    enabled: false
+  config:
+    cors:
+      allowedOrigins:
+        - "*"
+      allowCredentials: true
+  web:
+    ingress:
+      enabled: false
+    config:
+      apiBaseUrl: "/api/v1/volundr"
+  webNext:
+    ingress:
+      enabled: false
 
 tyr:
   enabled: true
+  ingress:
+    enabled: false
+  config:
+    cors:
+      allowedOrigins:
+        - "*"
+      allowCredentials: true
 
 niuu-shared:
   enabled: true
+  ingress:
+    enabled: false
+  config:
+    cors:
+      allowedOrigins:
+        - "*"
+      allowCredentials: true
 
 bifrost:
   enabled: true

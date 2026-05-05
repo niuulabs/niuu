@@ -71,10 +71,8 @@ test('unauthenticated user with OIDC config is redirected to /login from root', 
   await stubOidc(page);
   await page.goto('/');
 
-  // AuthProvider initialises → loading → no stored session → app stays at root or redirects to /login
-  // The exact behaviour depends on whether RequireAuth wraps the content.
-  // We verify the page is reachable without JS errors.
-  await expect(page).toHaveURL(/localhost:5173/, { timeout: 5000 });
+  await expect(page).toHaveURL('http://localhost:5173/login', { timeout: 5000 });
+  await expect(page.getByTestId('login-page')).toBeVisible({ timeout: 5000 });
 });
 
 test('callback page renders the loading spinner', async ({ page }) => {

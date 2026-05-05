@@ -6,6 +6,7 @@
  */
 import {
   createApiClient,
+  getAccessToken,
   openEventStream,
   type EventStreamHandle,
   type EventStreamOptions,
@@ -719,6 +720,15 @@ export function buildVolundrFileSystemHttpAdapter(options: {
     return `${baseUrl}/s/${encodeURIComponent(sessionId)}/api`;
   }
 
+  function withAuthHeaders(headers: HeadersInit = {}): Headers {
+    const nextHeaders = new Headers(headers);
+    const token = getAccessToken();
+    if (token) {
+      nextHeaders.set('Authorization', `Bearer ${token}`);
+    }
+    return nextHeaders;
+  }
+
   async function listDirectory(
     sessionId: string,
     root: 'workspace' | 'home',
@@ -727,7 +737,9 @@ export function buildVolundrFileSystemHttpAdapter(options: {
     const params = new URLSearchParams({ root });
     if (relativePath) params.set('path', relativePath);
     const response = await ensureOk(
-      await fetchImpl(`${sessionApi(sessionId)}/files?${params.toString()}`),
+      await fetchImpl(`${sessionApi(sessionId)}/files?${params.toString()}`, {
+        headers: withAuthHeaders(),
+      }),
     );
     const payload = await readJson<FileListPayload>(response);
     return payload.entries.map((entry) => toTreeNode(entry, root));
@@ -756,7 +768,9 @@ export function buildVolundrFileSystemHttpAdapter(options: {
       const { root, relativePath } = splitSessionPath(path);
       const params = new URLSearchParams({ root, path: relativePath });
       const response = await ensureOk(
-        await fetchImpl(`${sessionApi(sessionId)}/files/download?${params.toString()}`),
+        await fetchImpl(`${sessionApi(sessionId)}/files/download?${params.toString()}`, {
+          headers: withAuthHeaders(),
+        }),
       );
       return response.text();
     },
@@ -770,7 +784,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
       if (parentPath) {
         const mkdirResponse = await fetchImpl(`${sessionApi(sessionId)}/files/mkdir`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: withAuthHeaders({ 'content-type': 'application/json' }),
           body: JSON.stringify({ path: parentPath, root }),
         });
         if (!mkdirResponse.ok && mkdirResponse.status !== 409) {
@@ -785,6 +799,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
       await ensureOk(
         await fetchImpl(`${sessionApi(sessionId)}/files/upload?${params.toString()}`, {
           method: 'POST',
+          headers: withAuthHeaders(),
           body: form,
         }),
       );
@@ -797,6 +812,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
         await ensureOk(
           await fetchImpl(`${sessionApi(sessionId)}/files?${params.toString()}`, {
             method: 'DELETE',
+            headers: withAuthHeaders(),
           }),
         );
       }

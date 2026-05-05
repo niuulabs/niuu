@@ -176,16 +176,15 @@ class SdkPortAllocator:
     def _is_port_free(port: int) -> bool:
         """Check if a port is free for the local flock bind patterns we use.
 
-        We bind local mesh services on both loopback-published and wildcard
-        addresses. Avoid ``SO_REUSEADDR`` here because it can report false
-        positives on macOS when another process already owns ``*:port``.
+        Probe loopback only. On macOS a wildcard listener already blocks a
+        loopback bind on the same port, which lets us catch ``*:port``
+        collisions without briefly binding ``0.0.0.0`` ourselves.
         """
-        for host in ("127.0.0.1", "0.0.0.0"):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.bind((host, port))
-            except OSError:
-                return False
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
         return True
 
 

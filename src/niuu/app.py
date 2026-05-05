@@ -15,11 +15,12 @@ from typing import TYPE_CHECKING
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from niuu.config import CorsConfig
+from niuu.cors import apply_cors_middleware
 from niuu.http_compat import collect_legacy_route_hits, reset_legacy_route_hits
 from niuu.ports.plugin import APIRouteDomain, Service
 
@@ -550,12 +551,12 @@ def build_root_app(
     )
     cors_origins = _configured_cors_origins()
     if cors_origins:
-        root.add_middleware(
-            CORSMiddleware,
-            allow_origins=cors_origins,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+        apply_cors_middleware(
+            root,
+            CorsConfig(
+                allowed_origins=cors_origins,
+                allow_credentials=True,
+            ),
         )
     root.state.legacy_route_hits = {}
     root.state.route_inventory = route_inventory

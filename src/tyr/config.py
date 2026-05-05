@@ -24,6 +24,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from niuu.config import CorsConfig
+
 
 # Config file search paths (in order of priority).
 # NIUU_CONFIG env var (set by the CLI --config flag) takes precedence.
@@ -942,6 +944,7 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
     ai_models: list[AIModelConfig] = Field(
