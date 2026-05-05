@@ -1,4 +1,4 @@
-FROM python:3.14.4-slim-bookworm@sha256:5b3879b6f3cb77e712644d50262d05a7c146b7312d784a18eff7ff5462e77033
+FROM python:3.15.0a8-slim-bookworm@sha256:346d94d7c0c6187e68ebaa55004e4a1810c6912ee25c276ab9e6ec08e743d636
 
 
 LABEL org.opencontainers.image.title="devrunner"
