@@ -533,6 +533,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
             data-terminal-id={tab.id}
             data-visible={tab.id === activeTabId}
             className={styles.terminalContainer}
+            style={{ display: tab.id === activeTabId ? 'block' : 'none' }}
             ref={(element) => {
               if (element) {
                 mountTerminal(tab.id, element);
