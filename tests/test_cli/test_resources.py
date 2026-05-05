@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cli.resources import migration_dir, web_dist_dir
+from cli.resources import migration_dir, web_dist_dir, web_ui_variant
 
 
 def _mock_traversable(mock_files):
@@ -35,6 +35,36 @@ class TestWebDistDir:
             "cli.resources.Path.resolve", return_value=tmp_path / "src" / "cli" / "resources.py"
         ):
             assert web_dist_dir() == app_dist
+
+    def test_honours_old_ui_selection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        app_dist = tmp_path / "web-next" / "apps" / "niuu" / "dist"
+        old_dist = tmp_path / "web" / "dist"
+        app_dist.mkdir(parents=True)
+        old_dist.mkdir(parents=True)
+        monkeypatch.setenv("NIUU_WEB_UI", "old")
+
+        with patch(
+            "cli.resources.Path.resolve", return_value=tmp_path / "src" / "cli" / "resources.py"
+        ):
+            assert web_dist_dir() == old_dist
+
+    def test_honours_new_ui_selection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        app_dist = tmp_path / "web-next" / "apps" / "niuu" / "dist"
+        old_dist = tmp_path / "web" / "dist"
+        app_dist.mkdir(parents=True)
+        old_dist.mkdir(parents=True)
+        monkeypatch.setenv("NIUU_WEB_UI", "new")
+
+        with patch(
+            "cli.resources.Path.resolve", return_value=tmp_path / "src" / "cli" / "resources.py"
+        ):
+            assert web_dist_dir() == app_dist
+
+    def test_rejects_invalid_ui_selection(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("NIUU_WEB_UI", "banana")
+
+        with pytest.raises(ValueError, match="Invalid NIUU_WEB_UI value"):
+            web_ui_variant()
 
     def test_raises_when_no_dist_found(self):
         with patch("cli.resources.importlib.resources.files") as mock_files:

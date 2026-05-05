@@ -8,7 +8,25 @@ accessed via :mod:`importlib.resources`.
 from __future__ import annotations
 
 import importlib.resources
+import os
 from pathlib import Path
+
+
+def web_ui_variant() -> str:
+    """Return the requested web UI variant.
+
+    Supported values are ``"new"``, ``"old"``, and ``"auto"``.
+    Defaults to ``"auto"`` when the environment variable is unset.
+    """
+
+    raw = os.getenv("NIUU_WEB_UI", "auto").strip().lower()
+    if raw in {"", "auto"}:
+        return "auto"
+    if raw in {"new", "old"}:
+        return raw
+
+    msg = "Invalid NIUU_WEB_UI value — expected 'old', 'new', or 'auto'"
+    raise ValueError(msg)
 
 
 def web_dist_dir() -> Path:
@@ -17,11 +35,23 @@ def web_dist_dir() -> Path:
     Falls back to source-tree web builds when running from source.
     """
     repo_root = Path(__file__).resolve().parents[2]
-    repo_candidates = (
-        repo_root / "web-next" / "apps" / "niuu" / "dist",
-        repo_root / "web" / "dist",
-        repo_root / "src" / "cli" / "web" / "dist",
-    )
+    variant = web_ui_variant()
+    if variant == "new":
+        repo_candidates = (
+            repo_root / "web-next" / "apps" / "niuu" / "dist",
+            repo_root / "src" / "cli" / "web" / "dist",
+        )
+    elif variant == "old":
+        repo_candidates = (
+            repo_root / "web" / "dist",
+            repo_root / "src" / "cli" / "web" / "dist",
+        )
+    else:
+        repo_candidates = (
+            repo_root / "web-next" / "apps" / "niuu" / "dist",
+            repo_root / "web" / "dist",
+            repo_root / "src" / "cli" / "web" / "dist",
+        )
     for candidate in repo_candidates:
         if candidate.is_dir():
             return candidate
