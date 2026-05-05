@@ -3,7 +3,7 @@ type: research
 confidence: high
 produced_by_thread: true
 related_entities: []
-source_ids: [src_niu777_telegram_bot_api, src_niu777_slack_api, src_niu777_discord_api, src_niu777_teams_bot_fw, src_niu777_matrix_spec]
+source_ids: [src_niu777_telegram_bot_api, src_niu777_slack_api, src_niu777_discord_api, src_niu777_whatsapp_cloud_api, src_niu777_teams_bot_fw, src_niu777_matrix_spec]
 ---
 
 # Thread-Based Human Interface Patterns for Active Sessions
@@ -27,7 +27,7 @@ The routing layer sits between the session broker and platform-specific channel 
 
 ```
 CommunicationRoute {
-  platform:        string        // "telegram" | "slack" | "discord" | "teams" | "matrix"
+  platform:        string        // "telegram" | "slack" | "discord" | "whatsapp" | "teams" | "matrix"
   conversation_id: string        // chat/channel/room — the parent container
   thread_id:       string | null // platform-specific thread identifier
   direction:       "bidirectional" | "outbound_only"
@@ -41,9 +41,9 @@ CommunicationRoute {
 }
 ```
 
-This extends the shape returned by `TelegramChannel.communication_route()` in `src/skuld/channels.py`, adding fields needed for multi-platform routing.
+This extends the `CommunicationRoute` domain model (`src/volundr/domain/models.py`) and `TelegramChannel.communication_route()` (`src/skuld/channels.py`), adding multi-platform fields. The domain model already carries `owner_id`, `active`, `default_target`, and timestamps; the envelope above is the routing-specific subset. Current `CommunicationPlatform` values: telegram, slack, discord, whatsapp. Teams and matrix are proposed additions.
 
-**Inbound routing algorithm:** Extract `(platform, conversation_id, thread_id)` from the inbound event → look up the matching route → validate sender against the session's ACL → inject as a `user_confirmed` event with `metadata.source_platform` set (prevents echo loops). If no route matches, queue for a short grace period or drop.
+**Inbound routing:** Extract `(platform, conversation_id, thread_id)` from the inbound event → look up route → validate sender against session ACL → inject as `user_confirmed` with `metadata.source_platform` set (prevents echo loops). No match → queue briefly or drop.
 
 ### Platform Thread Identifier Reference
 
@@ -52,26 +52,29 @@ This extends the shape returned by `TelegramChannel.communication_route()` in `s
 | Telegram | `message_thread_id` | Integer | `createForumTopic` | Webhook / `getUpdates` — filter by `message_thread_id` |
 | Slack | `thread_ts` | String | `chat.postMessage` with `thread_ts` of parent | Events API `message` event with `thread_ts` present |
 | Discord | Channel `id` | Snowflake (String) | `POST /channels/{id}/threads` | Gateway `MESSAGE_CREATE` in thread channel |
+| WhatsApp | N/A (flat conversation) | String | Cloud API `messages` endpoint — no native threads | Webhook `messages` notification filtered by `from` + `wa_id` |
 | Teams | `conversation.id` (contains `messageid=`) | String | `CreateConversationAsync` / Bot Framework | Bot Framework webhook Activity |
 | Matrix | `event_id` of root | String | Send event with `m.relates_to.rel_type: "m.thread"` | `/sync` or appservice transaction — filter `m.relates_to` |
 
 ### Per-Platform Notes
 
 **Telegram**
-- Forum topics require a **supergroup** with forum mode enabled and bot **admin rights**.
-- The General topic has a fixed `message_thread_id = 1` and cannot be deleted.
-- Topic name max: 128 characters. Truncate session names before using as topic names.
-- Rate limit: ~30 messages/second globally, ~1 message/second per chat. Buffer and batch outbound messages.
-- Three topic modes apply: `shared_chat` (no threading), `fixed_topic` (pre-configured thread), `topic_per_session` (adapter creates a topic on session start). The existing `TelegramChannel` already implements all three.
-- Closing a topic via `closeForumTopic` signals session end without deleting history — preferred for archival.
+- Forum topics require a **supergroup** with forum mode enabled and bot **admin rights**. General topic has fixed `message_thread_id = 1`.
+- Topic name max: 128 characters. Truncate session names accordingly.
+- Rate limit: ~30 msg/s globally, ~1 msg/s per chat. Buffer and batch outbound.
+- Three topic modes: `shared_chat`, `fixed_topic`, `topic_per_session`. The existing `TelegramChannel` implements all three.
+- `closeForumTopic` signals session end without deleting history — preferred for archival.
 
 **Slack**
-- Threads are implicit: post a message, then reply to its `ts`. No explicit "create thread" API.
-- Recommended pattern: post a session-start message to the channel, capture its `ts`, use it as `thread_ts` for all subsequent messages.
-- `reply_broadcast: true` can surface key messages in the main channel timeline — use sparingly.
-- Thread replies arrive as `message` events with `thread_ts` present (`thread_ts != ts` means reply).
-- Aggressive rate limits on `conversations.replies` for non-Marketplace apps (1 req/min as of 2025). Prefer event-driven inbound over polling.
-- No thread-specific subscription filter — the app receives all channel events and must route by `thread_ts`.
+- Threads are implicit: post a message, reply to its `ts`. Post a session-start message, capture its `ts`, use as `thread_ts` for all subsequent messages.
+- `reply_broadcast: true` surfaces key messages in the channel timeline — use sparingly.
+- Replies arrive as `message` events where `thread_ts != ts`. Aggressive rate limits on `conversations.replies` for non-Marketplace apps. Prefer event-driven inbound over polling.
+- No thread-specific subscription — app receives all channel events, must route by `thread_ts`.
+
+**WhatsApp**
+- No native threading — conversations are flat. Use `shared_chat` mode with `thread_id = None`; route by `conversation_id` (`wa_id`).
+- `CommunicationPlatform.WHATSAPP` already exists in the codebase.
+- Outbound requires approved message templates for the first 24-hour window; rate limits depend on business tier.
 
 **Discord**
 - Threads are first-class Channel objects (types 10, 11, 12). Public and private thread types exist.
@@ -81,10 +84,10 @@ This extends the shape returned by `TelegramChannel.communication_route()` in `s
 - Forum channels are a natural fit for topic-per-session: each session becomes a forum post with its own thread.
 
 **Microsoft Teams**
-- Thread identity is embedded in `conversation.id` as a `messageid=` suffix — extract this, not `replyToId` (which is unreliable for inbound activities).
-- Bots only receive messages when **@mentioned** unless the app has RSC `ChannelMessage.Read.Group` permission.
-- Proactive messaging requires a stored `ConversationReference` with valid `serviceUrl`, `conversationId`, and `tenantId`. Rate limit: ~4 msg/s per conversation.
-- No native "close thread" concept — signal session end via a final message.
+- Thread identity is in `conversation.id` as a `messageid=` suffix — extract this, not `replyToId`.
+- Bots only receive messages when **@mentioned** unless the app has RSC `ChannelMessage.Read.Group`.
+- Proactive messaging requires a stored `ConversationReference` with `serviceUrl`, `conversationId`, `tenantId`. Rate limit: ~4 msg/s per conversation.
+- No native "close thread" — signal session end via a final message.
 
 **Matrix**
 - Threads use the `m.thread` relation type (stable since spec v1.4, September 2022).
@@ -137,25 +140,26 @@ Minimum metadata for reliable routing:
 
 **Failure modes:**
 
-- **Thread not found / deleted** — Adapters must handle `404`/`not_found` errors gracefully: log, deregister the route, and optionally notify via a fallback channel.
-- **Rate limiting** — Outbound messages must pass through a per-platform rate limiter with exponential backoff.
-- **Echo loops** — The `source_platform` stamp on inbound events prevents mirrored output from being re-ingested as user input.
+- **Thread not found / deleted** — Adapters must handle `404`/`not_found` gracefully: log, deregister the route, optionally notify via fallback.
+- **Rate limiting** — Outbound must pass through a per-platform rate limiter with exponential backoff.
+- **Echo loops** — `source_platform` stamp on inbound events prevents mirrored output from being re-ingested.
 - **Session start race** — Inbound messages arriving before route registration are absorbed by a short grace-period queue (default ~5s).
 - **Stale routes** — If the session crashes without clean shutdown, routes become orphaned. A periodic reconciler should scan for routes whose `session_id` is no longer active and clean them up.
 
 **Permission concerns:**
 
 - **Thread-level ACL** — The route's sender validation must check users against the session's owner and configured operator list.
-- **Bot permissions** — Creating threads requires elevated bot permissions on most platforms (admin on Telegram, `CREATE_*_THREADS` on Discord, app installation on Teams). Adapters should detect missing permissions at bind time and fall back to `shared_chat` mode.
+- **Bot permissions** — Creating threads requires elevated permissions (admin on Telegram, `CREATE_*_THREADS` on Discord, app install on Teams). Detect missing permissions at bind time and fall back to `shared_chat`.
 - **Cross-tenant isolation** — A route must be scoped to its tenant. Enforce this by including `tenant_id` in route lookup keys.
-- **Credential scoping** — Bot tokens must be scoped to minimum permissions. Telegram bots should not have `can_delete_messages` unless thread cleanup is explicitly enabled.
+- **Credential scoping** — Bot tokens must use minimum permissions. Telegram bots should not have `can_delete_messages` unless thread cleanup is explicitly enabled.
 
 ## Sources
 
 - Telegram Bot API — Forum Topics (core.telegram.org/bots/api, retrieved 2026-05-05)
 - Slack API — chat.postMessage, conversations.replies, Events API (docs.slack.dev, retrieved 2026-05-05)
 - Discord Developer Docs — Threads, Gateway Events, Rate Limits (docs.discord.com/developers, retrieved 2026-05-05)
+- WhatsApp Cloud API — Messages, Webhooks (developers.facebook.com/docs/whatsapp/cloud-api, retrieved 2026-05-05)
 - Microsoft Teams — Bot Framework Channel Conversations (learn.microsoft.com, retrieved 2026-05-05)
 - Matrix Spec v1.13 — Threading via m.thread relation (spec.matrix.org/v1.13, retrieved 2026-05-05)
 
-<!-- sources: src_niu777_telegram_bot_api, src_niu777_slack_api, src_niu777_discord_api, src_niu777_teams_bot_fw, src_niu777_matrix_spec -->
+<!-- sources: src_niu777_telegram_bot_api, src_niu777_slack_api, src_niu777_discord_api, src_niu777_whatsapp_cloud_api, src_niu777_teams_bot_fw, src_niu777_matrix_spec -->
