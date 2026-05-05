@@ -1,6 +1,6 @@
 apiVersion: v2
 name: skuld
-description: "Skuld — remote AI coding session broker with WebSocket transport and embedded VS Code editor"
+description: "Skuld — remote AI coding session broker with WebSocket transport and terminal sidecars"
 type: application
 version: 0.0.0-tyr.159
 appVersion: "0.0.0-tyr.159"
@@ -9,8 +9,6 @@ keywords:
   - code
   - session
   - websocket
-  - vscode
-  - ide
 home: https://github.com/niuulabs/volundr
 sources:
   - https://github.com/niuulabs/volundr

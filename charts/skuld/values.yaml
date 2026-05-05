@@ -1,5 +1,5 @@
 # Skuld Helm Chart Values
-# Claude Code CLI session pod with WebSocket broker and embedded VS Code editor
+# Claude Code CLI session pod with WebSocket broker and terminal/local-service support
 
 # Global values (can be set by parent chart)
 global:
@@ -51,7 +51,7 @@ resources:
 
 # Nginx entry point (routes all traffic internally)
 # All external traffic enters via nginx on port 8080 and is routed
-# to broker, devrunner, etc. based on URL path.
+# to the broker, terminal, and local services based on URL path.
 nginx:
   image:
     # -- Nginx image repository
@@ -71,34 +71,6 @@ nginx:
       memory: "128Mi"
       # -- Nginx CPU limit
       cpu: "100m"
-
-# VS Code Remote Extension Host (REH) server — headless WebSocket-only
-# backend for the VS Code workbench embedded in Hliðskjálf.
-# No HTML serving, no static assets, just
-# WebSocket RPC for file system, terminal PTY, and extension host.
-reh:
-  # -- Enable VS Code REH server container
-  enabled: true
-  image:
-    # -- REH server image repository (built with download-reh.sh baked in)
-    repository: ghcr.io/niuulabs/vscode-reh
-    # -- REH server image tag (must match @codingame/monaco-vscode-api version)
-    tag: "latest"
-    # -- REH server image pull policy
-    pullPolicy: Always
-  # -- Port for the REH WebSocket server
-  port: 8445
-  resources:
-    requests:
-      # -- REH memory request
-      memory: "256Mi"
-      # -- REH CPU request
-      cpu: "100m"
-    limits:
-      # -- REH memory limit
-      memory: "2Gi"
-      # -- REH CPU limit
-      cpu: "1000m"
 
 # Local service testing (devrunner sidecar)
 localServices:
@@ -190,7 +162,7 @@ persistence:
   mountPath: "/volundr/sessions"
 
 # Persistent home directory (shared across all sessions for a user)
-# Stores CLI config dirs (.claude/, .codex/, etc.), VS Code config, shell config.
+# Stores CLI config dirs (.claude/, .codex/, etc.) and shell config.
 # Credential files are mounted from a K8s Secret and symlinked into
 # $HOME/<destDir>/ so they auto-update when the secret changes (~60s).
 homeVolume:
@@ -412,7 +384,7 @@ serviceAccountName: ""
 # -- Extra volumes to add to the pod (e.g., CSI secret volumes)
 extraVolumes: []
 
-# -- Extra volume mounts added to skuld, devrunner, and REH containers
+# -- Extra volume mounts added to skuld and devrunner containers
 extraVolumeMounts: []
 
 # -- Secret mapping manifest for file-based credential injection.

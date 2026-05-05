@@ -20,7 +20,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Upgrade pip to latest to avoid GHSA-4xh5-x5gv-qwph / GHSA-6vgw-5pg2-w6jp,
 # then install build backend
-RUN pip install --no-cache-dir --upgrade pip==25.0.1 \
+RUN pip install --no-cache-dir --upgrade pip==26.1.1 \
     && pip install --no-cache-dir hatchling==1.29.0
 
 # Copy volundr package and install
@@ -66,7 +66,7 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade bundled npm to fix GHSA-qffp-2rhf-9h96 (tar) and GHSA-*-minimatch CVEs
-RUN npm install -g npm@11.3.0
+RUN npm install -g npm@11.13.0
 
 # Install Claude Code CLI globally via npm
 RUN npm install -g @anthropic-ai/claude-code@2.1.119

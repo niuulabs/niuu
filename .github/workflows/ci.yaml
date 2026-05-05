@@ -87,11 +87,10 @@ jobs:
             [volundr-web]='^containers/volundr-web/|^web/'
             [niuu-web]='^containers/niuu-web/|^web-next/'
             [devrunner]='^containers/devrunner/'
-            [vscode-reh]='^containers/vscode-reh/'
           )
 
           NAMES=()
-          for NAME in volundr skuld devrunner volundr-web niuu-web vscode-reh tyr niuu mimir bifrost; do
+          for NAME in volundr skuld devrunner volundr-web niuu-web tyr niuu mimir bifrost; do
             if match "${TRIGGER[$NAME]}"; then
               NAMES+=("\"${NAME}\"")
             fi

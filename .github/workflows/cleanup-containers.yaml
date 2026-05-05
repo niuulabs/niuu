@@ -22,7 +22,6 @@ jobs:
           - devrunner
           - volundr-web
           - niuu-web
-          - vscode-reh
           - tyr
           - niuu
     steps:
