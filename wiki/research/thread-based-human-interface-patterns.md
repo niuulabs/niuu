@@ -2,7 +2,7 @@
 type: research
 confidence: high
 produced_by_thread: true
-related_entities: []
+related_entities: [best-practices-agent-mimir-pages, research-persona-evaluation-rubric]
 source_ids: [src_niu777_telegram_bot_api, src_niu777_slack_api, src_niu777_discord_api, src_niu777_whatsapp_cloud_api, src_niu777_teams_bot_fw, src_niu777_matrix_spec]
 ---
 
@@ -112,6 +112,7 @@ Minimum metadata for reliable routing:
 | `topic_mode` | Controls thread lifecycle (create, reuse, shared) | Route metadata |
 | `created_by` | Distinguishes adapter-created threads from user-provided ones — affects cleanup policy | Route metadata |
 | `notify_only` | Suppresses inbound dispatch for observe-only channels | Route metadata |
+| `tenant_id` | Scopes route lookup to a tenant — prevents cross-tenant leakage | Route record |
 | `source_platform` | Stamped on injected inbound messages — prevents echo loops | Event metadata |
 
 ### Mirror Policy: What To Surface vs. Keep Internal
@@ -159,8 +160,9 @@ Minimum metadata for reliable routing:
 
 ## Timeline
 
-- 2026-05-05: Initial research compiled covering Telegram, Slack, Discord, WhatsApp, Teams, and Matrix threading patterns.
-- 2026-05-05: Updated with Telegram Bot API 9.4+ private-chat forum topics, WhatsApp contextual reply-to support, Slack March 2026 rate-limit changes for non-Marketplace apps, Matrix `is_falling_back` guidance, and Teams ConversationReference field additions.
+- 2026-05-05: Initial research compiled covering Telegram, Slack, Discord, WhatsApp, Teams, and Matrix threading patterns. [Source: platform API docs, retrieved 2026-05-05]
+- 2026-05-05: Updated with Telegram Bot API 9.4+ private-chat forum topics, WhatsApp contextual reply-to support, Slack March 2026 rate-limit changes for non-Marketplace apps, Matrix `is_falling_back` guidance, and Teams ConversationReference field additions. [Source: platform API docs, retrieved 2026-05-05]
+- 2026-05-05: Added `tenant_id` to required route metadata table; cross-linked related Mimir pages. [Source: NIU-777 review, 2026-05-05]
 
 ## Sources
 
