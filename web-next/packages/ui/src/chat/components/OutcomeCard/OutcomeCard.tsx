@@ -194,17 +194,56 @@ function extractTaggedOutcomeBlock(
 function extractDashedOutcomeBlock(
   text: string,
 ): { before: string; raw: string; after: string } | null {
-  const match = /---outcome---\s*([\s\S]*?)\s*(?:---end---|---)(?=\s|$)/i.exec(text);
-  if (!match || match.index == null) return null;
+  const lower = text.toLowerCase();
+  const openMarker = '---outcome---';
+  const start = lower.indexOf(openMarker);
+  if (start === -1) return null;
 
-  const fullMatch = match[0];
-  const raw = match[1] ?? '';
-  const start = match.index;
-  const end = start + fullMatch.length;
+  let contentStart = start + openMarker.length;
+  while (contentStart < text.length && /\s/.test(text[contentStart] ?? '')) {
+    contentStart += 1;
+  }
+
+  const endMarker = findDashedOutcomeEnd(lower, contentStart);
+  if (endMarker == null) return null;
+
+  const raw = text.slice(contentStart, endMarker.start).trim();
 
   return {
     before: text.slice(0, start),
-    raw: raw.trim(),
-    after: text.slice(end),
+    raw,
+    after: text.slice(endMarker.start + endMarker.marker.length),
   };
+}
+
+function findDashedOutcomeEnd(
+  lower: string,
+  fromIndex: number,
+): { start: number; marker: '---end---' | '---' } | null {
+  const endTag = '---end---';
+  const closeTag = '---';
+
+  let best: { start: number; marker: '---end---' | '---' } | null = null;
+
+  const endTagIndex = lower.indexOf(endTag, fromIndex);
+  if (endTagIndex !== -1) {
+    const nextChar = lower[endTagIndex + endTag.length];
+    if (nextChar == null || /\s/.test(nextChar)) {
+      best = { start: endTagIndex, marker: '---end---' };
+    }
+  }
+
+  let closeIndex = lower.indexOf(closeTag, fromIndex);
+  while (closeIndex !== -1) {
+    const nextChar = lower[closeIndex + closeTag.length];
+    if (nextChar == null || /\s/.test(nextChar)) {
+      if (best == null || closeIndex < best.start) {
+        best = { start: closeIndex, marker: '---' };
+      }
+      break;
+    }
+    closeIndex = lower.indexOf(closeTag, closeIndex + closeTag.length);
+  }
+
+  return best;
 }
