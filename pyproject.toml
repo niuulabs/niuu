@@ -55,7 +55,7 @@ encryption = [
     "cryptography>=42.0",
 ]
 browser = [
-    "playwright>=1.58.0",
+    "playwright>=1.59.0",
 ]
 infra = [
     "redis>=5.0",
