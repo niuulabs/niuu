@@ -14,6 +14,7 @@ Constructor accepts plain kwargs (dynamic adapter pattern):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -390,6 +391,15 @@ class DirectK8sPodManager(PodManager):
                             "value": str(message_thread_id),
                         }
                     )
+
+        mcp_servers = spec.values.get("mcpServers")
+        if isinstance(mcp_servers, list) and mcp_servers:
+            env.append(
+                {
+                    "name": "SKULD__MCP_SERVERS",
+                    "value": json.dumps(mcp_servers),
+                }
+            )
 
         if spec.pod_spec and spec.pod_spec.env:
             env.extend(spec.pod_spec.env)

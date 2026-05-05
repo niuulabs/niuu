@@ -50,6 +50,7 @@ interface RawPersonaConsumesEvent {
 
 interface RawPersonaConsumes {
   events: RawPersonaConsumesEvent[];
+  schema_def?: Record<string, unknown>;
 }
 
 interface RawPersonaFanIn {
@@ -140,6 +141,7 @@ function toDetail(raw: RawPersonaDetail): PersonaDetail {
         injects: e.injects,
         trust: e.trust,
       })),
+      schemaDef: (raw.consumes.schema_def ?? {}) as PersonaDetail['consumes']['schemaDef'],
     },
     mimirWriteRouting: raw.mimir_write_routing as PersonaDetail['mimirWriteRouting'],
     fanIn: {
@@ -177,6 +179,7 @@ function toRequestBody(req: PersonaCreateRequest): Record<string, unknown> {
     produces_event_type: req.producesEventType,
     produces_schema: req.producesSchema,
     consumes_events: req.consumesEvents,
+    consumes_schema: req.consumesSchema,
     fan_in_strategy: req.fanInStrategy,
     fan_in_params: req.fanInParams,
     mimir_write_routing: req.mimirWriteRouting,

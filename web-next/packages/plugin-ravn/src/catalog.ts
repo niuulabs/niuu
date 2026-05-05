@@ -48,6 +48,19 @@ export const SEED_EVENT_CATALOG: EventCatalog = [
   { name: 'verification.completed', schema: { scope: 'string', passed: 'boolean' } },
   { name: 'verification.requested', schema: { scope: 'string' } },
   { name: 'investigation.completed', schema: { issue: 'string', findings: 'string' } },
+  {
+    name: 'research.requested',
+    schema: {
+      question: 'string',
+      slug: 'string',
+      max_sources: 'number',
+      constraints: 'string',
+    },
+  },
+  {
+    name: 'research.completed',
+    schema: { summary: 'string', page_path: 'string' },
+  },
   { name: 'incident.opened', schema: { id: 'string', severity: 'string' } },
   { name: 'health.completed', schema: { status: 'string', metrics: 'object' } },
   { name: 'health.check.requested', schema: {} },

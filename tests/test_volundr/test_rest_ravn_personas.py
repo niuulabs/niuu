@@ -132,6 +132,7 @@ def _make_payload(name: str) -> dict:
         "produces_event_type": "code.changed",
         "produces_schema": {"file": "string"},
         "consumes_events": [{"name": "code.requested", "injects": ["repo"]}],
+        "consumes_schema": {"topic": "string", "max_sources": "number"},
         "fan_in_strategy": "merge",
         "fan_in_params": {},
         "mimir_write_routing": "local",
@@ -154,6 +155,10 @@ class TestRavnPersonaRoutes:
         assert created["executor"]["adapter"] == "ravn.adapters.executors.cli.CliTransportExecutor"
         assert created["mimir_write_routing"] == "local"
         assert created["consumes"]["events"][0]["name"] == "code.requested"
+        assert created["consumes"]["schema_def"] == {
+            "topic": "string",
+            "max_sources": "number",
+        }
 
         list_resp = client.get(
             "/api/v1/personas?source=custom",

@@ -39,6 +39,23 @@ class TestDeepMerge:
         _deep_merge(base, {"a": 1})
         assert base == {"a": 1}
 
+    def test_mcp_servers_merge_by_name(self):
+        base = {"mcpServers": [{"name": "shared", "command": "old"}, {"name": "alpha"}]}
+        override = {
+            "mcpServers": [
+                {"name": "shared", "command": "new"},
+                {"name": "beta"},
+            ]
+        }
+        _deep_merge(base, override)
+        assert base == {
+            "mcpServers": [
+                {"name": "shared", "command": "new"},
+                {"name": "alpha"},
+                {"name": "beta"},
+            ]
+        }
+
 
 class TestMergePodSpecs:
     def test_merge_empty(self):
@@ -133,3 +150,17 @@ class TestSessionSpecMerge:
         c2 = SessionContribution(values={"podLabels": {"b": "2"}})
         spec = SessionSpec.merge([c1, c2])
         assert spec.values == {"podLabels": {"a": "1", "b": "2"}}
+
+    def test_merge_concatenates_mcp_servers_by_name(self):
+        c1 = SessionContribution(
+            values={"mcpServers": [{"name": "linear", "command": "old"}, {"name": "github"}]}
+        )
+        c2 = SessionContribution(
+            values={"mcpServers": [{"name": "linear", "command": "new"}, {"name": "mimir"}]}
+        )
+        spec = SessionSpec.merge([c1, c2])
+        assert spec.values["mcpServers"] == [
+            {"name": "linear", "command": "new"},
+            {"name": "github"},
+            {"name": "mimir"},
+        ]

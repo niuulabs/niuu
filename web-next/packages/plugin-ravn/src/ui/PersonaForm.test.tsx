@@ -30,7 +30,7 @@ const MOCK_PERSONA: PersonaDetail = {
   systemPromptTemplate: '# test-persona\nYou are {{name}}, a {{role}} persona.',
   llm: { primaryAlias: 'claude-sonnet-4-6', thinkingEnabled: false, maxTokens: 8192 },
   produces: { eventType: 'code.changed', schemaDef: { file: 'string' } },
-  consumes: { events: [{ name: 'review.completed' }] },
+  consumes: { events: [{ name: 'review.completed' }], schemaDef: { topic: 'string' } },
   fanIn: { strategy: 'merge', params: {} },
   yamlSource: '[mock]',
 };

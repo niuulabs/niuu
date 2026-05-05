@@ -815,6 +815,7 @@ class Broker:
             "initial_prompt": (
                 "" if self._has_workflow_trigger() else self._settings.session.initial_prompt
             ),
+            "mcp_servers": self._settings.mcp_servers,
         }
 
     def _create_transport(self) -> CLITransport:

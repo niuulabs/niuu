@@ -28,7 +28,8 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
-from skuld.transports.codex import _map_codex_tool
+from skuld.transports.codex import _map_codex_tool, resolve_codex_cli
+from skuld.transports.mcp_config import build_codex_mcp_overrides
 
 logger = logging.getLogger("skuld.transport")
 
@@ -72,6 +73,7 @@ class CodexWebSocketTransport(CLITransport):
         system_prompt: str = "",
         initial_prompt: str = "",
         codex_port: int = 0,
+        mcp_servers: list[dict] | None = None,
         **_kwargs: object,
     ) -> None:
         super().__init__()
@@ -81,6 +83,7 @@ class CodexWebSocketTransport(CLITransport):
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._codex_port = codex_port or _pick_free_port()
+        self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
 
         self._process: asyncio.subprocess.Process | None = None
         self._ws: ClientConnection | None = None
@@ -140,13 +143,16 @@ class CodexWebSocketTransport(CLITransport):
 
     async def _spawn_app_server(self) -> None:
         listen_url = f"ws://127.0.0.1:{self._codex_port}"
+        codex_cli = resolve_codex_cli()
 
         cmd = [
-            "codex",
+            codex_cli,
             "app-server",
             "--listen",
             listen_url,
         ]
+        for key, value in self._mcp_overrides:
+            cmd.extend(["-c", f"{key}={value}"])
 
         env = dict(os.environ)
         if "OPENAI_API_KEY" not in env:

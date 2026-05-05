@@ -95,6 +95,7 @@ describe('useUpdatePersona', () => {
       producesEventType: 'code.changed',
       producesSchema: {},
       consumesEvents: [],
+      consumesSchema: {},
     };
 
     result.current.mutate(req);
@@ -143,6 +144,7 @@ describe('useCreatePersona', () => {
       producesEventType: '',
       producesSchema: {},
       consumesEvents: [],
+      consumesSchema: {},
     });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));

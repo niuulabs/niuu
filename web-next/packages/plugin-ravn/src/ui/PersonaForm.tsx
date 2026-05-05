@@ -153,6 +153,7 @@ function detailToRequest(d: PersonaDetail): PersonaCreateRequest {
     producesEventType: d.produces.eventType,
     producesSchema: d.produces.schemaDef,
     consumesEvents: d.consumes.events,
+    consumesSchema: d.consumes.schemaDef,
     fanInStrategy: d.fanIn?.strategy,
     fanInParams: d.fanIn?.params,
     mimirWriteRouting: d.mimirWriteRouting,
@@ -692,7 +693,7 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
         {/* Consumes */}
         <Section
           title="Consumes"
-          subtitle="Events this persona listens for, and the context it wants loaded."
+          subtitle="Events this persona listens for, and the structured inputs it expects."
         >
           <div className="niuu-flex niuu-flex-col niuu-gap-3">
             {form.consumesEvents.map((ev, i) => (
@@ -754,6 +755,12 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
               + Add consumed event
             </button>
           </div>
+          <FieldRow label="Input schema">
+            <SchemaEditor
+              value={form.consumesSchema}
+              onChange={(v) => update('consumesSchema', v as Record<string, FieldType>)}
+            />
+          </FieldRow>
         </Section>
 
         {/* Fan-in */}

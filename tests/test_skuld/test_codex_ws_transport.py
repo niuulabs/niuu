@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -132,6 +132,22 @@ class TestConstruction:
         assert caps.slash_commands is False
         assert caps.skills is False
 
+    def test_init_with_mcp_servers(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+        assert any(
+            key == "mcp_servers.mimir-local.command" and value == '"python3"'
+            for key, value in t._mcp_overrides
+        )
+
 
 # ---------------------------------------------------------------------------
 # Handshake
@@ -223,6 +239,48 @@ class TestHandshake:
         thread_params = params_captured[1][1]
         assert thread_params["approvalPolicy"] == "never"
         assert thread_params["sandbox"] == "danger-full-access"
+
+
+class TestSpawnAppServer:
+    @pytest.mark.asyncio
+    async def test_spawn_app_server_passes_mcp_overrides(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+
+        mock_process = MagicMock()
+        mock_process.stdout = None
+        mock_process.stderr = None
+        mock_process.pid = 12345
+
+        with patch(
+            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec, patch(
+            "skuld.transports.codex_ws.resolve_codex_cli",
+            return_value="/Applications/Codex.app/Contents/Resources/codex",
+        ):
+            mock_exec.return_value = mock_process
+            await t._spawn_app_server()
+
+            call_args = mock_exec.call_args[0]
+            assert call_args[:4] == (
+                "/Applications/Codex.app/Contents/Resources/codex",
+                "app-server",
+                "--listen",
+                "ws://127.0.0.1:19999",
+            )
+            assert "-c" in call_args
+            assert any(
+                arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
+            )
 
 
 # ---------------------------------------------------------------------------

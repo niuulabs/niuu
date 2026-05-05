@@ -234,6 +234,34 @@ class TestSkuldEnv:
         assert env["SKULD__TELEGRAM__TOPIC_MODE"] == "fixed_topic"
         assert env["SKULD__TELEGRAM__MESSAGE_THREAD_ID"] == "77"
 
+    def test_build_env_includes_localized_mcp_servers(self) -> None:
+        spec = SessionSpec(
+            values={
+                "mcpServers": [
+                    {
+                        "name": "mimir-local",
+                        "type": "stdio",
+                        "command": "python3",
+                        "args": ["-m", "mimir", "mcp", "--path", "/mimir/local", "--name", "local"],
+                    }
+                ]
+            },
+            pod_spec=PodSpecAdditions(),
+        )
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        servers = json.loads(env["SKULD__MCP_SERVERS"])
+        assert servers[0]["args"] == [
+            "-m",
+            "mimir",
+            "mcp",
+            "--path",
+            "/tmp/ws/.flock/mimir/local",
+            "--name",
+            "local",
+        ]
+
 
 class TestFlockPortAllocation:
     def test_pick_flock_base_port_skips_taken_ranges(
@@ -976,6 +1004,7 @@ class TestProcessSpawning:
         self,
         manager: LocalProcessPodManager,
         tmp_workspaces: Path,
+        git_session: Session,
     ) -> None:
         """Local flock startup must keep Skuld on loopback and shift ravn slots."""
         workspace = tmp_workspaces / "session"
@@ -1006,6 +1035,7 @@ class TestProcessSpawning:
 
         with patch("subprocess.run") as mock_run:
             result = await manager._start_flock(
+                git_session,
                 spec,
                 workspace,
                 FlockPortPlan(
@@ -1034,10 +1064,74 @@ class TestProcessSpawning:
         assert f"pub_address: {expected_pub}" in cluster
         assert f"rep_address: {expected_rep}" in cluster
 
+    async def test_start_flock_materializes_registry_personas_into_workspace(
+        self,
+        manager: LocalProcessPodManager,
+        tmp_workspaces: Path,
+    ) -> None:
+        workspace = tmp_workspaces / "session-with-custom-personas"
+        workspace.mkdir(parents=True)
+        flock_dir = workspace / ".flock"
+        flock_dir.mkdir()
+        (flock_dir / "cluster.yaml").write_text("peers: []\n", encoding="utf-8")
+
+        session = Session(
+            id=uuid4(),
+            name="custom-personas",
+            source=GitSource(repo="https://github.com/niuulabs/example"),
+            owner_id="dev-user",
+        )
+        spec = SessionSpec(
+            values={},
+            pod_spec=PodSpecAdditions(
+                env=(
+                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
+                ),
+                extra_containers=(
+                    {"name": "ravn-claude-mimir-researcher"},
+                    {"name": "ravn-codex-mimir-researcher"},
+                ),
+            ),
+        )
+
+        class _Registry:
+            async def get_persona_yaml(self, owner_id: str, name: str) -> str | None:
+                return f"name: {name}\nsystem_prompt_template: |\n  You are {name}.\n"
+
+        manager.set_persona_registry(_Registry())
+
+        with patch("subprocess.run") as mock_run:
+            await manager._start_flock(
+                session,
+                spec,
+                workspace,
+                FlockPortPlan(
+                    session_base_port=7484,
+                    ravn_base_port=7486,
+                    skuld_pub_port=7484,
+                    skuld_rep_port=7485,
+                    skuld_handshake_port=7584,
+                ),
+                skuld_port=9101,
+            )
+
+        persona_dir = workspace / ".ravn" / "personas"
+        claude_yaml = (persona_dir / "claude-mimir-researcher.yaml").read_text(
+            encoding="utf-8"
+        )
+        codex_yaml = (persona_dir / "codex-mimir-researcher.yaml").read_text(
+            encoding="utf-8"
+        )
+        assert claude_yaml.startswith("name: claude-mimir-researcher")
+        assert codex_yaml.startswith("name: codex-mimir-researcher")
+        assert mock_run.call_args_list[0].kwargs["cwd"] == str(workspace)
+        assert mock_run.call_args_list[1].kwargs["cwd"] == str(workspace)
+
     async def test_start_flock_injects_workflow_into_node_configs(
         self,
         manager: LocalProcessPodManager,
         tmp_workspaces: Path,
+        git_session: Session,
     ) -> None:
         workspace = tmp_workspaces / "session-with-workflow"
         workspace.mkdir(parents=True)
@@ -1072,6 +1166,7 @@ class TestProcessSpawning:
 
         with patch("subprocess.run"):
             await manager._start_flock(
+                git_session,
                 spec,
                 workspace,
                 FlockPortPlan(
@@ -1093,6 +1188,7 @@ class TestProcessSpawning:
         self,
         manager: LocalProcessPodManager,
         tmp_workspaces: Path,
+        git_session: Session,
     ) -> None:
         workspace = tmp_workspaces / "session-with-overrides"
         workspace.mkdir(parents=True)
@@ -1139,6 +1235,7 @@ class TestProcessSpawning:
         ):
             loader_cls.return_value.load.return_value = MagicMock(allowed_tools=["file", "git"])
             await manager._start_flock(
+                git_session,
                 spec,
                 workspace,
                 FlockPortPlan(
@@ -1163,6 +1260,7 @@ class TestProcessSpawning:
         self,
         manager: LocalProcessPodManager,
         tmp_workspaces: Path,
+        git_session: Session,
     ) -> None:
         workspace = tmp_workspaces / "session-with-mimir"
         workspace.mkdir(parents=True)
@@ -1179,6 +1277,22 @@ class TestProcessSpawning:
                     "llm_config": {"model": "google/gemma-4-26B-A4B-it"},
                     "max_concurrent_tasks": 3,
                 },
+                "mcpServers": [
+                    {
+                        "name": "mimir-local",
+                        "type": "stdio",
+                        "command": "python3",
+                        "args": [
+                            "-m",
+                            "mimir",
+                            "mcp",
+                            "--path",
+                            "/mimir/local",
+                            "--name",
+                            "local",
+                        ],
+                    }
+                ],
                 "mimir": {
                     "registryRefs": [
                         {
@@ -1215,6 +1329,7 @@ class TestProcessSpawning:
         ):
             loader_cls.return_value.load.return_value = MagicMock(allowed_tools=["file", "git"])
             await manager._start_flock(
+                git_session,
                 spec,
                 workspace,
                 FlockPortPlan(
@@ -1236,23 +1351,36 @@ class TestProcessSpawning:
             "role": "shared",
             "categories": ["decision"],
         } in mimir_cfg["instances"]
-        local_instance = next(
-            instance for instance in mimir_cfg["instances"] if instance["name"] == "local"
-        )
         scratch_instance = next(
             instance for instance in mimir_cfg["instances"] if instance["name"] == "scratchpad"
         )
-        assert local_instance["path"] == str(flock_dir / "mimir" / "local")
         assert scratch_instance["path"] == str(flock_dir / "mimir" / "local" / "scratchpad")
-        assert Path(local_instance["path"]).is_dir()
         assert Path(scratch_instance["path"]).is_dir()
-        assert mimir_cfg["write_routing"]["default"] == ["local"]
+        assert mimir_cfg["write_routing"]["default"] == ["scratchpad"]
+        assert {"prefix": "self/", "mounts": ["scratchpad"]} in mimir_cfg["write_routing"]["rules"]
         assert {"prefix": "draft/", "mounts": ["scratchpad"]} in mimir_cfg["write_routing"]["rules"]
+        assert node_config["mcp_servers"] == [
+            {
+                "name": "mimir-local",
+                "type": "stdio",
+                "command": "python3",
+                "args": [
+                    "-m",
+                    "mimir",
+                    "mcp",
+                    "--path",
+                    str(flock_dir / "mimir" / "local"),
+                    "--name",
+                    "local",
+                ],
+            }
+        ]
 
     async def test_start_flock_enriches_cluster_peers_with_persona_metadata(
         self,
         manager: LocalProcessPodManager,
         tmp_workspaces: Path,
+        git_session: Session,
     ) -> None:
         workspace = tmp_workspaces / "session-with-metadata"
         workspace.mkdir(parents=True)
@@ -1327,6 +1455,7 @@ class TestProcessSpawning:
                 allowed_tools=["file", "git"] if persona == "coder" else ["file", "ravn"]
             )
             await manager._start_flock(
+                git_session,
                 spec,
                 workspace,
                 FlockPortPlan(
@@ -1963,6 +2092,7 @@ class TestLocalFlockMeshMode:
         self,
         manager: LocalProcessPodManager,
         tmp_workspaces: Path,
+        git_session: Session,
     ) -> None:
         workspace = tmp_workspaces / "session"
         workspace.mkdir(parents=True)
@@ -1992,6 +2122,7 @@ class TestLocalFlockMeshMode:
 
         with patch("subprocess.run") as mock_run:
             result = await manager._start_flock(
+                git_session,
                 spec,
                 workspace,
                 FlockPortPlan(
@@ -2024,6 +2155,7 @@ class TestLocalFlockMeshMode:
         self,
         manager: LocalProcessPodManager,
         tmp_workspaces: Path,
+        git_session: Session,
     ) -> None:
         workspace = tmp_workspaces / "session-with-workflow"
         workspace.mkdir(parents=True)
@@ -2058,6 +2190,7 @@ class TestLocalFlockMeshMode:
 
         with patch("subprocess.run"):
             await manager._start_flock(
+                git_session,
                 spec,
                 workspace,
                 FlockPortPlan(

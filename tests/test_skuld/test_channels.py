@@ -272,6 +272,25 @@ class TestFormatTelegramEvent:
         }
         assert format_telegram_event(event) is None
 
+    def test_room_message_outcome_block_is_pre_rendered(self):
+        event = {
+            "type": "room_message",
+            "participant": {"persona": "claude-mimir-researcher"},
+            "visibility": "public",
+            "content": (
+                "---outcome---\n"
+                "summary: Wrote research/agent-mimir-page-standards.md\n"
+                "page_path: research/agent-mimir-page-standards.md\n"
+                "---end---"
+            ),
+        }
+        result = format_telegram_event(event)
+        assert "[claude-mimir-researcher] outcome: outcome" in result
+        assert "summary: Wrote research/agent-mimir-page-standards.md" not in result
+        assert "Wrote research/agent-mimir-page-standards.md" in result
+        assert "page_path: research/agent-mimir-page-standards.md" in result
+        assert "---outcome---" not in result
+
     def test_room_notification_help_needed(self):
         event = {
             "type": "room_notification",

@@ -436,6 +436,7 @@ def _normalize_payload(
     )
     normalized["produces_schema"] = _normalize_schema(payload.get("produces_schema"))
     normalized["consumes_events"] = _normalize_consumes_events(payload.get("consumes_events"))
+    normalized["consumes_schema"] = _normalize_schema(payload.get("consumes_schema"))
     normalized["fan_in_strategy"] = _normalize_optional_string(payload.get("fan_in_strategy"))
     normalized["fan_in_params"] = _normalize_params(payload.get("fan_in_params"))
     normalized["mimir_write_routing"] = _normalize_optional_string(
@@ -475,6 +476,7 @@ def _config_to_payload(config: PersonaConfig | None) -> dict[str, Any]:
         "produces_event_type": config.produces.event_type,
         "produces_schema": {key: field.type for key, field in config.produces.schema.items()},
         "consumes_events": [{"name": name} for name in config.consumes.event_types],
+        "consumes_schema": {key: field.type for key, field in config.consumes.schema.items()},
         "fan_in_strategy": _RUNTIME_TO_FAN_IN.get(config.fan_in.strategy),
         "fan_in_params": (
             {"contributes_to": config.fan_in.contributes_to} if config.fan_in.contributes_to else {}
@@ -484,12 +486,19 @@ def _config_to_payload(config: PersonaConfig | None) -> dict[str, Any]:
 
 
 def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
-    schema = {
+    produces_schema = {
         field_name: OutcomeField(
             type=str(field_type),  # type: ignore[arg-type]
             description=field_name,
         )
         for field_name, field_type in payload["produces_schema"].items()
+    }
+    consumes_schema = {
+        field_name: OutcomeField(
+            type=str(field_type),  # type: ignore[arg-type]
+            description=field_name,
+        )
+        for field_name, field_type in payload.get("consumes_schema", {}).items()
     }
     consumes_events = payload["consumes_events"]
     injects: list[str] = []
@@ -524,13 +533,14 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
         iteration_budget=int(payload["iteration_budget"]),
         produces=PersonaProduces(
             event_type=str(payload["produces_event_type"]),
-            schema=schema,
+            schema=produces_schema,
         ),
         consumes=PersonaConsumes(
             event_types=[
                 str(event["name"]) for event in consumes_events if str(event.get("name", ""))
             ],
             injects=sorted(set(injects)),
+            schema=consumes_schema,
         ),
         fan_in=PersonaFanIn(
             strategy=runtime_fan_in,  # type: ignore[arg-type]
@@ -565,6 +575,7 @@ def _default_payload(name: str) -> dict[str, Any]:
         "produces_event_type": "",
         "produces_schema": {},
         "consumes_events": [],
+        "consumes_schema": {},
         "fan_in_strategy": None,
         "fan_in_params": {},
         "mimir_write_routing": None,

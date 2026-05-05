@@ -345,6 +345,38 @@ def _materialize_local_mimir_config(spec: SessionSpec, flock_dir: Path) -> dict[
     }
 
 
+def _localize_mcp_servers(raw_servers: object, workspace: Path) -> list[dict[str, Any]]:
+    if not isinstance(raw_servers, list):
+        return []
+
+    flock_dir = workspace / ".flock"
+    localized: list[dict[str, Any]] = []
+    for raw_server in raw_servers:
+        if not isinstance(raw_server, dict):
+            continue
+        server = dict(raw_server)
+        args = server.get("args")
+        if isinstance(args, list):
+            normalized_args = [str(arg) for arg in args]
+            rewritten_args: list[str] = []
+            index = 0
+            while index < len(normalized_args):
+                arg = normalized_args[index]
+                rewritten_args.append(arg)
+                if arg == "--path" and index + 1 < len(normalized_args):
+                    localized_path = _localize_mimir_path(
+                        normalized_args[index + 1],
+                        flock_dir,
+                    )
+                    rewritten_args.append(localized_path)
+                    index += 2
+                    continue
+                index += 1
+            server["args"] = rewritten_args
+        localized.append(server)
+    return localized
+
+
 class LocalProcessPodManager(PodManager):
     """Manages Claude Code as local subprocesses.
 
@@ -381,6 +413,7 @@ class LocalProcessPodManager(PodManager):
         self._processes: dict[str, ProcessInfo] = {}
         self._monitors: dict[str, asyncio.Task] = {}
         self._skuld_registry: object | None = None  # Set via set_skuld_registry()
+        self._persona_registry: object | None = None  # Set via set_persona_registry()
 
         self._load_state()
 
@@ -393,6 +426,10 @@ class LocalProcessPodManager(PodManager):
         for session_id, info in self._processes.items():
             if info.state == ProcessState.RUNNING and info.port is not None:
                 register(session_id, info.port)
+
+    def set_persona_registry(self, registry: object) -> None:
+        """Inject the persona registry used to materialize custom flock personas."""
+        self._persona_registry = registry
 
     # ------------------------------------------------------------------
     # PodManager interface
@@ -447,6 +484,7 @@ class LocalProcessPodManager(PodManager):
             # Spawn ravn flock sidecars if the contributor produced extra containers
             if spec.pod_spec and spec.pod_spec.extra_containers and flock_plan is not None:
                 flock_dir = await self._start_flock(
+                    session,
                     spec,
                     workspace,
                     flock_plan,
@@ -849,6 +887,7 @@ class LocalProcessPodManager(PodManager):
 
     async def _start_flock(
         self,
+        session: Session,
         spec: SessionSpec,
         workspace: Path,
         flock_plan: FlockPortPlan,
@@ -876,6 +915,8 @@ class LocalProcessPodManager(PodManager):
         if not personas:
             return flock_dir
 
+        await self._materialize_flock_personas(session, workspace, personas)
+
         # ravn flock init with static discovery (no mDNS). The ravn sidecars
         # start at index 1 because the primary Skuld broker occupies index 0.
         ravn_base_port = flock_plan.ravn_base_port
@@ -900,6 +941,7 @@ class LocalProcessPodManager(PodManager):
             ],
             check=True,
             capture_output=True,
+            cwd=str(workspace),
         )
         logger.info(
             "Flock init: personas=%s dir=%s session_base_port=%d ravn_base_port=%d",
@@ -966,7 +1008,13 @@ class LocalProcessPodManager(PodManager):
                 flock_dir,
             )
 
-        self._apply_local_flock_overrides(spec, flock_dir, personas, skuld_port=skuld_port)
+        self._apply_local_flock_overrides(
+            spec,
+            flock_dir,
+            personas,
+            workspace=workspace,
+            skuld_port=skuld_port,
+        )
 
         # ravn flock start
         sp.run(
@@ -981,10 +1029,50 @@ class LocalProcessPodManager(PodManager):
             ],
             check=True,
             capture_output=True,
+            cwd=str(workspace),
         )
         logger.info("Flock started: %s", flock_dir)
 
         return flock_dir
+
+    async def _materialize_flock_personas(
+        self,
+        session: Session,
+        workspace: Path,
+        personas: list[str],
+    ) -> None:
+        """Write owner-scoped persona YAML files into the workspace for flock startup.
+
+        ``ravn flock init`` and the spawned ravn daemons only know how to resolve
+        personas from the filesystem. Custom personas stored in Volundr's registry
+        therefore need to be materialized into ``<workspace>/.ravn/personas`` so
+        both init-time validation and runtime persona loading can find them.
+        """
+        registry = self._persona_registry
+        owner_id = session.owner_id
+        if registry is None or not owner_id or not personas:
+            return
+
+        get_persona_yaml = getattr(registry, "get_persona_yaml", None)
+        if not callable(get_persona_yaml):
+            return
+
+        persona_dir = workspace / ".ravn" / "personas"
+        written = 0
+        for persona in personas:
+            yaml_text = await get_persona_yaml(owner_id, persona)
+            if not yaml_text:
+                continue
+            persona_dir.mkdir(parents=True, exist_ok=True)
+            (persona_dir / f"{persona}.yaml").write_text(yaml_text, encoding="utf-8")
+            written += 1
+
+        if written:
+            logger.info(
+                "Materialized %d persona definition(s) for local flock in %s",
+                written,
+                persona_dir,
+            )
 
     def _apply_local_flock_overrides(
         self,
@@ -992,6 +1080,7 @@ class LocalProcessPodManager(PodManager):
         flock_dir: Path,
         personas: list[str],
         *,
+        workspace: Path,
         skuld_port: int,
     ) -> None:
         """Apply workload-derived overrides to local flock node and cluster files."""
@@ -1019,6 +1108,7 @@ class LocalProcessPodManager(PodManager):
         workflow_cfg = spec.values.get("workflow")
         if not isinstance(workflow_cfg, dict):
             workflow_cfg = None
+        mcp_servers = _localize_mcp_servers(spec.values.get("mcpServers"), workspace)
 
         try:
             from ravn.adapters.personas.loader import FilesystemPersonaAdapter
@@ -1067,6 +1157,11 @@ class LocalProcessPodManager(PodManager):
                 node_config["persona_overrides"] = persona_runtime_overrides
             else:
                 node_config.pop("persona_overrides", None)
+
+            if mcp_servers:
+                node_config["mcp_servers"] = mcp_servers
+            else:
+                node_config.pop("mcp_servers", None)
 
             node_path.write_text(
                 yaml.safe_dump(node_config, default_flow_style=False),
@@ -1237,6 +1332,10 @@ class LocalProcessPodManager(PodManager):
                 )
                 if message_thread_id not in (None, ""):
                     env["SKULD__TELEGRAM__MESSAGE_THREAD_ID"] = str(message_thread_id)
+
+        mcp_servers = _localize_mcp_servers(spec.values.get("mcpServers"), workspace)
+        if mcp_servers:
+            env["SKULD__MCP_SERVERS"] = json.dumps(mcp_servers)
 
         return env
 

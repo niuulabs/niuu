@@ -46,6 +46,11 @@ produces:
 consumes:
   event_types: [code.changed, review.requested]
   injects: [repo, branch, diff_url]
+  schema:
+    topic:
+      type: string
+    max_sources:
+      type: number
 fan_in:
   strategy: all_must_pass
   contributes_to: review.verdict
@@ -151,6 +156,7 @@ class TestPersonaContractDefaults:
         c = PersonaConsumes()
         assert c.event_types == []
         assert c.injects == []
+        assert c.schema == {}
 
     def test_fan_in_defaults(self) -> None:
         f = PersonaFanIn()
@@ -265,6 +271,11 @@ class TestParseConsumes:
         c = _parse_consumes({"injects": ["repo", "branch"]})
         assert c.injects == ["repo", "branch"]
 
+    def test_parses_schema(self) -> None:
+        c = _parse_consumes({"schema": {"topic": {"type": "string"}}})
+        assert "topic" in c.schema
+        assert c.schema["topic"].type == "string"
+
     def test_non_list_event_types_becomes_empty(self) -> None:
         c = _parse_consumes({"event_types": "not-a-list"})
         assert c.event_types == []
@@ -272,6 +283,10 @@ class TestParseConsumes:
     def test_non_list_injects_becomes_empty(self) -> None:
         c = _parse_consumes({"injects": 42})
         assert c.injects == []
+
+    def test_non_dict_schema_becomes_empty(self) -> None:
+        c = _parse_consumes({"schema": 42})
+        assert c.schema == {}
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +346,10 @@ class TestFilesystemPersonaAdapterParseContracts:
         assert "repo" in cfg.consumes.injects
         assert "branch" in cfg.consumes.injects
         assert "diff_url" in cfg.consumes.injects
+        assert "topic" in cfg.consumes.schema
+        assert cfg.consumes.schema["topic"].type == "string"
+        assert "max_sources" in cfg.consumes.schema
+        assert cfg.consumes.schema["max_sources"].type == "number"
 
     def test_reviewer_yaml_parses_fan_in(self) -> None:
         cfg = FilesystemPersonaAdapter.parse(_REVIEWER_YAML)

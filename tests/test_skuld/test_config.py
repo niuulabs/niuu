@@ -98,6 +98,22 @@ class TestSkuldSettings:
         assert s.session.id == "nested-id"
         assert s.session.model == "opus"
 
+    def test_mcp_servers_from_env(self, monkeypatch):
+        monkeypatch.setenv(
+            "SKULD__MCP_SERVERS",
+            '[{"name":"mimir-local","type":"stdio","command":"python3","args":["-m","mimir"]}]',
+        )
+
+        s = SkuldSettings()
+        assert s.mcp_servers == [
+            {
+                "name": "mimir-local",
+                "type": "stdio",
+                "command": "python3",
+                "args": ["-m", "mimir"],
+            }
+        ]
+
     def test_legacy_flat_env_vars(self, monkeypatch):
         """Test backward-compatible flat env vars."""
         # Clear any SKULD__ prefixed vars

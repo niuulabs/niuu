@@ -414,6 +414,8 @@ class CliTransportExecutor(ExecutorPort):
             "system_prompt": str(kwargs.get("system_prompt", "")),
             "initial_prompt": "",
         }
+        if "mcp_servers" in kwargs:
+            transport_kwargs["mcp_servers"] = kwargs["mcp_servers"]
         transport_kwargs.update(self._transport_kwargs)
 
         return CliTransportAgent(

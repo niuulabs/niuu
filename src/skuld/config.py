@@ -195,6 +195,7 @@ class SkuldSettings(BaseSettings):
     chronicle_watcher_enabled: bool = Field(default=True)
     chronicle_watcher_debounce_ms: int = Field(default=500)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
+    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)

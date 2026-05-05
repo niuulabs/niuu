@@ -111,6 +111,17 @@ class TestBroker:
         assert isinstance(transport, SdkWebSocketTransport)
         assert transport._model == "claude-opus-4-20250514"
 
+    def test_create_transport_passes_mcp_servers(self, tmp_path):
+        settings = SkuldSettings(
+            transport="sdk",
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            mcp_servers=[{"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}],
+        )
+        b = Broker(settings=settings)
+        transport = b._create_transport()
+        assert isinstance(transport, SdkWebSocketTransport)
+        assert transport._mcp_config is not None
+
     def test_create_transport_dynamic_import(self, tmp_path):
         """Dynamic transport factory uses importlib to load the configured adapter."""
         settings = SkuldSettings(

@@ -569,6 +569,11 @@ class RavnAgent:
         # NIU-594: parse ---outcome--- block from final response when persona declares a schema
         parsed_outcome = _parse_outcome_block_for_persona(final_response, self._persona_config)
         if parsed_outcome is not None:
+            parsed_outcome = await _validate_mimir_outcome_for_persona(
+                parsed_outcome,
+                persona_config=self._persona_config,
+                mimir=self._mimir,
+            )
             logger.debug(
                 "final_outcome_block: valid=%s fields=%s errors=%s",
                 parsed_outcome.valid,
@@ -1312,6 +1317,77 @@ def _parse_outcome_block_for_persona(
     except Exception:
         logger.warning("Outcome block parsing failed; continuing without.", exc_info=True)
         return None
+
+
+async def _validate_mimir_outcome_for_persona(
+    parsed_outcome: ParsedOutcome,
+    *,
+    persona_config: PersonaConfig | None,
+    mimir: MimirPort | None,
+) -> ParsedOutcome:
+    """Apply persona-specific Mimir-backed outcome validation.
+
+    At the moment this enforces research-page provenance for personas that emit
+    ``research.completed``. The page must exist, be marked
+    ``produced_by_thread: true``, reference non-empty ``source_ids``, and those
+    source IDs must resolve to ingested raw sources that are not merely the
+    final page content copied back into ``raw/``.
+    """
+    if persona_config is None or mimir is None:
+        return parsed_outcome
+    if persona_config.produces.event_type != "research.completed":
+        return parsed_outcome
+
+    page_path = str(parsed_outcome.fields.get("page_path") or "").strip()
+    errors: list[str] = []
+    if not page_path:
+        errors.append("research.completed outcome requires a non-empty page_path")
+    else:
+        try:
+            page = await mimir.get_page(page_path)
+        except FileNotFoundError:
+            errors.append(f"research page not found in Mimir: {page_path}")
+        else:
+            if not page.meta.produced_by_thread:
+                errors.append(
+                    f"research page {page_path} must include produced_by_thread: true"
+                )
+
+            source_ids = [str(source_id).strip() for source_id in page.meta.source_ids if str(source_id).strip()]
+            if not source_ids:
+                errors.append(
+                    f"research page {page_path} has no source_ids provenance; ingest the "
+                    "actual sources and reference them in frontmatter"
+                )
+            else:
+                resolved_sources = []
+                missing_source_ids = []
+                for source_id in source_ids:
+                    source = await mimir.read_source(source_id)
+                    if source is None:
+                        missing_source_ids.append(source_id)
+                        continue
+                    resolved_sources.append(source)
+
+                if missing_source_ids:
+                    errors.append(
+                        f"research page {page_path} references missing source_ids: "
+                        + ", ".join(missing_source_ids)
+                    )
+
+                stripped_content = page.content.strip()
+                if resolved_sources and all(
+                    source.content.strip() == stripped_content for source in resolved_sources
+                ):
+                    errors.append(
+                        f"research page {page_path} only references self-ingested page content; "
+                        "ingest the material sources you actually used"
+                    )
+
+    if errors:
+        parsed_outcome.valid = False
+        parsed_outcome.errors.extend(errors)
+    return parsed_outcome
 
 
 _THINK_PREFIXES = ("think:", "think: ")

@@ -176,6 +176,39 @@ def _build_executor(persona_config: Any | None = None) -> ExecutorPort:
     return cls(**kwargs)
 
 
+def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:
+    """Serialize enabled MCP server configs for CLI transports."""
+    servers: list[dict[str, Any]] = []
+    for server in settings.mcp_servers:
+        if isinstance(server, dict):
+            enabled = bool(server.get("enabled", True))
+            if not enabled:
+                continue
+            transport = str(server.get("transport") or server.get("type") or "stdio")
+            servers.append(
+                {
+                    "name": str(server.get("name") or ""),
+                    "type": transport,
+                    "command": str(server.get("command") or ""),
+                    "args": list(server.get("args") or []),
+                    "env": dict(server.get("env") or {}),
+                    "url": str(server.get("url") or ""),
+                }
+            )
+            continue
+        servers.append(
+            {
+                "name": server.name,
+                "type": server.transport,
+                "command": server.command,
+                "args": list(server.args),
+                "env": dict(server.env),
+                "url": server.url,
+            }
+        )
+    return servers
+
+
 # ---------------------------------------------------------------------------
 # Builder: Memory + Embedding
 # ---------------------------------------------------------------------------
@@ -1056,6 +1089,7 @@ def _build_agent(
         max_tokens=max_tokens,
         max_iterations=max_iterations,
         workspace_dir=str(workspace),
+        mcp_servers=_transport_mcp_servers(settings),
         session=session,
         pre_tool_hooks=pre_hooks or None,
         post_tool_hooks=post_hooks or None,
@@ -1754,6 +1788,7 @@ async def _run_gateway(
             max_tokens=max_tokens_gw,
             max_iterations=max_iterations,
             workspace_dir=str(workspace),
+            mcp_servers=_transport_mcp_servers(settings),
             session=session,
             pre_tool_hooks=pre_hooks or None,
             post_tool_hooks=post_hooks or None,
@@ -2021,6 +2056,8 @@ async def _run_daemon(
             model=settings.effective_model(),
             max_tokens=resolved_max_tokens,
             max_iterations=resolved_max_iterations,
+            workspace_dir=str(workspace),
+            mcp_servers=_transport_mcp_servers(settings),
             session=session,
             pre_tool_hooks=pre_hooks or None,
             post_tool_hooks=post_hooks or None,

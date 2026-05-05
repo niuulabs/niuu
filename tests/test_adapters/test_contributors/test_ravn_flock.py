@@ -284,7 +284,7 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "code.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "trigger-1"
 
-    async def test_mimir_volume_added(self, session, flock_template):
+    async def test_mimir_volume_not_added_without_explicit_local(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
         c = RavnFlockContributor(template_provider=provider)
@@ -292,9 +292,11 @@ class TestContributorOutput:
         result = await c.contribute(session, ctx)
 
         volume_names = [v["name"] for v in result.pod_spec.volumes]
-        assert "mimir-local" in volume_names
+        assert "mimir-local" not in volume_names
 
-    async def test_ravn_container_has_mimir_mount(self, session, flock_template):
+    async def test_ravn_container_omits_local_mimir_mount_without_explicit_local(
+        self, session, flock_template
+    ):
         provider = MagicMock()
         provider.get.return_value = flock_template
         c = RavnFlockContributor(template_provider=provider)
@@ -303,7 +305,7 @@ class TestContributorOutput:
 
         ravn_ctr = result.pod_spec.extra_containers[0]
         mount_paths = {m["mountPath"] for m in ravn_ctr["volumeMounts"]}
-        assert "/mimir/local" in mount_paths
+        assert "/mimir/local" not in mount_paths
 
     async def test_ravn_container_has_workspace_mount(self, session, flock_template):
         provider = MagicMock()
@@ -553,7 +555,7 @@ class TestConfigGeneration:
             cfg = _extract_mounted_config(result.pod_spec, persona)
             assert "mimir:" in cfg
             assert "instances:" in cfg
-            assert "/mimir/local" in cfg
+            assert "https://mimir.niuu.internal/api/v1" in cfg
 
     async def test_mounted_config_has_write_routing(self, session, flock_template):
         provider = MagicMock()
@@ -565,7 +567,7 @@ class TestConfigGeneration:
         for persona in ("coordinator", "reviewer"):
             cfg = _extract_mounted_config(result.pod_spec, persona)
             assert "write_routing:" in cfg
-            assert "self/" in cfg
+            assert "project/" in cfg
 
     async def test_mounted_config_hosted_url_in_instances(self, session, flock_template):
         provider = MagicMock()
@@ -580,8 +582,8 @@ class TestConfigGeneration:
             assert "project/" in cfg
             assert "entity/" in cfg
 
-    async def test_mounted_config_no_hosted_url_only_local(self, session, flock_profile):
-        """When no hosted URL configured, config only has local mimir instance."""
+    async def test_mounted_config_no_hosted_url_has_no_instances(self, session, flock_profile):
+        """When no Mimir resources are configured, no runtime instances are injected."""
         provider = MagicMock()
         provider.get.return_value = flock_profile
         c = RavnFlockContributor(profile_provider=provider)
@@ -590,7 +592,7 @@ class TestConfigGeneration:
 
         for persona in ("coordinator", "reviewer"):
             cfg = _extract_mounted_config(result.pod_spec, persona)
-            assert "/mimir/local" in cfg
+            assert "instances: []" in cfg
             assert "project/" not in cfg
             assert "entity/" not in cfg
 
@@ -643,6 +645,10 @@ class TestConfigGeneration:
         assert "/mimir/local/scratchpad" in cfg
         assert "project/" in cfg
         assert "draft/" in cfg
+        volume_names = [v["name"] for v in result.pod_spec.volumes]
+        assert "mimir-local" in volume_names
+        mount_paths = {m["mountPath"] for m in result.pod_spec.extra_containers[0]["volumeMounts"]}
+        assert "/mimir/local" in mount_paths
 
     async def test_mounted_config_sleipnir_webhook(self, session, flock_template):
         provider = MagicMock()
@@ -732,7 +738,7 @@ class TestContributorPipelineMerge:
 
         # Mimir volume present
         volume_names = [v["name"] for v in spec.pod_spec.volumes]
-        assert "mimir-local" in volume_names
+        assert "mimir-local" not in volume_names
 
         # Init containers merged
         assert len(spec.pod_spec.init_containers) == 2
@@ -1614,7 +1620,6 @@ class TestMimirHelpers:
         )
 
         assert [instance["name"] for instance in instances] == [
-            "local",
             "shared",
             "registry-a",
             "registry-b",
@@ -1622,6 +1627,7 @@ class TestMimirHelpers:
             "scratch",
             "scratch-2",
         ]
+        assert {"prefix": "self/", "mounts": ["scratch"]} in routing["rules"]
         assert {"prefix": "docs/", "mounts": ["registry-a"]} in routing["rules"]
         assert {"prefix": "drafts/", "mounts": ["scratch"]} in routing["rules"]
         assert {"prefix": "reviews/", "mounts": ["registry-b"]} in routing["rules"]
@@ -1630,7 +1636,7 @@ class TestMimirHelpers:
     def test_resolve_mimir_runtime_adds_default_hosted_instance_when_no_registry_refs(self):
         instances, routing = _resolve_mimir_runtime({"hosted_url": "https://hosted.example"})
 
-        assert [instance["name"] for instance in instances] == ["local", "hosted"]
+        assert [instance["name"] for instance in instances] == ["hosted"]
         assert {"prefix": "project/", "mounts": ["hosted"]} in routing["rules"]
         assert {"prefix": "entity/", "mounts": ["hosted"]} in routing["rules"]
-        assert routing["default"] == ["local"]
+        assert routing["default"] == ["hosted"]

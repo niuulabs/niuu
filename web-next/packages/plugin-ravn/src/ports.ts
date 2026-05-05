@@ -36,6 +36,7 @@ export interface PersonaConsumesEvent {
 
 export interface PersonaConsumes {
   events: PersonaConsumesEvent[];
+  schemaDef: Record<string, FieldType>;
 }
 
 export interface PersonaFanIn {
@@ -97,6 +98,7 @@ export interface PersonaCreateRequest {
   producesEventType: string;
   producesSchema: Record<string, FieldType>;
   consumesEvents: PersonaConsumesEvent[];
+  consumesSchema: Record<string, FieldType>;
   fanInStrategy?: string;
   fanInParams?: Record<string, unknown>;
   mimirWriteRouting?: 'local' | 'shared' | 'domain';

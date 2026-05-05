@@ -125,14 +125,10 @@ def _normalize_mimir_workload_config(
 def _resolve_mimir_runtime(
     mimir_cfg: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    instances: list[dict[str, Any]] = [
-        {"name": "local", "role": "local", "path": _MIMIR_MOUNT_PATH},
-    ]
-    known_mounts = {"local"}
-    write_rules: list[dict[str, Any]] = [
-        {"prefix": "self/", "mounts": ["local"]},
-    ]
-    default_mounts: list[str] = ["local"]
+    instances: list[dict[str, Any]] = []
+    known_mounts: set[str] = set()
+    write_rules: list[dict[str, Any]] = []
+    default_mounts: list[str] = []
     hosted_url = str(mimir_cfg.get("hosted_url") or "").strip()
     registry_refs = list(mimir_cfg.get("registry_refs") or [])
     ephemeral_locals = list(mimir_cfg.get("ephemeral_locals") or [])
@@ -225,6 +221,14 @@ def _resolve_mimir_runtime(
         instances.append(instance)
         known_mounts.add(mount_name)
 
+    local_mount_names = [
+        instance["name"]
+        for instance in instances
+        if str(instance.get("role") or "").strip() == "local"
+    ]
+    if local_mount_names:
+        write_rules.append({"prefix": "self/", "mounts": [local_mount_names[0]]})
+
     for raw_binding in list(mimir_cfg.get("bindings") or []):
         if not isinstance(raw_binding, dict):
             continue
@@ -267,8 +271,29 @@ def _resolve_mimir_runtime(
     ]
     if configured_defaults:
         default_mounts = configured_defaults
+    else:
+        local_defaults = [
+            instance["name"]
+            for instance in instances
+            if str(instance.get("role") or "").strip() == "local"
+        ]
+        if local_defaults:
+            default_mounts = [local_defaults[0]]
+        elif len(instances) == 1:
+            default_mounts = [instances[0]["name"]]
 
     return instances, {"rules": write_rules, "default": default_mounts}
+
+
+def _requires_local_mimir_mount(instances: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(instance.get("path"), str)
+        and (
+            str(instance["path"]).strip() == _MIMIR_MOUNT_PATH
+            or str(instance["path"]).strip().startswith(f"{_MIMIR_MOUNT_PATH.rstrip('/')}/")
+        )
+        for instance in instances
+    )
 
 
 def _normalize_instance(raw_instance: dict[str, Any]) -> dict[str, Any] | None:
@@ -621,6 +646,8 @@ class RavnFlockContributor(SessionContributor):
         session_id = str(session.id)
         base_port = self._base_port
         all_personas = [pd["name"] for pd in persona_dicts]
+        mimir_instances, _mimir_write_routing = _resolve_mimir_runtime(mimir_config)
+        requires_local_mimir_mount = _requires_local_mimir_mount(mimir_instances)
 
         # Skuld (index 0) + ravn nodes start at index 1
         skuld_peer_id = f"skuld-{session_id[:8]}"
@@ -779,7 +806,6 @@ class RavnFlockContributor(SessionContributor):
             ravn_env.extend(persona_source_envs)
 
             volume_mounts: list[dict] = [
-                {"name": _MIMIR_VOLUME_NAME, "mountPath": _MIMIR_MOUNT_PATH},
                 {
                     "name": _WORKSPACE_VOLUME_NAME,
                     "mountPath": _WORKSPACE_MOUNT_PATH,
@@ -791,6 +817,11 @@ class RavnFlockContributor(SessionContributor):
                     "readOnly": True,
                 },
             ]
+            if requires_local_mimir_mount:
+                volume_mounts.insert(
+                    0,
+                    {"name": _MIMIR_VOLUME_NAME, "mountPath": _MIMIR_MOUNT_PATH},
+                )
             volume_mounts.extend(persona_source_volume_mounts)
 
             container: dict[str, Any] = {
@@ -807,12 +838,12 @@ class RavnFlockContributor(SessionContributor):
             }
             extra_containers.append(container)
 
+        pod_volumes: list[dict[str, Any]] = [*config_volumes, *persona_source_volumes]
+        if requires_local_mimir_mount:
+            pod_volumes.insert(0, {"name": _MIMIR_VOLUME_NAME, "emptyDir": {}})
+
         pod_spec = PodSpecAdditions(
-            volumes=(
-                {"name": _MIMIR_VOLUME_NAME, "emptyDir": {}},
-                *config_volumes,
-                *persona_source_volumes,
-            ),
+            volumes=tuple(pod_volumes),
             env=tuple(skuld_env),
             extra_containers=tuple(extra_containers),
             init_containers=tuple(init_containers),

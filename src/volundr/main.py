@@ -331,10 +331,15 @@ def _create_contributors(
     # Auto-wire RavnFlockContributor so ravn_flock workloads spawn
     # multi-sidecar sessions (locally via ravn flock init/start).
     from volundr.adapters.outbound.contributors.ravn_flock import RavnFlockContributor
+    from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
 
     if not _has_contributor("ravn_flock"):
         contributors.append(RavnFlockContributor(**ports))
         logger.info("Session contributor: ravn_flock (auto-wired)")
+
+    if not _has_contributor("session_mcp"):
+        contributors.append(SessionMCPContributor(**ports))
+        logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors
 
@@ -655,6 +660,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
             stats_repository = PostgresStatsRepository(pool)
             token_tracker = PostgresTokenTracker(pool)
+            from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
+
+            persona_registry = PostgresPersonaRegistry(pool)
+            app.state.persona_registry = persona_registry
             pod_manager = _create_pod_manager(settings)
 
             # Inject Skuld port registry for mini mode proxy routing
@@ -706,6 +715,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Inject credential store into pod manager for envSecrets resolution
             if hasattr(pod_manager, "set_credential_store"):
                 pod_manager.set_credential_store(credential_store)
+            if hasattr(pod_manager, "set_persona_registry"):
+                pod_manager.set_persona_registry(persona_registry)
 
             # Integration registry + repository
             from volundr.domain.services.integration_registry import (

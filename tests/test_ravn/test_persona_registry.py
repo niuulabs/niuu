@@ -354,6 +354,18 @@ class TestSave:
             consumes=PersonaConsumes(
                 event_types=["code.changed", "review.requested"],
                 injects=["repo", "branch"],
+                schema={
+                    "topic": OutcomeField(
+                        type="string",
+                        description="Research topic",
+                        required=True,
+                    ),
+                    "max_sources": OutcomeField(
+                        type="number",
+                        description="Maximum sources to consult",
+                        required=False,
+                    ),
+                },
             ),
             fan_in=PersonaFanIn(strategy="all_must_pass", contributes_to="review.verdict"),
         )
@@ -383,6 +395,10 @@ class TestSave:
         # consumes round-trips
         assert loaded.consumes.event_types == ["code.changed", "review.requested"]
         assert loaded.consumes.injects == ["repo", "branch"]
+        assert "topic" in loaded.consumes.schema
+        assert loaded.consumes.schema["topic"].type == "string"
+        assert "max_sources" in loaded.consumes.schema
+        assert loaded.consumes.schema["max_sources"].type == "number"
         # fan_in round-trips
         assert loaded.fan_in.strategy == "all_must_pass"
         assert loaded.fan_in.contributes_to == "review.verdict"

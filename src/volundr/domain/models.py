@@ -1504,10 +1504,35 @@ from niuu.domain.models import PersonalAccessToken  # noqa: F401, E402
 def _deep_merge(base: dict, override: dict) -> None:
     """Deep-merge override into base in place."""
     for key, value in override.items():
+        if key == "mcpServers" and isinstance(base.get(key), list) and isinstance(value, list):
+            base[key] = _merge_mcp_server_lists(base[key], value)
+            continue
         if key in base and isinstance(base[key], dict) and isinstance(value, dict):
             _deep_merge(base[key], value)
         else:
             base[key] = value
+
+
+def _merge_mcp_server_lists(existing: list, override: list) -> list:
+    """Merge MCP server lists by ``name``, preserving order and later overrides."""
+    merged: list = []
+    index_by_name: dict[str, int] = {}
+
+    for entry in list(existing) + list(override):
+        if not isinstance(entry, dict):
+            merged.append(entry)
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            merged.append(dict(entry))
+            continue
+        if name in index_by_name:
+            merged[index_by_name[name]] = dict(entry)
+            continue
+        index_by_name[name] = len(merged)
+        merged.append(dict(entry))
+
+    return merged
 
 
 def _merge_pod_specs(a: PodSpecAdditions, b: PodSpecAdditions) -> PodSpecAdditions:

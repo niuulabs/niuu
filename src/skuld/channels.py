@@ -13,6 +13,8 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 
+from niuu.domain.outcome import parse_outcome_block
+
 logger = logging.getLogger("skuld.channels")
 
 # Telegram API max message length
@@ -127,6 +129,31 @@ class WebSocketChannel(MessageChannel):
 # ---------------------------------------------------------------------------
 
 
+def _format_outcome_lines(
+    *,
+    name: str,
+    outcome_type: str,
+    verdict: str,
+    summary: str,
+    fields: object,
+) -> str:
+    lines = [f"[{name}] outcome: {outcome_type or 'outcome'}"]
+    if verdict:
+        lines.append(f"verdict: {verdict}")
+    if summary:
+        lines.append(summary)
+    if isinstance(fields, dict):
+        for key, value in fields.items():
+            if key in {"summary", "verdict"}:
+                continue
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, default=str)
+            lines.append(f"{key}: {value}")
+    elif fields:
+        lines.append(str(fields))
+    return "\n".join(line for line in lines if line)
+
+
 def format_telegram_event(event: dict) -> str | None:
     """Format a CLI event as a Telegram-friendly message.
 
@@ -210,6 +237,16 @@ def format_telegram_event(event: dict) -> str | None:
         content = event.get("content", "")
         if not content:
             return None
+        if isinstance(content, str):
+            parsed_outcome = parse_outcome_block(content)
+            if parsed_outcome is not None and parsed_outcome.fields:
+                return _format_outcome_lines(
+                    name=name,
+                    outcome_type="outcome",
+                    verdict=str(parsed_outcome.fields.get("verdict", "") or ""),
+                    summary=str(parsed_outcome.fields.get("summary", "") or ""),
+                    fields=parsed_outcome.fields,
+                )
         prefix = "[error]" if event.get("error") else f"[{name}]"
         return f"{prefix} {content}"
 
@@ -239,25 +276,13 @@ def format_telegram_event(event: dict) -> str | None:
             or event.get("participantId")
             or "agent"
         )
-        summary = event.get("summary", "")
-        verdict = event.get("verdict", "")
-        outcome_type = event.get("eventType", "") or "outcome"
-        fields = event.get("fields", {})
-        lines = [f"[{name}] outcome: {outcome_type}"]
-        if verdict:
-            lines.append(f"verdict: {verdict}")
-        if summary:
-            lines.append(summary)
-        if isinstance(fields, dict):
-            for key, value in fields.items():
-                if key in {"summary", "verdict"}:
-                    continue
-                if isinstance(value, (dict, list)):
-                    value = json.dumps(value, default=str)
-                lines.append(f"{key}: {value}")
-        elif fields:
-            lines.append(str(fields))
-        return "\n".join(line for line in lines if line)
+        return _format_outcome_lines(
+            name=name,
+            outcome_type=event.get("eventType", "") or "outcome",
+            verdict=str(event.get("verdict", "") or ""),
+            summary=str(event.get("summary", "") or ""),
+            fields=event.get("fields", {}),
+        )
 
     if event_type == "room_mesh_message":
         participant = event.get("participant", {}) or {}

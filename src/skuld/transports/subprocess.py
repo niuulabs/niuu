@@ -18,6 +18,7 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.transports.mcp_config import build_claude_mcp_config
 
 logger = logging.getLogger("skuld.transport")
 
@@ -50,6 +51,7 @@ class SubprocessTransport(CLITransport):
         agent_teams: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
+        mcp_servers: list[dict] | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -58,6 +60,7 @@ class SubprocessTransport(CLITransport):
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
+        self._mcp_config = build_claude_mcp_config(mcp_servers or [])
         self._initial_prompt_sent = False
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
@@ -141,6 +144,8 @@ class SubprocessTransport(CLITransport):
             cmd.extend(["--resume", self._session_id])
         elif self._system_prompt:
             cmd.extend(["--append-system-prompt", self._system_prompt])
+        if self._mcp_config:
+            cmd.extend(["--mcp-config", self._mcp_config])
 
         logger.info("Running Claude CLI (session=%s)", self._session_id)
         logger.debug("Claude CLI command: %s", " ".join(cmd))

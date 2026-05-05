@@ -17,6 +17,7 @@ from skuld.transports import (
     _stop_process,
 )
 from skuld.transports import subprocess as subprocess_transport
+from skuld.transports.codex import resolve_codex_cli
 
 # ---------------------------------------------------------------------------
 # TransportCapabilities
@@ -210,6 +211,21 @@ class TestSubprocessTransport:
         assert transport._agent_teams is True
         assert transport._system_prompt == "Be precise."
         assert transport._initial_prompt == "Fix the bug."
+
+    def test_init_with_mcp_servers(self, tmp_path):
+        transport = SubprocessTransport(
+            str(tmp_path),
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+        assert transport._mcp_config is not None
+        payload = json.loads(transport._mcp_config)
+        assert payload["mcpServers"]["mimir-local"]["command"] == "python3"
 
     @pytest.mark.asyncio
     async def test_start_with_initial_prompt_sends_message(self, tmp_path):
@@ -521,6 +537,36 @@ class TestSubprocessTransport:
             call_args = mock_exec.call_args[0]
             assert "--resume" in call_args
             assert "--append-system-prompt" not in call_args
+
+    @pytest.mark.asyncio
+    async def test_send_message_passes_mcp_config(self, tmp_path):
+        transport = SubprocessTransport(
+            str(tmp_path),
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done"}\n']
+        )
+
+        transport.on_event(AsyncMock())
+
+        with patch(
+            "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_subprocess
+            await transport.send_message("test")
+
+            call_args = mock_exec.call_args[0]
+            assert "--mcp-config" in call_args
+            config = json.loads(call_args[call_args.index("--mcp-config") + 1])
+            assert "mimir-local" in config["mcpServers"]
 
     @pytest.mark.asyncio
     async def test_send_message_retries_transient_error(self, transport):
@@ -1249,6 +1295,36 @@ class TestSdkWebSocketTransport:
             assert call_args[idx + 1] == "You are an agent."
 
     @pytest.mark.asyncio
+    async def test_spawn_with_mcp_config(self, tmp_path):
+        t = SdkWebSocketTransport(
+            workspace_dir=str(tmp_path),
+            sdk_port=8081,
+            session_id="s1",
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+        with patch(
+            "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_process = MagicMock()
+            mock_process.stdout = None
+            mock_process.stderr = None
+            mock_exec.return_value = mock_process
+
+            await t.start()
+
+            call_args = mock_exec.call_args[0]
+            assert "--mcp-config" in call_args
+            config = json.loads(call_args[call_args.index("--mcp-config") + 1])
+            assert "mimir-local" in config["mcpServers"]
+
+    @pytest.mark.asyncio
     async def test_spawn_without_system_prompt_omits_flag(self, transport):
         with patch(
             "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
@@ -1372,6 +1448,16 @@ class TestCodexSubprocessTransport:
         assert caps.slash_commands is False
         assert caps.skills is False
 
+    def test_resolve_codex_cli_prefers_env_var(self, monkeypatch):
+        monkeypatch.setenv("CODEX_CLI_PATH", "/tmp/custom-codex")
+        assert resolve_codex_cli() == "/tmp/custom-codex"
+
+    def test_resolve_codex_cli_uses_path(self, monkeypatch):
+        monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
+        monkeypatch.delenv("SKULD_CODEX_CLI_PATH", raising=False)
+        with patch("skuld.transports.codex.shutil.which", return_value="/usr/local/bin/codex"):
+            assert resolve_codex_cli() == "/usr/local/bin/codex"
+
     @pytest.mark.asyncio
     async def test_start_is_noop(self, transport):
         await transport.start()
@@ -1409,16 +1495,58 @@ class TestCodexSubprocessTransport:
         with patch(
             "skuld.transports.codex.asyncio.create_subprocess_exec",
             new_callable=AsyncMock,
+        ) as mock_exec, patch(
+            "skuld.transports.codex.resolve_codex_cli",
+            return_value="/Applications/Codex.app/Contents/Resources/codex",
+        ):
+            mock_exec.return_value = mock_process
+            await transport.send_message("refactor the auth module")
+
+            call_args = mock_exec.call_args[0]
+            assert call_args[0] == "/Applications/Codex.app/Contents/Resources/codex"
+            assert call_args[1] == "exec"
+            assert "--model" in call_args
+            assert "o4-mini" in call_args
+            assert "--full-auto" in call_args
+            assert "--json" in call_args
+            assert "--quiet" not in call_args
+            assert "refactor the auth module" in call_args
+
+    @pytest.mark.asyncio
+    async def test_send_message_spawns_codex_with_mcp_overrides(self, tmp_path):
+        transport = CodexSubprocessTransport(
+            str(tmp_path),
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(return_value=b"")
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        transport.on_event(AsyncMock())
+
+        with patch(
+            "skuld.transports.codex.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
         ) as mock_exec:
             mock_exec.return_value = mock_process
             await transport.send_message("refactor the auth module")
 
             call_args = mock_exec.call_args[0]
-            assert call_args[0] == "codex"
-            assert "--model" in call_args
-            assert "o4-mini" in call_args
-            assert "--full-auto" in call_args
-            assert "refactor the auth module" in call_args
+            assert "-c" in call_args
+            assert any(
+                arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
+            )
 
     @pytest.mark.asyncio
     async def test_send_message_emits_text_delta_for_json_events(self, transport):

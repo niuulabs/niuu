@@ -77,6 +77,7 @@ describe('createMockPersonaStore', () => {
       producesEventType: 'custom.done',
       producesSchema: {},
       consumesEvents: [{ name: 'custom.requested' }],
+      consumesSchema: {},
     };
     const detail = await store.createPersona(req);
     expect(detail.name).toBe('my-custom');
@@ -107,6 +108,7 @@ describe('createMockPersonaStore', () => {
       producesEventType: 'code.changed',
       producesSchema: {},
       consumesEvents: [{ name: 'code.requested' }],
+      consumesSchema: {},
       fanInStrategy: 'any_passes' as const,
     };
     const detail = await store.updatePersona('coder', req);
@@ -135,6 +137,7 @@ describe('createMockPersonaStore', () => {
         producesEventType: '',
         producesSchema: {},
         consumesEvents: [],
+        consumesSchema: {},
       }),
     ).rejects.toThrow('Persona not found');
   });

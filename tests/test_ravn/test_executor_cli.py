@@ -405,3 +405,55 @@ async def test_cli_transport_agent_emits_event_variants_and_filters_transport_kw
     assert channel.events[-1].payload["message"] == "kaboom"
     assert [call.name for call in agent._turn_tool_calls] == ["Bash"]
     assert [result.is_error for result in agent._turn_tool_results] == [True]
+
+
+def test_cli_executor_passes_mcp_servers_to_transport() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a reviewer.",
+        session=Session(),
+        model="fake-model",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-mcp",
+        persona="reviewer",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[],
+        mcp_servers=[{"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}],
+    )
+
+    assert agent._transport_kwargs["mcp_servers"] == [
+        {"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}
+    ]
+
+
+def test_cli_executor_passes_mcp_servers_to_codex_transport() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex.CodexSubprocessTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a researcher.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-codex-mcp",
+        persona="researcher",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[],
+        mcp_servers=[{"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}],
+    )
+
+    transport = agent._create_transport()
+    assert transport._mcp_overrides == [
+        ("mcp_servers.mimir-local.command", '"python3"'),
+        ("mcp_servers.mimir-local.args", '["-m", "mimir"]'),
+    ]

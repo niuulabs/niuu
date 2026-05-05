@@ -81,6 +81,7 @@ class PersonaConsumesResponse(BaseModel):
     """Consumed event configuration."""
 
     events: list[PersonaConsumesEventResponse]
+    schema_def: dict[str, str] = Field(default_factory=dict)
 
 
 class PersonaFanInResponse(BaseModel):
@@ -143,6 +144,7 @@ class PersonaCreateRequest(BaseModel):
     produces_event_type: str = Field(default="")
     produces_schema: dict[str, str] = Field(default_factory=dict)
     consumes_events: list[PersonaConsumesEventRequest] = Field(default_factory=list)
+    consumes_schema: dict[str, str] = Field(default_factory=dict)
     fan_in_strategy: str | None = Field(default=None)
     fan_in_params: dict[str, Any] = Field(default_factory=dict)
     mimir_write_routing: str | None = Field(default=None)
@@ -169,6 +171,7 @@ class PersonaCreateRequest(BaseModel):
             "produces_event_type": self.produces_event_type,
             "produces_schema": dict(self.produces_schema),
             "consumes_events": [event.model_dump() for event in self.consumes_events],
+            "consumes_schema": dict(self.consumes_schema),
             "fan_in_strategy": self.fan_in_strategy,
             "fan_in_params": dict(self.fan_in_params),
             "mimir_write_routing": self.mimir_write_routing,
@@ -480,7 +483,8 @@ def _to_detail(view: PersonaView) -> PersonaDetailResponse:
                     trust=(float(event["trust"]) if event.get("trust") is not None else None),
                 )
                 for event in payload["consumes_events"]
-            ]
+            ],
+            schema_def=dict(payload.get("consumes_schema") or {}),
         ),
         fan_in=fan_in,
         mimir_write_routing=(

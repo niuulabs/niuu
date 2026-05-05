@@ -70,6 +70,7 @@ function buildDraftPersona(name: string): PersonaCreateRequest {
     producesEventType: '',
     producesSchema: {},
     consumesEvents: [],
+    consumesSchema: {},
   };
 }
 

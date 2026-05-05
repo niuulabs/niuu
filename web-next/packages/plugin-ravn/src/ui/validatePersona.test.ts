@@ -28,6 +28,7 @@ function makeReq(overrides: Partial<PersonaCreateRequest> = {}): PersonaCreateRe
     producesEventType: 'code.changed',
     producesSchema: { file: 'string' },
     consumesEvents: [{ name: 'review.completed' }],
+    consumesSchema: {},
     ...overrides,
   };
 }

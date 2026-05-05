@@ -3,6 +3,9 @@
 import asyncio
 import json
 import logging
+import os
+import shutil
+from pathlib import Path
 
 from niuu.adapters.cli.runtime import (
     drain_process_stream as _drain_stream,
@@ -14,8 +17,15 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport
+from skuld.transports.mcp_config import build_codex_mcp_overrides
 
 logger = logging.getLogger("skuld.transport")
+
+_CODEX_ENV_VARS = ("CODEX_CLI_PATH", "SKULD_CODEX_CLI_PATH")
+_CODEX_BUNDLE_CANDIDATES = (
+    "/Applications/Codex.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/MacOS/Codex",
+)
 
 # ---------------------------------------------------------------------------
 # Tool name mapping — Codex -> normalized names (matching Claude's tool names)
@@ -39,6 +49,31 @@ def _map_codex_tool(codex_name: str) -> str:
     return _CODEX_TOOL_MAP.get(codex_name, codex_name)
 
 
+def resolve_codex_cli() -> str:
+    """Resolve the Codex CLI executable path.
+
+    Preference order:
+    1. explicit env override
+    2. PATH lookup
+    3. common macOS app-bundle locations
+    4. literal ``codex`` as a final fallback
+    """
+    for env_var in _CODEX_ENV_VARS:
+        configured = os.environ.get(env_var, "").strip()
+        if configured:
+            return configured
+
+    on_path = shutil.which("codex")
+    if on_path:
+        return on_path
+
+    for candidate in _CODEX_BUNDLE_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+
+    return "codex"
+
+
 class CodexSubprocessTransport(CLITransport):
     """Spawns the OpenAI Codex CLI as a subprocess per message.
 
@@ -56,10 +91,16 @@ class CodexSubprocessTransport(CLITransport):
     is emitted so the broker's result-handling path still fires.
     """
 
-    def __init__(self, workspace_dir: str, model: str = "o4-mini") -> None:
+    def __init__(
+        self,
+        workspace_dir: str,
+        model: str = "o4-mini",
+        mcp_servers: list[dict] | None = None,
+    ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
+        self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
         self._process: asyncio.subprocess.Process | None = None
         self._last_result: dict | None = None
         self._pending_text: list[str] = []
@@ -80,15 +121,19 @@ class CodexSubprocessTransport(CLITransport):
     async def send_message(self, content: str) -> None:
         self._last_result = None
         self._pending_text = []
+        codex_cli = resolve_codex_cli()
 
         cmd = [
-            "codex",
+            codex_cli,
+            "exec",
             "--model",
             self._model,
             "--full-auto",  # skip all human confirmations
-            "--quiet",  # minimal UI chrome, structured output
-            content,
+            "--json",
         ]
+        for key, value in self._mcp_overrides:
+            cmd.extend(["-c", f"{key}={value}"])
+        cmd.append(content)
 
         logger.info("Running Codex CLI (model: %s)", self._model)
         logger.debug("Codex CLI command: %s", " ".join(cmd))

@@ -880,6 +880,7 @@ function toDetail(summary: PersonaSummary, req?: PersonaCreateRequest): PersonaD
               { name: 'review.requested', injects: ['scope', 'owner'], trust: 0.9 },
             ]
           : summary.consumesEvents.map((name) => ({ name }))),
+      schemaDef: req?.consumesSchema ?? (isReviewer ? { diff: 'string', scope: 'string' } : {}),
     },
     fanIn: req?.fanInStrategy
       ? { strategy: req.fanInStrategy, params: req.fanInParams ?? {} }

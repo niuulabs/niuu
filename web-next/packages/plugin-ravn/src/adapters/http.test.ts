@@ -44,7 +44,7 @@ const rawDetail = {
   },
   llm: { primary_alias: 'claude-sonnet-4-6', thinking_enabled: true, max_tokens: 8192 },
   produces: { event_type: 'code.changed', schema_def: { file: 'string' } },
-  consumes: { events: [{ name: 'code.requested' }] },
+  consumes: { events: [{ name: 'code.requested' }], schema_def: { topic: 'string' } },
   fan_in: { strategy: 'merge', params: {} },
   yaml_source: '[built-in]',
   override_source: '[user:user-1]',
@@ -145,7 +145,7 @@ describe('getPersona', () => {
       },
       llm: { primaryAlias: 'claude-sonnet-4-6', thinkingEnabled: true, maxTokens: 8192 },
       produces: { eventType: 'code.changed', schemaDef: { file: 'string' } },
-      consumes: { events: [{ name: 'code.requested' }] },
+      consumes: { events: [{ name: 'code.requested' }], schemaDef: { topic: 'string' } },
       fanIn: { strategy: 'merge', params: {} },
       yamlSource: '[built-in]',
       overrideSource: '[user:user-1]',
@@ -197,6 +197,7 @@ describe('createPersona', () => {
     producesEventType: '',
     producesSchema: {},
     consumesEvents: [],
+    consumesSchema: {},
   };
 
   it('calls POST /personas', async () => {
@@ -228,6 +229,9 @@ describe('createPersona', () => {
       llm_primary_alias: 'claude-sonnet-4-6',
       llm_thinking_enabled: false,
       llm_max_tokens: 8192,
+      produces_schema: {},
+      consumes_events: [],
+      consumes_schema: {},
     });
   });
 
@@ -269,6 +273,7 @@ describe('updatePersona', () => {
     producesEventType: '',
     producesSchema: {},
     consumesEvents: [],
+    consumesSchema: {},
   };
 
   it('calls PUT /personas/:name', async () => {
