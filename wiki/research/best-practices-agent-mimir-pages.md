@@ -12,7 +12,45 @@ source_ids: [src_4f708cf8a2eee67a]
 
 ## Compiled Truth
 
-### Page Front Matter Template
+### Page Template
+
+Copy this skeleton when creating a new research page. Fill in every required field; delete optional sections if unused.
+
+````markdown
+---
+type: research
+confidence: low | medium | high
+produced_by_thread: true
+related_entities: []          # optional — list of related page slugs
+source_ids: []                # optional — identifiers for sources consulted
+---
+
+# <Title>
+
+> **TL;DR** — One sentence summary for fast skimming.
+
+> **See also:** [<Related page>](related-slug.md) — <what distinguishes this one>. *(Delete if no overlap.)*
+
+## Compiled Truth
+
+<Main synthesised content. Use bullets and tables; fall back to prose only when nuance requires it.>
+
+## Timeline
+
+*(Delete this section unless dated evidence is materially useful.)*
+
+- YYYY-MM-DD: <Observation or event.> [Source: <name, date>]
+
+## Sources
+
+*(Add only when four or more sources are used.)*
+
+- <Source name> — <one-line description> (<retrieved YYYY-MM-DD>)
+
+<!-- sources: <source_ids comma-separated> -->
+````
+
+### Front Matter Fields
 
 Every agent-written Mímir research page must begin with YAML front matter containing these fields:
 
@@ -76,6 +114,7 @@ Run this checklist before committing any agent-written page:
 
 ## Timeline
 
+- 2026-05-05: Added concrete copy-paste page template skeleton to make guidance immediately actionable for new agents. (NIU-776, 2026-05-05)
 - 2026-05-03: Initial guidance authored from NIU-776 task description and Mímir system prompt conventions.
 - 2026-05-04: Source synthesised and consolidated into canonical page; prior duplicates replaced with redirect notices.
 
