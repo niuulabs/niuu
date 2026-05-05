@@ -102,7 +102,7 @@
     "@codingame/monaco-vscode-localization-service-override": "^28.4.1",
     "@codingame/monaco-vscode-log-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-log-service-override": "^28.4.1",
-    "@codingame/monaco-vscode-lua-default-extension": "^28.4.1",
+    "@codingame/monaco-vscode-lua-default-extension": "^31.0.0",
     "@codingame/monaco-vscode-make-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-markdown-basics-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-markers-service-override": "^28.4.1",
