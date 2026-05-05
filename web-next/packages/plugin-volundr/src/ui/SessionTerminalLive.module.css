@@ -1,0 +1,20 @@
+.terminalArea {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.terminalContainer {
+  padding: 0.5rem;
+  height: 100%;
+  display: none;
+}
+
+.terminalContainer[data-visible='true'] {
+  display: block;
+}
+
+.terminalContainer :global(.xterm) {
+  height: 100%;
+}

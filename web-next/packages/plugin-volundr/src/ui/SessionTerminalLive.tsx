@@ -5,6 +5,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import styles from './SessionTerminalLive.module.css';
 import { useWebSocket } from './hooks/useWebSocket';
 
 const FONT_LOAD_TIMEOUT_MS = 2_000;
@@ -278,7 +279,6 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
       term.loadAddon(fitAddon);
       term.loadAddon(webLinksAddon);
       term.open(container);
-      container.querySelector<HTMLElement>('.xterm')?.style.setProperty('height', '100%');
 
       try {
         fitAddon.fit();
@@ -524,7 +524,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
           {connected ? 'connected' : 'connecting…'}
         </div>
       </div>
-      <div className="niuu-relative niuu-min-h-0 niuu-flex-1 niuu-overflow-hidden">
+      <div className={styles.terminalArea}>
         {tabs.map((tab) => (
           <div
             key={tab.id}
@@ -532,10 +532,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
             aria-hidden={tab.id !== activeTabId}
             data-terminal-id={tab.id}
             data-visible={tab.id === activeTabId}
-            className={cn(
-              'niuu-absolute niuu-inset-0 niuu-h-full niuu-w-full niuu-p-2',
-              tab.id === activeTabId ? 'niuu-block' : 'niuu-hidden',
-            )}
+            className={styles.terminalContainer}
             ref={(element) => {
               if (element) {
                 mountTerminal(tab.id, element);
