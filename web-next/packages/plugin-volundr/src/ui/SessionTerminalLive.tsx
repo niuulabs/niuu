@@ -227,7 +227,8 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
   }, [httpBase]);
 
   const mountTerminal = useCallback(
-    (tabId: string, container: HTMLDivElement | null) => {
+    (tabId: string) => {
+      const container = containerRefs.current.get(tabId);
       if (!container || !fontReady) {
         return;
       }
@@ -235,8 +236,6 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
       if (instanceRefs.current.has(tabId)) {
         return;
       }
-
-      containerRefs.current.set(tabId, container);
 
       const term = new XTerm({
         cursorBlink: true,
@@ -290,6 +289,16 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
     },
     [fontReady, readOnly],
   );
+
+  useEffect(() => {
+    if (!fontReady) {
+      return;
+    }
+
+    for (const tab of tabs) {
+      mountTerminal(tab.id);
+    }
+  }, [fontReady, tabs, mountTerminal]);
 
   useEffect(() => {
     const instances = instanceRefs.current;
@@ -536,7 +545,10 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
             style={{ display: tab.id === activeTabId ? 'block' : 'none' }}
             ref={(element) => {
               if (element) {
-                mountTerminal(tab.id, element);
+                containerRefs.current.set(tab.id, element);
+                mountTerminal(tab.id);
+              } else {
+                containerRefs.current.delete(tab.id);
               }
             }}
           />
