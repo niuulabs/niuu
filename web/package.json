@@ -151,7 +151,7 @@
     "@codingame/monaco-vscode-user-data-sync-service-override": "^28.4.1",
     "@codingame/monaco-vscode-view-banner-service-override": "^28.4.1",
     "@codingame/monaco-vscode-view-status-bar-service-override": "^28.4.1",
-    "@codingame/monaco-vscode-view-title-bar-service-override": "^28.4.1",
+    "@codingame/monaco-vscode-view-title-bar-service-override": "^31.0.0",
     "@codingame/monaco-vscode-views-service-override": "^28.4.1",
     "@codingame/monaco-vscode-welcome-service-override": "^30.0.0",
     "@codingame/monaco-vscode-workbench-service-override": "^28.4.1",
