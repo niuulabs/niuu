@@ -123,7 +123,7 @@
     "@codingame/monaco-vscode-relauncher-service-override": "^28.4.1",
     "@codingame/monaco-vscode-remote-agent-service-override": "^28.4.1",
     "@codingame/monaco-vscode-ruby-default-extension": "^28.4.1",
-    "@codingame/monaco-vscode-rust-default-extension": "^28.4.1",
+    "@codingame/monaco-vscode-rust-default-extension": "^31.0.0",
     "@codingame/monaco-vscode-scm-service-override": "^28.4.1",
     "@codingame/monaco-vscode-scss-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-search-result-default-extension": "^28.4.1",
