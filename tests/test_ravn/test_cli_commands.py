@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from typer.testing import CliRunner
 
-from ravn.cli.commands import _chat, _print_usage, _run_turn, app, main
+from ravn.adapters.personas.loader import PersonaConfig
+from ravn.cli.commands import (
+    _chat,
+    _print_usage,
+    _run_daemon,
+    _run_turn,
+    _workflow_runtime_for_persona,
+    app,
+    main,
+)
 from ravn.config import Settings
 from ravn.domain.models import (
     StreamEvent,
@@ -266,3 +276,154 @@ class TestMainEntryPoint:
         with patch("ravn.cli.commands.app") as mock_app:
             main()
             mock_app.assert_called_once()
+
+
+class TestWorkflowRuntimeForPersona:
+    def test_returns_incoming_event_types_and_join_mode(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "workflow_id": "wf-1",
+                    "name": "Code test",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "review-stage",
+                                "kind": "stage",
+                                "label": "Review",
+                                "personaIds": ["reviewer"],
+                                "joinMode": "all",
+                            },
+                            {
+                                "id": "verify-stage",
+                                "kind": "stage",
+                                "label": "Verify",
+                                "personaIds": ["verifier"],
+                                "joinMode": "all",
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "id": "e1",
+                                "source": "review-stage",
+                                "target": "verify-stage",
+                                "label": "review.completed -> review.completed",
+                            },
+                            {
+                                "id": "e2",
+                                "source": "security-stage",
+                                "target": "verify-stage",
+                                "label": "security.completed -> security.completed",
+                            },
+                        ],
+                    },
+                }
+            }
+        )
+
+        runtime = _workflow_runtime_for_persona(settings, "verifier")
+
+        assert runtime is not None
+        assert runtime["event_types"] == ["review.completed", "security.completed"]
+        assert runtime["fan_in_strategy"] == "all_must_pass"
+
+    def test_returns_none_when_workflow_graph_has_no_matching_persona(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "workflow_id": "wf-1",
+                    "name": "Code test",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "review-stage",
+                                "kind": "stage",
+                                "label": "Review",
+                                "personaIds": ["reviewer"],
+                            },
+                        ],
+                        "edges": [],
+                    },
+                }
+            }
+        )
+
+        assert _workflow_runtime_for_persona(settings, "verifier") is None
+
+
+class TestDaemonAgentFactory:
+    async def test_run_daemon_passes_workspace_dir_to_event_driven_executor(self) -> None:
+        settings = Settings()
+        settings.initiative.enabled = True
+        settings.gateway.channels.http.enabled = False
+        settings.gateway.channels.telegram.enabled = False
+        settings.gateway.channels.discord.enabled = False
+        settings.gateway.channels.slack.enabled = False
+        settings.gateway.channels.matrix.enabled = False
+        settings.gateway.channels.whatsapp.enabled = False
+        settings.sleipnir.enabled = False
+        settings.mimir.source_trigger.enabled = False
+        settings.mimir.staleness_trigger.enabled = False
+        settings.thread.enabled = False
+        settings.cascade.enabled = False
+        settings.mcp_servers = [
+            {
+                "name": "mimir-local",
+                "transport": "stdio",
+                "command": "python3",
+                "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir/local"],
+            }
+        ]
+
+        recorded: dict[str, object] = {}
+
+        class _FakeExecutor:
+            def build(self, **kwargs):  # noqa: ANN003
+                recorded.update(kwargs)
+                return MagicMock()
+
+        class _FakeDriveLoop:
+            def __init__(self, *, agent_factory, **kwargs):  # noqa: ANN003
+                self._triggers: list[object] = []
+                agent_factory(MagicMock(), task_id="task-1", triggered_by="mesh:outcome:test")
+
+            async def run(self) -> None:
+                return None
+
+        persona = PersonaConfig(name="claude-mimir-researcher")
+
+        with (
+            patch("ravn.cli.commands._resolve_workspace", return_value=Path("/tmp/workspace")),
+            patch("ravn.cli.commands._build_llm", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_memory", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_compressor", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_prompt_builder", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_hooks", return_value=([], [])),
+            patch("ravn.cli.commands._start_mcp_shared", new=AsyncMock(return_value=(None, []))),
+            patch("ravn.cli.commands._build_mimir", return_value=None),
+            patch("ravn.cli.commands._build_permission", return_value=MagicMock()),
+            patch("ravn.cli.commands._build_tools", return_value=[]),
+            patch(
+                "ravn.cli.commands._get_tool_group",
+                return_value=MagicMock(include_mcp=False, include_groups=[]),
+            ),
+            patch("ravn.cli.commands._apply_trust_filter", side_effect=lambda tools, *_: tools),
+            patch("ravn.cli.commands._build_executor", return_value=_FakeExecutor()),
+            patch("ravn.cli.commands._wire_triggers", return_value=[]),
+            patch("ravn.cli.commands._wire_cron", return_value=[]),
+            patch("ravn.cli.commands._shutdown_mcp", new=AsyncMock()),
+            patch("ravn.drive_loop.DriveLoop", _FakeDriveLoop),
+        ):
+            await _run_daemon(settings, persona_config=persona)
+
+        assert recorded["workspace_dir"] == "/tmp/workspace"
+        assert recorded["mcp_servers"] == [
+            {
+                "name": "mimir-local",
+                "type": "stdio",
+                "command": "python3",
+                "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir/local"],
+                "env": {},
+                "url": "",
+            }
+        ]

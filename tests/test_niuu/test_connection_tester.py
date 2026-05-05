@@ -12,7 +12,6 @@ import niuu.domain.services.connection_tester as _ct
 # test_code_forge
 # ---------------------------------------------------------------------------
 
-
 @pytest.mark.asyncio
 @respx.mock
 async def test_code_forge_success():
@@ -40,7 +39,9 @@ async def test_code_forge_uses_user_id_fallback():
 @pytest.mark.asyncio
 @respx.mock
 async def test_code_forge_uses_authenticated_fallback():
-    respx.get("http://my-server/api/v1/volundr/me").mock(return_value=httpx.Response(200, json={}))
+    respx.get("http://my-server/api/v1/volundr/me").mock(
+        return_value=httpx.Response(200, json={})
+    )
     result = await _ct.test_code_forge(url="http://my-server", token="tok")
     assert result.success is True
     assert result.user == "authenticated"

@@ -72,6 +72,15 @@ class TUIPageSpec:
     widget_class: type[Widget]
 
 
+@dataclass(frozen=True)
+class APIRouteDomain:
+    """Declarative route-domain metadata for host mounting."""
+
+    name: str
+    prefixes: tuple[str, ...]
+    description: str = ""
+
+
 class ServicePlugin(ABC):
     """Base class for niuu CLI plugins.
 
@@ -118,6 +127,10 @@ class ServicePlugin(ABC):
         Return None if this plugin does not expose HTTP endpoints.
         """
         return None
+
+    def api_route_domains(self) -> Sequence[APIRouteDomain]:
+        """Return declarative route-domain definitions for the API app."""
+        return []
 
     def create_api_client(self) -> Any:
         """Create an async API client for this service, or None."""

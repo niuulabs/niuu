@@ -271,6 +271,18 @@ class SkuldChannel(ChannelPort):
             case RavnEventType.ERROR:
                 data = payload["message"]
                 metadata = {}
+            case RavnEventType.TASK_STARTED:
+                data = payload.get("title", "")
+                metadata = {
+                    "task_id": payload.get("task_id", ""),
+                    "title": payload.get("title", ""),
+                }
+            case RavnEventType.TASK_COMPLETE:
+                data = payload
+                metadata = {
+                    "task_id": event.task_id or "",
+                    "success": payload.get("success", False),
+                }
             case RavnEventType.OUTCOME:
                 # Mesh outcome event — RoomBridge translates to room_outcome
                 data = payload

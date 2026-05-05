@@ -1,0 +1,452 @@
+/* ── Mímir KPI strip — override @niuulabs/ui KpiCard to match web2 ────────── */
+/* Web2 uses gap-border approach: strip bg = border-subtle, cells bg = bg-secondary,
+   gap: 1px creates the divider lines. No rounded card borders. */
+
+.mm-page-shell .niuu-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 1px;
+  background: var(--color-border-subtle);
+}
+
+.mm-page-shell .niuu-kpi-card {
+  border: none;
+  border-radius: 0;
+  background: var(--color-bg-secondary);
+  padding: var(--space-3) var(--space-4);
+  min-width: auto;
+}
+
+/* Lint KPI uses amber for warning state — web2 uses subdued amber, not red */
+.mm-kpi--warn .niuu-kpi-card__value {
+  color: var(--brand-400);
+}
+
+/* ── Shared Mímir view tokens ─────────────────────────────────────────────── */
+
+/* ── Search highlight mark — color-mix() not expressible in Tailwind ──────── */
+.mm-highlight {
+  background: color-mix(in srgb, var(--brand-400) 25%, transparent);
+  color: var(--brand-400);
+  border-radius: 2px;
+  padding: 0 1px;
+  font-style: normal;
+}
+
+/* ── MountChip ────────────────────────────────────────────────────────────── */
+.mm-mount-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: color-mix(in srgb, var(--color-accent-cyan) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent-cyan) 20%, transparent);
+  color: var(--color-accent-cyan);
+  cursor: default;
+  text-decoration: none;
+}
+.mm-mount-chip[type='button'] {
+  cursor: pointer;
+}
+.mm-mount-chip:hover[type='button'] {
+  background: color-mix(in srgb, var(--color-accent-cyan) 20%, transparent);
+}
+.mm-mount-chip--local {
+  color: var(--color-accent-cyan);
+}
+.mm-mount-chip--shared {
+  color: var(--brand-300, var(--color-accent-cyan));
+  border-color: color-mix(in srgb, var(--brand-300, var(--color-accent-cyan)) 20%, transparent);
+  background: color-mix(in srgb, var(--brand-300, var(--color-accent-cyan)) 12%, transparent);
+}
+.mm-mount-chip--domain {
+  color: var(--brand-400);
+  border-color: color-mix(in srgb, var(--brand-400) 20%, transparent);
+  background: color-mix(in srgb, var(--brand-400) 12%, transparent);
+}
+.mm-mount-chip__name {
+  color: inherit;
+}
+.mm-mount-chip__role {
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
+/* ── WikilinkPill ─────────────────────────────────────────────────────────── */
+.mm-wikilink {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  border: none;
+  cursor: pointer;
+}
+.mm-wikilink--resolved {
+  color: var(--color-accent-cyan);
+  background: color-mix(in srgb, var(--color-accent-cyan) 10%, transparent);
+}
+.mm-wikilink--resolved:hover {
+  background: color-mix(in srgb, var(--color-accent-cyan) 20%, transparent);
+}
+.mm-wikilink--broken {
+  color: var(--color-critical-fg);
+  background: color-mix(in srgb, var(--color-critical-fg) 10%, transparent);
+  cursor: default;
+  text-decoration: line-through;
+}
+
+/* ── PageTypeGlyph ────────────────────────────────────────────────────────── */
+.mm-page-type-glyph {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--mm-glyph-size, 16px);
+}
+.mm-page-type-glyph__label {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.mm-page-type-glyph[data-type='entity'] {
+  color: var(--color-accent-cyan);
+}
+.mm-page-type-glyph[data-type='topic'] {
+  color: var(--brand-500);
+}
+.mm-page-type-glyph[data-type='directive'] {
+  color: var(--brand-400);
+}
+.mm-page-type-glyph[data-type='preference'] {
+  color: var(--brand-200);
+}
+.mm-page-type-glyph[data-type='decision'] {
+  color: var(--brand-600);
+}
+
+/* ── Tab bar ──────────────────────────────────────────────────────────────── */
+.mm-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding: 0 var(--space-6);
+  background: var(--color-bg-secondary);
+}
+.mm-tab {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    border-color 0.12s;
+}
+.mm-tab:hover {
+  color: var(--color-text-primary);
+}
+.mm-tab--active {
+  color: var(--color-text-primary);
+  border-bottom-color: var(--color-brand, var(--color-accent-cyan));
+}
+
+/* ── Overview ─────────────────────────────────────────────────────────────── */
+/* Overview layout is now handled by Tailwind utilities in OverviewView.tsx */
+
+/* ── Feed ─────────────────────────────────────────────────────────────────── */
+/* Migrated to Tailwind utilities in OverviewView.tsx */
+
+/* ── Pages (structural layout migrated to Tailwind in PagesView.tsx / TreeNode.tsx) ── */
+/* Zone-level layout (mm-zone, mm-zone-head, mm-zone-body, mm-zone-title, mm-zone-saving-row,
+   mm-zone-edit-*, mm-timeline-*, mm-rel-note) migrated to Tailwind in ZoneBlock.tsx /
+   ZoneRenderers.tsx */
+
+/* Zone head editing tint — uses color-mix which is not expressible as a Tailwind token */
+.mm-zone-head--editing {
+  background: color-mix(in srgb, var(--brand-400) 8%, var(--color-bg-secondary));
+}
+
+/* conf-dot — kept for 6 px pixel-perfect sizing not in the token spacing scale */
+.mm-conf-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.mm-conf-dot--high {
+  background: var(--brand-200);
+}
+.mm-conf-dot--medium {
+  background: var(--brand-400);
+}
+.mm-conf-dot--low {
+  background: var(--color-critical-fg);
+}
+.mm-btn {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+.mm-btn:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+.mm-btn--primary {
+  background: var(--color-accent-cyan);
+  border-color: var(--color-accent-cyan);
+  color: var(--color-bg-primary);
+}
+.mm-btn--primary:hover {
+  opacity: 0.85;
+}
+.mm-btn--danger {
+  background: color-mix(in srgb, var(--color-critical-fg) 15%, transparent);
+  border-color: color-mix(in srgb, var(--color-critical-fg) 30%, transparent);
+  color: var(--color-critical-fg);
+}
+.mm-chip-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+.mm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-muted);
+  background: var(--color-bg-secondary);
+  white-space: nowrap;
+}
+.mm-chip-k {
+  color: var(--color-text-faint);
+}
+.mm-chip.accent {
+  color: var(--brand-300);
+  border-color: color-mix(in srgb, var(--brand-300) 30%, transparent);
+  background: color-mix(in srgb, var(--brand-300) 12%, var(--color-bg-secondary));
+}
+.mm-chip.ok {
+  color: var(--brand-200);
+  border-color: color-mix(in srgb, var(--brand-200) 35%, transparent);
+  background: color-mix(in srgb, var(--brand-200) 15%, var(--color-bg-secondary));
+}
+.mm-chip.warn {
+  color: var(--brand-400);
+  border-color: color-mix(in srgb, var(--brand-400) 35%, transparent);
+  background: color-mix(in srgb, var(--brand-400) 15%, var(--color-bg-secondary));
+}
+.mm-chip.err {
+  color: var(--color-critical-fg);
+  border-color: color-mix(in srgb, var(--color-critical-fg) 30%, transparent);
+  background: color-mix(in srgb, var(--color-critical-fg) 10%, var(--color-bg-secondary));
+}
+/* ── Zones (layout migrated to Tailwind — see ZoneBlock.tsx / ZoneRenderers.tsx) ──── */
+.mm-save-banner {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  background: color-mix(in srgb, var(--brand-200) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand-200) 25%, transparent);
+  color: var(--brand-200);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.mm-error-banner {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  background: color-mix(in srgb, var(--color-critical-fg) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-critical-fg) 25%, transparent);
+  color: var(--color-critical-fg);
+}
+/* ── Timeline (migrated to Tailwind — see ZoneRenderers.tsx) ──────────────── */
+/* ── Right panel (page meta) ──────────────────────────────────────────────── */
+.mm-rightpanel {
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  background: var(--color-bg-secondary);
+  border-left: 1px solid var(--color-border-subtle);
+}
+.mm-meta-head {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mm-meta-head h4 {
+  margin: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+.mm-meta-block {
+}
+.mm-meta-block h5 {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-muted);
+  font-weight: 500;
+  margin: 0 0 var(--space-2);
+}
+.mm-meta-row {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.mm-meta-k {
+  color: var(--color-text-muted);
+}
+.mm-meta-v {
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mm-backlink {
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  background: none;
+  border: none;
+  text-align: left;
+  width: 100%;
+  font-family: var(--font-sans);
+}
+.mm-backlink:hover {
+  color: var(--color-text-primary);
+}
+.mm-source-pill {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 3px 0;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
+.mm-source-pill__id {
+  color: var(--color-text-muted);
+}
+.mm-source-pill__title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+}
+/* ── Origin badges — color-mix() cannot be expressed as Tailwind utilities ── */
+.mm-origin-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+.mm-origin-badge--web {
+  color: var(--color-accent-cyan);
+}
+.mm-origin-badge--rss {
+  color: var(--brand-400);
+}
+.mm-origin-badge--arxiv {
+  color: var(--brand-500);
+}
+.mm-origin-badge--file {
+  color: var(--brand-200);
+}
+.mm-origin-badge--mail {
+  color: var(--brand-400);
+}
+.mm-origin-badge--chat {
+  color: var(--brand-600);
+}
+/* Active origin chip background — color-mix() not expressible in Tailwind */
+.mm-origin-chip--active-bg {
+  background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
+}
+
+/* ── Overview 2-column layout and ravn cards ──────────────────────────────── */
+/* These are now handled by Tailwind utilities in OverviewView.tsx */
+
+/* ── MimirPage shell ──────────────────────────────────────────────────────── */
+.mm-page-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.mm-tabpanel {
+  flex: 1;
+  overflow: auto;
+}
+
+/* ── Status row and mount card categories ─────────────────────────────────── */
+/* Migrated to Tailwind utilities in OverviewView.tsx */
+
+/* ── Activity feed text ───────────────────────────────────────────────────── */
+/* Migrated to Tailwind utilities in OverviewView.tsx */
+
+/* ── Tree indent via CSS variable ─────────────────────────────────────────── */
+:root {
+  --mm-tree-indent-step: 12px;
+}
+
+/* ── Zone / timeline / relationship note helpers (migrated to Tailwind) ───── */
+
+/* ── Meta panel helpers ───────────────────────────────────────────────────── */
+.mm-mount-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.mm-btn--block {
+  display: block;
+  margin-bottom: var(--space-1);
+  width: 100%;
+  text-align: left;
+}
+
+/* ── Page empty states (migrated to Tailwind in PagesView.tsx) ────────────── */
+
+/* ── Source path chip — color-mix() background not expressible in Tailwind ── */
+.mm-source-path-chip {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-accent-cyan);
+  background: color-mix(in srgb, var(--color-accent-cyan) 10%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--space-1);
+}

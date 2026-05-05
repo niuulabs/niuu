@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tyr.api.flock_config import create_flock_config_router
+from tyr.api.settings import create_settings_router
 from tyr.config import AuthConfig, FlockConfig, PersonaOverride, Settings
 
 
@@ -18,6 +19,7 @@ def _make_app(flock: FlockConfig | None = None) -> FastAPI:
 
     app = FastAPI()
     app.state.settings = settings
+    app.include_router(create_settings_router())
     app.include_router(create_flock_config_router())
     return app
 
@@ -124,3 +126,14 @@ class TestPatchFlockConfig:
         assert resp.status_code == 200
         data = resp.json()
         assert "flock_enabled" in data
+
+    def test_runtime_flock_config_does_not_change_operator_settings(
+        self,
+        client: TestClient,
+    ) -> None:
+        resp = client.patch("/api/v1/tyr/flock/config", json={"flock_enabled": True})
+        settings_resp = client.get("/api/v1/tyr/settings/flock")
+
+        assert resp.status_code == 200
+        assert settings_resp.status_code == 200
+        assert settings_resp.json()["flock_name"] == "default"

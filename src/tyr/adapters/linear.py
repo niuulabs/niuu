@@ -723,6 +723,32 @@ class LinearTrackerAdapter(TrackerPort):
                 logger.exception("Failed to sync status to Linear for %s", tracker_id)
         return await self.get_raid(tracker_id)
 
+    async def _collect_raids(self, rows: list[asyncpg.Record]) -> list[Raid]:
+        raids: list[Raid] = []
+        stale_ids: list[str] = []
+        for row in rows:
+            try:
+                raid = await self.get_raid(row["tracker_id"])
+                raids.append(raid)
+            except GraphQLError as exc:
+                if "not found" in str(exc).lower() or "Could not find" in str(exc):
+                    logger.warning(
+                        "Raid %s references a deleted Linear issue — marking for cleanup",
+                        row["tracker_id"],
+                    )
+                    stale_ids.append(row["tracker_id"])
+                else:
+                    logger.exception("Failed to fetch raid %s", row["tracker_id"])
+            except Exception:
+                logger.exception("Failed to fetch raid %s", row["tracker_id"])
+        if stale_ids and self._pool is not None:
+            await self._pool.execute(
+                "DELETE FROM raid_progress WHERE tracker_id = ANY($1::text[])",
+                stale_ids,
+            )
+            logger.info("Cleaned up %d stale raid_progress entries", len(stale_ids))
+        return raids
+
     async def get_raid_progress_for_saga(self, saga_tracker_id: str) -> list[Raid]:
         if self._pool is None:
             return []
@@ -730,14 +756,7 @@ class LinearTrackerAdapter(TrackerPort):
             "SELECT tracker_id FROM raid_progress WHERE saga_tracker_id = $1",
             saga_tracker_id,
         )
-        raids: list[Raid] = []
-        for row in rows:
-            try:
-                raid = await self.get_raid(row["tracker_id"])
-                raids.append(raid)
-            except Exception:
-                logger.exception("Failed to fetch raid %s", row["tracker_id"])
-        return raids
+        return await self._collect_raids(rows)
 
     async def get_raid_by_session(self, session_id: str) -> Raid | None:
         if self._pool is None:
@@ -757,14 +776,7 @@ class LinearTrackerAdapter(TrackerPort):
             "SELECT tracker_id FROM raid_progress WHERE status = $1 ORDER BY updated_at",
             status.value,
         )
-        raids: list[Raid] = []
-        for row in rows:
-            try:
-                raid = await self.get_raid(row["tracker_id"])
-                raids.append(raid)
-            except Exception:
-                logger.exception("Failed to fetch raid %s", row["tracker_id"])
-        return raids
+        return await self._collect_raids(rows)
 
     async def get_raid_by_id(self, raid_id: UUID) -> Raid | None:
         if self._pool is None:

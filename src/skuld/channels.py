@@ -6,9 +6,14 @@ broadcasts events to all registered channels via send_event().
 """
 
 import asyncio
+import html
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
+from typing import Any, Literal
+
+from niuu.domain.outcome import parse_outcome_block
 
 logger = logging.getLogger("skuld.channels")
 
@@ -17,6 +22,9 @@ TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
 # Buffer flush interval for streaming text (seconds)
 TELEGRAM_BUFFER_FLUSH_INTERVAL = 1.5
+TELEGRAM_TOPIC_NAME_MAX_LENGTH = 128
+
+TelegramTopicMode = Literal["shared_chat", "fixed_topic", "topic_per_session"]
 
 try:
     from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -121,6 +129,31 @@ class WebSocketChannel(MessageChannel):
 # ---------------------------------------------------------------------------
 
 
+def _format_outcome_lines(
+    *,
+    name: str,
+    outcome_type: str,
+    verdict: str,
+    summary: str,
+    fields: object,
+) -> str:
+    lines = [f"[{name}] outcome: {outcome_type or 'outcome'}"]
+    if verdict:
+        lines.append(f"verdict: {verdict}")
+    if summary:
+        lines.append(summary)
+    if isinstance(fields, dict):
+        for key, value in fields.items():
+            if key in {"summary", "verdict"}:
+                continue
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, default=str)
+            lines.append(f"{key}: {value}")
+    elif fields:
+        lines.append(str(fields))
+    return "\n".join(line for line in lines if line)
+
+
 def format_telegram_event(event: dict) -> str | None:
     """Format a CLI event as a Telegram-friendly message.
 
@@ -128,10 +161,10 @@ def format_telegram_event(event: dict) -> str | None:
 
     Formatting rules:
     - Text responses: plain text (Telegram MarkdownV2 is fragile)
-    - Code blocks: wrapped in triple backticks
-    - Tool use: prefixed with wrench indicator
-    - Errors: prefixed with warning indicator
-    - Thinking blocks: skipped
+    - Tool use: prefixed with a compact tool label
+    - Errors: prefixed with an error label
+    - Public room events: fanned out so Telegram can mirror user-visible chat
+    - Internal room events/activity/detail frames: skipped
     - content_block_delta: returns the delta text fragment
     """
     event_type = event.get("type", "")
@@ -142,6 +175,18 @@ def format_telegram_event(event: dict) -> str | None:
         if not text:
             return None
         return text
+
+    if event_type == "user_confirmed":
+        metadata = event.get("metadata", {})
+        source = event.get("source")
+        if isinstance(source, str) and source and source != "browser":
+            return None
+        if isinstance(metadata, dict) and metadata.get("source_platform"):
+            return None
+        content = event.get("content", "")
+        if not content:
+            return None
+        return f"[prompt] {content}"
 
     if event_type == "assistant":
         content = event.get("content", event.get("message", {}).get("content", []))
@@ -178,6 +223,82 @@ def format_telegram_event(event: dict) -> str | None:
         if not parts:
             return None
         return "\n".join(parts)
+
+    if event_type == "room_message":
+        if event.get("visibility") == "internal":
+            return None
+        participant = event.get("participant", {}) or {}
+        name = (
+            participant.get("display_name")
+            or participant.get("persona")
+            or event.get("participantId")
+            or "agent"
+        )
+        content = event.get("content", "")
+        if not content:
+            return None
+        if isinstance(content, str):
+            parsed_outcome = parse_outcome_block(content)
+            if parsed_outcome is not None and parsed_outcome.fields:
+                return _format_outcome_lines(
+                    name=name,
+                    outcome_type="outcome",
+                    verdict=str(parsed_outcome.fields.get("verdict", "") or ""),
+                    summary=str(parsed_outcome.fields.get("summary", "") or ""),
+                    fields=parsed_outcome.fields,
+                )
+        prefix = "[error]" if event.get("error") else f"[{name}]"
+        return f"{prefix} {content}"
+
+    if event_type == "room_notification":
+        participant = event.get("participant", {}) or {}
+        name = (
+            participant.get("display_name")
+            or participant.get("persona")
+            or event.get("participantId")
+            or "agent"
+        )
+        summary = event.get("summary", "")
+        reason = event.get("reason", "")
+        recommendation = event.get("recommendation", "")
+        parts = [f"[{name}] {summary or 'needs attention'}"]
+        if reason:
+            parts.append(f"reason: {reason}")
+        if recommendation:
+            parts.append(f"next: {recommendation}")
+        return "\n".join(parts)
+
+    if event_type == "room_outcome":
+        participant = event.get("participant", {}) or {}
+        name = (
+            participant.get("display_name")
+            or participant.get("persona")
+            or event.get("participantId")
+            or "agent"
+        )
+        return _format_outcome_lines(
+            name=name,
+            outcome_type=event.get("eventType", "") or "outcome",
+            verdict=str(event.get("verdict", "") or ""),
+            summary=str(event.get("summary", "") or ""),
+            fields=event.get("fields", {}),
+        )
+
+    if event_type == "room_mesh_message":
+        participant = event.get("participant", {}) or {}
+        name = (
+            participant.get("display_name")
+            or participant.get("persona")
+            or event.get("participantId")
+            or "agent"
+        )
+        event_name = event.get("eventType", "") or "work"
+        preview = event.get("preview", "")
+        direction = event.get("direction", "") or "delegate"
+        lines = [f"[{name}] {direction}: {event_name}"]
+        if preview:
+            lines.append(preview)
+        return "\n".join(lines)
 
     if event_type == "error":
         error_content = event.get("content", event.get("error", "Unknown error"))
@@ -223,6 +344,179 @@ def split_message(text: str, max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> l
     return chunks
 
 
+def _parse_markdown_table_row(line: str) -> list[str] | None:
+    trimmed = line.strip()
+    if "|" not in trimmed:
+        return None
+    if trimmed.startswith("|"):
+        trimmed = trimmed[1:]
+    if trimmed.endswith("|"):
+        trimmed = trimmed[:-1]
+    cells = [cell.strip() for cell in trimmed.split("|")]
+    if len(cells) < 2 or any(cell == "" for cell in cells):
+        return None
+    return cells
+
+
+def _is_markdown_table_divider(line: str) -> bool:
+    cells = _parse_markdown_table_row(line)
+    if not cells:
+        return False
+    return all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+
+def _strip_markdown_inline(text: str) -> str:
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    return text
+
+
+def _render_inline_telegram_html(text: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+
+    while cursor < len(text):
+        if text.startswith("**", cursor):
+            end = text.find("**", cursor + 2)
+            if end != -1:
+                parts.append(f"<b>{_render_inline_telegram_html(text[cursor + 2:end])}</b>")
+                cursor = end + 2
+                continue
+
+        if text[cursor] == "`":
+            end = text.find("`", cursor + 1)
+            if end != -1:
+                code = html.escape(text[cursor + 1:end])
+                parts.append(f"<code>{code}</code>")
+                cursor = end + 1
+                continue
+
+        if text[cursor] == "[":
+            label_end = text.find("]", cursor + 1)
+            if label_end != -1 and label_end + 1 < len(text) and text[label_end + 1] == "(":
+                url_end = text.find(")", label_end + 2)
+                if url_end != -1:
+                    label = html.escape(text[cursor + 1:label_end])
+                    href = html.escape(text[label_end + 2:url_end], quote=True)
+                    parts.append(f'<a href="{href}">{label}</a>')
+                    cursor = url_end + 1
+                    continue
+
+        next_positions = [
+            pos
+            for pos in (
+                text.find("**", cursor),
+                text.find("`", cursor),
+                text.find("[", cursor),
+            )
+            if pos != -1
+        ]
+        next_token = min(next_positions) if next_positions else len(text)
+        if next_token == cursor:
+            parts.append(html.escape(text[cursor]))
+            cursor += 1
+            continue
+        parts.append(html.escape(text[cursor:next_token]))
+        cursor = next_token
+
+    return "".join(parts)
+
+
+def _render_telegram_table_block(lines: list[str]) -> str:
+    rows = [_parse_markdown_table_row(line) for line in lines]
+    parsed_rows = [row for row in rows if row]
+    if not parsed_rows:
+        return html.escape("\n".join(lines))
+
+    plain_rows = [[_strip_markdown_inline(cell) for cell in row] for row in parsed_rows]
+    column_count = max(len(row) for row in plain_rows)
+    widths = [0] * column_count
+    for row in plain_rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(cell))
+
+    rendered_rows: list[str] = []
+    for row_index, row in enumerate(plain_rows):
+        padded = [cell.ljust(widths[idx]) for idx, cell in enumerate(row)]
+        rendered_rows.append(" | ".join(padded))
+        if row_index == 0 and len(plain_rows) > 1:
+            rendered_rows.append("-+-".join("-" * width for width in widths[: len(row)]))
+
+    return f"<pre>{html.escape(chr(10).join(rendered_rows))}</pre>"
+
+
+def render_telegram_html(text: str) -> str:
+    lines = text.splitlines()
+    if not lines:
+        return ""
+
+    rendered: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+
+        header_cells = _parse_markdown_table_row(line)
+        divider_line = lines[index + 1] if index + 1 < len(lines) else None
+        if header_cells and divider_line and _is_markdown_table_divider(divider_line):
+            table_lines = [line]
+            row_index = index + 2
+            while row_index < len(lines):
+                row = lines[row_index]
+                parsed = _parse_markdown_table_row(row)
+                if not parsed or _is_markdown_table_divider(row):
+                    break
+                table_lines.append(row)
+                row_index += 1
+            rendered.append(_render_telegram_table_block(table_lines))
+            index = row_index
+            continue
+
+        heading_match = re.fullmatch(r"(#{1,6})\s+(.*)", line)
+        if heading_match:
+            rendered.append(f"<b>{_render_inline_telegram_html(heading_match.group(2))}</b>")
+            index += 1
+            continue
+
+        unordered_match = re.fullmatch(r"\s*[-*+]\s+(.*)", line)
+        if unordered_match:
+            rendered.append(f"• {_render_inline_telegram_html(unordered_match.group(1))}")
+            index += 1
+            continue
+
+        ordered_match = re.fullmatch(r"\s*(\d+)\.\s+(.*)", line)
+        if ordered_match:
+            rendered.append(
+                f"{ordered_match.group(1)}. {_render_inline_telegram_html(ordered_match.group(2))}"
+            )
+            index += 1
+            continue
+
+        if line.startswith("> "):
+            rendered.append(f"&gt; {_render_inline_telegram_html(line[2:])}")
+            index += 1
+            continue
+
+        rendered.append(_render_inline_telegram_html(line))
+        index += 1
+
+    return "\n".join(rendered)
+
+
+def telegram_parse_mode(event: dict) -> str | None:
+    event_type = event.get("type", "")
+    if event_type in {
+        "room_message",
+        "room_notification",
+        "room_outcome",
+        "room_mesh_message",
+        "user_confirmed",
+        "system",
+    }:
+        return "HTML"
+    return None
+
+
 class TelegramChannel(MessageChannel):
     """Message channel that sends CLI events to a Telegram chat.
 
@@ -242,6 +536,9 @@ class TelegramChannel(MessageChannel):
         chat_id: str,
         *,
         notify_only: bool = False,
+        topic_mode: TelegramTopicMode = "topic_per_session",
+        message_thread_id: int | None = None,
+        topic_name: str | None = None,
         on_message: object | None = None,
     ) -> None:
         if not HAS_TELEGRAM:
@@ -253,6 +550,10 @@ class TelegramChannel(MessageChannel):
         self._bot_token = bot_token
         self._chat_id = chat_id
         self._notify_only = notify_only
+        self._topic_mode = topic_mode
+        self._message_thread_id = message_thread_id
+        base_topic_name = (topic_name or "Volundr session").strip()
+        self._topic_name = base_topic_name[:TELEGRAM_TOPIC_NAME_MAX_LENGTH]
         self._on_message = on_message
         self._bot: object | None = None
         self._application: object | None = None
@@ -269,10 +570,17 @@ class TelegramChannel(MessageChannel):
         self._bot = Bot(token=self._bot_token)
         self._started = True
         logger.info(
-            "TelegramChannel started (chat_id=%s, notify_only=%s)",
+            (
+                "TelegramChannel started (chat_id=%s, notify_only=%s, "
+                "topic_mode=%s, message_thread_id=%s)"
+            ),
             self._chat_id,
             self._notify_only,
+            self._topic_mode,
+            self._message_thread_id,
         )
+
+        await self._ensure_topic_target()
 
         if not self._notify_only:
             self._application = Application.builder().token(self._bot_token).build()
@@ -301,6 +609,9 @@ class TelegramChannel(MessageChannel):
         text = format_telegram_event(event)
         if not text:
             return
+        parse_mode = telegram_parse_mode(event)
+        if parse_mode == "HTML":
+            text = render_telegram_html(text)
 
         event_type = event.get("type", "")
 
@@ -313,7 +624,7 @@ class TelegramChannel(MessageChannel):
 
         # Non-delta event: flush buffer first, then send
         await self._flush_buffer()
-        await self._send_text(text)
+        await self._send_text(text, parse_mode=parse_mode)
 
     async def _scheduled_flush(self) -> None:
         """Wait then flush the text buffer."""
@@ -335,7 +646,7 @@ class TelegramChannel(MessageChannel):
         if combined.strip():
             await self._send_text(combined)
 
-    async def _send_text(self, text: str) -> None:
+    async def _send_text(self, text: str, *, parse_mode: str | None = None) -> None:
         """Send text to the Telegram chat, splitting if too long."""
         if not self._bot:
             return
@@ -343,9 +654,16 @@ class TelegramChannel(MessageChannel):
         chunks = split_message(text)
         for chunk in chunks:
             try:
+                kwargs = {
+                    "chat_id": self._chat_id,
+                    "text": chunk,
+                }
+                if parse_mode:
+                    kwargs["parse_mode"] = parse_mode
+                if self._message_thread_id is not None:
+                    kwargs["message_thread_id"] = self._message_thread_id
                 await self._bot.send_message(
-                    chat_id=self._chat_id,
-                    text=chunk,
+                    **kwargs,
                 )
             except Exception:
                 logger.warning(
@@ -389,13 +707,74 @@ class TelegramChannel(MessageChannel):
             ]
         )
         try:
-            await self._bot.send_message(
-                chat_id=self._chat_id,
-                text=text,
-                reply_markup=keyboard,
-            )
+            kwargs = {
+                "chat_id": self._chat_id,
+                "text": text,
+                "reply_markup": keyboard,
+            }
+            if self._message_thread_id is not None:
+                kwargs["message_thread_id"] = self._message_thread_id
+            await self._bot.send_message(**kwargs)
         except Exception:
             logger.warning("Failed to send permission request to Telegram", exc_info=True)
+
+    async def _ensure_topic_target(self) -> None:
+        """Resolve the effective Telegram topic target for this session."""
+        if not self._bot:
+            return
+
+        if self._topic_mode == "shared_chat":
+            return
+
+        if self._topic_mode == "fixed_topic":
+            if self._message_thread_id is None:
+                logger.warning(
+                    "Telegram fixed_topic mode selected without message_thread_id; "
+                    "falling back to shared chat"
+                )
+                self._topic_mode = "shared_chat"
+            return
+
+        if self._topic_mode != "topic_per_session":
+            logger.warning(
+                "Unknown Telegram topic mode %r; falling back to shared chat",
+                self._topic_mode,
+            )
+            self._topic_mode = "shared_chat"
+            return
+
+        if self._message_thread_id is not None:
+            return
+
+        try:
+            topic = await self._bot.create_forum_topic(
+                chat_id=self._chat_id,
+                name=self._topic_name or "Volundr session",
+            )
+            thread_id = getattr(topic, "message_thread_id", None)
+            if thread_id is None:
+                logger.warning(
+                    "Telegram topic creation returned no message_thread_id; "
+                    "falling back to shared chat"
+                )
+                self._topic_mode = "shared_chat"
+                return
+            self._message_thread_id = int(thread_id)
+            logger.info(
+                (
+                    "Telegram topic created for session "
+                    "(chat_id=%s, message_thread_id=%s, topic_name=%s)"
+                ),
+                self._chat_id,
+                self._message_thread_id,
+                self._topic_name,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to create Telegram session topic; falling back to shared chat",
+                exc_info=True,
+            )
+            self._topic_mode = "shared_chat"
 
     async def close(self) -> None:
         """Stop the Telegram bot and clean up."""
@@ -426,6 +805,22 @@ class TelegramChannel(MessageChannel):
     @property
     def is_open(self) -> bool:
         return self._started and not self._closed
+
+    def communication_route(self) -> dict[str, Any]:
+        """Return the effective external route for this Telegram channel."""
+        return {
+            "platform": "telegram",
+            "conversation_id": self._chat_id,
+            "thread_id": (
+                str(self._message_thread_id) if self._message_thread_id is not None else None
+            ),
+            "mode": "room",
+            "metadata": {
+                "notify_only": self._notify_only,
+                "topic_mode": self._topic_mode,
+                "topic_name": self._topic_name,
+            },
+        }
 
     # --- Bot command handlers ---
 

@@ -27,7 +27,7 @@ from tyr.ports.volundr import SpawnRequest
 _NOW = datetime.now(tz=UTC)
 
 VOLUNDR_BASE = "http://volundr-test:8000"
-SESSIONS_URL = f"{VOLUNDR_BASE}/api/v1/volundr/sessions"
+SESSIONS_URL = f"{VOLUNDR_BASE}/api/v1/forge/sessions"
 STORED_PAT = "test-pat-jwt"
 OWNER_ID = "user-123"
 

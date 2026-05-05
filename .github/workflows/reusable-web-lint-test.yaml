@@ -6,9 +6,10 @@ on:
   workflow_call:
     secrets:
       CODECOV_TOKEN:
-        required: true
+        required: false
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   lint:

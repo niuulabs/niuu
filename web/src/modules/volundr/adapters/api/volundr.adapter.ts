@@ -81,6 +81,7 @@ import type {
   ApiClusterResourceInfo,
   ApiFeatureModuleResponse,
   ApiUserFeaturePreferenceResponse,
+  ApiSessionDefinitionResponse,
 } from './volundr.types';
 
 /**
@@ -521,6 +522,21 @@ export class ApiVolundrService implements IVolundrService {
   private cachedSessions: VolundrSession[] = [];
   private cachedStats: VolundrStats | null = null;
 
+  async getSessionDefinitions(): Promise<import('@/modules/volundr/models').SessionDefinition[]> {
+    try {
+      const response = await api.get<ApiSessionDefinitionResponse[]>('/session-definitions');
+      return response.map(d => ({
+        key: d.key,
+        displayName: d.display_name,
+        description: d.description,
+        labels: d.labels,
+        defaultModel: d.default_model,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   async getSessions(): Promise<VolundrSession[]> {
     const response = await api.get<ApiSessionResponse[]>('/sessions');
     this.cachedSessions = response.map(transformSession);
@@ -778,6 +794,7 @@ export class ApiVolundrService implements IVolundrService {
     model: string;
     templateName?: string;
     taskType?: string;
+    definition?: string;
     terminalRestricted?: boolean;
     workspaceId?: string;
     credentialNames?: string[];
@@ -793,6 +810,7 @@ export class ApiVolundrService implements IVolundrService {
       source: config.source,
       template_name: config.templateName ?? null,
       task_type: config.taskType ?? null,
+      definition: config.definition ?? null,
       terminal_restricted: config.terminalRestricted ?? false,
       workspace_id: config.workspaceId ?? null,
       credential_names: config.credentialNames?.length ? config.credentialNames : undefined,

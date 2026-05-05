@@ -331,3 +331,79 @@ class TestGetTemplate:
         response = client.get("/api/v1/volundr/templates/nonexistent")
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
+
+
+# -------------------------------------------------------------------
+# Session definitions endpoint tests
+# -------------------------------------------------------------------
+
+
+class TestSessionDefinitions:
+    """Tests for GET /session-definitions."""
+
+    @pytest.fixture
+    def definitions_client(
+        self,
+        profile_service: ForgeProfileService,
+        template_service: WorkspaceTemplateService,
+    ) -> TestClient:
+        from volundr.config import SessionDefinitionConfig
+
+        definitions = {
+            "skuldClaude": SessionDefinitionConfig(
+                enabled=True,
+                display_name="Claude Code",
+                description="Anthropic Claude",
+                labels=["session", "claude"],
+                default_model="claude-sonnet-4-6",
+            ),
+            "skuldCodex": SessionDefinitionConfig(
+                enabled=True,
+                display_name="OpenAI Codex",
+                description="Codex with WebSocket",
+                labels=["session", "codex"],
+                default_model="",
+            ),
+            "skuldDisabled": SessionDefinitionConfig(
+                enabled=False,
+                display_name="Disabled",
+                description="Should not appear",
+            ),
+        }
+        app = FastAPI()
+        router = create_profiles_router(profile_service, template_service, definitions)
+        app.include_router(router)
+        return TestClient(app)
+
+    def test_list_session_definitions(self, definitions_client: TestClient):
+        """Returns enabled session definitions."""
+        resp = definitions_client.get("/api/v1/volundr/session-definitions")
+        assert resp.status_code == 200
+        data = resp.json()
+        keys = [d["key"] for d in data]
+        assert "skuldClaude" in keys
+        assert "skuldCodex" in keys
+        assert "skuldDisabled" not in keys
+
+    def test_session_definition_fields(self, definitions_client: TestClient):
+        """Response has correct fields."""
+        resp = definitions_client.get("/api/v1/volundr/session-definitions")
+        claude = next(d for d in resp.json() if d["key"] == "skuldClaude")
+        assert claude["display_name"] == "Claude Code"
+        assert claude["description"] == "Anthropic Claude"
+        assert claude["labels"] == ["session", "claude"]
+        assert claude["default_model"] == "claude-sonnet-4-6"
+
+    def test_empty_definitions(
+        self,
+        profile_service: ForgeProfileService,
+        template_service: WorkspaceTemplateService,
+    ):
+        """Returns empty list when no definitions configured."""
+        app = FastAPI()
+        router = create_profiles_router(profile_service, template_service)
+        app.include_router(router)
+        client = TestClient(app)
+        resp = client.get("/api/v1/volundr/session-definitions")
+        assert resp.status_code == 200
+        assert resp.json() == []

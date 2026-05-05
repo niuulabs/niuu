@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
+from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.models import IntegrationType, Principal, TrackerIssue
 from volundr.domain.ports import IntegrationRepository
@@ -30,17 +31,51 @@ def create_issues_router(
     tracker_factory: TrackerFactory,
 ) -> APIRouter:
     """Create FastAPI router for generic issue endpoints."""
-    router = APIRouter(
+    return _build_issues_router(
+        integration_repo,
+        tracker_factory,
         prefix="/api/v1/volundr/issues",
+        deprecated=True,
+        canonical_prefix="/api/v1/tracker",
+    )
+
+
+def create_canonical_issues_router(
+    integration_repo: IntegrationRepository,
+    tracker_factory: TrackerFactory,
+) -> APIRouter:
+    """Create canonical tracker issue endpoints."""
+    return _build_issues_router(
+        integration_repo,
+        tracker_factory,
+        prefix="/api/v1/tracker",
+        deprecated=False,
+        canonical_prefix="/api/v1/tracker",
+    )
+
+
+def _build_issues_router(
+    integration_repo: IntegrationRepository,
+    tracker_factory: TrackerFactory,
+    *,
+    prefix: str,
+    deprecated: bool,
+    canonical_prefix: str,
+) -> APIRouter:
+    """Build either legacy or canonical generic issue endpoints."""
+    router = APIRouter(
+        prefix=prefix,
         tags=["Issues"],
     )
 
-    @router.get(
-        "/search",
-        response_model=list[TrackerIssue],
-    )
+    search_path = "/search" if deprecated else "/issues"
+
+    @router.get(search_path, response_model=list[TrackerIssue])
     async def search_issues(
+        request: Request,
+        response: Response,
         q: str = Query(description="Search query", min_length=1),
+        project_id: str | None = Query(default=None, alias="projectId"),
         principal: Principal = Depends(extract_principal),
     ) -> list[TrackerIssue]:
         """Search issues across all connected issue trackers."""
@@ -68,13 +103,24 @@ def create_issues_router(
                     conn.id,
                     exc_info=True,
                 )
+        if deprecated:
+            warn_on_legacy_route(
+                request,
+                response,
+                LegacyRouteNotice(
+                    legacy_path=f"{prefix}/search",
+                    canonical_path=f"{canonical_prefix}/issues",
+                ),
+                route_logger=logger,
+            )
         return results
 
-    @router.get(
-        "/{issue_id}",
-        response_model=TrackerIssue,
-    )
+    get_path = "/{issue_id}" if deprecated else "/issues/{issue_id}"
+
+    @router.get(get_path, response_model=TrackerIssue)
     async def get_issue(
+        request: Request,
+        response: Response,
         issue_id: str,
         principal: Principal = Depends(extract_principal),
     ) -> TrackerIssue:
@@ -99,17 +145,33 @@ def create_issues_router(
                     conn.id,
                     exc_info=True,
                 )
+        if deprecated:
+            warn_on_legacy_route(
+                request,
+                response,
+                LegacyRouteNotice(
+                    legacy_path=f"{prefix}/{issue_id}",
+                    canonical_path=f"{canonical_prefix}/issues/{issue_id}",
+                ),
+                route_logger=logger,
+            )
 
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Issue not found: {issue_id}",
         )
 
-    @router.post(
-        "/{issue_id}/status",
-        response_model=TrackerIssue,
-    )
+    if deprecated:
+        update_path = "/{issue_id}/status"
+        update_decorator = router.post
+    else:
+        update_path = "/issues/{issue_id}"
+        update_decorator = router.patch
+
+    @update_decorator(update_path, response_model=TrackerIssue)
     async def update_issue_status(
+        request: Request,
+        response: Response,
         issue_id: str,
         data: StatusUpdateRequest,
         principal: Principal = Depends(extract_principal),
@@ -134,6 +196,16 @@ def create_issues_router(
                     conn.id,
                     exc_info=True,
                 )
+        if deprecated:
+            warn_on_legacy_route(
+                request,
+                response,
+                LegacyRouteNotice(
+                    legacy_path=f"{prefix}/{issue_id}/status",
+                    canonical_path=f"{canonical_prefix}/issues/{issue_id}",
+                ),
+                route_logger=logger,
+            )
 
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

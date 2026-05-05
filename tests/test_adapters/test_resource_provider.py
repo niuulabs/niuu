@@ -1,6 +1,7 @@
 """Tests for resource provider adapters."""
 
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -176,16 +177,18 @@ class TestK8sResourceProviderKubeconfig:
     async def test_kubeconfig_kwarg_triggers_load_kube_config(self):
         """When kubeconfig is provided, load_kube_config(config_file=...) is called."""
         # Directly test via mocking kubernetes_asyncio imports
-        mock_config = AsyncMock()
-        mock_client = AsyncMock()
-        mock_v1 = AsyncMock()
+        mock_config = MagicMock()
+        mock_config.load_kube_config = AsyncMock()
+        mock_config.load_incluster_config = AsyncMock()
+        mock_client = MagicMock()
+        mock_v1 = MagicMock()
         mock_client.CoreV1Api.return_value = mock_v1
-        mock_v1.list_node.return_value = AsyncMock(items=[])
+        mock_v1.list_node = AsyncMock(return_value=SimpleNamespace(items=[]))
 
         with patch.dict(
             "sys.modules",
             {
-                "kubernetes_asyncio": AsyncMock(client=mock_client, config=mock_config),
+                "kubernetes_asyncio": SimpleNamespace(client=mock_client, config=mock_config),
                 "kubernetes_asyncio.client": mock_client,
                 "kubernetes_asyncio.config": mock_config,
             },
@@ -204,16 +207,18 @@ class TestK8sResourceProviderKubeconfig:
     @pytest.mark.asyncio
     async def test_empty_kubeconfig_tries_incluster_first(self):
         """When no kubeconfig is set, try load_incluster_config first."""
-        mock_config = AsyncMock()
-        mock_client = AsyncMock()
-        mock_v1 = AsyncMock()
+        mock_config = MagicMock()
+        mock_config.load_kube_config = AsyncMock()
+        mock_config.load_incluster_config = AsyncMock()
+        mock_client = MagicMock()
+        mock_v1 = MagicMock()
         mock_client.CoreV1Api.return_value = mock_v1
-        mock_v1.list_node.return_value = AsyncMock(items=[])
+        mock_v1.list_node = AsyncMock(return_value=SimpleNamespace(items=[]))
 
         with patch.dict(
             "sys.modules",
             {
-                "kubernetes_asyncio": AsyncMock(client=mock_client, config=mock_config),
+                "kubernetes_asyncio": SimpleNamespace(client=mock_client, config=mock_config),
                 "kubernetes_asyncio.client": mock_client,
                 "kubernetes_asyncio.config": mock_config,
             },
@@ -231,20 +236,21 @@ class TestK8sResourceProviderKubeconfig:
     @pytest.mark.asyncio
     async def test_incluster_failure_falls_back_to_kube_config(self):
         """When load_incluster_config fails, fall back to load_kube_config."""
-        mock_config = AsyncMock()
+        mock_config = MagicMock()
         mock_config.ConfigException = type("ConfigException", (Exception,), {})
-        mock_config.load_incluster_config.side_effect = mock_config.ConfigException(
-            "not in cluster"
+        mock_config.load_kube_config = AsyncMock()
+        mock_config.load_incluster_config = AsyncMock(
+            side_effect=mock_config.ConfigException("not in cluster")
         )
-        mock_client = AsyncMock()
-        mock_v1 = AsyncMock()
+        mock_client = MagicMock()
+        mock_v1 = MagicMock()
         mock_client.CoreV1Api.return_value = mock_v1
-        mock_v1.list_node.return_value = AsyncMock(items=[])
+        mock_v1.list_node = AsyncMock(return_value=SimpleNamespace(items=[]))
 
         with patch.dict(
             "sys.modules",
             {
-                "kubernetes_asyncio": AsyncMock(client=mock_client, config=mock_config),
+                "kubernetes_asyncio": SimpleNamespace(client=mock_client, config=mock_config),
                 "kubernetes_asyncio.client": mock_client,
                 "kubernetes_asyncio.config": mock_config,
             },

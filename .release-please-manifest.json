@@ -1,0 +1,16 @@
+{
+  "web-next/packages/auth": "0.0.1",
+  "web-next/packages/design-tokens": "0.0.1",
+  "web-next/packages/domain": "0.0.1",
+  "web-next/packages/plugin-hello": "0.0.1",
+  "web-next/packages/plugin-login": "0.0.1",
+  "web-next/packages/plugin-mimir": "0.0.1",
+  "web-next/packages/plugin-observatory": "0.0.1",
+  "web-next/packages/plugin-ravn": "0.0.1",
+  "web-next/packages/plugin-sdk": "0.0.1",
+  "web-next/packages/plugin-tyr": "0.0.1",
+  "web-next/packages/plugin-volundr": "0.0.1",
+  "web-next/packages/query": "0.0.1",
+  "web-next/packages/shell": "0.0.1",
+  "web-next/packages/ui": "0.0.1"
+}

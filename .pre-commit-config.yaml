@@ -37,3 +37,58 @@ repos:
         language: system
         files: ^web/src/.*\.(ts|tsx)$
         stages: [pre-commit]
+
+      # ── web-next (TS / TSX / CSS / Markdown / JSON / YAML) ──
+      # Shared PATH extension so child pnpm processes (spawned by
+      # `pnpm -r`) can resolve pnpm regardless of how the dev installed
+      # it. Covers npm-global prefix, pnpm self-install, and Homebrew.
+      - id: prettier-web-next
+        name: Prettier format (web-next)
+        entry: bash -c 'export PATH="$HOME/.npm-global/bin:$HOME/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:$PATH"; cd web-next && pnpm exec prettier --write "${@/#web-next\//}"' --
+        language: system
+        files: ^web-next/.*\.(ts|tsx|js|jsx|css|md|json|yaml|yml)$
+        exclude: ^web-next/(node_modules|dist|coverage|storybook-static|playwright-report)/
+        stages: [pre-commit]
+
+      - id: eslint-web-next
+        name: ESLint (web-next)
+        entry: bash -c 'export PATH="$HOME/.npm-global/bin:$HOME/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:$PATH"; cd web-next && pnpm exec eslint --fix "${@/#web-next\//}"' --
+        language: system
+        files: ^web-next/(packages|apps)/.*\.(ts|tsx)$
+        exclude: ^web-next/.*\.(test|stories)\.tsx?$
+        stages: [pre-commit]
+
+      # ── web-next pre-push: catch CI failures locally ────────
+      # Heavier checks that only run when pushing. Build is required
+      # first so `pnpm -r typecheck` can resolve workspace packages.
+      - id: web-next-build
+        name: web-next build (pre-push)
+        entry: bash -c 'export PATH="$HOME/.npm-global/bin:$HOME/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:$PATH"; cd web-next && pnpm -r --filter=./packages/* build'
+        language: system
+        pass_filenames: false
+        files: ^web-next/
+        stages: [pre-push]
+
+      - id: web-next-typecheck
+        name: web-next typecheck (pre-push)
+        entry: bash -c 'export PATH="$HOME/.npm-global/bin:$HOME/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:$PATH"; cd web-next && pnpm typecheck'
+        language: system
+        pass_filenames: false
+        files: ^web-next/
+        stages: [pre-push]
+
+      - id: web-next-test
+        name: web-next test + coverage gate (pre-push)
+        entry: bash -c 'export PATH="$HOME/.npm-global/bin:$HOME/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:$PATH"; cd web-next && pnpm test'
+        language: system
+        pass_filenames: false
+        files: ^web-next/
+        stages: [pre-push]
+
+      - id: web-next-format-check
+        name: web-next prettier check (pre-push)
+        entry: bash -c 'export PATH="$HOME/.npm-global/bin:$HOME/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:$PATH"; cd web-next && pnpm format:check'
+        language: system
+        pass_filenames: false
+        files: ^web-next/
+        stages: [pre-push]

@@ -301,6 +301,13 @@ class SessionActivitySubscriber:
             await self._handle_failure(raid, tracker, owner_id, reason=f"Session {session.status}")
             return
 
+        if session.workload_type == "ravn_flock":
+            logger.info(
+                "Skipping idle completion evaluation for flock session %s; awaiting ravn outcome",
+                event.session_id[:8],
+            )
+            return
+
         if not await self._is_owner_active(owner_id):
             return
 

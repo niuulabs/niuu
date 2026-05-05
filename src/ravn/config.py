@@ -2428,6 +2428,22 @@ class PersonaOverridesConfig(BaseModel):
     )
 
 
+class WorkflowRuntimeConfig(BaseModel):
+    """Workflow graph metadata injected into flocked Ravn daemons.
+
+    This is a passive runtime contract for now: Tyr/Volundr pass the workflow
+    graph into the flock session so mesh-aware runtime code can consume it
+    without depending on Tyr's pipeline compiler.
+    """
+
+    workflow_id: str = ""
+    name: str = ""
+    version: str = ""
+    scope: str = ""
+    initial_context: str = ""
+    graph: dict[str, Any] = Field(default_factory=dict)
+
+
 class Settings(BaseSettings):
     """Ravn application settings.
 
@@ -2542,6 +2558,10 @@ class Settings(BaseSettings):
     persona_overrides: PersonaOverridesConfig = Field(
         default_factory=PersonaOverridesConfig,
         description="Per-sidecar persona overrides injected by Volundr at flock dispatch.",
+    )
+    workflow: WorkflowRuntimeConfig = Field(
+        default_factory=WorkflowRuntimeConfig,
+        description="Workflow graph payload injected for flock-backed sessions.",
     )
 
     # Legacy — kept so existing CLI wiring (NIU-426) continues to work

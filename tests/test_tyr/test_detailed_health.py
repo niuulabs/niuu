@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,6 +10,14 @@ from fastapi.testclient import TestClient
 
 from tyr.config import Settings
 from tyr.main import create_app
+
+
+def _database_pool_stub(pool):
+    @asynccontextmanager
+    async def _stub(*_args, **_kwargs):
+        yield pool
+
+    return _stub
 
 
 @pytest.fixture
@@ -20,8 +29,11 @@ def app():
 @pytest.fixture
 def mock_pool():
     """Create a mock asyncpg pool that returns 1 for SELECT 1."""
-    pool = AsyncMock()
+    pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=1)
+    pool.fetch = AsyncMock(return_value=[])
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.execute = AsyncMock(return_value="OK")
     pool.close = AsyncMock()
     return pool
 
@@ -64,9 +76,7 @@ def client(  # noqa: PLR0913
     mock_review_engine,
 ):
     """Test client with all services wired on app.state."""
-    with patch("tyr.main.database_pool") as mock_db:
-        mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_pool)
-        mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+    with patch("tyr.main.database_pool", _database_pool_stub(mock_pool)):
         with TestClient(app) as c:
             # Wire services on app.state after lifespan starts
             c.app.state.pool = mock_pool
@@ -108,11 +118,9 @@ class TestDetailedHealthEndpoint:
         assert data["review_engine_running"] is True
         assert data["status"] == "ok"
 
-    def test_database_unavailable_when_pool_missing(self, app) -> None:
+    def test_database_unavailable_when_pool_missing(self, app, mock_pool) -> None:
         """When pool is not on app.state, database should be 'unavailable'."""
-        with patch("tyr.main.database_pool") as mock_db:
-            mock_db.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
-            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+        with patch("tyr.main.database_pool", _database_pool_stub(mock_pool)):
             with TestClient(app) as c:
                 # Remove pool from state
                 if hasattr(c.app.state, "pool"):
@@ -124,9 +132,7 @@ class TestDetailedHealthEndpoint:
     def test_database_unavailable_on_exception(self, app, mock_pool) -> None:
         """When pool.fetchval raises, database should be 'unavailable'."""
         mock_pool.fetchval = AsyncMock(side_effect=OSError("connection refused"))
-        with patch("tyr.main.database_pool") as mock_db:
-            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_pool)
-            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+        with patch("tyr.main.database_pool", _database_pool_stub(mock_pool)):
             with TestClient(app) as c:
                 c.app.state.pool = mock_pool
                 response = c.get("/api/v1/tyr/health/detailed")
@@ -142,9 +148,7 @@ class TestDetailedHealthEndpoint:
         stopped_engine = MagicMock()
         stopped_engine.running = False
 
-        with patch("tyr.main.database_pool") as mock_db:
-            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_pool)
-            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+        with patch("tyr.main.database_pool", _database_pool_stub(mock_pool)):
             with TestClient(app) as c:
                 c.app.state.pool = mock_pool
                 c.app.state.subscriber = stopped_subscriber
@@ -160,9 +164,7 @@ class TestDetailedHealthEndpoint:
 
     def test_services_default_false_when_absent(self, app, mock_pool) -> None:
         """When services are missing from app.state, values default to False/0."""
-        with patch("tyr.main.database_pool") as mock_db:
-            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_pool)
-            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+        with patch("tyr.main.database_pool", _database_pool_stub(mock_pool)):
             with TestClient(app) as c:
                 c.app.state.pool = mock_pool
                 # Don't set event_bus, subscriber, notification_service, review_engine
@@ -185,9 +187,7 @@ class TestDetailedHealthEndpoint:
         stopped = MagicMock()
         stopped.running = False
 
-        with patch("tyr.main.database_pool") as mock_db:
-            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_pool)
-            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+        with patch("tyr.main.database_pool", _database_pool_stub(mock_pool)):
             with TestClient(app) as c:
                 c.app.state.pool = mock_pool
                 c.app.state.subscriber = running
@@ -221,9 +221,7 @@ class TestDetailedHealthEndpoint:
 
     def test_event_bus_count_zero_when_absent(self, app, mock_pool) -> None:
         """event_bus_subscriber_count is 0 when event bus is not on app.state."""
-        with patch("tyr.main.database_pool") as mock_db:
-            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_pool)
-            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+        with patch("tyr.main.database_pool", _database_pool_stub(mock_pool)):
             with TestClient(app) as c:
                 c.app.state.pool = mock_pool
                 if hasattr(c.app.state, "event_bus"):

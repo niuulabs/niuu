@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 from typer.testing import CliRunner
 
 from cli.app import build_app
@@ -78,3 +82,47 @@ class TestCLIEntryPoint:
     def test_unknown_command_fails(self) -> None:
         result = runner.invoke(_app(), ["nonexistent"])
         assert result.exit_code != 0
+
+
+class TestNiuuMainModule:
+    def test_main_sets_default_config_when_exists(self, tmp_path: Path) -> None:
+        config_file = tmp_path / ".niuu" / "config.yaml"
+        config_file.parent.mkdir(parents=True)
+        config_file.write_text("mode: mini\n")
+
+        captured_env: dict[str, str] = {}
+
+        def capture_app() -> None:
+            captured_env["NIUU_CONFIG"] = os.environ.get("NIUU_CONFIG", "")
+
+        mock_app = MagicMock(side_effect=capture_app)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("niuu.__main__.Path.home", return_value=tmp_path),
+            patch("cli.app.build_app", return_value=mock_app),
+        ):
+            from niuu.__main__ import main
+
+            main()
+
+        assert captured_env["NIUU_CONFIG"] == str(config_file)
+
+    def test_main_skips_default_when_config_does_not_exist(self, tmp_path: Path) -> None:
+        captured_env: dict[str, str | None] = {}
+
+        def capture_app() -> None:
+            captured_env["NIUU_CONFIG"] = os.environ.get("NIUU_CONFIG")
+
+        mock_app = MagicMock(side_effect=capture_app)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("niuu.__main__.Path.home", return_value=tmp_path),
+            patch("cli.app.build_app", return_value=mock_app),
+        ):
+            from niuu.__main__ import main
+
+            main()
+
+        assert captured_env["NIUU_CONFIG"] is None

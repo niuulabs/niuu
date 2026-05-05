@@ -201,9 +201,16 @@ class TestStartup:
             ),
             patch("cli.commands.platform.has_failures", return_value=False),
             patch("cli.commands.platform.format_results", return_value="all ok"),
-            patch("cli.server.RootServer", return_value=mock_server),
+            patch("niuu.app.RootServer", return_value=mock_server),
         ):
-            await _startup(manager, settings, enabled_services=None, skip_preflight=False)
+            await _startup(
+                manager,
+                settings,
+                enabled_services=None,
+                skip_preflight=False,
+                host_profile="full",
+                enabled_mounts=None,
+            )
         manager.start_all.assert_awaited_once()
 
     async def test_startup_with_preflight_fail(self) -> None:
@@ -221,7 +228,14 @@ class TestStartup:
             patch("cli.commands.platform.format_results", return_value="FAIL"),
             pytest.raises(click.exceptions.Exit),
         ):
-            await _startup(manager, settings, enabled_services=None, skip_preflight=False)
+            await _startup(
+                manager,
+                settings,
+                enabled_services=None,
+                skip_preflight=False,
+                host_profile="full",
+                enabled_mounts=None,
+            )
         manager.start_all.assert_not_awaited()
 
     async def test_startup_skip_preflight(self) -> None:
@@ -234,9 +248,16 @@ class TestStartup:
         mock_server.health_check = AsyncMock(return_value=True)
         with (
             patch("cli.commands.platform.run_preflight_checks") as mock_preflight,
-            patch("cli.server.RootServer", return_value=mock_server),
+            patch("niuu.app.RootServer", return_value=mock_server),
         ):
-            await _startup(manager, settings, enabled_services=None, skip_preflight=True)
+            await _startup(
+                manager,
+                settings,
+                enabled_services=None,
+                skip_preflight=True,
+                host_profile="full",
+                enabled_mounts=None,
+            )
         mock_preflight.assert_not_called()
         manager.start_all.assert_awaited_once()
 
@@ -246,7 +267,14 @@ class TestStartup:
         settings = CLISettings()
 
         with pytest.raises(click.exceptions.Exit):
-            await _startup(manager, settings, enabled_services=None, skip_preflight=True)
+            await _startup(
+                manager,
+                settings,
+                enabled_services=None,
+                skip_preflight=True,
+                host_profile="full",
+                enabled_mounts=None,
+            )
 
     async def test_startup_enabled_services_forwarded(self) -> None:
         manager = MagicMock()
@@ -254,13 +282,28 @@ class TestStartup:
         manager._registry = MagicMock()
         settings = CLISettings()
         enabled = {"volundr", "tyr"}
+        mounts = {"niuu-api", "runtime-config"}
 
         mock_server = AsyncMock()
         mock_server.health_check = AsyncMock(return_value=True)
-        with patch("cli.server.RootServer", return_value=mock_server):
-            await _startup(manager, settings, enabled_services=enabled, skip_preflight=True)
+        with patch("niuu.app.RootServer", return_value=mock_server) as root_server_cls:
+            await _startup(
+                manager,
+                settings,
+                enabled_services=enabled,
+                skip_preflight=True,
+                host_profile="api",
+                enabled_mounts=mounts,
+            )
         manager.start_all.assert_awaited_once_with(
             enabled_services=enabled, rollback_on_failure=True
+        )
+        root_server_cls.assert_called_once_with(
+            registry=manager._registry,
+            host=settings.server.host,
+            port=settings.server.port,
+            host_profile="api",
+            enabled_mounts=mounts,
         )
 
 

@@ -1,0 +1,86 @@
+name: Release Please
+
+# Manages versioning and release notes for @niuulabs/* npm packages.
+# On every push to main, release-please scans conventional commits and either:
+#   - Updates an open "Release PR" with new changelog entries, or
+#   - Creates one if none exists.
+# When that PR merges, release-please tags the commit and creates GitHub releases.
+# The publish-npm job then fires to push all packages to GitHub Packages.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Create / update Release PRs and publish when they merge
+  # ---------------------------------------------------------------------------
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.rp.outputs.releases_created }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Run release-please
+        uses: google-github-actions/release-please-action@a02a34c25a99f3a00a0266b80f75b2c6b9b5cbe1 # v4.1.4
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # ---------------------------------------------------------------------------
+  # Publish to GitHub Packages — only runs when release-please cut a release
+  # ---------------------------------------------------------------------------
+  publish-npm:
+    name: Publish @niuulabs/* to GitHub Packages
+    needs: release-please
+    if: needs.release-please.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: web-next
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: "@niuulabs"
+          cache: pnpm
+          cache-dependency-path: web-next/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm -r --filter='./packages/*' build
+
+      - name: Publish to GitHub Packages
+        # pnpm publish -r resolves workspace:* → version numbers before publishing
+        run: pnpm publish -r --filter='./packages/*' --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

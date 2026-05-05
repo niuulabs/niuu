@@ -24,6 +24,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from niuu.config import CorsConfig
+
 
 # Config file search paths (in order of priority).
 # NIUU_CONFIG env var (set by the CLI --config flag) takes precedence.
@@ -457,6 +459,13 @@ class FlockConfig(BaseModel):
     mimir_hosted_url: str = Field(
         default="",
         description="URL of the Mimir knowledge base for coordinator context queries.",
+    )
+    mimir_registry_path: str = Field(
+        default="~/.ravn/mimir/.mimir-registry.json",
+        description=(
+            "Path to the persisted Mimir registry used to resolve registry-backed "
+            "workflow resource mounts into concrete path/url runtime config."
+        ),
     )
     sleipnir_publish_urls: list[str] = Field(
         default_factory=list,
@@ -935,6 +944,7 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
     ai_models: list[AIModelConfig] = Field(

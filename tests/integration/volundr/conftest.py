@@ -19,9 +19,11 @@ import httpx
 import pytest_asyncio
 from fastapi import FastAPI
 
+from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
 from tests.integration.pool_wrapper import TransactionalPool
 from volundr.adapters.inbound.rest import create_router as create_session_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
+from volundr.adapters.inbound.rest_ravn_personas import create_ravn_personas_router
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.identity import EnvoyHeaderIdentityAdapter
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
@@ -83,6 +85,7 @@ class SyncSessionService(SessionService):
     async def start_session(
         self,
         session_id: UUID,
+        definition: str | None = None,
         profile_name: str | None = None,
         template_name: str | None = None,
         principal: Principal | None = None,
@@ -133,6 +136,7 @@ async def volundr_app(
     stats_repo = PostgresStatsRepository(txn_pool)
     token_tracker = PostgresTokenTracker(txn_pool)
     prompt_repo = PostgresPromptRepository(txn_pool)
+    persona_registry = PostgresPersonaRegistry(txn_pool)
     user_repo = PostgresUserRepository(txn_pool)
     tenant_repo = PostgresTenantRepository(txn_pool)
 
@@ -174,6 +178,9 @@ async def volundr_app(
 
     prompts_router = create_prompts_router(prompt_service)
     app.include_router(prompts_router)
+
+    ravn_personas_router = create_ravn_personas_router(persona_registry)
+    app.include_router(ravn_personas_router)
 
     # Expose broadcaster for SSE integration tests
     app.state.broadcaster = broadcaster

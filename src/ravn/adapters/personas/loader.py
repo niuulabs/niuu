@@ -71,6 +71,14 @@ class PersonaLLMConfig:
 
 
 @dataclass
+class PersonaExecutorConfig:
+    """Executor adapter settings embedded in a persona."""
+
+    adapter: str = ""
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class PersonaProduces:
     """What this persona outputs when it completes.
 
@@ -92,6 +100,7 @@ class PersonaConsumes:
 
     event_types: list[str] = field(default_factory=list)
     injects: list[str] = field(default_factory=list)
+    schema: dict[str, OutcomeField] = field(default_factory=dict)
 
 
 @dataclass
@@ -116,6 +125,7 @@ class PersonaConfig:
     allowed_tools: list[str] = field(default_factory=list)
     forbidden_tools: list[str] = field(default_factory=list)
     permission_mode: str = ""
+    executor: PersonaExecutorConfig = field(default_factory=PersonaExecutorConfig)
     llm: PersonaLLMConfig = field(default_factory=PersonaLLMConfig)
     iteration_budget: int = 0
     produces: PersonaProduces = field(default_factory=PersonaProduces)
@@ -141,6 +151,13 @@ class PersonaConfig:
             d["forbidden_tools"] = list(self.forbidden_tools)
         if self.permission_mode:
             d["permission_mode"] = self.permission_mode
+        if self.executor.adapter or self.executor.kwargs:
+            executor_dict: dict[str, Any] = {}
+            if self.executor.adapter:
+                executor_dict["adapter"] = self.executor.adapter
+            if self.executor.kwargs:
+                executor_dict["kwargs"] = dict(self.executor.kwargs)
+            d["executor"] = executor_dict
 
         llm_dict: dict = {}
         if self.llm.primary_alias:
@@ -173,12 +190,22 @@ class PersonaConfig:
                 produces_dict["schema"] = schema_dict
             d["produces"] = produces_dict
 
-        if self.consumes.event_types or self.consumes.injects:
+        if self.consumes.event_types or self.consumes.injects or self.consumes.schema:
             consumes_dict: dict = {}
             if self.consumes.event_types:
                 consumes_dict["event_types"] = list(self.consumes.event_types)
             if self.consumes.injects:
                 consumes_dict["injects"] = list(self.consumes.injects)
+            if self.consumes.schema:
+                schema_dict: dict = {}
+                for fname, f in self.consumes.schema.items():
+                    field_dict: dict = {"type": f.type, "description": f.description}
+                    if f.type == "enum" and f.enum_values:
+                        field_dict["values"] = list(f.enum_values)
+                    if not f.required:
+                        field_dict["required"] = False
+                    schema_dict[fname] = field_dict
+                consumes_dict["schema"] = schema_dict
             d["consumes"] = consumes_dict
 
         if self.fan_in.strategy != "merge" or self.fan_in.contributes_to:
@@ -370,15 +397,19 @@ _BUILTIN_PERSONAS: dict[str, PersonaConfig] = {
             "avoid duplicates.\n"
             "2. Use `mimir_list` to browse related sections if needed.\n"
             "3. Gather current information with `web_search` and `web_fetch`.\n"
-            "4. Read related Mímir pages with `mimir_read` to incorporate existing knowledge.\n"
-            "5. Synthesise findings into a concise, factual page — under 1500 words. "
+            "4. For each material source you actually rely on, call `mimir_ingest` first and "
+            "capture the returned source_id values.\n"
+            "5. Read related Mímir pages with `mimir_read` to incorporate existing knowledge.\n"
+            "6. Synthesise findings into a concise, factual page — under 1500 words. "
             "Prefer tables and bullet points over prose.\n"
-            "6. Write the page with `mimir_write` to `research/{slug}.md`. "
-            "Include `produced_by_thread: true` in the front matter.\n\n"
+            "7. Write the page with `mimir_write` to `research/{slug}.md`. "
+            "Include `produced_by_thread: true` and a non-empty `source_ids` frontmatter list "
+            "containing the ingested source IDs.\n\n"
             "## Constraints\n"
             "- Do not copy-paste source text. Restate in your own words.\n"
             "- Cross-link related pages using relative markdown links.\n"
             "- Only create pages under `research/` — never modify existing pages.\n"
+            "- Do not ingest the final page content itself as provenance.\n"
             "- Keep output under 1500 words. Tables and bullet points preferred."
         ),
         allowed_tools=[
@@ -386,6 +417,7 @@ _BUILTIN_PERSONAS: dict[str, PersonaConfig] = {
             "mimir_read",
             "mimir_write",
             "mimir_list",
+            "mimir_ingest",
             "web_search",
             "web_fetch",
         ],
@@ -738,7 +770,14 @@ def _parse_consumes(raw: Any) -> PersonaConsumes:
     injects_raw = raw.get("injects", [])
     event_types = list(event_types_raw) if isinstance(event_types_raw, list) else []
     injects = list(injects_raw) if isinstance(injects_raw, list) else []
-    return PersonaConsumes(event_types=event_types, injects=injects)
+    schema: dict[str, OutcomeField] = {}
+    schema_raw = raw.get("schema")
+    if isinstance(schema_raw, dict):
+        for fname, fval in schema_raw.items():
+            parsed = _parse_outcome_field(fname, fval)
+            if parsed is not None:
+                schema[fname] = parsed
+    return PersonaConsumes(event_types=event_types, injects=injects, schema=schema)
 
 
 def _parse_fan_in(raw: Any) -> PersonaFanIn:
@@ -1056,6 +1095,19 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
             max_tokens=_safe_int(llm_raw.get("max_tokens", 0)),
         )
 
+        executor_raw: dict[str, Any] = {}
+        if isinstance(raw.get("executor"), dict):
+            executor_raw = raw["executor"]
+
+        executor = PersonaExecutorConfig(
+            adapter=str(executor_raw.get("adapter", "")),
+            kwargs=(
+                dict(executor_raw.get("kwargs", {}))
+                if isinstance(executor_raw.get("kwargs"), dict)
+                else {}
+            ),
+        )
+
         allowed = raw.get("allowed_tools", [])
         forbidden = raw.get("forbidden_tools", [])
 
@@ -1065,6 +1117,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
             allowed_tools=list(allowed) if isinstance(allowed, list) else [],
             forbidden_tools=list(forbidden) if isinstance(forbidden, list) else [],
             permission_mode=str(raw.get("permission_mode", "")),
+            executor=executor,
             llm=llm,
             iteration_budget=_safe_int(raw.get("iteration_budget", 0)),
             produces=_parse_produces(raw.get("produces")),
@@ -1092,6 +1145,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
             permission_mode=(
                 project.permission_mode if project.permission_mode else persona.permission_mode
             ),
+            executor=persona.executor,
             llm=persona.llm,
             iteration_budget=(
                 project.iteration_budget if project.iteration_budget else persona.iteration_budget

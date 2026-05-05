@@ -16,12 +16,13 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from niuu.adapters.cli import CliTurnRunner
 from niuu.domain.outcome import parse_outcome_block
 from niuu.mesh.participant import MeshParticipant
+from niuu.ports.cli import CLITransport
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.ports.mesh import MeshPort
 from skuld.config import MeshConfig
-from skuld.transports import CLITransport
 from sleipnir.ports.events import SleipnirSubscriber
 
 logger = logging.getLogger("skuld.mesh_adapter")
@@ -49,8 +50,9 @@ class SkuldMeshAdapter:
         self._session_id = session_id
         self._peer_id = participant.peer_id or config.peer_id or socket.gethostname()
         self._running = False
-        self._pending_responses: dict[str, asyncio.Future[str]] = {}
-        self._execute_lock = asyncio.Lock()
+        self._turn_runner = CliTurnRunner(transport)
+        self._pending_responses = self._turn_runner.pending_responses
+        self._execute_lock = self._turn_runner.execute_lock
 
     @property
     def peer_id(self) -> str:
@@ -108,14 +110,17 @@ class SkuldMeshAdapter:
                 await self._mesh.unsubscribe(event_type)
 
         # Cancel any pending response futures
-        for fut in self._pending_responses.values():
-            if not fut.done():
-                fut.cancel()
-        self._pending_responses.clear()
+        await self._turn_runner.cancel_pending()
 
         await self._participant.stop()
 
         logger.info("mesh adapter: stopped (peer_id=%s)", self._peer_id)
+
+    async def publish(self, event: RavnEvent, topic: str) -> None:
+        """Publish an event onto the mesh when the adapter is active."""
+        if self._mesh is None:
+            return
+        await self._mesh.publish(event, topic=topic)
 
     async def _handle_rpc(self, message: dict) -> dict:
         """Handle incoming RPC messages (work_request, task_dispatch)."""
@@ -190,50 +195,7 @@ class SkuldMeshAdapter:
         Serialized via ``_execute_lock`` — the CLI handles one prompt at
         a time, so overlapping calls would corrupt the event callback chain.
         """
-        async with self._execute_lock:
-            return await self._execute_prompt_inner(prompt, request_id)
-
-    async def _execute_prompt_inner(self, prompt: str, request_id: str) -> str:
-        """Inner implementation — must be called under ``_execute_lock``."""
-        result_future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        self._pending_responses[request_id] = result_future
-
-        collected_text: list[str] = []
-
-        # Save and wrap the existing callback via the public property
-        original_callback = self._transport.event_callback
-
-        async def _capture_event(data: dict) -> None:
-            event_type = data.get("type", "")
-
-            if event_type == "assistant":
-                msg = data.get("message", {})
-                if isinstance(msg, dict):
-                    content = msg.get("content", "")
-                    if isinstance(content, str) and content:
-                        collected_text.append(content)
-
-            if event_type == "result":
-                result_text = data.get("result", "")
-                if isinstance(result_text, str) and result_text:
-                    collected_text.clear()
-                    collected_text.append(result_text)
-                if not result_future.done():
-                    result_future.set_result("\n".join(collected_text) if collected_text else "")
-
-            # Forward to original callback
-            if original_callback is not None:
-                await original_callback(data)
-
-        self._transport.on_event(_capture_event)
-
-        try:
-            await self._transport.send_message(prompt)
-            return await result_future
-        finally:
-            # Restore original callback
-            self._transport.on_event(original_callback)
-            self._pending_responses.pop(request_id, None)
+        return await self._turn_runner.run_prompt(prompt, request_id)
 
     async def _handle_outcome_event(self, event: RavnEvent) -> None:
         """Handle incoming outcome events from mesh subscriptions.

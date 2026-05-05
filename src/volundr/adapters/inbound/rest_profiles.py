@@ -7,6 +7,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
+from volundr.config import SessionDefinitionConfig
 from volundr.domain.models import (
     ForgeProfile,
     WorkspaceTemplate,
@@ -217,6 +218,26 @@ class TemplateResponse(BaseModel):
         )
 
 
+class SessionDefinitionResponse(BaseModel):
+    """Response model for a session definition (read-only, config-driven)."""
+
+    key: str = Field(description="Unique definition key (e.g. skuldClaude)")
+    display_name: str = Field(description="Human-readable name")
+    description: str = Field(description="Short description")
+    labels: list[str] = Field(description="Routing labels")
+    default_model: str = Field(description="Default model for this definition")
+
+    @classmethod
+    def from_config(cls, key: str, defn: SessionDefinitionConfig) -> SessionDefinitionResponse:
+        return cls(
+            key=key,
+            display_name=defn.display_name or key,
+            description=defn.description,
+            labels=defn.labels,
+            default_model=defn.default_model,
+        )
+
+
 class ErrorResponse(BaseModel):
     """Response model for errors."""
 
@@ -229,6 +250,7 @@ class ErrorResponse(BaseModel):
 def create_profiles_router(
     profile_service: ForgeProfileService,
     template_service: WorkspaceTemplateService,
+    session_definitions: dict[str, SessionDefinitionConfig] | None = None,
 ) -> APIRouter:
     """Create FastAPI router for profile and template endpoints."""
     router = APIRouter(prefix="/api/v1/volundr")
@@ -451,5 +473,22 @@ def create_profiles_router(
                 detail=f"Template not found: {template_name}",
             )
         return TemplateResponse.from_template(template)
+
+    # --- Session definition endpoints (read-only, config-driven) ---
+
+    _definitions = session_definitions or {}
+
+    @router.get(
+        "/session-definitions",
+        response_model=list[SessionDefinitionResponse],
+        tags=["Session Definitions"],
+    )
+    async def list_session_definitions() -> list[SessionDefinitionResponse]:
+        """List available session definitions (loaded from configuration)."""
+        return [
+            SessionDefinitionResponse.from_config(key, defn)
+            for key, defn in _definitions.items()
+            if defn.enabled
+        ]
 
     return router

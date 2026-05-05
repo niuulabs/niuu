@@ -13,11 +13,25 @@ export function DispatcherView() {
   const [selectedCluster, setSelectedCluster] = useState<string>('');
   const [flockEnabled, setFlockEnabled] = useState(false);
   const [selectedPersonas, setSelectedPersonas] = useState<string[]>([]);
+  const [submittingItems, setSubmittingItems] = useState<QueueItem[]>([]);
   const [lastResults, setLastResults] = useState<
     { issue_id: string; session_name: string; status: string; cluster_name: string }[] | null
   >(null);
 
+  const activeSubmittingItems =
+    submittingItems.length > 0
+      ? submittingItems
+      : dispatching
+        ? queue.filter(item => selected.has(item.issue_id))
+        : [];
+  const isSubmitting = dispatching || activeSubmittingItems.length > 0;
+  const submittingIssueIds = new Set(activeSubmittingItems.map(item => item.issue_id));
+
   const toggleItem = (issueId: string) => {
+    if (isSubmitting) {
+      return;
+    }
+
     setSelected(prev => {
       const next = new Set(prev);
       if (next.has(issueId)) {
@@ -30,21 +44,28 @@ export function DispatcherView() {
   };
 
   const selectAll = () => {
+    if (isSubmitting) {
+      return;
+    }
+
     setSelected(new Set(queue.map(q => q.issue_id)));
   };
 
   const clearSelection = () => {
+    if (isSubmitting) {
+      return;
+    }
+
     setSelected(new Set());
   };
 
   const handleDispatch = async () => {
-    const items = queue
-      .filter(q => selected.has(q.issue_id))
-      .map(q => ({
-        saga_id: q.saga_id,
-        issue_id: q.issue_id,
-        repo: q.repos[0] || '',
-      }));
+    const selectedQueueItems = queue.filter(q => selected.has(q.issue_id));
+    const items = selectedQueueItems.map(q => ({
+      saga_id: q.saga_id,
+      issue_id: q.issue_id,
+      repo: q.repos[0] || '',
+    }));
 
     if (items.length === 0) {
       return;
@@ -52,17 +73,22 @@ export function DispatcherView() {
 
     const workloadType = flockEnabled ? 'ravn_flock' : undefined;
     const workloadConfig = flockEnabled ? { personas: selectedPersonas } : undefined;
+    setSubmittingItems(selectedQueueItems);
 
-    const results = await dispatch(
-      items,
-      modelOverride ?? defaults.default_model,
-      promptOverride ?? defaults.default_system_prompt,
-      selectedCluster || undefined,
-      workloadType,
-      workloadConfig
-    );
-    setLastResults(results);
-    setSelected(new Set());
+    try {
+      const results = await dispatch(
+        items,
+        modelOverride ?? defaults.default_model,
+        promptOverride ?? defaults.default_system_prompt,
+        selectedCluster || undefined,
+        workloadType,
+        workloadConfig
+      );
+      setLastResults(results);
+      setSelected(new Set());
+    } finally {
+      setSubmittingItems([]);
+    }
   };
 
   if (loading) {
@@ -113,13 +139,49 @@ export function DispatcherView() {
         </div>
       )}
 
+      {activeSubmittingItems.length > 0 && (
+        <div className={styles.submittingPanel} role="status" aria-live="polite">
+          <div className={styles.submittingHeader}>
+            <span className={styles.submittingPulse} aria-hidden="true" />
+            <div>
+              <div className={styles.submittingTitle}>
+                Dispatching {activeSubmittingItems.length} item
+                {activeSubmittingItems.length === 1 ? '' : 's'}
+              </div>
+              <div className={styles.submittingDescription}>
+                Keeping the batch visible here while Tyr submits it.
+              </div>
+            </div>
+          </div>
+          <div className={styles.submittingList}>
+            {activeSubmittingItems.map(item => (
+              <div key={item.issue_id} className={styles.submittingItem}>
+                <span className={styles.submittingIdentifier}>{item.identifier}</span>
+                <span className={styles.submittingItemTitle}>{item.title}</span>
+                <span className={styles.submittingBadge}>Submitting</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {queue.length > 0 && (
         <div className={styles.controls}>
           <div className={styles.selectionControls}>
-            <button type="button" className={styles.selectButton} onClick={selectAll}>
+            <button
+              type="button"
+              className={styles.selectButton}
+              onClick={selectAll}
+              disabled={isSubmitting}
+            >
               Select All
             </button>
-            <button type="button" className={styles.selectButton} onClick={clearSelection}>
+            <button
+              type="button"
+              className={styles.selectButton}
+              onClick={clearSelection}
+              disabled={isSubmitting}
+            >
               Clear
             </button>
             <span className={styles.selectedCount}>{selected.size} selected</span>
@@ -130,6 +192,7 @@ export function DispatcherView() {
                 className={styles.clusterSelect}
                 value={selectedCluster}
                 onChange={e => setSelectedCluster(e.target.value)}
+                disabled={isSubmitting}
               >
                 <option value="">Auto (default cluster)</option>
                 {enabledClusters.map(c => (
@@ -143,6 +206,7 @@ export function DispatcherView() {
               className={styles.modelSelect}
               value={modelOverride ?? defaults.default_model}
               onChange={e => setModelOverride(e.target.value)}
+              disabled={isSubmitting}
             >
               {defaults.models.map(m => (
                 <option key={m.id} value={m.id}>
@@ -154,9 +218,9 @@ export function DispatcherView() {
               type="button"
               className={styles.dispatchButton}
               onClick={handleDispatch}
-              disabled={selected.size === 0 || dispatching}
+              disabled={selected.size === 0 || isSubmitting}
             >
-              {dispatching ? 'Dispatching...' : `Dispatch ${selected.size}`}
+              {isSubmitting ? 'Dispatching...' : `Dispatch ${selected.size}`}
             </button>
           </div>
         </div>
@@ -175,12 +239,20 @@ export function DispatcherView() {
         <div key={sagaId} className={styles.sagaGroup}>
           <div className={styles.sagaHeader}>{sagaName}</div>
           {items.map(item => (
-            <label key={item.issue_id} className={styles.queueItem}>
+            <label
+              key={item.issue_id}
+              className={
+                submittingIssueIds.has(item.issue_id)
+                  ? `${styles.queueItem} ${styles.queueItemSubmitting}`
+                  : styles.queueItem
+              }
+            >
               <input
                 type="checkbox"
-                checked={selected.has(item.issue_id)}
+                checked={selected.has(item.issue_id) || submittingIssueIds.has(item.issue_id)}
                 onChange={() => toggleItem(item.issue_id)}
                 className={styles.checkbox}
+                disabled={isSubmitting}
               />
               <span className={styles.itemIdentifier}>{item.identifier}</span>
               <span className={styles.itemTitle}>{item.title}</span>
@@ -190,6 +262,9 @@ export function DispatcherView() {
               )}
               {item.estimate != null && (
                 <span className={styles.itemEstimate}>{item.estimate}pt</span>
+              )}
+              {submittingIssueIds.has(item.issue_id) && (
+                <span className={styles.itemDispatchState}>Submitting</span>
               )}
             </label>
           ))}
@@ -207,6 +282,7 @@ export function DispatcherView() {
             onChange={e => setPromptOverride(e.target.value)}
             placeholder="Additional instructions for all dispatched sessions..."
             rows={3}
+            disabled={isSubmitting}
           />
         </div>
       )}

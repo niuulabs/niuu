@@ -1,8 +1,18 @@
 # Web UI Styling Rules
 
-## Forbidden Practices
+## Scope
 
-The following are **strictly forbidden** in the web UI:
+These rules apply to the **legacy `web/`** app only. Styling in **`web-next/`** follows
+its own convention (Tailwind CSS + design tokens) — see `web-next/CLAUDE.md` rule 6.
+
+If you are working in `web-next/`, stop reading this file and use Tailwind. If you are
+working in `web/`, the rules below apply.
+
+---
+
+## Forbidden Practices (in `web/`)
+
+The following are **strictly forbidden** in `web/`:
 
 ### No Inline Styles
 
@@ -12,19 +22,21 @@ The following are **strictly forbidden** in the web UI:
 <div style={someStyleObject}>
 ```
 
-### No Tailwind/Utility Classes in JSX
+### No Tailwind/Utility Classes in JSX (legacy only)
 
 ```tsx
-// FORBIDDEN
+// FORBIDDEN in web/
 <div className="bg-zinc-900 p-4 rounded-lg">
 <div className="flex items-center gap-2">
 ```
+
+> In `web-next/` Tailwind is the default — this prohibition does not apply there.
 
 ### No CSS-in-JS Libraries
 
 Do not use styled-components, emotion, or similar runtime CSS solutions.
 
-## Required Practices
+## Required Practices (in `web/`)
 
 ### CSS Modules for Component Styles
 

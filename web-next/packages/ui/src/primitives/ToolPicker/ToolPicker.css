@@ -1,0 +1,104 @@
+.niuu-tool-picker {
+  width: min(640px, calc(100vw - var(--space-8)));
+}
+
+.niuu-tool-picker__search {
+  width: 100%;
+  margin-bottom: var(--space-4);
+}
+
+.niuu-tool-picker__groups {
+  overflow-y: auto;
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.niuu-tool-picker__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.niuu-tool-picker__group-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.niuu-tool-picker__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+  font-family: var(--font-sans);
+}
+
+.niuu-tool-picker__item:hover {
+  background-color: var(--color-bg-tertiary);
+}
+
+.niuu-tool-picker__item--selected {
+  background-color: color-mix(in srgb, var(--brand-500) 10%, transparent);
+  border-color: color-mix(in srgb, var(--brand-500) 30%, transparent);
+}
+
+.niuu-tool-picker__item--destructive .niuu-tool-picker__item-id {
+  color: var(--color-critical);
+}
+
+.niuu-tool-picker__destructive-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--color-critical);
+  flex-shrink: 0;
+}
+
+.niuu-tool-picker__item-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+  min-width: 120px;
+  flex-shrink: 0;
+}
+
+.niuu-tool-picker__item-desc {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.niuu-tool-picker__check {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--brand-300);
+  font-size: var(--text-sm);
+}
+
+.niuu-tool-picker__empty {
+  padding: var(--space-4);
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  margin: 0;
+}

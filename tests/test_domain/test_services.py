@@ -476,6 +476,7 @@ class TestSessionServiceStart:
         # eagerly-set chat_endpoint. Pod manager called in background.
         assert result.status == SessionStatus.STARTING
         assert result.chat_endpoint is not None
+        assert result.chat_endpoint.startswith("ws://localhost:")
         assert "session" in result.chat_endpoint
 
     async def test_start_stopped_session(self, repository: Repo, pod_manager: Pods):

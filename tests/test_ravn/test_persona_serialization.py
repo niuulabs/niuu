@@ -13,6 +13,7 @@ from ravn.adapters.personas.loader import (
     FilesystemPersonaAdapter,
     PersonaConfig,
     PersonaConsumes,
+    PersonaExecutorConfig,
     PersonaFanIn,
     PersonaLLMConfig,
     PersonaProduces,
@@ -113,6 +114,25 @@ def test_to_dict_omits_default_fan_in() -> None:
     p = PersonaConfig(name="minimal")
     d = p.to_dict()
     assert "fan_in" not in d
+
+
+def test_to_dict_omits_default_executor() -> None:
+    p = PersonaConfig(name="minimal")
+    d = p.to_dict()
+    assert "executor" not in d
+
+
+def test_executor_round_trip() -> None:
+    p = PersonaConfig(
+        name="executor-test",
+        executor=PersonaExecutorConfig(
+            adapter="ravn.adapters.executors.agent.AgentExecutor",
+            kwargs={"mode": "default"},
+        ),
+    )
+    yaml_text = FilesystemPersonaAdapter.to_yaml(p)
+    restored = FilesystemPersonaAdapter.parse(yaml_text)
+    assert restored == p
 
 
 def test_to_dict_only_name_for_minimal() -> None:

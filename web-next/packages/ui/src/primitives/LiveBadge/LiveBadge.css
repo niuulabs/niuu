@@ -1,0 +1,34 @@
+.niuu-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--brand-300);
+  background: color-mix(in srgb, var(--brand-500) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand-500) 30%, transparent);
+}
+
+.niuu-live-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--brand-400);
+  animation: niuu-live-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes niuu-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.2);
+  }
+}

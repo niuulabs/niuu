@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { DispatcherView } from './DispatcherView';
 
 vi.mock('../../hooks/useDispatchQueue', () => ({
@@ -190,6 +191,52 @@ describe('DispatcherView', () => {
     });
     // Dismiss results
     fireEvent.click(screen.getByText('Dismiss'));
+  });
+
+  it('shows a submitting batch overlay while dispatch is in flight', async () => {
+    let resolveDispatch:
+      | ((value: { issue_id: string; session_name: string; status: string }[]) => void)
+      | null = null;
+    const mockDispatch = vi.fn(
+      () =>
+        new Promise<{ issue_id: string; session_name: string; status: string }[]>(resolve => {
+          resolveDispatch = resolve;
+        })
+    );
+
+    vi.mocked(useDispatchQueue).mockReturnValue({
+      queue: [mockQueueItem],
+      defaults: mockDefaults,
+      clusters: [],
+      loading: false,
+      error: null,
+      dispatching: false,
+      refresh: vi.fn(),
+      dispatch: mockDispatch,
+    });
+
+    render(<DispatcherView />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByText('Select All'));
+    const { waitFor } = await import('@testing-library/react');
+    await waitFor(() => {
+      expect(screen.getByText('1 selected')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText('Dispatch 1'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Dispatching 1 item')).toBeInTheDocument();
+    });
+    expect(screen.getAllByText('Submitting').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Dispatching...' })).toBeDisabled();
+
+    resolveDispatch?.([{ issue_id: 'i1', session_name: 'niu-100', status: 'spawned' }]);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Dispatching 1 item')).not.toBeInTheDocument();
+    });
   });
 
   it('shows dispatching state', () => {

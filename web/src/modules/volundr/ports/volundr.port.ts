@@ -40,6 +40,7 @@ import type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
+  SessionDefinition,
 } from '@/modules/volundr/models';
 
 /**
@@ -47,6 +48,11 @@ import type {
  * Manages Claude Code sessions
  */
 export interface IVolundrService {
+  /**
+   * Get available session definitions from the server
+   */
+  getSessionDefinitions(): Promise<SessionDefinition[]>;
+
   /**
    * Get feature flags from the server
    */
@@ -163,6 +169,7 @@ export interface IVolundrService {
     model: string;
     templateName?: string;
     taskType?: string;
+    definition?: string;
     trackerIssue?: TrackerIssue;
     terminalRestricted?: boolean;
     workspaceId?: string;

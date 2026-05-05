@@ -705,8 +705,12 @@ class TestOpenAIAdapterRetry:
             return_value=httpx.Response(503, json={"error": "service unavailable"})
         )
 
-        with pytest.raises(LLMError):
+        with pytest.raises(LLMError) as exc_info:
             await adapter.generate(_MESSAGES, **_KWARGS)
+
+        assert "model=" in str(exc_info.value)
+        assert "endpoint=" in str(exc_info.value)
+        assert "status=503" in str(exc_info.value)
 
     @respx.mock
     async def test_non_retryable_error_raises_immediately(self) -> None:

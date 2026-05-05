@@ -1,0 +1,87 @@
+.niuu-chat-participant-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background-color: color-mix(in srgb, var(--color-bg-secondary) 80%, transparent);
+  flex-shrink: 0;
+}
+
+.niuu-chat-filter-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.niuu-chat-filter-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+  background-color: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.niuu-chat-filter-tab:hover {
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+}
+
+.niuu-chat-filter-tab--active {
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+  background-color: var(--color-bg-elevated);
+}
+
+.niuu-chat-filter-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--niuu-dot-color, var(--color-text-muted));
+  flex-shrink: 0;
+}
+
+.niuu-chat-internal-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.niuu-chat-internal-toggle:hover {
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+}
+
+.niuu-chat-internal-toggle--active {
+  color: var(--color-accent-cyan);
+  border-color: color-mix(in srgb, var(--color-accent-cyan) 40%, transparent);
+  background-color: color-mix(in srgb, var(--color-accent-cyan) 10%, transparent);
+}
+
+.niuu-chat-toggle-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.niuu-chat-toggle-label {
+  font-family: var(--font-mono);
+}

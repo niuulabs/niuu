@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from volundr.domain.models import PromptScope, SavedPrompt
@@ -81,7 +81,7 @@ class PromptService:
             prompt.project_repo = project_repo
         if tags is not None:
             prompt.tags = tags
-        prompt.updated_at = datetime.utcnow()
+        prompt.updated_at = datetime.now(UTC)
 
         updated = await self._repository.update(prompt)
         logger.info("Updated saved prompt: id=%s", updated.id)

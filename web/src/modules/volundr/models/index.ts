@@ -131,6 +131,7 @@ export type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
+  SessionDefinition,
 } from './volundr.model';
 
 export { TASK_TYPES, CLI_TOOL_LABELS } from './volundr.model';

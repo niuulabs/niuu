@@ -103,6 +103,7 @@ class TestConfigFlockFlowProviderYAML:
         assert restored.description == original.description
         assert len(restored.personas) == len(original.personas)
         assert restored.personas[1].llm == original.personas[1].llm
+        assert restored.mimir == original.mimir
         assert restored.mimir_hosted_url == original.mimir_hosted_url
         assert restored.sleipnir_publish_urls == original.sleipnir_publish_urls
         assert restored.max_concurrent_tasks == original.max_concurrent_tasks

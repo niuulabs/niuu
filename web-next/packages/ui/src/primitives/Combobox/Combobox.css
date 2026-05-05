@@ -1,0 +1,61 @@
+/* Base form control styles live in form-control.css. Only combobox-specific rules below. */
+
+.niuu-combobox {
+  position: relative;
+  width: 100%;
+}
+
+.niuu-combobox__content {
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 50;
+  width: var(--radix-popover-trigger-width);
+  max-height: 240px;
+  overflow: hidden;
+}
+
+.niuu-combobox__list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1);
+  overflow-y: auto;
+  max-height: 232px;
+}
+
+.niuu-combobox__option {
+  display: flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.niuu-combobox__option:hover,
+.niuu-combobox__option:focus {
+  background-color: color-mix(in srgb, var(--color-brand-500, var(--brand-500)) 12%, transparent);
+}
+
+.niuu-combobox__option--selected {
+  color: var(--color-brand-300, var(--brand-300));
+  background-color: color-mix(in srgb, var(--color-brand-500, var(--brand-500)) 8%, transparent);
+}
+
+.niuu-combobox__option--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.niuu-combobox__empty {
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}

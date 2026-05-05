@@ -28,6 +28,7 @@ class FlockFlowBody(BaseModel):
     description: str = ""
     personas: list[PersonaOverrideBody] = Field(default_factory=list)
     mesh_transport: str = "nng"
+    mimir: dict = Field(default_factory=dict)
     mimir_hosted_url: str = ""
     sleipnir_publish_urls: list[str] = Field(default_factory=list)
     max_concurrent_tasks: int = Field(default=3, ge=1, le=100)
@@ -38,6 +39,7 @@ class FlockFlowResponse(BaseModel):
     description: str
     personas: list[PersonaOverrideBody]
     mesh_transport: str
+    mimir: dict
     mimir_hosted_url: str
     sleipnir_publish_urls: list[str]
     max_concurrent_tasks: int
@@ -63,6 +65,7 @@ def _to_response(flow: FlockFlowConfig) -> FlockFlowResponse:
             for p in flow.personas
         ],
         mesh_transport=flow.mesh_transport,
+        mimir=dict(flow.mimir),
         mimir_hosted_url=flow.mimir_hosted_url,
         sleipnir_publish_urls=flow.sleipnir_publish_urls,
         max_concurrent_tasks=flow.max_concurrent_tasks,
@@ -84,6 +87,7 @@ def _body_to_domain(body: FlockFlowBody) -> FlockFlowConfig:
             for p in body.personas
         ],
         mesh_transport=body.mesh_transport,
+        mimir=dict(body.mimir),
         mimir_hosted_url=body.mimir_hosted_url,
         sleipnir_publish_urls=body.sleipnir_publish_urls,
         max_concurrent_tasks=body.max_concurrent_tasks,

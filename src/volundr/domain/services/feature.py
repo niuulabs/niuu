@@ -10,6 +10,11 @@ from volundr.config import FeatureModuleConfig
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 @dataclass(frozen=True)
 class FeatureModule:
     """A resolved feature module with admin override applied."""
@@ -102,7 +107,11 @@ class FeatureService:
             key,
             enabled,
         )
-        logger.info("Feature '%s' set to enabled=%s", key, enabled)
+        logger.info(
+            "Feature '%s' set to enabled=%s",
+            _sanitize_log(key),
+            _sanitize_log(enabled),
+        )
 
     async def get_user_preferences(
         self,

@@ -1,6 +1,6 @@
 """PostgreSQL adapter for token tracking."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -26,7 +26,7 @@ class PostgresTokenTracker(TokenTracker):
     ) -> TokenUsageRecord:
         """Record token usage for a session."""
         record_id = uuid4()
-        recorded_at = datetime.utcnow()
+        recorded_at = datetime.now(UTC)
         cost_decimal = Decimal(str(cost)) if cost is not None else None
 
         async with self._pool.acquire() as conn:

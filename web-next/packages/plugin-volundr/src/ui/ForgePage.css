@@ -1,0 +1,761 @@
+.vol-forge {
+  min-height: 100%;
+  background: #090a0d;
+  color: #f3f5f8;
+  padding: 26px 32px 28px;
+}
+
+.vol-forge--loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vol-forge__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.vol-forge__metric {
+  min-height: 190px;
+  border: 1px solid rgba(75, 82, 97, 0.72);
+  border-radius: 18px;
+  background: #1a1b1f;
+  padding: 18px 22px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.vol-forge__metric--brand {
+  border-color: rgba(95, 173, 228, 0.58);
+}
+
+.vol-forge__metric-label,
+.vol-forge__panel-title span,
+.vol-forge__tail-time,
+.vol-forge__tail-sep {
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+}
+
+.vol-forge__metric-label {
+  color: #787c87;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  margin-bottom: 10px;
+}
+
+.vol-forge__metric-value {
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 43px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: #fcfdff;
+}
+
+.vol-forge__metric-sub {
+  margin-top: 12px;
+  color: #8b909c;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.vol-forge__metric-viz {
+  margin-top: 18px;
+  color: #8fd8ff;
+}
+
+.vol-forge__gpu-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-top: 8px;
+}
+
+.vol-forge__gpu-cell {
+  width: 14px;
+  height: 20px;
+  border-radius: 4px;
+  background: rgba(73, 76, 84, 0.52);
+  border: 1px solid rgba(108, 113, 125, 0.4);
+}
+
+.vol-forge__gpu-cell.is-used {
+  background: linear-gradient(180deg, #6cc5ff 0%, #4ea7ea 100%);
+  border-color: rgba(113, 194, 255, 0.72);
+  box-shadow: 0 0 8px rgba(96, 190, 255, 0.18);
+}
+
+.vol-forge__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(360px, 1fr);
+  gap: 18px;
+}
+
+.vol-forge__panel {
+  border: 1px solid rgba(78, 83, 95, 0.72);
+  border-radius: 18px;
+  background: #1a1b1f;
+  overflow: hidden;
+}
+
+.vol-forge__panel--inflight {
+  grid-column: 1;
+}
+
+.vol-forge__panel--load {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.vol-forge__panel--launch {
+  grid-column: 1;
+}
+
+.vol-forge__panel--recent,
+.vol-forge__panel--errors {
+  grid-column: 1 / -1;
+}
+
+.vol-forge__panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(71, 76, 87, 0.62);
+}
+
+.vol-forge__panel-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.vol-forge__panel-title h2 {
+  margin: 0;
+  color: #f1f3f7;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.vol-forge__panel-title span {
+  color: #7f8490;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.vol-forge__panel-title--critical h2 {
+  color: #f28585;
+}
+
+.vol-forge__panel-link {
+  border: 0;
+  background: transparent;
+  color: #9196a1;
+  cursor: pointer;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.vol-forge__panel-link:hover {
+  color: #cdeeff;
+}
+
+.vol-forge__inflight-list,
+.vol-forge__load-list,
+.vol-forge__tail-list,
+.vol-forge__error-list {
+  padding: 8px 0;
+}
+
+.vol-forge__inflight-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.15fr) minmax(180px, 1.3fr) minmax(140px, 0.9fr) auto auto;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid rgba(67, 71, 80, 0.58);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 16px 20px;
+  text-align: left;
+}
+
+.vol-forge__inflight-list > .vol-forge__inflight-row:first-child {
+  border-top: 0;
+}
+
+.vol-forge__inflight-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.vol-forge__inflight-row.is-booting {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.vol-forge__inflight-ident {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.vol-forge__inflight-namecol {
+  min-width: 0;
+}
+
+.vol-forge__inflight-name,
+.vol-forge__launch-name,
+.vol-forge__cluster-name,
+.vol-forge__error-title span:first-child,
+.vol-forge__tail-name {
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+}
+
+.vol-forge__inflight-name {
+  color: #eef3f8;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.vol-forge__inflight-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: #848997;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vol-forge__sep {
+  color: #666c78;
+}
+
+.vol-forge__inflight-preview,
+.vol-forge__tail-preview,
+.vol-forge__error-message,
+.vol-forge__launch-desc,
+.vol-forge__booting-copy {
+  color: #a2a8b4;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.vol-forge__inflight-preview,
+.vol-forge__tail-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vol-forge__inflight-resources {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  min-width: 0;
+}
+
+.vol-forge__booting-copy {
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+}
+
+.vol-forge__inflight-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #9197a4;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.vol-forge__inflight-badge {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.vol-forge__connection-badge {
+  min-width: 34px;
+  justify-content: center;
+}
+
+.vol-forge__boot-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(68, 72, 82, 0.62);
+}
+
+.vol-forge__boot-progress-fill {
+  height: 100%;
+  background: #55b3ef;
+}
+
+.vol-forge__cluster-row {
+  padding: 18px 20px;
+  border-top: 1px solid rgba(67, 71, 80, 0.58);
+}
+
+.vol-forge__load-list > .vol-forge__cluster-row:first-child {
+  border-top: 0;
+}
+
+.vol-forge__cluster-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vol-forge__cluster-namewrap,
+.vol-forge__cluster-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.vol-forge__cluster-name {
+  color: #f1f4f8;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.vol-forge__cluster-realm,
+.vol-forge__cluster-count {
+  color: #7f8591;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.vol-forge__kind {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.vol-forge__kind--primary {
+  background: rgba(69, 150, 221, 0.18);
+  color: #bcecff;
+}
+
+.vol-forge__kind--gpu {
+  background: rgba(120, 89, 207, 0.2);
+  color: #d3b8ff;
+}
+
+.vol-forge__kind--edge {
+  background: rgba(84, 168, 117, 0.2);
+  color: #aef5c4;
+}
+
+.vol-forge__kind--local {
+  background: rgba(190, 116, 170, 0.18);
+  color: #ffc4ef;
+}
+
+.vol-forge__kind--observ {
+  background: rgba(122, 154, 180, 0.18);
+  color: #bedcf4;
+}
+
+.vol-forge__kind--media {
+  background: rgba(177, 131, 70, 0.2);
+  color: #f2cc93;
+}
+
+.vol-forge__cluster-meters {
+  display: flex;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.vol-forge__meter-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.vol-forge__meter-empty span {
+  color: #777d89;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 11px;
+}
+
+.vol-forge__meter-empty-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(67, 71, 80, 0.58);
+}
+
+.vol-forge__launch-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 18px 20px 0;
+}
+
+.vol-forge__launch-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 148px;
+  border: 1px solid rgba(88, 94, 108, 0.72);
+  border-radius: 12px;
+  background: #090a0d;
+  padding: 18px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.vol-forge__launch-card:hover {
+  border-color: rgba(95, 173, 228, 0.72);
+}
+
+.vol-forge__launch-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.vol-forge__launch-default {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 3px 9px;
+  background: rgba(69, 150, 221, 0.18);
+  color: #bcecff;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.vol-forge__launch-name {
+  color: #eef3f7;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.vol-forge__launch-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  color: #8f95a2;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.vol-forge__launch-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: calc(100% - 40px);
+  margin: 18px 20px 20px;
+  border: 1px dashed rgba(88, 94, 108, 0.72);
+  border-radius: 12px;
+  background: transparent;
+  color: #818692;
+  cursor: pointer;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 13px 16px;
+}
+
+.vol-forge__launch-cta:hover {
+  border-color: rgba(95, 173, 228, 0.72);
+  color: #cbeeff;
+}
+
+.vol-forge__tail-list {
+  list-style: none;
+  margin: 0;
+}
+
+.vol-forge__tail-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(180px, 240px) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 13px 20px;
+  border-top: 1px solid rgba(67, 71, 80, 0.58);
+}
+
+.vol-forge__tail-list > .vol-forge__tail-row:first-child {
+  border-top: 0;
+}
+
+.vol-forge__tail-time {
+  color: #c1c5cf;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.vol-forge__tail-name {
+  color: #edf2f7;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.vol-forge__error-list {
+  padding: 0 0 10px;
+}
+
+.vol-forge__error-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  border-top: 1px solid rgba(124, 83, 83, 0.46);
+}
+
+.vol-forge__error-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.vol-forge__error-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.vol-forge__error-title span:first-child {
+  color: #f0f4f8;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.vol-forge__error-title span:last-child {
+  color: #787d88;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.vol-forge__error-message {
+  margin-top: 6px;
+  color: #f09d9d;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+}
+
+.vol-forge__retry-btn {
+  border: 1px solid rgba(96, 171, 231, 0.78);
+  border-radius: 10px;
+  background: rgba(27, 90, 129, 0.18);
+  color: #d5f1ff;
+  cursor: pointer;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    Liberation Mono,
+    monospace;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 9px 14px;
+}
+
+@media (max-width: 1500px) {
+  .vol-forge__inflight-row {
+    grid-template-columns: minmax(220px, 1.1fr) minmax(180px, 1fr) minmax(120px, 0.8fr) auto;
+  }
+
+  .vol-forge__inflight-badge {
+    grid-column: 4;
+  }
+}
+
+@media (max-width: 1280px) {
+  .vol-forge {
+    padding: 20px;
+  }
+
+  .vol-forge__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .vol-forge__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vol-forge__panel--load,
+  .vol-forge__panel--launch,
+  .vol-forge__panel--recent,
+  .vol-forge__panel--errors {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .vol-forge__tail-row {
+    grid-template-columns: auto auto minmax(140px, 200px) auto minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .vol-forge__metrics,
+  .vol-forge__launch-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vol-forge__inflight-row,
+  .vol-forge__tail-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .vol-forge__inflight-stats,
+  .vol-forge__inflight-badge,
+  .vol-forge__tail-time,
+  .vol-forge__tail-sep {
+    justify-content: flex-start;
+  }
+
+  .vol-forge__cluster-meters {
+    flex-direction: column;
+  }
+}

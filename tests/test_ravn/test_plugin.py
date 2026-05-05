@@ -81,10 +81,10 @@ def test_register_service_depends_on_postgres():
     assert "postgres" in defn.depends_on
 
 
-def test_register_service_description_mentions_persona():
+def test_register_service_description_mentions_agent_runtime():
     plugin = RavnPlugin()
     defn = plugin.register_service()
-    assert "persona" in defn.description.lower()
+    assert "agent" in defn.description.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ def test_create_api_app_returns_fastapi():
     assert isinstance(app, FastAPI)
 
 
-def test_create_api_app_includes_personas_endpoint():
+def test_create_api_app_does_not_mount_personas_endpoint():
     from pathlib import Path
 
     from fastapi.testclient import TestClient
@@ -324,5 +324,93 @@ def test_create_api_app_includes_personas_endpoint():
 
     client = TestClient(app)
     resp = client.get("/api/v1/ravn/personas")
-    assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert resp.status_code == 404
+
+
+def test_create_api_app_lists_ravens_sessions_and_triggers():
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    plugin = RavnPlugin()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Path, "home", staticmethod(lambda: Path("/tmp/ravn-plugin-test")))
+        app = plugin.create_api_app()
+
+    client = TestClient(app)
+
+    ravens = client.get("/api/v1/ravn/ravens")
+    assert ravens.status_code == 200
+    assert isinstance(ravens.json(), list)
+    assert ravens.json()[0]["persona_name"]
+
+    sessions = client.get("/api/v1/ravn/sessions")
+    assert sessions.status_code == 200
+    assert isinstance(sessions.json(), list)
+    assert sessions.json()[0]["ravn_id"]
+
+    triggers = client.get("/api/v1/ravn/triggers")
+    assert triggers.status_code == 200
+    assert isinstance(triggers.json(), list)
+    assert triggers.json()[0]["persona_name"]
+
+
+def test_create_api_app_supports_session_messages_and_budget_routes():
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    plugin = RavnPlugin()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Path, "home", staticmethod(lambda: Path("/tmp/ravn-plugin-test")))
+        app = plugin.create_api_app()
+
+    client = TestClient(app)
+
+    session = client.get("/api/v1/ravn/sessions/10000001-0000-4000-8000-000000000001")
+    assert session.status_code == 200
+    assert session.json()["persona_name"] == "sindri"
+
+    messages = client.get("/api/v1/ravn/sessions/10000001-0000-4000-8000-000000000001/messages")
+    assert messages.status_code == 200
+    assert isinstance(messages.json(), list)
+    assert messages.json()[0]["session_id"] == "10000001-0000-4000-8000-000000000001"
+
+    budget = client.get("/api/v1/ravn/budget/a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c")
+    assert budget.status_code == 200
+    assert budget.json()["spent_usd"] > 0
+
+    fleet = client.get("/api/v1/ravn/budget/fleet")
+    assert fleet.status_code == 200
+    assert fleet.json()["cap_usd"] > 0
+
+
+def test_create_api_app_supports_trigger_crud():
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    plugin = RavnPlugin()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Path, "home", staticmethod(lambda: Path("/tmp/ravn-plugin-test")))
+        app = plugin.create_api_app()
+
+    client = TestClient(app)
+
+    created = client.post(
+        "/api/v1/ravn/triggers",
+        json={
+            "kind": "manual",
+            "persona_name": "muninn",
+            "spec": "index-now",
+            "enabled": True,
+        },
+    )
+    assert created.status_code == 201
+    created_id = created.json()["id"]
+
+    deleted = client.delete(f"/api/v1/ravn/triggers/{created_id}")
+    assert deleted.status_code == 204

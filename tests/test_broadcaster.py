@@ -64,7 +64,7 @@ class TestInMemoryEventBroadcaster:
         event = RealtimeEvent(
             type=EventType.HEARTBEAT,
             data={},
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         received_events: list[RealtimeEvent] = []
@@ -95,7 +95,7 @@ class TestInMemoryEventBroadcaster:
         event = RealtimeEvent(
             type=EventType.HEARTBEAT,
             data={"test": "data"},
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         received_1: list[RealtimeEvent] = []
@@ -293,7 +293,7 @@ class TestInMemoryEventBroadcaster:
             event = RealtimeEvent(
                 type=EventType.HEARTBEAT,
                 data={"index": i},
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
             )
             await broadcaster.publish(event)
 
@@ -366,7 +366,7 @@ class TestInMemoryEventBroadcaster:
         event = RealtimeEvent(
             type=EventType.HEARTBEAT,
             data={},
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         # Publish should not raise, but should remove the dead queue
@@ -388,7 +388,7 @@ class TestInMemoryEventBroadcaster:
         event = RealtimeEvent(
             type=EventType.HEARTBEAT,
             data={},
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         # Should handle the QueueEmpty gracefully and still put the event

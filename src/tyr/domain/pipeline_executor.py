@@ -58,7 +58,7 @@ from tyr.domain.utils import _session_name, _slugify
 from tyr.ports.event_bus import EventBusPort, TyrEvent
 from tyr.ports.flock_flow import FlockFlowProvider
 from tyr.ports.saga_repository import SagaRepository
-from tyr.ports.volundr import SpawnRequest, VolundrFactory
+from tyr.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort
 
 logger = logging.getLogger(__name__)
 
@@ -541,6 +541,8 @@ class PipelineExecutor:
             )
             return
 
+        integration_ids = await self._resolve_integration_ids(volundr)
+
         raids = await self._saga_repo.get_raids_by_phase(phase.id)
         repo = saga.repos[0] if saga.repos else ""
         for raid, tpl_raid in zip(raids, tpl_phase.raids):
@@ -551,6 +553,7 @@ class PipelineExecutor:
                     tpl_raid=tpl_raid,
                     repo=repo,
                     prompt=tpl_raid.prompt,
+                    integration_ids=integration_ids,
                 )
                 session = await volundr.spawn_session(request=request)
                 updated = replace(
@@ -591,6 +594,7 @@ class PipelineExecutor:
         tpl_raid: TemplateRaid | None,
         repo: str,
         prompt: str,
+        integration_ids: list[str],
     ) -> SpawnRequest:
         """Build a SpawnRequest for a single raid.
 
@@ -607,7 +611,7 @@ class PipelineExecutor:
             system_prompt="",
             initial_prompt=prompt,
             profile=(tpl_raid.persona or None) if tpl_raid else None,
-            integration_ids=[],
+            integration_ids=integration_ids,
         )
 
     async def _gate_phase(
@@ -653,6 +657,24 @@ class PipelineExecutor:
             phase.name,
             saga.slug,
         )
+
+    async def _resolve_integration_ids(self, volundr: VolundrPort) -> list[str]:
+        """Resolve enabled integration IDs for this executor's owner."""
+        try:
+            ids = await volundr.list_integration_ids()
+            logger.info(
+                "PipelineExecutor: resolved %d integration IDs for owner %s",
+                len(ids),
+                self._owner_id[:8],
+            )
+            return ids
+        except Exception:
+            logger.warning(
+                "PipelineExecutor: failed to resolve integrations for owner %s",
+                self._owner_id[:8],
+                exc_info=True,
+            )
+            return []
 
     # ------------------------------------------------------------------
     # Phase completion / fan-in
@@ -769,6 +791,8 @@ class PipelineExecutor:
             )
             return
 
+        integration_ids = await self._resolve_integration_ids(volundr)
+
         raids = await self._saga_repo.get_raids_by_phase(next_phase.id)
         repo = saga.repos[0] if saga.repos else ""
         for raid in raids:
@@ -779,6 +803,7 @@ class PipelineExecutor:
                     tpl_raid=None,
                     repo=repo,
                     prompt=raid.description,
+                    integration_ids=integration_ids,
                 )
                 session = await volundr.spawn_session(request=request)
                 updated = replace(
@@ -904,6 +929,7 @@ class TemplateAwarePipelineExecutor(PipelineExecutor):
         tpl_raid: TemplateRaid | None,
         repo: str,
         prompt: str,
+        integration_ids: list[str],
     ) -> SpawnRequest:
         """Inject flock workload_config when a flow is registered for this saga."""
         flock_flow_name = self._saga_flock_flows.get(str(saga.id))
@@ -928,7 +954,7 @@ class TemplateAwarePipelineExecutor(PipelineExecutor):
             system_prompt="",
             initial_prompt=prompt,
             profile=(tpl_raid.persona or None) if tpl_raid else None,
-            integration_ids=[],
+            integration_ids=integration_ids,
             workload_type="ravn_flock" if workload_config else "default",
             workload_config=workload_config or {},
         )
@@ -1057,6 +1083,7 @@ class TemplateAwarePipelineExecutor(PipelineExecutor):
 
         raids = await self._saga_repo.get_raids_by_phase(next_phase.id)
         repo = saga.repos[0] if saga.repos else ""
+        integration_ids = await self._resolve_integration_ids(volundr)
         for i, raid in enumerate(raids):
             tpl_raid = tpl_phase.raids[i] if tpl_phase and i < len(tpl_phase.raids) else None
             base_prompt = tpl_raid.prompt if tpl_raid else raid.description
@@ -1069,6 +1096,7 @@ class TemplateAwarePipelineExecutor(PipelineExecutor):
                 tpl_raid=tpl_raid,
                 repo=repo,
                 prompt=prompt,
+                integration_ids=integration_ids,
             )
             try:
                 session = await volundr.spawn_session(request=request)

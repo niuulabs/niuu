@@ -19,6 +19,16 @@ class IntegrationRepository(ABC):
         """List connections for a user, optionally filtered by type."""
 
     @abstractmethod
+    async def list_connections_global(
+        self,
+        integration_type: IntegrationType | None = None,
+        *,
+        slug: str | None = None,
+        enabled_only: bool = False,
+    ) -> list[IntegrationConnection]:
+        """List connections across all owners with optional filters."""
+
+    @abstractmethod
     async def get_connection(self, connection_id: str) -> IntegrationConnection | None:
         """Get a single connection by ID."""
 

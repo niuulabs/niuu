@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from tyr.config import ReviewConfig
 from tyr.domain.models import PRStatus, Raid
-from tyr.ports.volundr import SpawnRequest, VolundrFactory, VolundrSession
+from tyr.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort, VolundrSession
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +310,12 @@ class ReviewerSessionService:
                 except Exception:
                     continue
 
+        if not integration_ids:
+            integration_ids = await self._resolve_integration_ids(
+                volundr=volundr,
+                owner_id=owner_id,
+            )
+
         diff_summary = self._get_diff_summary(raid)
 
         initial_prompt = build_reviewer_initial_prompt(
@@ -334,7 +340,7 @@ class ReviewerSessionService:
             initial_prompt=initial_prompt,
             workload_type="reviewer",
             profile=self._cfg.reviewer_profile,
-            integration_ids=integration_ids or [],
+            integration_ids=integration_ids,
         )
 
         logger.info(
@@ -343,7 +349,7 @@ class ReviewerSessionService:
             working_session.branch if working_session else "?",
             self._cfg.reviewer_model,
             self._cfg.reviewer_profile,
-            len(integration_ids or []),
+            len(integration_ids),
         )
         try:
             session = await volundr.spawn_session(request)
@@ -360,6 +366,29 @@ class ReviewerSessionService:
                 exc_info=True,
             )
             return None
+
+    async def _resolve_integration_ids(
+        self,
+        *,
+        volundr: VolundrPort,
+        owner_id: str,
+    ) -> list[str]:
+        """Resolve enabled integration IDs for reviewer session spawns."""
+        try:
+            ids = await volundr.list_integration_ids()
+            logger.info(
+                "Resolved %d integration IDs for reviewer session owner %s",
+                len(ids),
+                owner_id[:8],
+            )
+            return ids
+        except Exception:
+            logger.warning(
+                "Failed to resolve Volundr integrations for reviewer owner %s",
+                owner_id[:8],
+                exc_info=True,
+            )
+            return []
 
     async def send_feedback_to_working_session(
         self,

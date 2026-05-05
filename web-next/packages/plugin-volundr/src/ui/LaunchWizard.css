@@ -1,0 +1,18 @@
+.vol-launch-wizard {
+  width: min(1080px, calc(100vw - var(--space-8))) !important;
+  max-width: none !important;
+}
+
+.vol-launch-wizard__body {
+  min-width: 960px;
+}
+
+@media (max-width: 1100px) {
+  .vol-launch-wizard {
+    width: calc(100vw - var(--space-8)) !important;
+  }
+
+  .vol-launch-wizard__body {
+    min-width: 0;
+  }
+}

@@ -10,6 +10,9 @@ from volundr.adapters.outbound.contributors.secrets import (
     SecretInjectionContributor,
     SecretsContributor,
 )
+from volundr.adapters.outbound.contributors.session_def import (
+    SessionDefinitionContributor,
+)
 from volundr.adapters.outbound.contributors.storage import StorageContributor
 from volundr.adapters.outbound.contributors.template import TemplateContributor
 
@@ -21,6 +24,7 @@ __all__ = [
     "IsolationContributor",
     "RavnFlockContributor",
     "SecretInjectionContributor",
+    "SessionDefinitionContributor",
     "StorageContributor",
     "TemplateContributor",
     "SecretsContributor",

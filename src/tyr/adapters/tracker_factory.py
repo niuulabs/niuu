@@ -9,6 +9,7 @@ from niuu.domain.models import IntegrationType
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.integrations import IntegrationRepository
 from niuu.utils import import_class
+from tyr.adapters.native import NativeTrackerAdapter
 from tyr.ports.tracker import TrackerPort
 
 logger = logging.getLogger(__name__)
@@ -76,4 +77,11 @@ class TrackerAdapterFactory:
                     conn.id,
                     exc_info=True,
                 )
+        if not adapters and self._pool is not None:
+            logger.info(
+                "No tracker integrations configured for owner %s; "
+                "using NativeTrackerAdapter fallback",
+                owner_id,
+            )
+            adapters.append(NativeTrackerAdapter(pool=self._pool))
         return adapters

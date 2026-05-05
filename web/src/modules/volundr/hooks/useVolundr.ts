@@ -37,6 +37,7 @@ interface UseVolundrResult {
     source: SessionSource;
     model: string;
     templateName?: string;
+    definition?: string;
     taskType?: string;
     trackerIssue?: TrackerIssue;
     terminalRestricted?: boolean;

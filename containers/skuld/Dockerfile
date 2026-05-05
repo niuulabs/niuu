@@ -20,7 +20,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Upgrade pip to latest to avoid GHSA-4xh5-x5gv-qwph / GHSA-6vgw-5pg2-w6jp,
 # then install build backend
-RUN pip install --no-cache-dir --upgrade pip==25.0.1 \
+RUN pip install --no-cache-dir --upgrade pip==26.1.1 \
     && pip install --no-cache-dir hatchling==1.29.0
 
 # Copy volundr package and install
@@ -38,7 +38,7 @@ FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194
 
 
 LABEL org.opencontainers.image.title="skuld"
-LABEL org.opencontainers.image.description="Skuld — remote AI coding session broker (Claude Code + Codex)"
+LABEL org.opencontainers.image.description="Skuld — remote AI coding session broker (Claude Code, Codex, OpenCode)"
 LABEL org.opencontainers.image.vendor="Niuu Labs"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
@@ -66,13 +66,16 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade bundled npm to fix GHSA-qffp-2rhf-9h96 (tar) and GHSA-*-minimatch CVEs
-RUN npm install -g npm@11.3.0
+RUN npm install -g npm@11.13.0
 
 # Install Claude Code CLI globally via npm
-RUN npm install -g @anthropic-ai/claude-code@2.1.81
+RUN npm install -g @anthropic-ai/claude-code@2.1.119
 
 # Install OpenAI Codex CLI globally via npm
-RUN npm install -g @openai/codex@0.114.0
+RUN npm install -g @openai/codex@0.125.0
+
+# Install OpenCode (opencode.ai) globally via npm
+RUN npm install -g opencode-ai@1.14.29
 
 # Create app user with UID 1000 (matches helm chart runAsUser)
 RUN existing=$(getent passwd 1000 | cut -d: -f1) && \

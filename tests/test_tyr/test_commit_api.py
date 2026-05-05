@@ -159,6 +159,8 @@ class TestCommitSaga:
         assert data["feature_branch"] == "feat/my-saga"
         assert data["base_branch"] == "main"
         assert data["status"] == "ACTIVE"
+        assert data["created_at"]
+        assert data["phase_summary"] == {"total": 2, "completed": 0}
         # Has a valid UUID id
         UUID(data["id"])
         # Has tracker_id from mock

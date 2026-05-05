@@ -7,6 +7,7 @@ Stores sagas, phases, and raids entirely in Tyr's PostgreSQL schema.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from uuid import UUID
@@ -62,9 +63,23 @@ class NativeTrackerAdapter(TrackerPort):
             """
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
-                 repos, feature_branch, status, confidence, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            ON CONFLICT (id) DO NOTHING
+                 repos, feature_branch, base_branch, status, confidence, created_at,
+                 owner_id, workflow_id, workflow_version, workflow_snapshot)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+                tracker_id = EXCLUDED.tracker_id,
+                tracker_type = EXCLUDED.tracker_type,
+                slug = EXCLUDED.slug,
+                name = EXCLUDED.name,
+                repos = EXCLUDED.repos,
+                feature_branch = EXCLUDED.feature_branch,
+                base_branch = EXCLUDED.base_branch,
+                status = EXCLUDED.status,
+                confidence = EXCLUDED.confidence,
+                owner_id = EXCLUDED.owner_id,
+                workflow_id = EXCLUDED.workflow_id,
+                workflow_version = EXCLUDED.workflow_version,
+                workflow_snapshot = EXCLUDED.workflow_snapshot
             """,
             saga.id,
             tracker_id,
@@ -73,9 +88,14 @@ class NativeTrackerAdapter(TrackerPort):
             saga.name,
             saga.repos,
             saga.feature_branch,
+            saga.base_branch,
             saga.status.value,
             saga.confidence,
             saga.created_at,
+            saga.owner_id,
+            saga.workflow_id,
+            saga.workflow_version,
+            json.dumps(saga.workflow_snapshot) if saga.workflow_snapshot is not None else None,
         )
         return tracker_id
 
@@ -209,7 +229,8 @@ class NativeTrackerAdapter(TrackerPort):
         if milestone_id:
             rows = await self._pool.fetch(
                 """
-                SELECT r.* FROM raids r
+                SELECT r.*, p.tracker_id AS milestone_tracker_id
+                FROM raids r
                 JOIN phases p ON p.id = r.phase_id
                 JOIN sagas s ON s.id = p.saga_id
                 WHERE s.tracker_id = $1 AND p.tracker_id = $2
@@ -221,7 +242,8 @@ class NativeTrackerAdapter(TrackerPort):
         else:
             rows = await self._pool.fetch(
                 """
-                SELECT r.* FROM raids r
+                SELECT r.*, p.tracker_id AS milestone_tracker_id
+                FROM raids r
                 JOIN phases p ON p.id = r.phase_id
                 JOIN sagas s ON s.id = p.saga_id
                 WHERE s.tracker_id = $1
@@ -586,9 +608,10 @@ class NativeTrackerAdapter(TrackerPort):
             title=row["name"],
             description=row.get("description", "") or "",
             status=_RAID_STATUS_DISPLAY.get(status, status.value),
+            status_type="unstarted" if status == RaidStatus.PENDING else "",
             assignee=None,
             labels=[],
             priority=0,
             url="",
-            milestone_id=None,
+            milestone_id=row.get("milestone_tracker_id") or row.get("milestone_id"),
         )

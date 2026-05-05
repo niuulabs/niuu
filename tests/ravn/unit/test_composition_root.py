@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ravn.adapters.personas.loader import PersonaExecutorConfig
 from ravn.config import Settings
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,26 @@ class TestBuildLlm:
 
         _, kwargs = mock_cls.call_args
         assert kwargs["api_key"] == "custom-key"
+
+
+class TestBuildExecutor:
+    def test_default_returns_agent_executor(self) -> None:
+        from ravn.cli.commands import _build_executor
+
+        executor = _build_executor()
+        assert type(executor).__name__ == "AgentExecutor"
+
+    def test_persona_executor_override_is_loaded(self) -> None:
+        from ravn.cli.commands import _build_executor
+
+        persona = MagicMock(
+            executor=PersonaExecutorConfig(
+                adapter="ravn.adapters.executors.agent.AgentExecutor",
+                kwargs={"mode": "default"},
+            )
+        )
+        executor = _build_executor(persona)
+        assert type(executor).__name__ == "AgentExecutor"
 
 
 # ---------------------------------------------------------------------------

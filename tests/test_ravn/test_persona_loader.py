@@ -188,6 +188,19 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg is not None
         assert cfg.iteration_budget == 0
 
+    def test_executor_config_parses(self) -> None:
+        yaml = (
+            "name: x\n"
+            "executor:\n"
+            "  adapter: ravn.adapters.executors.agent.AgentExecutor\n"
+            "  kwargs:\n"
+            "    mode: default\n"
+        )
+        cfg = FilesystemPersonaAdapter.parse(yaml)
+        assert cfg is not None
+        assert cfg.executor.adapter == "ravn.adapters.executors.agent.AgentExecutor"
+        assert cfg.executor.kwargs == {"mode": "default"}
+
 
 # ---------------------------------------------------------------------------
 # FilesystemPersonaAdapter.load_from_file

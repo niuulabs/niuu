@@ -29,10 +29,12 @@ from ravn.adapters.channels.composite import CompositeChannel
 from ravn.adapters.channels.mesh_channel import MeshActivityChannel
 from ravn.adapters.channels.silent import SilentChannel
 from ravn.adapters.channels.skuld_channel import SkuldChannel
+from ravn.adapters.channels.task_context import TaskContextChannel
 from ravn.adapters.events.noop_publisher import NoOpEventPublisher
 from ravn.config import BudgetConfig, InitiativeConfig, Settings
 from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
+from ravn.domain.exceptions import LLMError
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
@@ -429,6 +431,9 @@ class DriveLoop:
         )
 
         # Skuld channel for browser delivery (mesh cascade visualization)
+        # TODO(niu-activity-bus): Once direct Skuld streaming is stable again,
+        # split high-frequency live activity onto a dedicated activity bus/channel
+        # and leave workflow/outcome propagation on the mesh.
         self._skuld_channel: SkuldChannel | None = None
         if settings.skuld.enabled:
             # peer_id is appended to the broker_url
@@ -712,6 +717,17 @@ class DriveLoop:
         if event is not None:
             event.set()
 
+    def _wrap_activity_channel(self, channel: ChannelPort, task: AgentTask) -> ChannelPort:
+        """Attach stable outer session/task ids to live activity events."""
+        root_corr = task.root_correlation_id or task.task_id
+        return TaskContextChannel(
+            channel,
+            correlation_id=task.task_id,
+            session_id=task.session_id,
+            task_id=task.task_id,
+            root_correlation_id=root_corr,
+        )
+
     async def _run_task(self, task: AgentTask) -> None:
         """Execute a single initiative task."""
         # Budget pre-check: skip when daily cap is reached.
@@ -737,9 +753,11 @@ class DriveLoop:
             extra: list[ChannelPort] = []
             if self._skuld_channel is not None:
                 self._skuld_channel._persona = task.persona  # Update persona for this task
-                extra.append(self._skuld_channel)
-            if self._mesh is not None and peer_id:
-                extra.append(MeshActivityChannel(self._mesh, peer_id))
+                extra.append(self._wrap_activity_channel(self._skuld_channel, task))
+            elif self._mesh is not None and peer_id:
+                extra.append(
+                    self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
+                )
             if extra:
                 channel: ChannelPort = CompositeChannel([capture_channel, *extra])
             else:
@@ -748,9 +766,11 @@ class DriveLoop:
             sinks: list[ChannelPort] = []
             if self._skuld_channel is not None:
                 self._skuld_channel._persona = task.persona
-                sinks.append(self._skuld_channel)
-            if self._mesh is not None and peer_id:
-                sinks.append(MeshActivityChannel(self._mesh, peer_id))
+                sinks.append(self._wrap_activity_channel(self._skuld_channel, task))
+            elif self._mesh is not None and peer_id:
+                sinks.append(
+                    self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
+                )
             if sinks:
                 channel = CompositeChannel(sinks) if len(sinks) > 1 else sinks[0]
             else:
@@ -763,6 +783,16 @@ class DriveLoop:
             task.task_id,
             task.title,
             task.triggered_by,
+        )
+
+        await channel.emit(
+            RavnEvent.task_started(
+                source=self._source_id,
+                task_id=task.task_id,
+                title=task.title,
+                correlation_id=task.task_id,
+                session_id=task.session_id or task.task_id,
+            )
         )
 
         await self._event_publisher.publish(
@@ -825,6 +855,15 @@ class DriveLoop:
         except Exception as exc:
             logger.error("drive_loop: task %s failed: %s", task.task_id, exc)
             self._result_store.set_status(task.task_id, "failed")
+            await channel.emit(
+                RavnEvent.error(
+                    source=self._source_id,
+                    message=self._format_task_error(task, exc),
+                    correlation_id=task.task_id,
+                    session_id=task.session_id or task.task_id,
+                    task_id=task.task_id,
+                )
+            )
 
         outcome = "success" if success else "error"
         emit_fn = getattr(agent, "emit_session_ended", None)
@@ -851,6 +890,15 @@ class DriveLoop:
                 task_id=task.task_id,
             )
         )
+        await channel.emit(
+            RavnEvent.task_complete(
+                source=self._source_id,
+                success=success,
+                correlation_id=task.task_id,
+                session_id=task.session_id or task.task_id,
+                task_id=task.task_id,
+            )
+        )
 
         if capture_channel and capture_channel.surface_triggered:
             await self._re_deliver_surface(task, capture_channel.response_text)
@@ -864,6 +912,15 @@ class DriveLoop:
         if task.triggered_by and task.triggered_by.startswith("thread:"):
             thread_path = task.triggered_by.removeprefix("thread:")
             await self._finalise_thread(thread_path, success)
+
+    def _format_task_error(self, task: AgentTask, exc: Exception) -> str:
+        """Render a user-visible task failure message for live room chat."""
+        if isinstance(exc, LLMError):
+            return (
+                f"LLM backend unavailable while handling `{task.title}`: {exc}. "
+                "The task will not make progress until the upstream model/service recovers."
+            )
+        return f"{type(exc).__name__}: {exc}"
 
     async def _emit_sleipnir_task_completed(self, task: AgentTask, outcome: str) -> None:
         """Publish ravn.task.completed to Sleipnir (no-op when publisher absent)."""
@@ -895,6 +952,13 @@ class DriveLoop:
         This is fully generic — any persona with produces.event_type participates.
         """
         if self._mesh is None or self._persona_config is None:
+            return
+        if not success:
+            logger.info(
+                "drive_loop: skipping mesh outcome publish for failed task_id=%s persona=%s",
+                task.task_id,
+                self._persona_config.name,
+            )
             return
 
         # Parse outcome block from response
@@ -949,8 +1013,10 @@ class DriveLoop:
         except Exception:
             logger.warning("Failed to publish mesh outcome event; continuing.", exc_info=True)
 
-        # Also emit to skuld channel for browser visualization
-        if self._skuld_channel is not None:
+        # In flock mode, live browser activity/response flows directly over the
+        # Skuld websocket channel. Outcomes stay on the mesh to avoid duplicate
+        # room_outcome cards when both direct streaming and RoomMeshBridge exist.
+        if self._skuld_channel is not None and self._mesh is None:
             try:
                 await self._skuld_channel.emit(event)
             except Exception:

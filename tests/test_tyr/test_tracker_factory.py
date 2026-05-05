@@ -12,6 +12,7 @@ import pytest
 
 from niuu.domain.models import IntegrationConnection, IntegrationType
 from tests.test_tyr.conftest import StubCredentialStore, StubIntegrationRepo
+from tyr.adapters.native import NativeTrackerAdapter
 from tyr.adapters.tracker_factory import TrackerAdapterFactory
 from tyr.ports.tracker import TrackerPort
 
@@ -349,6 +350,24 @@ async def test_no_pool_does_not_inject_pool_kwarg() -> None:
     result = await factory.for_owner("owner-1")
     assert len(result) == 1
     assert "pool" not in result[0].kwargs
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_native_tracker_when_no_connections_and_pool_available() -> None:
+    class FakePool:
+        pass
+
+    pool = FakePool()
+    factory = TrackerAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=[]),
+        credential_store=StubCredentialStore(),
+        pool=pool,
+    )
+
+    result = await factory.for_owner("owner-1")
+
+    assert len(result) == 1
+    assert isinstance(result[0], NativeTrackerAdapter)
 
 
 @pytest.mark.asyncio

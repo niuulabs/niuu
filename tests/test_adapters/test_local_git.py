@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from volundr.adapters.outbound.local_git import (
     parse_log,
     parse_numstat,
     parse_pr_view,
+    resolve_repo_dir,
 )
 
 # ---------------------------------------------------------------------------
@@ -161,6 +163,23 @@ class TestParsePrView:
         assert result["mergeable"] == "UNKNOWN"
 
 
+class TestResolveRepoDir:
+    """Tests for workspace repo-root resolution."""
+
+    def test_prefers_nested_repo_checkout_when_present(self, tmp_path: Path):
+        workspace = tmp_path / "workspace"
+        nested_repo = workspace / "repo" / ".git"
+        nested_repo.mkdir(parents=True)
+
+        assert resolve_repo_dir(str(workspace)) == str(workspace / "repo")
+
+    def test_falls_back_to_workspace_root(self, tmp_path: Path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        assert resolve_repo_dir(str(workspace)) == str(workspace)
+
+
 # ---------------------------------------------------------------------------
 # LocalGitService subprocess tests (mocked)
 # ---------------------------------------------------------------------------
@@ -176,10 +195,24 @@ class TestLocalGitServiceDiffFiles:
             "volundr.adapters.outbound.local_git._run",
             new_callable=AsyncMock,
             return_value=(0, "10\t5\tsrc/main.py\n", ""),
-        ):
+        ) as mock_run:
             result = await service.diff_files("/workspace")
         assert len(result) == 1
         assert result[0]["path"] == "src/main.py"
+        assert mock_run.await_args.kwargs["cwd"] == "/workspace"
+
+    @pytest.mark.asyncio
+    async def test_prefers_nested_repo_directory(self, tmp_path: Path):
+        service = LocalGitService()
+        workspace = tmp_path / "workspace"
+        (workspace / "repo" / ".git").mkdir(parents=True)
+        with patch(
+            "volundr.adapters.outbound.local_git._run",
+            new_callable=AsyncMock,
+            return_value=(0, "10\t5\tsrc/main.py\n", ""),
+        ) as mock_run:
+            await service.diff_files(str(workspace))
+        assert mock_run.await_args.kwargs["cwd"] == str(workspace / "repo")
 
     @pytest.mark.asyncio
     async def test_returns_empty_on_error(self):
@@ -204,9 +237,10 @@ class TestLocalGitServiceFileDiff:
             "volundr.adapters.outbound.local_git._run",
             new_callable=AsyncMock,
             return_value=(0, diff_output, ""),
-        ):
+        ) as mock_run:
             result = await service.file_diff("/workspace", "f.py", "main")
         assert result == diff_output
+        assert mock_run.await_args.kwargs["cwd"] == "/workspace"
 
     @pytest.mark.asyncio
     async def test_returns_none_for_empty_diff(self):
@@ -259,6 +293,7 @@ class TestLocalGitServiceCommitLog:
         args = mock_run.call_args
         cmd_args = args[0]
         assert any("--since=2025-01-01" in str(a) for a in cmd_args)
+        assert mock_run.await_args.kwargs["cwd"] == "/workspace"
 
     @pytest.mark.asyncio
     async def test_returns_empty_on_error(self):
@@ -291,10 +326,11 @@ class TestLocalGitServicePrStatus:
             "volundr.adapters.outbound.local_git._run",
             new_callable=AsyncMock,
             return_value=(0, data, ""),
-        ):
+        ) as mock_run:
             result = await service.pr_status("/workspace")
         assert result is not None
         assert result["number"] == 42
+        assert mock_run.await_args.kwargs["cwd"] == "/workspace"
 
     @pytest.mark.asyncio
     async def test_returns_none_when_gh_not_installed(self):
@@ -329,9 +365,10 @@ class TestLocalGitServiceCurrentBranch:
             "volundr.adapters.outbound.local_git._run",
             new_callable=AsyncMock,
             return_value=(0, "feat/my-branch\n", ""),
-        ):
+        ) as mock_run:
             result = await service.current_branch("/workspace")
         assert result == "feat/my-branch"
+        assert mock_run.await_args.kwargs["cwd"] == "/workspace"
 
     @pytest.mark.asyncio
     async def test_returns_none_on_error(self):

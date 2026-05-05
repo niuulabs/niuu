@@ -4,7 +4,7 @@
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 ![AppVersion: 0.55.0](https://img.shields.io/badge/AppVersion-0.55.0-informational?style=flat-square)
 
-Helm chart for deploying **Skuld** -- a Claude Code CLI session pod with WebSocket broker and code-server IDE.
+Helm chart for deploying **Skuld** -- a Claude Code CLI session pod with a WebSocket broker and terminal/local-service sidecars.
 
 ## Overview
 
@@ -12,7 +12,6 @@ Skuld is the session runtime for [Volundr](../volundr/). Each session deploys as
 
 - **Nginx** -- single entry point routing all traffic to internal containers
 - **Skuld broker** -- WebSocket bridge between Claude Code CLI and the AI model
-- **code-server** (optional) -- VS Code IDE in the browser
 - **Devrunner** (optional) -- terminal access and dynamic local service management
 - **Envoy** (optional) -- JWT validation and header extraction sidecar
 
@@ -24,9 +23,6 @@ Skuld is the session runtime for [Volundr](../volundr/). Each session deploys as
   ─────────────────►│  │  nginx  │──────────────►│ skuld broker│ │
                     │  │  :8080  │   /api/       │    :8081    │ │
                     │  │         │───────────────►│             │ │
-                    │  │         │   /           ┌─────────────┐ │
-                    │  │         │──────────────►│ code-server │ │
-                    │  │         │               │    :8443    │ │
                     │  │         │   /terminal   ┌─────────────┐ │
                     │  │         │──────────────►│  devrunner  │ │
                     │  └─────────┘               │    :7681    │ │
@@ -137,25 +133,6 @@ Nginx is the single entry point for all traffic. It routes requests to the appro
 | `nginx.resources.limits.memory` | string | `"128Mi"` | Nginx memory limit |
 | `nginx.resources.limits.cpu` | string | `"100m"` | Nginx CPU limit |
 
-### code-server (VS Code IDE)
-
-Optional sidecar providing a full VS Code IDE in the browser. When enabled, accessible at the root path (`/`).
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `codeServer.enabled` | bool | `true` | Enable code-server sidecar container |
-| `codeServer.image.repository` | string | `"codercom/code-server"` | code-server image repository |
-| `codeServer.image.tag` | string | `"latest"` | code-server image tag |
-| `codeServer.image.pullPolicy` | string | `"Always"` | code-server image pull policy |
-| `codeServer.resources.requests.memory` | string | `"256Mi"` | code-server memory request |
-| `codeServer.resources.requests.cpu` | string | `"100m"` | code-server CPU request |
-| `codeServer.resources.limits.memory` | string | `"2Gi"` | code-server memory limit |
-| `codeServer.resources.limits.cpu` | string | `"1000m"` | code-server CPU limit |
-| `codeServer.port` | int | `8443` | Port for code-server |
-| `codeServer.password` | string | `""` | Password for code-server authentication (empty = no password) |
-| `codeServer.extensions` | string | `""` | Extra VS Code extensions to install (comma-separated extension IDs) |
-| `codeServer.settings` | object | `{"workbench.colorTheme":"Default Dark Modern"}` | VS Code editor settings (applied from ConfigMap on each container start) |
-
 ### Local Services (Devrunner)
 
 Optional sidecar for terminal access and dynamic local service management. Provides a WebSocket-based shell and port forwarding for services running inside the session.
@@ -193,7 +170,7 @@ Optional sidecar for terminal access and dynamic local service management. Provi
 | `ingress.annotations` | object | See values.yaml | Ingress annotations (controller-specific). Default includes cert-manager cluster-issuer |
 | `ingress.host` | string | `""` | Hostname for the session ingress (set by Volundr, e.g., `session-uuid.niuu.world`) |
 | `ingress.paths.session` | string | `"/session"` | WebSocket path for Skuld broker |
-| `ingress.paths.ide` | string | `"/"` | code-server IDE path (`/` catch-all when codeServer.enabled) |
+| `ingress.paths.ide` | string | `"/"` | Default catch-all path forwarded to the broker |
 | `ingress.tls.enabled` | bool | `true` | Enable TLS |
 | `ingress.tls.secretName` | string | `""` | TLS secret name (auto-generated from release name if empty) |
 
@@ -209,7 +186,7 @@ Shared PVC for session workspace data. Each session creates its workspace under 
 
 ### Home Volume (Persistent User Config)
 
-Persistent home directory shared across all sessions for a given user. Stores CLI config (`.claude/`, `.codex/`), VS Code settings, and shell config. Credential files are mounted from a K8s Secret and symlinked into `$HOME/<destDir>/` so they auto-update when the secret changes (~60s kubelet sync).
+Persistent home directory shared across all sessions for a given user. Stores CLI config (`.claude/`, `.codex/`) and shell config. Credential files are mounted from a K8s Secret and symlinked into `$HOME/<destDir>/` so they auto-update when the secret changes (~60s kubelet sync).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -383,7 +360,7 @@ External → Ingress/Gateway → Service (:8444) → Envoy → nginx → backend
 | `/terminal/` | Devrunner (:7681) | WebSocket terminal (if localServices enabled) |
 | `/debug/` | Static HTML | xterm.js debug UI (if terminal.debug enabled) |
 | `/svc/` | Dynamic | Local services from `.services/nginx.conf` |
-| `/` | code-server (:8443) | VS Code IDE (if codeServer enabled) |
+| `/` | Skuld broker (:8081) | Default catch-all route |
 
 ### Init Containers
 

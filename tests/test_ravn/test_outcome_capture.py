@@ -13,14 +13,21 @@ Covers:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
+from niuu.domain.mimir import MimirPage, MimirPageMeta, MimirSource, compute_content_hash
 from ravn.adapters.personas.loader import (
     PersonaConfig,
+    PersonaProduces,
 )
-from ravn.agent import RavnAgent, _parse_outcome_block_for_persona
+from ravn.agent import (
+    RavnAgent,
+    _parse_outcome_block_for_persona,
+    _validate_mimir_outcome_for_persona,
+)
 from ravn.domain.models import (
     Episode,
     LLMResponse,
@@ -32,6 +39,7 @@ from ravn.domain.models import (
     TurnResult,
 )
 from ravn.ports.llm import LLMPort
+from niuu.domain.outcome import OutcomeField
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 from tests.ravn.fixtures.fakes import InMemoryChannel
@@ -72,6 +80,33 @@ def _reviewer_persona() -> PersonaConfig:
     persona = FilesystemPersonaAdapter().load("reviewer")
     assert persona is not None, "reviewer persona must exist in built-ins"
     return persona
+
+
+def _research_persona() -> PersonaConfig:
+    return PersonaConfig(
+        name="research-persona",
+        produces=PersonaProduces(
+            event_type="research.completed",
+            schema={
+                "summary": OutcomeField(type="string", description="summary"),
+                "page_path": OutcomeField(type="string", description="page path"),
+            },
+        ),
+    )
+
+
+class _FakeMimir:
+    def __init__(self, *, page: MimirPage | None = None, sources: dict[str, MimirSource] | None = None):
+        self._page = page
+        self._sources = sources or {}
+
+    async def get_page(self, path: str) -> MimirPage:
+        if self._page is None or self._page.meta.path != path:
+            raise FileNotFoundError(path)
+        return self._page
+
+    async def read_source(self, source_id: str) -> MimirSource | None:
+        return self._sources.get(source_id)
 
 
 def _make_agent(
@@ -171,6 +206,98 @@ class TestParseOutcomeBlockForPersona:
         with patch("niuu.domain.outcome.parse_outcome_block", side_effect=RuntimeError("forced")):
             result = _parse_outcome_block_for_persona(text, _FakePersona())
         assert result is None
+
+
+class TestValidateMimirOutcomeForPersona:
+    @pytest.mark.asyncio
+    async def test_research_outcome_invalid_when_page_has_no_source_ids(self) -> None:
+        persona = _research_persona()
+        parsed = _parse_outcome_block_for_persona(
+            (
+                "---outcome---\n"
+                "summary: done\n"
+                "page_path: research/example.md\n"
+                "---end---\n"
+            ),
+            persona,
+        )
+        assert parsed is not None
+
+        page = MimirPage(
+            meta=MimirPageMeta(
+                path="research/example.md",
+                title="Example",
+                summary="summary",
+                category="research",
+                updated_at=datetime.now(UTC),
+                source_ids=[],
+                produced_by_thread=True,
+            ),
+            content="# Example\n\nBody.",
+        )
+        validated = await _validate_mimir_outcome_for_persona(
+            parsed,
+            persona_config=persona,
+            mimir=_FakeMimir(page=page),
+        )
+
+        assert validated.valid is False
+        assert any("no source_ids provenance" in error for error in validated.errors)
+
+    @pytest.mark.asyncio
+    async def test_research_outcome_invalid_when_sources_are_self_ingested_page(self) -> None:
+        persona = _research_persona()
+        parsed = _parse_outcome_block_for_persona(
+            (
+                "---outcome---\n"
+                "summary: done\n"
+                "page_path: research/example.md\n"
+                "---end---\n"
+            ),
+            persona,
+        )
+        assert parsed is not None
+
+        content = (
+            "---\n"
+            "type: research\n"
+            "confidence: high\n"
+            "produced_by_thread: true\n"
+            "source_ids: [src_self]\n"
+            "---\n\n"
+            "# Example\n\n"
+            "## Compiled Truth\n\n"
+            "Body."
+        )
+        page = MimirPage(
+            meta=MimirPageMeta(
+                path="research/example.md",
+                title="Example",
+                summary="summary",
+                category="research",
+                updated_at=datetime.now(UTC),
+                source_ids=["src_self"],
+                produced_by_thread=True,
+            ),
+            content=content,
+        )
+        source = MimirSource(
+            source_id="src_self",
+            title="Example",
+            content=content,
+            source_type="document",
+            content_hash=compute_content_hash(content),
+            ingested_at=datetime.now(UTC),
+        )
+
+        validated = await _validate_mimir_outcome_for_persona(
+            parsed,
+            persona_config=persona,
+            mimir=_FakeMimir(page=page, sources={"src_self": source}),
+        )
+
+        assert validated.valid is False
+        assert any("self-ingested page content" in error for error in validated.errors)
 
 
 # ---------------------------------------------------------------------------

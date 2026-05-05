@@ -1,0 +1,78 @@
+/* Base form control styles live in form-control.css. Only select-specific rules below. */
+
+.niuu-select__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  cursor: pointer;
+  user-select: none;
+  text-align: left;
+}
+
+.niuu-select__trigger[data-placeholder] {
+  color: var(--color-text-muted);
+}
+
+.niuu-select__trigger[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.niuu-select__icon {
+  display: flex;
+  align-items: center;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.niuu-select__content {
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 50;
+  min-width: var(--radix-select-trigger-width);
+  max-height: var(--radix-select-content-available-height);
+  overflow: hidden;
+}
+
+.niuu-select__viewport {
+  padding: var(--space-1);
+}
+
+.niuu-select__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+  transition: background-color var(--transition-fast);
+}
+
+.niuu-select__item[data-highlighted] {
+  background-color: color-mix(in srgb, var(--color-brand-500, var(--brand-500)) 12%, transparent);
+  color: var(--color-text-primary);
+}
+
+.niuu-select__item[data-disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.niuu-select__item[data-state='checked'] {
+  color: var(--color-brand-300, var(--brand-300));
+}
+
+.niuu-select__item-indicator {
+  display: flex;
+  align-items: center;
+  width: 16px;
+  color: var(--color-brand-300, var(--brand-300));
+}

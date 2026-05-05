@@ -1,0 +1,59 @@
+.niuu-mount-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+/* ── Binding-role dot ─────────────────────────────────────────── */
+.niuu-mount-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  background: var(--color-text-muted);
+}
+
+.niuu-mount-chip--primary .niuu-mount-chip__dot {
+  background: var(--brand-400);
+}
+
+.niuu-mount-chip--archive .niuu-mount-chip__dot {
+  background: var(--color-text-secondary);
+}
+
+.niuu-mount-chip--ro .niuu-mount-chip__dot {
+  background: var(--color-text-faint);
+}
+
+/* ── Mount-kind glyph ─────────────────────────────────────────── */
+.niuu-mount-chip__glyph {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.niuu-mount-chip--local .niuu-mount-chip__glyph {
+  color: var(--brand-400);
+}
+
+.niuu-mount-chip--shared .niuu-mount-chip__glyph {
+  color: var(--brand-300);
+}
+
+.niuu-mount-chip--domain .niuu-mount-chip__glyph {
+  color: var(--brand-200);
+}
+
+/* ── Role label (faint suffix) ──────────────────────────────── */
+.niuu-mount-chip__role {
+  color: var(--color-text-faint);
+  font-size: 10px;
+}

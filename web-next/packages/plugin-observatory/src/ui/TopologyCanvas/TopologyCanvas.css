@@ -1,0 +1,79 @@
+/* TopologyCanvas overlay styles */
+
+.topology-canvas-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.topology-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+.camera-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  background: rgba(9, 9, 11, 0.82);
+  border: 1px solid rgba(147, 197, 253, 0.2);
+  border-radius: 8px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: rgba(186, 230, 253, 0.8);
+  user-select: none;
+  overflow: hidden;
+}
+
+.camera-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  padding: 8px 12px;
+  width: 100%;
+  text-align: center;
+  outline: none;
+}
+
+.camera-btn:hover {
+  background: rgba(147, 197, 253, 0.1);
+}
+
+.camera-divider {
+  width: 100%;
+  height: 1px;
+  background: rgba(147, 197, 253, 0.2);
+}
+
+.zoom-display {
+  padding: 4px 12px;
+  text-align: center;
+  font-size: 11px;
+  border-top: 1px solid rgba(147, 197, 253, 0.15);
+  border-bottom: 1px solid rgba(147, 197, 253, 0.15);
+}
+
+.minimap-panel {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  border: 1px solid rgba(147, 197, 253, 0.18);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.minimap-canvas {
+  display: block;
+  cursor: crosshair;
+}

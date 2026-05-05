@@ -20,7 +20,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Upgrade pip to latest to avoid GHSA-4xh5-x5gv-qwph / GHSA-6vgw-5pg2-w6jp,
 # then install build backend
-RUN pip install --no-cache-dir --upgrade pip==25.0.1 \
+RUN pip install --no-cache-dir --upgrade pip==26.1.1 \
     && pip install --no-cache-dir hatchling==1.29.0
 
 # Copy package and install

@@ -14,6 +14,7 @@ Constructor accepts plain kwargs (dynamic adapter pattern):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -330,6 +331,78 @@ class DirectK8sPodManager(PodManager):
         if isinstance(extra_env, dict):
             for k, v in extra_env.items():
                 env.append({"name": k, "value": str(v)})
+
+        broker_config = spec.values.get("broker", {})
+        if isinstance(broker_config, dict):
+            telegram_cfg = broker_config.get("telegram")
+            if isinstance(telegram_cfg, dict):
+                if "enabled" in telegram_cfg:
+                    env.append(
+                        {
+                            "name": "SKULD__TELEGRAM__ENABLED",
+                            "value": str(bool(telegram_cfg["enabled"])).lower(),
+                        }
+                    )
+
+                bot_token = telegram_cfg.get("botToken", telegram_cfg.get("bot_token"))
+                if bot_token:
+                    env.append(
+                        {
+                            "name": "SKULD__TELEGRAM__BOT_TOKEN",
+                            "value": str(bot_token),
+                        }
+                    )
+
+                chat_id = telegram_cfg.get("chatId", telegram_cfg.get("chat_id"))
+                if chat_id:
+                    env.append(
+                        {
+                            "name": "SKULD__TELEGRAM__CHAT_ID",
+                            "value": str(chat_id),
+                        }
+                    )
+
+                if "notifyOnly" in telegram_cfg or "notify_only" in telegram_cfg:
+                    notify_only = telegram_cfg.get("notifyOnly", telegram_cfg.get("notify_only"))
+                    env.append(
+                        {
+                            "name": "SKULD__TELEGRAM__NOTIFY_ONLY",
+                            "value": str(bool(notify_only)).lower(),
+                        }
+                    )
+
+                topic_mode = telegram_cfg.get("topicMode", telegram_cfg.get("topic_mode"))
+                if topic_mode:
+                    env.append(
+                        {
+                            "name": "SKULD__TELEGRAM__TOPIC_MODE",
+                            "value": str(topic_mode),
+                        }
+                    )
+
+                message_thread_id = telegram_cfg.get(
+                    "messageThreadId",
+                    telegram_cfg.get("message_thread_id"),
+                )
+                if message_thread_id not in (None, ""):
+                    env.append(
+                        {
+                            "name": "SKULD__TELEGRAM__MESSAGE_THREAD_ID",
+                            "value": str(message_thread_id),
+                        }
+                    )
+
+        mcp_servers = spec.values.get("mcpServers")
+        if isinstance(mcp_servers, list) and mcp_servers:
+            env.append(
+                {
+                    "name": "SKULD__MCP_SERVERS",
+                    "value": json.dumps(mcp_servers),
+                }
+            )
+
+        if spec.pod_spec and spec.pod_spec.env:
+            env.extend(spec.pod_spec.env)
 
         # Inject git credentials into the skuld container so that
         # git push / gh CLI work with the same token used for cloning.

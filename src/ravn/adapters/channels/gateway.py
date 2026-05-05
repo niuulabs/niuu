@@ -22,16 +22,16 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ravn.agent import RavnAgent
 from ravn.config import GatewayConfig
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.profile import RavnProfile
 from ravn.ports.channel import ChannelPort
+from ravn.ports.executor import ExecutionAgentPort
 
 logger = logging.getLogger(__name__)
 
-# Factory that creates a new RavnAgent bound to the supplied channel.
-AgentFactory = Callable[[ChannelPort], RavnAgent]
+# Factory that creates a new execution agent bound to the supplied channel.
+AgentFactory = Callable[[ChannelPort], ExecutionAgentPort]
 
 # Optional broadcast callback invoked on every emitted event.
 BroadcastCallback = Callable[[RavnEvent], Awaitable[None]]
@@ -111,7 +111,7 @@ class GatewayChannel(ChannelPort):
 class GatewaySession:
     """A single isolated session bound to one user+channel pair."""
 
-    agent: RavnAgent
+    agent: ExecutionAgentPort
     channel: GatewayChannel
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

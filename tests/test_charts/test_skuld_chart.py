@@ -27,13 +27,14 @@ class TestChartMetadata:
         assert chart_yaml["version"]
 
     def test_chart_description_includes_editor(self, chart_yaml):
-        """Test chart description mentions VS Code editor."""
-        assert "vs code" in chart_yaml["description"].lower()
+        """Test chart description mentions terminal sidecars."""
+        assert "terminal" in chart_yaml["description"].lower()
 
     def test_chart_keywords_include_ide(self, chart_yaml):
-        """Test chart keywords include IDE-related terms."""
+        """Test chart keywords stay focused on session runtime concerns."""
         keywords = chart_yaml["keywords"]
-        assert "vscode" in keywords
+        assert "websocket" in keywords
+        assert "session" in keywords
 
 
 class TestValuesDefaults:
@@ -92,20 +93,6 @@ class TestValuesDefaults:
         """Test ingress class defaults to traefik."""
         assert values_yaml["ingress"]["className"] == "traefik"
 
-    def test_reh_enabled_by_default(self, values_yaml):
-        """Test REH is enabled by default."""
-        assert values_yaml["reh"]["enabled"] is True
-
-    def test_reh_image_configured(self, values_yaml):
-        """Test REH image is configured."""
-        image = values_yaml["reh"]["image"]
-        assert image["repository"] == "ghcr.io/niuulabs/vscode-reh"
-        assert "tag" in image
-
-    def test_reh_port_configured(self, values_yaml):
-        """Test REH port defaults to 8445."""
-        assert values_yaml["reh"]["port"] == 8445
-
     def test_skuld_image_configured(self, values_yaml):
         """Test Skuld image is configured."""
         image = values_yaml["image"]
@@ -128,18 +115,15 @@ class TestNginxConfigMap:
         template_path = CHART_DIR / "templates" / "nginx-configmap.yaml"
         return template_path.read_text()
 
-    def test_reh_upstream_defined(self, nginx_yaml):
-        """Test nginx config defines REH upstream."""
-        assert "upstream reh" in nginx_yaml
-
-    def test_reh_location_routes_websocket(self, nginx_yaml):
-        """Test nginx config routes /reh/ with WebSocket upgrade."""
-        assert "location /reh/" in nginx_yaml
+    def test_routes_terminal_traffic(self, nginx_yaml):
+        """Test nginx config routes terminal traffic."""
+        assert "location /terminal/" in nginx_yaml
         assert "proxy_set_header Upgrade" in nginx_yaml
 
-    def test_reh_upstream_gated_on_values(self, nginx_yaml):
-        """Test REH upstream is gated on .Values.reh.enabled."""
-        assert ".Values.reh.enabled" in nginx_yaml
+    def test_has_no_reh_upstream(self, nginx_yaml):
+        """Test nginx config no longer references the REH sidecar."""
+        assert "upstream reh" not in nginx_yaml
+        assert "location /reh/" not in nginx_yaml
 
 
 class TestConfigMapTemplate:
@@ -205,17 +189,10 @@ class TestDeploymentTemplate:
         """Test sessions volume is mounted by multiple containers."""
         assert deployment_yaml.count("name: sessions") >= 2
 
-    def test_contains_reh_container(self, deployment_yaml):
-        """Test deployment contains vscode-reh container."""
-        assert "name: vscode-reh" in deployment_yaml
-
-    def test_reh_conditionally_enabled(self, deployment_yaml):
-        """Test REH is conditionally enabled."""
-        assert "if .Values.reh.enabled" in deployment_yaml
-
-    def test_reh_starts_without_connection_token(self, deployment_yaml):
-        """Test REH runs with --without-connection-token."""
-        assert "--without-connection-token" in deployment_yaml
+    def test_has_no_reh_container(self, deployment_yaml):
+        """Test deployment no longer contains the retired REH container."""
+        assert "name: vscode-reh" not in deployment_yaml
+        assert "--without-connection-token" not in deployment_yaml
 
     def test_broker_port_is_8081(self, deployment_yaml):
         """Test broker runs on port 8081 (nginx is entry at 8080)."""

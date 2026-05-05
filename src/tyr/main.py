@@ -10,11 +10,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
 
+from niuu.cors import apply_cors_middleware
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.domain.models import Principal
 from niuu.domain.services.pat_validator import PATValidator
 from niuu.utils import import_class, resolve_secret_kwargs
+from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from ravn.ports.persona import PersonaPort
 from tyr.adapters.github_git import GitHubGitAdapter
 from tyr.adapters.inbound.rest_integrations import (
     create_integrations_router,
@@ -28,8 +31,10 @@ from tyr.adapters.postgres_notification_subscriptions import (
     PostgresNotificationSubscriptionRepository,
 )
 from tyr.adapters.postgres_sagas import PostgresSagaRepository
+from tyr.adapters.postgres_workflows import PostgresWorkflowRepository
 from tyr.adapters.tracker_factory import TrackerAdapterFactory
 from tyr.adapters.volundr_factory import VolundrAdapterFactory
+from tyr.api.audit import create_audit_router
 from tyr.api.dispatch import (
     create_dispatch_router,
     resolve_dispatch_service,
@@ -45,16 +50,23 @@ from tyr.api.flock_config import create_flock_config_router
 from tyr.api.flock_flows import (
     create_flock_flows_router,
     resolve_flow_provider,
+    resolve_persona_names,
 )
 from tyr.api.health import create_health_router
+from tyr.api.persona_names import build_persona_names_dependency
+from tyr.api.phases import create_saga_phases_router
 from tyr.api.pipelines import create_pipelines_router, resolve_pipeline_executor
 from tyr.api.raids import create_raids_router, resolve_git, resolve_raid_repo
 from tyr.api.raids import resolve_tracker as resolve_raids_tracker
 from tyr.api.raids import resolve_volundr as resolve_raids_volundr
+from tyr.api.saga_previews import create_saga_previews_router
 from tyr.api.sagas import create_sagas_router, resolve_llm, resolve_saga_repo
 from tyr.api.sagas import resolve_git as sagas_resolve_git
 from tyr.api.sagas import resolve_volundr as sagas_resolve_volundr
-from tyr.api.tracker import create_tracker_router, resolve_trackers
+from tyr.api.sessions import create_sessions_router
+from tyr.api.settings import create_settings_router
+from tyr.api.tracker import create_canonical_tracker_router, create_tracker_router, resolve_trackers
+from tyr.api.workflows import create_workflows_router, resolve_workflow_repo
 from tyr.config import Settings
 from tyr.domain.services.activity_subscriber import SessionActivitySubscriber
 from tyr.domain.services.dispatch_service import (
@@ -74,6 +86,7 @@ from tyr.ports.git import GitPort
 from tyr.ports.saga_repository import SagaRepository
 from tyr.ports.tracker import TrackerPort
 from tyr.ports.volundr import VolundrPort
+from tyr.ports.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +123,6 @@ def _configure_logging(settings: Settings) -> None:
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-
 
 async def _seed_linear_integration(
     integration_repo: PostgresIntegrationRepository,
@@ -174,13 +186,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # -- Routers --
     app.include_router(create_health_router())
+    app.include_router(create_canonical_tracker_router())
     app.include_router(create_tracker_router())
+    app.include_router(create_saga_previews_router())
     app.include_router(create_sagas_router())
+    app.include_router(create_saga_phases_router())
     app.include_router(create_raids_router())
     app.include_router(create_dispatch_router())
     app.include_router(create_dispatcher_router())
     app.include_router(create_events_router(settings.events.keepalive_interval))
+    app.include_router(create_audit_router())
+    app.include_router(create_sessions_router())
+    app.include_router(create_settings_router())
     app.include_router(create_pipelines_router())
+    app.include_router(create_workflows_router())
     app.include_router(create_flock_flows_router())
     app.include_router(create_flock_config_router())
     from tyr.adapters.inbound.auth import extract_principal as _extract_principal
@@ -297,6 +316,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             app.dependency_overrides[resolve_flow_provider] = _resolve_flow_provider
 
+            persona_source: PersonaPort | None = FilesystemPersonaAdapter()
+            app.state.persona_source = persona_source
+            app.dependency_overrides[resolve_persona_names] = build_persona_names_dependency(
+                persona_source
+            )
+
+            workflow_repo = PostgresWorkflowRepository(pool)
+            app.state.workflow_repo = workflow_repo
+
+            async def _resolve_workflow_repo() -> WorkflowRepository:
+                return workflow_repo
+
+            app.dependency_overrides[resolve_workflow_repo] = _resolve_workflow_repo
+
             # Wire DispatchService
             dispatch_svc = DispatchService(
                 tracker_factory=app.state.tracker_factory,
@@ -311,6 +344,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
                 sleipnir_publisher=sleipnir_bus,
                 flow_provider=flow_provider,
+                workflow_repo=workflow_repo,
             )
             app.state.dispatch_service = dispatch_svc
 
@@ -606,6 +640,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 saga_repo=saga_repo,
                 volundr_factory=app.state.volundr_factory,
                 event_bus=event_bus,
+                flow_provider=flow_provider,
                 owner_id=settings.event_triggers.owner_id
                 if settings.event_triggers.enabled
                 else "api",
@@ -640,6 +675,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.info("Tyr shutting down")
 
     app.router.lifespan_context = lifespan
+    apply_cors_middleware(app, settings.cors)
     app.add_middleware(PATRevocationMiddleware)
 
     @app.middleware("http")

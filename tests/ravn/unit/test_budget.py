@@ -30,6 +30,7 @@ def _make_drive_loop_with_mock_settings(
         queue_journal_path=str(journal),
     )
     settings = MagicMock()
+    settings.skuld.enabled = False
     settings.cascade.enabled = False
     published: list[RavnEvent] = []
 

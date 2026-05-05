@@ -6,38 +6,69 @@ import os
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from importlib.metadata import metadata
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+
+from niuu.cors import apply_cors_middleware
 
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
-from volundr.adapters.inbound.rest_audit import create_audit_router
-from volundr.adapters.inbound.rest_credentials import create_credentials_router
+from volundr.adapters.inbound.rest_audit import create_audit_router, create_canonical_audit_router
+from volundr.adapters.inbound.rest_credentials import (
+    create_canonical_credentials_router,
+    create_credentials_router,
+    create_legacy_secret_store_router,
+)
 from volundr.adapters.inbound.rest_events import create_events_router
-from volundr.adapters.inbound.rest_features import create_features_router
+from volundr.adapters.inbound.rest_features import (
+    create_feature_catalog_router,
+    create_features_router,
+)
 from volundr.adapters.inbound.rest_git import create_git_router
-from volundr.adapters.inbound.rest_integrations import create_integrations_router
-from volundr.adapters.inbound.rest_issues import create_issues_router
-from volundr.adapters.inbound.rest_oauth import create_oauth_router
+from volundr.adapters.inbound.rest_integrations import (
+    create_canonical_integrations_router,
+    create_integrations_router,
+)
+from volundr.adapters.inbound.rest_issues import (
+    create_canonical_issues_router,
+    create_issues_router,
+)
+from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router, create_oauth_router
 from volundr.adapters.inbound.rest_presets import create_presets_router
 from volundr.adapters.inbound.rest_profiles import create_profiles_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
-from volundr.adapters.inbound.rest_secrets import create_secrets_router
-from volundr.adapters.inbound.rest_tenants import create_tenants_router
+from volundr.adapters.inbound.rest_secrets import (
+    create_canonical_secrets_router,
+    create_secrets_router,
+)
+from volundr.adapters.inbound.rest_tenants import create_identity_router, create_tenants_router
+from volundr.adapters.inbound.rest_tracker import (
+    create_canonical_tracker_router,
+    create_tracker_router,
+)
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.config_profiles import ConfigProfileProvider
 from volundr.adapters.outbound.config_templates import ConfigTemplateProvider
 from volundr.adapters.outbound.git_registry import create_git_registry
+from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
 from volundr.adapters.outbound.postgres_chronicles import PostgresChronicleRepository
+from volundr.adapters.outbound.postgres_communication_cursors import (
+    PostgresCommunicationCursorRepository,
+)
+from volundr.adapters.outbound.postgres_communication_routes import (
+    PostgresCommunicationRouteRepository,
+)
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
+from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_presets import PostgresPresetRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
@@ -46,6 +77,7 @@ from volundr.adapters.outbound.postgres_timeline import PostgresTimelineReposito
 from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
+from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.config import LoggingConfig, Settings
 from volundr.domain.ports import SessionContributor
 from volundr.domain.services import (
@@ -58,10 +90,13 @@ from volundr.domain.services import (
     StatsService,
     TenantService,
     TokenService,
+    TrackerService,
 )
+from volundr.domain.services.communication_ingress import CommunicationIngressService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.feature import FeatureService
 from volundr.domain.services.profile import ForgeProfileService
+from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.template import WorkspaceTemplateService
 from volundr.domain.services.workspace import WorkspaceService
 from volundr.infrastructure.database import database_pool
@@ -235,8 +270,29 @@ def _create_contributors(
     can accept the ports they need and ignore others via **_extra.
     """
     from volundr.adapters.outbound.contributors.local_mount import LocalMountContributor
+    from volundr.adapters.outbound.contributors.session_def import SessionDefinitionContributor
 
     contributors: list[SessionContributor] = []
+
+    def _has_contributor(name: str) -> bool:
+        return any(contributor.name == name for contributor in contributors)
+
+    # Auto-wire SessionDefinitionContributor first so definition defaults
+    # (broker.cliType, transportAdapter, etc.) are the base layer that
+    # later contributors (templates, profiles, resources) can override.
+    if settings.session_definitions:
+        contributors.append(
+            SessionDefinitionContributor(
+                definitions=settings.session_definitions,
+                default_definition=settings.default_definition,
+            )
+        )
+        logger.info(
+            "Session contributor: session_definition (auto-wired, %d definitions, default=%s)",
+            len(settings.session_definitions),
+            settings.default_definition or "(none)",
+        )
+
     for cfg in settings.session_contributors:
         cls = import_class(cfg.adapter)
         resolved_kwargs = _resolve_secret_kwargs(cfg.kwargs, cfg.secret_kwargs_env)
@@ -262,16 +318,29 @@ def _create_contributors(
 
     # Always wire the prompt contributor so system_prompt/initial_prompt
     # from the launch request (or dispatch) are injected into the spec.
+    from volundr.adapters.outbound.contributors.notification_channels import (
+        NotificationChannelContributor,
+    )
     from volundr.adapters.outbound.contributors.prompt import PromptContributor
+
+    if not _has_contributor("notification_channels"):
+        contributors.append(NotificationChannelContributor(**ports))
+        logger.info("Session contributor: notification_channels (auto-wired)")
 
     contributors.append(PromptContributor())
 
     # Auto-wire RavnFlockContributor so ravn_flock workloads spawn
     # multi-sidecar sessions (locally via ravn flock init/start).
     from volundr.adapters.outbound.contributors.ravn_flock import RavnFlockContributor
+    from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
 
-    contributors.append(RavnFlockContributor(**ports))
-    logger.info("Session contributor: ravn_flock (auto-wired)")
+    if not _has_contributor("ravn_flock"):
+        contributors.append(RavnFlockContributor(**ports))
+        logger.info("Session contributor: ravn_flock (auto-wired)")
+
+    if not _has_contributor("session_mcp"):
+        contributors.append(SessionMCPContributor(**ports))
+        logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors
 
@@ -372,8 +441,6 @@ async def _seed_linear_integration(
     This lets the integration-based /issues/search endpoint find Linear
     without manual UI setup.
     """
-    from datetime import UTC, datetime
-
     from niuu.domain.models import IntegrationConnection, IntegrationType, SecretType
 
     owner_id = "dev-user"
@@ -400,6 +467,79 @@ async def _seed_linear_integration(
         slug="linear",
     )
     await integration_repo.save_connection(connection)
+
+
+def _seeded_integration_connection_id(
+    *,
+    owner_type: str,
+    owner_id: str,
+    integration_type: str,
+    adapter: str,
+    credential_name: str,
+    slug: str,
+) -> str:
+    """Return a stable UUID for a config-seeded integration connection."""
+    value = (
+        f"volundr:integration-seed:{owner_type}:{owner_id}:{integration_type}:"
+        f"{adapter}:{credential_name}:{slug}"
+    )
+    return str(uuid5(NAMESPACE_URL, value))
+
+
+async def _seed_configured_integrations(
+    integration_repo: object,
+    credential_store: object,
+    settings: Settings,
+) -> None:
+    """Seed configured integration connections into storage at startup."""
+    from niuu.domain.models import IntegrationConnection
+
+    for seed in settings.integrations.seed_connections:
+        if seed.credential is not None:
+            await credential_store.store(
+                owner_type=seed.owner_type,
+                owner_id=seed.owner_id,
+                name=seed.credential_name,
+                secret_type=seed.credential.secret_type,
+                data=seed.credential.data,
+                metadata=seed.credential.metadata,
+            )
+
+        connection = IntegrationConnection(
+            id=seed.id
+            or _seeded_integration_connection_id(
+                owner_type=seed.owner_type,
+                owner_id=seed.owner_id,
+                integration_type=str(seed.integration_type),
+                adapter=seed.adapter,
+                credential_name=seed.credential_name,
+                slug=seed.slug,
+            ),
+            owner_id=seed.owner_id,
+            integration_type=seed.integration_type,
+            adapter=seed.adapter,
+            credential_name=seed.credential_name,
+            config=seed.config,
+            enabled=seed.enabled,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            slug=seed.slug,
+        )
+        await integration_repo.save_connection(connection)
+
+
+def _has_seeded_linear_integration(settings: Settings) -> bool:
+    """Return whether config already seeds a Linear issue-tracker connection."""
+    from niuu.domain.models import IntegrationType
+
+    for seed in settings.integrations.seed_connections:
+        if seed.integration_type != IntegrationType.ISSUE_TRACKER:
+            continue
+        if seed.slug == "linear":
+            return True
+        if seed.adapter == "volundr.adapters.outbound.linear.LinearAdapter":
+            return True
+    return False
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -517,8 +657,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # Create adapters
             repository = PostgresSessionRepository(pool)
+            communication_route_repository = PostgresCommunicationRouteRepository(pool)
+            communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
             stats_repository = PostgresStatsRepository(pool)
             token_tracker = PostgresTokenTracker(pool)
+            from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
+
+            persona_registry = PostgresPersonaRegistry(pool)
+            app.state.persona_registry = persona_registry
             pod_manager = _create_pod_manager(settings)
 
             # Inject Skuld port registry for mini mode proxy routing
@@ -570,6 +716,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Inject credential store into pod manager for envSecrets resolution
             if hasattr(pod_manager, "set_credential_store"):
                 pod_manager.set_credential_store(credential_store)
+            if hasattr(pod_manager, "set_persona_registry"):
+                pod_manager.set_persona_registry(persona_registry)
 
             # Integration registry + repository
             from volundr.domain.services.integration_registry import (
@@ -591,6 +739,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 integration_repo=integration_repo,
                 integration_registry=integration_registry,
                 credential_store=credential_store,
+            )
+            session_room_port = SkuldRoomAdapter(repository)
+            communication_ingress = CommunicationIngressService(
+                route_repository=communication_route_repository,
+                room_port=session_room_port,
+            )
+            telegram_ingress = TelegramIngressService(
+                integration_repo=integration_repo,
+                credential_store=credential_store,
+                communication_ingress=communication_ingress,
+                cursor_repository=communication_cursor_repository,
             )
 
             # Create session contributors (dynamic adapter pattern)
@@ -624,6 +783,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 provisioning_timeout=settings.provisioning.timeout_seconds,
                 provisioning_initial_delay=settings.provisioning.initial_delay_seconds,
                 integration_repo=integration_repo,
+                communication_route_repository=communication_route_repository,
+                session_communication_port=session_room_port,
             )
             stats_service = StatsService(stats_repository)
             token_service = TokenService(
@@ -667,8 +828,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 chronicle_service=chronicle_service,
             )
             app.include_router(router)
+            forge_router = create_router(
+                session_service,
+                stats_service,
+                token_service,
+                pricing_provider,
+                broadcaster=broadcaster,
+                repo_service=repo_service,
+                chronicle_service=chronicle_service,
+                prefix="/api/v1/forge",
+            )
+            app.include_router(forge_router)
 
-            profiles_router = create_profiles_router(profile_service, template_service)
+            profiles_router = create_profiles_router(
+                profile_service, template_service, settings.session_definitions
+            )
             app.include_router(profiles_router)
 
             # Resource discovery endpoint
@@ -679,6 +853,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # MCP servers and secrets
             mcp_provider = ConfigMCPServerProvider(settings.mcp_servers)
             secret_manager = InMemorySecretManager()
+            canonical_secrets_router = create_canonical_secrets_router(mcp_provider, secret_manager)
+            app.include_router(canonical_secrets_router)
             secrets_router = create_secrets_router(mcp_provider, secret_manager)
             app.include_router(secrets_router)
 
@@ -724,8 +900,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from volundr.adapters.inbound.auth import extract_principal as _extract_principal
             from volundr.adapters.inbound.rest_pats import create_pats_router
 
-            pats_router = create_pats_router(_extract_principal)
+            tokens_router = create_pats_router(_extract_principal, prefix="/api/v1/tokens")
+            app.include_router(tokens_router)
+            pats_router = create_pats_router(
+                _extract_principal,
+                prefix="/api/v1/users/tokens",
+                deprecated=True,
+                canonical_prefix="/api/v1/tokens",
+            )
             app.include_router(pats_router)
+            volundr_tokens_router = create_pats_router(
+                _extract_principal,
+                prefix="/api/v1/volundr/tokens",
+                deprecated=True,
+                canonical_prefix="/api/v1/tokens",
+            )
+            app.include_router(volundr_tokens_router)
 
             git_router = create_git_router(git_workflow_service)
             app.include_router(git_router)
@@ -745,6 +935,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.local_git_service = local_git_service
 
             # Tenant and identity management
+            identity_router = create_identity_router(tenant_service)
+            app.include_router(identity_router)
             tenants_router = create_tenants_router(tenant_service)
             app.include_router(tenants_router)
 
@@ -761,6 +953,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if fc.key in _mini_disabled:
                         fc.default_enabled = False
             feature_service = FeatureService(pool, feature_configs)
+            feature_catalog_router = create_feature_catalog_router(feature_service)
+            app.include_router(feature_catalog_router)
             features_router = create_features_router(feature_service)
             app.include_router(features_router)
             app.state.feature_service = feature_service
@@ -770,10 +964,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 store=credential_store,
                 strategies=SecretMountStrategyRegistry(),
             )
+            canonical_credentials_router = create_canonical_credentials_router(
+                credential_service,
+            )
+            app.include_router(canonical_credentials_router)
             credentials_router = create_credentials_router(
                 credential_service,
             )
             app.include_router(credentials_router)
+            legacy_secret_store_router = create_legacy_secret_store_router(
+                credential_service,
+            )
+            app.include_router(legacy_secret_store_router)
 
             # Workspace management — PVCs are the source of truth
             workspace_service = WorkspaceService(storage_adapter)
@@ -783,10 +985,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from volundr.domain.services.tracker_factory import TrackerFactory
 
             tracker_factory = TrackerFactory(credential_store)
+            mapping_repository = PostgresMappingRepository(pool)
+            default_tracker = None
+            if settings.linear.enabled and settings.linear.api_key:
+                default_tracker = LinearAdapter(api_key=settings.linear.api_key)
+            tracker_service = TrackerService(
+                default_tracker,
+                mapping_repository,
+                integration_repo=integration_repo,
+                tracker_factory=tracker_factory,
+            )
+
+            if settings.integrations.seed_connections:
+                await _seed_configured_integrations(
+                    integration_repo=integration_repo,
+                    credential_store=credential_store,
+                    settings=settings,
+                )
+                logger.info(
+                    "Seeded %d integration connection(s) from config",
+                    len(settings.integrations.seed_connections),
+                )
 
             # Seed Linear integration from config so the integration-based
             # endpoints (/issues/search) find it in the DB.
-            if settings.linear.enabled and settings.linear.api_key:
+            if (
+                settings.linear.enabled
+                and settings.linear.api_key
+                and not _has_seeded_linear_integration(settings)
+            ):
                 await _seed_linear_integration(
                     integration_repo,
                     credential_store,
@@ -795,6 +1022,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.info("Linear integration seeded from config")
 
             # Integration management endpoints
+            canonical_integrations_router = create_canonical_integrations_router(
+                integration_repo,
+                tracker_factory,
+                registry=integration_registry,
+                credential_store=credential_store,
+            )
+            app.include_router(canonical_integrations_router)
+
             integrations_router = create_integrations_router(
                 integration_repo,
                 tracker_factory,
@@ -804,6 +1039,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.include_router(integrations_router)
 
             # OAuth integration endpoints
+            canonical_oauth_router = create_canonical_oauth_router(
+                oauth_config=settings.oauth,
+                integration_registry=integration_registry,
+                credential_store=credential_store,
+                integration_repo=integration_repo,
+            )
+            app.include_router(canonical_oauth_router)
+
             oauth_router = create_oauth_router(
                 oauth_config=settings.oauth,
                 integration_registry=integration_registry,
@@ -813,13 +1056,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.include_router(oauth_router)
 
             # Generic issue endpoints
+            canonical_issues_router = create_canonical_issues_router(
+                integration_repo,
+                tracker_factory,
+            )
+            app.include_router(canonical_issues_router)
+
             issues_router = create_issues_router(
                 integration_repo,
                 tracker_factory,
             )
             app.include_router(issues_router)
 
+            tracker_router = create_tracker_router(
+                tracker_service=tracker_service,
+            )
+            app.include_router(tracker_router)
+
+            canonical_tracker_router = create_canonical_tracker_router(
+                tracker_service=tracker_service,
+            )
+            app.include_router(canonical_tracker_router)
+
             app.state.user_integration_service = user_integration_service
+            app.state.communication_route_repository = communication_route_repository
+            app.state.communication_cursor_repository = communication_cursor_repository
+            app.state.session_room_port = session_room_port
+            app.state.communication_ingress = communication_ingress
+            app.state.telegram_ingress = telegram_ingress
 
             # Event pipeline: sinks + ingestion service + REST endpoints
             pg_event_sink = PostgresEventSink(
@@ -899,6 +1163,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 audit_subscriber = AuditSubscriber(sleipnir_bus, audit_repository)
                 await audit_subscriber.start()
 
+                canonical_audit_router = create_canonical_audit_router(audit_repository)
+                app.include_router(canonical_audit_router)
                 audit_router = create_audit_router(audit_repository)
                 app.include_router(audit_router)
                 logger.info("Audit log subscriber started")
@@ -943,6 +1209,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             background_task = asyncio.create_task(
                 _broadcast_periodic_updates(broadcaster, stats_service)
             )
+            await telegram_ingress.start()
 
             # Reconcile sessions stuck in PROVISIONING after a restart
             await session_service.reconcile_provisioning_sessions()
@@ -950,6 +1217,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 yield
             finally:
+                await telegram_ingress.stop()
                 background_task.cancel()
                 try:
                     await background_task
@@ -966,14 +1234,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.router.lifespan_context = lifespan
 
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    apply_cors_middleware(app, settings.cors)
 
     # PAT revocation enforcement
     from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware

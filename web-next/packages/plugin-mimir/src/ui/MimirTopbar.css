@@ -1,0 +1,33 @@
+/* ── MimirTopbar stats bar ─────────────────────────────────────────────────── */
+
+.mm-topbar-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.mm-topbar-stat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+
+.mm-topbar-stat__k {
+  color: var(--color-text-muted);
+}
+
+.mm-topbar-stat__v {
+  color: var(--color-text-primary);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.mm-topbar-stat__v--warn {
+  color: var(--brand-400);
+}
+
+.mm-topbar-sep {
+  color: var(--color-border);
+  user-select: none;
+}

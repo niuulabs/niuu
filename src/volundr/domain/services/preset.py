@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from volundr.domain.models import Preset
@@ -119,7 +119,7 @@ class PresetService:
 
         for key, value in updates.items():
             setattr(preset, key, value)
-        preset.updated_at = datetime.utcnow()
+        preset.updated_at = datetime.now(UTC)
 
         updated = await self._repository.update(preset)
         logger.info("Updated preset: id=%s", updated.id)

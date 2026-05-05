@@ -6,9 +6,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.helpers.http_contracts import RouteCallSpec, assert_route_equivalence
 from volundr.adapters.inbound.rest_secrets import (
     MCPServerResponse,
     SecretResponse,
+    _build_secrets_router,
+    create_canonical_secrets_router,
     create_secrets_router,
 )
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
@@ -64,6 +67,7 @@ def secret_manager(sample_secrets) -> InMemorySecretManager:
 def app(mcp_provider, secret_manager) -> FastAPI:
     """Create test FastAPI app with secrets routes."""
     app = FastAPI()
+    app.include_router(create_canonical_secrets_router(mcp_provider, secret_manager))
     router = create_secrets_router(mcp_provider, secret_manager)
     app.include_router(router)
     return app
@@ -72,6 +76,22 @@ def app(mcp_provider, secret_manager) -> FastAPI:
 @pytest.fixture
 def client(app: FastAPI) -> TestClient:
     """Create a test client."""
+    return TestClient(app)
+
+
+@pytest.fixture
+def deprecated_generic_client(mcp_provider, secret_manager) -> TestClient:
+    """Create a client for exercising deprecated shared-router branches."""
+    app = FastAPI()
+    app.include_router(
+        _build_secrets_router(
+            mcp_provider,
+            secret_manager,
+            prefix="/api/v1/legacy-credentials",
+            deprecated=True,
+            canonical_prefix="/api/v1/credentials",
+        )
+    )
     return TestClient(app)
 
 
@@ -125,6 +145,15 @@ class TestListMCPServers:
         assert len(data) == 2
         names = {s["name"] for s in data}
         assert names == {"linear", "filesystem"}
+        assert response.headers["Deprecation"] == "true"
+        assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/credentials/mcp-servers"
+
+    def test_canonical_mcp_servers_match_legacy(self, client: TestClient):
+        assert_route_equivalence(
+            client,
+            legacy=RouteCallSpec(path="/api/v1/volundr/mcp-servers"),
+            canonical=RouteCallSpec(path="/api/v1/credentials/mcp-servers"),
+        )
 
     def test_list_mcp_servers_empty(self):
         """Returns empty list when no servers configured."""
@@ -159,6 +188,16 @@ class TestGetMCPServer:
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
+    def test_deprecated_shared_router_mcp_server_not_found(
+        self,
+        deprecated_generic_client: TestClient,
+    ):
+        response = deprecated_generic_client.get(
+            "/api/v1/legacy-credentials/mcp-servers/nonexistent"
+        )
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
+
 
 # ---- Secret endpoint tests (GET) ----
 
@@ -167,20 +206,32 @@ class TestListSecrets:
     """Tests for GET /api/v1/volundr/secrets."""
 
     def test_list_secrets(self, client: TestClient):
-        """Returns all secrets metadata."""
+        """Legacy Volundr surface returns only secret names."""
         response = client.get("/api/v1/volundr/secrets")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
-        names = {s["name"] for s in data}
-        assert names == {"github-token", "anthropic-api-key"}
+        assert set(data) == {"github-token", "anthropic-api-key"}
+        assert response.headers["Deprecation"] == "true"
+        assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/credentials/secrets"
 
-    def test_list_secrets_includes_keys(self, client: TestClient):
-        """Secret responses include key names."""
-        response = client.get("/api/v1/volundr/secrets")
+    def test_canonical_secrets_return_rich_metadata(self, client: TestClient):
+        response = client.get("/api/v1/credentials/secrets")
+        assert response.status_code == 200
         data = response.json()
         github = next(s for s in data if s["name"] == "github-token")
         assert github["keys"] == ["GITHUB_TOKEN"]
+
+    def test_deprecated_shared_router_list_secrets_warns(
+        self,
+        deprecated_generic_client: TestClient,
+    ):
+        response = deprecated_generic_client.get("/api/v1/legacy-credentials/secrets")
+        assert response.status_code == 200
+        assert response.headers["Deprecation"] == "true"
+        assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/credentials/secrets"
+        names = {item["name"] for item in response.json()}
+        assert names == {"github-token", "anthropic-api-key"}
 
     def test_list_secrets_empty(self):
         """Returns empty list when no secrets exist."""
@@ -210,6 +261,14 @@ class TestGetSecret:
     def test_get_secret_not_found(self, client: TestClient):
         """Returns 404 for non-existent secret."""
         response = client.get("/api/v1/volundr/secrets/nonexistent")
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
+
+    def test_deprecated_shared_router_secret_not_found(
+        self,
+        deprecated_generic_client: TestClient,
+    ):
+        response = deprecated_generic_client.get("/api/v1/legacy-credentials/secrets/nonexistent")
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
@@ -288,5 +347,24 @@ class TestCreateSecret:
             json={"name": "new-secret", "data": {"KEY": "val"}},
         )
         response = client.get("/api/v1/volundr/secrets")
-        names = {s["name"] for s in response.json()}
+        names = set(response.json())
         assert "new-secret" in names
+
+    def test_canonical_create_secret_conflict(self, client: TestClient):
+        response = client.post(
+            "/api/v1/credentials/secrets",
+            json={"name": "github-token", "data": {"KEY": "val"}},
+        )
+        assert response.status_code == 409
+        assert "already exists" in response.json()["detail"].lower()
+
+    def test_deprecated_shared_router_create_secret_validation_error(
+        self,
+        deprecated_generic_client: TestClient,
+    ):
+        response = deprecated_generic_client.post(
+            "/api/v1/legacy-credentials/secrets",
+            json={"name": "INVALID_NAME!", "data": {"KEY": "val"}},
+        )
+        assert response.status_code == 400
+        assert "invalid" in response.json()["detail"].lower()

@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from volundr.adapters.inbound.rest_issues import create_issues_router
+from volundr.adapters.inbound.rest_issues import (
+    create_canonical_issues_router,
+    create_issues_router,
+)
 from volundr.domain.models import (
     IntegrationConnection,
     IntegrationType,
@@ -72,6 +75,8 @@ def _make_app(identity=None) -> tuple[FastAPI, AsyncMock, AsyncMock]:
 
     app = FastAPI()
     app.state.identity = identity or _mock_identity()
+    app.state.legacy_route_hits = {}
+    app.include_router(create_canonical_issues_router(integration_repo, tracker_factory))
     router = create_issues_router(
         integration_repo=integration_repo,
         tracker_factory=tracker_factory,
@@ -82,6 +87,7 @@ def _make_app(identity=None) -> tuple[FastAPI, AsyncMock, AsyncMock]:
 
 AUTH = {"Authorization": "Bearer tok"}
 PREFIX = "/api/v1/volundr/issues"
+CANONICAL_PREFIX = "/api/v1/tracker"
 
 
 class TestSearchIssues:
@@ -166,6 +172,24 @@ class TestSearchIssues:
         assert len(data) == 1
         assert data[0]["id"] == "i2"
 
+    def test_canonical_search_matches_legacy(self):
+        app, integration_repo, tracker_factory = _make_app()
+        connection = _make_connection()
+        integration_repo.list_connections.return_value = [connection]
+
+        mock_adapter = AsyncMock()
+        mock_adapter.search_issues.return_value = [_make_issue()]
+        tracker_factory.create.return_value = mock_adapter
+        client = TestClient(app)
+
+        legacy = client.get(f"{PREFIX}/search?q=bug", headers=AUTH)
+        canonical = client.get(f"{CANONICAL_PREFIX}/issues?q=bug", headers=AUTH)
+
+        assert legacy.status_code == 200
+        assert canonical.status_code == 200
+        assert canonical.json() == legacy.json()
+        assert legacy.headers["X-Niuu-Canonical-Route"] == f"{CANONICAL_PREFIX}/issues"
+
 
 class TestGetIssue:
     def test_returns_issue(self):
@@ -208,6 +232,24 @@ class TestGetIssue:
 
         assert resp.status_code == 404
 
+    def test_canonical_get_matches_legacy(self):
+        app, integration_repo, tracker_factory = _make_app()
+        connection = _make_connection()
+        integration_repo.list_connections.return_value = [connection]
+
+        mock_adapter = AsyncMock()
+        issue = _make_issue(issue_id="issue-99")
+        mock_adapter.get_issue.return_value = issue
+        tracker_factory.create.return_value = mock_adapter
+        client = TestClient(app)
+
+        legacy = client.get(f"{PREFIX}/issue-99", headers=AUTH)
+        canonical = client.get(f"{CANONICAL_PREFIX}/issues/issue-99", headers=AUTH)
+
+        assert legacy.status_code == 200
+        assert canonical.status_code == 200
+        assert canonical.json() == legacy.json()
+
 
 class TestUpdateIssueStatus:
     def test_updates_and_returns_issue(self):
@@ -232,6 +274,30 @@ class TestUpdateIssueStatus:
         assert resp.status_code == 200
         assert resp.json()["status"] == "In Progress"
         mock_adapter.update_issue_status.assert_called_once_with("issue-1", "In Progress")
+
+    def test_canonical_patch_matches_legacy(self):
+        app, integration_repo, tracker_factory = _make_app()
+        connection = _make_connection()
+        integration_repo.list_connections.return_value = [connection]
+
+        mock_adapter = AsyncMock()
+        original = _make_issue(issue_id="issue-1", status="Todo")
+        updated = _make_issue(issue_id="issue-1", status="Done")
+        mock_adapter.get_issue.return_value = original
+        mock_adapter.update_issue_status.return_value = updated
+        tracker_factory.create.return_value = mock_adapter
+        client = TestClient(app)
+
+        legacy = client.post(f"{PREFIX}/issue-1/status", json={"status": "Done"}, headers=AUTH)
+        canonical = client.patch(
+            f"{CANONICAL_PREFIX}/issues/issue-1",
+            json={"status": "Done"},
+            headers=AUTH,
+        )
+
+        assert legacy.status_code == 200
+        assert canonical.status_code == 200
+        assert canonical.json() == legacy.json()
 
     def test_returns_404_when_issue_not_found(self):
         app, integration_repo, tracker_factory = _make_app()

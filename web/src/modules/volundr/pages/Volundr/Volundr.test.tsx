@@ -140,12 +140,32 @@ vi.mock('@/modules/volundr/components/LaunchWizard', () => ({
               branch: 'main',
             },
             model: 'qwen3-coder:70b',
+            definition: 'skuldClaude',
             templateName: templates[0]?.name ?? '',
           })
         }
         disabled={isLaunching}
       >
         {isLaunching ? 'Launching...' : 'Launch Session'}
+      </button>
+      <button
+        data-testid="wizard-launch-codex"
+        onClick={() =>
+          onLaunch({
+            name: 'codex-session',
+            source: {
+              type: 'git',
+              repo: 'https://github.com/kanuckvalley/my-repo.git',
+              branch: 'main',
+            },
+            model: 'gpt-5.4',
+            definition: 'skuldCodex',
+            templateName: templates[0]?.name ?? '',
+          })
+        }
+        disabled={isLaunching}
+      >
+        Launch Codex
       </button>
     </div>
   ),
@@ -931,7 +951,7 @@ describe('VolundrPage', () => {
 
   // Tests for launch wizard integration
   describe('Launch wizard integration', () => {
-    it('calls startSession when wizard launches', async () => {
+    it('calls startSession with claude definition when wizard launches', async () => {
       startSession.mockResolvedValue(mockSessions[0]);
       vi.mocked(useVolundr).mockReturnValue(createMockHookReturn());
 
@@ -945,16 +965,38 @@ describe('VolundrPage', () => {
       fireEvent.click(screen.getByTestId('wizard-launch'));
 
       await waitFor(() => {
-        expect(startSession).toHaveBeenCalledWith({
-          name: 'test-session',
-          source: {
-            type: 'git',
-            repo: 'https://github.com/kanuckvalley/my-repo.git',
-            branch: 'main',
-          },
-          model: 'qwen3-coder:70b',
-          templateName: 'full-stack-dev',
-        });
+        expect(startSession).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'test-session',
+            model: 'qwen3-coder:70b',
+            definition: 'skuldClaude',
+            templateName: 'full-stack-dev',
+          })
+        );
+      });
+    });
+
+    it('calls startSession with codex definition when codex is selected', async () => {
+      startSession.mockResolvedValue(mockSessions[0]);
+      vi.mocked(useVolundr).mockReturnValue(createMockHookReturn());
+
+      render(
+        <MemoryRouter>
+          <VolundrPage />
+        </MemoryRouter>
+      );
+
+      fireEvent.click(screen.getByTitle('New Session'));
+      fireEvent.click(screen.getByTestId('wizard-launch-codex'));
+
+      await waitFor(() => {
+        expect(startSession).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'codex-session',
+            model: 'gpt-5.4',
+            definition: 'skuldCodex',
+          })
+        );
       });
     });
 

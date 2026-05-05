@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "include-component-in-tag": true,
+  "include-v-in-tag": true,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance Improvements" },
+    { "type": "refactor", "section": "Code Refactoring" },
+    { "type": "build", "section": "Build System" }
+  ],
+  "packages": {
+    "web-next/packages/auth": {
+      "component": "@niuulabs/auth"
+    },
+    "web-next/packages/design-tokens": {
+      "component": "@niuulabs/design-tokens"
+    },
+    "web-next/packages/domain": {
+      "component": "@niuulabs/domain"
+    },
+    "web-next/packages/plugin-hello": {
+      "component": "@niuulabs/plugin-hello"
+    },
+    "web-next/packages/plugin-login": {
+      "component": "@niuulabs/plugin-login"
+    },
+    "web-next/packages/plugin-mimir": {
+      "component": "@niuulabs/plugin-mimir"
+    },
+    "web-next/packages/plugin-observatory": {
+      "component": "@niuulabs/plugin-observatory"
+    },
+    "web-next/packages/plugin-ravn": {
+      "component": "@niuulabs/plugin-ravn"
+    },
+    "web-next/packages/plugin-sdk": {
+      "component": "@niuulabs/plugin-sdk"
+    },
+    "web-next/packages/plugin-tyr": {
+      "component": "@niuulabs/plugin-tyr"
+    },
+    "web-next/packages/plugin-volundr": {
+      "component": "@niuulabs/plugin-volundr"
+    },
+    "web-next/packages/query": {
+      "component": "@niuulabs/query"
+    },
+    "web-next/packages/shell": {
+      "component": "@niuulabs/shell"
+    },
+    "web-next/packages/ui": {
+      "component": "@niuulabs/ui"
+    }
+  }
+}

@@ -26,12 +26,14 @@ from pydantic_settings import (
 )
 
 from niuu.config import (
+    CorsConfig,
     GitHubConfig,  # noqa: F401
     GitHubInstance,  # noqa: F401
     GitLabConfig,  # noqa: F401
     GitLabInstance,  # noqa: F401
 )
 from ravn.config import PersonaSourceConfig
+from volundr.domain.models import IntegrationType, SecretType
 
 
 # Config file search paths (in order of priority).
@@ -44,9 +46,6 @@ def _config_paths() -> list[Path]:
         Path("./config.yaml"),
         Path("/etc/volundr/config.yaml"),
     ]
-
-
-CONFIG_PATHS = _config_paths()
 
 
 class LocalGitConfig(BaseModel):
@@ -168,6 +167,79 @@ class MCPServerEntry(BaseModel):
     url: str | None = None
     args: list[str] = Field(default_factory=list)
     description: str = ""
+
+
+class SessionDefinitionConfig(BaseModel):
+    """Configuration for a single session definition (e.g. skuldClaude, skuldCodex).
+
+    Session definitions describe available AI backend configurations.
+    Each definition has a unique key, display metadata, and a ``defaults``
+    dict that gets merged into Helm values when a session is created with
+    this definition.
+    """
+
+    enabled: bool = True
+    display_name: str = ""
+    description: str = ""
+    labels: list[str] = Field(default_factory=list)
+    default_model: str = ""
+    defaults: dict[str, Any] = Field(default_factory=dict)
+
+
+def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
+    """Built-in session definitions so the wizard works without Helm config.
+
+    These carry only broker-level config (cliType, transportAdapter).
+    Helm values merge on top when running in Kubernetes.
+    """
+    return {
+        "skuldClaude": SessionDefinitionConfig(
+            enabled=True,
+            display_name="Claude Code",
+            description="Anthropic Claude — full IDE with terminal, tools, and MCP",
+            labels=["session", "claude"],
+            default_model="claude-sonnet-4-6",
+            defaults={
+                "broker": {
+                    "cliType": "claude",
+                    "transport": "subprocess",
+                    "transportAdapter": "skuld.transports.subprocess.SubprocessTransport",
+                    "skipPermissions": True,
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldCodex": SessionDefinitionConfig(
+            enabled=True,
+            display_name="OpenAI Codex",
+            description="OpenAI Codex — WebSocket protocol with streaming and tools",
+            labels=["session", "codex"],
+            default_model="",
+            defaults={
+                "broker": {
+                    "cliType": "codex-ws",
+                    "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                    "skipPermissions": True,
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldOpenCode": SessionDefinitionConfig(
+            enabled=True,
+            display_name="OpenCode",
+            description="Model-neutral AI coding agent — Claude, OpenAI, Gemini, local",
+            labels=["session", "opencode"],
+            default_model="",
+            defaults={
+                "broker": {
+                    "cliType": "opencode",
+                    "transportAdapter": "skuld.transports.opencode.OpenCodeHttpTransport",
+                    "skipPermissions": True,
+                    "agentTeams": False,
+                },
+            },
+        ),
+    }
 
 
 class ProfileConfig(BaseModel):
@@ -720,6 +792,75 @@ class IntegrationsConfig(BaseModel):
     definitions: list[IntegrationDefinitionConfig] = Field(
         default_factory=_default_integration_definitions,
     )
+    seed_connections: list["SeededIntegrationConnectionConfig"] = Field(
+        default_factory=list,
+        description=(
+            "Integration connections to seed into the credential store and "
+            "integration repository at startup."
+        ),
+    )
+
+
+class SeededIntegrationCredentialConfig(BaseModel):
+    """Credential payload to seed for an integration connection."""
+
+    secret_type: SecretType = Field(
+        default=SecretType.GENERIC,
+        description="Secret type stored for the seeded credential.",
+    )
+    data: dict[str, str] = Field(
+        default_factory=dict,
+        description="Secret key/value pairs to store in the credential store.",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional credential metadata stored alongside the secret values.",
+    )
+
+
+class SeededIntegrationConnectionConfig(BaseModel):
+    """A startup-seeded integration connection."""
+
+    id: str | None = Field(
+        default=None,
+        description=(
+            "Optional fixed integration connection ID. When omitted, Volundr "
+            "derives a stable UUID from the seeded connection fields."
+        ),
+    )
+    owner_type: str = Field(
+        default="user",
+        description="Credential/integration owner type, usually 'user' in mini mode.",
+    )
+    owner_id: str = Field(
+        default="dev-user",
+        description="Owner receiving the seeded integration connection.",
+    )
+    integration_type: IntegrationType = Field(
+        description="Category of integration being seeded.",
+    )
+    adapter: str = Field(
+        description="Fully-qualified adapter path for the integration connection.",
+    )
+    credential_name: str = Field(
+        description="Credential name referenced by the integration connection.",
+    )
+    slug: str = Field(
+        default="",
+        description="Catalog slug for the integration definition, e.g. 'telegram'.",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether the seeded connection starts enabled.",
+    )
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Adapter-specific connection config.",
+    )
+    credential: SeededIntegrationCredentialConfig | None = Field(
+        default=None,
+        description="Optional credential payload to seed before creating the connection.",
+    )
 
 
 class FeatureModuleConfig(BaseModel):
@@ -1029,6 +1170,25 @@ class AIModelConfig(BaseModel):
     cost_per_million_tokens: float = 0.0
 
 
+def _default_models() -> list[AIModelConfig]:
+    """Built-in model catalog so the wizard works without Helm config."""
+    return [
+        AIModelConfig(
+            id="claude-opus-4-6", name="Claude Opus 4.6", cost_per_million_tokens=15.0,
+        ),
+        AIModelConfig(
+            id="claude-sonnet-4-6", name="Claude Sonnet 4.6", cost_per_million_tokens=3.0,
+        ),
+        AIModelConfig(
+            id="claude-haiku-4-5-20251001", name="Claude Haiku 4.5", cost_per_million_tokens=1.0,
+        ),
+        AIModelConfig(id="gpt-5.5", name="GPT-5.5", cost_per_million_tokens=10.0),
+        AIModelConfig(id="gpt-5.4", name="GPT-5.4", cost_per_million_tokens=5.0),
+        AIModelConfig(id="o4-mini", name="o4-mini", cost_per_million_tokens=1.1),
+        AIModelConfig(id="o3", name="o3", cost_per_million_tokens=10.0),
+    ]
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -1044,13 +1204,13 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        yaml_file=CONFIG_PATHS,
         yaml_file_encoding="utf-8",
         env_nested_delimiter="__",
         extra="ignore",
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     git: GitConfig = Field(default_factory=GitConfig)
@@ -1074,7 +1234,16 @@ class Settings(BaseSettings):
     local_git: LocalGitConfig = Field(default_factory=LocalGitConfig)
     local_mounts: LocalMountsConfig = Field(default_factory=LocalMountsConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
-    models: list[AIModelConfig] = Field(default_factory=list)
+    session_definitions: dict[str, SessionDefinitionConfig] = Field(
+        default_factory=_default_session_definitions,
+        description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
+    )
+    default_definition: str = Field(
+        default="skuldClaude",
+        description="Fallback definition key when no explicit definition is specified.",
+    )
+
+    models: list[AIModelConfig] = Field(default_factory=_default_models)
     profiles: list[ProfileConfig] = Field(default_factory=list)
     templates: list[TemplateConfig] = Field(default_factory=list)
     mcp_servers: list[MCPServerEntry] = Field(default_factory=list)
@@ -1104,6 +1273,6 @@ class Settings(BaseSettings):
         return (
             init_settings,
             env_settings,
-            YamlConfigSettingsSource(settings_cls),
+            YamlConfigSettingsSource(settings_cls, yaml_file=_config_paths()),
             file_secret_settings,
         )

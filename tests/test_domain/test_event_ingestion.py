@@ -1,6 +1,6 @@
 """Tests for EventIngestionService."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from volundr.domain.models import SessionEvent, SessionEventType
@@ -50,7 +50,7 @@ def _make_event(**overrides) -> SessionEvent:
         "id": uuid4(),
         "session_id": uuid4(),
         "event_type": SessionEventType.MESSAGE_ASSISTANT,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(UTC),
         "data": {"content_preview": "hello"},
         "sequence": 0,
     }

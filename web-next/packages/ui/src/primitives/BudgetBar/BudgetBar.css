@@ -1,0 +1,87 @@
+.niuu-budget-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* ── Track ─────────────────────────────────────────────── */
+
+.niuu-budget-bar__track {
+  position: relative;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  overflow: hidden;
+}
+
+.niuu-budget-bar--sm .niuu-budget-bar__track {
+  height: 4px;
+}
+
+.niuu-budget-bar--md .niuu-budget-bar__track {
+  height: 6px;
+}
+
+/* ── Fill ───────────────────────────────────────────────── */
+
+.niuu-budget-bar__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--radius-full);
+  transition: width 0.2s ease;
+}
+
+.niuu-budget-bar--ok .niuu-budget-bar__fill {
+  background: var(--state-ok);
+}
+
+.niuu-budget-bar--warn .niuu-budget-bar__fill {
+  background: var(--state-warn);
+}
+
+.niuu-budget-bar--crit .niuu-budget-bar__fill {
+  background: var(--color-critical);
+}
+
+/* ── Warn threshold marker ──────────────────────────────── */
+
+.niuu-budget-bar__warn-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--state-warn) 60%, transparent);
+  pointer-events: none;
+}
+
+/* ── Label ──────────────────────────────────────────────── */
+
+.niuu-budget-bar__label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+
+.niuu-budget-bar__spent {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.niuu-budget-bar__divider {
+  color: var(--color-text-muted);
+}
+
+.niuu-budget-bar__cap {
+  color: var(--color-text-muted);
+}
+
+.niuu-budget-bar--warn .niuu-budget-bar__spent {
+  color: var(--state-warn);
+}
+
+.niuu-budget-bar--crit .niuu-budget-bar__spent {
+  color: var(--color-critical);
+}

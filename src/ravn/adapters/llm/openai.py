@@ -321,6 +321,8 @@ class OpenAICompatibleAdapter(LLMPort):
     ) -> httpx.Response:
         url = f"{self._base_url}/v1/chat/completions"
         last_exc: Exception | None = None
+        last_status_code: int | None = None
+        model_name = str(payload.get("model") or self._default_model)
 
         for attempt in range(self._max_retries + 1):
             try:
@@ -335,6 +337,7 @@ class OpenAICompatibleAdapter(LLMPort):
                 if response.status_code not in _RETRYABLE_STATUS_CODES:
                     return response
 
+                last_status_code = response.status_code
                 if stream:
                     await response.aclose()
 
@@ -359,8 +362,16 @@ class OpenAICompatibleAdapter(LLMPort):
                     delay = self._retry_base_delay * (2**attempt)
                     await asyncio.sleep(delay)
 
+        details = [
+            f"model={model_name}",
+            f"endpoint={url}",
+        ]
+        if last_status_code is not None:
+            details.append(f"status={last_status_code}")
         raise LLMError(
-            f"OpenAI-compatible API failed after {self._max_retries} retries"
+            "OpenAI-compatible API failed after "
+            f"{self._max_retries} retries ({', '.join(details)})",
+            status_code=last_status_code,
         ) from last_exc
 
     # ------------------------------------------------------------------

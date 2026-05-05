@@ -1,0 +1,129 @@
+.niuu-schema-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.niuu-schema-editor__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+}
+
+.niuu-schema-editor__th {
+  padding: var(--space-1) var(--space-2);
+  text-align: left;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.niuu-schema-editor__th--action {
+  width: 32px;
+}
+
+.niuu-schema-editor__row {
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.niuu-schema-editor__row:last-child {
+  border-bottom: none;
+}
+
+.niuu-schema-editor__td {
+  padding: var(--space-1) var(--space-2);
+  vertical-align: middle;
+}
+
+.niuu-schema-editor__td--key {
+  width: 40%;
+}
+
+.niuu-schema-editor__td--type {
+  width: 40%;
+}
+
+.niuu-schema-editor__td--action {
+  width: 32px;
+  text-align: center;
+}
+
+.niuu-schema-editor__key-label,
+.niuu-schema-editor__type-badge {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  padding: var(--space-1) 0;
+}
+
+.niuu-schema-editor__type-badge {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg-tertiary);
+  color: var(--brand-300);
+}
+
+.niuu-schema-editor__key-input {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.niuu-schema-editor__type-select {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.niuu-schema-editor__remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: var(--text-xs);
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.niuu-schema-editor__remove-btn:hover {
+  background-color: color-mix(in srgb, var(--color-critical) 12%, transparent);
+  color: var(--color-critical);
+}
+
+.niuu-schema-editor__empty {
+  padding: var(--space-3) var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-style: italic;
+  text-align: center;
+}
+
+.niuu-schema-editor__add-btn {
+  align-self: flex-start;
+  padding: var(--space-1) var(--space-3);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.niuu-schema-editor__add-btn:hover {
+  border-color: var(--brand-400);
+  color: var(--color-text-primary);
+}

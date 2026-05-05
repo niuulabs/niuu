@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from volundr.config import GitWorkflowConfig
@@ -208,7 +208,7 @@ class GitWorkflowService:
                         "pr_url": pr.url,
                         "repo_url": session.repo,
                     },
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(UTC),
                 )
             )
 
@@ -247,7 +247,7 @@ class GitWorkflowService:
                         "repo_url": repo_url,
                         "merge_method": method,
                     },
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(UTC),
                 )
             )
 

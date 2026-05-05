@@ -405,4 +405,52 @@ data:
   000022_raid_structured_outcome.down.sql: |
     ALTER TABLE raids DROP COLUMN IF EXISTS structured_outcome;
     ALTER TABLE raids DROP COLUMN IF EXISTS outcome_event_type;
+
+  000023_workflows.up.sql: |
+    CREATE TABLE IF NOT EXISTS workflows (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        version TEXT NOT NULL DEFAULT 'draft',
+        scope TEXT NOT NULL DEFAULT 'user',
+        owner_id TEXT,
+        definition_yaml TEXT,
+        graph_json JSONB NOT NULL DEFAULT '{"nodes": [], "edges": []}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT workflows_scope_check CHECK (scope IN ('system', 'user')),
+        CONSTRAINT workflows_owner_check CHECK (
+            (scope = 'system' AND owner_id IS NULL)
+            OR (scope = 'user' AND owner_id IS NOT NULL)
+        )
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workflows_scope_updated_at
+        ON workflows(scope, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_workflows_owner_updated_at
+        ON workflows(owner_id, updated_at DESC)
+        WHERE owner_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_workflows_name
+        ON workflows(name);
+
+  000023_workflows.down.sql: |
+    DROP INDEX IF EXISTS idx_workflows_name;
+    DROP INDEX IF EXISTS idx_workflows_owner_updated_at;
+    DROP INDEX IF EXISTS idx_workflows_scope_updated_at;
+    DROP TABLE IF EXISTS workflows;
+
+  000024_saga_workflows.up.sql: |
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS workflow_id UUID;
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS workflow_version TEXT;
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS workflow_snapshot JSONB;
+
+    CREATE INDEX IF NOT EXISTS idx_sagas_workflow_id
+        ON sagas(workflow_id)
+        WHERE workflow_id IS NOT NULL;
+
+  000024_saga_workflows.down.sql: |
+    DROP INDEX IF EXISTS idx_sagas_workflow_id;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS workflow_snapshot;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS workflow_version;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS workflow_id;
 {{- end }}

@@ -234,6 +234,15 @@ class TestCreateFromYaml:
         assert len(volundr.spawned) == 1
 
     @pytest.mark.asyncio
+    async def test_auto_start_resolves_owner_integrations(self):
+        volundr = StubVolundrPort()
+        volundr.integration_ids = ["int-telegram", "int-linear"]
+        executor, repo, _ = _make_executor(volundr=volundr)
+        await executor.create_from_yaml(_SINGLE_STAGE_PIPELINE, auto_start=True)
+        assert len(volundr.spawned) == 1
+        assert volundr.spawned[0].integration_ids == ["int-telegram", "int-linear"]
+
+    @pytest.mark.asyncio
     async def test_auto_start_false_does_not_dispatch(self):
         volundr = StubVolundrPort()
         executor, repo, _ = _make_executor(volundr=volundr)

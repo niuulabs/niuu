@@ -1,6 +1,5 @@
 """Tests for the Skuld broker /api/diff endpoint."""
 
-import subprocess
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -86,6 +85,7 @@ class TestDiffEndpoint:
         self.workspace = tmp_path
         self.client = TestClient(app, raise_server_exceptions=False)
         yield
+        self.client.close()
         broker.workspace_dir = self._original_workspace
 
     def test_missing_file_param_returns_422(self):
@@ -105,17 +105,15 @@ class TestDiffEndpoint:
         assert response.status_code == 400
         assert "Path traversal" in response.json()["detail"]
 
-    @patch("skuld.broker.asyncio")
-    def test_successful_diff(self, mock_asyncio):
+    @patch("skuld.broker.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    def test_successful_diff(self, mock_create_subprocess_exec):
         diff_output = "@@ -1,2 +1,3 @@\n line1\n+added\n line2\n"
 
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(diff_output.encode(), b""))
 
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=mock_proc)
-        mock_asyncio.subprocess = subprocess
-        mock_asyncio.wait_for = AsyncMock(return_value=(diff_output.encode(), b""))
+        mock_create_subprocess_exec.return_value = mock_proc
 
         response = self.client.get(
             "/api/diff",
@@ -126,15 +124,13 @@ class TestDiffEndpoint:
         assert data["filePath"] == "src/main.py"
         assert len(data["hunks"]) == 1
 
-    @patch("skuld.broker.asyncio")
-    def test_git_diff_failure_returns_502(self, mock_asyncio):
+    @patch("skuld.broker.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    def test_git_diff_failure_returns_502(self, mock_create_subprocess_exec):
         mock_proc = AsyncMock()
         mock_proc.returncode = 128
         mock_proc.communicate = AsyncMock(return_value=(b"", b"fatal: bad object"))
 
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=mock_proc)
-        mock_asyncio.subprocess = subprocess
-        mock_asyncio.wait_for = AsyncMock(return_value=(b"", b"fatal: bad object"))
+        mock_create_subprocess_exec.return_value = mock_proc
 
         response = self.client.get(
             "/api/diff",
@@ -143,15 +139,13 @@ class TestDiffEndpoint:
         assert response.status_code == 502
         assert "git diff failed" in response.json()["detail"]
 
-    @patch("skuld.broker.asyncio")
-    def test_default_branch_diff_command(self, mock_asyncio):
+    @patch("skuld.broker.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    def test_default_branch_diff_command(self, mock_create_subprocess_exec):
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=mock_proc)
-        mock_asyncio.subprocess = subprocess
-        mock_asyncio.wait_for = AsyncMock(return_value=(b"", b""))
+        mock_create_subprocess_exec.return_value = mock_proc
 
         response = self.client.get(
             "/api/diff",
@@ -160,6 +154,6 @@ class TestDiffEndpoint:
         assert response.status_code == 200
 
         # Verify the command used main...HEAD
-        call_args = mock_asyncio.create_subprocess_exec.call_args
+        call_args = mock_create_subprocess_exec.call_args
         cmd = call_args[0]
         assert "main...HEAD" in cmd

@@ -34,10 +34,13 @@ def test_status_endpoint(client: TestClient):
     assert "session_count" in data
 
 
-def test_list_sessions_returns_empty_list(client: TestClient):
+def test_list_sessions_returns_seeded_runtime_sessions(client: TestClient):
     resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200
-    assert resp.json() == []
+    data = resp.json()
+    assert isinstance(data, list)
+    assert data
+    assert data[0]["ravn_id"]
 
 
 def test_stop_session(client: TestClient):

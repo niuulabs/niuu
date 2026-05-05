@@ -59,6 +59,18 @@ class SagaRepository(ABC):
         """Update the status of a saga."""
         ...
 
+    async def update_saga_workflow(
+        self,
+        saga_id: UUID,
+        *,
+        workflow_id: UUID | None,
+        workflow_version: str | None,
+        workflow_snapshot: dict[str, Any] | None,
+        owner_id: str | None = None,
+    ) -> None:
+        """Update the workflow assignment and snapshot for a saga."""
+        raise NotImplementedError(f"{type(self).__name__}.update_saga_workflow not implemented")
+
     @abstractmethod
     async def count_by_status(self) -> dict[str, int]:
         """Return a count of raids grouped by status.

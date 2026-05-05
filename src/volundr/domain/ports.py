@@ -24,6 +24,7 @@ from niuu.ports.integrations import IntegrationRepository  # noqa: F401
 from volundr.domain.models import (
     Chronicle,
     ClusterResourceInfo,
+    CommunicationRoute,
     CredentialMapping,
     ForgeProfile,
     IntegrationConnection,
@@ -37,11 +38,13 @@ from volundr.domain.models import (
     PromptScope,
     PVCRef,
     RealtimeEvent,
+    RoomParticipantInfo,
     SavedPrompt,
     SecretInfo,
     SecretMountSpec,
     SecretType,
     Session,
+    SessionCommunicationTarget,
     SessionEvent,
     SessionEventType,
     SessionSpec,
@@ -102,6 +105,43 @@ class SessionRepository(ABC):
     @abstractmethod
     async def delete(self, session_id: UUID) -> bool:
         """Delete a session. Returns True if deleted, False if not found."""
+
+
+class CommunicationRouteRepository(ABC):
+    """Port for external communication route persistence."""
+
+    @abstractmethod
+    async def upsert_route(self, route: CommunicationRoute) -> CommunicationRoute:
+        """Create or update a communication route."""
+
+    @abstractmethod
+    async def get_active_route(
+        self,
+        platform: str,
+        conversation_id: str,
+        thread_id: str | None,
+    ) -> CommunicationRoute | None:
+        """Return the active route for a platform/conversation/thread."""
+
+    @abstractmethod
+    async def deactivate_routes_for_session(self, session_id: UUID) -> int:
+        """Deactivate all active routes for a session."""
+
+    @abstractmethod
+    async def list_routes_for_session(self, session_id: UUID) -> list[CommunicationRoute]:
+        """List routes registered for a session."""
+
+
+class CommunicationCursorRepository(ABC):
+    """Port for persistent inbound-consumer cursors."""
+
+    @abstractmethod
+    async def get_cursor(self, platform: str, consumer_key: str) -> str | None:
+        """Return the stored cursor for a consumer, if any."""
+
+    @abstractmethod
+    async def upsert_cursor(self, platform: str, consumer_key: str, cursor: str) -> None:
+        """Persist the latest consumer cursor."""
 
 
 class ChronicleRepository(ABC):
@@ -1087,6 +1127,7 @@ class SessionContext:
     """Read-only context for contributors."""
 
     principal: Principal | None = None
+    definition: str | None = None
     template_name: str | None = None
     profile_name: str | None = None
     terminal_restricted: bool = False
@@ -1129,3 +1170,45 @@ class SessionContributor(ABC):
     async def cleanup(self, session: Session, context: SessionContext) -> None:
         """Clean up on stop/delete. Default no-op."""
         return
+
+
+class SessionRoomPort(ABC):
+    """Port for interacting with a live flock room owned by Skuld."""
+
+    @abstractmethod
+    async def send_room_message(
+        self,
+        session_id: UUID,
+        text: str,
+        *,
+        source: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Send a plain human message into the session room."""
+
+    @abstractmethod
+    async def send_directed_room_message(
+        self,
+        session_id: UUID,
+        target_peer_id: str,
+        text: str,
+        *,
+        source: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Send a directed human message to a specific room participant."""
+
+    @abstractmethod
+    async def list_room_participants(self, session_id: UUID) -> list[RoomParticipantInfo]:
+        """Return the current room participants for a live session."""
+
+
+class SessionCommunicationPort(ABC):
+    """Port for querying live external communication targets from a session."""
+
+    @abstractmethod
+    async def list_communication_targets(
+        self,
+        session_id: UUID,
+    ) -> list[SessionCommunicationTarget]:
+        """Return active external communication targets for a live session."""

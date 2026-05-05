@@ -27,7 +27,13 @@ from fastapi import FastAPI
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.config import MimirServiceConfig
 from mimir.mcp import MimirMcpServer
+from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
+from niuu.settings_schema import (
+    SettingsFieldSchema,
+    SettingsProviderSchema,
+    SettingsSectionSchema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +86,23 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     search_port = SqliteSearchAdapter(path=search_db, embed_fn=embed_fn)
 
     adapter = MarkdownMimirAdapter(root=config.path, search_port=search_port)
-    mimir_router = MimirRouter(adapter=adapter, name=config.name, role=config.role)
+    registry_store = MimirRegistryStore(Path(config.path).expanduser() / ".mimir-registry.json")
+    registry_store.ensure_entry(
+        name=config.name,
+        role=config.role,
+        kind="local" if not config.announce_url else "remote",
+        path=str(Path(config.path).expanduser()),
+        url=config.announce_url or "",
+        categories=config.categories,
+        default_read_priority=0,
+        desc="Current Mimir service instance",
+    )
+    mimir_router = MimirRouter(
+        adapter=adapter,
+        name=config.name,
+        role=config.role,
+        registry_store=registry_store,
+    )
     mcp_server = MimirMcpServer(adapter=adapter, name=config.name)
 
     @asynccontextmanager
@@ -127,5 +149,69 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
 
     app.include_router(mimir_router.router, prefix="/mimir")
     app.include_router(mcp_server.router(), prefix="/mcp")
+    app.state.mimir_config = config
+
+    @app.get("/settings", response_model=SettingsProviderSchema)
+    async def settings() -> SettingsProviderSchema:
+        categories = ", ".join(config.categories or ["all"])
+        return SettingsProviderSchema(
+            title="Mimir",
+            subtitle="knowledge system settings",
+            scope="service",
+            sections=[
+                SettingsSectionSchema(
+                    id="service",
+                    label="Service",
+                    description=(
+                        "Mounted Mimir instance characteristics exposed by the "
+                        "current host profile."
+                    ),
+                    fields=[
+                        SettingsFieldSchema(
+                            key="instance_name",
+                            label="Instance Name",
+                            type="text",
+                            value=config.name,
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="role",
+                            label="Role",
+                            type="text",
+                            value=config.role,
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="knowledge_path",
+                            label="Knowledge Path",
+                            type="text",
+                            value=config.path,
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="category_scope",
+                            label="Category Scope",
+                            type="text",
+                            value=categories,
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="embedding_model",
+                            label="Embedding Model",
+                            type="text",
+                            value=config.embedding_model or "fts-only",
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="announce_url",
+                            label="Announce URL",
+                            type="text",
+                            value=config.announce_url or "disabled",
+                            read_only=True,
+                        ),
+                    ],
+                )
+            ],
+        )
 
     return app

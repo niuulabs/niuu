@@ -21,7 +21,9 @@ on:
         type: string
         default: "0.87.0"
 
-permissions: read-all
+permissions:
+  packages: read
+  security-events: write  # Required to upload Grype results to GitHub Security
 
 jobs:
   scan:

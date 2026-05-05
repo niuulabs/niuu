@@ -16,7 +16,8 @@ class ParticipantMeta:
         peer_id: Stable identifier for this participant (e.g. user sub or agent ID).
         persona: Display name shown in the chat UI.
         color: Accent token name from the design system (e.g. "amber", "cyan").
-        participant_type: "human" for human users, "ravn" for AI agents.
+        participant_type: "human" for human users, "ravn" for mesh peers,
+            "skuld" for the local broker/orchestrator.
         gateway_url: WebSocket gateway URL for agent participants; None for humans.
         subscribes_to: Event types this participant listens for.
         emits: Event types this participant can publish.
@@ -26,12 +27,13 @@ class ParticipantMeta:
     peer_id: str
     persona: str
     color: str
-    participant_type: str  # "human" | "ravn"
+    participant_type: str  # "human" | "ravn" | "skuld"
     display_name: str = ""
     gateway_url: str | None = None
     subscribes_to: tuple[str, ...] = ()
     emits: tuple[str, ...] = ()
     tools: tuple[str, ...] = ()
+    status: str = "idle"
 
 
 @dataclass(frozen=True)

@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 
 from niuu.domain.models import IntegrationType, Principal
 from tyr.adapters.inbound.auth import extract_bearer_token, extract_principal
 from tyr.api.flock_config import FlockPersonaResponse
+from tyr.api.tracker import resolve_trackers
 from tyr.domain.services.dispatch_service import (
     DispatchItem as ServiceDispatchItem,
 )
@@ -56,6 +57,9 @@ class QueueItemResponse(BaseModel):
     priority_label: str = ""
     estimate: float | None = None
     url: str = ""
+    workflow_id: str | None = None
+    workflow: str | None = None
+    workflow_version: str | None = None
 
 
 class ModelOption(BaseModel):
@@ -85,6 +89,10 @@ class DispatchRequest(BaseModel):
         default=None,
         description="Target a specific Volundr cluster by connection ID",
     )
+    session_definition: str | None = Field(
+        default=None,
+        description="Optional Volundr session definition key (e.g. 'skuldCodex')",
+    )
     workload_type: str = Field(
         default="solo",
         description="'solo' for a single Ravn session or 'ravn_flock' for a multi-agent flock",
@@ -105,6 +113,14 @@ class DispatchItemRequest(BaseModel):
         default=None,
         description="Target a specific Volundr cluster for this item (overrides request-level)",
     )
+    workflow_id: str | None = Field(
+        default=None,
+        description="Optional workflow override for this dispatch item",
+    )
+    session_definition: str | None = Field(
+        default=None,
+        description="Optional session definition override for this dispatch item",
+    )
 
 
 class DispatchResultResponse(BaseModel):
@@ -115,6 +131,24 @@ class DispatchResultResponse(BaseModel):
     session_name: str
     status: str
     cluster_name: str = ""
+
+
+class DispatchBatchRequest(BaseModel):
+    """Compatibility request for dispatching raids by raid tracker ID."""
+
+    raid_ids: list[str] = Field(default_factory=list, min_length=1)
+
+
+class FailedRaidDispatchResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    raid_id: str = Field(serialization_alias="raidId")
+    reason: str
+
+
+class DispatchBatchResultResponse(BaseModel):
+    dispatched: list[str]
+    failed: list[FailedRaidDispatchResponse]
 
 
 class ClusterInfo(BaseModel):
@@ -148,6 +182,9 @@ def _queue_item_to_response(item: ServiceQueueItem) -> QueueItemResponse:
         priority_label=item.priority_label,
         estimate=item.estimate,
         url=item.url,
+        workflow_id=item.workflow_id,
+        workflow=item.workflow,
+        workflow_version=item.workflow_version,
     )
 
 
@@ -204,6 +241,48 @@ async def resolve_dispatch_service() -> DispatchService:
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Dispatch service not configured",
     )
+
+
+async def _resolve_dispatch_item_for_raid(
+    raid_id: str,
+    *,
+    trackers: list,
+) -> tuple[ServiceDispatchItem | None, str | None]:
+    for tracker in trackers:
+        try:
+            raid = await tracker.get_raid(raid_id)
+        except Exception:
+            continue
+
+        saga = await tracker.get_saga_for_raid(raid.tracker_id)
+        if saga is None:
+            return None, "parent saga not found"
+        if not saga.repos:
+            return None, "saga has no repos"
+
+        issues = await tracker.list_issues(saga.tracker_id)
+        issue = next(
+            (
+                item
+                for item in issues
+                if item.id == raid.tracker_id or item.identifier == raid.tracker_id
+            ),
+            None,
+        )
+        if issue is None:
+            return None, "raid issue not found in tracker"
+
+        return (
+            ServiceDispatchItem(
+                saga_id=str(saga.id),
+                issue_id=issue.id,
+                repo=saga.repos[0],
+                connection_id=None,
+            ),
+            None,
+        )
+
+    return None, "raid not found"
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +345,8 @@ def create_dispatch_router() -> APIRouter:
                 issue_id=item.issue_id,
                 repo=item.repo,
                 connection_id=item.connection_id,
+                workflow_id=item.workflow_id,
+                session_definition=item.session_definition,
             )
             for item in body.items
         ]
@@ -283,6 +364,7 @@ def create_dispatch_router() -> APIRouter:
             model=body.model or settings.dispatch.default_model,
             system_prompt=body.system_prompt or settings.dispatch.default_system_prompt,
             connection_id=body.connection_id,
+            session_definition=body.session_definition,
             persona_overrides=persona_overrides,
         )
         return [_result_to_response(r) for r in results]
@@ -314,5 +396,80 @@ def create_dispatch_router() -> APIRouter:
                 )
             )
         return clusters
+
+    @router.post("/batch", response_model=DispatchBatchResultResponse)
+    async def dispatch_batch(
+        body: DispatchBatchRequest,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        trackers: list = Depends(resolve_trackers),
+        service: DispatchService = Depends(resolve_dispatch_service),
+        dispatcher_repo: DispatcherRepository = Depends(resolve_dispatcher_repo),
+    ) -> DispatchBatchResultResponse:
+        """Compatibility alias for dispatching multiple raids by raid tracker ID."""
+        await dispatcher_repo.get_or_create(principal.user_id)
+
+        dispatch_items: list[ServiceDispatchItem] = []
+        requested_raid_by_issue_id: dict[str, str] = {}
+        failures: list[FailedRaidDispatchResponse] = []
+        for raid_id in body.raid_ids:
+            item, reason = await _resolve_dispatch_item_for_raid(raid_id, trackers=trackers)
+            if item is None:
+                failures.append(
+                    FailedRaidDispatchResponse(
+                        raid_id=raid_id,
+                        reason=reason or "raid not found",
+                    )
+                )
+                continue
+            dispatch_items.append(item)
+            requested_raid_by_issue_id[item.issue_id] = raid_id
+
+        auth_token = extract_bearer_token(request)
+        settings = request.app.state.settings
+        results = await service.dispatch_issues(
+            owner_id=principal.user_id,
+            items=dispatch_items,
+            auth_token=auth_token,
+            model=settings.dispatch.default_model,
+            system_prompt=settings.dispatch.default_system_prompt,
+        )
+        dispatched = [
+            requested_raid_by_issue_id[result.issue_id]
+            for result in results
+            if result.issue_id in requested_raid_by_issue_id
+        ]
+
+        return DispatchBatchResultResponse(dispatched=dispatched, failed=failures)
+
+    @router.post("/{raid_id}", status_code=status.HTTP_202_ACCEPTED)
+    async def dispatch_raid(
+        raid_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        trackers: list = Depends(resolve_trackers),
+        service: DispatchService = Depends(resolve_dispatch_service),
+        dispatcher_repo: DispatcherRepository = Depends(resolve_dispatcher_repo),
+    ) -> Response:
+        """Compatibility alias for dispatching a single raid by raid tracker ID."""
+        await dispatcher_repo.get_or_create(principal.user_id)
+
+        item, reason = await _resolve_dispatch_item_for_raid(raid_id, trackers=trackers)
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=reason or "raid not found",
+            )
+
+        auth_token = extract_bearer_token(request)
+        settings = request.app.state.settings
+        await service.dispatch_issues(
+            owner_id=principal.user_id,
+            items=[item],
+            auth_token=auth_token,
+            model=settings.dispatch.default_model,
+            system_prompt=settings.dispatch.default_system_prompt,
+        )
+        return Response(status_code=status.HTTP_202_ACCEPTED)
 
     return router

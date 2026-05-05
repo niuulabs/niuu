@@ -28,6 +28,7 @@ class MeshIdentity:
     permission_mode: str
     version: str
     consumes_event_types: list[str] = field(default_factory=list)
+    emits_event_types: list[str] = field(default_factory=list)
     rep_address: str | None = None
     pub_address: str | None = None
     spiffe_id: str | None = None

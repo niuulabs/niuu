@@ -8,13 +8,17 @@ import uuid
 
 from fastapi import WebSocket
 
-from skuld.transports import (
-    CLITransport,
-    TransportCapabilities,
-    _drain_stream,
-    _filter_event,
-    _stop_process,
+from niuu.adapters.cli.runtime import (
+    drain_process_stream as _drain_stream,
 )
+from niuu.adapters.cli.runtime import (
+    filter_cli_event as _filter_event,
+)
+from niuu.adapters.cli.runtime import (
+    stop_subprocess as _stop_process,
+)
+from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.transports.mcp_config import build_claude_mcp_config
 
 logger = logging.getLogger("skuld.transport")
 
@@ -37,6 +41,7 @@ class SdkWebSocketTransport(CLITransport):
         agent_teams: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
+        mcp_servers: list[dict] | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -47,6 +52,7 @@ class SdkWebSocketTransport(CLITransport):
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
+        self._mcp_config = build_claude_mcp_config(mcp_servers or [])
         self._process: asyncio.subprocess.Process | None = None
         self._cli_ws: WebSocket | None = None
         self._cli_connected = asyncio.Event()
@@ -91,6 +97,8 @@ class SdkWebSocketTransport(CLITransport):
             cmd.extend(["--permission-mode", "bypassPermissions"])
         if self._system_prompt:
             cmd.extend(["--append-system-prompt", self._system_prompt])
+        if self._mcp_config:
+            cmd.extend(["--mcp-config", self._mcp_config])
         if self._initial_prompt and not resume_id:
             self._pending_messages.append(
                 {

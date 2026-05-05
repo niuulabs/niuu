@@ -80,9 +80,23 @@ class PostgresSagaRepository(SagaRepository):
             """
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
-                 repos, feature_branch, base_branch, status, confidence, created_at, owner_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-            ON CONFLICT (id) DO NOTHING
+                 repos, feature_branch, base_branch, status, confidence, created_at, owner_id,
+                 workflow_id, workflow_version, workflow_snapshot)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+                tracker_id = EXCLUDED.tracker_id,
+                tracker_type = EXCLUDED.tracker_type,
+                slug = EXCLUDED.slug,
+                name = EXCLUDED.name,
+                repos = EXCLUDED.repos,
+                feature_branch = EXCLUDED.feature_branch,
+                base_branch = EXCLUDED.base_branch,
+                status = EXCLUDED.status,
+                confidence = EXCLUDED.confidence,
+                owner_id = EXCLUDED.owner_id,
+                workflow_id = EXCLUDED.workflow_id,
+                workflow_version = EXCLUDED.workflow_version,
+                workflow_snapshot = EXCLUDED.workflow_snapshot
             """,
             saga.id,
             saga.tracker_id,
@@ -96,6 +110,9 @@ class PostgresSagaRepository(SagaRepository):
             saga.confidence,
             saga.created_at,
             saga.owner_id,
+            saga.workflow_id,
+            saga.workflow_version,
+            json.dumps(saga.workflow_snapshot) if saga.workflow_snapshot is not None else None,
         )
 
     async def list_sagas(self, *, owner_id: str | None = None) -> list[Saga]:
@@ -160,6 +177,49 @@ class PostgresSagaRepository(SagaRepository):
         await self._pool.execute(
             "UPDATE sagas SET status = $1 WHERE id = $2",
             status.value,
+            saga_id,
+        )
+
+    async def update_saga_workflow(
+        self,
+        saga_id: UUID,
+        *,
+        workflow_id: UUID | None,
+        workflow_version: str | None,
+        workflow_snapshot: dict[str, Any] | None,
+        owner_id: str | None = None,
+    ) -> None:
+        snapshot = json.dumps(workflow_snapshot) if workflow_snapshot is not None else None
+
+        if owner_id is not None:
+            await self._pool.execute(
+                """
+                UPDATE sagas
+                SET workflow_id = $1,
+                    workflow_version = $2,
+                    workflow_snapshot = $3::jsonb
+                WHERE id = $4
+                  AND owner_id = $5
+                """,
+                workflow_id,
+                workflow_version,
+                snapshot,
+                saga_id,
+                owner_id,
+            )
+            return
+
+        await self._pool.execute(
+            """
+            UPDATE sagas
+            SET workflow_id = $1,
+                workflow_version = $2,
+                workflow_snapshot = $3::jsonb
+            WHERE id = $4
+            """,
+            workflow_id,
+            workflow_version,
+            snapshot,
             saga_id,
         )
 
@@ -268,6 +328,7 @@ class PostgresSagaRepository(SagaRepository):
     @staticmethod
     def _row_to_saga(row: asyncpg.Record) -> Saga:
         slug = row["slug"]
+        workflow_snapshot = PostgresSagaRepository._decode_jsonb(row.get("workflow_snapshot"))
         return Saga(
             id=row["id"],
             tracker_id=row["tracker_id"],
@@ -281,4 +342,15 @@ class PostgresSagaRepository(SagaRepository):
             confidence=row["confidence"] or 0.0,
             created_at=row["created_at"] or datetime.now(UTC),
             owner_id=row.get("owner_id") or "",
+            workflow_id=row.get("workflow_id"),
+            workflow_version=row.get("workflow_version"),
+            workflow_snapshot=workflow_snapshot,
         )
+
+    @staticmethod
+    def _decode_jsonb(value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return json.loads(value)
+        return dict(value)

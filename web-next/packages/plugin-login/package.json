@@ -1,0 +1,44 @@
+{
+  "name": "@niuulabs/plugin-login",
+  "version": "0.0.1",
+  "description": "OIDC login page plugin for the Niuu platform",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsup --watch"
+  },
+  "peerDependencies": {
+    "@tanstack/react-router": "^1.95.0",
+    "react": "^19.0.0"
+  },
+  "dependencies": {
+    "@niuulabs/auth": "workspace:*",
+    "@niuulabs/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@tanstack/react-router": "^1.95.0",
+    "@types/react": "^19.0.7",
+    "react": "^19.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.0"
+  }
+}

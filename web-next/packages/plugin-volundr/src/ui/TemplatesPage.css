@@ -1,0 +1,130 @@
+.tpl-page {
+  padding: var(--space-6);
+  max-width: 960px;
+}
+
+.tpl-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.tpl-page__title {
+  margin: 0;
+  font-size: var(--text-xl);
+  color: var(--color-text-primary);
+}
+
+.tpl-page__subtitle {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--space-6);
+}
+
+.tpl-page__new-btn {
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-brand);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-bg-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tpl-page__new-btn:hover {
+  opacity: 0.9;
+}
+
+.tpl-page__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.tpl-page__empty {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.tpl-page__list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-4);
+}
+
+/* Editor (inside drawer) */
+.tpl-editor {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.tpl-editor__section {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.tpl-editor__section-title {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.tpl-editor__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.tpl-editor__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.tpl-editor__cancel {
+  padding: var(--space-2) var(--space-4);
+  background: transparent;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.tpl-editor__cancel:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.tpl-editor__save {
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-brand);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-bg-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tpl-editor__save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tpl-editor__save:hover:not(:disabled) {
+  opacity: 0.9;
+}

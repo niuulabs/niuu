@@ -628,6 +628,7 @@ export function VolundrPage() {
           source: config.source,
           model: config.model,
           templateName: config.templateName,
+          definition: config.definition,
           taskType: config.taskType,
           trackerIssue: config.trackerIssue,
           terminalRestricted: config.terminalRestricted,

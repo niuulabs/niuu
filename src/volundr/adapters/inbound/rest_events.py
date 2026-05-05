@@ -203,7 +203,7 @@ def create_events_router(
             event_type = SessionEventType(data.event_type)
         except ValueError:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Invalid event_type: {data.event_type}",
             )
 
@@ -246,7 +246,7 @@ def create_events_router(
                 event_type = SessionEventType(item.event_type)
             except ValueError:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Invalid event_type: {item.event_type}",
                 )
             events.append(
@@ -305,7 +305,7 @@ def create_events_router(
                 types = [SessionEventType(event_type)]
             except ValueError:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Invalid event_type: {event_type}",
                 )
         events = await event_repository.get_events(

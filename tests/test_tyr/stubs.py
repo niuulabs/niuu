@@ -144,6 +144,7 @@ class StubVolundrPort(VolundrPort):
     def __init__(self, session_id: str = "sess-001") -> None:
         self._session_id = session_id
         self.spawned: list[SpawnRequest] = []
+        self.integration_ids: list[str] = []
 
     async def spawn_session(
         self, request: SpawnRequest, *, auth_token: str | None = None
@@ -179,7 +180,7 @@ class StubVolundrPort(VolundrPort):
         pass
 
     async def list_integration_ids(self, *, auth_token: str | None = None) -> list[str]:
-        return []
+        return list(self.integration_ids)
 
     async def list_repos(self, *, auth_token: str | None = None) -> list[dict]:
         return []

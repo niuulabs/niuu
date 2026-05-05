@@ -56,22 +56,22 @@ if (
   typeof globalThis.localStorage === 'undefined' ||
   typeof globalThis.localStorage.getItem !== 'function'
 ) {
-  const store: Record<string, string> = {};
+  const store = new Map<string, string>();
   globalThis.localStorage = {
-    getItem: (key: string) => store[key] ?? null,
+    getItem: (key: string) => store.get(key) ?? null,
     setItem: (key: string, value: string) => {
-      store[key] = value;
+      store.set(key, value);
     },
     removeItem: (key: string) => {
-      delete store[key];
+      store.delete(key);
     },
     clear: () => {
-      for (const k of Object.keys(store)) delete store[k];
+      store.clear();
     },
     get length() {
-      return Object.keys(store).length;
+      return store.size;
     },
-    key: (i: number) => Object.keys(store)[i] ?? null,
+    key: (i: number) => Array.from(store.keys())[i] ?? null,
   };
 }
 

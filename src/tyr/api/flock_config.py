@@ -1,7 +1,10 @@
-"""REST API for flock configuration — read and update flock dispatch settings.
+"""REST API for flock runtime configuration.
 
 Updates are applied in-memory and take effect immediately. They are not
 persisted to disk; the YAML config remains authoritative across restarts.
+
+This route family owns workflow/runtime flock execution settings and is kept
+separate from operator settings under ``/api/v1/tyr/settings/flock``.
 """
 
 from __future__ import annotations

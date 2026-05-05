@@ -1,0 +1,143 @@
+.niuu-chat-mesh-card {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-left: 2px solid var(--niuu-participant-color, var(--color-border));
+}
+
+.niuu-chat-mesh-card[data-event-type='outcome'] {
+  cursor: pointer;
+}
+
+.niuu-chat-mesh-card[data-event-type='notification'][data-urgent] {
+  border-left-color: var(--color-accent-amber);
+}
+
+.niuu-chat-mesh-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.niuu-chat-mesh-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--niuu-participant-color, var(--color-text-muted));
+  flex-shrink: 0;
+}
+
+.niuu-chat-mesh-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-left: calc(8px + var(--space-2));
+}
+
+.niuu-chat-mesh-persona {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-mesh-event-type {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-mesh-verdict-icon {
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+}
+
+.niuu-chat-mesh-verdict-icon[data-verdict='pass'] {
+  color: var(--color-brand);
+}
+
+.niuu-chat-mesh-verdict-icon[data-verdict='fail'] {
+  color: var(--color-accent-red);
+}
+
+.niuu-chat-mesh-verdict-icon[data-verdict='changes'] {
+  color: var(--color-accent-amber);
+}
+
+.niuu-chat-mesh-arrow-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--color-text-faint);
+}
+
+.niuu-chat-mesh-help-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--color-accent-amber);
+}
+
+.niuu-chat-mesh-summary,
+.niuu-chat-mesh-preview {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+}
+
+.niuu-chat-mesh-verdict {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.niuu-chat-mesh-verdict[data-verdict='pass'] {
+  color: var(--color-brand);
+}
+.niuu-chat-mesh-verdict[data-verdict='fail'] {
+  color: var(--color-accent-red);
+}
+.niuu-chat-mesh-verdict[data-verdict='needs_changes'],
+.niuu-chat-mesh-verdict[data-verdict='needs_review'] {
+  color: var(--color-accent-amber);
+}
+
+.niuu-chat-mesh-detail-link {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-brand);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  align-self: flex-start;
+}
+
+.niuu-chat-mesh-reason,
+.niuu-chat-mesh-recommendation {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+}
+
+.niuu-chat-mesh-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.niuu-chat-mesh-timestamp {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-text-faint);
+  margin-left: auto;
+}

@@ -1,0 +1,57 @@
+.niuu-pipe {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.niuu-pipe__cell {
+  height: 6px;
+  border-radius: 2px;
+  background: var(--color-bg-tertiary);
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ── Cell statuses ───────────────────────────────────────── */
+
+.niuu-pipe__cell--ok {
+  background: var(--brand-200);
+}
+
+.niuu-pipe__cell--run {
+  background: var(--brand-300);
+}
+
+.niuu-pipe__cell--run::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  animation: niuu-pipe-shimmer 1.6s linear infinite;
+}
+
+.niuu-pipe__cell--warn {
+  background: var(--brand-400);
+}
+
+.niuu-pipe__cell--crit {
+  background: var(--color-critical);
+}
+
+.niuu-pipe__cell--gate {
+  background: var(--color-gate);
+}
+
+.niuu-pipe__cell--pend {
+  background: var(--color-bg-elevated);
+}
+
+@keyframes niuu-pipe-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}

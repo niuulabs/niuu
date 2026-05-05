@@ -54,6 +54,17 @@ def test_create_app_mounts_mimir_router(tmp_path: Path) -> None:
     assert any("/mimir" in r for r in routes)
 
 
+def test_create_app_exposes_settings_schema(tmp_path: Path) -> None:
+    config = MimirServiceConfig(path=str(tmp_path / "mimir"), name="shared", role="shared")
+    app = create_app(config)
+    with TestClient(app) as client:
+        response = client.get("/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["title"] == "Mimir"
+    assert payload["sections"][0]["id"] == "service"
+
+
 def test_create_app_uses_custom_search_db(tmp_path: Path) -> None:
     db_path = str(tmp_path / "custom_search.db")
     config = MimirServiceConfig(

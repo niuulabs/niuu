@@ -64,8 +64,22 @@ def _make_room_bridge(known_peers: list[str] | None = None) -> MagicMock:
     bridge = MagicMock()
     bridge.handle_ravn_frame = AsyncMock()
     bridge.register_mesh_peer = AsyncMock()
-    # Participants dict: peer_id → meta
-    bridge.participants = {pid: MagicMock(peer_id=pid) for pid in (known_peers or [])}
+    participants = {}
+    for pid in known_peers or []:
+        persona = pid.split("-", 1)[-1] if "-" in pid else pid
+        display_name = persona
+        participant_type = "ravn"
+        if pid.startswith("skuld-"):
+            persona = "coder"
+            display_name = "skuld"
+            participant_type = "skuld"
+        participants[pid] = MagicMock(
+            peer_id=pid,
+            persona=persona,
+            display_name=display_name,
+            participant_type=participant_type,
+        )
+    bridge.participants = participants
     bridge.has_participant = MagicMock(side_effect=lambda pid: pid in bridge.participants)
     return bridge
 
@@ -76,14 +90,6 @@ def _make_room_bridge(known_peers: list[str] | None = None) -> MagicMock:
 
 
 class TestExtractPeerId:
-    def test_from_ravn_source_plain(self):
-        evt = _make_event(payload={"ravn_source": "skuld-01"})
-        assert _extract_peer_id(evt) == "skuld-01"
-
-    def test_from_ravn_source_with_prefix(self):
-        evt = _make_event(payload={"ravn_source": "skuld:skuld-01"})
-        assert _extract_peer_id(evt) == "skuld-01"
-
     def test_from_source_field_fallback(self):
         evt = _make_event(payload={}, source="ravn:peer-99")
         assert _extract_peer_id(evt) == "peer-99"
@@ -91,6 +97,17 @@ class TestExtractPeerId:
     def test_source_without_prefix(self):
         evt = _make_event(payload={}, source="plain-peer")
         assert _extract_peer_id(evt) == "plain-peer"
+
+    def test_prefers_mesh_source_over_nested_ravn_source(self):
+        evt = _make_event(
+            source="ravn:flock-coder",
+            payload={"ravn_source": "ravn-084b245b"},
+        )
+        assert _extract_peer_id(evt) == "flock-coder"
+
+    def test_falls_back_to_ravn_source_when_mesh_source_missing(self):
+        evt = _make_event(payload={"ravn_source": "skuld:skuld-01"}, source="")
+        assert _extract_peer_id(evt) == "skuld-01"
 
     def test_empty_source(self):
         evt = _make_event(payload={}, source="")
@@ -240,6 +257,30 @@ class TestSessionFiltering:
         await bridge.stop()
 
     @pytest.mark.asyncio
+    async def test_matching_root_correlation_id_passes(self):
+        room = _make_room_bridge()
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(subscriber=bus, room_bridge=room, session_id="sess-abc")
+        await bridge.start()
+
+        evt = _make_event(
+            correlation_id="event_code_changed_sess",
+            payload={
+                "ravn_event": {"persona": "reviewer"},
+                "ravn_type": "RavnEventType.OUTCOME",
+                "ravn_source": "flock-reviewer",
+                "ravn_session_id": "",
+                "ravn_root_correlation_id": "sess-abc",
+                "ravn_urgency": 0.5,
+                "ravn_task_id": "event_code_changed_sess",
+            },
+        )
+        await bridge._handle_event(evt)
+
+        room.handle_ravn_frame.assert_awaited_once()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
     async def test_no_session_filter_passes_all(self):
         room = _make_room_bridge()
         bus = InProcessBus()
@@ -345,7 +386,7 @@ class TestActivityTranslation:
 
         evt = _make_event(
             payload={
-                "ravn_event": {"detail": "running bash"},
+                "ravn_event": {"tool_name": "BashTool", "input": {"command": "ls"}},
                 "ravn_type": "RavnEventType.TOOL_START",
                 "ravn_source": "skuld-01",
                 "ravn_session_id": "sess-abc",
@@ -358,6 +399,8 @@ class TestActivityTranslation:
         room.handle_ravn_frame.assert_awaited_once()
         _, frame = room.handle_ravn_frame.call_args[0]
         assert frame["type"] == "tool_start"
+        assert frame["data"] == "BashTool"
+        assert frame["metadata"]["input"] == {"command": "ls"}
         await bridge.stop()
 
     @pytest.mark.asyncio
@@ -373,7 +416,7 @@ class TestActivityTranslation:
 
         evt = _make_event(
             payload={
-                "ravn_event": {},
+                "ravn_event": {"text": "Thinking about the README"},
                 "ravn_type": "RavnEventType.THOUGHT",
                 "ravn_source": "skuld-01",
                 "ravn_session_id": "sess-abc",
@@ -386,6 +429,7 @@ class TestActivityTranslation:
         room.handle_ravn_frame.assert_awaited_once()
         _, frame = room.handle_ravn_frame.call_args[0]
         assert frame["type"] == "thought"
+        assert frame["data"] == "Thinking about the README"
         await bridge.stop()
 
     @pytest.mark.asyncio
@@ -414,6 +458,41 @@ class TestActivityTranslation:
         room.handle_ravn_frame.assert_awaited_once()
         _, frame = room.handle_ravn_frame.call_args[0]
         assert frame["type"] == "response"
+        assert frame["data"] == "Here is the answer"
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_tool_result_event_translated_to_tool_result_frame(self):
+        room = _make_room_bridge(known_peers=["skuld-01"])
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=room,
+            session_id="sess-abc",
+        )
+        await bridge.start()
+
+        evt = _make_event(
+            payload={
+                "ravn_event": {
+                    "tool_name": "BashTool",
+                    "result": "README.md\nsrc\n",
+                    "is_error": False,
+                },
+                "ravn_type": "RavnEventType.TOOL_RESULT",
+                "ravn_source": "skuld-01",
+                "ravn_session_id": "sess-abc",
+                "ravn_urgency": 0.3,
+                "ravn_task_id": None,
+            }
+        )
+        await bridge._handle_event(evt)
+
+        room.handle_ravn_frame.assert_awaited_once()
+        _, frame = room.handle_ravn_frame.call_args[0]
+        assert frame["type"] == "tool_result"
+        assert frame["data"] == "README.md\nsrc\n"
+        assert frame["metadata"]["tool_name"] == "BashTool"
         await bridge.stop()
 
     @pytest.mark.asyncio
@@ -486,6 +565,35 @@ class TestPeerAutoRegistration:
         await bridge.stop()
 
     @pytest.mark.asyncio
+    async def test_internal_drive_loop_source_maps_to_matching_ravn_peer(self):
+        room = _make_room_bridge(known_peers=["flock-reviewer", "skuld-01"])
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=room,
+            session_id="sess-abc",
+        )
+        await bridge.start()
+
+        evt = _make_event(
+            payload={
+                "ravn_event": {"persona": "reviewer", "event_type": "review.completed"},
+                "ravn_type": "RavnEventType.OUTCOME",
+                "ravn_source": "drive_loop",
+                "ravn_session_id": "sess-abc",
+                "ravn_urgency": 0.6,
+                "ravn_task_id": None,
+            },
+            source="ravn:drive_loop",
+        )
+        await bridge._handle_event(evt)
+
+        room.register_mesh_peer.assert_not_awaited()
+        room.handle_ravn_frame.assert_awaited_once()
+        assert room.handle_ravn_frame.call_args[0][0] == "flock-reviewer"
+        await bridge.stop()
+
+    @pytest.mark.asyncio
     async def test_auto_registered_peer_has_correct_persona(self):
         room = _make_room_bridge(known_peers=[])
         bus = InProcessBus()
@@ -511,6 +619,35 @@ class TestPeerAutoRegistration:
 
         call_kwargs = room.register_mesh_peer.call_args[1]
         assert call_kwargs["persona"] == "reviewer"
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_auto_registered_peer_uses_mesh_peer_id_not_nested_ravn_source(self):
+        room = _make_room_bridge(known_peers=[])
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=room,
+            session_id="sess-abc",
+        )
+        await bridge.start()
+
+        evt = _make_event(
+            source="ravn:flock-coder",
+            payload={
+                "ravn_event": {"persona": "coder", "text": "Thinking"},
+                "ravn_type": "RavnEventType.THOUGHT",
+                "ravn_source": "ravn-084b245b",
+                "ravn_session_id": "sess-abc",
+                "ravn_urgency": 0.3,
+                "ravn_task_id": None,
+            },
+        )
+        await bridge._handle_event(evt)
+
+        call_kwargs = room.register_mesh_peer.call_args[1]
+        assert call_kwargs["peer_id"] == "flock-coder"
+        assert call_kwargs["persona"] == "coder"
         await bridge.stop()
 
     @pytest.mark.asyncio

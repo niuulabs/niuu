@@ -1,0 +1,28 @@
+.niuu-session-files-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.niuu-session-files-row > td {
+  background: transparent;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.niuu-session-files-row:hover > td {
+  background: color-mix(in srgb, var(--color-brand) 14%, var(--color-bg-secondary));
+}
+
+.niuu-session-files-row[data-selected='true'] > td {
+  background: color-mix(in srgb, var(--color-brand) 9%, var(--color-bg-primary));
+}
+
+.niuu-session-files-row[data-selected='true']:hover > td {
+  background: color-mix(in srgb, var(--color-brand) 13%, var(--color-bg-secondary));
+}
+
+.niuu-session-files-row[data-selected='true'] > .niuu-session-files-cell--name {
+  box-shadow: inset 3px 0 0 var(--color-brand);
+}

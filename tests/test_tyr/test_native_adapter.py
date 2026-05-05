@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -178,6 +179,35 @@ class TestCreateSaga:
 
         args = pool.execute.call_args[0]
         assert "INSERT INTO sagas" in args[0]
+        assert args[8] == saga.base_branch
+        assert args[12] == saga.owner_id
+        assert args[13] == saga.workflow_id
+        assert args[14] == saga.workflow_version
+        assert args[15] is None
+
+    async def test_serializes_workflow_snapshot(self):
+        pool = _make_pool()
+        adapter = _make_adapter(pool)
+        saga = Saga(
+            id=uuid4(),
+            tracker_id="",
+            tracker_type="native",
+            slug="workflow-saga",
+            name="Workflow Saga",
+            repos=["org/repo"],
+            feature_branch="feat/workflow-saga",
+            status=SagaStatus.ACTIVE,
+            confidence=0.8,
+            created_at=NOW,
+            base_branch="main",
+            owner_id="dev-user",
+            workflow_snapshot={"name": "Review Flow"},
+        )
+
+        await adapter.create_saga(saga)
+
+        args = pool.execute.call_args[0]
+        assert args[15] == json.dumps({"name": "Review Flow"})
         assert args[1] == saga.id
         assert args[2] == str(saga.id)  # tracker_id = local UUID
         assert args[3] == "native"
@@ -599,13 +629,20 @@ class TestListIssues:
         adapter = _make_adapter(pool)
         raid = _make_raid()
         tracker_id = str(raid.id)
-        pool.fetch.return_value = [_raid_record(raid, tracker_id)]
+        pool.fetch.return_value = [
+            {
+                **_raid_record(raid, tracker_id),
+                "milestone_tracker_id": "phase-tid-1",
+            }
+        ]
 
         issues = await adapter.list_issues("proj-tid")
 
         assert len(issues) == 1
         assert issues[0].id == tracker_id
         assert issues[0].title == "Test Raid"
+        assert issues[0].status_type == "unstarted"
+        assert issues[0].milestone_id == "phase-tid-1"
 
     async def test_filtered_by_milestone(self):
         pool = _make_pool()

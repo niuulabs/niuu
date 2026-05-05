@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Coroutine
 from unittest.mock import patch
 
 import pytest
@@ -104,11 +105,18 @@ class TestStartupEcho:
 class TestDaemonCallsConfigEcho:
     """Verify daemon and listen commands call _log_effective_config."""
 
+    @staticmethod
+    def _close_run_coroutine(coro: Coroutine) -> None:
+        coro.close()
+
     @pytest.mark.usefixtures("_clean_env")
     def test_daemon_emits_config_log(self):
         with (
             patch("ravn.cli.commands._log_effective_config") as mock_log,
-            patch("ravn.cli.commands.asyncio.run"),
+            patch(
+                "ravn.cli.commands.asyncio.run",
+                side_effect=self._close_run_coroutine,
+            ),
         ):
             runner.invoke(app, ["daemon"])
 
@@ -118,7 +126,10 @@ class TestDaemonCallsConfigEcho:
     def test_listen_emits_config_log(self):
         with (
             patch("ravn.cli.commands._log_effective_config") as mock_log,
-            patch("ravn.cli.commands.asyncio.run"),
+            patch(
+                "ravn.cli.commands.asyncio.run",
+                side_effect=self._close_run_coroutine,
+            ),
         ):
             runner.invoke(app, ["listen"])
 

@@ -1,0 +1,76 @@
+.obs-conn-legend {
+  position: absolute;
+  top: var(--space-4);
+  left: var(--space-4);
+  z-index: 40;
+  background: color-mix(in srgb, var(--color-bg-secondary) 90%, transparent);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 180px;
+  pointer-events: auto;
+
+  /* Edge colour palette — token-mapped values used by SVG classes below */
+  --obs-edge-solid: rgba(147, 197, 253, 0.8);
+  --obs-edge-anim: rgba(125, 211, 252, 0.9);
+  --obs-edge-long: rgba(147, 197, 253, 0.7);
+  --obs-edge-soft: rgba(224, 242, 254, 0.55);
+  --obs-edge-raid: rgba(125, 211, 252, 0.9);
+  --obs-edge-raid-line: rgba(125, 211, 252, 0.6);
+}
+
+.obs-conn-legend__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.obs-conn-legend__line-svg {
+  flex-shrink: 0;
+}
+
+.obs-conn-legend__label {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  min-width: 42px;
+}
+
+.obs-conn-legend__desc {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+/* SVG edge swatches — stroke/fill driven by CSS vars, never hardcoded */
+.obs-conn-legend__edge--solid {
+  stroke: var(--obs-edge-solid);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+.obs-conn-legend__edge--anim {
+  stroke: var(--obs-edge-anim);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 3;
+  stroke-linecap: round;
+}
+.obs-conn-legend__edge--long {
+  stroke: var(--obs-edge-long);
+  stroke-width: 1.2;
+  stroke-dasharray: 6 4;
+  stroke-linecap: round;
+}
+.obs-conn-legend__edge--soft {
+  stroke: var(--obs-edge-soft);
+  stroke-width: 0.9;
+  stroke-linecap: round;
+}
+.obs-conn-legend__edge--raid-node {
+  fill: var(--obs-edge-raid);
+}
+.obs-conn-legend__edge--raid-line {
+  stroke: var(--obs-edge-raid-line);
+  stroke-width: 1;
+}

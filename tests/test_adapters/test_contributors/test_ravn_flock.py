@@ -10,8 +10,13 @@ from volundr.adapters.outbound.contributors.core import CoreSessionContributor
 from volundr.adapters.outbound.contributors.ravn_flock import (
     RavnFlockContributor,
     _gateway_port_for,
+    _normalize_instance,
+    _normalize_mimir_workload_config,
     _normalize_personas,
     _ports_for,
+    _resolve_mimir_runtime,
+    _split_workflow_edge_label,
+    _string_list,
 )
 from volundr.domain.models import (
     ForgeProfile,
@@ -242,7 +247,44 @@ class TestContributorOutput:
         assert "MESH_PUB_ADDRESS" in env_names
         assert "MESH_REP_ADDRESS" in env_names
 
-    async def test_mimir_volume_added(self, session, flock_template):
+    async def test_skuld_workflow_trigger_env_present_when_graph_has_trigger(self, session):
+        template = WorkspaceTemplate(
+            name="workflow-flock",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["coder"],
+                "workflow": {
+                    "workflow_id": "wf-1",
+                    "name": "Code",
+                    "version": "1.0.0",
+                    "scope": "user",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "trigger-1",
+                                "kind": "trigger",
+                                "label": "Dispatch",
+                                "source": "manual dispatch",
+                                "dispatchEvent": "code.requested",
+                            }
+                        ],
+                        "edges": [],
+                    },
+                },
+            },
+        )
+        provider = MagicMock()
+        provider.get.return_value = template
+        c = RavnFlockContributor(template_provider=provider)
+        result = await c.contribute(session, SessionContext(template_name="workflow-flock"))
+
+        env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
+        assert env_names["SKULD__MESH__CONSUMES_EVENT_TYPES"] == "[]"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__ENABLED"] == "true"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "code.requested"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "trigger-1"
+
+    async def test_mimir_volume_not_added_without_explicit_local(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
         c = RavnFlockContributor(template_provider=provider)
@@ -250,9 +292,11 @@ class TestContributorOutput:
         result = await c.contribute(session, ctx)
 
         volume_names = [v["name"] for v in result.pod_spec.volumes]
-        assert "mimir-local" in volume_names
+        assert "mimir-local" not in volume_names
 
-    async def test_ravn_container_has_mimir_mount(self, session, flock_template):
+    async def test_ravn_container_omits_local_mimir_mount_without_explicit_local(
+        self, session, flock_template
+    ):
         provider = MagicMock()
         provider.get.return_value = flock_template
         c = RavnFlockContributor(template_provider=provider)
@@ -261,7 +305,7 @@ class TestContributorOutput:
 
         ravn_ctr = result.pod_spec.extra_containers[0]
         mount_paths = {m["mountPath"] for m in ravn_ctr["volumeMounts"]}
-        assert "/mimir/local" in mount_paths
+        assert "/mimir/local" not in mount_paths
 
     async def test_ravn_container_has_workspace_mount(self, session, flock_template):
         provider = MagicMock()
@@ -318,6 +362,31 @@ class TestContributorOutput:
             result.values.get("mimir", {}).get("hostedUrl") == "https://mimir.niuu.internal/api/v1"
         )
 
+    async def test_richer_mimir_workload_is_preserved_in_values(self, session):
+        provider = MagicMock()
+        provider.get.return_value = WorkspaceTemplate(
+            name="registry-values",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["coordinator"],
+                "mimir": {
+                    "registry_refs": [{"registry_entry_id": "shared", "mount_name": "shared"}],
+                    "ephemeral_locals": [{"mount_name": "scratchpad"}],
+                    "bindings": [{"mount_name": "scratchpad", "write_prefixes": ["draft/"]}],
+                },
+            },
+        )
+        c = RavnFlockContributor(template_provider=provider)
+        result = await c.contribute(session, SessionContext(template_name="registry-values"))
+
+        assert result.values["mimir"]["registryRefs"] == [
+            {"registry_entry_id": "shared", "mount_name": "shared"}
+        ]
+        assert result.values["mimir"]["ephemeralLocals"] == [{"mount_name": "scratchpad"}]
+        assert result.values["mimir"]["bindings"] == [
+            {"mount_name": "scratchpad", "write_prefixes": ["draft/"]}
+        ]
+
     async def test_mesh_values_present(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
@@ -327,6 +396,35 @@ class TestContributorOutput:
 
         assert result.values.get("mesh", {}).get("enabled") is True
         assert result.values["mesh"]["transport"] == "nng"
+
+    async def test_flock_values_preserve_llm_and_persona_overrides(self, session, flock_template):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(template_provider=provider)
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [
+                    {"name": "coder", "llm": {"model": "Qwen/Qwen3.6-35B-A3B-FP8"}},
+                    {
+                        "name": "reviewer",
+                        "system_prompt_extra": "Be thorough.",
+                        "iteration_budget": 40,
+                    },
+                ],
+                "llm_config": {"model": "google/gemma-4-26B-A4B-it"},
+                "max_concurrent_tasks": 5,
+            },
+        )
+
+        result = await c.contribute(session, ctx)
+
+        assert result.values["flock"]["llm_config"]["model"] == "google/gemma-4-26B-A4B-it"
+        assert result.values["flock"]["max_concurrent_tasks"] == 5
+        assert result.values["flock"]["personas"][0]["name"] == "coder"
+        assert result.values["flock"]["personas"][0]["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
+        assert result.values["flock"]["personas"][1]["system_prompt_extra"] == "Be thorough."
+        assert result.values["flock"]["personas"][1]["iteration_budget"] == 40
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +555,7 @@ class TestConfigGeneration:
             cfg = _extract_mounted_config(result.pod_spec, persona)
             assert "mimir:" in cfg
             assert "instances:" in cfg
-            assert "/mimir/local" in cfg
+            assert "https://mimir.niuu.internal/api/v1" in cfg
 
     async def test_mounted_config_has_write_routing(self, session, flock_template):
         provider = MagicMock()
@@ -469,7 +567,7 @@ class TestConfigGeneration:
         for persona in ("coordinator", "reviewer"):
             cfg = _extract_mounted_config(result.pod_spec, persona)
             assert "write_routing:" in cfg
-            assert "self/" in cfg
+            assert "project/" in cfg
 
     async def test_mounted_config_hosted_url_in_instances(self, session, flock_template):
         provider = MagicMock()
@@ -484,8 +582,8 @@ class TestConfigGeneration:
             assert "project/" in cfg
             assert "entity/" in cfg
 
-    async def test_mounted_config_no_hosted_url_only_local(self, session, flock_profile):
-        """When no hosted URL configured, config only has local mimir instance."""
+    async def test_mounted_config_no_hosted_url_has_no_instances(self, session, flock_profile):
+        """When no Mimir resources are configured, no runtime instances are injected."""
         provider = MagicMock()
         provider.get.return_value = flock_profile
         c = RavnFlockContributor(profile_provider=provider)
@@ -494,9 +592,63 @@ class TestConfigGeneration:
 
         for persona in ("coordinator", "reviewer"):
             cfg = _extract_mounted_config(result.pod_spec, persona)
-            assert "/mimir/local" in cfg
+            assert "instances: []" in cfg
             assert "project/" not in cfg
             assert "entity/" not in cfg
+
+    async def test_mounted_config_resolves_registry_refs_and_ephemeral_locals(self, session):
+        template = WorkspaceTemplate(
+            name="registry-flock",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["coordinator"],
+                "mimir": {
+                    "hosted_url": "https://mimir.niuu.internal/api/v1",
+                    "registry_refs": [
+                        {
+                            "registry_entry_id": "shared-team-mimir",
+                            "mount_name": "shared-team-mimir",
+                            "categories": ["entity", "decision"],
+                        }
+                    ],
+                    "ephemeral_locals": [
+                        {
+                            "resource_node_id": "scratch",
+                            "mount_name": "scratchpad",
+                            "categories": ["draft"],
+                        }
+                    ],
+                    "bindings": [
+                        {
+                            "mount_name": "shared-team-mimir",
+                            "access": "read_write",
+                            "write_prefixes": ["project/"],
+                        },
+                        {
+                            "mount_name": "scratchpad",
+                            "access": "write",
+                            "write_prefixes": ["draft/"],
+                        },
+                    ],
+                },
+            },
+        )
+        provider = MagicMock()
+        provider.get.return_value = template
+        c = RavnFlockContributor(template_provider=provider)
+        result = await c.contribute(session, SessionContext(template_name="registry-flock"))
+
+        cfg = _extract_mounted_config(result.pod_spec, "coordinator")
+        assert "shared-team-mimir" in cfg
+        assert "https://mimir.niuu.internal/api/v1" in cfg
+        assert "scratchpad" in cfg
+        assert "/mimir/local/scratchpad" in cfg
+        assert "project/" in cfg
+        assert "draft/" in cfg
+        volume_names = [v["name"] for v in result.pod_spec.volumes]
+        assert "mimir-local" in volume_names
+        mount_paths = {m["mountPath"] for m in result.pod_spec.extra_containers[0]["volumeMounts"]}
+        assert "/mimir/local" in mount_paths
 
     async def test_mounted_config_sleipnir_webhook(self, session, flock_template):
         provider = MagicMock()
@@ -586,7 +738,7 @@ class TestContributorPipelineMerge:
 
         # Mimir volume present
         volume_names = [v["name"] for v in spec.pod_spec.volumes]
-        assert "mimir-local" in volume_names
+        assert "mimir-local" not in volume_names
 
         # Init containers merged
         assert len(spec.pod_spec.init_containers) == 2
@@ -1377,3 +1529,114 @@ class TestPerPersonaLLMOverrides:
         assert "dropping security key" in caplog.text
         cfg = _extract_mounted_config(result.pod_spec, "reviewer")
         assert "allowed_tools" not in cfg
+
+
+class TestMimirHelpers:
+    def test_split_edge_label_and_string_list_helpers(self):
+        assert _split_workflow_edge_label("code.requested -> code.changed") == (
+            "code.requested",
+            "code.changed",
+        )
+        assert _split_workflow_edge_label(None) == ("", "")
+        assert _string_list([" a ", "", None, "b"]) == ["a", "None", "b"]
+        assert _string_list("bad") == []
+
+    def test_normalize_instance_and_workload_config_helpers(self):
+        assert _normalize_instance({"name": "shared", "path": "/tmp/shared"}) == {
+            "name": "shared",
+            "role": "shared",
+            "path": "/tmp/shared",
+        }
+        assert _normalize_instance({"name": "shared", "url": "https://mimir.example"}) == {
+            "name": "shared",
+            "role": "shared",
+            "url": "https://mimir.example",
+        }
+        assert _normalize_instance({"name": "shared"}) is None
+        assert _normalize_instance({"url": "https://mimir.example"}) is None
+
+        assert _normalize_mimir_workload_config({}, "https://legacy.example") == {
+            "hosted_url": "https://legacy.example"
+        }
+        assert _normalize_mimir_workload_config(
+            {"hosted_url": "https://explicit.example"},
+            "https://legacy.example",
+        ) == {"hosted_url": "https://explicit.example"}
+
+    def test_resolve_mimir_runtime_supports_hosted_registry_ephemeral_and_explicit_routing(self):
+        instances, routing = _resolve_mimir_runtime(
+            {
+                "hosted_url": "https://hosted.example",
+                "instances": [
+                    {"name": "shared", "url": "https://shared.example", "categories": ["entity"]},
+                    {"name": "shared", "url": "https://duplicate.example"},
+                    {"url": "https://invalid.example"},
+                    "bad",
+                ],
+                "registry_refs": [
+                    {
+                        "mount_name": "registry-a",
+                        "path": "/mnt/registry-a",
+                        "role": "shared",
+                        "categories": ["directive"],
+                    },
+                    {
+                        "registryEntryId": "registry-b",
+                        "url": "https://registry-b.example",
+                    },
+                    {
+                        "mount_name": "hosted-backed",
+                        "role": "shared",
+                    },
+                    {"mount_name": "registry-a", "url": "https://duplicate.example"},
+                    "bad",
+                ],
+                "ephemeral_locals": [
+                    {"mount_name": "scratch", "categories": ["draft"]},
+                    {"mountName": "scratch-2"},
+                    {"mount_name": "scratch"},
+                    "bad",
+                ],
+                "bindings": [
+                    {
+                        "mount_name": "registry-a",
+                        "access": "read_write",
+                        "write_prefixes": ["docs/"],
+                    },
+                    {"mountName": "scratch", "access": "write", "writePrefixes": ["drafts/"]},
+                    {"mount_name": "missing", "access": "write", "write_prefixes": ["ignored/"]},
+                    "bad",
+                ],
+                "write_routing": {
+                    "rules": [
+                        {"prefix": "reviews/", "mounts": ["registry-b", "missing"]},
+                        {"prefix": "ignored/", "mounts": []},
+                        "bad",
+                    ],
+                    "default": ["registry-b", "missing"],
+                },
+                "default_mounts": ["scratch", "missing"],
+            }
+        )
+
+        assert [instance["name"] for instance in instances] == [
+            "shared",
+            "registry-a",
+            "registry-b",
+            "hosted-backed",
+            "scratch",
+            "scratch-2",
+        ]
+        assert {"prefix": "self/", "mounts": ["scratch"]} in routing["rules"]
+        assert {"prefix": "docs/", "mounts": ["registry-a"]} in routing["rules"]
+        assert {"prefix": "drafts/", "mounts": ["scratch"]} in routing["rules"]
+        assert {"prefix": "reviews/", "mounts": ["registry-b"]} in routing["rules"]
+        assert routing["default"] == ["scratch"]
+
+    def test_resolve_mimir_runtime_adds_default_hosted_instance_when_no_registry_refs(self):
+        instances, routing = _resolve_mimir_runtime({"hosted_url": "https://hosted.example"})
+
+        assert [instance["name"] for instance in instances] == ["hosted"]
+        assert {"prefix": "project/", "mounts": ["hosted"]} in routing["rules"]
+        assert {"prefix": "entity/", "mounts": ["hosted"]} in routing["rules"]
+        assert routing["default"] == ["hosted"]

@@ -573,13 +573,91 @@ async def test_mimir_read_tool_missing_path() -> None:
 async def test_mimir_write_tool_success(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     tool = MimirWriteTool(adapter)
-    result = await tool.execute({"path": "research/new.md", "content": "# New Page\n\nBody."})
+    source = _make_source(
+        title="Reference",
+        content="Original source material.",
+        source_type="research",
+    )
+    await adapter.ingest(source)
+    result = await tool.execute(
+        {
+            "path": "research/new.md",
+            "content": (
+                "---\n"
+                "type: research\n"
+                "confidence: high\n"
+                "produced_by_thread: true\n"
+                f"source_ids: [{source.source_id}]\n"
+                "---\n\n"
+                "# New Page\n\n"
+                "## Compiled Truth\n\n"
+                "Body."
+            ),
+        }
+    )
     assert not result.is_error
     assert "research/new.md" in result.content
 
     # Verify the page was written
     page_path = tmp_path / "mimir" / "wiki" / "research" / "new.md"
     assert page_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_mimir_write_tool_research_page_requires_source_ids(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    tool = MimirWriteTool(adapter)
+    result = await tool.execute(
+        {
+            "path": "research/new.md",
+            "content": (
+                "---\n"
+                "type: research\n"
+                "confidence: high\n"
+                "produced_by_thread: true\n"
+                "source_ids: []\n"
+                "---\n\n"
+                "# New Page\n\n"
+                "## Compiled Truth\n\n"
+                "Body."
+            ),
+        }
+    )
+    assert result.is_error
+    assert "source_ids" in result.content
+
+
+@pytest.mark.asyncio
+async def test_mimir_write_tool_research_page_rejects_self_ingested_content(
+    tmp_path: Path,
+) -> None:
+    adapter = _make_adapter(tmp_path)
+    tool = MimirWriteTool(adapter)
+    content = (
+        "---\n"
+        "type: research\n"
+        "confidence: high\n"
+        "produced_by_thread: true\n"
+        "source_ids: [src_self]\n"
+        "---\n\n"
+        "# New Page\n\n"
+        "## Compiled Truth\n\n"
+        "Body."
+    )
+    await adapter.ingest(
+        MimirSource(
+            source_id="src_self",
+            title="New Page",
+            content=content,
+            source_type="document",
+            content_hash=_sha256(content),
+            ingested_at=datetime.now(UTC),
+        )
+    )
+
+    result = await tool.execute({"path": "research/new.md", "content": content})
+    assert result.is_error
+    assert "self-ingested page content" in result.content
 
 
 @pytest.mark.asyncio

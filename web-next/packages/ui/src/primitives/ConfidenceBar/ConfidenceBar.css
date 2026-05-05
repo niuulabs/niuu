@@ -1,0 +1,47 @@
+.niuu-conf-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.niuu-conf-bar__track {
+  width: 48px;
+  height: 4px;
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.niuu-conf-bar__fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  border-radius: var(--radius-full);
+}
+
+.niuu-conf-bar__label {
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+/* ── Levels ─────────────────────────────────────────────── */
+
+.niuu-conf-bar--high .niuu-conf-bar__fill {
+  width: 100%;
+  background: var(--brand-200);
+}
+
+.niuu-conf-bar--medium .niuu-conf-bar__fill {
+  width: 60%;
+  background: var(--brand-400);
+}
+
+.niuu-conf-bar--low .niuu-conf-bar__fill {
+  width: 25%;
+  background: var(--color-critical);
+}

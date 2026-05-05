@@ -274,12 +274,11 @@ class TestUsageEndpointAuth:
         _seed_session(session_repo, session)
 
         app = _build_rest_app(session_repo, owner_identity, allow_authz)
-        client = TestClient(app)
-
-        resp = client.post(
-            f"/api/v1/volundr/sessions/{session.id}/usage",
-            json={"tokens": 100, "provider": "cloud", "model": "sonnet", "message_count": 1},
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/volundr/sessions/{session.id}/usage",
+                json={"tokens": 100, "provider": "cloud", "model": "sonnet", "message_count": 1},
+            )
         assert resp.status_code == 201
 
     def test_denied_user_gets_403_on_usage(self, session_repo, other_identity, deny_authz):
@@ -287,12 +286,11 @@ class TestUsageEndpointAuth:
         _seed_session(session_repo, session)
 
         app = _build_rest_app(session_repo, other_identity, deny_authz)
-        client = TestClient(app)
-
-        resp = client.post(
-            f"/api/v1/volundr/sessions/{session.id}/usage",
-            json={"tokens": 100, "provider": "cloud", "model": "sonnet", "message_count": 1},
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/volundr/sessions/{session.id}/usage",
+                json={"tokens": 100, "provider": "cloud", "model": "sonnet", "message_count": 1},
+            )
         assert resp.status_code == 403
         assert "Not authorized" in resp.json()["detail"]
 
@@ -310,12 +308,11 @@ class TestChronicleEndpointAuth:
         _seed_session(session_repo, session)
 
         app = _build_rest_app(session_repo, owner_identity, allow_authz)
-        client = TestClient(app)
-
-        resp = client.post(
-            f"/api/v1/volundr/sessions/{session.id}/chronicle",
-            json={"duration_seconds": 120, "key_changes": ["file.py: added tests"]},
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/volundr/sessions/{session.id}/chronicle",
+                json={"duration_seconds": 120, "key_changes": ["file.py: added tests"]},
+            )
         assert resp.status_code == 201
 
     def test_denied_user_gets_403_on_chronicle(self, session_repo, other_identity, deny_authz):
@@ -323,12 +320,11 @@ class TestChronicleEndpointAuth:
         _seed_session(session_repo, session)
 
         app = _build_rest_app(session_repo, other_identity, deny_authz)
-        client = TestClient(app)
-
-        resp = client.post(
-            f"/api/v1/volundr/sessions/{session.id}/chronicle",
-            json={"duration_seconds": 120, "key_changes": ["file.py: added tests"]},
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/volundr/sessions/{session.id}/chronicle",
+                json={"duration_seconds": 120, "key_changes": ["file.py: added tests"]},
+            )
         assert resp.status_code == 403
 
 
@@ -345,12 +341,11 @@ class TestTimelineEndpointAuth:
         _seed_session(session_repo, session)
 
         app = _build_rest_app(session_repo, owner_identity, allow_authz)
-        client = TestClient(app)
-
-        resp = client.post(
-            f"/api/v1/volundr/chronicles/{session.id}/timeline",
-            json={"t": 10, "type": "file", "label": "main.py", "action": "modified"},
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/volundr/chronicles/{session.id}/timeline",
+                json={"t": 10, "type": "file", "label": "main.py", "action": "modified"},
+            )
         assert resp.status_code == 201
 
     def test_denied_user_gets_403_on_timeline(self, session_repo, other_identity, deny_authz):
@@ -358,12 +353,11 @@ class TestTimelineEndpointAuth:
         _seed_session(session_repo, session)
 
         app = _build_rest_app(session_repo, other_identity, deny_authz)
-        client = TestClient(app)
-
-        resp = client.post(
-            f"/api/v1/volundr/chronicles/{session.id}/timeline",
-            json={"t": 10, "type": "file", "label": "main.py", "action": "modified"},
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/volundr/chronicles/{session.id}/timeline",
+                json={"t": 10, "type": "file", "label": "main.py", "action": "modified"},
+            )
         assert resp.status_code == 403
 
 
@@ -380,18 +374,17 @@ class TestEventsEndpointAuth:
         _seed_session(session_repo, session)
 
         app, _ = _build_events_app(owner_identity, allow_authz, session_repo)
-        client = TestClient(app)
-
-        resp = client.post(
-            "/api/v1/volundr/events",
-            json={
-                "session_id": str(session.id),
-                "event_type": "session_start",
-                "timestamp": datetime.now(UTC).isoformat(),
-                "data": {},
-                "sequence": 0,
-            },
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/volundr/events",
+                json={
+                    "session_id": str(session.id),
+                    "event_type": "session_start",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "data": {},
+                    "sequence": 0,
+                },
+            )
         assert resp.status_code == 201
 
     def test_denied_user_gets_403_on_event(self, session_repo, other_identity, deny_authz):
@@ -399,18 +392,17 @@ class TestEventsEndpointAuth:
         _seed_session(session_repo, session)
 
         app, _ = _build_events_app(other_identity, deny_authz, session_repo)
-        client = TestClient(app)
-
-        resp = client.post(
-            "/api/v1/volundr/events",
-            json={
-                "session_id": str(session.id),
-                "event_type": "session_start",
-                "timestamp": datetime.now(UTC).isoformat(),
-                "data": {},
-                "sequence": 0,
-            },
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/volundr/events",
+                json={
+                    "session_id": str(session.id),
+                    "event_type": "session_start",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "data": {},
+                    "sequence": 0,
+                },
+            )
         assert resp.status_code == 403
 
     def test_denied_user_gets_403_on_event_batch(self, session_repo, other_identity, deny_authz):
@@ -418,39 +410,37 @@ class TestEventsEndpointAuth:
         _seed_session(session_repo, session)
 
         app, _ = _build_events_app(other_identity, deny_authz, session_repo)
-        client = TestClient(app)
-
-        resp = client.post(
-            "/api/v1/volundr/events/batch",
-            json={
-                "events": [
-                    {
-                        "session_id": str(session.id),
-                        "event_type": "session_start",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                        "data": {},
-                        "sequence": 0,
-                    }
-                ]
-            },
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/volundr/events/batch",
+                json={
+                    "events": [
+                        {
+                            "session_id": str(session.id),
+                            "event_type": "session_start",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "data": {},
+                            "sequence": 0,
+                        }
+                    ]
+                },
+            )
         assert resp.status_code == 403
 
     def test_event_for_nonexistent_session_passes(self, session_repo, owner_identity, allow_authz):
         """When session doesn't exist, auth check is skipped (session lookup returns None)."""
         app, _ = _build_events_app(owner_identity, allow_authz, session_repo)
-        client = TestClient(app)
-
-        resp = client.post(
-            "/api/v1/volundr/events",
-            json={
-                "session_id": str(uuid4()),
-                "event_type": "session_start",
-                "timestamp": datetime.now(UTC).isoformat(),
-                "data": {},
-                "sequence": 0,
-            },
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/volundr/events",
+                json={
+                    "session_id": str(uuid4()),
+                    "event_type": "session_start",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "data": {},
+                    "sequence": 0,
+                },
+            )
         assert resp.status_code == 201
 
 
@@ -474,11 +464,11 @@ class TestNoIdentityDevMode:
         # Remove identity from state to simulate dev mode
         del app.state.identity
 
-        client = TestClient(app)
-        resp = client.post(
-            f"/api/v1/volundr/sessions/{session.id}/usage",
-            json={"tokens": 50, "provider": "cloud", "model": "test", "message_count": 1},
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/volundr/sessions/{session.id}/usage",
+                json={"tokens": 50, "provider": "cloud", "model": "test", "message_count": 1},
+            )
         assert resp.status_code == 201
 
     def test_events_no_session_service(self):
@@ -489,16 +479,15 @@ class TestNoIdentityDevMode:
 
         app = FastAPI()
         app.include_router(router)
-        client = TestClient(app)
-
-        resp = client.post(
-            "/api/v1/volundr/events",
-            json={
-                "session_id": str(uuid4()),
-                "event_type": "session_start",
-                "timestamp": datetime.now(UTC).isoformat(),
-                "data": {},
-                "sequence": 0,
-            },
-        )
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/volundr/events",
+                json={
+                    "session_id": str(uuid4()),
+                    "event_type": "session_start",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "data": {},
+                    "sequence": 0,
+                },
+            )
         assert resp.status_code == 201

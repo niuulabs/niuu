@@ -396,6 +396,7 @@ class RavnIdentity:
     consumes_event_types: list[str] = field(
         default_factory=list
     )  # event types this persona handles
+    emits_event_types: list[str] = field(default_factory=list)
     rep_address: str | None = None  # nng REP address for mesh.send()
     pub_address: str | None = None  # nng PUB address for mesh.send()
     spiffe_id: str | None = None  # infra mode only

@@ -99,6 +99,227 @@ def _normalize_personas(raw: list) -> list[dict]:
     return result
 
 
+def _split_workflow_edge_label(label: object) -> tuple[str, str]:
+    if not isinstance(label, str) or "->" not in label:
+        return "", ""
+    source, target = label.split("->", 1)
+    return source.strip(), target.strip()
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _normalize_mimir_workload_config(
+    raw: dict[str, Any] | None,
+    legacy_hosted_url: str | None,
+) -> dict[str, Any]:
+    normalized = dict(raw or {})
+    if legacy_hosted_url and not normalized.get("hosted_url"):
+        normalized["hosted_url"] = legacy_hosted_url
+    return normalized
+
+
+def _resolve_mimir_runtime(
+    mimir_cfg: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    instances: list[dict[str, Any]] = []
+    known_mounts: set[str] = set()
+    write_rules: list[dict[str, Any]] = []
+    default_mounts: list[str] = []
+    hosted_url = str(mimir_cfg.get("hosted_url") or "").strip()
+    registry_refs = list(mimir_cfg.get("registry_refs") or [])
+    ephemeral_locals = list(mimir_cfg.get("ephemeral_locals") or [])
+
+    for raw_instance in list(mimir_cfg.get("instances") or []):
+        if not isinstance(raw_instance, dict):
+            continue
+        instance = _normalize_instance(raw_instance)
+        if instance is None:
+            continue
+        if instance["name"] in known_mounts:
+            continue
+        instances.append(instance)
+        known_mounts.add(instance["name"])
+
+    if hosted_url and not registry_refs and "hosted" not in known_mounts:
+        instances.append(
+            {
+                "name": "hosted",
+                "role": "shared",
+                "url": hosted_url,
+                "categories": ["entity", "decision", "directive", "topic"],
+            }
+        )
+        known_mounts.add("hosted")
+        write_rules.extend(
+            [
+                {"prefix": "project/", "mounts": ["hosted"]},
+                {"prefix": "entity/", "mounts": ["hosted"]},
+            ]
+        )
+
+    for raw_ref in registry_refs:
+        if not isinstance(raw_ref, dict):
+            continue
+        mount_name = str(
+            raw_ref.get("mount_name")
+            or raw_ref.get("mountName")
+            or raw_ref.get("registry_entry_id")
+            or raw_ref.get("registryEntryId")
+            or raw_ref.get("resource_node_id")
+            or raw_ref.get("resourceNodeId")
+            or ""
+        ).strip()
+        if not mount_name or mount_name in known_mounts:
+            continue
+
+        instance: dict[str, Any] = {
+            "name": mount_name,
+            "role": str(raw_ref.get("role") or "shared"),
+        }
+        path = str(raw_ref.get("path") or "").strip()
+        url = str(raw_ref.get("url") or "").strip()
+        if path:
+            instance["path"] = path
+        elif url:
+            instance["url"] = url
+        elif hosted_url:
+            instance["url"] = hosted_url
+        else:
+            continue
+
+        categories = _string_list(raw_ref.get("categories"))
+        if categories:
+            instance["categories"] = categories
+        instances.append(instance)
+        known_mounts.add(mount_name)
+
+    for raw_local in ephemeral_locals:
+        if not isinstance(raw_local, dict):
+            continue
+        mount_name = str(
+            raw_local.get("mount_name")
+            or raw_local.get("mountName")
+            or raw_local.get("resource_node_id")
+            or raw_local.get("resourceNodeId")
+            or ""
+        ).strip()
+        if not mount_name or mount_name in known_mounts:
+            continue
+
+        instance = {
+            "name": mount_name,
+            "role": "local",
+            "path": f"{_MIMIR_MOUNT_PATH.rstrip('/')}/{mount_name}",
+        }
+        categories = _string_list(raw_local.get("categories"))
+        if categories:
+            instance["categories"] = categories
+        instances.append(instance)
+        known_mounts.add(mount_name)
+
+    local_mount_names = [
+        instance["name"]
+        for instance in instances
+        if str(instance.get("role") or "").strip() == "local"
+    ]
+    if local_mount_names:
+        write_rules.append({"prefix": "self/", "mounts": [local_mount_names[0]]})
+
+    for raw_binding in list(mimir_cfg.get("bindings") or []):
+        if not isinstance(raw_binding, dict):
+            continue
+        mount_name = str(
+            raw_binding.get("mount_name") or raw_binding.get("mountName") or ""
+        ).strip()
+        if not mount_name or mount_name not in known_mounts:
+            continue
+        access = str(raw_binding.get("access") or "read")
+        if "write" not in access:
+            continue
+        for prefix in _string_list(
+            raw_binding.get("write_prefixes") or raw_binding.get("writePrefixes")
+        ):
+            write_rules.append({"prefix": prefix, "mounts": [mount_name]})
+
+    explicit_routing = mimir_cfg.get("write_routing") or {}
+    if isinstance(explicit_routing, dict):
+        for raw_rule in list(explicit_routing.get("rules") or []):
+            if not isinstance(raw_rule, dict):
+                continue
+            prefix = str(raw_rule.get("prefix") or "").strip()
+            mounts = [
+                mount for mount in _string_list(raw_rule.get("mounts")) if mount in known_mounts
+            ]
+            if not prefix or not mounts:
+                continue
+            write_rules.append({"prefix": prefix, "mounts": mounts})
+
+        explicit_defaults = [
+            mount
+            for mount in _string_list(explicit_routing.get("default"))
+            if mount in known_mounts
+        ]
+        if explicit_defaults:
+            default_mounts = explicit_defaults
+
+    configured_defaults = [
+        mount for mount in _string_list(mimir_cfg.get("default_mounts")) if mount in known_mounts
+    ]
+    if configured_defaults:
+        default_mounts = configured_defaults
+    else:
+        local_defaults = [
+            instance["name"]
+            for instance in instances
+            if str(instance.get("role") or "").strip() == "local"
+        ]
+        if local_defaults:
+            default_mounts = [local_defaults[0]]
+        elif len(instances) == 1:
+            default_mounts = [instances[0]["name"]]
+
+    return instances, {"rules": write_rules, "default": default_mounts}
+
+
+def _requires_local_mimir_mount(instances: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(instance.get("path"), str)
+        and (
+            str(instance["path"]).strip() == _MIMIR_MOUNT_PATH
+            or str(instance["path"]).strip().startswith(f"{_MIMIR_MOUNT_PATH.rstrip('/')}/")
+        )
+        for instance in instances
+    )
+
+
+def _normalize_instance(raw_instance: dict[str, Any]) -> dict[str, Any] | None:
+    mount_name = str(raw_instance.get("name") or "").strip()
+    if not mount_name:
+        return None
+
+    instance: dict[str, Any] = {
+        "name": mount_name,
+        "role": str(raw_instance.get("role") or "shared"),
+    }
+    path = str(raw_instance.get("path") or "").strip()
+    url = str(raw_instance.get("url") or "").strip()
+    if path:
+        instance["path"] = path
+    elif url:
+        instance["url"] = url
+    else:
+        return None
+
+    categories = _string_list(raw_instance.get("categories"))
+    if categories:
+        instance["categories"] = categories
+    return instance
+
+
 def _build_ravn_config(
     *,
     persona: str,
@@ -109,13 +330,14 @@ def _build_ravn_config(
     base_port: int,
     all_personas: list[str],
     skuld_peer_id: str,
-    mimir_hosted_url: str | None,
+    mimir_config: dict[str, Any],
     sleipnir_publish_urls: list[str],
     global_max_concurrent_tasks: int = _DEFAULT_MAX_CONCURRENT_TASKS,
     mesh_host: str = "0.0.0.0",
     persona_source_mode: str = _PERSONA_SOURCE_FILESYSTEM,
     persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
     persona_source_http_base_url: str = "",
+    workflow: dict[str, Any] | None = None,
 ) -> str:
     """Generate the ravn daemon YAML config for a single flock node.
 
@@ -131,27 +353,7 @@ def _build_ravn_config(
         {"peer_id": f"flock-{p}"} for p in all_personas if p != persona
     ]
 
-    mimir_instances: list[dict[str, Any]] = [
-        {"name": "local", "role": "local", "path": _MIMIR_MOUNT_PATH},
-    ]
-    mimir_write_rules: list[dict[str, Any]] = [
-        {"prefix": "self/", "mounts": ["local"]},
-    ]
-    if mimir_hosted_url:
-        mimir_instances.append(
-            {
-                "name": "hosted",
-                "role": "shared",
-                "url": mimir_hosted_url,
-                "categories": ["entity", "decision", "directive", "topic"],
-            }
-        )
-        mimir_write_rules.extend(
-            [
-                {"prefix": "project/", "mounts": ["hosted"]},
-                {"prefix": "entity/", "mounts": ["hosted"]},
-            ]
-        )
+    mimir_instances, mimir_write_routing = _resolve_mimir_runtime(mimir_config)
 
     max_tasks = persona_override.get("max_concurrent_tasks") or global_max_concurrent_tasks
 
@@ -182,10 +384,7 @@ def _build_ravn_config(
         "mimir": {
             "enabled": True,
             "instances": mimir_instances,
-            "write_routing": {
-                "rules": mimir_write_rules,
-                "default": ["local"],
-            },
+            "write_routing": mimir_write_routing,
         },
         "logging": {"level": "INFO"},
     }
@@ -232,7 +431,75 @@ def _build_ravn_config(
             "webhook": {"publish_urls": sleipnir_publish_urls},
         }
 
+    if workflow:
+        config["workflow"] = workflow
+
     return yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
+
+
+def _normalize_workflow_config(
+    workflow: dict[str, Any] | None,
+    initiative_context: str,
+) -> dict[str, Any] | None:
+    if not isinstance(workflow, dict):
+        return None
+
+    graph = workflow.get("graph")
+    if not isinstance(graph, dict):
+        return None
+
+    return {
+        "workflow_id": str(workflow.get("workflow_id") or ""),
+        "name": str(workflow.get("name") or ""),
+        "version": str(workflow.get("version") or ""),
+        "scope": str(workflow.get("scope") or ""),
+        "initial_context": initiative_context,
+        "graph": graph,
+    }
+
+
+def _workflow_trigger_config(workflow: dict[str, Any] | None) -> dict[str, str] | None:
+    if not isinstance(workflow, dict):
+        return None
+
+    graph = workflow.get("graph")
+    if not isinstance(graph, dict):
+        return None
+
+    nodes = list(graph.get("nodes") or [])
+    edges = list(graph.get("edges") or [])
+    trigger = next(
+        (
+            node
+            for node in nodes
+            if isinstance(node, dict) and str(node.get("kind") or "") == "trigger"
+        ),
+        None,
+    )
+    if trigger is None:
+        return None
+
+    event_type = str(trigger.get("dispatchEvent") or "").strip()
+    if not event_type:
+        trigger_id = str(trigger.get("id") or "")
+        for edge in edges:
+            if not isinstance(edge, dict) or str(edge.get("source") or "") != trigger_id:
+                continue
+            _source_event, target_event = _split_workflow_edge_label(edge.get("label"))
+            if target_event:
+                event_type = target_event
+                break
+
+    if not event_type:
+        return None
+
+    return {
+        "enabled": "true",
+        "node_id": str(trigger.get("id") or ""),
+        "label": str(trigger.get("label") or ""),
+        "source": str(trigger.get("source") or "manual dispatch"),
+        "event_type": event_type,
+    }
 
 
 class RavnFlockContributor(SessionContributor):
@@ -306,22 +573,30 @@ class RavnFlockContributor(SessionContributor):
         persona_dicts: list[dict] = _normalize_personas(raw_personas)
 
         mesh_cfg: dict = wc.get("mesh", {})
-        mimir_cfg: dict = wc.get("mimir", {})
+        mimir_cfg = _normalize_mimir_workload_config(
+            wc.get("mimir") if isinstance(wc.get("mimir"), dict) else None,
+            wc.get("mimir_hosted_url"),
+        )
         sleipnir_cfg: dict = wc.get("sleipnir", {})
 
-        mimir_hosted_url: str | None = mimir_cfg.get("hosted_url")
-        sleipnir_publish_urls: list[str] = sleipnir_cfg.get("publish_urls", [])
-        mesh_transport: str = mesh_cfg.get("transport", "nng")
+        sleipnir_publish_urls = list(
+            sleipnir_cfg.get("publish_urls") or wc.get("sleipnir_publish_urls") or []
+        )
+        mesh_transport = str(wc.get("mesh_transport") or mesh_cfg.get("transport") or "nng")
         global_max_concurrent_tasks: int = wc.get(
             "max_concurrent_tasks", _DEFAULT_MAX_CONCURRENT_TASKS
         )
         global_llm: dict | None = wc.get("llm_config") or None
+        workflow_cfg = _normalize_workflow_config(
+            wc.get("workflow"),
+            str(wc.get("initiative_context") or ""),
+        )
 
         values, pod_spec = self._build_flock_spec(
             session=session,
             persona_dicts=persona_dicts,
             mesh_transport=mesh_transport,
-            mimir_hosted_url=mimir_hosted_url,
+            mimir_config=mimir_cfg,
             sleipnir_publish_urls=sleipnir_publish_urls,
             global_max_concurrent_tasks=global_max_concurrent_tasks,
             global_llm=global_llm,
@@ -330,6 +605,7 @@ class RavnFlockContributor(SessionContributor):
             persona_source_mount_path=self._persona_source_mount_path,
             persona_source_token_secret_name=self._persona_source_token_secret_name,
             persona_source_http_base_url=self._persona_source_http_base_url,
+            workflow=workflow_cfg,
         )
 
         return SessionContribution(values=values, pod_spec=pod_spec)
@@ -356,7 +632,7 @@ class RavnFlockContributor(SessionContributor):
         session: Session,
         persona_dicts: list[dict],
         mesh_transport: str,
-        mimir_hosted_url: str | None,
+        mimir_config: dict[str, Any],
         sleipnir_publish_urls: list[str],
         global_max_concurrent_tasks: int,
         global_llm: dict | None = None,
@@ -365,10 +641,13 @@ class RavnFlockContributor(SessionContributor):
         persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
         persona_source_token_secret_name: str = "",
         persona_source_http_base_url: str = "",
+        workflow: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], PodSpecAdditions]:
         session_id = str(session.id)
         base_port = self._base_port
         all_personas = [pd["name"] for pd in persona_dicts]
+        mimir_instances, _mimir_write_routing = _resolve_mimir_runtime(mimir_config)
+        requires_local_mimir_mount = _requires_local_mimir_mount(mimir_instances)
 
         # Skuld (index 0) + ravn nodes start at index 1
         skuld_peer_id = f"skuld-{session_id[:8]}"
@@ -382,6 +661,36 @@ class RavnFlockContributor(SessionContributor):
             {"name": "MESH_REP_ADDRESS", "value": f"tcp://{self._mesh_host}:{skuld_rep}"},
             {"name": "MESH_HANDSHAKE_PORT", "value": str(skuld_hs)},
         ]
+        workflow_trigger = _workflow_trigger_config(workflow)
+        if workflow_trigger is not None:
+            skuld_env.extend(
+                [
+                    {
+                        "name": "SKULD__MESH__CONSUMES_EVENT_TYPES",
+                        "value": "[]",
+                    },
+                    {
+                        "name": "SKULD__WORKFLOW_TRIGGER__ENABLED",
+                        "value": workflow_trigger["enabled"],
+                    },
+                    {
+                        "name": "SKULD__WORKFLOW_TRIGGER__NODE_ID",
+                        "value": workflow_trigger["node_id"],
+                    },
+                    {
+                        "name": "SKULD__WORKFLOW_TRIGGER__LABEL",
+                        "value": workflow_trigger["label"],
+                    },
+                    {
+                        "name": "SKULD__WORKFLOW_TRIGGER__SOURCE",
+                        "value": workflow_trigger["source"],
+                    },
+                    {
+                        "name": "SKULD__WORKFLOW_TRIGGER__EVENT_TYPE",
+                        "value": workflow_trigger["event_type"],
+                    },
+                ]
+            )
 
         if sleipnir_publish_urls:
             skuld_env.append(
@@ -451,13 +760,14 @@ class RavnFlockContributor(SessionContributor):
                 base_port=base_port,
                 all_personas=all_personas,
                 skuld_peer_id=skuld_peer_id,
-                mimir_hosted_url=mimir_hosted_url,
+                mimir_config=mimir_config,
                 sleipnir_publish_urls=sleipnir_publish_urls,
                 global_max_concurrent_tasks=global_max_concurrent_tasks,
                 mesh_host=self._mesh_host,
                 persona_source_mode=persona_source_mode,
                 persona_source_mount_path=persona_source_mount_path,
                 persona_source_http_base_url=persona_source_http_base_url,
+                workflow=workflow,
             )
 
             # Per-sidecar emptyDir volume for the mounted config file
@@ -496,7 +806,6 @@ class RavnFlockContributor(SessionContributor):
             ravn_env.extend(persona_source_envs)
 
             volume_mounts: list[dict] = [
-                {"name": _MIMIR_VOLUME_NAME, "mountPath": _MIMIR_MOUNT_PATH},
                 {
                     "name": _WORKSPACE_VOLUME_NAME,
                     "mountPath": _WORKSPACE_MOUNT_PATH,
@@ -508,6 +817,11 @@ class RavnFlockContributor(SessionContributor):
                     "readOnly": True,
                 },
             ]
+            if requires_local_mimir_mount:
+                volume_mounts.insert(
+                    0,
+                    {"name": _MIMIR_VOLUME_NAME, "mountPath": _MIMIR_MOUNT_PATH},
+                )
             volume_mounts.extend(persona_source_volume_mounts)
 
             container: dict[str, Any] = {
@@ -524,12 +838,12 @@ class RavnFlockContributor(SessionContributor):
             }
             extra_containers.append(container)
 
+        pod_volumes: list[dict[str, Any]] = [*config_volumes, *persona_source_volumes]
+        if requires_local_mimir_mount:
+            pod_volumes.insert(0, {"name": _MIMIR_VOLUME_NAME, "emptyDir": {}})
+
         pod_spec = PodSpecAdditions(
-            volumes=(
-                {"name": _MIMIR_VOLUME_NAME, "emptyDir": {}},
-                *config_volumes,
-                *persona_source_volumes,
-            ),
+            volumes=tuple(pod_volumes),
             env=tuple(skuld_env),
             extra_containers=tuple(extra_containers),
             init_containers=tuple(init_containers),
@@ -541,10 +855,24 @@ class RavnFlockContributor(SessionContributor):
                 "transport": mesh_transport,
                 "peerPorts": skuld_ports,
             },
+            "flock": {
+                "personas": persona_dicts,
+                "llm_config": global_llm or {},
+                "max_concurrent_tasks": global_max_concurrent_tasks,
+            },
         }
+        if workflow:
+            values["workflow"] = workflow
 
-        if mimir_hosted_url:
-            values["mimir"] = {"hostedUrl": mimir_hosted_url}
+        if mimir_config:
+            values["mimir"] = {
+                "hostedUrl": str(mimir_config.get("hosted_url") or ""),
+                "registryRefs": list(mimir_config.get("registry_refs") or []),
+                "ephemeralLocals": list(mimir_config.get("ephemeral_locals") or []),
+                "bindings": list(mimir_config.get("bindings") or []),
+                "instances": list(mimir_config.get("instances") or []),
+                "writeRouting": dict(mimir_config.get("write_routing") or {}),
+            }
 
         if sleipnir_publish_urls:
             values["sleipnir"] = {"publishUrls": sleipnir_publish_urls}

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -184,9 +184,9 @@ def _make_session(
         model="claude-sonnet-4-20250514",
         source=GitSource(repo=repo, branch=branch),
         status=SessionStatus.RUNNING,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-        last_active=datetime.utcnow(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        last_active=datetime.now(UTC),
     )
 
 
@@ -208,8 +208,8 @@ def _make_chronicle(session_id, repo="https://github.com/user/repo") -> Chronicl
         duration_seconds=120,
         tags=["fix", "auth"],
         parent_chronicle_id=None,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
 
 
@@ -255,8 +255,8 @@ class MockGitRegistryWithWorkflow:
             target_branch=target_branch,
             status=PullRequestStatus.OPEN,
             description=description,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
     async def get_pull_request(self, repo_url: str, pr_number: int) -> PullRequest | None:

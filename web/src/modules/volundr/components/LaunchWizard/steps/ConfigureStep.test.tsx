@@ -85,10 +85,12 @@ function buildState(overrides: Partial<WizardState> = {}): WizardState {
     mountPaths: [],
     model: '',
     taskType: '',
+    definition: 'skuldClaude',
     mcpServers: [],
     resourceConfig: {},
     envVars: {},
     systemPrompt: '',
+    initialPrompt: '',
     setupScripts: [],
     preset: null,
     selectedCredentials: [],
@@ -137,6 +139,22 @@ const mockService = {
   getCredentials: vi.fn().mockResolvedValue([]),
   getIntegrations: vi.fn().mockResolvedValue([]),
   getClusterResources: vi.fn().mockResolvedValue({ resourceTypes: [], nodes: [] }),
+  getSessionDefinitions: vi.fn().mockResolvedValue([
+    {
+      key: 'skuldClaude',
+      displayName: 'Claude Code',
+      description: 'Anthropic Claude CLI agent',
+      labels: ['claude'],
+      defaultModel: 'claude-sonnet',
+    },
+    {
+      key: 'skuldCodex',
+      displayName: 'Codex',
+      description: 'OpenAI Codex CLI agent',
+      labels: ['codex'],
+      defaultModel: 'codex',
+    },
+  ]),
 } as unknown as import('@/ports').IVolundrService;
 
 function renderStep(overrides: Partial<ConfigureStepProps> = {}) {
@@ -175,6 +193,7 @@ describe('ConfigureStep', () => {
 
       expect(onChange).toHaveBeenCalledWith(
         expect.objectContaining({
+          definition: 'skuldCodex',
           template: expect.objectContaining({ cliTool: 'codex' }),
         })
       );
@@ -738,6 +757,7 @@ describe('ConfigureStep', () => {
           model: 'claude-opus',
           systemPrompt: 'Be concise.',
           taskType: 'skuld-claude',
+          definition: 'skuldClaude',
         })
       );
     });

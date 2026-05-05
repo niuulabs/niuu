@@ -52,6 +52,11 @@ class ConfidenceEventType(StrEnum):
     REVIEWER_SCORE = "reviewer_score"
 
 
+class WorkflowScope(StrEnum):
+    SYSTEM = "system"
+    USER = "user"
+
+
 # ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
@@ -101,6 +106,9 @@ class Saga:
     created_at: datetime
     base_branch: str
     owner_id: str = ""
+    workflow_id: UUID | None = None
+    workflow_version: str | None = None
+    workflow_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +215,20 @@ class DispatcherState:
 class SessionInfo:
     session_id: str
     status: str
+
+
+@dataclass(frozen=True)
+class WorkflowDefinition:
+    id: UUID
+    name: str
+    description: str
+    version: str
+    scope: WorkflowScope
+    owner_id: str | None
+    definition_yaml: str | None
+    graph: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)

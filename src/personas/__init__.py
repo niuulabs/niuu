@@ -1,0 +1,1 @@
+"""Persona registry service package."""

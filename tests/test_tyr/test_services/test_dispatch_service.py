@@ -26,6 +26,8 @@ from tyr.domain.models import (
     TrackerIssue,
     TrackerMilestone,
     TrackerProject,
+    WorkflowDefinition,
+    WorkflowScope,
 )
 from tyr.domain.services.dispatch_service import (
     DispatchConfig,
@@ -37,6 +39,7 @@ from tyr.domain.services.dispatch_service import (
     resolve_target_adapter,
 )
 from tyr.domain.templates import TemplatePhase, TemplateRaid
+from tyr.ports.workflow_repository import WorkflowRepository
 
 from ..stubs import StubFlockFlowProvider
 from ..test_dispatch_api import (
@@ -193,6 +196,17 @@ class TestIsReady:
         issue = TrackerIssue(id="1", identifier="X-1", title="t", description="", status="Triage")
         assert is_ready(issue, set(), set()) is True
 
+    def test_ready_unstarted_status_type(self):
+        issue = TrackerIssue(
+            id="1",
+            identifier="X-1",
+            title="t",
+            description="",
+            status="Planned",
+            status_type="unstarted",
+        )
+        assert is_ready(issue, set(), set()) is True
+
     def test_not_ready_in_progress(self):
         issue = TrackerIssue(
             id="1", identifier="X-1", title="t", description="", status="In Progress"
@@ -312,6 +326,31 @@ class TestFindReadyIssues:
         ids = [i.identifier for i in items]
         assert "ALPHA-1" not in ids
         assert "ALPHA-3" in ids
+
+    @pytest.mark.asyncio
+    async def test_includes_unstarted_linear_issues(
+        self,
+        tracker: MockTracker,
+        service: DispatchService,
+    ):
+        tracker.issues["proj-1"].append(
+            TrackerIssue(
+                id="i-4",
+                identifier="ALPHA-4",
+                title="Plan rollout",
+                description="Create rollout checklist",
+                status="Planned",
+                status_type="unstarted",
+                priority=4,
+                priority_label="Low",
+                url="https://linear.app/i-4",
+                milestone_id="ms-1",
+            )
+        )
+
+        items = await service.find_ready_issues("dev-user")
+        ids = [i.identifier for i in items]
+        assert "ALPHA-4" in ids
 
     @pytest.mark.asyncio
     async def test_empty_when_no_sagas(
@@ -983,6 +1022,150 @@ class TestBuildSpawnRequestPersonaOverrides:
         assert any("reviewer(powerful/thinking)" in r.message for r in caplog.records)
         assert any("security-auditor(balanced)" in r.message for r in caplog.records)
 
+    def test_workflow_snapshot_forces_flock_dispatch(self):
+        config = DispatchConfig(flock_enabled=False, flock_default_personas=[])
+        saga = self._make_saga()
+        issue = self._make_issue()
+        workflow_snapshot = {
+            "workflow_id": str(uuid4()),
+            "name": "Review Flow",
+            "version": "1.0.0",
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "stage-1",
+                        "kind": "stage",
+                        "label": "Review",
+                        "stageMembers": [{"personaId": "reviewer", "budget": 40}],
+                    }
+                ]
+            },
+        }
+
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
+        req = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=issue,
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            workflow_snapshot=workflow_snapshot,
+        )
+
+        assert req.workload_type == "ravn_flock"
+        assert req.workload_config["workflow"]["name"] == "Review Flow"
+        assert req.workload_config["personas"] == [{"name": "reviewer", "iteration_budget": 40}]
+
+
+class _StubWorkflowRepo(WorkflowRepository):
+    def __init__(self, workflows: list[WorkflowDefinition]) -> None:
+        self._workflows = {workflow.id: workflow for workflow in workflows}
+
+    async def list_workflows(self, *, owner_id: str, scope: WorkflowScope | None = None):
+        return list(self._workflows.values())
+
+    async def get_workflow(self, workflow_id):
+        return self._workflows.get(workflow_id)
+
+    async def save_workflow(self, workflow: WorkflowDefinition) -> WorkflowDefinition:
+        self._workflows[workflow.id] = workflow
+        return workflow
+
+    async def delete_workflow(self, workflow_id) -> bool:
+        return self._workflows.pop(workflow_id, None) is not None
+
+
+class TestResolveWorkflowSnapshot:
+    @pytest.mark.asyncio
+    async def test_explicit_override_resolves_snapshot(self):
+        workflow = WorkflowDefinition(
+            id=uuid4(),
+            name="Review Flow",
+            description="",
+            version="1.0.0",
+            scope=WorkflowScope.USER,
+            owner_id="owner-1",
+            definition_yaml="name: Review Flow\nstages: []",
+            graph={"nodes": [], "edges": []},
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        service = DispatchService(
+            tracker_factory=MockTrackerFactory([]),
+            volundr_factory=MockVolundrFactory(adapters=[MockVolundr()]),
+            saga_repo=MockSagaRepo(),
+            dispatcher_repo=MockDispatcherRepo(),
+            config=DispatchConfig(default_system_prompt="Be helpful.", default_model="claude"),
+            workflow_repo=_StubWorkflowRepo([workflow]),
+        )
+        saga = Saga(
+            id=uuid4(),
+            tracker_id="proj-1",
+            tracker_type="linear",
+            slug="alpha",
+            name="Alpha",
+            repos=["org/repo"],
+            feature_branch="feat/alpha",
+            base_branch="main",
+            status=SagaStatus.ACTIVE,
+            confidence=0.5,
+            created_at=datetime.now(UTC),
+            owner_id="owner-1",
+        )
+        item = DispatchItem(
+            saga_id=str(saga.id),
+            issue_id="i-1",
+            repo="org/repo",
+            workflow_id=str(workflow.id),
+        )
+
+        snapshot, error = await service._resolve_workflow_snapshot(item, saga)
+
+        assert error is None
+        assert snapshot is not None
+        assert snapshot["workflow_id"] == str(workflow.id)
+
+    @pytest.mark.asyncio
+    async def test_invalid_override_returns_error(self):
+        service = DispatchService(
+            tracker_factory=MockTrackerFactory([]),
+            volundr_factory=MockVolundrFactory(adapters=[MockVolundr()]),
+            saga_repo=MockSagaRepo(),
+            dispatcher_repo=MockDispatcherRepo(),
+            config=DispatchConfig(default_system_prompt="Be helpful.", default_model="claude"),
+            workflow_repo=_StubWorkflowRepo([]),
+        )
+        saga = Saga(
+            id=uuid4(),
+            tracker_id="proj-1",
+            tracker_type="linear",
+            slug="alpha",
+            name="Alpha",
+            repos=["org/repo"],
+            feature_branch="feat/alpha",
+            base_branch="main",
+            status=SagaStatus.ACTIVE,
+            confidence=0.5,
+            created_at=datetime.now(UTC),
+            owner_id="owner-1",
+        )
+        item = DispatchItem(
+            saga_id=str(saga.id),
+            issue_id="i-1",
+            repo="org/repo",
+            workflow_id="not-a-uuid",
+        )
+
+        snapshot, error = await service._resolve_workflow_snapshot(item, saga)
+
+        assert snapshot is None
+        assert error is not None
+
 
 # ---------------------------------------------------------------------------
 # NIU-644: _dispatch_template_phase with flock_flow_name
@@ -1074,6 +1257,7 @@ class TestDispatchTemplatePhaseFlockFlow:
         )
         provider = StubFlockFlowProvider({"code-review-flow": flow})
         volundr = MockVolundr()
+        volundr.integration_ids = ["int-telegram", "int-linear"]
         repo = MockSagaRepo()
         service = _make_dispatch_service(volundr, provider, repo)
 
@@ -1092,11 +1276,13 @@ class TestDispatchTemplatePhaseFlockFlow:
         assert len(volundr.spawned) == 1
         assert volundr.spawned[0].workload_type == "ravn_flock"
         assert "personas" in volundr.spawned[0].workload_config
+        assert volundr.spawned[0].integration_ids == ["int-telegram", "int-linear"]
 
     @pytest.mark.asyncio
     async def test_empty_flock_flow_name_is_solo_dispatch(self):
         """Without flock_flow_name, workload_type is default."""
         volundr = MockVolundr()
+        volundr.integration_ids = ["int-telegram"]
         repo = MockSagaRepo()
         service = _make_dispatch_service(volundr, saga_repo=repo)
 
@@ -1115,3 +1301,4 @@ class TestDispatchTemplatePhaseFlockFlow:
         assert len(volundr.spawned) == 1
         assert volundr.spawned[0].workload_type == "default"
         assert volundr.spawned[0].workload_config == {}
+        assert volundr.spawned[0].integration_ids == ["int-telegram"]

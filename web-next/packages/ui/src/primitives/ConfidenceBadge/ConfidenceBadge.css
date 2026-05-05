@@ -1,0 +1,51 @@
+.niuu-conf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+}
+
+.niuu-conf-badge__track {
+  width: 42px;
+  height: 4px;
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.niuu-conf-badge__fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  border-radius: var(--radius-full);
+}
+
+.niuu-conf-badge__num {
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  min-width: 22px;
+  text-align: right;
+}
+
+/* ── Null / zero state ───────────────────────────────────── */
+
+.niuu-conf-badge--null .niuu-conf-badge__num {
+  color: var(--color-text-faint);
+}
+
+/* ── Tiers ───────────────────────────────────────────────── */
+
+.niuu-conf-badge--hi .niuu-conf-badge__fill {
+  background: var(--brand-200);
+}
+
+.niuu-conf-badge--md .niuu-conf-badge__fill {
+  background: var(--brand-400);
+}
+
+.niuu-conf-badge--lo .niuu-conf-badge__fill {
+  background: var(--color-critical);
+}

@@ -18,6 +18,7 @@ from uuid import uuid4
 import pytest
 import yaml
 
+from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from tyr.domain.models import (
     Saga,
     SagaStatus,
@@ -79,6 +80,7 @@ def _make_flock_config(**overrides) -> DispatchConfig:
         flock_enabled=True,
         flock_default_personas=[{"name": "coordinator"}, {"name": "reviewer"}],
         flock_mimir_hosted_url="https://mimir.example.com",
+        flock_mimir_registry_path="~/.ravn/mimir/.mimir-registry.json",
         flock_sleipnir_publish_urls=["nats://sleipnir.example.com"],
     )
     defaults.update(overrides)
@@ -179,6 +181,7 @@ class TestBuildSpawnRequestFlockEnabled:
         )
 
         assert req.workload_config["mimir_hosted_url"] == "https://mimir.example.com"
+        assert req.workload_config["mimir"] == {"hosted_url": "https://mimir.example.com"}
 
     def test_no_sleipnir_key_when_urls_empty(self) -> None:
         config = _make_flock_config(flock_sleipnir_publish_urls=[])
@@ -219,6 +222,138 @@ class TestBuildSpawnRequestFlockEnabled:
         )
 
         assert "mimir_hosted_url" not in req.workload_config
+        assert "mimir" not in req.workload_config
+
+    def test_workload_config_contains_workflow_snapshot_mimir_resources(self) -> None:
+        config = _make_flock_config(flock_mimir_hosted_url="")
+        saga = _make_saga()
+        issue = _make_issue()
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo-a")
+        workflow_snapshot = {
+            "workflow_id": str(uuid4()),
+            "name": "Knowledge Flow",
+            "version": "1.0.0",
+            "mimir": {
+                "registry_refs": [
+                    {
+                        "resource_node_id": "mimir-1",
+                        "registry_entry_id": "shared-team-mimir",
+                        "mount_name": "shared-team-mimir",
+                        "categories": ["entity"],
+                    }
+                ],
+                "bindings": [
+                    {
+                        "resource_node_id": "mimir-1",
+                        "mount_name": "shared-team-mimir",
+                        "target_type": "workflow",
+                        "target_id": "wf-1",
+                        "access": "read_write",
+                        "write_prefixes": ["project/"],
+                        "read_priority": 3,
+                    }
+                ],
+            },
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "stage-1",
+                        "kind": "stage",
+                        "label": "Review",
+                        "stageMembers": [{"personaId": "reviewer", "budget": 40}],
+                    }
+                ]
+            },
+        }
+
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        req = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=issue,
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            workflow_snapshot=workflow_snapshot,
+        )
+
+        assert req.workload_config["mimir"] == workflow_snapshot["mimir"]
+
+    def test_workload_config_resolves_registry_backed_mimir_resources(self, tmp_path: Path) -> None:
+        registry_path = tmp_path / ".mimir-registry.json"
+        store = MimirRegistryStore(registry_path)
+        entry = MimirRegistryEntry(
+            id="shared-team-mimir",
+            name="shared-team-mimir",
+            kind="remote",
+            role="shared",
+            url="https://mimir.shared.test/api/v1",
+            categories=["entity", "decision"],
+        )
+        store.save_entry(entry)
+
+        config = _make_flock_config(
+            flock_mimir_hosted_url="",
+            flock_mimir_registry_path=str(registry_path),
+        )
+        saga = _make_saga()
+        issue = _make_issue()
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo-a")
+        workflow_snapshot = {
+            "workflow_id": str(uuid4()),
+            "name": "Knowledge Flow",
+            "version": "1.0.0",
+            "mimir": {
+                "registry_refs": [
+                    {
+                        "resource_node_id": "mimir-1",
+                        "registry_entry_id": "shared-team-mimir",
+                        "mount_name": "shared-team-mimir",
+                    }
+                ],
+                "bindings": [],
+            },
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "stage-1",
+                        "kind": "stage",
+                        "label": "Review",
+                        "stageMembers": [{"personaId": "reviewer", "budget": 40}],
+                    }
+                ]
+            },
+        }
+
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        req = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=issue,
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            workflow_snapshot=workflow_snapshot,
+        )
+
+        assert req.workload_config["mimir"]["registry_refs"] == [
+            {
+                "resource_node_id": "mimir-1",
+                "registry_entry_id": "shared-team-mimir",
+                "mount_name": "shared-team-mimir",
+                "url": "https://mimir.shared.test/api/v1",
+                "role": "shared",
+                "categories": ["entity", "decision"],
+                "default_read_priority": 10,
+                "enabled": True,
+            }
+        ]
 
     def test_workload_config_contains_llm_config(self) -> None:
         llm = {

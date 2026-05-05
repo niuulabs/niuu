@@ -21,8 +21,10 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import re
+import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
@@ -36,6 +38,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_GIT_COMMIT_PREFIXES = ("git commit", "git -c ", "git -C ")
+_GIT_COMMIT_OUTPUT_RE = re.compile(r"\[[\w/-]+\s+([a-f0-9]{7,})\]\s+(.+)")
+
 # Maps RavnEvent type strings to room activity types
 _RAVN_ACTIVITY_MAP: dict[str, str] = {
     "thought": "thinking",
@@ -43,6 +48,7 @@ _RAVN_ACTIVITY_MAP: dict[str, str] = {
     "tool_start": "tool_executing",
     "tool_result": "idle",
     "task_started": "busy",
+    "task_complete": "idle",
     "decision": "thinking",
 }
 
@@ -64,13 +70,19 @@ class RoomBridge:
         config: RoomConfig,
         channels: ChannelRegistry,
         append_turn: Callable[[Any], None] | None = None,
+        report_timeline_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        observe_peer_event: Callable[[str, str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._config = config
         self._channels = channels
         self._append_turn = append_turn
+        self._report_timeline_event = report_timeline_event
+        self._observe_peer_event = observe_peer_event
         self._participants: dict[str, ParticipantMeta] = {}
         self._websockets: dict[str, WebSocket] = {}
         self._color_cycle = itertools.cycle(list(config.participant_colors))
+        self._timeline_started_at = time.monotonic()
+        self._known_files: set[str] = set()
 
     # ------------------------------------------------------------------
     # Participant management
@@ -107,6 +119,7 @@ class RoomBridge:
                 subscribes_to=subs,
                 emits=emit_types,
                 tools=tool_names,
+                status="idle",
             )
             self._participants[peer_id] = meta
         else:
@@ -120,6 +133,7 @@ class RoomBridge:
                 subscribes_to=subs or old.subscribes_to,
                 emits=emit_types or old.emits,
                 tools=tool_names or old.tools,
+                status=old.status,
             )
             self._participants[peer_id] = meta
 
@@ -138,6 +152,7 @@ class RoomBridge:
         subscribes_to: list[str] | None = None,
         emits: list[str] | None = None,
         tools: list[str] | None = None,
+        participant_type: str = "ravn",
     ) -> ParticipantMeta:
         """Register a mesh-discovered peer (no WebSocket connection).
 
@@ -152,11 +167,12 @@ class RoomBridge:
             peer_id=peer_id,
             persona=persona,
             color=color,
-            participant_type="ravn",
+            participant_type=participant_type,
             display_name=display_name or persona,
             subscribes_to=tuple(subscribes_to or ()),
             emits=tuple(emits or ()),
             tools=tuple(tools or ()),
+            status="idle",
         )
         self._participants[peer_id] = meta
         logger.info("RoomBridge: mesh peer registered peer_id=%s persona=%s", peer_id, persona)
@@ -202,18 +218,23 @@ class RoomBridge:
         if event_type in ("response", "error"):
             await self._handle_response_frame(meta, frame, is_error=(event_type == "error"))
             # Agent turn is complete — reset status to idle.
-            await self._handle_activity_frame(meta, "idle", "")
+            await self._handle_activity_frame(
+                meta, "error" if event_type == "error" else "idle", ""
+            )
+            await self._notify_peer_event(meta.peer_id, event_type, frame)
             return
 
         if event_type == "outcome":
             await self._handle_outcome_frame(meta, frame)
             # Outcome is emitted mid-turn; the agent may still produce a
             # response afterward — don't reset status here.
+            await self._notify_peer_event(meta.peer_id, event_type, frame)
             return
 
         if event_type == "help_needed":
             await self._handle_help_needed_frame(meta, frame)
             # Agent is asking for help but is still working — don't reset.
+            await self._notify_peer_event(meta.peer_id, event_type, frame)
             return
 
         # Check for inter-agent delegation (route_work tool)
@@ -221,10 +242,20 @@ class RoomBridge:
             tool_name = metadata.get("tool_name") or data
             if tool_name == "route_work":
                 await self._handle_mesh_delegation_frame(meta, frame)
+            await self._report_peer_tool_timeline(meta, tool_name, metadata.get("input", {}))
+
+        if event_type == "tool_result" and metadata.get("is_error"):
+            await self._emit_timeline_event(
+                {
+                    "type": "error",
+                    "label": self._timeline_label(meta, self._preview_text(str(data), 120)),
+                }
+            )
 
         activity_type = _RAVN_ACTIVITY_MAP.get(event_type)
         if activity_type:
             await self._handle_activity_frame(meta, activity_type, data)
+            await self._notify_peer_event(meta.peer_id, event_type, frame)
 
         # Forward internal events (thought, tool_start, tool_result) so the
         # agent detail panel can render them — the original frame is relayed
@@ -255,7 +286,7 @@ class RoomBridge:
             "participantId": meta.peer_id,
             "participant": asdict(meta),
             "content": content,
-            "visibility": "public",
+            "visibility": frame.get("visibility", "public"),
         }
         if is_error:
             room_event["error"] = True
@@ -263,6 +294,12 @@ class RoomBridge:
             room_event["threadId"] = thread_id
 
         await self._channels.broadcast(room_event)
+        await self._emit_timeline_event(
+            {
+                "type": "error" if is_error else "message",
+                "label": self._timeline_label(meta, self._preview_text(content, 120)),
+            }
+        )
 
         # Persist as ConversationTurn
         if self._append_turn is not None:
@@ -283,18 +320,39 @@ class RoomBridge:
         self,
         meta: ParticipantMeta,
         activity_type: str,
-        detail: str,
+        detail: Any,
     ) -> None:
         """Translate a thought/tool frame into a room_activity event."""
+        self._participants[meta.peer_id] = ParticipantMeta(
+            peer_id=meta.peer_id,
+            persona=meta.persona,
+            color=meta.color,
+            participant_type=meta.participant_type,
+            display_name=meta.display_name,
+            gateway_url=meta.gateway_url,
+            subscribes_to=meta.subscribes_to,
+            emits=meta.emits,
+            tools=meta.tools,
+            status=activity_type,
+        )
         event: dict = {
             "type": "room_activity",
             "participantId": meta.peer_id,
             "activityType": activity_type,
         }
         if detail:
-            event["detail"] = detail[: self._config.activity_detail_max_length]
+            detail_text = detail if isinstance(detail, str) else json.dumps(detail, default=str)
+            event["detail"] = detail_text[: self._config.activity_detail_max_length]
 
         await self._channels.broadcast(event)
+
+    async def _notify_peer_event(
+        self, peer_id: str, event_type: str, frame: dict[str, Any]
+    ) -> None:
+        """Report a peer event to the broker for watchdog/status bookkeeping."""
+        if self._observe_peer_event is None:
+            return
+        await self._observe_peer_event(peer_id, event_type, frame)
 
     async def _handle_help_needed_frame(
         self,
@@ -422,7 +480,12 @@ class RoomBridge:
     # CLI participant helpers
     # ------------------------------------------------------------------
 
-    async def broadcast_cli_activity(self, peer_id: str, activity_type: str) -> None:
+    async def broadcast_cli_activity(
+        self,
+        peer_id: str,
+        activity_type: str,
+        detail: str = "",
+    ) -> None:
         """Broadcast a ``room_activity`` event for the local CLI participant.
 
         Called by the Broker when the CLI transport changes activity state
@@ -431,9 +494,16 @@ class RoomBridge:
         meta = self._participants.get(peer_id)
         if meta is None:
             return
-        await self._handle_activity_frame(meta, activity_type, "")
+        await self._handle_activity_frame(meta, activity_type, detail)
 
-    async def broadcast_cli_message(self, peer_id: str, content: str) -> None:
+    async def broadcast_cli_message(
+        self,
+        peer_id: str,
+        content: str,
+        *,
+        is_error: bool = False,
+        visibility: str = "public",
+    ) -> None:
         """Broadcast a ``room_message`` for the local CLI participant.
 
         Called by the Broker when a CLI assistant turn completes so the
@@ -442,7 +512,11 @@ class RoomBridge:
         meta = self._participants.get(peer_id)
         if meta is None:
             return
-        await self._handle_response_frame(meta, {"data": content, "metadata": {}}, is_error=False)
+        await self._handle_response_frame(
+            meta,
+            {"data": content, "metadata": {}, "visibility": visibility},
+            is_error=is_error,
+        )
 
     # ------------------------------------------------------------------
     # Directed routing
@@ -502,3 +576,100 @@ class RoomBridge:
     def has_participant(self, peer_id: str) -> bool:
         """Return True if *peer_id* is already a registered participant."""
         return peer_id in self._participants
+
+    # ------------------------------------------------------------------
+    # Chronicle timeline reporting
+    # ------------------------------------------------------------------
+
+    async def _emit_timeline_event(self, event: dict[str, Any]) -> None:
+        """Forward a timeline event to the broker callback, if configured."""
+        if self._report_timeline_event is None:
+            return
+        payload = {"t": int(time.monotonic() - self._timeline_started_at), **event}
+        try:
+            await self._report_timeline_event(payload)
+        except Exception:
+            logger.debug(
+                "RoomBridge: failed to report timeline event: type=%s",
+                event.get("type"),
+                exc_info=True,
+            )
+
+    async def _report_peer_tool_timeline(
+        self,
+        meta: ParticipantMeta,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> None:
+        """Map a peer tool_start into a chronicle timeline event."""
+        event = self._classify_tool_event(tool_name, tool_input)
+        if event is None:
+            return
+        event["label"] = self._timeline_label(meta, str(event["label"]))
+        await self._emit_timeline_event(event)
+
+    def _classify_tool_event(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Classify a peer tool_start into the coarse chronicle schema."""
+        file_path = tool_input.get("file_path") or tool_input.get("path")
+
+        if tool_name in ("Edit", "Write", "NotebookEdit"):
+            if tool_name == "Edit":
+                action = "modified"
+                if file_path:
+                    self._known_files.add(file_path)
+            elif file_path and file_path in self._known_files:
+                action = "modified"
+            elif file_path:
+                action = "created"
+                self._known_files.add(file_path)
+            else:
+                action = "created"
+            return {"type": "file", "label": file_path or tool_name, "action": action}
+
+        if tool_name == "Read":
+            if file_path:
+                self._known_files.add(file_path)
+            return None
+
+        if tool_name not in ("Bash", "BashTool"):
+            return None
+
+        command = str(tool_input.get("command", ""))
+        if self._is_git_commit(command):
+            label = self._extract_git_commit_message(command) or command[:80] or "git commit"
+            return {"type": "git", "label": label}
+
+        return {"type": "terminal", "label": command[:80] or "bash"}
+
+    @staticmethod
+    def _preview_text(content: str, limit: int) -> str:
+        """Collapse newlines and trim text for timeline labels."""
+        preview = " ".join(line.strip() for line in content.splitlines() if line.strip()).strip()
+        if not preview:
+            preview = content.strip()
+        if len(preview) > limit:
+            return preview[: limit - 3].rstrip() + "..."
+        return preview
+
+    @staticmethod
+    def _timeline_label(meta: ParticipantMeta, label: str) -> str:
+        """Prefix timeline labels with persona for multi-agent attribution."""
+        return f"{meta.persona}: {label}" if label else meta.persona
+
+    @staticmethod
+    def _is_git_commit(command: str) -> bool:
+        stripped = command.lstrip()
+        if stripped.startswith(_GIT_COMMIT_PREFIXES):
+            return True
+        return "git commit" in stripped
+
+    @staticmethod
+    def _extract_git_commit_message(output: str) -> str | None:
+        match = _GIT_COMMIT_OUTPUT_RE.search(output)
+        if match:
+            return match.group(2)
+        return None

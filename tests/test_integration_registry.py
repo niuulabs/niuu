@@ -9,7 +9,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from volundr.adapters.inbound.rest_integrations import create_integrations_router
+from tests.helpers.http_contracts import RouteCallSpec, assert_route_equivalence
+from volundr.adapters.inbound.rest_integrations import (
+    create_canonical_integrations_router,
+    create_integrations_router,
+)
 from volundr.adapters.outbound.memory_integrations import InMemoryIntegrationRepository
 from volundr.domain.models import (
     IntegrationConnection,
@@ -550,6 +554,12 @@ def catalog_client(
     async def mock_extract_principal():
         return mock_principal
 
+    canonical_router = create_canonical_integrations_router(
+        integration_repo,
+        tracker_factory,
+        registry=registry,
+    )
+    app.include_router(canonical_router)
     router = create_integrations_router(
         integration_repo,
         tracker_factory,
@@ -570,17 +580,31 @@ class TestCatalogEndpoint:
         response = catalog_client.get("/api/v1/volundr/integrations/catalog")
         assert response.status_code == 200
         data = response.json()
+        ids = [d["id"] for d in data]
         slugs = [d["slug"] for d in data]
         # Built-ins + test telegram
+        assert "github" in ids
         assert "github" in slugs
+        assert "linear" in ids
         assert "linear" in slugs
+        assert "telegram" in ids
         assert "telegram" in slugs
         assert len(data) == 3  # fixture provides 3 definitions
+        assert response.headers["Deprecation"] == "true"
+        assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/integrations/catalog"
+
+    def test_canonical_catalog_matches_legacy(self, catalog_client: TestClient):
+        assert_route_equivalence(
+            catalog_client,
+            legacy=RouteCallSpec(path="/api/v1/volundr/integrations/catalog"),
+            canonical=RouteCallSpec(path="/api/v1/integrations/catalog"),
+        )
 
     def test_catalog_entry_has_mcp(self, catalog_client: TestClient):
         response = catalog_client.get("/api/v1/volundr/integrations/catalog")
         data = response.json()
         linear = next(d for d in data if d["slug"] == "linear")
+        assert linear["id"] == "linear"
         assert linear["mcp_server"] is not None
         assert linear["mcp_server"]["name"] == "linear-mcp"
         assert linear["mcp_server"]["command"] == "npx"

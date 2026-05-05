@@ -277,6 +277,7 @@ async def test_drive_loop_surface_escalation_logged(
     # Patch the SilentChannel to always have surface_triggered=True
     with patch("ravn.drive_loop.SilentChannel") as mock_channel:
         mock_ch = MagicMock()
+        mock_ch.emit = AsyncMock()
         mock_ch.surface_triggered = True
         mock_ch.response_text = "[SURFACE] Disk at 90%"
         mock_channel.return_value = mock_ch

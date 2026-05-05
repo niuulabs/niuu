@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -338,7 +338,7 @@ class InMemoryTokenTracker(TokenTracker):
         record = TokenUsageRecord(
             id=uuid4(),
             session_id=session_id,
-            recorded_at=datetime.utcnow(),
+            recorded_at=datetime.now(UTC),
             tokens=tokens,
             provider=provider,
             model=model,
@@ -604,7 +604,7 @@ class MockEventBroadcaster(EventBroadcaster):
             RealtimeEvent(
                 type=EventType.SESSION_CREATED,
                 data={"id": str(session.id)},
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
             )
         )
 
@@ -615,7 +615,7 @@ class MockEventBroadcaster(EventBroadcaster):
             RealtimeEvent(
                 type=EventType.SESSION_UPDATED,
                 data={"id": str(session.id)},
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
             )
         )
 
@@ -626,7 +626,7 @@ class MockEventBroadcaster(EventBroadcaster):
             RealtimeEvent(
                 type=EventType.SESSION_DELETED,
                 data={"id": str(session_id)},
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
             )
         )
 
@@ -637,7 +637,7 @@ class MockEventBroadcaster(EventBroadcaster):
             RealtimeEvent(
                 type=EventType.STATS_UPDATED,
                 data={"active_sessions": stats.active_sessions},
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
             )
         )
 
@@ -648,7 +648,7 @@ class MockEventBroadcaster(EventBroadcaster):
             RealtimeEvent(
                 type=EventType.HEARTBEAT,
                 data={},
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
             )
         )
 
@@ -666,7 +666,7 @@ class MockEventBroadcaster(EventBroadcaster):
                     "session_id": str(session_id),
                     "event": {"t": event.t, "type": event.type.value},
                 },
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
             )
         )
 

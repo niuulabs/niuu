@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import typer
 
 from cli.services.manager import ServiceState, StartupError
@@ -30,7 +32,11 @@ if TYPE_CHECKING:
     from niuu.ports.plugin import ServiceDefinition
 
 
-def _build_preflight_config(settings: CLISettings) -> PreflightConfig:
+def _build_preflight_config(
+    settings: CLISettings,
+    *,
+    workspaces_dir_override: str = "",
+) -> PreflightConfig:
     """Build a PreflightConfig from CLISettings."""
     ports = [settings.server.port]
     for plugin_cfg in settings.plugins.extra:
@@ -39,10 +45,11 @@ def _build_preflight_config(settings: CLISettings) -> PreflightConfig:
             ports.append(plugin_port)
 
     kwargs = settings.pod_manager.adapter_kwargs()
+    workspaces_dir = workspaces_dir_override or kwargs.get("workspaces_dir", "~/.niuu/workspaces")
     return PreflightConfig(
         claude_binary=kwargs.get("claude_binary", "claude"),
         ports=ports,
-        workspaces_dir=kwargs.get("workspaces_dir", "~/.niuu/workspaces"),
+        workspaces_dir=workspaces_dir,
         database_mode=settings.database.mode,
         database_dsn=settings.database.dsn,
         mode=settings.mode,
@@ -125,11 +132,17 @@ async def _startup(
     settings: CLISettings,
     enabled_services: set[str] | None,
     skip_preflight: bool,
+    host_profile: str,
+    enabled_mounts: set[str] | None,
+    workspaces_dir_override: str = "",
 ) -> None:
     """Run preflight checks, start infrastructure, then the root server."""
     if not skip_preflight:
         typer.echo("Running preflight checks...")
-        config = _build_preflight_config(settings)
+        config = _build_preflight_config(
+            settings,
+            workspaces_dir_override=workspaces_dir_override,
+        )
         results = run_preflight_checks(config)
         typer.echo(format_results(results))
 
@@ -146,7 +159,7 @@ async def _startup(
         raise typer.Exit(1) from None
 
     # Start the unified root server (all plugin APIs + web UI on one port)
-    from cli.server import RootServer
+    from niuu.app import RootServer
 
     host = settings.server.host
     port = settings.server.port
@@ -159,6 +172,8 @@ async def _startup(
         registry=manager._registry,
         host=host,
         port=port,
+        host_profile=host_profile,
+        enabled_mounts=enabled_mounts,
     )
     manager._root_server = root_server  # type: ignore[attr-defined]
 
@@ -209,27 +224,57 @@ def _build_up_callback(
         """Start platform services."""
         import os
 
+        from niuu.app import DEFAULT_HOST_PROFILE, parse_enabled_mounts
+
         # Set Anthropic API key from config if not already in env
         if settings.anthropic.api_key:
             os.environ.setdefault("ANTHROPIC_API_KEY", settings.anthropic.api_key)
 
+        workspaces_dir = str(kwargs.pop("workspaces_dir", "") or "").strip()
+        effective_settings = settings
+        if workspaces_dir:
+            if settings.mode != "mini":
+                raise typer.BadParameter(
+                    "--workspaces-dir is only supported in mini mode",
+                    param_hint="workspaces-dir",
+                )
+            effective_settings = settings.model_copy(deep=True)
+            effective_settings.pod_manager.workspaces_dir = workspaces_dir
+
         # In mini mode, enable local mounts and mini_mode feature flag.
-        if settings.mode == "mini":
+        if effective_settings.mode == "mini":
             os.environ.setdefault("LOCAL_MOUNTS__ENABLED", "true")
             os.environ.setdefault("LOCAL_MOUNTS__MINI_MODE", "true")
+            for key, value in _resolve_mini_pod_manager_env(effective_settings).items():
+                os.environ[key] = value
 
         skip_preflight: bool = bool(kwargs.pop("skip_preflight", False))
         start_all: bool = bool(kwargs.pop("all", False))
         no_web: bool = bool(kwargs.pop("no_web", False))
+        host_profile = str(kwargs.pop("host_profile", DEFAULT_HOST_PROFILE))
+        mounts = str(kwargs.pop("mounts", ""))
         svc_flags: dict[str, bool | None] = dict(kwargs)
 
         if no_web:
             os.environ["NIUU_NO_WEB"] = "true"
 
+        try:
+            enabled_mounts = parse_enabled_mounts(mounts)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="mounts") from exc
+
         enabled = _resolve_enabled_services(service_defs, settings, start_all, svc_flags)
 
         async def _run() -> None:
-            await _startup(manager, settings, enabled, skip_preflight)
+            await _startup(
+                manager,
+                effective_settings,
+                enabled,
+                skip_preflight,
+                host_profile,
+                enabled_mounts,
+                workspaces_dir_override=workspaces_dir,
+            )
 
             # Wait forever until cancelled by KeyboardInterrupt
             try:
@@ -268,6 +313,24 @@ def _build_up_callback(
             default=False,
             annotation=bool,
         ),
+        inspect.Parameter(
+            "host_profile",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default="full",
+            annotation=str,
+        ),
+        inspect.Parameter(
+            "mounts",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default="",
+            annotation=str,
+        ),
+        inspect.Parameter(
+            "workspaces_dir",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default="",
+            annotation=str,
+        ),
     ]
     for svc_name in sorted(service_defs.keys()):
         params.append(
@@ -304,6 +367,18 @@ MINI_POD_MANAGER_DEFAULTS: dict[str, Any] = {
     "claude_binary": "claude",
 }
 
+def _resolve_mini_pod_manager_env(settings: CLISettings) -> dict[str, str]:
+    """Build env overrides for Volundr mini-mode runtime configuration."""
+    kwargs = dict(settings.pod_manager.adapter_kwargs())
+
+    env = {
+        "POD_MANAGER__ADAPTER": settings.pod_manager.adapter,
+        "GIT__VALIDATE_ON_CREATE": "false",
+    }
+    for key, value in kwargs.items():
+        env[f"POD_MANAGER__KWARGS__{key.upper()}"] = str(value)
+    return env
+
 
 def _prompt_mode_selection() -> str:
     """Prompt the user for mini or cluster mode."""
@@ -327,6 +402,24 @@ def _build_init_config(mode: str) -> dict[str, Any]:
         "mode": "mini",
         "pod_manager": dict(MINI_POD_MANAGER_DEFAULTS),
     }
+
+
+def _route_inventory_payload(inventory: list[Any] | tuple[Any, ...]) -> list[dict[str, Any]]:
+    """Convert route inventory records into JSON-friendly dicts."""
+    return [
+        {
+            "name": item.name,
+            "prefixes": list(item.prefixes),
+            "source": item.source,
+            "plugin": item.plugin_name,
+        }
+        for item in inventory
+    ]
+
+
+def _legacy_route_hits_url(server: str) -> str:
+    """Build the host endpoint used for legacy-route usage snapshots."""
+    return f"{server.rstrip('/')}/api/v1/niuu/compat/legacy-routes"
 
 
 def create_platform_commands(
@@ -379,6 +472,115 @@ def create_platform_commands(
             state = svc_status.state.value if svc_status else "not started"
             svc_def = service_defs[svc_name]
             typer.echo(f"  {svc_name}: {state} — {svc_def.description}")
+
+    @platform_app.command()
+    def inventory(
+        host_profile: str = typer.Option(
+            "full",
+            "--host-profile",
+            help="Host profile used to resolve mounted route domains.",
+        ),
+        mounts: str = typer.Option(
+            "",
+            "--mounts",
+            help="Comma-separated route domains to inventory instead of the profile default.",
+        ),
+        json_output: bool = typer.Option(
+            False,
+            "--json",
+            help="Print route inventory as JSON.",
+        ),
+        out: str = typer.Option(
+            "",
+            "--out",
+            help="Optional file path to write the JSON route inventory report.",
+        ),
+    ) -> None:
+        """Show or export the route domains mounted by the niuu host."""
+        from niuu.app import collect_route_inventory, parse_enabled_mounts
+
+        try:
+            enabled_mounts = parse_enabled_mounts(mounts)
+            inventory = collect_route_inventory(
+                registry=registry,
+                host_profile=host_profile,
+                enabled_mounts=enabled_mounts,
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+
+        payload = _route_inventory_payload(inventory)
+
+        if out:
+            output_path = Path(out)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(f"{json.dumps(payload, indent=2)}\n")
+            typer.echo(f"Wrote route inventory to {output_path}")
+
+        if json_output:
+            typer.echo(json.dumps(payload, indent=2))
+            return
+
+        typer.echo(f"Host profile: {host_profile}")
+        for item in payload:
+            prefixes = ", ".join(item["prefixes"]) or "(none)"
+            plugin = item["plugin"] or "internal"
+            typer.echo(f"  {item['name']}: {prefixes} [{item['source']}/{plugin}]")
+
+    @platform_app.command(name="legacy-routes")
+    def legacy_routes(
+        server: str = typer.Option(
+            "",
+            "--server",
+            help="Base URL for the running niuu host. Defaults to the configured local server.",
+        ),
+        json_output: bool = typer.Option(
+            False,
+            "--json",
+            help="Print the legacy-route usage snapshot as JSON.",
+        ),
+        clear: bool = typer.Option(
+            False,
+            "--clear",
+            help="Clear the legacy-route counters after returning the current snapshot.",
+        ),
+        out: str = typer.Option(
+            "",
+            "--out",
+            help="Optional file path to write the JSON legacy-route usage report.",
+        ),
+    ) -> None:
+        """Show the current legacy-route usage snapshot from a running niuu host."""
+        base_url = server or f"http://{settings.server.host}:{settings.server.port}"
+        url = _legacy_route_hits_url(base_url)
+
+        try:
+            response = httpx.delete(url, timeout=5.0) if clear else httpx.get(url, timeout=5.0)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            action = "clear" if clear else "fetch"
+            typer.echo(f"Failed to {action} legacy-route usage from {url}: {exc}")
+            raise typer.Exit(1) from None
+
+        payload = response.json()
+
+        if out:
+            output_path = Path(out)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(f"{json.dumps(payload, indent=2)}\n")
+            typer.echo(f"Wrote legacy-route usage to {output_path}")
+
+        if json_output:
+            typer.echo(json.dumps(payload, indent=2))
+            return
+
+        summary_label = "Cleared legacy route hits" if clear else "Legacy route hits"
+        typer.echo(f"{summary_label}: {payload.get('totalHits', 0)}")
+        for item in payload.get("items", []):
+            typer.echo(
+                f"  {item['method']} {item['legacyPath']} -> "
+                f"{item['canonicalPath']} ({item['hits']})"
+            )
 
     @platform_app.command()
     def init() -> None:

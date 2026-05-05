@@ -1,0 +1,1 @@
+export { RoomMessage } from './RoomMessage';

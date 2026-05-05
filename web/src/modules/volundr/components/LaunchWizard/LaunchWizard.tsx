@@ -25,6 +25,7 @@ export interface LaunchConfig {
   templateName?: string;
   presetId?: string;
   taskType?: string;
+  definition?: string;
   trackerIssue?: TrackerIssue;
   terminalRestricted?: boolean;
   workspaceId?: string;
@@ -47,6 +48,7 @@ export interface WizardState {
   mountPaths: MountMapping[];
   model: string;
   taskType: string;
+  definition: string;
   trackerIssue?: TrackerIssue;
   workspaceId?: string;
   terminalRestricted: boolean;
@@ -104,6 +106,7 @@ function buildInitialState(template: VolundrTemplate, repos: VolundrRepo[]): Wiz
     mountPaths: [{ host_path: '', mount_path: '', read_only: true }],
     model: template.model ?? '',
     taskType: `skuld-${template.cliTool}`,
+    definition: template.cliTool === 'codex' ? 'skuldCodex' : 'skuldClaude',
     mcpServers: [...template.mcpServers],
     resourceConfig: { ...template.resourceConfig },
     envVars: { ...template.envVars },
@@ -201,6 +204,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
       templateName: state.template.name || undefined,
       presetId: state.preset?.id,
       taskType: state.taskType || undefined,
+      definition: state.definition || 'skuldClaude',
       trackerIssue: state.trackerIssue,
       terminalRestricted: state.terminalRestricted,
       workspaceId: state.workspaceId,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 
 from fastapi import Depends, HTTPException, Request, status
@@ -31,7 +32,13 @@ async def extract_principal(request: Request) -> Principal:
     from volundr.adapters.outbound.identity import EnvoyHeaderIdentityAdapter
 
     if isinstance(identity, EnvoyHeaderIdentityAdapter):
-        headers = {k.lower(): v for k, v in request.headers.items()}
+        header_items = request.headers.items()
+        if inspect.iscoroutine(header_items):
+            header_items.close()
+            header_items = ()
+        elif inspect.isawaitable(header_items):
+            header_items = ()
+        headers = {k.lower(): v for k, v in header_items}
         try:
             return await identity.validate_headers(headers)
         except InvalidTokenError as e:

@@ -1,0 +1,60 @@
+.niuu-budget-runway {
+  min-width: 0;
+}
+
+/* ── Track ─────────────────────────────────────────────── */
+
+.niuu-budget-runway__track {
+  position: relative;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  overflow: hidden;
+}
+
+/* ── Spent fill ─────────────────────────────────────────── */
+
+.niuu-budget-runway__spent {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--brand-300);
+  border-radius: var(--radius-full) 0 0 var(--radius-full);
+}
+
+/* ── Projected (hatched) fill ───────────────────────────── */
+
+.niuu-budget-runway__proj {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--brand-300) 40%, transparent) 0,
+    color-mix(in srgb, var(--brand-300) 40%, transparent) 2px,
+    transparent 2px,
+    transparent 6px
+  );
+}
+
+.niuu-budget-runway__proj--over {
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--color-critical) 55%, transparent) 0,
+    color-mix(in srgb, var(--color-critical) 55%, transparent) 2px,
+    transparent 2px,
+    transparent 6px
+  );
+}
+
+/* ── Now marker (tick at elapsed-time fraction) ─────────── */
+
+.niuu-budget-runway__now-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-text-primary);
+  transform: translateX(-50%);
+  pointer-events: none;
+}

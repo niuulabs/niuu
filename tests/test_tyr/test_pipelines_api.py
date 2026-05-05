@@ -15,7 +15,9 @@ from tyr.api.pipelines import (
     resolve_pipeline_executor,
 )
 from tyr.config import AuthConfig
+from tyr.domain.flock_flow import FlockFlowConfig, FlockPersonaOverride
 from tyr.domain.pipeline_executor import TemplateAwarePipelineExecutor
+from tyr.ports.flock_flow import FlockFlowProvider
 
 _VALID_YAML = textwrap.dedent(
     """
@@ -33,19 +35,88 @@ _VALID_YAML = textwrap.dedent(
     """
 )
 
+_FLOW_YAML = textwrap.dedent(
+    """
+    name: "Flock pipeline"
+    feature_branch: "feat/test"
+    base_branch: "main"
+    repos:
+      - "acme/app"
+    flock_flow: code-review-flow
+    stages:
+      - name: review
+        sequential:
+          - name: "Review code"
+            persona: reviewer
+            prompt: "Review the code"
+    """
+)
+
 _OWNER = "test-owner"
 
 
-def _make_executor() -> TemplateAwarePipelineExecutor:
+def _make_executor(
+    flow_provider: FlockFlowProvider | None = None,
+    volundr: StubVolundrPort | None = None,
+) -> TemplateAwarePipelineExecutor:
     repo = InMemorySagaRepository()
     bus = InMemoryEventBus()
-    factory = StubVolundrFactory(StubVolundrPort())
+    factory = StubVolundrFactory(volundr or StubVolundrPort())
     return TemplateAwarePipelineExecutor(
         saga_repo=repo,
         volundr_factory=factory,
         event_bus=bus,
         owner_id=_OWNER,
+        flow_provider=flow_provider,
     )
+
+
+def _make_flow_provider() -> FlockFlowProvider:
+    class _FlowProvider(FlockFlowProvider):
+        def __init__(self) -> None:
+            self._flow = FlockFlowConfig(
+                name="code-review-flow",
+                personas=[
+                    FlockPersonaOverride(name="reviewer"),
+                    FlockPersonaOverride(name="security-auditor"),
+                ],
+            )
+
+        def get(self, name: str) -> FlockFlowConfig | None:
+            if name != self._flow.name:
+                return None
+            return self._flow
+
+        def list(self) -> list[FlockFlowConfig]:
+            return [self._flow]
+
+        def save(self, flow: FlockFlowConfig) -> None:
+            self._flow = flow
+
+        def delete(self, name: str) -> bool:
+            if name != self._flow.name:
+                return False
+            self._flow = FlockFlowConfig(name="")
+            return True
+
+    return _FlowProvider()
+
+
+def _make_empty_flow_provider() -> FlockFlowProvider:
+    class _EmptyFlowProvider(FlockFlowProvider):
+        def get(self, name: str) -> FlockFlowConfig | None:
+            return None
+
+        def list(self) -> list[FlockFlowConfig]:
+            return []
+
+        def save(self, flow: FlockFlowConfig) -> None:
+            return None
+
+        def delete(self, name: str) -> bool:
+            return False
+
+    return _EmptyFlowProvider()
 
 
 def _make_app(executor: TemplateAwarePipelineExecutor) -> FastAPI:
@@ -182,3 +253,32 @@ class TestCreatePipeline:
         assert resp.status_code == 201
         data = resp.json()
         assert "acme/app" in data["name"]
+
+    def test_missing_named_flock_flow_returns_422(self):
+        executor = _make_executor(flow_provider=_make_empty_flow_provider())
+        app = _make_app(executor)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/v1/tyr/pipelines",
+            json={"definition": _FLOW_YAML, "context": {}, "auto_start": False},
+        )
+        assert resp.status_code == 422
+        assert "flock_flow" in resp.json()["detail"]
+
+    def test_named_flock_flow_dispatches_ravn_flock(self):
+        volundr = StubVolundrPort()
+        executor = _make_executor(
+            flow_provider=_make_flow_provider(),
+            volundr=volundr,
+        )
+        app = _make_app(executor)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/v1/tyr/pipelines",
+            json={"definition": _FLOW_YAML, "context": {}, "auto_start": True},
+        )
+        assert resp.status_code == 201
+        assert len(volundr.spawned) == 1
+        assert volundr.spawned[0].workload_type == "ravn_flock"

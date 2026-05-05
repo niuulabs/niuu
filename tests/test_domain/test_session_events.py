@@ -1,6 +1,6 @@
 """Tests for SessionEvent and SessionEventType domain models."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -49,7 +49,7 @@ class TestSessionEvent:
             id=uuid4(),
             session_id=uuid4(),
             event_type=SessionEventType.MESSAGE_ASSISTANT,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             data={},
             sequence=0,
         )
@@ -62,7 +62,7 @@ class TestSessionEvent:
     def test_create_full(self):
         event_id = uuid4()
         session_id = uuid4()
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         event = SessionEvent(
             id=event_id,
             session_id=session_id,
@@ -90,7 +90,7 @@ class TestSessionEvent:
             id=uuid4(),
             session_id=uuid4(),
             event_type=SessionEventType.ERROR,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             data={"message": "test"},
             sequence=0,
         )

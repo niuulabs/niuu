@@ -110,7 +110,10 @@ def build_flock_workload_config(
     workload_config: dict = {
         "personas": personas,
         "initiative_context": initial_prompt,
+        "mesh_transport": flow.mesh_transport,
     }
+    if flow.mimir:
+        workload_config["mimir"] = dict(flow.mimir)
     if flow.mimir_hosted_url:
         workload_config["mimir_hosted_url"] = flow.mimir_hosted_url
     if flow.sleipnir_publish_urls:

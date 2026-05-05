@@ -1,0 +1,148 @@
+/* ── Fan-in strategy cards ─────────────────────────────────────────────── */
+
+.rv-persona-form {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+}
+
+.rv-persona-form__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.rv-fanin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-2);
+}
+
+.rv-fanin-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+
+.rv-fanin-card:hover {
+  border-color: var(--color-border-subtle);
+  background: var(--color-bg-tertiary);
+}
+
+.rv-fanin-card--active {
+  border-color: var(--brand-400);
+  background: color-mix(in srgb, var(--brand-500) 10%, transparent);
+}
+
+.rv-fanin-card__name {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.rv-fanin-card--active .rv-fanin-card__name {
+  color: var(--brand-300);
+}
+
+.rv-fanin-card__desc {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: 1.4;
+}
+
+.rv-fanin-card__diagram {
+  color: var(--color-text-muted);
+  margin-top: var(--space-1);
+}
+
+.rv-fanin-card--active .rv-fanin-card__diagram {
+  color: var(--brand-400);
+}
+
+/* ── Persona form fields — web2 full-width style ─────────────────────── */
+.rv-pf-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.rv-pf-field__label {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+}
+.rv-pf-grid-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: var(--space-3);
+}
+.rv-pf-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+/* Toggle — web2 style */
+.rv-pf-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+.rv-pf-toggle--on {
+  background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent-cyan) 40%, transparent);
+  color: var(--color-accent-cyan);
+}
+.rv-pf-toggle__knob {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-text-muted);
+  transition: background 0.15s;
+}
+.rv-pf-toggle--on .rv-pf-toggle__knob {
+  background: var(--color-accent-cyan);
+}
+.rv-pf-toggle__label {
+  font-weight: 500;
+}
+
+/* ── System prompt template ───────────────────────────────────────────── */
+
+.rv-prompt-preview {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rv-prompt-preview mark {
+  background: color-mix(in srgb, var(--brand-400) 25%, transparent);
+  color: var(--brand-300);
+  border-radius: 2px;
+  padding: 0 2px;
+}

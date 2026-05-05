@@ -141,7 +141,7 @@ class HttpPersonaAdapter(PersonaPort):
         if cached is not None and not cached.expired:
             return cached.value  # type: ignore[return-value]
 
-        url = f"{self._base_url}/api/v1/ravn/personas/{name}"
+        url = f"{self._base_url}/api/v1/personas/{name}"
         try:
             response = self._get_client().get(url, headers=self._auth_headers())
         except Exception as exc:  # network / timeout
@@ -174,7 +174,7 @@ class HttpPersonaAdapter(PersonaPort):
         if self._names_cache is not None and not self._names_cache.expired:
             return list(self._names_cache.value)  # type: ignore[arg-type]
 
-        url = f"{self._base_url}/api/v1/ravn/personas"
+        url = f"{self._base_url}/api/v1/personas"
         try:
             response = self._get_client().get(url, headers=self._auth_headers())
         except Exception as exc:  # network / timeout

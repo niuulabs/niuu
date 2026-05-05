@@ -155,6 +155,19 @@ class TestSleipnirMeshAdapterUnit:
         assert sleipnir_event.payload["ravn_type"] == "thought"
 
     @pytest.mark.asyncio
+    async def test_publish_sanitizes_invalid_topic_segments(
+        self, adapter: SleipnirMeshAdapter, transport: _FakeSleipnirTransport
+    ) -> None:
+        event = _make_event(source="flock-coder")
+
+        await adapter.publish(event, "activity.flock-coder")
+
+        assert len(transport.published) == 1
+        sleipnir_event = transport.published[0]
+        assert sleipnir_event.event_type == "ravn.mesh.activity.flock_coder"
+        assert sleipnir_event.payload["ravn_source"] == "flock-coder"
+
+    @pytest.mark.asyncio
     async def test_subscribe_registers_handler(
         self, adapter: SleipnirMeshAdapter, transport: _FakeSleipnirTransport
     ) -> None:
@@ -163,6 +176,17 @@ class TestSleipnirMeshAdapterUnit:
 
         assert len(transport.subscriptions) == 1
         assert transport.subscriptions[0].topic == "ravn.mesh.test.topic"
+
+    @pytest.mark.asyncio
+    async def test_subscribe_sanitizes_invalid_topic_segments(
+        self, adapter: SleipnirMeshAdapter, transport: _FakeSleipnirTransport
+    ) -> None:
+        handler = AsyncMock()
+
+        await adapter.subscribe("activity.flock-coder", handler)
+
+        assert len(transport.subscriptions) == 1
+        assert transport.subscriptions[0].topic == "ravn.mesh.activity.flock_coder"
 
     @pytest.mark.asyncio
     async def test_subscribe_handler_receives_converted_event(

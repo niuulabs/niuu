@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("aio_pika", reason="aio-pika not installed")
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -23,7 +23,7 @@ def _make_event(**overrides) -> SessionEvent:
         "id": uuid4(),
         "session_id": uuid4(),
         "event_type": SessionEventType.MESSAGE_ASSISTANT,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(UTC),
         "data": {"content_preview": "hello"},
         "sequence": 0,
         "tokens_in": 100,

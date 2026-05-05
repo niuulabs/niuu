@@ -67,6 +67,14 @@ def test_ravn_sessions_available(client: TestClient) -> None:
     assert resp.status_code == 200
 
 
+def test_ravn_settings_available(client: TestClient) -> None:
+    resp = client.get("/api/v1/ravn/settings")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["title"] == "Ravn"
+    assert data["sections"][0]["id"] == "runtime"
+
+
 def test_personas_list_available(client: TestClient) -> None:
     resp = client.get("/api/v1/ravn/personas")
     assert resp.status_code == 200

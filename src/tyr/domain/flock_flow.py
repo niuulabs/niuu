@@ -42,6 +42,7 @@ class FlockFlowConfig:
     description: str = ""
     personas: list[FlockPersonaOverride] = field(default_factory=list)
     mesh_transport: str = "nng"
+    mimir: dict = field(default_factory=dict)
     mimir_hosted_url: str = ""
     sleipnir_publish_urls: list[str] = field(default_factory=list)
     max_concurrent_tasks: int = 3
@@ -53,6 +54,7 @@ class FlockFlowConfig:
             "description": self.description,
             "personas": [p.to_dict() for p in self.personas],
             "mesh_transport": self.mesh_transport,
+            "mimir": dict(self.mimir),
             "mimir_hosted_url": self.mimir_hosted_url,
             "sleipnir_publish_urls": list(self.sleipnir_publish_urls),
             "max_concurrent_tasks": self.max_concurrent_tasks,
@@ -76,6 +78,7 @@ class FlockFlowConfig:
             description=data.get("description", ""),
             personas=personas,
             mesh_transport=data.get("mesh_transport", "nng"),
+            mimir=dict(data.get("mimir") or {}),
             mimir_hosted_url=data.get("mimir_hosted_url", ""),
             sleipnir_publish_urls=data.get("sleipnir_publish_urls", []),
             max_concurrent_tasks=data.get("max_concurrent_tasks", 3),

@@ -1,0 +1,280 @@
+/* Tyr Dashboard — matches web2/tyr/design/styles.css .dash layout */
+
+.tyr-dash {
+  padding: var(--space-5) var(--space-6);
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: var(--space-4);
+  grid-auto-rows: min-content;
+}
+
+.tyr-dash__row-title {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: var(--space-2);
+}
+.tyr-dash__row-title h2 {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+/* ── Dispatcher stats bar ──────────────────── */
+.tyr-dash__topbar-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.tyr-dash__stat {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tyr-dash__stat strong {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+.tyr-dash__stat-sep {
+  display: inline-block;
+  width: 1px;
+  height: 10px;
+  background: var(--color-border-subtle);
+}
+
+/* ── KPI cards ─────────────────────────────────── */
+.tyr-kpi {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+.tyr-kpi__label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+}
+.tyr-kpi__val {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.tyr-kpi__unit {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-left: 4px;
+  font-weight: 400;
+}
+.tyr-kpi__sub {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.tyr-kpi__spark {
+  display: block;
+  margin-top: 12px;
+  max-width: 100%;
+}
+.tyr-kpi__spark--wide {
+  min-width: 100%;
+}
+.tyr-kpi--accent {
+  border-color: color-mix(in srgb, var(--color-brand) 25%, transparent);
+  background: color-mix(in srgb, var(--color-brand) 4%, var(--color-bg-secondary));
+}
+.tyr-kpi--accent .tyr-kpi__val {
+  color: var(--brand-300);
+}
+
+/* ── Width helpers ─────────────────────────────── */
+.tyr-dash__wide {
+  grid-column: span 2;
+}
+.tyr-dash__full {
+  grid-column: 1 / -1;
+}
+
+/* ── Saga card ─────────────────────────────────── */
+.tyr-saga-card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px var(--space-4);
+  align-items: center;
+}
+.tyr-saga-card:hover {
+  border-color: var(--color-border);
+}
+.tyr-saga-card__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tyr-saga-card__meta {
+  display: flex;
+  gap: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  align-items: center;
+}
+.tyr-saga-card__pipe {
+  grid-column: 1 / -1;
+}
+
+/* ── Flock viz (raid mesh) ─────────────────────── */
+.tyr-flock-viz {
+  position: relative;
+  height: 220px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.tyr-flock-viz canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.tyr-flock-viz__title {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-muted);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.tyr-flock-viz__cnt {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+/* ── Event feed ────────────────────────────────── */
+.tyr-sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-1);
+  margin: var(--space-2) 0 var(--space-1);
+}
+.tyr-sec-head__title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.tyr-raid-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tyr-feed-row {
+  display: grid;
+  grid-template-columns: 10px auto 1fr auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 6px var(--space-3);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.tyr-feed-row:hover {
+  border-color: var(--color-border);
+}
+.tyr-feed-row__time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-faint);
+}
+.tyr-feed-row__subject {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--brand-300);
+}
+.tyr-feed-row__link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+.tyr-feed-row__link:not(:disabled):hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-elevated, var(--color-bg-tertiary));
+}
+.tyr-feed-row__link:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+/* ── Button helpers ────────────────────────────── */
+.tyr-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px 10px;
+  background: transparent;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+.tyr-btn:hover {
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.tyr-eyebrow {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted);
+}

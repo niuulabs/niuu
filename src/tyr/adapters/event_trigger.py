@@ -503,6 +503,7 @@ class EventTriggerAdapter:
         """Spawn a single session for *raid*."""
         repo = saga.repos[0] if saga.repos else ""
         session_name = re.sub(r"[^a-z0-9]+", "-", raid.name.lower()).strip("-")[:48]
+        integration_ids = await self._resolve_integration_ids(volundr)
 
         try:
             session = await volundr.spawn_session(
@@ -517,7 +518,7 @@ class EventTriggerAdapter:
                     system_prompt="",
                     initial_prompt=tpl_raid.prompt,
                     profile=tpl_raid.persona or None,
-                    integration_ids=[],
+                    integration_ids=integration_ids,
                 ),
             )
 
@@ -564,6 +565,24 @@ class EventTriggerAdapter:
             )
         except Exception:
             logger.exception("EventTriggerAdapter: failed to spawn session for raid %s", raid.name)
+
+    async def _resolve_integration_ids(self, volundr: VolundrPort) -> list[str]:
+        """Resolve enabled integration IDs for the trigger owner."""
+        try:
+            ids = await volundr.list_integration_ids()
+            logger.info(
+                "EventTriggerAdapter: resolved %d integration IDs for owner %s",
+                len(ids),
+                self._owner_id[:8],
+            )
+            return ids
+        except Exception:
+            logger.warning(
+                "EventTriggerAdapter: failed to resolve integrations for owner %s",
+                self._owner_id[:8],
+                exc_info=True,
+            )
+            return []
 
     async def _emit_needs_approval(
         self,

@@ -13,8 +13,6 @@ data:
   WORKERS: {{ .Values.config.workers | default 4 | quote }}
   SESSION_TIMEOUT: {{ .Values.config.sessionTimeout | default "3600" | quote }}
   MAX_SESSIONS_PER_USER: {{ .Values.config.maxSessionsPerUser | default "5" | quote }}
-  CORS_ORIGINS: {{ .Values.config.corsOrigins | default "*" | quote }}
-  CORS_ALLOW_CREDENTIALS: {{ .Values.config.corsAllowCredentials | default "true" | quote }}
   {{- with .Values.config.extra }}
   {{- range $key, $value := . }}
   {{ $key }}: {{ $value | quote }}
@@ -28,6 +26,17 @@ data:
     logging:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}
+
+    cors:
+      allowed_origins:
+        {{- range .Values.config.cors.allowedOrigins }}
+        - {{ . | quote }}
+        {{- end }}
+      allow_credentials: {{ .Values.config.cors.allowCredentials | default true }}
+      allow_methods:
+        - "*"
+      allow_headers:
+        - "*"
 
     database:
       min_pool_size: {{ .Values.database.minPoolSize | default 5 }}
@@ -67,6 +76,24 @@ data:
       {{- if and .Values.chronicle.retentionDays (ne (int .Values.chronicle.retentionDays) 0) }}
       retention_days: {{ .Values.chronicle.retentionDays }}
       {{- end }}
+
+    default_definition: {{ .Values.defaultDefinition | default "skuldClaude" | quote }}
+    {{- if .Values.sessionDefinitions }}
+    session_definitions:
+      {{- range $key, $def := .Values.sessionDefinitions }}
+      {{ $key }}:
+        enabled: {{ $def.enabled | default false }}
+        display_name: {{ $def.displayName | default $key | quote }}
+        description: {{ $def.description | default "" | quote }}
+        default_model: {{ $def.defaultModel | default "" | quote }}
+        {{- if $def.labels }}
+        labels: {{ $def.labels | toJson }}
+        {{- end }}
+        {{- if $def.defaults }}
+        defaults: {{ $def.defaults | toJson }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
 
     {{- if .Values.profiles }}
     profiles:

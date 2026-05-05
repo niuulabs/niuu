@@ -1,0 +1,478 @@
+[
+  {
+    "name": "admin-api",
+    "prefixes": [
+      "/api/v1/volundr/admin"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "audit-api",
+    "prefixes": [
+      "/api/v1/audit",
+      "/audit"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "bifrost-api",
+    "prefixes": [
+      "/api/v1/bifrost"
+    ],
+    "source": "plugin",
+    "plugin": "bifrost"
+  },
+  {
+    "name": "bifrost-observability-api",
+    "prefixes": [
+      "/api/v1/bifrost/metrics",
+      "/api/v1/bifrost/healthz",
+      "/api/v1/bifrost/readyz"
+    ],
+    "source": "plugin",
+    "plugin": "bifrost"
+  },
+  {
+    "name": "catalog-api",
+    "prefixes": [
+      "/api/v1/forge/templates",
+      "/api/v1/forge/presets",
+      "/api/v1/forge/profiles",
+      "/api/v1/forge/resources",
+      "/api/v1/forge/prompts",
+      "/api/v1/forge/mcp-servers"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "catalog-legacy-api",
+    "prefixes": [
+      "/api/v1/volundr/templates",
+      "/api/v1/volundr/presets",
+      "/api/v1/volundr/profiles",
+      "/api/v1/volundr/resources",
+      "/api/v1/volundr/prompts",
+      "/api/v1/volundr/mcp-servers"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "credentials-api",
+    "prefixes": [
+      "/api/v1/credentials"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "credentials-legacy-api",
+    "prefixes": [
+      "/api/v1/volundr/credentials",
+      "/api/v1/volundr/secrets"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "dispatch-api",
+    "prefixes": [
+      "/api/v1/tyr/dispatch",
+      "/api/v1/tyr/dispatcher"
+    ],
+    "source": "plugin",
+    "plugin": "tyr"
+  },
+  {
+    "name": "event-api",
+    "prefixes": [
+      "/api/v1/tyr/events"
+    ],
+    "source": "plugin",
+    "plugin": "tyr"
+  },
+  {
+    "name": "features-api",
+    "prefixes": [
+      "/api/v1/features"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "features-legacy-api",
+    "prefixes": [
+      "/api/v1/volundr/features"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "forge-api",
+    "prefixes": [
+      "/api/v1/forge/sessions",
+      "/api/v1/forge/chronicles",
+      "/api/v1/forge/events",
+      "/api/v1/forge/templates",
+      "/api/v1/forge/presets",
+      "/api/v1/forge/profiles",
+      "/api/v1/forge/workspaces",
+      "/api/v1/forge/resources",
+      "/api/v1/forge/models",
+      "/api/v1/forge/stats",
+      "/api/v1/forge/prompts",
+      "/api/v1/forge/cluster",
+      "/api/v1/forge/mcp-servers",
+      "/api/v1/forge/git"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "forge-legacy-api",
+    "prefixes": [
+      "/api/v1/volundr/sessions",
+      "/api/v1/volundr/chronicles",
+      "/api/v1/volundr/events",
+      "/api/v1/volundr/templates",
+      "/api/v1/volundr/presets",
+      "/api/v1/volundr/profiles",
+      "/api/v1/volundr/workspaces",
+      "/api/v1/volundr/resources",
+      "/api/v1/volundr/models",
+      "/api/v1/volundr/stats",
+      "/api/v1/volundr/prompts",
+      "/api/v1/volundr/cluster",
+      "/api/v1/volundr/mcp-servers",
+      "/api/v1/volundr/git"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "git-api",
+    "prefixes": [
+      "/api/v1/forge/repos/branches",
+      "/api/v1/forge/repos/prs",
+      "/api/v1/forge/git"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "git-legacy-api",
+    "prefixes": [
+      "/api/v1/volundr/repos/branches",
+      "/api/v1/volundr/repos/prs",
+      "/api/v1/volundr/git"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "identity-api",
+    "prefixes": [
+      "/api/v1/identity"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "identity-legacy-api",
+    "prefixes": [
+      "/api/v1/volundr/me",
+      "/api/v1/volundr/identity"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "integrations-api",
+    "prefixes": [
+      "/api/v1/tyr/integrations",
+      "/api/v1/tyr/telegram",
+      "/api/v1/integrations"
+    ],
+    "source": "plugin",
+    "plugin": "tyr,volundr"
+  },
+  {
+    "name": "integrations-legacy-api",
+    "prefixes": [
+      "/api/v1/volundr/integrations"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "llm-api",
+    "prefixes": [
+      "/api/v1/bifrost/health",
+      "/api/v1/bifrost/admin",
+      "/api/v1/bifrost/v1",
+      "/api/v1/bifrost/api"
+    ],
+    "source": "plugin",
+    "plugin": "bifrost"
+  },
+  {
+    "name": "mimir-api",
+    "prefixes": [
+      "/api/v1/mimir/mcp",
+      "/api/v1/mimir",
+      "/mcp",
+      "/mimir"
+    ],
+    "source": "plugin",
+    "plugin": "mimir"
+  },
+  {
+    "name": "niuu-api",
+    "prefixes": [
+      "/api/v1/niuu"
+    ],
+    "source": "plugin",
+    "plugin": "niuu"
+  },
+  {
+    "name": "observatory-api",
+    "prefixes": [
+      "/api/v1/observatory"
+    ],
+    "source": "plugin",
+    "plugin": "observatory"
+  },
+  {
+    "name": "observatory-events-api",
+    "prefixes": [
+      "/api/v1/observatory/events/stream",
+      "/api/v1/observatory/events"
+    ],
+    "source": "plugin",
+    "plugin": "observatory"
+  },
+  {
+    "name": "observatory-registry-api",
+    "prefixes": [
+      "/api/v1/observatory/registry"
+    ],
+    "source": "plugin",
+    "plugin": "observatory"
+  },
+  {
+    "name": "observatory-topology-api",
+    "prefixes": [
+      "/api/v1/observatory/topology/stream",
+      "/api/v1/observatory/topology"
+    ],
+    "source": "plugin",
+    "plugin": "observatory"
+  },
+  {
+    "name": "persona-api",
+    "prefixes": [
+      "/api/v1/ravn/personas"
+    ],
+    "source": "plugin",
+    "plugin": "ravn"
+  },
+  {
+    "name": "ravn-api",
+    "prefixes": [
+      "/api/v1/ravn"
+    ],
+    "source": "plugin",
+    "plugin": "ravn"
+  },
+  {
+    "name": "ravn-budget-api",
+    "prefixes": [
+      "/api/v1/ravn/budget"
+    ],
+    "source": "plugin",
+    "plugin": "ravn"
+  },
+  {
+    "name": "ravn-runtime-api",
+    "prefixes": [
+      "/api/v1/ravn/ravens",
+      "/api/v1/ravn/sessions"
+    ],
+    "source": "plugin",
+    "plugin": "ravn"
+  },
+  {
+    "name": "ravn-session-api",
+    "prefixes": [
+      "/api/v1/ravn/status",
+      "/api/v1/ravn/sessions"
+    ],
+    "source": "plugin",
+    "plugin": "ravn"
+  },
+  {
+    "name": "ravn-trigger-api",
+    "prefixes": [
+      "/api/v1/ravn/triggers"
+    ],
+    "source": "plugin",
+    "plugin": "ravn"
+  },
+  {
+    "name": "review-api",
+    "prefixes": [
+      "/api/v1/tyr/raids",
+      "/api/v1/tyr/sessions"
+    ],
+    "source": "plugin",
+    "plugin": "tyr"
+  },
+  {
+    "name": "runtime-config",
+    "prefixes": [
+      "/config.json"
+    ],
+    "source": "internal",
+    "plugin": null
+  },
+  {
+    "name": "saga-api",
+    "prefixes": [
+      "/api/v1/tyr/sagas"
+    ],
+    "source": "plugin",
+    "plugin": "tyr"
+  },
+  {
+    "name": "session-api",
+    "prefixes": [
+      "/api/v1/forge/sessions",
+      "/api/v1/forge/chronicles",
+      "/api/v1/forge/events"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "session-legacy-api",
+    "prefixes": [
+      "/api/v1/volundr/sessions",
+      "/api/v1/volundr/chronicles",
+      "/api/v1/volundr/events"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "settings-api",
+    "prefixes": [
+      "/api/v1/tyr/settings"
+    ],
+    "source": "plugin",
+    "plugin": "tyr"
+  },
+  {
+    "name": "skuld-proxy",
+    "prefixes": [
+      "/s/{session_id}/session",
+      "/s/{session_id}/api/{path:path}",
+      "/s/{session_id}/health"
+    ],
+    "source": "internal",
+    "plugin": null
+  },
+  {
+    "name": "tenancy-api",
+    "prefixes": [
+      "/api/v1/volundr/tenants"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "tokens-api",
+    "prefixes": [
+      "/api/v1/tokens"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "tokens-legacy-api",
+    "prefixes": [
+      "/api/v1/users/tokens",
+      "/api/v1/volundr/tokens"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "tracker-api",
+    "prefixes": [
+      "/api/v1/tracker/projects",
+      "/api/v1/tracker/import",
+      "/api/v1/tracker/status",
+      "/api/v1/tracker/issues",
+      "/api/v1/tracker/repo-mappings"
+    ],
+    "source": "plugin",
+    "plugin": "tyr,volundr"
+  },
+  {
+    "name": "tyr-api",
+    "prefixes": [
+      "/api/v1/tyr"
+    ],
+    "source": "plugin",
+    "plugin": "tyr"
+  },
+  {
+    "name": "volundr-api",
+    "prefixes": [
+      "/api/v1/volundr"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "web-ui",
+    "prefixes": [
+      "/assets",
+      "/fonts",
+      "/favicon.svg",
+      "/favicon.ico",
+      "/{path:path}"
+    ],
+    "source": "internal",
+    "plugin": null
+  },
+  {
+    "name": "workflow-api",
+    "prefixes": [
+      "/api/v1/tyr/flock",
+      "/api/v1/tyr/flock_flows",
+      "/api/v1/tyr/pipelines"
+    ],
+    "source": "plugin",
+    "plugin": "tyr"
+  },
+  {
+    "name": "workspace-api",
+    "prefixes": [
+      "/api/v1/forge/workspaces"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  },
+  {
+    "name": "workspace-legacy-api",
+    "prefixes": [
+      "/api/v1/volundr/workspaces"
+    ],
+    "source": "plugin",
+    "plugin": "volundr"
+  }
+]

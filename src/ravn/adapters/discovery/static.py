@@ -194,6 +194,7 @@ class StaticDiscoveryAdapter:
                 permission_mode=entry.get("permission_mode", "read_only"),
                 version=entry.get("version", "0.0.0"),
                 consumes_event_types=entry.get("consumes_event_types", []),
+                emits_event_types=entry.get("emits_event_types", []),
                 rep_address=entry.get("rep_address"),
                 pub_address=entry.get("pub_address"),
                 spiffe_id=entry.get("spiffe_id"),

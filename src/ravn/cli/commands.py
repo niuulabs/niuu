@@ -14,7 +14,7 @@ from typing import Any
 
 import typer
 
-from ravn.agent import PostToolHook, PreToolHook, RavnAgent
+from ravn.agent import PostToolHook, PreToolHook
 from ravn.config import (
     InitiativeConfig,
     ProjectConfig,
@@ -37,6 +37,7 @@ from ravn.domain.models import (
 )
 from ravn.domain.profile import RavnProfile
 from ravn.ports.checkpoint import CheckpointPort
+from ravn.ports.executor import ExecutionAgentPort, ExecutorPort
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,55 @@ def _build_llm(settings: Settings) -> Any:
         providers.append(fb_cls(**fb_kwargs))
 
     return FallbackLLMAdapter(providers=providers)
+
+
+def _build_executor(persona_config: Any | None = None) -> ExecutorPort:
+    """Build the persona-selected executor adapter."""
+    adapter_path = "ravn.adapters.executors.agent.AgentExecutor"
+    kwargs: dict[str, Any] = {}
+
+    executor_cfg = getattr(persona_config, "executor", None)
+    if executor_cfg is not None and getattr(executor_cfg, "adapter", ""):
+        adapter_path = str(executor_cfg.adapter)
+        raw_kwargs = getattr(executor_cfg, "kwargs", {})
+        if isinstance(raw_kwargs, dict):
+            kwargs = dict(raw_kwargs)
+
+    cls = _import_class(adapter_path)
+    return cls(**kwargs)
+
+
+def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:
+    """Serialize enabled MCP server configs for CLI transports."""
+    servers: list[dict[str, Any]] = []
+    for server in settings.mcp_servers:
+        if isinstance(server, dict):
+            enabled = bool(server.get("enabled", True))
+            if not enabled:
+                continue
+            transport = str(server.get("transport") or server.get("type") or "stdio")
+            servers.append(
+                {
+                    "name": str(server.get("name") or ""),
+                    "type": transport,
+                    "command": str(server.get("command") or ""),
+                    "args": list(server.get("args") or []),
+                    "env": dict(server.get("env") or {}),
+                    "url": str(server.get("url") or ""),
+                }
+            )
+            continue
+        servers.append(
+            {
+                "name": server.name,
+                "type": server.transport,
+                "command": server.command,
+                "args": list(server.args),
+                "env": dict(server.env),
+                "url": server.url,
+            }
+        )
+    return servers
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +710,7 @@ def _build_prompt_builder(settings: Settings) -> Any:
 
 async def _start_mcp(
     settings: Settings,
-    agent: RavnAgent,
+    agent: ExecutionAgentPort,
 ) -> Any | None:
     """Start MCP servers and register discovered tools into the agent.
 
@@ -954,7 +1004,7 @@ def _build_agent(
     session: Session | None = None,
     task_id: str | None = None,
     sleipnir_publisher: object | None = None,
-) -> tuple[RavnAgent, Any]:
+) -> tuple[ExecutionAgentPort, Any]:
     from ravn.adapters.channels.composite import CompositeChannel
     from ravn.adapters.cli_channel import CliChannel
     from ravn.budget import IterationBudget
@@ -978,6 +1028,9 @@ def _build_agent(
                 max_tokens = persona_config.llm.max_tokens
 
     workspace = _resolve_workspace(settings)
+    permission_mode = settings.permission.mode
+    if persona_config is not None and persona_config.permission_mode:
+        permission_mode = persona_config.permission_mode
     llm = _build_llm(settings)
     session = session or Session()
     base_channel: CliChannel = CliChannel()
@@ -1024,15 +1077,19 @@ def _build_agent(
     )
 
     cp_cfg = settings.checkpoint
-    agent = RavnAgent(
+    executor = _build_executor(persona_config)
+    agent = executor.build(
         llm=llm,
         tools=tools,
         channel=channel,
         permission=permission,
+        permission_mode=permission_mode,
         system_prompt=system_prompt,
         model=settings.effective_model(),
         max_tokens=max_tokens,
         max_iterations=max_iterations,
+        workspace_dir=str(workspace),
+        mcp_servers=_transport_mcp_servers(settings),
         session=session,
         pre_tool_hooks=pre_hooks or None,
         post_tool_hooks=post_hooks or None,
@@ -1055,7 +1112,6 @@ def _build_agent(
         checkpoint_every_n_tools=cp_cfg.checkpoint_every_n_tools,
         auto_checkpoint_before_destructive=cp_cfg.auto_before_destructive,
         budget_milestone_fractions=cp_cfg.budget_milestone_fractions,
-        # NIU-598: session lifecycle events + learnings injection
         sleipnir_publisher=sleipnir_publisher,
         reflection_config=settings.reflection,
         persona=persona_config.name if persona_config else "",
@@ -1064,7 +1120,7 @@ def _build_agent(
     return agent, channel
 
 
-def _make_slash_ctx(agent: RavnAgent, settings: Settings) -> Any:
+def _make_slash_ctx(agent: ExecutionAgentPort, settings: Settings) -> Any:
     """Build a SlashCommandContext from the running agent and loaded settings."""
     from ravn.adapters.slash_commands import SlashCommandContext
 
@@ -1285,7 +1341,7 @@ async def _load_checkpoint_session(
 
 
 async def _chat(
-    agent: RavnAgent,
+    agent: ExecutionAgentPort,
     channel: Any,
     *,
     settings: Settings,
@@ -1327,7 +1383,7 @@ async def _chat(
 
 
 async def _run_turn(
-    agent: RavnAgent,
+    agent: ExecutionAgentPort,
     channel: Any,
     user_input: str,
     *,
@@ -1679,13 +1735,16 @@ async def _run_gateway(
     # Start MCP servers (shared across sessions)
     mcp_manager, mcp_tools = await _start_mcp_shared(settings)
 
-    def _agent_factory(channel: ChannelPort) -> RavnAgent:
+    def _agent_factory(channel: ChannelPort) -> ExecutionAgentPort:
         # Per-session: fresh session, budget, and tools
         session = Session()
         budget = IterationBudget(
             total=settings.iteration_budget.total,
             near_limit_threshold=settings.iteration_budget.near_limit_threshold,
         )
+        permission_mode = settings.permission.mode
+        if persona_config is not None and persona_config.permission_mode:
+            permission_mode = persona_config.permission_mode
         permission = _build_permission(
             settings,
             workspace,
@@ -1717,15 +1776,19 @@ async def _run_gateway(
             )
             effective_channel = CompositeChannel([channel, sleipnir_ch])
 
-        return RavnAgent(
+        executor = _build_executor(persona_config)
+        return executor.build(
             llm=llm,
             tools=tools,
             channel=effective_channel,
             permission=permission,
+            permission_mode=permission_mode,
             system_prompt=system_prompt,
             model=settings.effective_model(),
             max_tokens=max_tokens_gw,
             max_iterations=max_iterations,
+            workspace_dir=str(workspace),
+            mcp_servers=_transport_mcp_servers(settings),
             session=session,
             pre_tool_hooks=pre_hooks or None,
             post_tool_hooks=post_hooks or None,
@@ -1983,7 +2046,8 @@ async def _run_daemon(
         # NIU-571: Apply trust gradient constraints for thread-triggered tasks
         tools = _apply_trust_filter(tools, settings, triggered_by)
 
-        return RavnAgent(
+        executor = _build_executor(resolved_persona)
+        return executor.build(
             llm=llm,
             tools=tools,
             channel=channel,
@@ -1992,6 +2056,8 @@ async def _run_daemon(
             model=settings.effective_model(),
             max_tokens=resolved_max_tokens,
             max_iterations=resolved_max_iterations,
+            workspace_dir=str(workspace),
+            mcp_servers=_transport_mcp_servers(settings),
             session=session,
             pre_tool_hooks=pre_hooks or None,
             post_tool_hooks=post_hooks or None,
@@ -2325,6 +2391,7 @@ def _wire_mimir_triggers(
             settings.dream_cycle.poll_interval_seconds,
         )
 
+
 def _wire_cron(
     drive_loop: Any,
     cron_jobs: list[Any],
@@ -2385,6 +2452,74 @@ def _derive_capabilities(
 
     profile_cfg = _get_tool_group(settings, profile_name)
     return list(profile_cfg.include_groups)
+
+
+def _split_workflow_edge_label(label: Any) -> tuple[str, str]:
+    if not isinstance(label, str):
+        return "", ""
+    parts = [part.strip() for part in label.split("->", 1)]
+    if len(parts) != 2:
+        return "", ""
+    return parts[0], parts[1]
+
+
+def _join_mode_to_fan_in(join_mode: str) -> str:
+    if join_mode == "all":
+        return "all_must_pass"
+    if join_mode == "any":
+        return "any_pass"
+    return "merge"
+
+
+def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict[str, Any] | None:
+    workflow_cfg = getattr(settings, "workflow", None)
+    graph = getattr(workflow_cfg, "graph", None)
+    if not isinstance(graph, dict):
+        return None
+
+    nodes = list(graph.get("nodes") or [])
+    edges = list(graph.get("edges") or [])
+    if not nodes or not edges:
+        return None
+
+    matching_nodes: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("kind") != "stage":
+            continue
+        stage_members = list(node.get("stageMembers") or [])
+        if any(member.get("personaId") == persona_name for member in stage_members):
+            matching_nodes.append(node)
+            continue
+        persona_ids = list(node.get("personaIds") or [])
+        if persona_name in persona_ids:
+            matching_nodes.append(node)
+
+    if not matching_nodes:
+        return None
+
+    node_ids = {str(node.get("id")) for node in matching_nodes if node.get("id") is not None}
+    event_types: list[str] = []
+    fan_in_strategy = "merge"
+
+    for edge in edges:
+        if str(edge.get("target")) not in node_ids:
+            continue
+        _, target_event = _split_workflow_edge_label(edge.get("label"))
+        if target_event and target_event not in event_types:
+            event_types.append(target_event)
+
+    multi_input_nodes = [
+        node
+        for node in matching_nodes
+        if sum(1 for edge in edges if str(edge.get("target")) == str(node.get("id"))) > 1
+    ]
+    if len(multi_input_nodes) == 1:
+        fan_in_strategy = _join_mode_to_fan_in(str(multi_input_nodes[0].get("joinMode") or "all"))
+
+    return {
+        "event_types": event_types,
+        "fan_in_strategy": fan_in_strategy,
+    }
 
 
 def _wire_cascade(
@@ -2562,7 +2697,15 @@ def _wire_cascade(
     # Subscribe to event types this persona consumes
     if mesh is not None and persona_config is not None:
         consumes = getattr(persona_config, "consumes", None)
-        event_types = getattr(consumes, "event_types", []) if consumes else []
+        event_types = list(getattr(consumes, "event_types", []) if consumes else [])
+        workflow_runtime = _workflow_runtime_for_persona(settings, persona_config.name)
+        if workflow_runtime is not None and workflow_runtime["event_types"]:
+            event_types = list(workflow_runtime["event_types"])
+            logger.info(
+                "mesh: workflow graph overrides consumed event_types for %s: %s",
+                persona_config.name,
+                event_types,
+            )
 
         # Register fan-in contributors from the persona catalog so the
         # buffer knows how many producer outcomes to collect.
@@ -2599,7 +2742,11 @@ def _wire_cascade(
                     target,
                 )
 
-        fan_in_strategy = persona_config.fan_in.strategy if persona_config else "merge"
+        fan_in_strategy = (
+            str(workflow_runtime["fan_in_strategy"])
+            if workflow_runtime is not None
+            else persona_config.fan_in.strategy
+        )
         fan_in_contributes_to = persona_config.fan_in.contributes_to if persona_config else ""
 
         async def _handle_outcome_event(event: RavnEvent) -> None:
@@ -2668,6 +2815,7 @@ def _wire_cascade(
                 priority=5,
                 root_correlation_id=result.root_correlation_id,
             )
+            task.session_id = event.session_id or task.session_id
 
             try:
                 await drive_loop.enqueue(task)

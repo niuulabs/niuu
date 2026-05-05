@@ -97,7 +97,7 @@ def _adapter(**kwargs: object) -> HttpPersonaAdapter:
 class TestLoad:
     @respx.mock
     def test_load_returns_persona_config(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
         adapter = _adapter()
@@ -111,7 +111,7 @@ class TestLoad:
 
     @respx.mock
     def test_load_parses_llm_fields(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas/reviewer").mock(
+        respx.get(f"{_BASE}/api/v1/personas/reviewer").mock(
             return_value=httpx.Response(200, json=_DETAIL_REVIEWER)
         )
         config = _adapter().load("reviewer")
@@ -122,7 +122,7 @@ class TestLoad:
 
     @respx.mock
     def test_load_parses_consumes_and_fan_in(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas/reviewer").mock(
+        respx.get(f"{_BASE}/api/v1/personas/reviewer").mock(
             return_value=httpx.Response(200, json=_DETAIL_REVIEWER)
         )
         config = _adapter().load("reviewer")
@@ -134,7 +134,7 @@ class TestLoad:
 
     @respx.mock
     def test_load_parses_produces(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas/reviewer").mock(
+        respx.get(f"{_BASE}/api/v1/personas/reviewer").mock(
             return_value=httpx.Response(200, json=_DETAIL_REVIEWER)
         )
         config = _adapter().load("reviewer")
@@ -147,7 +147,7 @@ class TestLoad:
 
     @respx.mock
     def test_load_returns_none_on_404(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas/missing").mock(
+        respx.get(f"{_BASE}/api/v1/personas/missing").mock(
             return_value=httpx.Response(404, json={"detail": "Persona not found: missing"})
         )
         config = _adapter().load("missing")
@@ -159,7 +159,7 @@ class TestLoad:
 
     @respx.mock
     def test_load_returns_none_on_500_no_cache(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(return_value=httpx.Response(500))
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(return_value=httpx.Response(500))
         config = _adapter().load("coder")
         assert config is None
 
@@ -167,7 +167,7 @@ class TestLoad:
     def test_load_returns_stale_cache_on_500(self) -> None:
         adapter = _adapter()
         # Prime the cache with a successful response
-        respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
         config_first = adapter.load("coder")
@@ -177,14 +177,14 @@ class TestLoad:
         adapter._persona_cache["coder"].expires_at = time.monotonic() - 1.0
 
         # Server now returns 500
-        respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(return_value=httpx.Response(500))
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(return_value=httpx.Response(500))
         config_stale = adapter.load("coder")
         assert config_stale is not None
         assert config_stale.name == "coder"
 
     @respx.mock
     def test_load_does_not_raise_on_network_error(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             side_effect=httpx.ConnectError("connection refused")
         )
         # Must not raise — fail-closed returns None
@@ -195,14 +195,14 @@ class TestLoad:
     def test_load_returns_stale_cache_on_network_error(self) -> None:
         adapter = _adapter()
         # Prime cache
-        respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
         adapter.load("coder")
 
         # Expire cache, then fail
         adapter._persona_cache["coder"].expires_at = time.monotonic() - 1.0
-        respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             side_effect=httpx.ConnectError("connection refused")
         )
         config = adapter.load("coder")
@@ -217,7 +217,7 @@ class TestLoad:
     def test_load_logs_warning_on_5xx(self, caplog: pytest.LogCaptureFixture) -> None:
         import logging
 
-        respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(return_value=httpx.Response(503))
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(return_value=httpx.Response(503))
         with caplog.at_level(logging.WARNING, logger="ravn.adapters.personas.http"):
             _adapter().load("coder")
         assert any("503" in r.message for r in caplog.records)
@@ -226,7 +226,7 @@ class TestLoad:
     def test_load_logs_warning_on_network_error(self, caplog: pytest.LogCaptureFixture) -> None:
         import logging
 
-        respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             side_effect=httpx.ConnectError("refused")
         )
         with caplog.at_level(logging.WARNING, logger="ravn.adapters.personas.http"):
@@ -242,7 +242,7 @@ class TestLoad:
 class TestCache:
     @respx.mock
     def test_cache_hit_single_http_request(self) -> None:
-        route = respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        route = respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
         adapter = _adapter()
@@ -253,7 +253,7 @@ class TestCache:
 
     @respx.mock
     def test_cache_expiry_triggers_new_request(self) -> None:
-        route = respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        route = respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
         adapter = _adapter(cache_ttl_seconds=60)
@@ -268,7 +268,7 @@ class TestCache:
 
     @respx.mock
     def test_list_names_cache_hit(self) -> None:
-        route = respx.get(f"{_BASE}/api/v1/ravn/personas").mock(
+        route = respx.get(f"{_BASE}/api/v1/personas").mock(
             return_value=httpx.Response(200, json=_SUMMARIES)
         )
         adapter = _adapter()
@@ -279,7 +279,7 @@ class TestCache:
 
     @respx.mock
     def test_list_names_cache_expiry(self) -> None:
-        route = respx.get(f"{_BASE}/api/v1/ravn/personas").mock(
+        route = respx.get(f"{_BASE}/api/v1/personas").mock(
             return_value=httpx.Response(200, json=_SUMMARIES)
         )
         adapter = _adapter(cache_ttl_seconds=60)
@@ -299,7 +299,7 @@ class TestCache:
 class TestListNames:
     @respx.mock
     def test_list_names_returns_sorted_names(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas").mock(
+        respx.get(f"{_BASE}/api/v1/personas").mock(
             return_value=httpx.Response(200, json=_SUMMARIES)
         )
         names = _adapter().list_names()
@@ -307,39 +307,39 @@ class TestListNames:
 
     @respx.mock
     def test_list_names_returns_empty_on_500_no_cache(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas").mock(return_value=httpx.Response(500))
+        respx.get(f"{_BASE}/api/v1/personas").mock(return_value=httpx.Response(500))
         names = _adapter().list_names()
         assert names == []
 
     @respx.mock
     def test_list_names_returns_stale_cache_on_500(self) -> None:
         adapter = _adapter()
-        respx.get(f"{_BASE}/api/v1/ravn/personas").mock(
+        respx.get(f"{_BASE}/api/v1/personas").mock(
             return_value=httpx.Response(200, json=_SUMMARIES)
         )
         adapter.list_names()
 
         adapter._names_cache.expires_at = time.monotonic() - 1.0  # type: ignore[union-attr]
-        respx.get(f"{_BASE}/api/v1/ravn/personas").mock(return_value=httpx.Response(500))
+        respx.get(f"{_BASE}/api/v1/personas").mock(return_value=httpx.Response(500))
         names = adapter.list_names()
         assert names == ["coder", "reviewer"]
 
     @respx.mock
     def test_list_names_does_not_raise_on_network_error(self) -> None:
-        respx.get(f"{_BASE}/api/v1/ravn/personas").mock(side_effect=httpx.ConnectError("refused"))
+        respx.get(f"{_BASE}/api/v1/personas").mock(side_effect=httpx.ConnectError("refused"))
         names = _adapter().list_names()
         assert names == []
 
     @respx.mock
     def test_list_names_returns_stale_cache_on_network_error(self) -> None:
         adapter = _adapter()
-        respx.get(f"{_BASE}/api/v1/ravn/personas").mock(
+        respx.get(f"{_BASE}/api/v1/personas").mock(
             return_value=httpx.Response(200, json=_SUMMARIES)
         )
         adapter.list_names()
 
         adapter._names_cache.expires_at = time.monotonic() - 1.0  # type: ignore[union-attr]
-        respx.get(f"{_BASE}/api/v1/ravn/personas").mock(side_effect=httpx.ConnectError("refused"))
+        respx.get(f"{_BASE}/api/v1/personas").mock(side_effect=httpx.ConnectError("refused"))
         names = adapter.list_names()
         assert names == ["coder", "reviewer"]
 
@@ -353,7 +353,7 @@ class TestAuth:
     @respx.mock
     def test_bearer_header_sent_when_env_var_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RAVN_VOLUNDR_TOKEN", "my-secret-pat")
-        route = respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        route = respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
         _adapter(token_env="RAVN_VOLUNDR_TOKEN").load("coder")
@@ -365,7 +365,7 @@ class TestAuth:
     @respx.mock
     def test_no_auth_header_when_env_var_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("RAVN_VOLUNDR_TOKEN", raising=False)
-        route = respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        route = respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
         _adapter(token_env="RAVN_VOLUNDR_TOKEN").load("coder")
@@ -376,7 +376,7 @@ class TestAuth:
     @respx.mock
     def test_custom_token_env_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CUSTOM_TOKEN_VAR", "custom-token-value")
-        route = respx.get(f"{_BASE}/api/v1/ravn/personas/coder").mock(
+        route = respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
         _adapter(token_env="CUSTOM_TOKEN_VAR").load("coder")
@@ -388,7 +388,7 @@ class TestAuth:
     @respx.mock
     def test_bearer_header_sent_for_list_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RAVN_VOLUNDR_TOKEN", "list-token")
-        route = respx.get(f"{_BASE}/api/v1/ravn/personas").mock(
+        route = respx.get(f"{_BASE}/api/v1/personas").mock(
             return_value=httpx.Response(200, json=_SUMMARIES)
         )
         _adapter(token_env="RAVN_VOLUNDR_TOKEN").list_names()

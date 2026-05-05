@@ -1,37 +1,87 @@
 """SubprocessTransport — legacy path (one process per message)."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
+import os
+from typing import Any
 
-from skuld.transports import (
-    CLITransport,
-    TransportCapabilities,
-    _drain_stream,
-    _filter_event,
-    _stop_process,
+from niuu.adapters.cli.runtime import (
+    drain_process_stream as _drain_stream,
 )
+from niuu.adapters.cli.runtime import (
+    filter_cli_event as _filter_event,
+)
+from niuu.adapters.cli.runtime import (
+    stop_subprocess as _stop_process,
+)
+from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.transports.mcp_config import build_claude_mcp_config
 
 logger = logging.getLogger("skuld.transport")
 
+_DEFAULT_PERMISSION_MODE = "bypassPermissions"
+_MAX_RETRIES = 5
+_RETRY_BASE_DELAY_MS = 1000
+_TRANSPORT_ERROR_DELAY_MS = 2000
+_RETRYABLE_ERROR_MARKERS = (
+    "processtransport",
+    "not ready for writing",
+    "transport closed",
+    "connection reset",
+    "econnreset",
+    "broken pipe",
+)
+
+
+class _RetryableClaudeError(RuntimeError):
+    """Transient Claude CLI failure that should be retried."""
+
 
 class SubprocessTransport(CLITransport):
-    """Spawns `claude -p` per message, reads stdout for JSON events.
+    """Spawn Claude per turn, resuming the logical session between invocations."""
 
-    This is a refactor of the original ClaudeCodeProcess class, preserving
-    identical behavior as a fallback transport.
-    """
-
-    def __init__(self, workspace_dir: str) -> None:
+    def __init__(
+        self,
+        workspace_dir: str,
+        model: str = "",
+        skip_permissions: bool = True,
+        agent_teams: bool = False,
+        system_prompt: str = "",
+        initial_prompt: str = "",
+        mcp_servers: list[dict] | None = None,
+    ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
+        self._model = model
+        self._skip_permissions = skip_permissions
+        self._agent_teams = agent_teams
+        self._system_prompt = system_prompt
+        self._initial_prompt = initial_prompt
+        self._mcp_config = build_claude_mcp_config(mcp_servers or [])
+        self._initial_prompt_sent = False
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._session_id: str | None = None
         self._last_result: dict | None = None
 
     async def start(self) -> None:
-        logger.info("SubprocessTransport configured for %s", self.workspace_dir)
+        logger.info(
+            "SubprocessTransport configured for %s (model=%s, resume=%s)",
+            self.workspace_dir,
+            self._model or "<default>",
+            self._session_id,
+        )
+        if not self._initial_prompt or self._initial_prompt_sent:
+            return
+        self._initial_prompt_sent = True
+        try:
+            await self.send_message(self._initial_prompt)
+        except Exception:
+            self._initial_prompt_sent = False
+            raise
 
     async def stop(self) -> None:
         async with self._lock:
@@ -41,35 +91,90 @@ class SubprocessTransport(CLITransport):
             self._process = None
 
     async def send_message(self, content: str) -> None:
-        self._last_result = None
+        async with self._lock:
+            self._last_result = None
+            await self._send_message_with_retries(content)
 
+    async def _send_message_with_retries(self, content: str) -> None:
+        last_error: Exception | None = None
+
+        for attempt in range(_MAX_RETRIES):
+            if attempt > 0:
+                delay = _RETRY_BASE_DELAY_MS * (1 << (attempt - 1))
+                if last_error is not None and _is_retryable_error(str(last_error)):
+                    delay += _TRANSPORT_ERROR_DELAY_MS
+                logger.info(
+                    "Retrying Claude CLI request (attempt %d/%d, delay=%dms)",
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay / 1000)
+
+            try:
+                await self._send_message_once(content)
+                return
+            except _RetryableClaudeError as exc:
+                last_error = exc
+                if attempt + 1 >= _MAX_RETRIES:
+                    break
+                logger.warning("Transient Claude CLI error: %s", exc)
+            except Exception:
+                raise
+
+        if last_error is not None:
+            raise RuntimeError(f"Claude Code CLI failed after {_MAX_RETRIES} retries: {last_error}")
+        raise RuntimeError("Claude Code CLI failed without a retryable error")
+
+    async def _send_message_once(self, content: str) -> None:
         cmd = [
             "claude",
             "-p",
-            content,
             "--output-format",
             "stream-json",
+            "--input-format",
+            "stream-json",
             "--verbose",
-            "--dangerously-skip-permissions",
         ]
+        if self._model:
+            cmd.extend(["--model", self._model])
+        if self._skip_permissions:
+            cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
+        elif self._system_prompt:
+            cmd.extend(["--append-system-prompt", self._system_prompt])
+        if self._mcp_config:
+            cmd.extend(["--mcp-config", self._mcp_config])
 
-        logger.info("Running Claude CLI (session: %s)", self._session_id)
+        logger.info("Running Claude CLI (session=%s)", self._session_id)
+        logger.debug("Claude CLI command: %s", " ".join(cmd))
+
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        if self._agent_teams:
+            env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=self.workspace_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE,
+            env=env,
         )
         self._process = process
 
-        stderr_task = asyncio.create_task(_drain_stream(process.stderr, "stderr"))
+        stderr_task = asyncio.create_task(_drain_stream(process.stderr, "claude-stderr"))
 
         try:
             if process.stdout is None:
                 raise RuntimeError("Claude Code CLI stdout not available")
+            if process.stdin is None:
+                raise RuntimeError("Claude Code CLI stdin not available")
+
+            await self._write_user_message(process.stdin, content)
+            saw_result = False
+            saw_meaningful_output = False
 
             while True:
                 line = await process.stdout.readline()
@@ -82,21 +187,29 @@ class SubprocessTransport(CLITransport):
 
                 try:
                     data = json.loads(raw)
-                except json.JSONDecodeError as e:
-                    logger.warning("Skipping non-JSON line: %s (%s)", raw[:200], e)
+                except json.JSONDecodeError as exc:
+                    logger.warning("Skipping non-JSON line: %s (%s)", raw[:200], exc)
                     continue
 
-                if data.get("session_id"):
-                    self._session_id = data["session_id"]
+                session_id = data.get("session_id")
+                if isinstance(session_id, str) and session_id:
+                    self._session_id = session_id
 
                 event_type = data.get("type", "unknown")
-
                 if event_type == "result":
                     self._last_result = data
+                    saw_result = True
 
                 filtered = _filter_event(data)
                 if filtered:
+                    if _counts_as_output(filtered):
+                        saw_meaningful_output = True
                     await self._emit(filtered)
+
+                if event_type == "error":
+                    message = _extract_error_message(data)
+                    if not saw_meaningful_output and _is_retryable_error(message):
+                        raise _RetryableClaudeError(message)
 
                 if event_type == "result":
                     break
@@ -104,10 +217,39 @@ class SubprocessTransport(CLITransport):
             exit_code = await process.wait()
             if exit_code != 0:
                 raise RuntimeError(f"Claude Code CLI exited with code {exit_code}")
+            if not saw_result:
+                raise RuntimeError("Claude Code CLI completed without a result event")
+        except _RetryableClaudeError:
+            await _stop_process(process)
+            raise
         finally:
             if not stderr_task.done():
                 stderr_task.cancel()
             self._process = None
+
+    async def _write_user_message(
+        self,
+        stdin: Any,
+        content: str,
+    ) -> None:
+        payload = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": content,
+            },
+        }
+
+        try:
+            stdin.write(json.dumps(payload).encode("utf-8"))
+            stdin.write(b"\n")
+            await stdin.drain()
+            if hasattr(stdin, "close"):
+                stdin.close()
+                if hasattr(stdin, "wait_closed"):
+                    await stdin.wait_closed()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to write Claude CLI stdin: {exc}") from exc
 
     @property
     def capabilities(self) -> TransportCapabilities:
@@ -124,3 +266,35 @@ class SubprocessTransport(CLITransport):
     @property
     def is_alive(self) -> bool:
         return self._process is not None
+
+
+def _extract_error_message(data: dict) -> str:
+    message = data.get("message")
+    if isinstance(message, str) and message:
+        return message
+
+    error = data.get("error")
+    if isinstance(error, dict):
+        nested = error.get("message")
+        if isinstance(nested, str) and nested:
+            return nested
+    elif isinstance(error, str) and error:
+        return error
+
+    return json.dumps(data, sort_keys=True)
+
+
+def _is_retryable_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _RETRYABLE_ERROR_MARKERS)
+
+
+def _counts_as_output(data: dict) -> bool:
+    event_type = data.get("type")
+    if event_type == "content_block_delta":
+        return True
+    if event_type == "assistant":
+        return True
+    if event_type == "result":
+        return True
+    return False

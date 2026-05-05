@@ -1,0 +1,317 @@
+.niuu-shell {
+  display: grid;
+  grid-template-columns: 48px auto 1fr;
+  grid-template-rows: 48px 1fr 28px;
+  grid-template-areas:
+    'rail topbar topbar'
+    'rail subnav content'
+    'rail footer footer';
+  height: 100vh;
+  width: 100vw;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  overflow: hidden;
+}
+
+/* ── Rail ───────────────────────────────────────────── */
+.niuu-shell__rail {
+  grid-area: rail;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px;
+  gap: 2px;
+  background: var(--color-bg-secondary);
+  border-right: 1px solid var(--color-border-subtle);
+}
+
+.niuu-shell__rail-brand {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--color-brand);
+  margin-bottom: 10px;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--color-brand) 55%, transparent);
+}
+.niuu-shell__rail-brand svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+.niuu-shell__rail-item {
+  width: 48px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+.niuu-shell__rail-item:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+}
+.niuu-shell__rail-item--active {
+  color: var(--color-brand);
+  border-left-color: var(--color-brand);
+  background: color-mix(in srgb, var(--color-brand) 8%, transparent);
+}
+
+.niuu-shell__rail-spacer {
+  flex: 1;
+}
+.niuu-shell__rail-foot {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-faint);
+  padding: 10px 0;
+}
+
+/* ── Topbar ─────────────────────────────────────────── */
+.niuu-shell__topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-6);
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.niuu-shell__topbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.niuu-shell__topbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.niuu-shell__topbar-title h1 {
+  font-size: var(--text-base);
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.niuu-shell__rune-mark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--color-brand);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--color-brand) 45%, transparent);
+}
+.niuu-shell__topbar-subtitle {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+
+/* topbar tabs */
+.niuu-shell__tabs {
+  display: flex;
+  gap: 0;
+  align-self: stretch;
+}
+.niuu-shell__tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 400;
+  transition: color var(--transition-fast);
+}
+.niuu-shell__tab:hover {
+  color: var(--color-text-secondary);
+}
+.niuu-shell__tab--active {
+  color: var(--color-text-primary);
+}
+.niuu-shell__tab--active::after {
+  content: '';
+  position: absolute;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: -1px;
+  height: 2px;
+  background: var(--color-brand);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-brand) 60%, transparent);
+}
+.niuu-shell__tab-rune {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.7;
+}
+.niuu-shell__tab--active .niuu-shell__tab-rune {
+  color: var(--color-brand);
+  opacity: 1;
+}
+
+/* tab count badge */
+.niuu-shell__tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-brand) 15%, transparent);
+  color: var(--color-brand);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+.niuu-shell__tab--active .niuu-shell__tab-count {
+  background: color-mix(in srgb, var(--color-brand) 25%, transparent);
+}
+
+.niuu-shell__topbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--text-xs);
+}
+.niuu-shell__topbar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--color-border-subtle);
+}
+.niuu-shell__topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+.niuu-shell__topbar-meta strong {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+/* ── Command palette trigger ────────────────────────── */
+.niuu-shell__cp-btn {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: opacity var(--transition-fast);
+}
+.niuu-shell__cp-btn:hover {
+  opacity: 0.75;
+}
+
+/* ── Subnav ────────────────────────────────────────── */
+.niuu-shell__subnav {
+  grid-area: subnav;
+  width: 200px;
+  min-width: 200px;
+  background: var(--color-bg-secondary);
+  border-right: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition:
+    width var(--transition-normal),
+    min-width var(--transition-normal),
+    border-color var(--transition-normal);
+}
+.niuu-shell__subnav--collapsed {
+  width: 0;
+  min-width: 0;
+  border-right-color: transparent;
+}
+.niuu-shell__subnav:empty {
+  width: 0;
+  min-width: 0;
+  border-right-color: transparent;
+}
+
+/* ── Content ───────────────────────────────────────── */
+.niuu-shell__content {
+  grid-area: content;
+  overflow: auto;
+  position: relative;
+  background: var(--color-bg-primary);
+}
+
+/* ── Footer ────────────────────────────────────────── */
+.niuu-shell__footer {
+  grid-area: footer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-6);
+  background: var(--color-bg-secondary);
+  border-top: 1px solid var(--color-border-subtle);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+.niuu-shell__footer-left,
+.niuu-shell__footer-center,
+.niuu-shell__footer-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.niuu-shell__footer code {
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
+.niuu-shell__footer-sep {
+  color: var(--color-text-faint);
+}
+
+/* footer status chips */
+.niuu-shell__footer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-secondary);
+}
+.niuu-shell__footer-chip-dot {
+  font-size: 8px;
+}
+.niuu-shell__footer-chip-dot[data-state='ok'] {
+  color: var(--status-healthy, #10b981);
+}
+.niuu-shell__footer-chip-dot[data-state='warn'] {
+  color: var(--status-gated, #f59e0b);
+}
+.niuu-shell__footer-chip-dot[data-state='err'] {
+  color: var(--status-failed, #ef4444);
+}
+.niuu-shell__footer-chip-sep {
+  color: var(--color-text-faint);
+  margin: 0 2px;
+}

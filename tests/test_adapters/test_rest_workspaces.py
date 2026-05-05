@@ -275,6 +275,20 @@ class TestBulkDeleteWorkspaces:
         assert data["deleted"] == 2
         assert data["failed"] == []
 
+    async def test_delete_owned_accepts_camel_case_session_ids(self, app, storage):
+        sid = str(uuid4())
+        await storage.create_session_workspace(sid, "user-1", "t1")
+
+        with patch(_PATCH_TARGET, _extract_user):
+            resp = TestClient(app).post(
+                "/api/v1/volundr/workspaces/bulk-delete",
+                json={"sessionIds": [sid]},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["deleted"] == 1
+        assert data["failed"] == []
+
     async def test_delete_not_owned(self, app, storage):
         sid = str(uuid4())
         await storage.create_session_workspace(sid, "other-user", "t1")
@@ -352,6 +366,18 @@ class TestAdminBulkDelete:
             resp = TestClient(admin_app).post(
                 "/api/v1/volundr/admin/workspaces/bulk-delete",
                 json={"session_ids": [sid]},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 1
+
+    async def test_delete_any_user_accepts_camel_case_session_ids(self, admin_app, storage):
+        sid = str(uuid4())
+        await storage.create_session_workspace(sid, "any-user", "t1")
+
+        with patch(_PATCH_TARGET, _extract_admin):
+            resp = TestClient(admin_app).post(
+                "/api/v1/volundr/admin/workspaces/bulk-delete",
+                json={"sessionIds": [sid]},
             )
         assert resp.status_code == 200
         assert resp.json()["deleted"] == 1

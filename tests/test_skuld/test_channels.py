@@ -12,6 +12,7 @@ from skuld.channels import (
     TelegramChannel,
     WebSocketChannel,
     format_telegram_event,
+    render_telegram_html,
     split_message,
 )
 
@@ -214,6 +215,168 @@ class TestFormatTelegramEvent:
         result = format_telegram_event(event)
         assert result == "Nested hello"
 
+    def test_user_confirmed_event(self):
+        event = {"type": "user_confirmed", "content": "Kick off the raid"}
+        assert format_telegram_event(event) == "[prompt] Kick off the raid"
+
+    def test_user_confirmed_external_source_skipped(self):
+        event = {
+            "type": "user_confirmed",
+            "content": "Who is in this flock?",
+            "source": "telegram",
+            "metadata": {"source_platform": "telegram"},
+        }
+        assert format_telegram_event(event) is None
+
+    def test_user_confirmed_source_platform_skipped(self):
+        event = {
+            "type": "user_confirmed",
+            "content": "Confirm this step",
+            "source": "browser",
+            "metadata": {"source_platform": "slack"},
+        }
+        assert format_telegram_event(event) is None
+
+    def test_user_confirmed_without_content_skipped(self):
+        event = {
+            "type": "user_confirmed",
+            "content": "",
+            "source": "browser",
+        }
+        assert format_telegram_event(event) is None
+
+    def test_room_message_public(self):
+        event = {
+            "type": "room_message",
+            "participant": {"persona": "coder", "display_name": "coder"},
+            "content": "I found the issue.",
+            "visibility": "public",
+        }
+        assert format_telegram_event(event) == "[coder] I found the issue."
+
+    def test_room_message_internal_skipped(self):
+        event = {
+            "type": "room_message",
+            "participant": {"persona": "coder"},
+            "content": "internal detail",
+            "visibility": "internal",
+        }
+        assert format_telegram_event(event) is None
+
+    def test_room_message_without_content_skipped(self):
+        event = {
+            "type": "room_message",
+            "participant": {"persona": "coder"},
+            "content": "",
+            "visibility": "public",
+        }
+        assert format_telegram_event(event) is None
+
+    def test_room_message_outcome_block_is_pre_rendered(self):
+        event = {
+            "type": "room_message",
+            "participant": {"persona": "claude-mimir-researcher"},
+            "visibility": "public",
+            "content": (
+                "---outcome---\n"
+                "summary: Wrote research/agent-mimir-page-standards.md\n"
+                "page_path: research/agent-mimir-page-standards.md\n"
+                "---end---"
+            ),
+        }
+        result = format_telegram_event(event)
+        assert "[claude-mimir-researcher] outcome: outcome" in result
+        assert "summary: Wrote research/agent-mimir-page-standards.md" not in result
+        assert "Wrote research/agent-mimir-page-standards.md" in result
+        assert "page_path: research/agent-mimir-page-standards.md" in result
+        assert "---outcome---" not in result
+
+    def test_room_notification_help_needed(self):
+        event = {
+            "type": "room_notification",
+            "participant": {"persona": "reviewer"},
+            "summary": "Need human input",
+            "reason": "merge conflict",
+            "recommendation": "decide which patch to keep",
+        }
+        result = format_telegram_event(event)
+        assert "[reviewer] Need human input" in result
+        assert "reason: merge conflict" in result
+        assert "next: decide which patch to keep" in result
+
+    def test_room_outcome_rendered(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "verifier"},
+            "eventType": "verification.completed",
+            "verdict": "conditional",
+            "summary": "One issue found",
+            "fields": {"checks_passed": 12, "checks_failed": 1},
+        }
+        result = format_telegram_event(event)
+        assert "[verifier] outcome: verification.completed" in result
+        assert "verdict: conditional" in result
+        assert "checks_passed: 12" in result
+
+    def test_room_outcome_serializes_list_fields(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "verifier"},
+            "fields": {"affected_files": ["a.py", "b.py"]},
+        }
+        result = format_telegram_event(event)
+        assert "[verifier] outcome: outcome" in result
+        assert 'affected_files: ["a.py", "b.py"]' in result
+
+    def test_room_outcome_renders_non_dict_fields(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "verifier"},
+            "fields": "fallback payload",
+        }
+        result = format_telegram_event(event)
+        assert "fallback payload" in result
+
+    def test_room_mesh_message_rendered(self):
+        event = {
+            "type": "room_mesh_message",
+            "participant": {"persona": "coder"},
+            "eventType": "review.completed",
+            "direction": "delegate",
+            "preview": "Please verify the route parity checklist changes.",
+        }
+        result = format_telegram_event(event)
+        assert "[coder] delegate: review.completed" in result
+        assert "Please verify the route parity checklist changes." in result
+
+    def test_render_telegram_html_formats_markdown_table(self):
+        rendered = render_telegram_html(
+            "[Skuld] | Peer | Status |\n"
+            "|------|--------|\n"
+            "| **Skuld** | idle |\n"
+            "| `coder` | blocked |"
+        )
+        assert rendered.startswith("<pre>")
+        assert "Peer" in rendered
+        assert "blocked" in rendered
+
+    def test_render_telegram_html_formats_bold_code_and_links(self):
+        rendered = render_telegram_html(
+            "[Skuld] **blocked** on `README.md`; see [docs](https://example.com)"
+        )
+        assert "<b>blocked</b>" in rendered
+        assert "<code>README.md</code>" in rendered
+        assert '<a href="https://example.com">docs</a>' in rendered
+
+    def test_render_telegram_html_formats_headings_lists_and_quotes(self):
+        rendered = render_telegram_html(
+            "# Heading\n- bullet\n1. ordered\n> quoted"
+        )
+        assert "<b>Heading</b>" in rendered
+        assert "• bullet" in rendered
+        assert "1. ordered" in rendered
+        assert "&gt; quoted" in rendered
+
 
 # ---------------------------------------------------------------------------
 # split_message
@@ -284,6 +447,9 @@ class TestTelegramChannelMocked:
             ch._bot_token = "test-token"
             ch._chat_id = "12345"
             ch._notify_only = True
+            ch._topic_mode = "shared_chat"
+            ch._message_thread_id = None
+            ch._topic_name = "Volundr session"
             ch._on_message = None
             ch._bot = AsyncMock()
             ch._application = None
@@ -314,6 +480,56 @@ class TestTelegramChannelMocked:
             chat_id="12345",
             text="Hello",
         )
+
+    @pytest.mark.asyncio
+    async def test_send_event_text_to_thread(self, channel):
+        channel._message_thread_id = 77
+        event = {
+            "type": "assistant",
+            "content": [{"type": "text", "text": "Hello"}],
+        }
+        await channel.send_event(event)
+        channel._bot.send_message.assert_called_once_with(
+            chat_id="12345",
+            text="Hello",
+            message_thread_id=77,
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_event_room_message_uses_html_parse_mode(self, channel):
+        event = {
+            "type": "room_message",
+            "participant": {"persona": "Skuld", "display_name": "Skuld"},
+            "content": "**Blocked** on `README.md`; see [docs](https://example.com)",
+            "visibility": "public",
+        }
+        await channel.send_event(event)
+        _, kwargs = channel._bot.send_message.call_args
+        assert kwargs["chat_id"] == "12345"
+        assert kwargs["parse_mode"] == "HTML"
+        assert "<b>Blocked</b>" in kwargs["text"]
+        assert "<code>README.md</code>" in kwargs["text"]
+        assert '<a href="https://example.com">docs</a>' in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_event_room_message_table_uses_preformatted_block(self, channel):
+        event = {
+            "type": "room_message",
+            "participant": {"persona": "Skuld", "display_name": "Skuld"},
+            "content": (
+                "| Peer | Status |\n"
+                "|------|--------|\n"
+                "| **Skuld** | idle |\n"
+                "| `coder` | blocked |"
+            ),
+            "visibility": "public",
+        }
+        await channel.send_event(event)
+        _, kwargs = channel._bot.send_message.call_args
+        assert kwargs["parse_mode"] == "HTML"
+        assert "<pre>" in kwargs["text"]
+        assert "Peer" in kwargs["text"]
+        assert "blocked" in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_send_event_skips_none_format(self, channel):
@@ -595,6 +811,23 @@ class TestTelegramChannelMocked:
             ch_mod.HAS_TELEGRAM = orig_has
 
     @pytest.mark.asyncio
+    async def test_send_permission_request_uses_thread(self, channel):
+        ch_mod = sys.modules["skuld.channels"]
+
+        orig_has = ch_mod.HAS_TELEGRAM
+        ch_mod.HAS_TELEGRAM = True
+        ch_mod.InlineKeyboardMarkup = MagicMock()
+        ch_mod.InlineKeyboardButton = MagicMock()
+        channel._message_thread_id = 55
+        try:
+            await channel.send_permission_request("req-1", "Bash", {"command": "ls -la"})
+            _, kwargs = channel._bot.send_message.call_args
+            assert kwargs["chat_id"] == "12345"
+            assert kwargs["message_thread_id"] == 55
+        finally:
+            ch_mod.HAS_TELEGRAM = orig_has
+
+    @pytest.mark.asyncio
     async def test_send_permission_request_with_file_path(self, channel):
         ch_mod = sys.modules["skuld.channels"]
 
@@ -682,6 +915,18 @@ class TestTelegramChannelMocked:
         assert channel._text_buffer == []
 
     @pytest.mark.asyncio
+    async def test_flush_buffer_with_content_to_thread(self, channel):
+        channel._message_thread_id = 66
+        channel._text_buffer = ["hello ", "world"]
+        await channel._flush_buffer()
+        channel._bot.send_message.assert_called_once_with(
+            chat_id="12345",
+            text="hello world",
+            message_thread_id=66,
+        )
+        assert channel._text_buffer == []
+
+    @pytest.mark.asyncio
     async def test_flush_buffer_cancels_pending_task(self, channel):
         task = MagicMock()
         task.done.return_value = False
@@ -697,6 +942,53 @@ class TestTelegramChannelMocked:
         channel._text_buffer = ["  ", "\n"]
         await channel._flush_buffer()
         channel._bot.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_creates_forum_topic_for_session_mode(self):
+        with patch("skuld.channels.HAS_TELEGRAM", True), patch(
+            "skuld.channels.Bot"
+        ) as bot_cls:
+            bot = AsyncMock()
+            bot.create_forum_topic = AsyncMock(
+                return_value=MagicMock(message_thread_id=321)
+            )
+            bot_cls.return_value = bot
+
+            channel = TelegramChannel(
+                bot_token="token",
+                chat_id="12345",
+                notify_only=True,
+                topic_mode="topic_per_session",
+                topic_name="niu-768 · 1234abcd",
+            )
+
+            await channel.start()
+
+            bot.create_forum_topic.assert_awaited_once_with(
+                chat_id="12345",
+                name="niu-768 · 1234abcd",
+            )
+            assert channel._message_thread_id == 321
+
+    @pytest.mark.asyncio
+    async def test_start_fixed_topic_without_thread_falls_back(self):
+        with patch("skuld.channels.HAS_TELEGRAM", True), patch(
+            "skuld.channels.Bot"
+        ) as bot_cls:
+            bot = AsyncMock()
+            bot_cls.return_value = bot
+
+            channel = TelegramChannel(
+                bot_token="token",
+                chat_id="12345",
+                notify_only=True,
+                topic_mode="fixed_topic",
+            )
+
+            await channel.start()
+
+            assert channel._topic_mode == "shared_chat"
+            bot.create_forum_topic.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_scheduled_flush(self, channel):
@@ -718,6 +1010,8 @@ class TestTelegramChannelMocked:
             }
             await channel.send_event(delta_event)
             mock_create.assert_called_once()
+            scheduled = mock_create.call_args[0][0]
+            scheduled.close()
 
     @pytest.mark.asyncio
     async def test_streaming_reuses_active_flush_task(self, channel):

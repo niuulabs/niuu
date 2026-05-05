@@ -1,0 +1,4 @@
+.rv-subs-legend-focus {
+  border-color: var(--brand-400);
+  background: color-mix(in srgb, var(--brand-500) 18%, transparent);
+}

@@ -11,6 +11,7 @@ Covers:
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,7 +45,7 @@ def disabled_mesh_config():
 
 @pytest.fixture
 def mock_mesh():
-    mesh = AsyncMock()
+    mesh = MagicMock()
     mesh.start = AsyncMock()
     mesh.stop = AsyncMock()
     mesh.publish = AsyncMock()
@@ -182,7 +183,7 @@ class TestSkuldMeshAdapterLifecycle:
     async def test_start_with_discovery(self, mock_mesh, mock_transport, mesh_config):
         from niuu.mesh.participant import MeshParticipant
 
-        discovery = AsyncMock()
+        discovery = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         participant = MeshParticipant(mesh=mock_mesh, discovery=discovery, peer_id="s1")
         adapter = SkuldMeshAdapter(
             participant=participant,
@@ -207,7 +208,7 @@ class TestSkuldMeshAdapterLifecycle:
     async def test_stop_with_discovery(self, mock_mesh, mock_transport, mesh_config):
         from niuu.mesh.participant import MeshParticipant
 
-        discovery = AsyncMock()
+        discovery = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         participant = MeshParticipant(mesh=mock_mesh, discovery=discovery, peer_id="s1")
         adapter = SkuldMeshAdapter(
             participant=participant,
@@ -251,6 +252,22 @@ class TestSkuldMeshAdapterLifecycle:
             session_id="s1",
         )
         assert adapter.peer_id == socket.gethostname()
+
+    @pytest.mark.asyncio
+    async def test_publish_forwards_event_to_mesh(self, adapter, mock_mesh):
+        event = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source="skuld:test",
+            payload={"event_type": "code.requested"},
+            timestamp=datetime.now(UTC),
+            urgency=0.5,
+            correlation_id="corr-1",
+            session_id="session-1",
+        )
+
+        await adapter.publish(event, "code.requested")
+
+        mock_mesh.publish.assert_awaited_once_with(event, topic="code.requested")
 
     @pytest.mark.asyncio
     async def test_multiple_event_type_subscriptions(self, mock_mesh, mock_transport):

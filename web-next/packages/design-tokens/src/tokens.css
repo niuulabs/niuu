@@ -1,0 +1,357 @@
+/* ============================================================
+ * Niuu Design System — Base Tokens
+ * Ported from the earlier prototype design tokens and kept as the shared source.
+ * Source of truth for all design tokens across Niuu surfaces.
+ * ============================================================ */
+
+/* --- Fonts --- */
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/Inter-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/Inter-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/Inter-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/Inter-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrainsMono NF';
+  src: url('./fonts/JetBrainsMonoNerdFont-Regular.ttf') format('truetype');
+  font-weight: 400 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'JetBrainsMono NF';
+  src: url('./fonts/JetBrainsMonoNerdFont-Bold.ttf') format('truetype');
+  font-weight: 600 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* ── Background (Zinc scale) ────────────────────────── */
+  --color-bg-primary: #09090b;
+  --color-bg-secondary: #18181b;
+  --color-bg-tertiary: #27272a;
+  --color-bg-elevated: #3f3f46;
+
+  /* ── Foreground ─────────────────────────────────────── */
+  --color-text-primary: #fafafa;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #71717a;
+  --color-text-faint: #52525b;
+
+  /* ── Borders ────────────────────────────────────────── */
+  --color-border: #3f3f46;
+  --color-border-subtle: #27272a;
+
+  /* ── Brand ramp (themeable) ───────────────────────────
+   * Default = ice (single-brand policy).
+   * Override per [data-theme] attribute below.
+   * ────────────────────────────────────────────────────── */
+  --brand-100: #f0f9ff;
+  --brand-200: #e0f2fe;
+  --brand-300: #bae6fd;
+  --brand-400: #7dd3fc;
+  --brand-500: #38bdf8;
+  --brand-600: #0ea5e9;
+  --brand-700: #0369a1;
+  --brand-800: #075985;
+  --brand-900: #0c4a6e;
+  --color-brand: var(--brand-500);
+
+  /* ── Brand aliases (color-brand-N → brand-N) ────────────
+   * web2 Tyr styles use `--color-brand-N`; web-next uses `--brand-N`.
+   * These aliases let web2 references resolve without renaming.
+   * ────────────────────────────────────────────────────── */
+  --color-brand-100: var(--brand-100);
+  --color-brand-200: var(--brand-200);
+  --color-brand-300: var(--brand-300);
+  --color-brand-400: var(--brand-400);
+  --color-brand-500: var(--brand-500);
+  --color-brand-600: var(--brand-600);
+  --color-brand-700: var(--brand-700);
+  --color-brand-800: var(--brand-800);
+  --color-brand-900: var(--brand-900);
+
+  /* ── Critical (reserved — red only) ───────────────────── */
+  --color-critical: #ef4444;
+  --color-critical-fg: #fca5a5;
+  --color-critical-bg: color-mix(in srgb, #ef4444 15%, transparent);
+  --color-critical-bo: color-mix(in srgb, #ef4444 35%, transparent);
+
+  /* ── Danger (alias → critical) ──────────────────────────
+   * web2 registry uses `--color-danger` for invalid drop states.
+   * Maps to `--color-critical` in web-next.
+   * ────────────────────────────────────────────────────── */
+  --color-danger: var(--color-critical);
+
+  /* ── Gate (violet — approval / gated states) ──────────── */
+  --color-gate: #a855f7;
+  --color-gate-fg: #c4b5fd;
+  --color-gate-bg: color-mix(in srgb, #a855f7 15%, transparent);
+  --color-gate-bo: color-mix(in srgb, #a855f7 35%, transparent);
+
+  /* ── Semantic indicators ─────────────────────────────── */
+  --color-delta-up: #10b981;
+
+  /* ── Semantic status ─────────────────────────────────── */
+  --status-healthy: var(--brand-200);
+  --status-running: var(--brand-300);
+  --status-observing: var(--brand-300);
+  --status-merged: var(--brand-200);
+  --status-attention: var(--brand-400);
+  --status-review: var(--brand-400);
+  --status-queued: var(--brand-400);
+  --status-processing: var(--brand-700);
+  --status-deciding: var(--brand-700);
+  --status-failed: var(--color-critical);
+  --status-degraded: var(--color-critical-fg);
+  --status-unknown: var(--color-text-muted);
+  --status-idle: var(--color-text-muted);
+  --status-archived: var(--color-text-muted);
+  --status-gated: var(--color-gate);
+
+  /* ── Status direct-hue tokens ──────────────────────────
+   * Fixed colors for inline status indicators (Mimir chips, dots,
+   * feed labels). These do NOT flex with the brand theme — they
+   * must stay distinguishable regardless of the active ramp.
+   * ────────────────────────────────────────────────────── */
+  --status-emerald: #10b981;
+  --status-green: #22c55e;
+  --status-amber: #f59e0b;
+  --status-orange: #f97316;
+  --status-red: #ef4444;
+  --status-cyan: #06b6d4;
+  --status-indigo: #6366f1;
+  --status-purple: #a855f7;
+
+  /* ── State tokens (ravn/budget components) ───────────── */
+  --state-ok: #10b981;
+  --state-ok-bg: color-mix(in srgb, var(--state-ok) 15%, transparent);
+  --state-mute: var(--color-text-muted);
+  --state-warn: #f59e0b;
+  --state-warn-bg: color-mix(in srgb, var(--state-warn) 15%, transparent);
+  --state-err: var(--color-critical);
+
+  /* ── Tool categories ─────────────────────────────────── */
+  --color-tool-search: var(--brand-200);
+  --color-tool-web: var(--brand-300);
+  --color-tool-file: var(--brand-400);
+  --color-tool-terminal: var(--brand-500);
+  --color-tool-mcp: var(--brand-500);
+  --color-tool-agent: var(--brand-600);
+  --color-tool-task: var(--brand-700);
+  --color-tool-default: var(--brand-500);
+
+  /* ── Typography ──────────────────────────────────────── */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrainsMono NF', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+
+  /* ── Spacing ─────────────────────────────────────────── */
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  /* ── Radii ───────────────────────────────────────────── */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.5rem;
+  --radius-full: 9999px;
+
+  /* ── Elevation ───────────────────────────────────────── */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+
+  /* ── Motion ──────────────────────────────────────────── */
+  --transition-fast: 150ms ease;
+  --transition-normal: 200ms ease;
+  --transition-slow: 300ms ease;
+
+  /* ── Ice utility tokens ────────────────────────────────
+   * Semi-transparent panel backgrounds and glow effects used
+   * across Observatory, Mimir, Ravn, and Tyr overlays.
+   * ────────────────────────────────────────────────────── */
+  --ice-panel: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
+  --ice-panel-solid: var(--color-bg-secondary);
+  --ice-glow: 0 0 14px color-mix(in srgb, var(--brand-300) 25%, transparent);
+}
+
+/* ── Theme overrides ──────────────────────────────────── */
+
+[data-theme='ice'] {
+  --brand-100: #f0f9ff;
+  --brand-200: #e0f2fe;
+  --brand-300: #bae6fd;
+  --brand-400: #7dd3fc;
+  --brand-500: #38bdf8;
+  --brand-600: #0ea5e9;
+  --brand-700: #0369a1;
+  --brand-800: #075985;
+  --brand-900: #0c4a6e;
+}
+
+[data-theme='amber'] {
+  --brand-100: #fef3c7;
+  --brand-200: #fde68a;
+  --brand-300: #fcd34d;
+  --brand-400: #fbbf24;
+  --brand-500: #f59e0b;
+  --brand-600: #d97706;
+  --brand-700: #b45309;
+  --brand-800: #92400e;
+  --brand-900: #78350f;
+}
+
+[data-theme='spring'] {
+  --brand-100: #ecfccb;
+  --brand-200: #d9f99d;
+  --brand-300: #bef264;
+  --brand-400: #a3e635;
+  --brand-500: #76b900;
+  --brand-600: #65a30d;
+  --brand-700: #4d7c0f;
+  --brand-800: #3f6212;
+  --brand-900: #365314;
+}
+
+/* ============================================================
+ * Semantic type scale
+ * ============================================================ */
+
+h1,
+.h1 {
+  font-family: var(--font-sans);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+  color: var(--color-text-primary);
+}
+h2,
+.h2 {
+  font-family: var(--font-sans);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--color-text-primary);
+}
+h3,
+.h3 {
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-text-primary);
+}
+h4,
+.h4 {
+  font-size: var(--text-base);
+  font-weight: 600;
+  line-height: 1.5;
+}
+h5,
+.h5 {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.5;
+}
+h6,
+.h6 {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1.5;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary);
+}
+
+p,
+.body {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--color-text-primary);
+}
+.body-lg {
+  font-size: var(--text-base);
+  line-height: 1.6;
+}
+.body-sm {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.mono,
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+  font-feature-settings: 'ss01', 'cv01';
+}
+
+.label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-muted);
+}
+
+.section-title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary);
+}
+
+.rune {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--color-brand);
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

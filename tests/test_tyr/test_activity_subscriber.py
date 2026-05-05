@@ -217,12 +217,17 @@ def _default_config(**overrides: object) -> WatcherConfig:
     return WatcherConfig(**defaults)
 
 
-def _make_volundr_session(session_id: str = SESSION_ID, status: str = "running") -> VolundrSession:
+def _make_volundr_session(
+    session_id: str = SESSION_ID,
+    status: str = "running",
+    workload_type: str = "default",
+) -> VolundrSession:
     return VolundrSession(
         id=session_id,
         name="Test Session",
         status=status,
         tracker_issue_id=None,
+        workload_type=workload_type,
     )
 
 
@@ -340,6 +345,24 @@ class TestActivityEventHandling:
         bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
         assert bus_event.event == "raid.state_changed"
         assert bus_event.data["status"] == "REVIEW"
+
+    @pytest.mark.asyncio
+    async def test_idle_event_skips_flock_sessions_until_ravn_outcome(self) -> None:
+        """Flock sessions should not enter idle-based REVIEW evaluation."""
+        sub, volundr, tracker, _ = _make_subscriber()
+        volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
+
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="idle",
+            metadata={"turn_count": 5, "duration_seconds": 60},
+            owner_id=OWNER_ID,
+        )
+
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+        await asyncio.sleep(0.1)
+
+        tracker.update_raid_progress.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_idle_with_no_turns_does_not_complete(self) -> None:

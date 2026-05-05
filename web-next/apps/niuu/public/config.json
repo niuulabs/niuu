@@ -1,0 +1,38 @@
+{
+  "theme": "ice",
+  "plugins": {
+    "login": { "enabled": true, "order": 0 },
+    "volundr": { "enabled": true, "order": 1 },
+    "tyr": { "enabled": true, "order": 2 },
+    "mimir": { "enabled": true, "order": 3 },
+    "ravn": { "enabled": true, "order": 4 },
+    "observatory": { "enabled": true, "order": 5 },
+    "settings": { "enabled": true, "order": 6 }
+  },
+  "services": {
+    "identity": { "mode": "mock" },
+    "features": { "mode": "mock" },
+    "tracker": { "mode": "mock" },
+    "audit": { "mode": "mock" },
+    "mimir": { "mode": "mock" },
+    "observatory": { "mode": "mock" },
+    "observatory.registry": { "mode": "mock" },
+    "observatory.topology": { "mode": "mock" },
+    "observatory.events": { "mode": "mock" },
+    "ravn": { "mode": "mock" },
+    "ravn.personas": { "mode": "mock" },
+    "ravn.ravens": { "mode": "mock" },
+    "ravn.sessions": { "mode": "mock" },
+    "ravn.triggers": { "mode": "mock" },
+    "ravn.budget": { "mode": "mock" },
+    "forge": { "mode": "mock" },
+    "forge.pty": { "mode": "mock" },
+    "forge.metrics": { "mode": "mock" },
+    "volundr": { "mode": "mock" },
+    "tyr.dispatcher": { "mode": "mock" },
+    "tyr.sessions": { "mode": "mock" },
+    "tyr.dispatch": { "mode": "mock" },
+    "tyr.settings": { "mode": "mock" },
+    "tyr": { "mode": "mock" }
+  }
+}

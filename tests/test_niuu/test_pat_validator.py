@@ -12,7 +12,7 @@ import pytest
 
 from niuu.domain.services.pat_validator import PATValidator
 
-SIGNING_KEY = "test-signing-key-for-validator!"
+SIGNING_KEY = "test-signing-key-for-validator-at-least-32"
 
 
 def _make_pat_jwt(

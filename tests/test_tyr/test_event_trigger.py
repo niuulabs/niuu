@@ -322,6 +322,32 @@ class TestEventTriggerAutoStart:
 
         await adapter.stop()
 
+    async def test_auto_start_resolves_owner_integrations(self, tmp_path):
+        _write_minimal_template(tmp_path, "review")
+        saga_repo = InMemorySagaRepository()
+        bus = InProcessBus()
+        volundr = StubVolundrPort()
+        volundr.integration_ids = ["int-telegram", "int-linear"]
+        adapter = _make_adapter(
+            subscriber=bus,
+            saga_repo=saga_repo,
+            volundr_factory=StubVolundrFactory(volundr),
+            templates_dir=tmp_path,
+            rules=[_make_rule("github.pr.opened", auto_start=True)],
+        )
+        await adapter.start()
+
+        await bus.publish(_make_sleipnir_event("github.pr.opened", {"repo": "repo/x"}))
+        await bus.flush()
+        await asyncio.sleep(0)
+
+        assert len(volundr.spawned) == 1
+        assert volundr.spawned[0].integration_ids == ["int-telegram", "int-linear"]
+
+        await adapter.stop()
+
+        await adapter.stop()
+
     async def test_auto_start_spawns_volundr_session(self, tmp_path):
         _write_minimal_template(tmp_path, "review")
         volundr = StubVolundrPort()
