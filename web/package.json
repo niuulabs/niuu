@@ -96,7 +96,7 @@
     "@codingame/monaco-vscode-javascript-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-json-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-language-detection-worker-service-override": "^30.0.0",
-    "@codingame/monaco-vscode-languages-service-override": "^28.4.1",
+    "@codingame/monaco-vscode-languages-service-override": "^31.0.0",
     "@codingame/monaco-vscode-less-default-extension": "^30.0.0",
     "@codingame/monaco-vscode-lifecycle-service-override": "^28.4.1",
     "@codingame/monaco-vscode-localization-service-override": "^28.4.1",
