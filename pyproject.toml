@@ -39,7 +39,7 @@ test = [
     "respx>=0.22.0",
 ]
 rabbitmq = [
-    "aio-pika>=9.0",
+    "aio-pika>=9.6.2",
 ]
 redis = [
     "redis[hiredis]>=5.0",
