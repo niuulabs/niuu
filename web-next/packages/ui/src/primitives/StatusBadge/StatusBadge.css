@@ -1,0 +1,76 @@
+.niuu-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.niuu-status-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+/* ── Tones ─────────────────────────────────────────────── */
+
+.niuu-status-badge--run {
+  color: var(--brand-300);
+  background: color-mix(in srgb, var(--brand-300) 10%, transparent);
+  border-color: color-mix(in srgb, var(--brand-300) 30%, transparent);
+}
+
+.niuu-status-badge--ok {
+  color: var(--brand-200);
+  background: color-mix(in srgb, var(--brand-200) 10%, transparent);
+  border-color: color-mix(in srgb, var(--brand-200) 30%, transparent);
+}
+
+.niuu-status-badge--warn {
+  color: var(--brand-400);
+  background: color-mix(in srgb, var(--brand-400) 12%, transparent);
+  border-color: color-mix(in srgb, var(--brand-400) 35%, transparent);
+}
+
+.niuu-status-badge--crit {
+  color: var(--color-critical-fg);
+  background: color-mix(in srgb, var(--color-critical) 16%, var(--color-bg-secondary));
+  border-color: color-mix(in srgb, var(--color-critical-fg) 36%, transparent);
+}
+
+.niuu-status-badge--mute {
+  color: var(--color-text-muted);
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-subtle);
+}
+
+.niuu-status-badge--gate {
+  color: var(--color-gate-fg);
+  background: var(--color-gate-bg);
+  border-color: var(--color-gate-bo);
+}
+
+/* ── Pulse (for active states) ─────────────────────────── */
+
+.niuu-status-badge--pulse .niuu-status-badge__dot {
+  animation: niuu-status-badge-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes niuu-status-badge-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}

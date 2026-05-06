@@ -38,6 +38,12 @@
   margin: 0;
 }
 
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .refreshButton {
   background: none;
   border: 1px solid var(--color-border);
@@ -58,6 +64,31 @@
 }
 
 .refreshButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.fixButton {
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--color-accent-emerald) 40%, transparent);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-accent-emerald);
+  font-size: var(--text-sm);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    border-color 0.15s,
+    background-color 0.15s;
+}
+
+.fixButton:hover {
+  background-color: color-mix(in srgb, var(--color-accent-emerald) 10%, transparent);
+  border-color: var(--color-accent-emerald);
+}
+
+.fixButton:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }

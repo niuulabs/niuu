@@ -1,0 +1,31 @@
+# ─── Bifrost config for: bifrost-ollama ──────────────────────────────────────
+#
+# Local-only gateway with Ollama. No cloud providers, no auth.
+# ─────────────────────────────────────────────────────────────────────────────
+
+bifrost:
+  routing_strategy: direct
+
+  providers:
+    ollama:
+      base_url: http://localhost:11434
+      models:
+        - llama3.2:1b
+        - llama3.2:3b
+        - llama3.1:8b
+      cost_per_token: 0.0
+
+  aliases:
+    fast: llama3.2:1b
+    balanced: llama3.2:3b
+    best: llama3.1:8b
+    local: llama3.2:3b
+
+  auth_mode: open
+
+  usage_store:
+    adapter: sqlite
+    path: ~/.ravn/bifrost_usage.db
+
+  host: 127.0.0.1
+  port: 8088

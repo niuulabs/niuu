@@ -22,6 +22,8 @@ export interface VolundrSession {
   tracker_issue_id: string | null;
   issue_tracker_url: string | null;
   error: string | null;
+  workload_type: string | null;
+  mesh_participants: string[] | null;
 }
 
 export interface TimelineEvent {

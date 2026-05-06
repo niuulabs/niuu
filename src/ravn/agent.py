@@ -8,11 +8,13 @@ import time
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from niuu.ports.mimir import MimirPort
+from ravn.adapters.memory.inline_facts import detect_and_write as _detect_and_write_facts
 from ravn.budget import IterationBudget, TokenEstimator
 from ravn.compression import CompressionResult, ContextCompressor
-from ravn.config import ExtendedThinkingConfig
+from ravn.config import ExtendedThinkingConfig, PostSessionReflectionConfig
 from ravn.domain.budget import compute_cost as _compute_cost_usd
 from ravn.domain.checkpoint import (
     DESTRUCTIVE_TOOL_NAMES,
@@ -41,6 +43,16 @@ from ravn.ports.memory import MemoryPort
 from ravn.ports.permission import PermissionPort
 from ravn.ports.tool import ToolPort
 from ravn.prompt_builder import PromptBuilder
+
+if TYPE_CHECKING:
+    from niuu.domain.outcome import ParsedOutcome
+    from ravn.adapters.personas.loader import PersonaConfig
+
+try:
+    from sleipnir.domain.catalog import ravn_session_ended, ravn_session_started
+except ImportError:  # sleipnir not available in all environments
+    ravn_session_started = None  # type: ignore[assignment]
+    ravn_session_ended = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +115,17 @@ class RavnAgent:
         checkpoint_every_n_tools: int = 0,
         auto_checkpoint_before_destructive: bool = False,
         budget_milestone_fractions: list[float] | None = None,
+        # NIU-582: Sleipnir lifecycle events
+        sleipnir_publisher: object | None = None,
+        persona: str = "",
+        repo_slug: str = "",
+        # NIU-588: learnings injection at session start
+        mimir: MimirPort | None = None,
+        reflection_config: PostSessionReflectionConfig | None = None,
+        # NIU-594: persona config for outcome block parsing
+        persona_config: PersonaConfig | None = None,
+        # NIU-612: stop loop early when outcome block detected
+        stop_on_outcome: bool = False,
     ) -> None:
         self._llm = llm
         self._tools = {t.name: t for t in tools}
@@ -116,11 +139,16 @@ class RavnAgent:
         self._post_tool_hooks: list[PostToolHook] = post_tool_hooks or []
         self._user_input_fn = user_input_fn
         self._memory = memory
+        self._mimir = mimir
         self._episode_summary_max_chars = episode_summary_max_chars
         self._episode_task_max_chars = episode_task_max_chars
         self._iteration_budget = iteration_budget
         self._compressor = compressor
         self._prompt_builder = prompt_builder
+        # Set identity on prompt_builder if provided — this was missing and caused
+        # empty system prompts when using PromptBuilder with personas.
+        if prompt_builder is not None:
+            prompt_builder.set_identity(system_prompt)
         self._reflection_model = reflection_model
         self._reflection_max_tokens = reflection_max_tokens
         self._task_summary_max_chars = task_summary_max_chars
@@ -139,6 +167,20 @@ class RavnAgent:
         self._budget_milestones: list[float] = budget_milestone_fractions or []
         self._tool_call_count: int = 0
         self._fired_milestones: set[float] = set()
+        # NIU-582: Sleipnir lifecycle event support
+        self._sleipnir_publisher = sleipnir_publisher
+        self._persona = persona
+        self._repo_slug = repo_slug
+        self._turn_count: int = 0
+        self._session_wall_start: float = time.monotonic()
+        self._session_ended_emitted: bool = False
+        # NIU-588: learnings injection at session start
+        self._mimir = mimir
+        self._reflection_config = reflection_config
+        # NIU-594: persona config for outcome block parsing
+        self._persona_config = persona_config
+        # NIU-612: stop loop early when outcome block detected
+        self._stop_on_outcome = stop_on_outcome
 
     @property
     def session(self) -> Session:
@@ -195,6 +237,84 @@ class RavnAgent:
         """Convert session messages to the API format."""
         return [{"role": m.role, "content": m.content} for m in self._session.messages]
 
+    async def _emit_session_started(self) -> None:
+        """Publish ravn.session.started to Sleipnir (no-op when publisher absent)."""
+        if self._sleipnir_publisher is None or ravn_session_started is None:
+            return
+        try:
+            event = ravn_session_started(
+                session_id=str(self._session.id),
+                persona=self._persona,
+                repo_slug=self._repo_slug,
+                source=self._source_id,
+                correlation_id=self._task_id,
+            )
+            await self._sleipnir_publisher.publish(event)
+        except Exception:
+            logger.warning("Failed to emit ravn.session.started; continuing.", exc_info=True)
+
+    def _build_session_ended_event(self, outcome: str) -> object:
+        """Build a ravn.session.ended SleipnirEvent with the given outcome string.
+
+        Centralises the token/duration computation and ravn_session_ended() call
+        so both emit_session_ended() and _emit_session_ended_with_outcome() stay DRY.
+        """
+        total_tokens = self._session.total_usage.total_tokens
+        duration_s = round(time.monotonic() - self._session_wall_start, 3)
+        return ravn_session_ended(
+            session_id=str(self._session.id),
+            persona=self._persona,
+            outcome=outcome,
+            token_count=total_tokens,
+            duration_s=duration_s,
+            source=self._source_id,
+            repo_slug=self._repo_slug,
+            correlation_id=self._task_id,
+        )
+
+    async def emit_session_ended(self, outcome: str) -> None:
+        """Publish ravn.session.ended to Sleipnir.
+
+        Call this once the entire session is complete (all turns done, normal
+        exit, interrupt, or error).  No-op when no publisher is configured or
+        when the event was already emitted (e.g. by outcome block capture).
+
+        :param outcome: One of ``"success"``, ``"interrupted"``, or ``"error"``.
+        """
+        if self._sleipnir_publisher is None or ravn_session_ended is None:
+            return
+        if self._session_ended_emitted:
+            return
+        try:
+            event = self._build_session_ended_event(outcome)
+            await self._sleipnir_publisher.publish(event)
+            self._session_ended_emitted = True
+        except Exception:
+            logger.warning("Failed to emit ravn.session.ended; continuing.", exc_info=True)
+
+    async def _emit_session_ended_with_outcome(self, parsed_outcome: ParsedOutcome) -> None:
+        """Publish ravn.session.ended enriched with structured outcome fields.
+
+        Called from run_turn() when the agent produces a valid outcome block.
+        Sets ``_session_ended_emitted`` so the external emit_session_ended()
+        becomes a no-op and no double-emission occurs.
+        """
+        if self._sleipnir_publisher is None or ravn_session_ended is None:
+            return
+        try:
+            outcome_str = "success" if parsed_outcome.valid else "partial"
+            event = self._build_session_ended_event(outcome_str)
+            event.payload["structured_outcome"] = parsed_outcome.fields
+            event.payload["outcome_valid"] = parsed_outcome.valid
+            if self._persona_config is not None:
+                event.payload["outcome_event_type"] = self._persona_config.produces.event_type
+            await self._sleipnir_publisher.publish(event)
+            self._session_ended_emitted = True
+        except Exception:
+            logger.warning(
+                "Failed to emit ravn.session.ended with outcome; continuing.", exc_info=True
+            )
+
     async def run_turn(self, user_input: str) -> TurnResult:
         """Process one user turn and return the result.
 
@@ -219,6 +339,11 @@ class RavnAgent:
         - An episode (with LLM reflection) is recorded after the turn.
         """
         start_time = time.monotonic()
+
+        # NIU-582: emit session.started on the first turn only.
+        if self._turn_count == 0:
+            await self._emit_session_started()
+        self._turn_count += 1
 
         # Check budget before starting the turn.
         if self._iteration_budget is not None and self._iteration_budget.exhausted:
@@ -246,7 +371,12 @@ class RavnAgent:
         # Determine whether explicit thinking was requested for this turn.
         explicit_thinking, user_input = _parse_think_flag(user_input)
 
-        if self._memory is not None:
+        if self._mimir is not None:
+            try:
+                await _detect_and_write_facts(user_input, self._mimir)
+            except Exception:
+                logger.warning("Inline fact detection failed; continuing.", exc_info=True)
+        elif self._memory is not None:
             try:
                 await self._memory.process_inline_facts(str(self._session.id), user_input)
             except Exception:
@@ -260,6 +390,16 @@ class RavnAgent:
         final_response = ""
         self._last_compression_result = None
         last_had_tool_error = False
+
+        # Log system prompt on first iteration for debugging
+        if isinstance(effective_system, str):
+            logger.debug("system_prompt (first 2000 chars): %s", effective_system[:2000])
+        else:
+            # Anthropic blocks format - log full content
+            logger.debug("system_prompt_blocks: %d blocks", len(effective_system))
+            for i, block in enumerate(effective_system):
+                text = block.get("text", "")
+                logger.debug("system_prompt_block[%d] (first 2000 chars): %s", i, text[:2000])
 
         for iteration in range(self._max_iterations):
             # Check external interruption (SIGINT/SIGTERM/Tyr cancel via interrupt()).
@@ -326,6 +466,34 @@ class RavnAgent:
             if llm_response.content:
                 final_response = llm_response.content
 
+            # NIU-612: Early termination when outcome block detected (optional).
+            # Some models continue calling tools even after producing the outcome.
+            # When stop_on_outcome is enabled, we check for the block and break early.
+            if self._stop_on_outcome and llm_response.content:
+                early_outcome = _parse_outcome_block_for_persona(
+                    llm_response.content, self._persona_config
+                )
+                if early_outcome is not None:
+                    logger.info("Early termination: outcome block detected, skipping tool calls")
+                    logger.debug(
+                        "outcome_block: valid=%s fields=%s errors=%s",
+                        early_outcome.valid,
+                        early_outcome.fields,
+                        early_outcome.errors,
+                    )
+                    await self._channel.emit(
+                        RavnEvent.response(
+                            source=self._source_id,
+                            text=llm_response.content,
+                            correlation_id=self._session.id,
+                            session_id=self._session.id,
+                        )
+                    )
+                    self._session.add_message(
+                        Message(role="assistant", content=llm_response.content)
+                    )
+                    break
+
             # Append the assistant message (with tool calls) to history.
             assistant_content = _build_assistant_content(llm_response)
             self._session.messages.append(Message(role="assistant", content=assistant_content))
@@ -388,31 +556,55 @@ class RavnAgent:
         self._session.record_turn(cumulative_usage)
         duration_seconds = time.monotonic() - start_time
 
-        result = TurnResult(
+        # NIU-594: build a partial result to pass into episode extraction
+        partial_result = TurnResult(
             response=final_response,
             tool_calls=turn_tool_calls,
             tool_results=turn_tool_results,
             usage=cumulative_usage,
         )
 
-        if self._memory is not None:
-            try:
-                episode = _extract_episode(
-                    session_id=str(self._session.id),
-                    user_input=user_input,
-                    turn_result=result,
-                    summary_max_chars=self._episode_summary_max_chars,
-                    task_max_chars=self._episode_task_max_chars,
-                )
+        # NIU-594: parse ---outcome--- block from final response when persona declares a schema
+        parsed_outcome = _parse_outcome_block_for_persona(final_response, self._persona_config)
+        if parsed_outcome is not None:
+            parsed_outcome = await _validate_mimir_outcome_for_persona(
+                parsed_outcome,
+                persona_config=self._persona_config,
+                mimir=self._mimir,
+            )
+            logger.debug(
+                "final_outcome_block: valid=%s fields=%s errors=%s",
+                parsed_outcome.valid,
+                parsed_outcome.fields,
+                parsed_outcome.errors,
+            )
+
+        # Extract episode (always, so TurnResult.episode is populated for outcome capture)
+        recorded_episode: Episode | None = None
+        try:
+            episode = _extract_episode(
+                session_id=str(self._session.id),
+                user_input=user_input,
+                turn_result=partial_result,
+                summary_max_chars=self._episode_summary_max_chars,
+                task_max_chars=self._episode_task_max_chars,
+            )
+            # Attach structured outcome to episode before enrichment/recording
+            if parsed_outcome is not None:
+                episode.structured_outcome = parsed_outcome.fields
+                episode.outcome_valid = parsed_outcome.valid
+
+            if self._memory is not None:
                 episode = await self._enrich_episode(
                     episode=episode,
-                    turn_result=result,
+                    turn_result=partial_result,
                     duration_seconds=duration_seconds,
                     past_context=memory_ctx,
                 )
                 await self._memory.record_episode(episode)
-            except Exception:
-                logger.warning("Memory episode recording failed; continuing.", exc_info=True)
+            recorded_episode = episode
+        except Exception:
+            logger.warning("Episode extraction/recording failed; continuing.", exc_info=True)
 
         if self._memory is not None:
             try:
@@ -424,7 +616,17 @@ class RavnAgent:
             except Exception:
                 logger.warning("Memory on_turn_complete failed; continuing.", exc_info=True)
 
-        return result
+        # NIU-594: emit ravn.session.ended enriched with structured outcome
+        if parsed_outcome is not None:
+            await self._emit_session_ended_with_outcome(parsed_outcome)
+
+        return TurnResult(
+            response=final_response,
+            tool_calls=turn_tool_calls,
+            tool_results=turn_tool_results,
+            usage=cumulative_usage,
+            episode=recorded_episode,
+        )
 
     async def _build_effective_system(self, user_input: str) -> SystemPrompt:
         """Build the effective system prompt for this turn.
@@ -442,6 +644,9 @@ class RavnAgent:
                     logger.warning(
                         "Memory prefetch failed; continuing without context.", exc_info=True
                     )
+            # NIU-588: inject Mímir learnings on the first turn only.
+            if self._turn_count == 1 and self._mimir is not None:
+                await self._inject_learnings()
             return self._prompt_builder.render_blocks()
 
         # Legacy: plain-string system prompt with optional memory suffix.
@@ -454,6 +659,33 @@ class RavnAgent:
             except Exception:
                 logger.warning("Memory prefetch failed; continuing without context.", exc_info=True)
         return effective
+
+    async def _inject_learnings(self) -> None:
+        """Fetch Mímir learnings for the current repo and inject into the prompt.
+
+        Best-effort — logs a warning and does nothing if Mímir is unavailable
+        or the reflection config is not provided.
+        """
+        if self._mimir is None or self._prompt_builder is None:
+            return
+
+        cfg = self._reflection_config
+        max_pages = cfg.max_learnings_injected if cfg is not None else 5
+        token_budget = cfg.learning_token_budget if cfg is not None else 500
+
+        try:
+            from ravn.adapters.reflection.post_session import fetch_relevant_learnings
+
+            learnings_text = await fetch_relevant_learnings(
+                self._mimir,
+                repo_slug=self._repo_slug,
+                max_pages=max_pages,
+                token_budget=token_budget,
+            )
+            if learnings_text:
+                self._prompt_builder.set_learnings_context(learnings_text)
+        except Exception:
+            logger.warning("Learnings injection failed; continuing without.", exc_info=True)
 
     async def _maybe_compress(
         self,
@@ -1056,6 +1288,108 @@ def _extract_episode(
         tags=tags,
         embedding=None,
     )
+
+
+def _parse_outcome_block_for_persona(
+    text: str,
+    persona_config: PersonaConfig | None,
+) -> ParsedOutcome | None:
+    """Parse the ---outcome--- block from *text* using the persona's declared schema.
+
+    Returns a :class:`niuu.domain.outcome.ParsedOutcome` when an outcome block is
+    found, or ``None`` when no persona schema is configured or no block is present.
+    """
+    if persona_config is None:
+        return None
+    produces = persona_config.produces
+    if produces is None:
+        return None
+    schema_fields = produces.schema
+    if not schema_fields:
+        return None
+    try:
+        from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
+
+        schema = OutcomeSchema(fields=schema_fields)
+        return parse_outcome_block(text, schema)
+    except Exception:
+        logger.warning("Outcome block parsing failed; continuing without.", exc_info=True)
+        return None
+
+
+async def _validate_mimir_outcome_for_persona(
+    parsed_outcome: ParsedOutcome,
+    *,
+    persona_config: PersonaConfig | None,
+    mimir: MimirPort | None,
+) -> ParsedOutcome:
+    """Apply persona-specific Mimir-backed outcome validation.
+
+    At the moment this enforces research-page provenance for personas that emit
+    ``research.completed``. The page must exist, be marked
+    ``produced_by_thread: true``, reference non-empty ``source_ids``, and those
+    source IDs must resolve to ingested raw sources that are not merely the
+    final page content copied back into ``raw/``.
+    """
+    if persona_config is None or mimir is None:
+        return parsed_outcome
+    if persona_config.produces.event_type != "research.completed":
+        return parsed_outcome
+
+    page_path = str(parsed_outcome.fields.get("page_path") or "").strip()
+    errors: list[str] = []
+    if not page_path:
+        errors.append("research.completed outcome requires a non-empty page_path")
+    else:
+        try:
+            page = await mimir.get_page(page_path)
+        except FileNotFoundError:
+            errors.append(f"research page not found in Mimir: {page_path}")
+        else:
+            if not page.meta.produced_by_thread:
+                errors.append(
+                    f"research page {page_path} must include produced_by_thread: true"
+                )
+
+            source_ids = [
+                stripped_id
+                for source_id in page.meta.source_ids
+                if (stripped_id := str(source_id).strip())
+            ]
+            if not source_ids:
+                errors.append(
+                    f"research page {page_path} has no source_ids provenance; ingest the "
+                    "actual sources and reference them in frontmatter"
+                )
+            else:
+                resolved_sources = []
+                missing_source_ids = []
+                for source_id in source_ids:
+                    source = await mimir.read_source(source_id)
+                    if source is None:
+                        missing_source_ids.append(source_id)
+                        continue
+                    resolved_sources.append(source)
+
+                if missing_source_ids:
+                    errors.append(
+                        f"research page {page_path} references missing source_ids: "
+                        + ", ".join(missing_source_ids)
+                    )
+
+                stripped_content = page.content.strip()
+                if resolved_sources and all(
+                    source.content.strip() == stripped_content for source in resolved_sources
+                ):
+                    errors.append(
+                        f"research page {page_path} only references self-ingested page content; "
+                        "ingest the material sources you actually used"
+                    )
+
+    if errors:
+        parsed_outcome.valid = False
+        parsed_outcome.errors.extend(errors)
+    return parsed_outcome
 
 
 _THINK_PREFIXES = ("think:", "think: ")

@@ -23,3 +23,26 @@ dependencies:
     version: ">=0.0.0-0"
     repository: "file://../tyr"
     condition: tyr.enabled
+  - name: niuu-shared
+    version: ">=0.0.0-0"
+    repository: "file://../niuu-shared"
+    condition: niuu-shared.enabled
+  - name: bifrost
+    version: ">=0.0.0-0"
+    repository: "file://../bifrost"
+    condition: bifrost.enabled
+  - name: mimir
+    version: ">=0.0.0-0"
+    repository: "file://../mimir"
+    condition: mimir-shared.enabled
+    alias: mimir-shared
+  - name: mimir
+    version: ">=0.0.0-0"
+    repository: "file://../mimir"
+    condition: mimir-kanuck.enabled
+    alias: mimir-kanuck
+  - name: mimir
+    version: ">=0.0.0-0"
+    repository: "file://../mimir"
+    condition: mimir-research.enabled
+    alias: mimir-research

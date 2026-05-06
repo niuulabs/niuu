@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from niuu.ports.integrations import IntegrationRepository
+from tyr.adapters.ravn_dispatcher import RavnDispatcher
 from tyr.config import ReviewConfig
 from tyr.domain.models import (
     ConfidenceEvent,
@@ -35,6 +36,7 @@ from tyr.domain.models import (
     PRStatus,
     Raid,
     RaidStatus,
+    RavnOutcome,
     Saga,
     validate_transition,
 )
@@ -134,6 +136,7 @@ class ReviewEngine:
         integration_repo: IntegrationRepository | None = None,
         dispatcher_repo: DispatcherRepository | None = None,
         dispatch_service: DispatchService | None = None,
+        ravn_dispatcher: RavnDispatcher | None = None,
     ) -> None:
         self._tracker_factory = tracker_factory
         self._volundr_factory = volundr_factory
@@ -144,6 +147,7 @@ class ReviewEngine:
         self._integration_repo = integration_repo
         self._dispatcher_repo = dispatcher_repo
         self._dispatch_service = dispatch_service
+        self._ravn = ravn_dispatcher
         self._task: asyncio.Task[None] | None = None
         self._processed: set[str] = set()
         # Maps reviewer_session_id → (raid_tracker_id, owner_id)
@@ -160,6 +164,73 @@ class ReviewEngine:
         None otherwise.
         """
         return self._reviewer_sessions.get(session_id)
+
+    async def handle_reviewer_failure(self, session_id: str, reason: str) -> None:
+        """Handle a reviewer session lifecycle failure.
+
+        Triggered when the reviewer session never produces output because
+        provisioning failed (e.g. ``Max concurrent sessions reached``) or
+        the session crashed early. Without this hook the raid sits in
+        REVIEW indefinitely with a phantom reviewer that will never
+        complete. Marks the raid as REVIEW-pending no longer (transitions
+        it back to a state that the autonomous flow can act on) and
+        records a confidence event so the failure is visible in the audit
+        trail.
+        """
+        mapping = self._reviewer_sessions.pop(session_id, None)
+        if mapping is None:
+            logger.debug(
+                "Reviewer session %s not tracked — ignoring failure", session_id
+            )
+            return
+
+        tracker_id, owner_id = mapping
+        logger.warning(
+            "Reviewer session %s failed for raid %s (reason=%s) — "
+            "marking raid for retry",
+            session_id,
+            tracker_id,
+            reason,
+        )
+        adapters = await self._tracker_factory.for_owner(owner_id)
+        if not adapters:
+            logger.warning(
+                "No tracker adapter for owner %s — cannot recover reviewer failure",
+                owner_id[:8],
+            )
+            return
+        tracker = adapters[0]
+        try:
+            raid = await tracker.get_raid(tracker_id)
+        except Exception:
+            logger.warning(
+                "Could not fetch raid %s while handling reviewer failure",
+                tracker_id,
+                exc_info=True,
+            )
+            return
+        # Drop the dangling reviewer_session_id so a future review attempt
+        # gets a fresh slot, then push the raid into FAILED so the user can
+        # /retry it (or the autonomous path can pick it up). FAILED is the
+        # safer default than auto-respawning here, which could thrash if
+        # the cap is genuinely full.
+        updated = await tracker.update_raid_progress(
+            tracker_id,
+            status=RaidStatus.FAILED,
+            reviewer_session_id="",
+            reason=f"Reviewer session failed: {reason}",
+        )
+        try:
+            await tracker.update_raid_state(tracker_id, RaidStatus.FAILED)
+        except Exception:
+            logger.warning(
+                "Failed to set tracker issue %s to FAILED after reviewer failure",
+                tracker_id,
+                exc_info=True,
+            )
+        await self._emit_state_changed(
+            updated or raid, owner_id=owner_id, action="reviewer_failed"
+        )
 
     async def handle_reviewer_completion(self, session_id: str, reviewer_output: str) -> None:
         """Handle a reviewer session idle event (called by ActivitySubscriber).
@@ -340,13 +411,22 @@ class ReviewEngine:
                 )
                 if event.event != "raid.state_changed":
                     continue
-                if event.data.get("status") != RaidStatus.REVIEW.value:
+                status = event.data.get("status")
+                tracker_id = event.data.get("tracker_id")
+                # Any non-REVIEW transition means a previous review cycle
+                # is over (raid was MERGED, FAILED, or re-dispatched into
+                # RUNNING). Forget the tracker_id so a future REVIEW
+                # transition for the same raid (e.g. after auto-continue
+                # re-dispatches it) is treated as a fresh cycle, not
+                # silently skipped as "already processed".
+                if status != RaidStatus.REVIEW.value:
+                    if isinstance(tracker_id, str) and tracker_id:
+                        self._processed.discard(tracker_id)
                     logger.debug(
                         "Skipping — status=%s (not REVIEW)",
-                        event.data.get("status"),
+                        status,
                     )
                     continue
-                tracker_id = event.data.get("tracker_id")
                 owner_id = event.owner_id
                 if not tracker_id or not owner_id:
                     logger.warning(
@@ -432,7 +512,15 @@ class ReviewEngine:
                 reason="Reviewer session spawned, awaiting completion",
             )
 
-        # No reviewer — decide immediately based on signals
+        # Try review-arbiter ravn for nuanced judgment (falls back to imperative logic)
+        if self._cfg.ravn_arbiter_enabled and self._ravn is not None:
+            arbiter_decision = await self._dispatch_to_arbiter(
+                tracker, tracker_id, owner_id, raid, pr_status, changed_files, score
+            )
+            if arbiter_decision is not None:
+                return arbiter_decision
+
+        # Imperative fallback: decide based on confidence signals
         if pr_status and not pr_status.ci_passed:
             return await self._handle_ci_failure(
                 tracker, tracker_id, owner_id, raid, pr_status, score
@@ -445,6 +533,127 @@ class ReviewEngine:
             return await self._handle_auto_approve(tracker, tracker_id, owner_id, raid, score)
 
         return await self._handle_escalation(tracker, tracker_id, owner_id, raid, score)
+
+    async def handle_ravn_outcome(
+        self,
+        tracker_id: str,
+        owner_id: str,
+        outcome: RavnOutcome,
+        *,
+        scope_adherence_threshold: float,
+    ) -> ReviewDecision:
+        """Process a structured outcome from a ``ravn.task.completed`` event.
+
+        Maps the ravn coordinator's outcome fields to :class:`ConfidenceEvent`
+        entries and routes to the appropriate decision handler based on the
+        explicit verdict.
+
+        Accepts raids in RUNNING or REVIEW state:
+
+        - RUNNING → transitions to REVIEW first (ravn outcome is authoritative).
+        - REVIEW → processes directly (ActivitySubscriber may have beaten us).
+        - Any other status → skipped (already handled or terminal).
+        """
+        trackers = await self._tracker_factory.for_owner(owner_id)
+        if not trackers:
+            raise ValueError(f"No tracker adapter found for owner {owner_id}")
+        tracker = trackers[0]
+
+        raid = await tracker.get_raid(tracker_id)
+
+        if raid.status not in (RaidStatus.RUNNING, RaidStatus.REVIEW):
+            logger.info(
+                "handle_ravn_outcome: raid %s is %s — already handled, skipping",
+                tracker_id,
+                raid.status,
+            )
+            return ReviewDecision(
+                raid=raid,
+                action="skipped",
+                reason=f"Raid already in {raid.status} state",
+            )
+
+        if raid.status == RaidStatus.RUNNING:
+            validate_transition(raid.status, RaidStatus.REVIEW)
+            raid = await tracker.update_raid_progress(tracker_id, status=RaidStatus.REVIEW)
+
+        score = raid.confidence
+
+        if outcome.tests_passing is True:
+            event = _make_event(
+                raid.id, ConfidenceEventType.CI_PASS, self._cfg.confidence_delta_ci_pass, score
+            )
+            await tracker.add_confidence_event(tracker_id, event)
+            await self._emit_confidence_updated(raid.id, event)
+            score = event.score_after
+        elif outcome.tests_passing is False:
+            event = _make_event(
+                raid.id, ConfidenceEventType.CI_FAIL, self._cfg.confidence_delta_ci_fail, score
+            )
+            await tracker.add_confidence_event(tracker_id, event)
+            await self._emit_confidence_updated(raid.id, event)
+            score = event.score_after
+
+        if (
+            outcome.scope_adherence is not None
+            and outcome.scope_adherence < scope_adherence_threshold
+        ):
+            event = _make_event(
+                raid.id,
+                ConfidenceEventType.SCOPE_BREACH,
+                self._cfg.confidence_delta_scope_breach,
+                score,
+            )
+            await tracker.add_confidence_event(tracker_id, event)
+            await self._emit_confidence_updated(raid.id, event)
+            score = event.score_after
+
+        match outcome.verdict:
+            case "retry":
+                if raid.retry_count < self._cfg.max_retries:
+                    attempt = f"attempt {raid.retry_count + 1}/{self._cfg.max_retries}"
+                    return await self._auto_retry(
+                        tracker,
+                        tracker_id,
+                        owner_id,
+                        raid,
+                        reason=f"ravn coordinator requested retry ({attempt})",
+                    )
+
+                # Retries exhausted → FAILED
+                validate_transition(raid.status, RaidStatus.FAILED)
+                updated = await tracker.update_raid_progress(
+                    tracker_id,
+                    status=RaidStatus.FAILED,
+                    reason="ravn coordinator requested retry but retries exhausted",
+                )
+                if raid.session_id:
+                    await self._attach_working_transcript(tracker, tracker_id, owner_id, raid)
+                    await self._stop_session(owner_id, raid.session_id, "working session")
+                await self._emit_state_changed(updated, owner_id=owner_id, action="failed")
+                return ReviewDecision(
+                    raid=updated,
+                    action="failed",
+                    reason=(
+                        f"ravn coordinator requested retry after"
+                        f" {self._cfg.max_retries} retries exhausted"
+                    ),
+                )
+            case "approve":
+                if score >= self._cfg.auto_approve_threshold:
+                    return await self._handle_auto_approve(
+                        tracker, tracker_id, owner_id, raid, score
+                    )
+                return await self._handle_escalation(tracker, tracker_id, owner_id, raid, score)
+            case "escalate":
+                return await self._handle_escalation(tracker, tracker_id, owner_id, raid, score)
+            case _:
+                logger.warning(
+                    "handle_ravn_outcome: unknown verdict %r for raid %s — escalating",
+                    outcome.verdict,
+                    tracker_id,
+                )
+                return await self._handle_escalation(tracker, tracker_id, owner_id, raid, score)
 
     # -- Signal fetchers --
 
@@ -558,6 +767,141 @@ class ReviewEngine:
         await tracker.add_confidence_event(tracker_id, event)
         await self._emit_confidence_updated(raid_id, event)
         return event.score_after
+
+    # -- Review-arbiter ravn dispatch --
+
+    def _assemble_arbiter_context(
+        self,
+        raid: Raid,
+        pr_status: PRStatus | None,
+        changed_files: list[str],
+        score: float,
+    ) -> str:
+        """Assemble the initiative context string for the review-arbiter persona."""
+        lines: list[str] = [
+            f"# Review arbiter context for raid: {raid.name}",
+            f"Tracker ID: {raid.tracker_id}",
+            f"Confidence score (after signals): {score:.3f}",
+            f"Auto-approve threshold: {self._cfg.auto_approve_threshold:.3f}",
+            f"Retry count: {raid.retry_count} / {self._cfg.max_retries}",
+            "",
+            "## Acceptance criteria",
+        ]
+        for criterion in raid.acceptance_criteria:
+            lines.append(f"- {criterion}")
+
+        lines.append("")
+        lines.append("## PR status")
+        if pr_status is None:
+            lines.append("No PR found.")
+        else:
+            lines.append(f"PR ID: {pr_status.pr_id}")
+            lines.append(f"PR URL: {pr_status.url}")
+            lines.append(f"State: {pr_status.state}")
+            lines.append(f"Mergeable: {pr_status.mergeable}")
+            ci_label = {True: "passed", False: "failed", None: "unknown"}[pr_status.ci_passed]
+            lines.append(f"CI: {ci_label}")
+
+        declared_set = set(raid.declared_files)
+
+        lines.append("")
+        lines.append("## Declared files")
+        for f in raid.declared_files:
+            lines.append(f"- {f}")
+
+        lines.append("")
+        lines.append("## Changed files in PR")
+        if changed_files:
+            for f in changed_files:
+                declared = " [declared]" if f in declared_set else " [undeclared]"
+                lines.append(f"- {f}{declared}")
+        else:
+            lines.append("No changed files available.")
+
+        undeclared = [f for f in changed_files if f not in declared_set]
+        if undeclared:
+            ratio = len(undeclared) / len(changed_files) if changed_files else 0.0
+            lines.append(f"\nScope breach ratio: {ratio:.1%} undeclared")
+
+        lines.append("")
+        lines.append(
+            "Based on the above context, decide: approve, retry, or escalate. "
+            "Produce your outcome block."
+        )
+        return "\n".join(lines)
+
+    async def _dispatch_to_arbiter(
+        self,
+        tracker: TrackerPort,
+        tracker_id: str,
+        owner_id: str,
+        raid: Raid,
+        pr_status: PRStatus | None,
+        changed_files: list[str],
+        score: float,
+    ) -> ReviewDecision | None:
+        """Dispatch to the review-arbiter ravn persona.
+
+        Returns a :class:`ReviewDecision` if the arbiter produced a valid
+        outcome, or ``None`` to fall back to imperative logic.
+        """
+        if self._ravn is None:
+            return None
+
+        context = self._assemble_arbiter_context(raid, pr_status, changed_files, score)
+
+        try:
+            outcome = await self._ravn.dispatch(
+                "review-arbiter",
+                context,
+            )
+        except Exception:
+            logger.warning(
+                "review-arbiter dispatch failed for raid %s — using imperative fallback",
+                tracker_id,
+                exc_info=True,
+            )
+            return None
+
+        if outcome is None:
+            logger.info(
+                "review-arbiter returned no outcome for raid %s — using imperative fallback",
+                tracker_id,
+            )
+            return None
+
+        verdict = str(outcome.get("verdict", "")).lower()
+        reason = str(outcome.get("reason", "review-arbiter decision"))
+
+        logger.info(
+            "review-arbiter verdict for raid %s: %s (reason=%s)",
+            tracker_id,
+            verdict,
+            reason,
+        )
+
+        match verdict:
+            case "approve":
+                return await self._handle_auto_approve(tracker, tracker_id, owner_id, raid, score)
+            case "retry":
+                if raid.retry_count < self._cfg.max_retries:
+                    return await self._auto_retry(
+                        tracker,
+                        tracker_id,
+                        owner_id,
+                        raid,
+                        reason=f"review-arbiter: {reason}",
+                    )
+                return await self._handle_escalation(tracker, tracker_id, owner_id, raid, score)
+            case "escalate":
+                return await self._handle_escalation(tracker, tracker_id, owner_id, raid, score)
+            case _:
+                logger.warning(
+                    "review-arbiter returned unknown verdict %r for raid %s — imperative fallback",
+                    verdict,
+                    tracker_id,
+                )
+                return None
 
     # -- Reviewer session --
 

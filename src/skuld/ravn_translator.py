@@ -51,6 +51,10 @@ _SUMMARY_BUILDERS: dict[RavnEventType, _SummaryFn] = {
     RavnEventType.DECISION_REQUIRED: lambda e: (
         f"Human decision required: {e.payload.get('question', 'awaiting input')}"
     ),
+    RavnEventType.HELP_NEEDED: lambda e: (
+        f"Help needed ({e.payload.get('persona', 'agent')}): "
+        f"{e.payload.get('summary', 'awaiting input')}"
+    ),
     RavnEventType.TOOL_CALL: lambda e: f"Tool dispatched: {_tool(e)}",
     RavnEventType.STEP_START: lambda e: f"Agent step started for session {_sid(e)}",
     RavnEventType.STEP_COMPLETE: lambda e: f"Agent step complete for session {_sid(e)}",

@@ -1,0 +1,1 @@
+export { ToolBadge } from './ToolBadge';

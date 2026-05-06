@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tyr.adapters.bifrost import DecompositionError
+from tyr.api.saga_previews import create_saga_previews_router
 from tyr.api.sagas import create_sagas_router, resolve_llm, resolve_saga_repo
 from tyr.api.tracker import resolve_trackers
 from tyr.config import AuthConfig, LLMConfig
@@ -74,6 +75,7 @@ def _dev_settings() -> MagicMock:
 
 def _make_client(llm: MockLLM) -> TestClient:
     app = FastAPI()
+    app.include_router(create_saga_previews_router())
     app.include_router(create_sagas_router())
     app.dependency_overrides[resolve_trackers] = lambda: [MockTracker()]
     app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
@@ -210,6 +212,27 @@ class TestDecomposeEndpoint:
         assert len(data["phases"][0]["raids"]) == 2
         assert data["phases"][0]["raids"][0]["confidence"] == 0.95
         assert data["phases"][0]["raids"][1]["estimate_hours"] == 4.0
+
+    def test_create_saga_returns_preview_shape(self, client: TestClient, llm: MockLLM) -> None:
+        resp = client.post(
+            "/api/v1/tyr/sagas",
+            json={"spec": "Build auth system", "repo": "org/repo", "model": "claude-opus-4-6"},
+        )
+
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["tracker_id"] == ""
+        assert data["tracker_type"] == "preview"
+        assert data["name"] == "Test Saga"
+        assert data["repos"] == ["org/repo"]
+        assert data["feature_branch"] == "feat/test-saga"
+        assert data["base_branch"] == "main"
+        assert data["confidence"] == 0.0
+        assert data["created_at"] == ""
+        assert data["phase_summary"] == {"total": 0, "completed": 0}
+        assert data["milestone_count"] == 1
+        assert data["issue_count"] == 1
+        assert llm.last_model == "claude-opus-4-6"
 
     def test_connection_error_returns_502(self, client: TestClient, llm: MockLLM) -> None:
         llm.error = ConnectionError("Cannot reach Bifröst")

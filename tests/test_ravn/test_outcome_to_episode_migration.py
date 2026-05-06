@@ -229,9 +229,7 @@ class TestMigrateFunction:
 class TestMainCli:
     def test_main_db_not_found_exits(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """main() exits with code 1 if the db file doesn't exist."""
-        monkeypatch.setattr(
-            sys, "argv", ["migrate", "--db", str(tmp_path / "nonexistent.db")]
-        )
+        monkeypatch.setattr(sys, "argv", ["migrate", "--db", str(tmp_path / "nonexistent.db")])
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 1

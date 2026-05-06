@@ -7,10 +7,11 @@ import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.outbound.oauth2_provider import OAuth2Provider
 from volundr.config import OAuthConfig
@@ -33,15 +34,19 @@ class AuthorizeResponse(BaseModel):
     url: str = Field(description="OAuth2 authorization URL to redirect the user to")
 
 
-def create_oauth_router(
+def _build_oauth_router(
     oauth_config: OAuthConfig,
     integration_registry: IntegrationRegistry,
     credential_store: CredentialStorePort,
     integration_repo: IntegrationRepository,
+    *,
+    prefix: str,
+    deprecated: bool = False,
+    canonical_prefix: str | None = None,
 ) -> APIRouter:
     """Create FastAPI router for OAuth2 integration flows."""
     router = APIRouter(
-        prefix="/api/v1/volundr/integrations/oauth",
+        prefix=prefix,
         tags=["OAuth"],
     )
 
@@ -57,7 +62,7 @@ def create_oauth_router(
 
     def _build_redirect_uri(slug: str) -> str:
         base = oauth_config.redirect_base_url.rstrip("/")
-        return f"{base}/api/v1/volundr/integrations/oauth/callback"
+        return f"{base}{prefix}/callback"
 
     @router.get(
         "/{slug}/authorize",
@@ -65,9 +70,20 @@ def create_oauth_router(
     )
     async def authorize(
         slug: str,
+        request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> AuthorizeResponse:
         """Start an OAuth2 authorization flow for an integration."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=f"{prefix}/{slug}/authorize",
+                    canonical_path=f"{canonical_prefix}/{slug}/authorize",
+                ),
+            )
         defn = integration_registry.get_definition(slug)
         if defn is None or defn.oauth is None:
             raise HTTPException(
@@ -104,6 +120,7 @@ def create_oauth_router(
 
     @router.get("/callback")
     async def oauth_callback(
+        request: Request,
         code: str = Query(description="Authorization code from the provider"),
         state: str = Query(description="State parameter for CSRF validation"),
     ) -> HTMLResponse:
@@ -189,14 +206,35 @@ def create_oauth_router(
             "<script>setTimeout(function(){window.close()},2000)"
             "</script></div></body></html>"
         )
-        return HTMLResponse(content=html)
+        response = HTMLResponse(content=html)
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=f"{prefix}/callback",
+                    canonical_path=f"{canonical_prefix}/callback",
+                ),
+            )
+        return response
 
     @router.post("/{slug}/disconnect", status_code=status.HTTP_204_NO_CONTENT)
     async def disconnect(
         slug: str,
+        request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> None:
         """Disconnect an OAuth integration — revoke token and remove connection."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=f"{prefix}/{slug}/disconnect",
+                    canonical_path=f"{canonical_prefix}/{slug}/disconnect",
+                ),
+            )
         connections = await integration_repo.list_connections(principal.user_id)
         connection = next((c for c in connections if c.slug == slug), None)
         if connection is None:
@@ -232,3 +270,37 @@ def create_oauth_router(
         await integration_repo.delete_connection(connection.id)
 
     return router
+
+
+def create_oauth_router(
+    oauth_config: OAuthConfig,
+    integration_registry: IntegrationRegistry,
+    credential_store: CredentialStorePort,
+    integration_repo: IntegrationRepository,
+) -> APIRouter:
+    """Create the legacy Volundr OAuth router."""
+    return _build_oauth_router(
+        oauth_config,
+        integration_registry,
+        credential_store,
+        integration_repo,
+        prefix="/api/v1/volundr/integrations/oauth",
+        deprecated=True,
+        canonical_prefix="/api/v1/integrations/oauth",
+    )
+
+
+def create_canonical_oauth_router(
+    oauth_config: OAuthConfig,
+    integration_registry: IntegrationRegistry,
+    credential_store: CredentialStorePort,
+    integration_repo: IntegrationRepository,
+) -> APIRouter:
+    """Create the canonical shared OAuth router."""
+    return _build_oauth_router(
+        oauth_config,
+        integration_registry,
+        credential_store,
+        integration_repo,
+        prefix="/api/v1/integrations/oauth",
+    )

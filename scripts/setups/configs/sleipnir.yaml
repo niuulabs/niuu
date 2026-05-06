@@ -1,0 +1,135 @@
+# ─── sleipnir ────────────────────────────────────────────────────────────────
+#
+# Ravn daemon with Sleipnir event backbone for fleet coordination.
+#
+# What you get:
+#   - All daemon features (gateway, drive loop, triggers)
+#   - Sleipnir pub/sub: every RavnEvent published to RabbitMQ topic exchange
+#   - Other systems (Valkyrie, Tyr, monitoring) consume events without coupling
+#   - Task dispatch: `ravn listen` instances pick up work from the exchange
+#   - Agent ID auto-detected from hostname (or set explicitly)
+#
+# Architecture:
+#   ravn daemon ──publish──► RabbitMQ (ravn.events) ──consume──► Tyr / Valkyrie
+#                                                   ──consume──► ravn listen
+#                                                   ──consume──► Grafana / alerts
+#
+# Prerequisites:
+#   - An LLM provider (configure below)
+#   - TELEGRAM_BOT_TOKEN environment variable
+#   - SLEIPNIR_AMQP_URL environment variable (e.g. amqp://guest:guest@rabbitmq:5672/)
+#   - RabbitMQ running and reachable
+#
+# Quick RabbitMQ (Docker):
+#   docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
+#   export SLEIPNIR_AMQP_URL=amqp://guest:guest@localhost:5672/
+#
+# Launch:
+#   ravn daemon --config ~/.ravn/config.yaml
+#
+# Start a listener on another machine:
+#   ravn listen --config ~/.ravn/config.yaml --persona coding-agent
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# ── Mimir ───────────────────────────────────────────────────────────────────
+mimir:
+  enabled: true
+  path: ~/.ravn/mimir
+  auto_distill: true
+  categories:
+    - technical
+    - projects
+    - research
+    - self
+
+# ── Sleipnir: event backbone ──────────────────────────────────────────────
+sleipnir:
+  enabled: true
+  amqp_url_env: SLEIPNIR_AMQP_URL
+  exchange: ravn.events
+  agent_id: ""                           # auto: hostname
+  reconnect_delay_s: 5.0
+  publish_timeout_s: 2.0
+
+# ── Gateway ────────────────────────────────────────────────────────────────
+gateway:
+  enabled: true
+  channels:
+    telegram:
+      enabled: true
+      token_env: TELEGRAM_BOT_TOKEN
+      allowed_chat_ids: []
+      poll_timeout: 30
+    http:
+      enabled: true
+      host: 127.0.0.1
+      port: 7477
+
+# ── Drive loop ─────────────────────────────────────────────────────────────
+initiative:
+  enabled: true
+  max_concurrent_tasks: 3
+  task_queue_max: 50
+  queue_journal_path: ~/.ravn/daemon/queue.json
+  default_output_mode: ambient
+  heartbeat_interval_seconds: 60
+  cron_tick_seconds: 30.0
+
+# ── Triggers ───────────────────────────────────────────────────────────────
+thread:
+  enabled: true
+  max_queue_size: 200
+  enricher_poll_interval_seconds: 300
+  enricher_llm_alias: fast
+
+wakefulness:
+  enabled: true
+  silence_threshold_seconds: 1800
+  reflection_cooldown_seconds: 3600
+  llm_alias: fast
+
+recap:
+  enabled: true
+  absence_threshold_seconds: 3600
+  return_detection_window_seconds: 300
+  max_threads_in_recap: 10
+  persona: produce-recap
+
+# ── Budget ─────────────────────────────────────────────────────────────────
+budget:
+  daily_cap_usd: 3.0
+  warn_at_percent: 80
+
+# ── Trust ──────────────────────────────────────────────────────────────────
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  drafting_tickets: free
+  producing_recaps: free
+  opening_tickets: approval
+  closing_tickets: approval
+  pushing_branches: approval
+  pushing_main: never
+  external_messages: approval
+  spending_beyond_cap: never
+
+mesh:
+  enabled: false
+
+logging:
+  level: info

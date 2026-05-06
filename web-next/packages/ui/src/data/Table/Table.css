@@ -1,0 +1,165 @@
+.niuu-table-wrapper {
+  overflow: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.niuu-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+}
+
+/* ── Header ──────────────────────────────────────────── */
+
+.niuu-table-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-bg-secondary);
+}
+
+.niuu-table-th {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-text-muted);
+  border-bottom: 1px solid var(--color-border-subtle);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.niuu-table-th--sortable {
+  cursor: pointer;
+}
+
+.niuu-table-th--sortable:hover {
+  color: var(--color-text-secondary);
+}
+
+.niuu-table-th--select,
+.niuu-table-th--expand {
+  width: 32px;
+  text-align: center;
+}
+
+.niuu-table-th-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* ── Sort icon ───────────────────────────────────────── */
+
+.niuu-table-sort-icon {
+  font-size: 8px;
+  opacity: 0.3;
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.niuu-table-sort-icon--active {
+  opacity: 0.8;
+  color: var(--color-brand);
+}
+
+.niuu-table-sort-icon--desc {
+  transform: rotate(180deg);
+}
+
+/* ── Body ────────────────────────────────────────────── */
+
+.niuu-table-body {
+  background: var(--color-bg-primary);
+}
+
+.niuu-table-row {
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background var(--transition-fast);
+}
+
+.niuu-table-row:last-child {
+  border-bottom: none;
+}
+
+.niuu-table-row:hover {
+  background: var(--color-bg-secondary);
+}
+
+.niuu-table-row--selected {
+  background: color-mix(in srgb, var(--color-brand) 8%, transparent);
+}
+
+.niuu-table-row--selected:hover {
+  background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+}
+
+.niuu-table-row--expanded > .niuu-table-td {
+  border-bottom: none;
+}
+
+.niuu-table-td {
+  padding: var(--space-2) var(--space-3);
+  vertical-align: middle;
+}
+
+.niuu-table-td--select,
+.niuu-table-td--expand {
+  width: 32px;
+  text-align: center;
+  padding: var(--space-2);
+}
+
+/* ── Expand button ───────────────────────────────────── */
+
+.niuu-table-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 8px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition:
+    color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.niuu-table-expand-btn:hover {
+  color: var(--color-text-primary);
+}
+
+.niuu-table-expand-btn--open {
+  transform: rotate(90deg);
+  color: var(--color-brand);
+}
+
+/* ── Expanded content row ─────────────────────────────── */
+
+.niuu-table-row--expand-content {
+  background: var(--color-bg-secondary);
+}
+
+.niuu-table-td--expand-content {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+/* ── Checkbox ─────────────────────────────────────────── */
+
+.niuu-table-td input[type='checkbox'],
+.niuu-table-th input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: var(--color-brand);
+}

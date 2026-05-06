@@ -162,6 +162,18 @@ export interface ChatMessageMeta {
   turns?: number;
 }
 
+export interface ParticipantMeta {
+  readonly peerId: string;
+  readonly persona: string;
+  readonly displayName: string;
+  readonly color: string;
+  readonly participantType: 'human' | 'ravn';
+  readonly gatewayUrl?: string;
+  readonly subscribesTo?: readonly string[];
+  readonly emits?: readonly string[];
+  readonly tools?: readonly string[];
+}
+
 export interface SkuldChatMessage {
   readonly id: string;
   readonly role: ChatMessageRole;
@@ -171,6 +183,11 @@ export interface SkuldChatMessage {
   readonly createdAt: Date;
   readonly status: 'running' | 'complete' | 'error';
   readonly metadata?: ChatMessageMeta;
+  // Multi-participant fields (undefined in single-agent mode)
+  readonly participantId?: string;
+  readonly participant?: ParticipantMeta;
+  readonly threadId?: string;
+  readonly visibility?: string;
 }
 
 export type PermissionBehavior = 'allow' | 'deny' | 'allowForever';
@@ -197,6 +214,10 @@ interface ConversationTurn {
   parts: Array<Record<string, unknown>>;
   created_at: string;
   metadata: Record<string, unknown>;
+  participant_id?: string;
+  participant_meta?: Record<string, unknown>;
+  thread_id?: string;
+  visibility?: string;
 }
 
 /**
@@ -211,6 +232,21 @@ function transformTurns(turns: ConversationTurn[]): SkuldChatMessage[] {
     createdAt: new Date(turn.created_at),
     status: 'complete' as const,
     metadata: turn.metadata as ChatMessageMeta | undefined,
+    participantId: turn.participant_id,
+    participant: turn.participant_meta
+      ? ({
+          peerId: String(turn.participant_meta.peer_id ?? ''),
+          persona: String(turn.participant_meta.persona ?? ''),
+          displayName: String(turn.participant_meta.display_name ?? ''),
+          color: String(turn.participant_meta.color ?? ''),
+          participantType: (turn.participant_meta.participant_type ?? 'human') as 'human' | 'ravn',
+          gatewayUrl: turn.participant_meta.gateway_url
+            ? String(turn.participant_meta.gateway_url)
+            : undefined,
+        } satisfies ParticipantMeta)
+      : undefined,
+    threadId: turn.thread_id,
+    visibility: turn.visibility,
   }));
 }
 
@@ -232,8 +268,76 @@ function wsUrlToHttpBase(wsUrl: string): string | null {
   }
 }
 
+export type ParticipantStatus = 'idle' | 'busy' | 'thinking' | 'tool_executing';
+
+export interface RoomParticipant extends ParticipantMeta {
+  readonly status: ParticipantStatus;
+  readonly joinedAt: Date;
+}
+
+// ── Mesh cascade event types ──────────────────────────────────────────
+
+export type MeshEventType = 'outcome' | 'mesh_message' | 'notification';
+
+export interface MeshOutcomeEvent {
+  readonly type: 'outcome';
+  readonly id: string;
+  readonly timestamp: Date;
+  readonly participantId: string;
+  readonly participant: ParticipantMeta;
+  readonly persona: string;
+  readonly eventType: string; // e.g. "review.passed", "security.changes_requested"
+  readonly fields: Record<string, unknown>;
+  readonly valid: boolean;
+  readonly summary?: string;
+  readonly verdict?: string;
+}
+
+export interface MeshDelegationEvent {
+  readonly type: 'mesh_message';
+  readonly id: string;
+  readonly timestamp: Date;
+  readonly participantId: string;
+  readonly participant: ParticipantMeta;
+  readonly fromPersona: string;
+  readonly eventType: string; // e.g. "code.changed"
+  readonly direction: 'delegate' | 'receive';
+  readonly preview: string;
+}
+
+export interface MeshNotificationEvent {
+  readonly type: 'notification';
+  readonly id: string;
+  readonly timestamp: Date;
+  readonly participantId: string;
+  readonly participant: ParticipantMeta;
+  readonly notificationType: string; // e.g. "help_needed"
+  readonly persona: string;
+  readonly reason: string;
+  readonly summary: string;
+  readonly attempted?: string[];
+  readonly recommendation?: string;
+  readonly urgency: number;
+  readonly context?: Record<string, unknown>;
+}
+
+export type MeshEvent = MeshOutcomeEvent | MeshDelegationEvent | MeshNotificationEvent;
+
+/** Per-peer internal event (thought, tool_start, tool_result) for agent detail view */
+export interface AgentInternalEvent {
+  readonly id: string;
+  readonly participantId: string;
+  readonly timestamp: Date;
+  readonly frameType: string;
+  readonly data: unknown;
+  readonly metadata: Record<string, unknown>;
+}
+
 interface UseSkuldChatReturn {
   messages: readonly SkuldChatMessage[];
+  participants: ReadonlyMap<string, RoomParticipant>;
+  meshEvents: readonly MeshEvent[];
+  agentEvents: ReadonlyMap<string, readonly AgentInternalEvent[]>;
   connected: boolean;
   isRunning: boolean;
   historyLoaded: boolean;
@@ -254,6 +358,7 @@ interface UseSkuldChatReturn {
   sendSetModel: (model: string) => void;
   sendSetMaxThinkingTokens: (tokens: number) => void;
   sendRewindFiles: () => void;
+  sendDirectedMessages: (peerIds: string[], text: string) => void;
   clearMessages: () => void;
 }
 
@@ -278,12 +383,37 @@ export function useSkuldChat(
 ): UseSkuldChatReturn {
   const { onConnect, onDisconnect } = options;
 
-  const { getMessages, setMessages: persistMessages, clearSession } = useChatStore();
+  const {
+    getMessages,
+    setMessages: persistMessages,
+    getMeshEvents: getStoredMeshEvents,
+    setMeshEvents: persistMeshEvents,
+    clearSession,
+  } = useChatStore();
 
   const [messages, setMessages] = useState<SkuldChatMessage[]>(() => {
     if (!url) return [];
     return getMessages(url);
   });
+  const [participants, setParticipants] = useState<Map<string, RoomParticipant>>(new Map());
+  const participantsRef = useRef<Map<string, RoomParticipant>>(participants);
+  useEffect(() => {
+    participantsRef.current = participants;
+  }, [participants]);
+
+  // Per-participant internal message accumulation — mirrors the streaming refs
+  // but keyed by peerId so multiple agents can stream concurrently.
+  interface InternalStreamState {
+    messageId: string;
+    parts: SkuldChatMessagePart[];
+    currentToolId: string;
+  }
+  const internalStreamsRef = useRef<Map<string, InternalStreamState>>(new Map());
+  const [meshEvents, setMeshEvents] = useState<MeshEvent[]>(() => {
+    if (!url) return [];
+    return getStoredMeshEvents(url);
+  });
+  const [agentEvents, setAgentEvents] = useState<Map<string, AgentInternalEvent[]>>(new Map());
   const [connected, setConnected] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -317,7 +447,8 @@ export function useSkuldChat(
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const historyUrl = new URL('/api/conversation/history', httpBase);
+    const base = httpBase.endsWith('/') ? httpBase : `${httpBase}/`;
+    const historyUrl = new URL('api/conversation/history', base);
     fetch(historyUrl.href, { headers })
       .then(res => res.json())
       .then(data => {
@@ -369,6 +500,12 @@ export function useSkuldChat(
     persistMessages(url, messages);
   }, [url, messages, persistMessages]);
 
+  // Persist mesh events alongside messages
+  useEffect(() => {
+    if (!url) return;
+    persistMeshEvents(url, meshEvents);
+  }, [url, meshEvents, persistMeshEvents]);
+
   // Streaming state refs (not in React state to avoid render churn)
   const streamingIdRef = useRef<string | null>(null);
   const streamingTextRef = useRef('');
@@ -412,6 +549,21 @@ export function useSkuldChat(
       return null;
     }
   }, []);
+
+  /** Extract a ParticipantMeta from a raw participant object in a wire event. */
+  function parseParticipantMeta(
+    raw: Record<string, unknown> | undefined
+  ): ParticipantMeta | undefined {
+    if (!raw) return undefined;
+    return {
+      peerId: String(raw.peer_id ?? ''),
+      persona: String(raw.persona ?? ''),
+      displayName: String(raw.display_name ?? ''),
+      color: String(raw.color ?? ''),
+      participantType: (raw.participant_type ?? 'ravn') as 'human' | 'ravn',
+      gatewayUrl: raw.gateway_url ? String(raw.gateway_url) : undefined,
+    };
+  }
 
   const handleMessage = useCallback(
     (raw: string) => {
@@ -875,6 +1027,329 @@ export function useSkuldChat(
           continue;
         }
 
+        // ── participant_joined: add participant to room ────────────
+        if (eventType === 'participant_joined') {
+          const wrapper = event as unknown as Record<string, unknown>;
+          // Server sends {type: "participant_joined", participant: {...}}
+          const raw = (wrapper.participant ?? wrapper) as Record<string, unknown>;
+          const peerId = String(raw.peer_id ?? '');
+          if (peerId) {
+            const participant: RoomParticipant = {
+              peerId,
+              persona: String(raw.persona ?? ''),
+              displayName: String(raw.display_name ?? ''),
+              color: String(raw.color ?? ''),
+              participantType: (raw.participant_type ?? 'ravn') as 'human' | 'ravn',
+              gatewayUrl: raw.gateway_url ? String(raw.gateway_url) : undefined,
+              subscribesTo: Array.isArray(raw.subscribes_to)
+                ? (raw.subscribes_to as string[])
+                : undefined,
+              emits: Array.isArray(raw.emits) ? (raw.emits as string[]) : undefined,
+              tools: Array.isArray(raw.tools) ? (raw.tools as string[]) : undefined,
+              status: 'idle',
+              joinedAt: new Date(),
+            };
+            setParticipants(prev => new Map(prev).set(peerId, participant));
+          }
+          continue;
+        }
+
+        // ── participant_left: remove participant from room ─────────
+        if (eventType === 'participant_left') {
+          const raw = event as unknown as Record<string, unknown>;
+          const peerId = String(raw.participantId ?? raw.peer_id ?? '');
+          if (peerId) {
+            setParticipants(prev => {
+              const next = new Map(prev);
+              next.delete(peerId);
+              return next;
+            });
+          }
+          continue;
+        }
+
+        // ── room_state: initialize participants on connect ────────
+        if (eventType === 'room_state') {
+          const raw = event as unknown as Record<string, unknown>;
+          const rawParticipants = Array.isArray(raw.participants) ? raw.participants : [];
+          const newMap = new Map<string, RoomParticipant>();
+          for (const p of rawParticipants) {
+            const pr = p as Record<string, unknown>;
+            const peerId = String(pr.peer_id ?? '');
+            if (!peerId) continue;
+            newMap.set(peerId, {
+              peerId,
+              persona: String(pr.persona ?? ''),
+              displayName: String(pr.display_name ?? ''),
+              color: String(pr.color ?? ''),
+              participantType: (pr.participant_type ?? 'ravn') as 'human' | 'ravn',
+              gatewayUrl: pr.gateway_url ? String(pr.gateway_url) : undefined,
+              subscribesTo: Array.isArray(pr.subscribes_to)
+                ? (pr.subscribes_to as string[])
+                : undefined,
+              emits: Array.isArray(pr.emits) ? (pr.emits as string[]) : undefined,
+              tools: Array.isArray(pr.tools) ? (pr.tools as string[]) : undefined,
+              status: 'idle',
+              joinedAt: new Date(),
+            });
+          }
+          setParticipants(newMap);
+          continue;
+        }
+
+        // ── room_message: append multi-participant message ────────
+        if (eventType === 'room_message') {
+          const raw = event as unknown as Record<string, unknown>;
+          const rawSenderId = raw.participantId ?? raw.participant_id;
+          const senderId = rawSenderId ? String(rawSenderId) : undefined;
+
+          // Finalize any running internal stream for this participant —
+          // a room_message means their turn produced a response.
+          if (senderId) {
+            const stream = internalStreamsRef.current.get(senderId);
+            if (stream) {
+              const finalParts = [...stream.parts];
+              const finalContent = finalParts
+                .filter((p): p is { type: 'reasoning'; text: string } => p.type === 'reasoning')
+                .map(p => p.text)
+                .join('\n');
+              const finId = stream.messageId;
+              setMessages(prev =>
+                prev.map(m =>
+                  m.id === finId
+                    ? {
+                        ...m,
+                        content: finalContent,
+                        parts: finalParts,
+                        status: 'complete' as const,
+                      }
+                    : m
+                )
+              );
+              internalStreamsRef.current.delete(senderId);
+            }
+          }
+
+          const msg: SkuldChatMessage = {
+            id: String(raw.id ?? generateId()),
+            role: (raw.role === 'user' ? 'user' : 'assistant') as ChatMessageRole,
+            content: String(raw.content ?? ''),
+            createdAt: raw.created_at ? new Date(String(raw.created_at)) : new Date(),
+            status: 'complete',
+            participantId: senderId,
+            participant: parseParticipantMeta(
+              raw.participant as Record<string, unknown> | undefined
+            ),
+            threadId: raw.thread_id ? String(raw.thread_id) : undefined,
+            visibility: raw.visibility ? String(raw.visibility) : undefined,
+          };
+          setMessages(prev => [...prev, msg]);
+          continue;
+        }
+
+        // ── room_activity: update participant status ───────────────
+        if (eventType === 'room_activity') {
+          const raw = event as unknown as Record<string, unknown>;
+          // Server sends camelCase: participantId, activityType
+          const peerId = String(raw.participantId ?? raw.peer_id ?? '');
+          const status = String(raw.activityType ?? raw.status ?? 'idle') as ParticipantStatus;
+          if (peerId) {
+            setParticipants(prev => {
+              const existing = prev.get(peerId);
+              if (!existing) return prev;
+              return new Map(prev).set(peerId, { ...existing, status });
+            });
+
+            // Finalize internal stream when agent goes idle
+            if (status === 'idle') {
+              const stream = internalStreamsRef.current.get(peerId);
+              if (stream) {
+                const finalParts = [...stream.parts];
+                const finalContent = finalParts
+                  .filter((p): p is { type: 'reasoning'; text: string } => p.type === 'reasoning')
+                  .map(p => p.text)
+                  .join('\n');
+                const finId = stream.messageId;
+                setMessages(prev =>
+                  prev.map(m =>
+                    m.id === finId
+                      ? {
+                          ...m,
+                          content: finalContent,
+                          parts: finalParts,
+                          status: 'complete' as const,
+                        }
+                      : m
+                  )
+                );
+                internalStreamsRef.current.delete(peerId);
+              }
+            }
+          }
+          continue;
+        }
+
+        // ── room_outcome: persona produced a structured result ─────
+        if (eventType === 'room_outcome') {
+          const raw = event as unknown as Record<string, unknown>;
+          const outcome: MeshOutcomeEvent = {
+            type: 'outcome',
+            id: generateId(),
+            timestamp: new Date(),
+            participantId: String(raw.participantId ?? ''),
+            participant: parseParticipantMeta(
+              raw.participant as Record<string, unknown> | undefined
+            ) ?? { peerId: '', persona: '', displayName: '', color: '', participantType: 'ravn' },
+            persona: String(raw.persona ?? ''),
+            eventType: String(raw.eventType ?? ''),
+            fields: (raw.fields as Record<string, unknown>) ?? {},
+            valid: raw.valid !== false,
+            summary: raw.summary ? String(raw.summary) : undefined,
+            verdict: raw.verdict ? String(raw.verdict) : undefined,
+          };
+          setMeshEvents(prev => [...prev, outcome]);
+          continue;
+        }
+
+        // ── room_mesh_message: inter-agent delegation ──────────────
+        if (eventType === 'room_mesh_message') {
+          const raw = event as unknown as Record<string, unknown>;
+          const meshMsg: MeshDelegationEvent = {
+            type: 'mesh_message',
+            id: generateId(),
+            timestamp: new Date(),
+            participantId: String(raw.participantId ?? ''),
+            participant: parseParticipantMeta(
+              raw.participant as Record<string, unknown> | undefined
+            ) ?? { peerId: '', persona: '', displayName: '', color: '', participantType: 'ravn' },
+            fromPersona: String(raw.fromPersona ?? ''),
+            eventType: String(raw.eventType ?? ''),
+            direction: (raw.direction ?? 'delegate') as 'delegate' | 'receive',
+            preview: String(raw.preview ?? ''),
+          };
+          setMeshEvents(prev => [...prev, meshMsg]);
+          continue;
+        }
+
+        // ── room_notification: help_needed or other alerts ─────────
+        if (eventType === 'room_notification') {
+          const raw = event as unknown as Record<string, unknown>;
+          const notification: MeshNotificationEvent = {
+            type: 'notification',
+            id: generateId(),
+            timestamp: new Date(),
+            participantId: String(raw.participantId ?? ''),
+            participant: parseParticipantMeta(
+              raw.participant as Record<string, unknown> | undefined
+            ) ?? { peerId: '', persona: '', displayName: '', color: '', participantType: 'ravn' },
+            notificationType: String(raw.notificationType ?? ''),
+            persona: String(raw.persona ?? ''),
+            reason: String(raw.reason ?? ''),
+            summary: String(raw.summary ?? ''),
+            attempted: Array.isArray(raw.attempted) ? (raw.attempted as string[]) : undefined,
+            recommendation: raw.recommendation ? String(raw.recommendation) : undefined,
+            urgency: typeof raw.urgency === 'number' ? raw.urgency : 0.5,
+            context: raw.context as Record<string, unknown> | undefined,
+          };
+          setMeshEvents(prev => [...prev, notification]);
+          continue;
+        }
+
+        // ── room_agent_event: internal agent event (thought/tool) ──
+        if (eventType === 'room_agent_event') {
+          const raw = event as unknown as Record<string, unknown>;
+          const peerId = String(raw.participantId ?? '');
+          const frame = raw.frame as Record<string, unknown> | undefined;
+          if (peerId && frame) {
+            const frameType = String(frame.type ?? '');
+            const frameData = frame.data;
+            const frameMeta = (frame.metadata ?? {}) as Record<string, unknown>;
+            const agentEvt: AgentInternalEvent = {
+              id: generateId(),
+              participantId: peerId,
+              timestamp: new Date(),
+              frameType,
+              data: frameData,
+              metadata: frameMeta,
+            };
+            setAgentEvents(prev => {
+              const next = new Map(prev);
+              const existing = next.get(peerId) ?? [];
+              next.set(peerId, [...existing, agentEvt]);
+              return next;
+            });
+
+            // Accumulate frames into a single running message per participant,
+            // building up `parts` (reasoning, tool_use, tool_result, text) so
+            // the existing AssistantMessage / ToolGroupBlock rendering works.
+            const participant = participantsRef.current.get(peerId);
+            const participantMeta: ParticipantMeta | undefined = participant
+              ? {
+                  peerId: participant.peerId,
+                  persona: participant.persona,
+                  displayName: participant.displayName,
+                  color: participant.color,
+                  participantType: participant.participantType,
+                  gatewayUrl: participant.gatewayUrl,
+                }
+              : undefined;
+
+            let stream = internalStreamsRef.current.get(peerId);
+            if (!stream) {
+              const msgId = generateId();
+              stream = { messageId: msgId, parts: [], currentToolId: '' };
+              internalStreamsRef.current.set(peerId, stream);
+              // Create the running message
+              setMessages(prev => [
+                ...prev,
+                {
+                  id: msgId,
+                  role: 'assistant',
+                  content: '',
+                  createdAt: new Date(),
+                  status: 'running',
+                  participantId: peerId,
+                  participant: participantMeta,
+                  visibility: 'internal',
+                },
+              ]);
+            }
+
+            // Append the frame as a part
+            if (frameType === 'thought') {
+              const text = typeof frameData === 'string' ? frameData : JSON.stringify(frameData);
+              stream.parts.push({ type: 'reasoning', text });
+            } else if (frameType === 'tool_start') {
+              const toolName =
+                (frameMeta.tool_name as string) || (typeof frameData === 'string' ? frameData : '');
+              const toolId = `tool-${generateId()}`;
+              stream.currentToolId = toolId;
+              const input =
+                typeof frameMeta.input === 'object' && frameMeta.input !== null
+                  ? (frameMeta.input as Record<string, unknown>)
+                  : {};
+              stream.parts.push({ type: 'tool_use', id: toolId, name: toolName, input });
+            } else if (frameType === 'tool_result') {
+              const result = typeof frameData === 'string' ? frameData : JSON.stringify(frameData);
+              const toolUseId = stream.currentToolId || `tool-${generateId()}`;
+              stream.parts.push({ type: 'tool_result', tool_use_id: toolUseId, content: result });
+              stream.currentToolId = '';
+            }
+
+            // Update the running message with accumulated parts + text content
+            const textParts = stream.parts
+              .filter((p): p is { type: 'reasoning'; text: string } => p.type === 'reasoning')
+              .map(p => p.text);
+            const content = textParts.join('\n');
+            const currentParts = [...stream.parts];
+            const msgId = stream.messageId;
+            setMessages(prev =>
+              prev.map(m => (m.id === msgId ? { ...m, content, parts: currentParts } : m))
+            );
+          }
+          continue;
+        }
+
         // ── message_start, message_stop — silently consumed ──────
       } // end for (const event of events)
     },
@@ -996,21 +1471,59 @@ export function useSkuldChat(
     sendJson({ type: 'rewind_files' });
   }, [sendJson]);
 
+  const sendDirectedMessages = useCallback(
+    (peerIds: string[], text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || !connected || peerIds.length === 0) {
+        return;
+      }
+      setMessages(prev => [
+        ...prev,
+        {
+          id: generateId(),
+          role: 'user',
+          content: trimmed,
+          createdAt: new Date(),
+          status: 'complete',
+        },
+      ]);
+      for (const peerId of peerIds) {
+        sendJson({ type: 'directed_message', targetPeerId: peerId, content: trimmed });
+      }
+      setIsRunning(true);
+    },
+    [connected, sendJson]
+  );
+
   const clearMessages = useCallback(() => {
     setMessages([]);
+    setMeshEvents([]);
     setPendingPermissions([]);
     resetStreamingRefs();
     setIsRunning(false);
+    internalStreamsRef.current.clear();
     if (url) clearSession(url);
   }, [resetStreamingRefs, url, clearSession]);
 
   const stableMessages = useMemo(() => messages, [messages]);
+  const stableParticipants = useMemo(
+    () => participants as ReadonlyMap<string, RoomParticipant>,
+    [participants]
+  );
+  const stableMeshEvents = useMemo(() => meshEvents, [meshEvents]);
+  const stableAgentEvents = useMemo(
+    () => agentEvents as ReadonlyMap<string, readonly AgentInternalEvent[]>,
+    [agentEvents]
+  );
   const stablePermissions = useMemo(() => pendingPermissions, [pendingPermissions]);
   const stableCommands = useMemo(() => availableCommands, [availableCommands]);
   const stableCapabilities = useMemo(() => capabilities, [capabilities]);
 
   return {
     messages: stableMessages,
+    participants: stableParticipants,
+    meshEvents: stableMeshEvents,
+    agentEvents: stableAgentEvents,
     connected,
     isRunning,
     historyLoaded,
@@ -1023,6 +1536,7 @@ export function useSkuldChat(
     sendSetModel,
     sendSetMaxThinkingTokens,
     sendRewindFiles,
+    sendDirectedMessages,
     clearMessages,
   };
 }

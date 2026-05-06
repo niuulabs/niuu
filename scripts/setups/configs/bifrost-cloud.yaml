@@ -1,0 +1,57 @@
+# ─── bifrost-cloud ───────────────────────────────────────────────────────────
+#
+# Ravn with Bifrost routing across multiple cloud LLM providers.
+#
+# What you get:
+#   - Bifrost gateway at localhost:8088
+#   - Multi-provider failover (429s / 5xx → automatic fallback)
+#   - Cost-optimised routing option available
+#   - Model aliases: fast, balanced, powerful
+#   - Per-agent quotas and usage tracking
+#
+# Prerequisites:
+#   - Provider API keys set as env vars (see bifrost.yaml for provider config)
+#
+# Launch:
+#   bifrost --config ~/.ravn/bifrost.yaml &
+#   ravn run --config ~/.ravn/config.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: balanced
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: "http://localhost:8088"
+
+memory:
+  backend: sqlite
+
+mimir:
+  enabled: false
+
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+thread:
+  enabled: false
+
+wakefulness:
+  enabled: false
+
+recap:
+  enabled: false
+
+initiative:
+  enabled: false
+
+gateway:
+  enabled: false
+
+logging:
+  level: info

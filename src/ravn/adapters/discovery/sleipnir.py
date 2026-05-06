@@ -30,7 +30,7 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
 from ravn.ports.discovery import PeerCallback
@@ -54,23 +54,51 @@ class SleipnirDiscoveryAdapter:
 
     Parameters
     ----------
-    config:
-        Root ``DiscoveryConfig`` from settings.
-    sleipnir_config:
-        Shared Sleipnir AMQP settings (carries the URL env var).
     own_identity:
         Pre-built ``RavnIdentity`` for this instance.
+    amqp_url_env:
+        Environment variable name containing the AMQP connection URL.
+    convergence_wait_s:
+        Seconds to wait on startup for other peers to announce.
+    heartbeat_interval_s:
+        Seconds between Sleipnir announce heartbeats.
+    spiffe_audience_env:
+        Env var containing the SPIFFE trust domain for JWT-SVID validation.
+    peer_ttl_s:
+        Seconds of missed heartbeats before a peer is evicted.
+    **kwargs:
+        Ignored — allows forward compatibility with new config fields.
     """
 
     def __init__(
         self,
-        config: DiscoveryConfig,
-        sleipnir_config: SleipnirConfig,
         own_identity: RavnIdentity,
+        *,
+        amqp_url_env: str = "SLEIPNIR_AMQP_URL",
+        convergence_wait_s: float = 5.0,
+        heartbeat_interval_s: float = 60.0,
+        spiffe_audience_env: str = "SPIFFE_TRUST_DOMAIN",
+        peer_ttl_s: float = 90.0,
+        # Legacy: accept config objects for backward compatibility
+        config: DiscoveryConfig | None = None,
+        sleipnir_config: SleipnirConfig | None = None,
+        **kwargs: Any,
     ) -> None:
-        self._config = config
-        self._sleipnir_config = sleipnir_config
         self._identity = own_identity
+        self._amqp_url_env = amqp_url_env
+        self._convergence_wait_s = convergence_wait_s
+        self._heartbeat_interval_s = heartbeat_interval_s
+        self._spiffe_audience_env = spiffe_audience_env
+        self._peer_ttl_s = peer_ttl_s
+
+        # Legacy config support — extract values if config objects provided
+        if config is not None:
+            self._convergence_wait_s = config.sleipnir.convergence_wait_s
+            self._heartbeat_interval_s = config.sleipnir.heartbeat_interval_s
+            self._spiffe_audience_env = config.sleipnir.spiffe_audience_env
+            self._peer_ttl_s = config.peer_ttl_s
+        if sleipnir_config is not None:
+            self._amqp_url_env = sleipnir_config.amqp_url_env
 
         self._peers: dict[str, RavnPeer] = {}
         self._on_join: list[PeerCallback] = []
@@ -97,7 +125,7 @@ class SleipnirDiscoveryAdapter:
         await self.announce()
 
         # Wait briefly for other peers to respond with their announces.
-        await asyncio.sleep(self._config.sleipnir.convergence_wait_s)
+        await asyncio.sleep(self._convergence_wait_s)
 
         self._consumer_task = asyncio.create_task(
             self._consume_loop(), name="sleipnir_discovery_consumer"
@@ -163,11 +191,11 @@ class SleipnirDiscoveryAdapter:
     async def _connect(self) -> bool:
         if aio_pika is None:
             return False
-        amqp_url = os.environ.get(self._sleipnir_config.amqp_url_env, "")
+        amqp_url = os.environ.get(self._amqp_url_env, "")
         if not amqp_url:
             logger.debug(
                 "sleipnir_discovery: %s not set — discovery disabled",
-                self._sleipnir_config.amqp_url_env,
+                self._amqp_url_env,
             )
             return False
         try:
@@ -299,7 +327,7 @@ class SleipnirDiscoveryAdapter:
         In environments without SPIFFE, skip validation (return True).
         Real validation checks the JWT matches ``spiffe://niuu.world/*/ravn/<peer_id>``.
         """
-        trust_domain = os.environ.get(self._config.sleipnir.spiffe_audience_env, "")
+        trust_domain = os.environ.get(self._spiffe_audience_env, "")
         if not trust_domain:
             # No SPIFFE configured — accept without validation
             return True
@@ -349,7 +377,7 @@ class SleipnirDiscoveryAdapter:
     async def _heartbeat_loop(self) -> None:
         while True:
             try:
-                await asyncio.sleep(self._config.sleipnir.heartbeat_interval_s)
+                await asyncio.sleep(self._heartbeat_interval_s)
                 await self._publish_announce("heartbeat")
                 self._evict_stale_peers()
             except asyncio.CancelledError:
@@ -359,7 +387,7 @@ class SleipnirDiscoveryAdapter:
 
     def _evict_stale_peers(self) -> None:
         now = datetime.now(UTC)
-        ttl = self._config.peer_ttl_s
+        ttl = self._peer_ttl_s
         to_evict = [
             pid
             for pid, peer in self._peers.items()

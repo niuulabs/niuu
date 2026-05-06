@@ -1,0 +1,9 @@
+/* Base form control styles live in form-control.css. Only textarea-specific rules below. */
+
+.niuu-textarea {
+  resize: vertical;
+}
+
+.niuu-textarea:disabled {
+  resize: none;
+}

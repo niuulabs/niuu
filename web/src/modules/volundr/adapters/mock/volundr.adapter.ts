@@ -102,6 +102,25 @@ export class MockVolundrService implements IVolundrService {
     }
   }
 
+  async getSessionDefinitions(): Promise<import('@/modules/volundr/models').SessionDefinition[]> {
+    return [
+      {
+        key: 'skuldClaude',
+        displayName: 'Claude Code',
+        description: 'Anthropic Claude CLI agent',
+        labels: ['claude', 'anthropic'],
+        defaultModel: 'claude-sonnet',
+      },
+      {
+        key: 'skuldCodex',
+        displayName: 'Codex',
+        description: 'OpenAI Codex CLI agent',
+        labels: ['codex', 'openai'],
+        defaultModel: 'codex',
+      },
+    ];
+  }
+
   async getSessions(): Promise<VolundrSession[]> {
     return this.sessions.map(s => ({ ...s }));
   }
@@ -254,6 +273,7 @@ export class MockVolundrService implements IVolundrService {
     model: string;
     templateName?: string;
     taskType?: string;
+    definition?: string;
     trackerIssue?: TrackerIssue;
     terminalRestricted?: boolean;
     credentialNames?: string[];

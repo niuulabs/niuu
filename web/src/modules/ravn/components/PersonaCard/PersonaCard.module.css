@@ -1,0 +1,88 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  text-decoration: none;
+  color: inherit;
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
+  cursor: pointer;
+}
+
+.card:hover {
+  border-color: var(--color-brand);
+  background-color: var(--color-bg-tertiary);
+  text-decoration: none;
+}
+
+.card[data-builtin='false'] {
+  border-color: color-mix(in srgb, var(--color-accent-purple) 30%, var(--color-border));
+}
+
+/* -- Header row -- */
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+
+.badges {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+/* -- Meta row -- */
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.metaItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+}
+
+.metaLabel {
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+}
+
+.metaValue {
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+}
+
+/* -- Tools row -- */
+
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.extraTools {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}

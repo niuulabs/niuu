@@ -1,0 +1,27 @@
+.niuu-ravn-av {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.niuu-ravn-av__rune {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--brand-300);
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+}
+
+.niuu-ravn-av__dot {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+}

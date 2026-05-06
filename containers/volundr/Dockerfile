@@ -1,4 +1,4 @@
-FROM ubuntu:24.04@sha256:84e77dee7d1bc93fb029a45e3c6cb9d8aa4831ccfcc7103d36e876938d28895b AS builder
+FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b AS builder
 
 
 # Prevent interactive prompts during package installation
@@ -20,7 +20,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Upgrade pip to latest to avoid GHSA-4xh5-x5gv-qwph / GHSA-6vgw-5pg2-w6jp,
 # then install build backend
-RUN pip install --no-cache-dir --upgrade pip==25.0.1 \
+RUN pip install --no-cache-dir --upgrade pip==26.1.1 \
     && pip install --no-cache-dir hatchling==1.29.0
 
 # Copy volundr package and install
@@ -34,7 +34,7 @@ RUN pip uninstall -y pip
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code CLI at runtime)
 # ---------------------------------------------------------------------------
-FROM ubuntu:24.04@sha256:84e77dee7d1bc93fb029a45e3c6cb9d8aa4831ccfcc7103d36e876938d28895b
+FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
 
 
 LABEL org.opencontainers.image.title="volundr"
@@ -64,7 +64,7 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade bundled npm to fix GHSA-qffp-2rhf-9h96 (tar) and GHSA-*-minimatch CVEs
-RUN npm install -g npm@11.3.0
+RUN npm install -g npm@11.13.0
 
 # Install Claude Code CLI globally via npm (same method as skuld pod)
 RUN npm install -g @anthropic-ai/claude-code@2.1.81

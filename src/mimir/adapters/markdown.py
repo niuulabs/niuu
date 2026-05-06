@@ -27,19 +27,36 @@ derived wiki pages should be reviewed and updated.
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+import yaml
+
+from mimir.compiled_truth import (
+    extract_wikilinks,
+)
+from mimir.compiled_truth import (
+    parse_page as parse_compiled_truth_page,
+)
+
+try:
+    from sleipnir.domain.catalog import mimir_page_written as _catalog_page_written
+except ImportError:
+    _catalog_page_written = None  # type: ignore[assignment]
 from niuu.domain.mimir import (
+    LintIssue,
     MimirLintReport,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
     MimirSource,
     MimirSourceMeta,
+    PageType,
     ThreadContextRef,
     ThreadOwnershipError,
     ThreadState,
@@ -48,8 +65,13 @@ from niuu.domain.mimir import (
     slugify,
 )
 from niuu.ports.mimir import MimirPort
+from niuu.ports.search import SearchPort
 
 logger = logging.getLogger(__name__)
+
+# Maximum characters per search chunk (~500 tokens).
+_CHUNK_MAX_CHARS = 2000
+_SEARCH_RESULT_LIMIT = 20
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -163,6 +185,27 @@ _LOG_QUERY_PREFIX = "query"
 _LOG_LINT_PREFIX = "lint"
 
 _MIN_GAP_MENTION_COUNT = 3  # mentions before a concept is flagged as a gap
+_MIN_KEY_FACTS = 3  # minimum key facts in a Compiled Truth zone before flagging as thin
+_STALE_CONTENT_DAYS = 60  # days without update before a page is flagged as stale content
+_LINT_CACHE_FILE = ".lint-cache.json"  # stores timeline hashes for L09 detection
+
+# Page types that must have Compiled Truth + Timeline zones
+_MANDATORY_COMPILED_TRUTH_TYPES: frozenset[PageType] = frozenset(
+    {PageType.entity, PageType.directive, PageType.decision}
+)
+
+# Infer page type from top-level directory when frontmatter type is absent
+_CATEGORY_TO_PAGE_TYPE: dict[str, str] = {
+    "technical": "topic",
+    "projects": "entity",
+    "research": "topic",
+    "household": "observation",
+    "self": "preference",
+}
+
+_COMPILED_TRUTH_HEADING = "## Compiled Truth"
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
+_WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +227,19 @@ class MarkdownMimirAdapter(MimirPort):
 
     Args:
         root: Root directory for the Mímir store (e.g. ``~/.ravn/mimir``).
+        search_port: Optional SearchPort for hybrid FTS/semantic search.
+            When provided, ``search()`` delegates to it and pages are
+            automatically indexed on write.  When ``None``, the adapter
+            falls back to its built-in keyword-counting search.
     """
 
-    def __init__(self, root: str | Path = "~/.ravn/mimir") -> None:
+    def __init__(
+        self,
+        root: str | Path = "~/.ravn/mimir",
+        sleipnir_publisher: object | None = None,
+        *,
+        search_port: SearchPort | None = None,
+    ) -> None:
         self._root = Path(root).expanduser()
         self._wiki = self._root / "wiki"
         self._raw = self._root / "raw"
@@ -194,6 +247,11 @@ class MarkdownMimirAdapter(MimirPort):
         self._schema = self._root / "MIMIR.md"
         self._index = self._wiki / "index.md"
         self._log = self._wiki / "log.md"
+        self._sleipnir_publisher = sleipnir_publisher
+        self._search_port = search_port
+        # Tracks how many chunks were indexed per page path so we can remove
+        # them before re-indexing on update.  Populated lazily on first write.
+        self._page_chunk_counts: dict[str, int] = {}
         self._ensure_layout()
 
     # ------------------------------------------------------------------
@@ -269,47 +327,102 @@ class MarkdownMimirAdapter(MimirPort):
             sources=pages,
         )
 
-    async def lint(self) -> MimirLintReport:
-        """Scan the wiki and return a health-check report.
+    async def lint(self, fix: bool = False) -> MimirLintReport:
+        """Scan the wiki and return a structured health-check report (L01–L12).
 
-        The ``stale`` field of the returned report is always empty — staleness
-        detection requires re-fetching source URLs, which the lint pass does
-        not do.  Use ``is_source_stale()`` during re-ingest instead.
+        When *fix* is ``True``, auto-fixable issues are corrected in-place:
+
+        - L05 broken wikilinks → replaced with the closest fuzzy-match slug
+        - L11 stale index     → index.md rebuilt from the current page set
+        - L12 invalid frontmatter → missing ``type`` field inferred from path
+
+        Staleness detection (L03) requires re-fetching remote URLs and is
+        therefore not performed here; use ``is_source_stale()`` during re-ingest.
         """
         pages_with_content = self._list_pages_with_content()
         all_pages = [meta for meta, _ in pages_with_content]
         content_map = {meta.path: content for meta, content in pages_with_content}
         indexed = self._read_indexed_paths()
+        lint_cache = self._load_lint_cache()
 
-        orphans = self._find_orphans(all_pages, indexed)
-        contradictions = self._find_contradictions(content_map)
-        gaps = self._find_gaps(all_pages, content_map)
+        issues: list[LintIssue] = []
+        issues.extend(self._check_orphans(all_pages, indexed))
+        issues.extend(self._check_contradictions(content_map))
+        # L03 (stale sources) requires remote re-fetch — skipped in lint pass
+        issues.extend(self._check_gaps(all_pages, content_map))
+        issues.extend(self._check_broken_wikilinks(content_map))
+        issues.extend(self._check_missing_source_attribution(content_map))
+        issues.extend(self._check_thin_pages(content_map))
+        issues.extend(self._check_stale_content(all_pages))
+        issues.extend(self._check_timeline_edits(content_map, lint_cache))
+        issues.extend(self._check_empty_compiled_truth(content_map))
+        issues.extend(self._check_stale_index(all_pages, indexed))
+        issues.extend(self._check_invalid_frontmatter(content_map))
 
-        report = MimirLintReport(
-            orphans=orphans,
-            contradictions=contradictions,
-            stale=[],  # populated by re-ingest flow, not lint pass
-            gaps=gaps,
-            pages_checked=len(all_pages),
-        )
+        if fix:
+            issues = self._apply_fixes(issues, content_map, all_pages)
+            # Re-read content map after in-place fixes so the cache is accurate
+            pages_with_content = self._list_pages_with_content()
+            content_map = {meta.path: c for meta, c in pages_with_content}
 
-        issues = len(orphans) + len(contradictions) + len(gaps)
+        self._update_timeline_cache(content_map, lint_cache)
+        self._save_lint_cache(lint_cache)
+
+        report = MimirLintReport(issues=issues, pages_checked=len(all_pages))
+        sev = report.summary
         self._append_log(
             _LOG_LINT_PREFIX,
-            f"{len(all_pages)} pages checked, {issues} issues found",
+            f"{len(all_pages)} pages checked, {len(issues)} issues found",
+            f"errors={sev['error']} warnings={sev['warning']} info={sev['info']}",
         )
         logger.info(
-            "mimir: lint complete — %d pages checked, %d issues",
+            "mimir: lint complete — %d pages checked, %d issues (errors=%d warnings=%d info=%d)",
             len(all_pages),
-            issues,
+            len(issues),
+            sev["error"],
+            sev["warning"],
+            sev["info"],
         )
         return report
 
     async def search(self, query: str) -> list[MimirPage]:
-        """Full-text search over wiki pages, ranked by keyword hits."""
+        """Search wiki pages ranked by relevance.
+
+        When a SearchPort is configured, hybrid FTS/semantic search is used
+        and results include relevance scores in ``meta.summary``.  Falls back
+        to built-in keyword counting when no SearchPort is present.
+        """
         if not query.strip():
             return []
 
+        if self._search_port is not None:
+            return await self._search_via_port(query)
+
+        return await self._search_keywords(query)
+
+    async def _search_via_port(self, query: str) -> list[MimirPage]:
+        """Delegate search to the configured SearchPort."""
+        search_results = await self._search_port.search(query, limit=_SEARCH_RESULT_LIMIT)  # type: ignore[union-attr]
+
+        seen_paths: dict[str, tuple[float, MimirPage]] = {}
+        for result in search_results:
+            page_path = result.metadata.get("page_path", "")
+            if not page_path:
+                continue
+            md_path = self._wiki / page_path
+            if not md_path.exists():
+                continue
+            # Keep only the best-scoring chunk per page.
+            if page_path in seen_paths and seen_paths[page_path][0] >= result.score:
+                continue
+            content = md_path.read_text(encoding="utf-8")
+            meta = self._build_page_meta(md_path, content)
+            seen_paths[page_path] = (result.score, MimirPage(meta=meta, content=content))
+
+        return [page for _, page in sorted(seen_paths.values(), key=lambda t: t[0], reverse=True)]
+
+    async def _search_keywords(self, query: str) -> list[MimirPage]:
+        """Built-in keyword-counting fallback search."""
         keywords = set(re.split(r"\W+", query.lower())) - {"", "the", "a", "an", "is", "in"}
         results: list[tuple[int, MimirPage]] = []
 
@@ -339,6 +452,7 @@ class MarkdownMimirAdapter(MimirPort):
         The *mimir* and *meta* parameters are accepted for interface
         compatibility but are ignored here — this adapter always writes to its
         own filesystem root and does not persist metadata separately.
+        When a SearchPort is configured, the page is automatically re-indexed.
         """
         page_path = self._safe_wiki_path(path)
         page_path.parent.mkdir(parents=True, exist_ok=True)
@@ -352,6 +466,23 @@ class MarkdownMimirAdapter(MimirPort):
             self._update_index_entry(path, content)
 
         logger.info("mimir: upserted page %s (new=%s)", path, is_new)
+
+        # NIU-582: emit mimir.page.written to Sleipnir catalog (best-effort)
+        if self._sleipnir_publisher is not None and _catalog_page_written is not None:
+            try:
+                category = path.split("/")[0] if "/" in path else "uncategorised"
+                _event = _catalog_page_written(
+                    page_path=path,
+                    category=category,
+                    author="ravn",
+                    source="mimir:markdown",
+                )
+                await self._sleipnir_publisher.publish(_event)
+            except Exception:
+                logger.warning("Failed to emit mimir.page.written; continuing.", exc_info=True)
+
+        if self._search_port is not None:
+            await self._reindex_page(path, content)
 
     async def get_page(self, path: str) -> MimirPage:
         """Return content and metadata for the wiki page at *path* in one call."""
@@ -455,7 +586,7 @@ class MarkdownMimirAdapter(MimirPort):
             raise FileExistsError(f"Thread already exists: threads/{slug}")
 
         now = datetime.now(UTC)
-        first_ref_summary = context_refs[0].summary if context_refs else ""
+        first_ref_summary = context_refs[0].ref_summary if context_refs else ""
         schema = ThreadYamlSchema(
             title=title,
             state=ThreadState.open,
@@ -654,6 +785,57 @@ class MarkdownMimirAdapter(MimirPort):
         return MimirPage(meta=meta, content=content)
 
     # ------------------------------------------------------------------
+    # Search index management
+    # ------------------------------------------------------------------
+
+    async def rebuild_search_index(self) -> int:
+        """Re-index all wiki pages from the filesystem.
+
+        Idempotent — clears any previously tracked chunk counts and rebuilds
+        the entire search index from the current ``wiki/`` directory.
+
+        Returns:
+            Number of pages indexed.
+        """
+        if self._search_port is None:
+            return 0
+
+        # Wipe the index before re-indexing to avoid stale orphan chunks.
+        await self._search_port.rebuild()
+        self._page_chunk_counts.clear()
+        count = 0
+        for md_path in self._wiki.rglob("*.md"):
+            if md_path.name in {"index.md", "log.md"}:
+                continue
+            content = md_path.read_text(encoding="utf-8")
+            rel = str(md_path.relative_to(self._wiki))
+            await self._reindex_page(rel, content)
+            count += 1
+
+        logger.info("mimir: rebuilt search index — %d pages", count)
+        return count
+
+    async def _reindex_page(self, path: str, content: str) -> None:
+        """Remove old chunks for *path* and index fresh ones."""
+        assert self._search_port is not None  # noqa: S101 — caller-checked
+
+        # Remove previously indexed chunks for this page.
+        old_count = self._page_chunk_counts.get(path, 0)
+        for i in range(old_count):
+            await self._search_port.remove(f"{path}::{i}")
+
+        # Derive metadata from path.
+        parts = path.split("/")
+        category = parts[0] if len(parts) > 1 else "uncategorised"
+        page_type = "thread" if path.startswith("threads/") else "wiki"
+
+        chunks = _chunk_markdown(content, path, category, page_type)
+        for i, (chunk_content, chunk_meta) in enumerate(chunks):
+            await self._search_port.index(f"{path}::{i}", chunk_content, chunk_meta)
+
+        self._page_chunk_counts[path] = len(chunks)
+
+    # ------------------------------------------------------------------
     # Raw source storage
     # ------------------------------------------------------------------
 
@@ -760,23 +942,41 @@ class MarkdownMimirAdapter(MimirPort):
             f.write(entry)
 
     # ------------------------------------------------------------------
-    # Lint helpers
+    # Lint helpers — L01–L12
     # ------------------------------------------------------------------
 
-    def _find_orphans(self, pages: list[MimirPageMeta], indexed: set[str]) -> list[str]:
-        """Return paths of pages not linked in index.md."""
-        return [p.path for p in pages if p.path not in indexed]
-
-    def _find_contradictions(self, content_map: dict[str, str]) -> list[str]:
-        """Return paths of pages that contain a contradiction flag marker."""
+    def _check_orphans(self, pages: list[MimirPageMeta], indexed: set[str]) -> list[LintIssue]:
+        """L01 — pages not linked in index.md."""
         return [
-            path
+            LintIssue(
+                id="L01",
+                severity="warning",
+                message="Page is not linked in index.md",
+                page_path=p.path,
+                auto_fixable=False,
+            )
+            for p in pages
+            if p.path not in indexed
+        ]
+
+    def _check_contradictions(self, content_map: dict[str, str]) -> list[LintIssue]:
+        """L02 — pages containing a [CONTRADICTION] flag marker."""
+        return [
+            LintIssue(
+                id="L02",
+                severity="warning",
+                message="Page contains a contradiction flag marker",
+                page_path=path,
+                auto_fixable=False,
+            )
             for path, content in content_map.items()
             if "[CONTRADICTION]" in content or "⚠️ contradiction" in content.lower()
         ]
 
-    def _find_gaps(self, pages: list[MimirPageMeta], content_map: dict[str, str]) -> list[str]:
-        """Return concept names mentioned ≥ N times across wiki but without a page."""
+    def _check_gaps(
+        self, pages: list[MimirPageMeta], content_map: dict[str, str]
+    ) -> list[LintIssue]:
+        """L04 — concepts mentioned ≥ N times without a dedicated page."""
         existing_titles = {p.title.lower() for p in pages}
         mention_counts: dict[str, int] = {}
 
@@ -787,8 +987,366 @@ class MarkdownMimirAdapter(MimirPort):
                     mention_counts[key] = mention_counts.get(key, 0) + 1
 
         return [
-            concept for concept, count in mention_counts.items() if count >= _MIN_GAP_MENTION_COUNT
+            LintIssue(
+                id="L04",
+                severity="info",
+                message=(f"Concept '{concept}' mentioned {count} times but has no dedicated page"),
+                page_path=concept,
+                auto_fixable=False,
+            )
+            for concept, count in mention_counts.items()
+            if count >= _MIN_GAP_MENTION_COUNT
         ]
+
+    def _check_broken_wikilinks(self, content_map: dict[str, str]) -> list[LintIssue]:
+        """L05 — [[slug]] references whose target page does not exist."""
+        known_slugs = {Path(path).stem for path in content_map}
+        issues: list[LintIssue] = []
+
+        for page_path, content in content_map.items():
+            for link in extract_wikilinks(content):
+                slug = link.strip()
+                if slug not in known_slugs:
+                    suggestions = difflib.get_close_matches(slug, known_slugs, n=1, cutoff=0.6)
+                    hint = f" (closest match: '{suggestions[0]}')" if suggestions else ""
+                    issues.append(
+                        LintIssue(
+                            id="L05",
+                            severity="warning",
+                            message=f"Broken wikilink [[{link}]] — no matching page found{hint}",
+                            page_path=page_path,
+                            auto_fixable=bool(suggestions),
+                        )
+                    )
+        return issues
+
+    def _check_missing_source_attribution(self, content_map: dict[str, str]) -> list[LintIssue]:
+        """L06 — timeline entries lacking [Source: ...] attribution."""
+        issues: list[LintIssue] = []
+
+        for page_path, content in content_map.items():
+            page = parse_compiled_truth_page(content)
+            for entry in page.timeline_entries:
+                if not entry.has_source:
+                    issues.append(
+                        LintIssue(
+                            id="L06",
+                            severity="error",
+                            message=f"Timeline entry missing [Source: ...]: {entry.raw!r}",
+                            page_path=page_path,
+                            auto_fixable=False,
+                        )
+                    )
+        return issues
+
+    def _check_thin_pages(self, content_map: dict[str, str]) -> list[LintIssue]:
+        """L07 — compiled-truth pages with fewer than _MIN_KEY_FACTS key facts."""
+        issues: list[LintIssue] = []
+
+        for page_path, content in content_map.items():
+            page = parse_compiled_truth_page(content)
+            if page.page_type not in _MANDATORY_COMPILED_TRUTH_TYPES:
+                continue
+            ct = page.compiled_truth
+            if not ct:
+                continue
+            fact_count = len(re.findall(r"^#{3,}|^[-*]\s+", ct, re.MULTILINE))
+            if fact_count < _MIN_KEY_FACTS:
+                issues.append(
+                    LintIssue(
+                        id="L07",
+                        severity="warning",
+                        message=(
+                            f"Compiled Truth has {fact_count} key fact(s) "
+                            f"(minimum is {_MIN_KEY_FACTS})"
+                        ),
+                        page_path=page_path,
+                        auto_fixable=False,
+                    )
+                )
+        return issues
+
+    def _check_stale_content(self, pages: list[MimirPageMeta]) -> list[LintIssue]:
+        """L08 — pages not updated in _STALE_CONTENT_DAYS days."""
+        now = datetime.now(UTC)
+        issues: list[LintIssue] = []
+
+        for meta in pages:
+            age_days = (now - meta.updated_at).days
+            if age_days >= _STALE_CONTENT_DAYS:
+                issues.append(
+                    LintIssue(
+                        id="L08",
+                        severity="info",
+                        message=(
+                            f"Page not updated in {age_days} days "
+                            f"(threshold: {_STALE_CONTENT_DAYS})"
+                        ),
+                        page_path=meta.path,
+                        auto_fixable=False,
+                    )
+                )
+        return issues
+
+    def _check_timeline_edits(
+        self, content_map: dict[str, str], lint_cache: dict
+    ) -> list[LintIssue]:
+        """L09 — detect when a timeline section was edited rather than appended to."""
+        timeline_cache = lint_cache.get("timeline_hashes", {})
+        issues: list[LintIssue] = []
+
+        for page_path, content in content_map.items():
+            page = parse_compiled_truth_page(content)
+            if not page.timeline_entries:
+                continue
+
+            current_entries = [e.raw for e in page.timeline_entries]
+            stored = timeline_cache.get(page_path)
+            if stored is None:
+                continue
+
+            stored_entries: list[str] = stored.get("entries", [])
+            stored_hash: str = stored.get("hash", "")
+            current_hash = compute_content_hash("\n".join(current_entries))
+
+            if current_hash == stored_hash:
+                continue
+
+            # Append-only check: stored entries must be an exact prefix of current
+            is_append_only = (
+                len(current_entries) >= len(stored_entries)
+                and current_entries[: len(stored_entries)] == stored_entries
+            )
+
+            if not is_append_only:
+                issues.append(
+                    LintIssue(
+                        id="L09",
+                        severity="error",
+                        message=(
+                            "Timeline section was edited (not just appended to) since last lint"
+                        ),
+                        page_path=page_path,
+                        auto_fixable=False,
+                    )
+                )
+        return issues
+
+    def _check_empty_compiled_truth(self, content_map: dict[str, str]) -> list[LintIssue]:
+        """L10 — pages with an empty ## Compiled Truth section."""
+        issues: list[LintIssue] = []
+
+        for page_path, content in content_map.items():
+            page = parse_compiled_truth_page(content)
+            if page.page_type not in _MANDATORY_COMPILED_TRUTH_TYPES:
+                continue
+            if _COMPILED_TRUTH_HEADING not in content:
+                continue
+            if not page.compiled_truth.strip():
+                issues.append(
+                    LintIssue(
+                        id="L10",
+                        severity="warning",
+                        message="Compiled Truth section is present but empty",
+                        page_path=page_path,
+                        auto_fixable=False,
+                    )
+                )
+        return issues
+
+    def _check_stale_index(self, pages: list[MimirPageMeta], indexed: set[str]) -> list[LintIssue]:
+        """L11 — index.md out of sync with wiki/ directory."""
+        all_paths = {p.path for p in pages}
+        extra = indexed - all_paths
+        missing = all_paths - indexed
+        if not extra and not missing:
+            return []
+        count = len(extra) + len(missing)
+        return [
+            LintIssue(
+                id="L11",
+                severity="warning",
+                message=(
+                    f"index.md is out of sync with wiki/ ({count} discrepancy/discrepancies: "
+                    f"{len(missing)} missing, {len(extra)} stale)"
+                ),
+                page_path="index.md",
+                auto_fixable=True,
+            )
+        ]
+
+    def _check_invalid_frontmatter(self, content_map: dict[str, str]) -> list[LintIssue]:
+        """L12 — pages missing the required 'type' frontmatter field."""
+        issues: list[LintIssue] = []
+
+        for page_path, content in content_map.items():
+            page = parse_compiled_truth_page(content)
+            if page.page_type is None:
+                inferred = self._infer_page_type(page_path)
+                issues.append(
+                    LintIssue(
+                        id="L12",
+                        severity="warning",
+                        message=(
+                            f"Missing required 'type' frontmatter field (suggested: '{inferred}')"
+                        ),
+                        page_path=page_path,
+                        auto_fixable=True,
+                    )
+                )
+        return issues
+
+    # ------------------------------------------------------------------
+    # Auto-fix helpers
+    # ------------------------------------------------------------------
+
+    def _apply_fixes(
+        self,
+        issues: list[LintIssue],
+        content_map: dict[str, str],
+        pages: list[MimirPageMeta],
+    ) -> list[LintIssue]:
+        """Apply in-place fixes for auto-fixable issues; return remaining issues.
+
+        All fixes for a given page are applied to the same in-memory content
+        before the file is written, so multiple fix types on the same page
+        do not overwrite each other.
+        """
+        known_slugs = {Path(path).stem for path in content_map}
+        remaining: list[LintIssue] = []
+
+        # Collect fixable issue IDs per page
+        page_fixes: dict[str, set[str]] = {}  # page_path → set of fix IDs
+        fix_l11 = False
+
+        for issue in issues:
+            if issue.id == "L05" and issue.auto_fixable:
+                page_fixes.setdefault(issue.page_path, set()).add("L05")
+            elif issue.id == "L11":
+                fix_l11 = True
+            elif issue.id == "L12":
+                page_fixes.setdefault(issue.page_path, set()).add("L12")
+            else:
+                remaining.append(issue)
+
+        # Apply all fixes for each page in a single write
+        for page_path, fix_ids in page_fixes.items():
+            content = content_map.get(page_path, "")
+            original = content
+
+            if "L05" in fix_ids:
+                content = self._fix_broken_wikilinks(content, known_slugs)
+                if content == original:
+                    # No match found — keep the issue
+                    remaining.append(
+                        LintIssue(
+                            id="L05",
+                            severity="warning",
+                            message="Broken wikilinks could not be resolved (no close match)",
+                            page_path=page_path,
+                            auto_fixable=False,
+                        )
+                    )
+
+            if "L12" in fix_ids:
+                content = self._fix_invalid_frontmatter(page_path, content)
+
+            if content != original:
+                page_file = self._wiki / page_path
+                page_file.write_text(content, encoding="utf-8")
+                logger.info(
+                    "mimir: auto-fixed %s in %s",
+                    ", ".join(sorted(fix_ids)),
+                    page_path,
+                )
+
+        if fix_l11:
+            self._rebuild_index(pages, content_map)
+            logger.info("mimir: L11 auto-fixed stale index.md (rebuilt)")
+
+        return remaining
+
+    def _fix_broken_wikilinks(self, content: str, known_slugs: set[str]) -> str:
+        """Replace broken [[slug]] links with the closest fuzzy-match slug."""
+
+        def replace_link(match: re.Match) -> str:
+            link = match.group(1).strip()
+            if link in known_slugs:
+                return match.group(0)
+            suggestions = difflib.get_close_matches(link, known_slugs, n=1, cutoff=0.6)
+            if suggestions:
+                return f"[[{suggestions[0]}]]"
+            return match.group(0)
+
+        return _WIKILINK_RE.sub(replace_link, content)
+
+    def _fix_invalid_frontmatter(self, page_path: str, content: str) -> str:
+        """Add an inferred 'type' field to pages with missing frontmatter."""
+        inferred = self._infer_page_type(page_path)
+        fm_match = _FRONTMATTER_RE.match(content)
+        if fm_match:
+            try:
+                fm = yaml.safe_load(fm_match.group(1)) or {}
+            except yaml.YAMLError:
+                fm = {}
+            fm["type"] = inferred
+            fm_yaml = yaml.dump(
+                fm, default_flow_style=False, allow_unicode=True, sort_keys=False
+            ).strip()
+            return f"---\n{fm_yaml}\n---\n{content[fm_match.end() :]}"
+        # No frontmatter at all — prepend a minimal block
+        return f"---\ntype: {inferred}\n---\n{content}"
+
+    def _rebuild_index(self, pages: list[MimirPageMeta], content_map: dict[str, str]) -> None:
+        """Rewrite index.md from the current page set."""
+        header = "# Mímir — content catalog\n\n"
+        lines: list[str] = []
+        for meta in sorted(pages, key=lambda p: p.path):
+            content = content_map.get(meta.path, "")
+            summary = _extract_summary(content)
+            date_str = meta.updated_at.strftime("%Y-%m-%d")
+            lines.append(
+                f"- [{meta.title}]({meta.path}) — {summary} *(updated {date_str}, {meta.category})*"
+            )
+        self._index.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
+
+    def _infer_page_type(self, page_path: str) -> str:
+        """Infer a page type from its top-level directory."""
+        category = page_path.split("/")[0] if "/" in page_path else ""
+        return _CATEGORY_TO_PAGE_TYPE.get(category, "topic")
+
+    # ------------------------------------------------------------------
+    # Lint cache — used by L09 timeline edit detection
+    # ------------------------------------------------------------------
+
+    def _load_lint_cache(self) -> dict:
+        """Load the persisted lint cache, or return an empty dict."""
+        cache_path = self._wiki / _LINT_CACHE_FILE
+        if not cache_path.exists():
+            return {}
+        try:
+            return json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save_lint_cache(self, cache: dict) -> None:
+        """Persist the lint cache to disk."""
+        cache_path = self._wiki / _LINT_CACHE_FILE
+        cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+
+    def _update_timeline_cache(self, content_map: dict[str, str], cache: dict) -> None:
+        """Update the timeline_hashes section of the lint cache."""
+        timeline_cache: dict[str, dict] = {}
+        for page_path, content in content_map.items():
+            page = parse_compiled_truth_page(content)
+            if not page.timeline_entries:
+                continue
+            current_entries = [e.raw for e in page.timeline_entries]
+            timeline_cache[page_path] = {
+                "hash": compute_content_hash("\n".join(current_entries)),
+                "entries": current_entries,
+            }
+        cache["timeline_hashes"] = timeline_cache
 
     # ------------------------------------------------------------------
     # Metadata helpers
@@ -892,3 +1450,106 @@ def _extract_summary(content: str) -> str:
         if heading_seen:
             return stripped[:120]
     return ""
+
+
+def _chunk_markdown(
+    content: str,
+    page_path: str,
+    category: str,
+    page_type: str = "wiki",
+    *,
+    max_chars: int = _CHUNK_MAX_CHARS,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Split markdown content into searchable chunks.
+
+    Strategy:
+    1. Split on ``## `` headings — each H2 section becomes a candidate chunk.
+    2. Everything before the first ``## `` heading is the intro chunk.
+    3. Sections exceeding *max_chars* are split further on ``### `` headings
+       or blank-line-delimited paragraphs.
+
+    Returns:
+        List of ``(chunk_text, metadata)`` pairs where metadata contains
+        ``page_path``, ``section_heading``, ``category``, and ``page_type``.
+    """
+    base_meta: dict[str, Any] = {
+        "page_path": page_path,
+        "category": category,
+        "page_type": page_type,
+    }
+
+    # Split on H2 boundaries, keeping the heading with each section.
+    h2_pattern = re.compile(r"(?=^## )", re.MULTILINE)
+    raw_sections = h2_pattern.split(content)
+
+    chunks: list[tuple[str, dict[str, Any]]] = []
+    for section in raw_sections:
+        if not section.strip():
+            continue
+
+        # Extract the section heading (first line starting with ##).
+        first_line = section.splitlines()[0].strip() if section.strip() else ""
+        heading = first_line.lstrip("#").strip() if first_line.startswith("#") else ""
+
+        if len(section) <= max_chars:
+            meta = {**base_meta, "section_heading": heading}
+            chunks.append((section.strip(), meta))
+            continue
+
+        # Section too large — try splitting on H3 headings first.
+        h3_pattern = re.compile(r"(?=^### )", re.MULTILINE)
+        sub_sections = h3_pattern.split(section)
+
+        if len(sub_sections) > 1:
+            for sub in sub_sections:
+                if not sub.strip():
+                    continue
+                sub_first = sub.splitlines()[0].strip() if sub.strip() else ""
+                sub_heading = (
+                    sub_first.lstrip("#").strip() if sub_first.startswith("#") else heading
+                )
+                _append_paragraphs(sub, sub_heading, base_meta, max_chars, chunks)
+        else:
+            _append_paragraphs(section, heading, base_meta, max_chars, chunks)
+
+    # Always return at least one chunk containing the full content.
+    if not chunks:
+        meta = {**base_meta, "section_heading": _extract_title(content)}
+        chunks.append((content.strip(), meta))
+
+    return chunks
+
+
+def _append_paragraphs(
+    text: str,
+    heading: str,
+    base_meta: dict[str, Any],
+    max_chars: int,
+    out: list[tuple[str, dict[str, Any]]],
+) -> None:
+    """Split *text* on blank lines and append paragraph-level chunks to *out*."""
+    if len(text) <= max_chars:
+        meta = {**base_meta, "section_heading": heading}
+        out.append((text.strip(), meta))
+        return
+
+    paragraphs = re.split(r"\n{2,}", text)
+    current_parts: list[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        if current_len + len(para) > max_chars and current_parts:
+            meta = {**base_meta, "section_heading": heading}
+            out.append(("\n\n".join(current_parts), meta))
+            current_parts = [para]
+            current_len = len(para)
+        else:
+            current_parts.append(para)
+            current_len += len(para)
+
+    if current_parts:
+        meta = {**base_meta, "section_heading": heading}
+        out.append(("\n\n".join(current_parts), meta))

@@ -19,7 +19,7 @@ from ravn.adapters.channels.event import (
     _build_initiative_context,
     _parse_deadline,
 )
-from ravn.adapters.personas.loader import PersonaConfig, PersonaLoader
+from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
 from ravn.config import SleipnirConfig
 from ravn.domain.models import AgentTask, OutputMode
 
@@ -56,9 +56,9 @@ def _dispatch_payload(**kwargs) -> bytes:
     return json.dumps(base).encode("utf-8")
 
 
-def _fake_persona_loader(names: list[str]) -> PersonaLoader:
-    """Return a PersonaLoader that only knows the listed persona names."""
-    loader = MagicMock(spec=PersonaLoader)
+def _fake_persona_loader(names: list[str]) -> FilesystemPersonaAdapter:
+    """Return a FilesystemPersonaAdapter that only knows the listed persona names."""
+    loader = MagicMock(spec=FilesystemPersonaAdapter)
 
     def _load(name: str) -> PersonaConfig | None:
         if name in names:
@@ -152,10 +152,10 @@ class TestTaskDispatchChannelConstruction:
 
     def test_default_persona_loader(self) -> None:
         ch = TaskDispatchChannel(_config())
-        assert isinstance(ch._persona_loader, PersonaLoader)
+        assert isinstance(ch._persona_loader, FilesystemPersonaAdapter)
 
     def test_custom_persona_loader(self) -> None:
-        loader = MagicMock(spec=PersonaLoader)
+        loader = MagicMock(spec=FilesystemPersonaAdapter)
         ch = TaskDispatchChannel(_config(), persona_loader=loader)
         assert ch._persona_loader is loader
 

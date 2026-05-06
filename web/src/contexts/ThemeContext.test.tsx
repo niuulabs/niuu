@@ -116,7 +116,7 @@ describe('ThemeContext', () => {
   });
 
   it('exports all expected themes', () => {
-    expect(THEMES).toHaveLength(2);
-    expect(THEMES.map(t => t.id)).toEqual(['default', 'spring']);
+    expect(THEMES).toHaveLength(3);
+    expect(THEMES.map(t => t.id)).toEqual(['default', 'spring', 'frost']);
   });
 });

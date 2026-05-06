@@ -1,0 +1,132 @@
+# ─── pi ──────────────────────────────────────────────────────────────────────
+#
+# Raspberry Pi deployment: fully offline-capable with Bifrost + Ollama.
+#
+# What you get:
+#   - Bifrost routing to local Ollama models (zero cloud dependency)
+#   - Telegram bot for remote interaction with your Pi
+#   - Drive loop for autonomous tasks
+#   - Local Mimir knowledge base
+#   - Minimal resource footprint
+#   - Falls back gracefully when models are too large for RAM
+#
+# Hardware recommendations:
+#   - Pi 5 + 8GB RAM: can run llama3.1:8b (~4.7GB)
+#   - Pi 5 + 4GB RAM: stick to llama3.2:3b (~2.0GB)
+#   - Pi 4 + 8GB RAM: llama3.2:3b at ~8 tok/s
+#
+# Prerequisites:
+#   - Ollama installed: curl -fsSL https://ollama.com/install.sh | sh
+#   - Models pulled: ollama pull llama3.2:3b
+#   - Optional: TELEGRAM_BOT_TOKEN for remote access
+#
+# Launch:
+#   bifrost --config ~/.ravn/bifrost.yaml &
+#   ravn daemon --config ~/.ravn/config.yaml --persona autonomous-agent
+#
+# Or use the hybrid bifrost config for cloud+local fallback.
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: balanced
+  max_tokens: 2048                       # conserve RAM on Pi
+  timeout: 600                           # local models need patience
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: "http://localhost:8088"
+
+memory:
+  backend: sqlite
+
+# ── Mimir: lightweight local ──────────────────────────────────────────────
+mimir:
+  enabled: true
+  path: ~/.ravn/mimir
+  auto_distill: true
+  distill_min_session_minutes: 10        # less frequent to save compute
+  categories:
+    - technical
+    - projects
+    - household
+
+# ── Gateway: Telegram for remote access ───────────────────────────────────
+gateway:
+  enabled: true
+  channels:
+    telegram:
+      enabled: true
+      token_env: TELEGRAM_BOT_TOKEN
+      allowed_chat_ids: []               # set your chat ID for security!
+      poll_timeout: 30
+      message_max_chars: 4096
+    http:
+      enabled: true
+      host: 0.0.0.0                      # accessible on LAN
+      port: 7477
+
+# ── Drive loop: conservative for Pi ───────────────────────────────────────
+initiative:
+  enabled: true
+  max_concurrent_tasks: 1                # one at a time on Pi
+  task_queue_max: 10
+  queue_journal_path: ~/.ravn/daemon/queue.json
+  default_output_mode: ambient
+  heartbeat_interval_seconds: 120        # less frequent heartbeats
+  cron_tick_seconds: 60.0
+
+# ── Thread: light-touch on Pi ─────────────────────────────────────────────
+thread:
+  enabled: true
+  max_queue_size: 50
+  enricher_poll_interval_seconds: 900    # every 15 min (conserve compute)
+  enricher_llm_alias: fast
+
+# ── Wakefulness: relaxed timing for Pi ────────────────────────────────────
+wakefulness:
+  enabled: true
+  silence_threshold_seconds: 3600        # 1 hour (more patient)
+  reflection_cooldown_seconds: 7200      # one reflection per 2 hours
+  deep_reflection_threshold_seconds: 14400
+  deep_reflection_cooldown_seconds: 28800
+  llm_alias: fast
+  max_intents_per_reflection: 3          # fewer intents to save tokens
+
+# ── Recap ──────────────────────────────────────────────────────────────────
+recap:
+  enabled: true
+  absence_threshold_seconds: 7200        # 2 hours
+  return_detection_window_seconds: 600
+  max_threads_in_recap: 5
+  persona: produce-recap
+
+# ── Budget: zero cost (local models) ──────────────────────────────────────
+budget:
+  daily_cap_usd: 0.0                     # no cloud spend
+  input_token_cost_per_million: 0.0
+  output_token_cost_per_million: 0.0
+  warn_at_percent: 80
+
+# ── Trust: conservative for always-on Pi ──────────────────────────────────
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: approval
+  consulting_peers: free
+  drafting_tickets: approval
+  producing_recaps: free
+  opening_tickets: never
+  closing_tickets: never
+  pushing_branches: never
+  pushing_main: never
+  external_messages: approval
+  spending_beyond_cap: never
+
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+logging:
+  level: warning                         # quiet on Pi

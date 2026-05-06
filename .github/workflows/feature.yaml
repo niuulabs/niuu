@@ -1,16 +1,21 @@
-# Runs on every push to feat/* branches:
-# 1. Lints and unit-tests Python + web code
-# 2. Builds all container images tagged with the feature name
+# Runs on every push to feat/* branches. Publish-only:
+# 1. Builds all container images tagged with the feature name
 #    (e.g. feat/tyr-ui -> tag "tyr-ui")
-# 3. Packages Helm charts as 0.0.0-<feature>.<N> prerelease versions
+# 2. Packages Helm charts as 0.0.0-<feature>.<N> prerelease versions
 #    (e.g. 0.0.0-tyr-ui.3)
+#
+# Test/lint for feature branches lives in ci.yaml on pull_request events —
+# every niu-*/feat PR runs them there. Pushing directly to feat/* without a
+# PR skips tests by design; branch protection should require PR review.
 name: Feature Build
 
 on:
   push:
     branches: ['feat/**']
 
-permissions: read-all
+permissions:
+  contents: read
+  packages: write     # Required by containers + build-charts jobs
 
 env:
   REGISTRY: ghcr.io
@@ -30,6 +35,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       chart_version: ${{ steps.tag.outputs.chart_version }}
+      short_sha: ${{ steps.tag.outputs.short_sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -53,245 +59,32 @@ jobs:
           echo "chart_version=${CHART_VERSION}" >> $GITHUB_OUTPUT
           echo "Chart version: ${CHART_VERSION}"
 
-  # ---------------------------------------------------------------------------
-  # Python — lint + unit tests
-  # ---------------------------------------------------------------------------
-  python-lint:
-    name: "Python: Lint"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          version: "0.11.2"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Run ruff linting
-        run: uv run ruff check src/ tests/
-
-      - name: Check ruff formatting
-        run: uv run ruff format --check src/ tests/ || echo "::warning::Formatting issues found - consider running 'ruff format src/ tests/'"
-        continue-on-error: true
-
-  python-test-volundr:
-    name: "Python: Test Volundr"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          version: "0.11.2"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Run tests with coverage
-        run: |
-          uv run pytest tests/ --ignore=tests/test_tyr --ignore=tests/integration -v --tb=short \
-            --override-ini="addopts=" \
-            --cov=src/volundr --cov=src/cli --cov=src/niuu --cov=src/skuld \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-fail-under=85
-
-      - name: Upload coverage to Codecov
-        if: always() && hashFiles('coverage.xml') != ''
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5.5.4
-        with:
-          files: coverage.xml
-          flags: backend-volundr
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-  python-test-tyr:
-    name: "Python: Test Tyr"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          version: "0.11.2"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Run tests with coverage
-        run: |
-          uv run pytest tests/test_tyr -v --tb=short \
-            --override-ini="addopts=" \
-            --cov=src/tyr \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-fail-under=85
-
-      - name: Upload coverage to Codecov
-        if: always() && hashFiles('coverage.xml') != ''
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5.5.4
-        with:
-          files: coverage.xml
-          flags: backend-tyr
-          token: ${{ secrets.CODECOV_TOKEN }}
+          echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
   # ---------------------------------------------------------------------------
-  # Web — lint + unit tests
+  # Containers — build multi-arch, publish feature tag + feature-<short-sha>.
+  # Delegated to reusable workflow.
   # ---------------------------------------------------------------------------
-  web-lint:
-    name: "Web: Lint"
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run ESLint
-        run: npm run lint
-
-      - name: Check formatting
-        run: npm run format:check
-
-      - name: TypeScript check
-        run: npm run typecheck
-
-  web-test:
-    name: "Web: Test"
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests with coverage
-        run: npm run test:coverage
-
-      - name: Upload coverage to Codecov
-        if: always() && hashFiles('web/coverage/lcov.info') != ''
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5.5.4
-        with:
-          files: web/coverage/lcov.info
-          flags: web
-          token: ${{ secrets.CODECOV_TOKEN }}
-          working-directory: web
-
-  # ---------------------------------------------------------------------------
-  # Containers — build per platform, then merge manifests
-  # ---------------------------------------------------------------------------
-  build-container-image:
-    name: "Build ${{ matrix.container }} (${{ matrix.platform }})"
+  containers:
+    name: Containers
     needs: meta
-    runs-on: ${{ matrix.platform == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        platform: [amd64, arm64]
-        container: [volundr, skuld, devrunner, volundr-web, vscode-reh, tyr, niuu, mimir, bifrost]
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
-        with:
-          context: .
-          file: ./containers/${{ matrix.container }}/Dockerfile
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ needs.meta.outputs.tag }}-${{ matrix.platform }}
-          build-args: |
-            APP_VERSION=${{ needs.meta.outputs.tag }}-${{ github.sha }}
-          labels: |
-            org.opencontainers.image.title=${{ matrix.container }}
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.vendor=Niuu Labs
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            dev.niuu.feature=${{ needs.meta.outputs.tag }}
-          cache-from: type=gha,scope=${{ matrix.container }}-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.container }}-${{ matrix.platform }}
-          platforms: linux/${{ matrix.platform }}
-          provenance: false
-
-  merge-container-manifests:
-    name: "Manifest ${{ matrix.container }}"
-    needs: [meta, build-container-image]
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    strategy:
-      matrix:
-        container: [volundr, skuld, devrunner, volundr-web, vscode-reh, tyr, niuu, mimir, bifrost]
-    steps:
-      - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create and push manifests
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}"
-          TAG="${{ needs.meta.outputs.tag }}"
-          SHA="${{ github.sha }}"
-          SHORT_SHA="${SHA:0:7}"
-
-          # Feature tag (mutable, always points to latest push on this feature branch)
-          docker manifest create "${IMAGE}:${TAG}" \
-            "${IMAGE}:${TAG}-amd64" \
-            "${IMAGE}:${TAG}-arm64"
-          docker manifest push "${IMAGE}:${TAG}"
-
-          # Feature + short sha (immutable, for pinning a specific build)
-          docker manifest create "${IMAGE}:${TAG}-${SHORT_SHA}" \
-            "${IMAGE}:${TAG}-amd64" \
-            "${IMAGE}:${TAG}-arm64"
-          docker manifest push "${IMAGE}:${TAG}-${SHORT_SHA}"
+    uses: ./.github/workflows/reusable-container-build.yaml
+    with:
+      containers: '["volundr","skuld","devrunner","volundr-web","niuu-web","tyr","niuu","mimir","bifrost"]'
+      platforms: '["amd64","arm64"]'
+      tag-prefix: ${{ needs.meta.outputs.tag }}
+      manifest-tags: "${{ needs.meta.outputs.tag }} ${{ needs.meta.outputs.tag }}-${{ needs.meta.outputs.short_sha }}"
+      build-args: |
+        APP_VERSION=${{ needs.meta.outputs.tag }}-${{ github.sha }}
+      labels: |
+        org.opencontainers.image.title=niuu
+        org.opencontainers.image.licenses=Apache-2.0
+        org.opencontainers.image.vendor=Niuu Labs
+        org.opencontainers.image.source=https://github.com/${{ github.repository }}
+        dev.niuu.feature=${{ needs.meta.outputs.tag }}
 
   # ---------------------------------------------------------------------------
   # Helm charts — feature prerelease versions (0.0.0-<feature>.<N>)

@@ -10,7 +10,6 @@ import pytest
 from ravn.config import (
     TRUST_CATEGORY_TOOLS,
     AgentConfig,
-    AnthropicConfig,
     ChannelConfig,
     ContextConfig,
     HookConfig,
@@ -30,13 +29,6 @@ from ravn.config import (
     TrustGradientConfig,
     resolve_trust_tools,
 )
-
-
-class TestAnthropicConfig:
-    def test_defaults(self) -> None:
-        c = AnthropicConfig()
-        assert c.api_key == ""
-        assert c.base_url == "https://api.anthropic.com"
 
 
 class TestAgentConfig:
@@ -276,7 +268,6 @@ class TestLoggingConfig:
 class TestSettings:
     def test_defaults(self) -> None:
         s = Settings()
-        assert isinstance(s.anthropic, AnthropicConfig)
         assert isinstance(s.agent, AgentConfig)
         assert isinstance(s.llm_adapter, LLMAdapterConfig)
         assert isinstance(s.permission, PermissionConfig)
@@ -293,22 +284,6 @@ class TestSettings:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             assert s.channels == []
-
-    def test_effective_api_key_from_env(self) -> None:
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "env-key"}):
-            s = Settings()
-            assert s.effective_api_key() == "env-key"
-
-    def test_effective_api_key_from_config(self) -> None:
-        env_without_key = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-        with patch.dict(os.environ, env_without_key, clear=True):
-            s = Settings(anthropic=AnthropicConfig(api_key="config-key"))
-            assert s.effective_api_key() == "config-key"
-
-    def test_effective_api_key_env_takes_precedence(self) -> None:
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "env-key"}):
-            s = Settings(anthropic=AnthropicConfig(api_key="config-key"))
-            assert s.effective_api_key() == "env-key"
 
     def test_env_override(self) -> None:
         with patch.dict(os.environ, {"RAVN_AGENT__MODEL": "claude-haiku-4-5-20251001"}):

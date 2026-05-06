@@ -2,7 +2,7 @@
 
 {{ template "chart.badgesSection" . }}
 
-Helm chart for deploying **Skuld** -- a Claude Code CLI session pod with WebSocket broker and code-server IDE.
+Helm chart for deploying **Skuld** -- a Claude Code CLI session pod with a WebSocket broker and terminal/local-service sidecars.
 
 ## Overview
 
@@ -10,7 +10,6 @@ Skuld is the session runtime for [Volundr](../volundr/). Each session deploys as
 
 - **Nginx** -- single entry point routing all traffic to internal containers
 - **Skuld broker** -- WebSocket bridge between Claude Code CLI and the AI model
-- **code-server** (optional) -- VS Code IDE in the browser
 - **Devrunner** (optional) -- terminal access and dynamic local service management
 - **Envoy** (optional) -- JWT validation and header extraction sidecar
 

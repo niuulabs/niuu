@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.domain.services.pat_validator import PATValidator
 
-SIGNING_KEY = "test-signing-key-for-middleware!"
+SIGNING_KEY = "test-signing-key-for-middleware-at-least-32"
 
 
 def _make_pat_jwt(sub: str = "user-1", jti: str = "jti-abc") -> str:

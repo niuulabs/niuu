@@ -78,6 +78,22 @@ const mockService = {
   getIntegrations: vi.fn().mockResolvedValue([]),
   getFeatures: vi.fn().mockResolvedValue({ localMountsEnabled: false, miniMode: false }),
   getClusterResources: vi.fn().mockResolvedValue({ resourceTypes: [], nodes: [] }),
+  getSessionDefinitions: vi.fn().mockResolvedValue([
+    {
+      key: 'skuldClaude',
+      displayName: 'Claude Code',
+      description: 'Anthropic Claude CLI agent',
+      labels: ['claude'],
+      defaultModel: 'claude-sonnet',
+    },
+    {
+      key: 'skuldCodex',
+      displayName: 'Codex',
+      description: 'OpenAI Codex CLI agent',
+      labels: ['codex'],
+      defaultModel: 'codex',
+    },
+  ]),
 } as unknown as import('@/ports').IVolundrService;
 
 const defaultProps = {
@@ -231,6 +247,7 @@ describe('LaunchWizard', () => {
           name: 'test-session',
           model: 'claude-sonnet',
           source: { type: 'git', repo: 'https://github.com/org/repo.git', branch: 'develop' },
+          definition: 'skuldClaude',
           terminalRestricted: false,
         })
       );
@@ -292,6 +309,7 @@ describe('LaunchWizard', () => {
       const miniService = {
         ...mockService,
         getFeatures: vi.fn().mockResolvedValue({ localMountsEnabled: true, miniMode: true }),
+        getSessionDefinitions: vi.fn().mockResolvedValue([]),
       } as unknown as import('@/ports').IVolundrService;
 
       render(<LaunchWizard {...defaultProps} repos={[]} service={miniService} />);

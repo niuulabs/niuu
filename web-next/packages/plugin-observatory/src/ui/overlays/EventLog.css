@@ -1,0 +1,105 @@
+/* EventLog — bottom strip matching web2 .eventlog spec */
+.obs-event-log {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  height: 110px;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-bg-primary) 88%, transparent) 20%,
+    var(--color-bg-primary) 100%
+  );
+  pointer-events: none;
+}
+
+/* Inner panel: inset from left, clear minimap (200px) + drawer (320px) on right */
+.obs-event-log__inner {
+  position: absolute;
+  left: var(--space-4);
+  right: 200px;
+  bottom: var(--space-3);
+  height: 90px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-bg-secondary) 90%, transparent);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-subtle) transparent;
+  pointer-events: auto;
+}
+
+.obs-event-log__empty {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  padding: var(--space-2);
+  text-align: center;
+  align-self: center;
+  margin: auto;
+}
+
+.obs-event-log__entry {
+  display: grid;
+  grid-template-columns: 8ch 7ch 14ch 1fr;
+  gap: var(--space-2);
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.obs-event-log__ts {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+.obs-event-log__type {
+  font-weight: 600;
+  flex-shrink: 0;
+  letter-spacing: 0.04em;
+}
+.obs-event-log__type--raid {
+  color: var(--color-accent-amber);
+}
+.obs-event-log__type--ravn {
+  color: var(--color-accent-purple);
+}
+.obs-event-log__type--tyr {
+  color: var(--color-accent-cyan);
+}
+.obs-event-log__type--mimir {
+  color: var(--color-accent-indigo);
+}
+.obs-event-log__type--bifrost {
+  color: var(--color-accent-emerald);
+}
+.obs-event-log__header {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+.obs-event-log__subject {
+  color: var(--brand-300, var(--color-accent-cyan));
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.obs-event-log__body {
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -224,3 +224,32 @@ describe('MarkdownContent', () => {
     expect(screen.getByText(/line10/)).toBeInTheDocument();
   });
 });
+
+/* ================================================================== */
+/*  MarkdownContent — Outcome blocks (integration)                     */
+/* ================================================================== */
+
+describe('MarkdownContent — outcome blocks', () => {
+  const outcomeBlock = `---outcome---
+verdict: approve
+summary: Implementation complete with full test coverage
+---end---`;
+
+  it('renders an outcome block as a card instead of raw text', () => {
+    const { container } = render(<MarkdownContent content={outcomeBlock} />);
+
+    expect(screen.queryByText(/---outcome---/)).toBeNull();
+    expect(screen.queryByText(/---end---/)).toBeNull();
+    expect(screen.getByText('Outcome')).toBeInTheDocument();
+    expect(container.querySelector('[class*="outcomeCard"]')).toBeInTheDocument();
+  });
+
+  it('strips outcome markers from surrounding message text', () => {
+    const content = `Some intro text.\n\n${outcomeBlock}\n\nSome conclusion text.`;
+    render(<MarkdownContent content={content} />);
+
+    expect(screen.getByText(/Some intro text/)).toBeInTheDocument();
+    expect(screen.getByText(/Some conclusion text/)).toBeInTheDocument();
+    expect(screen.getByText('Outcome')).toBeInTheDocument();
+  });
+});

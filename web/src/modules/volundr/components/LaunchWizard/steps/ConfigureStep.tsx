@@ -29,15 +29,14 @@ import type {
   VolundrModel,
   McpServerConfig,
   McpServerType,
-  CliTool,
   TrackerIssue,
   RepoProvider,
   VolundrWorkspace,
   StoredCredential,
   IntegrationConnection,
   ClusterResourceInfo,
+  SessionDefinition,
 } from '@/modules/volundr/models';
-import { CLI_TOOL_LABELS } from '@/modules/volundr/models';
 import type { SourceType } from '../LaunchWizard';
 import type { IVolundrService } from '@/modules/volundr/ports';
 import { TrackerIssueSearch } from '@/modules/volundr/components/molecules/TrackerIssueSearch';
@@ -102,16 +101,20 @@ function workspaceLabel(ws: VolundrWorkspace): string {
   return ws.pvcName;
 }
 
-const CLI_TOOLS: { value: CliTool; label: string; description: string }[] = [
+const FALLBACK_DEFINITIONS: SessionDefinition[] = [
   {
-    value: 'claude',
-    label: CLI_TOOL_LABELS['claude'] ?? 'claude',
+    key: 'skuldClaude',
+    displayName: 'Claude Code',
     description: 'Anthropic Claude CLI agent',
+    labels: ['claude'],
+    defaultModel: 'claude-sonnet',
   },
   {
-    value: 'codex',
-    label: CLI_TOOL_LABELS['codex'] ?? 'codex',
+    key: 'skuldCodex',
+    displayName: 'Codex',
     description: 'OpenAI Codex CLI agent',
+    labels: ['codex'],
+    defaultModel: 'codex',
   },
 ];
 
@@ -159,6 +162,8 @@ export function ConfigureStep({
   const [credentials, setCredentials] = useState<StoredCredential[]>([]);
   const [integrations, setIntegrations] = useState<IntegrationConnection[]>([]);
   const [clusterResources, setClusterResources] = useState<ClusterResourceInfo | null>(null);
+  const [sessionDefinitions, setSessionDefinitions] =
+    useState<SessionDefinition[]>(FALLBACK_DEFINITIONS);
 
   useEffect(() => {
     Promise.all([service.listWorkspaces('archived'), service.listWorkspaces('active')])
@@ -175,6 +180,14 @@ export function ConfigureStep({
     service
       .getClusterResources()
       .then(setClusterResources)
+      .catch(() => {});
+    service
+      .getSessionDefinitions()
+      .then(defs => {
+        if (defs.length > 0) {
+          setSessionDefinitions(defs);
+        }
+      })
       .catch(() => {});
   }, [service]);
 
@@ -287,10 +300,13 @@ export function ConfigureStep({
       }
 
       const warnings: string[] = [];
+      // Find matching definition for the preset's CLI tool
+      const matchedDef = sessionDefinitions.find(d => d.labels.includes(preset.cliTool));
       const updates: Partial<WizardState> = {
         preset,
         model: preset.model ?? '',
         taskType: `skuld-${preset.cliTool}`,
+        definition: matchedDef?.key ?? (preset.cliTool === 'codex' ? 'skuldCodex' : 'skuldClaude'),
         systemPrompt: preset.systemPrompt ?? '',
         mcpServers: [...preset.mcpServers],
         resourceConfig: { ...preset.resourceConfig },
@@ -352,7 +368,7 @@ export function ConfigureStep({
       setPresetWarnings(warnings);
       onChange(updates);
     },
-    [presets, repos, availableSecrets, integrations, state.template, onChange]
+    [presets, repos, availableSecrets, integrations, sessionDefinitions, state.template, onChange]
   );
 
   const handleToggleYaml = useCallback(() => {
@@ -726,27 +742,28 @@ export function ConfigureStep({
         </div>
       )}
 
-      {/* CLI Tool selector */}
+      {/* Session Definition selector */}
       <div className={styles.cliToolSection}>
         <span className={styles.sectionLabel}>CLI Tool</span>
         <div className={styles.cliToolGrid}>
-          {CLI_TOOLS.map(tool => (
+          {sessionDefinitions.map(def => (
             <button
-              key={tool.value}
+              key={def.key}
               className={cn(
                 styles.cliToolCard,
-                state.template.cliTool === tool.value && styles.cliToolCardActive
+                state.definition === def.key && styles.cliToolCardActive
               )}
               onClick={() =>
                 onChange({
-                  taskType: `skuld-${tool.value}`,
-                  template: { ...state.template, cliTool: tool.value },
+                  definition: def.key,
+                  taskType: `skuld-${def.labels[0] ?? def.key}`,
+                  template: { ...state.template, cliTool: def.labels[0] ?? def.key },
                 })
               }
               type="button"
             >
-              <span className={styles.cliToolLabel}>{tool.label}</span>
-              <span className={styles.cliToolDescription}>{tool.description}</span>
+              <span className={styles.cliToolLabel}>{def.displayName}</span>
+              <span className={styles.cliToolDescription}>{def.description}</span>
             </button>
           ))}
         </div>

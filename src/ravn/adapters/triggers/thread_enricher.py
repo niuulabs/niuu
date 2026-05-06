@@ -255,7 +255,8 @@ class ThreadEnricher(TriggerPort):
         page.meta.thread_weight_signals = asdict(signals)
         page.meta.thread_next_action_hint = result.get("next_action_hint")
         page.meta.thread_context_refs = [
-            ThreadContextRef(type="wiki_page", id=sid, summary="") for sid in page.meta.source_ids
+            ThreadContextRef(ref_type="ingest", ref_id=sid, ref_summary="")
+            for sid in page.meta.source_ids
         ]
 
         await self._mimir.upsert_page(page.meta.path, page.content, meta=page.meta)

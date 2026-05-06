@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+# ravn-setup — Generate and optionally launch Ravn in various configurations.
+#
+# Usage:
+#   ravn-setup list                     Show all available setups
+#   ravn-setup describe <name>          Show what a setup configures
+#   ravn-setup generate <name> [DIR]    Write config files to DIR (default: ~/.ravn)
+#   ravn-setup launch <name>            Generate configs + start ravn
+#   ravn-setup check <name>             Validate prerequisites for a setup
+#
+# Examples:
+#   ravn-setup list
+#   ravn-setup describe daemon-telegram
+#   ravn-setup generate bifrost-ollama ./my-configs
+#   ravn-setup launch minimal
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIGS_DIR="${SCRIPT_DIR}/configs"
+DEFAULT_OUTPUT_DIR="${HOME}/.ravn"
+
+# ── Colours ─────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+# ── Setup Registry ──────────────────────────────────────────────────────────
+# Each setup has:  <name>|<category>|<short description>
+SETUPS=(
+  "minimal|core|Bare-bones ravn — just LLM + memory, no extras"
+  "mimir-local|mimir|Ravn + local filesystem Mimir with auto-distill"
+  "mimir-remote|mimir|Ravn + remote HTTP Mimir instance"
+  "mimir-composite|mimir|Local + remote Mimir with write routing"
+  "bifrost-ollama|bifrost|Ravn + Bifrost gateway routing to local Ollama"
+  "bifrost-cloud|bifrost|Bifrost with Anthropic primary + OpenAI failover"
+  "bifrost-hybrid|bifrost|Bifrost with cloud primary + local Ollama fallback"
+  "daemon-telegram|daemon|Daemon with Telegram gateway + drive loop"
+  "daemon-http|daemon|Daemon with HTTP gateway for local dev"
+  "daemon-full|daemon|Daemon with Telegram + HTTP + all triggers"
+  "sleipnir|infra|Daemon + Sleipnir event backbone (RabbitMQ)"
+  "flock-mdns|flock|Mesh peers with nng transport + mDNS discovery"
+  "flock-sleipnir|flock|Mesh peers with Sleipnir transport + discovery"
+  "pi|deployment|Raspberry Pi: Bifrost Ollama + daemon + Telegram"
+  "kitchen-sink|deployment|Everything enabled — the full monty"
+  "vaka-full|vaka|All MF features + daemon + Qwen3 on Valaskjalf vLLM (zero Anthropic)"
+  "vaka-light|vaka|Interactive coding with MF features + Qwen3 on Valaskjalf (no daemon)"
+)
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+_setup_name()  { echo "$1" | cut -d'|' -f1; }
+_setup_cat()   { echo "$1" | cut -d'|' -f2; }
+_setup_desc()  { echo "$1" | cut -d'|' -f3; }
+
+_find_setup() {
+  local name="$1"
+  for entry in "${SETUPS[@]}"; do
+    if [[ "$(_setup_name "$entry")" == "$name" ]]; then
+      echo "$entry"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_config_file() {
+  local name="$1"
+  echo "${CONFIGS_DIR}/${name}.yaml"
+}
+
+_bifrost_config_file() {
+  local name="$1"
+  echo "${CONFIGS_DIR}/${name}.bifrost.yaml"
+}
+
+_header() {
+  echo ""
+  echo -e "${BOLD}${CYAN}━━━ $1 ━━━${RESET}"
+  echo ""
+}
+
+_ok()   { echo -e "  ${GREEN}✓${RESET} $1"; }
+_warn() { echo -e "  ${YELLOW}!${RESET} $1"; }
+_err()  { echo -e "  ${RED}✗${RESET} $1"; }
+_info() { echo -e "  ${DIM}$1${RESET}"; }
+
+# ── Commands ────────────────────────────────────────────────────────────────
+
+cmd_list() {
+  _header "Available Ravn Setups"
+
+  local prev_cat=""
+  for entry in "${SETUPS[@]}"; do
+    local name cat desc
+    name="$(_setup_name "$entry")"
+    cat="$(_setup_cat "$entry")"
+    desc="$(_setup_desc "$entry")"
+
+    if [[ "$cat" != "$prev_cat" ]]; then
+      echo ""
+      echo -e "  ${BOLD}${cat}${RESET}"
+      prev_cat="$cat"
+    fi
+    printf "    ${CYAN}%-20s${RESET} %s\n" "$name" "$desc"
+  done
+
+  echo ""
+  echo -e "  ${DIM}Use 'ravn-setup describe <name>' for details${RESET}"
+  echo -e "  ${DIM}Use 'ravn-setup generate <name>' to write config files${RESET}"
+  echo ""
+}
+
+cmd_describe() {
+  local name="${1:?Usage: ravn-setup describe <name>}"
+  local entry
+  entry="$(_find_setup "$name")" || { _err "Unknown setup: $name"; exit 1; }
+
+  _header "$name — $(_setup_desc "$entry")"
+
+  local config_file
+  config_file="$(_config_file "$name")"
+
+  if [[ ! -f "$config_file" ]]; then
+    _err "Config file not found: $config_file"
+    exit 1
+  fi
+
+  # Show the description block from the config (lines starting with #)
+  echo -e "${DIM}"
+  sed -n '/^#/p' "$config_file" | head -40
+  echo -e "${RESET}"
+
+  # Show what files will be generated
+  echo -e "  ${BOLD}Files generated:${RESET}"
+  _info "  ravn config  → config.yaml"
+
+  local bifrost_file
+  bifrost_file="$(_bifrost_config_file "$name")"
+  if [[ -f "$bifrost_file" ]]; then
+    _info "  bifrost config → bifrost.yaml"
+  fi
+
+  echo ""
+
+  # Show required env vars
+  echo -e "  ${BOLD}Required environment variables:${RESET}"
+  local envvars
+  envvars=$(grep -oE '[A-Z_]{3,}_ENV:\s*\S+|_env:\s*\S+|_ENV\b' "$config_file" 2>/dev/null | sort -u || true)
+  if [[ -n "$envvars" ]]; then
+    echo "$envvars" | while read -r line; do
+      _info "  $line"
+    done
+  fi
+
+  # Also check for common env var references
+  local api_keys
+  api_keys=$(grep -oE 'TELEGRAM_BOT_TOKEN|SLEIPNIR_AMQP_URL|DISCORD_BOT_TOKEN|SLACK_BOT_TOKEN|SLACK_APP_TOKEN|MIMIR_BEARER_TOKEN' "$config_file" 2>/dev/null | sort -u || true)
+  if [[ -n "$api_keys" ]]; then
+    echo "$api_keys" | while read -r key; do
+      _info "  $key"
+    done
+  fi
+
+  echo ""
+
+  # Show required services
+  echo -e "  ${BOLD}Required services:${RESET}"
+  if grep -q 'ollama' "$config_file" 2>/dev/null; then
+    _info "  Ollama (http://localhost:11434)"
+  fi
+  if grep -q 'amqp' "$config_file" 2>/dev/null; then
+    _info "  RabbitMQ (SLEIPNIR_AMQP_URL)"
+  fi
+  if grep -q 'bifrost' "$config_file" 2>/dev/null || [[ -f "$bifrost_file" ]]; then
+    _info "  Bifrost gateway"
+  fi
+  echo ""
+}
+
+cmd_check() {
+  local name="${1:?Usage: ravn-setup check <name>}"
+  local entry
+  entry="$(_find_setup "$name")" || { _err "Unknown setup: $name"; exit 1; }
+
+  _header "Checking prerequisites for: $name"
+
+  local config_file
+  config_file="$(_config_file "$name")"
+
+  local all_ok=true
+
+  # Check ravn binary
+  if command -v ravn &>/dev/null; then
+    _ok "ravn binary found"
+  else
+    _err "ravn binary not found in PATH"
+    all_ok=false
+  fi
+
+  # Check bifrost if needed
+  local bifrost_file
+  bifrost_file="$(_bifrost_config_file "$name")"
+  if [[ -f "$bifrost_file" ]]; then
+    if command -v bifrost &>/dev/null; then
+      _ok "bifrost binary found"
+    else
+      _err "bifrost binary not found in PATH"
+      all_ok=false
+    fi
+  fi
+
+  # Check Ollama if needed
+  if grep -q 'ollama' "$config_file" 2>/dev/null; then
+    if command -v ollama &>/dev/null; then
+      _ok "ollama binary found"
+      if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+        _ok "ollama server running"
+        local models
+        models=$(curl -sf http://localhost:11434/api/tags | python3 -c "import sys,json; [print(m['name']) for m in json.load(sys.stdin).get('models',[])]" 2>/dev/null || true)
+        if [[ -n "$models" ]]; then
+          echo "$models" | while read -r m; do _ok "  model: $m"; done
+        else
+          _warn "no models pulled — run: ollama pull llama3.2:3b"
+        fi
+      else
+        _warn "ollama not running — start with: ollama serve"
+      fi
+    else
+      _err "ollama not found — install from https://ollama.com"
+      all_ok=false
+    fi
+  fi
+
+  # Check RabbitMQ if needed
+  if grep -q 'amqp' "$config_file" 2>/dev/null; then
+    if [[ -n "${SLEIPNIR_AMQP_URL:-}" ]]; then
+      _ok "SLEIPNIR_AMQP_URL is set"
+    else
+      _warn "SLEIPNIR_AMQP_URL not set"
+      all_ok=false
+    fi
+  fi
+
+  # Check required env vars
+  if grep -q 'TELEGRAM_BOT_TOKEN' "$config_file" 2>/dev/null; then
+    if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
+      _ok "TELEGRAM_BOT_TOKEN is set"
+    else
+      _warn "TELEGRAM_BOT_TOKEN not set"
+      all_ok=false
+    fi
+  fi
+
+  if grep -q 'MIMIR_BEARER_TOKEN' "$config_file" 2>/dev/null; then
+    if [[ -n "${MIMIR_BEARER_TOKEN:-}" ]]; then
+      _ok "MIMIR_BEARER_TOKEN is set"
+    else
+      _warn "MIMIR_BEARER_TOKEN not set (needed for shared Mimir)"
+      all_ok=false
+    fi
+  fi
+
+  echo ""
+  if [[ "$all_ok" == true ]]; then
+    echo -e "  ${GREEN}${BOLD}All checks passed${RESET}"
+  else
+    echo -e "  ${YELLOW}${BOLD}Some checks failed — setup may not work fully${RESET}"
+  fi
+  echo ""
+}
+
+cmd_generate() {
+  local name="${1:?Usage: ravn-setup generate <name> [output-dir]}"
+  local output_dir="${2:-$DEFAULT_OUTPUT_DIR}"
+  local entry
+  entry="$(_find_setup "$name")" || { _err "Unknown setup: $name"; exit 1; }
+
+  _header "Generating config for: $name"
+
+  mkdir -p "$output_dir"
+
+  local config_file
+  config_file="$(_config_file "$name")"
+
+  if [[ ! -f "$config_file" ]]; then
+    _err "Config template not found: $config_file"
+    exit 1
+  fi
+
+  # Backup existing config
+  if [[ -f "${output_dir}/config.yaml" ]]; then
+    local backup="${output_dir}/config.yaml.bak.$(date +%s)"
+    cp "${output_dir}/config.yaml" "$backup"
+    _warn "Backed up existing config to $(basename "$backup")"
+  fi
+
+  # Copy ravn config
+  cp "$config_file" "${output_dir}/config.yaml"
+  _ok "Written: ${output_dir}/config.yaml"
+
+  # Copy bifrost config if present
+  local bifrost_file
+  bifrost_file="$(_bifrost_config_file "$name")"
+  if [[ -f "$bifrost_file" ]]; then
+    cp "$bifrost_file" "${output_dir}/bifrost.yaml"
+    _ok "Written: ${output_dir}/bifrost.yaml"
+  fi
+
+  echo ""
+  echo -e "  ${DIM}Config written to: ${output_dir}${RESET}"
+  echo -e "  ${DIM}Review and edit before launching.${RESET}"
+  echo ""
+}
+
+cmd_launch() {
+  local name="${1:?Usage: ravn-setup launch <name>}"
+  local entry
+  entry="$(_find_setup "$name")" || { _err "Unknown setup: $name"; exit 1; }
+
+  # Generate first
+  cmd_generate "$name"
+
+  _header "Launching: $name"
+
+  local config_path="${DEFAULT_OUTPUT_DIR}/config.yaml"
+  local bifrost_path="${DEFAULT_OUTPUT_DIR}/bifrost.yaml"
+
+  # Start bifrost in background if config exists
+  local bifrost_pid=""
+  if [[ -f "$bifrost_path" ]]; then
+    _info "Starting Bifrost gateway..."
+    bifrost --config "$bifrost_path" &
+    bifrost_pid=$!
+    _ok "Bifrost started (PID: $bifrost_pid)"
+    sleep 1
+  fi
+
+  # Determine launch command based on setup category
+  local cat
+  cat="$(_setup_cat "$entry")"
+
+  case "$cat" in
+    daemon)
+      _info "Starting ravn daemon..."
+      ravn daemon --config "$config_path"
+      ;;
+    flock)
+      _info "Starting ravn daemon (flock mode)..."
+      ravn daemon --config "$config_path"
+      ;;
+    *)
+      _info "Starting ravn..."
+      ravn run --config "$config_path"
+      ;;
+  esac
+
+  # Cleanup bifrost on exit
+  if [[ -n "$bifrost_pid" ]]; then
+    kill "$bifrost_pid" 2>/dev/null || true
+  fi
+}
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+
+  case "$cmd" in
+    list|ls)        cmd_list "$@" ;;
+    describe|desc)  cmd_describe "$@" ;;
+    generate|gen)   cmd_generate "$@" ;;
+    launch|run)     cmd_launch "$@" ;;
+    check)          cmd_check "$@" ;;
+    help|--help|-h)
+      echo ""
+      echo -e "${BOLD}ravn-setup${RESET} — Generate and launch Ravn configurations"
+      echo ""
+      echo "  list                     Show all available setups"
+      echo "  describe <name>          Show what a setup configures"
+      echo "  generate <name> [dir]    Write config files (default: ~/.ravn)"
+      echo "  launch <name>            Generate + start ravn"
+      echo "  check <name>             Validate prerequisites"
+      echo ""
+      ;;
+    *)
+      _err "Unknown command: $cmd"
+      echo "  Run 'ravn-setup help' for usage"
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

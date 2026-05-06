@@ -55,4 +55,15 @@ def create_repos_router(repo_service: RepoService) -> APIRouter:
             for provider_name, repos in repos_by_provider.items()
         }
 
+    @router.get("/repos/branches", response_model=list[str])
+    async def list_branches(request: Request, repo_url: str) -> list[str]:
+        """List branches for a repository visible to the current user."""
+        if repo_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Repo service not available",
+            )
+        user_id = request.headers.get("x-auth-user-id")
+        return await repo_service.list_branches(repo_url, user_id=user_id)
+
     return router

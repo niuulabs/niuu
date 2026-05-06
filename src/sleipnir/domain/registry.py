@@ -52,10 +52,20 @@ RAVN_TURN_START: str = "ravn.turn.start"
 RAVN_TOOL_START: str = "ravn.tool.start"
 
 #: A Ravn task completed successfully (all turns and tool calls done).
+#: @deprecated Use RAVN_TASK_COMPLETED ("ravn.task.completed") instead.
 RAVN_TASK_COMPLETE: str = "ravn.task.complete"
 
 #: The agent requires a human decision before proceeding (urgency ≥ 0.8).
 RAVN_DECISION_REQUIRED: str = "ravn.decision.required"
+
+#: An agent session started (first turn received by the agent).
+RAVN_SESSION_STARTED: str = "ravn.session.started"
+
+#: An agent session ended — normal exit, interrupt, or error.
+RAVN_SESSION_ENDED: str = "ravn.session.ended"
+
+#: A Ravn task completed (all turns done; includes outcome and token cost).
+RAVN_TASK_COMPLETED: str = "ravn.task.completed"
 
 # ---------------------------------------------------------------------------
 # tyr — Tyr autonomous dispatcher events
@@ -111,6 +121,12 @@ TYR_DISPATCHER_STATE: str = "tyr.dispatcher.state"
 
 #: A notification was sent to a channel.
 TYR_NOTIFICATION_SENT: str = "tyr.notification.sent"
+
+#: A Saga completed all phases (distinct from TYR_SAGA_COMPLETE for consistency with catalog).
+TYR_SAGA_COMPLETED: str = "tyr.saga.completed"
+
+#: A raid requires human approval before it can proceed.
+TYR_RAID_NEEDS_APPROVAL: str = "tyr.raid.needs_approval"
 
 # ---------------------------------------------------------------------------
 # skuld — Skuld broker events (session pod activity)
@@ -265,7 +281,7 @@ BIFROST_PROVIDER_DOWN: str = "bifrost.provider.down"
 #: The upstream LLM provider recovered and is healthy again.
 BIFROST_PROVIDER_RECOVERED: str = "bifrost.provider.recovered"
 
-#: A request was automatically routed to a cheaper model due to budget pressure.
+#: A tenant's daily spend crossed 80 % of its configured cap; model downgraded.
 BIFROST_BUDGET_DEGRADED: str = "bifrost.budget.degraded"
 
 # ---------------------------------------------------------------------------
@@ -289,3 +305,29 @@ SYSTEM_ERROR: str = "system.error"
 
 #: A metric snapshot was emitted for observability.
 SYSTEM_METRIC: str = "system.metric"
+
+# ---------------------------------------------------------------------------
+# mimir — Mimir knowledge-base events
+# ---------------------------------------------------------------------------
+
+#: A wiki page was written (created or updated) by the Mimir adapter.
+MIMIR_PAGE_WRITTEN: str = "mimir.page.written"
+
+#: A dream cycle completed — pages updated, entities created, lint fixes applied.
+MIMIR_DREAM_COMPLETED: str = "mimir.dream.completed"
+
+# ---------------------------------------------------------------------------
+# github — GitHub webhook events
+# ---------------------------------------------------------------------------
+
+#: A pull request was opened on GitHub.
+GITHUB_PR_OPENED: str = "github.pr.opened"
+
+#: A pull request was merged on GitHub.
+GITHUB_PR_MERGED: str = "github.pr.merged"
+
+#: A push was made to the main branch on GitHub.
+GITHUB_PUSH_MAIN: str = "github.push.main"
+
+#: An issue was opened on GitHub.
+GITHUB_ISSUE_OPENED: str = "github.issue.opened"

@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+import os
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
+
+try:
+    from sleipnir.domain.catalog import volundr_session_failed as _catalog_failed
+    from sleipnir.domain.catalog import volundr_session_started as _catalog_started
+    from sleipnir.ports.events import SleipnirPublisher as _SleipnirPublisher
+except ImportError:
+    _SleipnirPublisher = None  # type: ignore[assignment,misc]
+    _catalog_started = None  # type: ignore[assignment]
+    _catalog_failed = None  # type: ignore[assignment]
 
 from volundr.domain.models import (
     CleanupTarget,
+    CommunicationRoute,
     EventType,
     GitSource,
     IntegrationConnection,
@@ -25,10 +36,12 @@ from volundr.domain.models import (
 from volundr.domain.ports import (
     AuthorizationPort,
     ChronicleRepository,
+    CommunicationRouteRepository,
     EventBroadcaster,
     IntegrationRepository,
     PodManager,
     Resource,
+    SessionCommunicationPort,
     SessionContext,
     SessionContribution,
     SessionContributor,
@@ -46,6 +59,12 @@ logger = logging.getLogger(__name__)
 def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _public_loopback_host() -> str:
+    """Return the loopback host we publish to browser-facing clients."""
+    host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    return "localhost" if host == "127.0.0.1" else host
 
 
 class SessionNotFoundError(Exception):
@@ -104,6 +123,9 @@ class SessionService:
         integration_repo: IntegrationRepository | None = None,
         storage: StoragePort | None = None,
         chronicle_repository: ChronicleRepository | None = None,
+        sleipnir_publisher: object | None = None,
+        communication_route_repository: CommunicationRouteRepository | None = None,
+        session_communication_port: SessionCommunicationPort | None = None,
     ):
         self._repository = repository
         self._pod_manager = pod_manager
@@ -119,6 +141,9 @@ class SessionService:
         self._integration_repo = integration_repo
         self._storage = storage
         self._chronicle_repository = chronicle_repository
+        self._sleipnir_publisher = sleipnir_publisher
+        self._communication_route_repository = communication_route_repository
+        self._session_communication_port = session_communication_port
 
     async def create_session(
         self,
@@ -524,6 +549,7 @@ class SessionService:
     async def start_session(
         self,
         session_id: UUID,
+        definition: str | None = None,
         profile_name: str | None = None,
         template_name: str | None = None,
         principal: Principal | None = None,
@@ -533,6 +559,8 @@ class SessionService:
         resource_config: dict | None = None,
         system_prompt: str = "",
         initial_prompt: str = "",
+        workload_type: str = "session",
+        workload_config: dict | None = None,
     ) -> Session:
         """Start a session — returns immediately, provisions in background.
 
@@ -550,13 +578,19 @@ class SessionService:
             raise SessionStateError(session_id, "start", session.status)
 
         # Set chat_endpoint eagerly — URL is deterministic from session ID
-        import os
-
-        host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1")
+        host = _public_loopback_host()
         port = os.environ.get("NIUU_SERVER_PORT", "8080")
         chat_endpoint = f"ws://{host}:{port}/s/{session_id}/session"
 
-        starting = session.with_status(SessionStatus.STARTING).with_endpoints(chat_endpoint, None)
+        starting = session.model_copy(
+            update={
+                "status": SessionStatus.STARTING,
+                "chat_endpoint": chat_endpoint,
+                "code_endpoint": None,
+                "updated_at": datetime.now(UTC),
+                "workload_type": workload_type,
+            }
+        )
         await self._repository.update(starting)
 
         if self._broadcaster is not None:
@@ -567,6 +601,7 @@ class SessionService:
             self._provision_background(
                 starting,
                 principal=principal,
+                definition=definition,
                 template_name=template_name,
                 profile_name=profile_name,
                 terminal_restricted=terminal_restricted,
@@ -575,6 +610,8 @@ class SessionService:
                 resource_config=resource_config,
                 system_prompt=system_prompt,
                 initial_prompt=initial_prompt,
+                workload_type=workload_type,
+                workload_config=workload_config,
             ),
             name=f"provision-{session_id}",
         )
@@ -587,6 +624,7 @@ class SessionService:
         self,
         session: Session,
         principal: Principal | None = None,
+        definition: str | None = None,
         template_name: str | None = None,
         profile_name: str | None = None,
         terminal_restricted: bool = False,
@@ -595,12 +633,15 @@ class SessionService:
         resource_config: dict | None = None,
         system_prompt: str = "",
         initial_prompt: str = "",
+        workload_type: str = "session",
+        workload_config: dict | None = None,
     ) -> None:
         """Background task: run contributor pipeline, start pods, update status."""
         try:
             result = await self._start_with_pipeline(
                 session,
                 principal,
+                definition,
                 template_name,
                 profile_name,
                 terminal_restricted,
@@ -609,6 +650,8 @@ class SessionService:
                 resource_config=resource_config,
                 system_prompt=system_prompt,
                 initial_prompt=initial_prompt,
+                workload_type=workload_type,
+                workload_config=workload_config,
             )
 
             provisioning = (
@@ -641,6 +684,7 @@ class SessionService:
         self,
         session: Session,
         principal: Principal | None,
+        definition: str | None,
         template_name: str | None,
         profile_name: str | None,
         terminal_restricted: bool,
@@ -649,6 +693,8 @@ class SessionService:
         resource_config: dict | None = None,
         system_prompt: str = "",
         initial_prompt: str = "",
+        workload_type: str = "session",
+        workload_config: dict | None = None,
     ):
         """Run the contributor pipeline and start pods with merged spec."""
         # Auto-include all enabled integrations when none are specified.
@@ -669,6 +715,7 @@ class SessionService:
 
         context = SessionContext(
             principal=principal,
+            definition=definition,
             template_name=template_name,
             profile_name=profile_name,
             terminal_restricted=terminal_restricted,
@@ -678,6 +725,8 @@ class SessionService:
             resource_config=resource_config or {},
             system_prompt=system_prompt,
             initial_prompt=initial_prompt,
+            workload_type=workload_type,
+            workload_config=workload_config or {},
         )
 
         contributions: list[SessionContribution] = []
@@ -697,6 +746,16 @@ class SessionService:
 
         Failures are logged but don't block other contributors.
         """
+        if self._communication_route_repository is not None:
+            try:
+                await self._communication_route_repository.deactivate_routes_for_session(session.id)
+            except Exception:
+                logger.warning(
+                    "Failed to deactivate communication routes for session %s",
+                    session.id,
+                    exc_info=True,
+                )
+
         if not self._contributors:
             return
 
@@ -743,6 +802,8 @@ class SessionService:
             await self._repository.update(running)
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(running)
+            await self._register_communication_routes(running)
+            await self._emit_session_started(running)
             return
 
         if error_detail:
@@ -753,12 +814,98 @@ class SessionService:
         await self._repository.update(failed)
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(failed)
+        await self._emit_session_failed(failed, msg)
 
     def _cancel_provisioning_task(self, session_id: UUID) -> None:
         """Cancel an active provisioning task if one exists."""
         task = self._provisioning_tasks.pop(session_id, None)
         if task is not None and not task.done():
             task.cancel()
+
+    async def _emit_session_started(self, session: Session) -> None:
+        """Publish volundr.session.started to Sleipnir (no-op when absent)."""
+        if self._sleipnir_publisher is None or _catalog_started is None:
+            return
+        try:
+            from volundr.domain.models import GitSource  # noqa: PLC0415
+
+            repo = session.source.repo if isinstance(session.source, GitSource) else ""
+            branch = session.source.branch if isinstance(session.source, GitSource) else ""
+            event = _catalog_started(
+                session_id=str(session.id),
+                user_id=session.owner_id or "",
+                repo=repo,
+                branch=branch or "",
+                source="volundr",
+                correlation_id=str(session.id),
+            )
+            await self._sleipnir_publisher.publish(event)
+        except Exception:
+            logger.warning("Failed to emit volundr.session.started; continuing.", exc_info=True)
+
+    async def _emit_session_failed(self, session: Session, error: str) -> None:
+        """Publish volundr.session.failed to Sleipnir (no-op when absent)."""
+        if self._sleipnir_publisher is None or _catalog_failed is None:
+            return
+        try:
+            event = _catalog_failed(
+                session_id=str(session.id),
+                error=error,
+                user_id=session.owner_id or "",
+                source="volundr",
+                correlation_id=str(session.id),
+            )
+            await self._sleipnir_publisher.publish(event)
+        except Exception:
+            logger.warning("Failed to emit volundr.session.failed; continuing.", exc_info=True)
+
+    async def _register_communication_routes(self, session: Session) -> None:
+        """Sync active external communication targets exposed by the live session."""
+        if (
+            self._communication_route_repository is None
+            or self._session_communication_port is None
+            or not session.owner_id
+        ):
+            return
+
+        try:
+            targets = await self._session_communication_port.list_communication_targets(session.id)
+        except Exception:
+            logger.warning(
+                "Failed to discover communication targets for session %s",
+                session.id,
+                exc_info=True,
+            )
+            return
+
+        for target in targets:
+            route = CommunicationRoute(
+                id=_communication_route_id(
+                    session_id=session.id,
+                    platform=target.platform.value,
+                    conversation_id=target.conversation_id,
+                    thread_id=target.thread_id,
+                ),
+                platform=target.platform,
+                conversation_id=target.conversation_id,
+                thread_id=target.thread_id,
+                session_id=session.id,
+                owner_id=session.owner_id,
+                mode=target.mode,
+                default_target=target.default_target,
+                metadata=target.metadata,
+            )
+            try:
+                await self._communication_route_repository.upsert_route(route)
+            except Exception:
+                logger.warning(
+                    "Failed to upsert communication route for session %s (%s:%s/%s)",
+                    session.id,
+                    target.platform.value,
+                    target.conversation_id,
+                    target.thread_id,
+                    exc_info=True,
+                )
 
     async def stop_session(
         self,
@@ -850,7 +997,7 @@ class SessionService:
         ):
             raise SessionStateError(session_id, "archive", session.status)
 
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         archived = session.model_copy(
             update={
                 "status": SessionStatus.ARCHIVED,
@@ -887,7 +1034,7 @@ class SessionService:
             update={
                 "status": SessionStatus.STOPPED,
                 "archived_at": None,
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(UTC),
             }
         )
         updated = await self._repository.update(restored)
@@ -923,3 +1070,18 @@ class SessionService:
             task.add_done_callback(
                 lambda t, sid=session.id: self._provisioning_tasks.pop(sid, None)
             )
+
+
+def _communication_route_id(
+    *,
+    session_id: UUID,
+    platform: str,
+    conversation_id: str,
+    thread_id: str | None,
+) -> UUID:
+    """Return a stable route UUID for a session communication target."""
+    value = (
+        f"volundr:communication-route:{session_id}:{platform}:"
+        f"{conversation_id}:{thread_id or ''}"
+    )
+    return uuid5(NAMESPACE_URL, value)

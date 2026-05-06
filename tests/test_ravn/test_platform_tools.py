@@ -16,6 +16,9 @@ from ravn.adapters.tools.platform_tools import (
 )
 
 BASE_URL = "http://localhost:8080"
+FORGE_SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
+FORGE_GIT_URL = f"{BASE_URL}/api/v1/forge/repos"
+TRACKER_ISSUES_URL = f"{BASE_URL}/api/v1/tracker/issues"
 
 
 # ===========================================================================
@@ -42,9 +45,7 @@ class TestVolundrSessionTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_list_sessions(self):
-        respx.get(f"{BASE_URL}/api/v1/volundr/sessions").mock(
-            return_value=httpx.Response(200, json=[{"id": "abc"}])
-        )
+        respx.get(FORGE_SESSIONS_URL).mock(return_value=httpx.Response(200, json=[{"id": "abc"}]))
         result = await self.tool.execute({"action": "list"})
         assert not result.is_error
         data = json.loads(result.content)
@@ -53,13 +54,27 @@ class TestVolundrSessionTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_create_session(self):
-        respx.post(f"{BASE_URL}/api/v1/volundr/sessions").mock(
+        respx.post(FORGE_SESSIONS_URL).mock(
             return_value=httpx.Response(200, json={"id": "new-session"})
         )
         result = await self.tool.execute({"action": "create", "name": "my-session"})
         assert not result.is_error
         data = json.loads(result.content)
         assert data["id"] == "new-session"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_session(self):
+        session_id = "sess-get"
+        respx.get(f"{FORGE_SESSIONS_URL}/{session_id}").mock(
+            return_value=httpx.Response(200, json={"id": session_id, "status": "running"})
+        )
+
+        result = await self.tool.execute({"action": "get", "session_id": session_id})
+
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["id"] == session_id
 
     @pytest.mark.asyncio
     async def test_create_session_missing_name(self):
@@ -71,13 +86,27 @@ class TestVolundrSessionTool:
     @respx.mock
     async def test_stop_session(self):
         session_id = "sess-123"
-        respx.post(f"{BASE_URL}/api/v1/volundr/sessions/{session_id}/stop").mock(
+        respx.post(f"{FORGE_SESSIONS_URL}/{session_id}/stop").mock(
             return_value=httpx.Response(200, json={"status": "stopped"})
         )
         result = await self.tool.execute({"action": "stop", "session_id": session_id})
         assert not result.is_error
         data = json.loads(result.content)
         assert data["status"] == "stopped"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_start_session(self):
+        session_id = "sess-start"
+        respx.post(f"{FORGE_SESSIONS_URL}/{session_id}/start").mock(
+            return_value=httpx.Response(200, json={"status": "running"})
+        )
+
+        result = await self.tool.execute({"action": "start", "session_id": session_id})
+
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "running"
 
     @pytest.mark.asyncio
     async def test_stop_session_missing_id(self):
@@ -89,7 +118,7 @@ class TestVolundrSessionTool:
     @respx.mock
     async def test_delete_session(self):
         session_id = "sess-456"
-        respx.delete(f"{BASE_URL}/api/v1/volundr/sessions/{session_id}").mock(
+        respx.delete(f"{FORGE_SESSIONS_URL}/{session_id}").mock(
             return_value=httpx.Response(200, json={})
         )
         result = await self.tool.execute({"action": "delete", "session_id": session_id})
@@ -104,9 +133,7 @@ class TestVolundrSessionTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_api_error_returns_error_result(self):
-        respx.get(f"{BASE_URL}/api/v1/volundr/sessions").mock(
-            return_value=httpx.Response(500, text="internal error")
-        )
+        respx.get(FORGE_SESSIONS_URL).mock(return_value=httpx.Response(500, text="internal error"))
         result = await self.tool.execute({"action": "list"})
         assert result.is_error
 
@@ -129,7 +156,7 @@ class TestVolundrGitTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_list_branches(self):
-        respx.get(f"{BASE_URL}/api/v1/volundr/repos/branches").mock(
+        respx.get(f"{FORGE_GIT_URL}/branches").mock(
             return_value=httpx.Response(200, json=[{"name": "main"}])
         )
         result = await self.tool.execute(
@@ -147,7 +174,7 @@ class TestVolundrGitTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_create_pr(self):
-        respx.post(f"{BASE_URL}/api/v1/volundr/repos/prs").mock(
+        respx.post(f"{FORGE_GIT_URL}/prs").mock(
             return_value=httpx.Response(200, json={"url": "https://github.com/pr/1"})
         )
         result = await self.tool.execute(
@@ -169,7 +196,7 @@ class TestVolundrGitTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_ci_status(self):
-        respx.get(f"{BASE_URL}/api/v1/volundr/repos/prs/42/ci").mock(
+        respx.get(f"{FORGE_GIT_URL}/prs/42/ci").mock(
             return_value=httpx.Response(200, json={"status": "passing"})
         )
         result = await self.tool.execute(
@@ -307,7 +334,7 @@ class TestTrackerIssueTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_search_issues(self):
-        respx.get(f"{BASE_URL}/api/v1/volundr/issues/search").mock(
+        respx.get(TRACKER_ISSUES_URL).mock(
             return_value=httpx.Response(200, json=[{"id": "NIU-1", "title": "Fix bug"}])
         )
         result = await self.tool.execute({"action": "search", "query": "Fix bug"})
@@ -324,7 +351,7 @@ class TestTrackerIssueTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_update_status(self):
-        respx.post(f"{BASE_URL}/api/v1/volundr/issues/NIU-1/status").mock(
+        respx.post(f"{TRACKER_ISSUES_URL}/NIU-1").mock(
             return_value=httpx.Response(200, json={"id": "NIU-1", "status": "Done"})
         )
         result = await self.tool.execute(
@@ -342,7 +369,7 @@ class TestTrackerIssueTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_get_issue(self):
-        respx.get(f"{BASE_URL}/api/v1/volundr/issues/NIU-1").mock(
+        respx.get(f"{TRACKER_ISSUES_URL}/NIU-1").mock(
             return_value=httpx.Response(200, json={"id": "NIU-1"})
         )
         result = await self.tool.execute({"action": "get", "issue_id": "NIU-1"})

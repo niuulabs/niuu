@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
 from ravn.ports.discovery import PeerCallback
@@ -46,19 +46,40 @@ class K8sDiscoveryAdapter:
 
     Parameters
     ----------
-    config:
-        Root ``DiscoveryConfig`` from settings.
     own_identity:
         Pre-built ``RavnIdentity`` for this instance.
+    namespace:
+        K8s namespace to query (empty = all namespaces).
+    label_selector:
+        Label selector used to list Ravn pods.
+    heartbeat_interval_s:
+        Seconds between pod list refreshes.
+    **kwargs:
+        Ignored — allows forward compatibility with new config fields.
     """
 
     def __init__(
         self,
-        config: DiscoveryConfig,
         own_identity: RavnIdentity,
+        *,
+        namespace: str = "",
+        label_selector: str = "ravn.niuu.world/role=agent",
+        heartbeat_interval_s: float = 30.0,
+        # Legacy: accept config object for backward compatibility
+        config: DiscoveryConfig | None = None,
+        **kwargs: Any,
     ) -> None:
-        self._config = config
         self._identity = own_identity
+        self._namespace = namespace
+        self._label_selector = label_selector
+        self._heartbeat_interval_s = heartbeat_interval_s
+
+        # Legacy config support — extract values if config object provided
+        if config is not None:
+            self._namespace = config.k8s.namespace
+            self._label_selector = config.k8s.label_selector
+            self._heartbeat_interval_s = config.heartbeat_interval_s
+
         self._peers: dict[str, RavnPeer] = {}
         self._on_join: list[PeerCallback] = []
         self._on_leave: list[PeerCallback] = []
@@ -176,10 +197,8 @@ class K8sDiscoveryAdapter:
             return []
         try:
             v1 = k8s_client.CoreV1Api()
-            label_selector = (
-                f"{_LABEL_REALM}={self._identity.realm_id}," + self._config.k8s.label_selector
-            )
-            namespace = self._config.k8s.namespace or None
+            label_selector = f"{_LABEL_REALM}={self._identity.realm_id}," + self._label_selector
+            namespace = self._namespace or None
             if namespace:
                 pods = v1.list_namespaced_pod(
                     namespace=namespace,
@@ -217,7 +236,7 @@ class K8sDiscoveryAdapter:
     async def _poll_loop(self) -> None:
         while True:
             try:
-                await asyncio.sleep(self._config.heartbeat_interval_s)
+                await asyncio.sleep(self._heartbeat_interval_s)
                 await self._do_scan()
             except asyncio.CancelledError:
                 return

@@ -1,5 +1,6 @@
 """Tests for the REST API adapter."""
 
+from datetime import UTC
 from decimal import Decimal
 
 import pytest
@@ -70,7 +71,7 @@ class TestSSEEndpoint:
         event = RealtimeEvent(
             type=EventType.HEARTBEAT,
             data={"test": "data"},
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         broadcaster = _FiniteBroadcaster([event])
         app = FastAPI()

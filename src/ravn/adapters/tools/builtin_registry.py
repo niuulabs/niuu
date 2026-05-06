@@ -336,4 +336,15 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "pat_token": s.gateway.platform.pat_token,
         },
     ),
+    # =========================================================================
+    # ravn — persona management tools
+    # =========================================================================
+    "persona_validate": BuiltinToolDef(
+        adapter="ravn.adapters.tools.persona_tools.PersonaValidateTool",
+        groups=frozenset({"ravn"}),
+    ),
+    "persona_save": BuiltinToolDef(
+        adapter="ravn.adapters.tools.persona_tools.PersonaSaveTool",
+        groups=frozenset({"ravn"}),
+    ),
 }

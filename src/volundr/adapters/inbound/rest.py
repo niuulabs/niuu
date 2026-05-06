@@ -3,7 +3,11 @@
 import asyncio
 import json
 import logging
+import os
 import re
+from datetime import UTC, datetime
+from pathlib import Path as FilePath
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -11,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+from skuld.log_aggregate import aggregate_workspace_logs
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.domain.models import (
     Chronicle,
@@ -30,10 +35,16 @@ from volundr.domain.models import (
     TimelineEventType,
     WorkspaceStatus,
 )
-from volundr.domain.ports import EventBroadcaster, PricingProvider
+from volundr.domain.ports import (
+    EventBroadcaster,
+    GitAuthError,
+    GitRepoNotFoundError,
+    PricingProvider,
+)
 from volundr.domain.services import (
     ChronicleNotFoundError,
     ChronicleService,
+    ForgeService,
     ProviderInfo,
     RepoService,
     RepoValidationError,
@@ -49,9 +60,49 @@ from volundr.domain.services import (
 logger = logging.getLogger(__name__)
 
 
+def _public_session_endpoint(endpoint: str | None) -> str | None:
+    """Normalize loopback session endpoints for browser-facing clients."""
+    if not endpoint:
+        return endpoint
+    try:
+        parsed = urlsplit(endpoint)
+    except ValueError:
+        return endpoint
+    if parsed.hostname != "127.0.0.1":
+        return endpoint
+    host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    public_host = "localhost" if host == "127.0.0.1" else host
+    netloc = public_host
+    if parsed.port is not None:
+        netloc = f"{public_host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
 def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _workspace_bulk_delete_session_ids(body: dict) -> list[str]:
+    """Accept both snake_case and camelCase workspace bulk-delete payloads."""
+    session_ids = body.get("session_ids")
+    if session_ids is None:
+        session_ids = body.get("sessionIds", [])
+    return session_ids
+
+
+def _workspace_dir_from_code_endpoint(code_endpoint: str | None) -> FilePath | None:
+    """Resolve a local workspace path from a file:// code endpoint when possible."""
+    if not code_endpoint:
+        return None
+    try:
+        parsed = urlsplit(code_endpoint)
+    except ValueError:
+        return None
+    if parsed.scheme != "file" or not parsed.path:
+        return None
+    path = FilePath(parsed.path)
+    return path if path.exists() else None
 
 
 _RFC1123_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -102,6 +153,11 @@ class SessionCreate(BaseModel):
     source: SessionSource = Field(
         default_factory=GitSource,
         description="Workspace source (git repo or local mount)",
+    )
+    definition: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Session definition key (e.g. 'skuldClaude', 'skuldCodex')",
     )
     template_name: str | None = Field(
         default=None,
@@ -156,6 +212,15 @@ class SessionCreate(BaseModel):
         default=None,
         max_length=2048,
         description="URL of the linked issue in the tracker",
+    )
+    workload_type: str = Field(
+        default="session",
+        max_length=100,
+        description="Workload type: 'session' (default) or 'ravn_flock' for raiding parties",
+    )
+    workload_config: dict = Field(
+        default_factory=dict,
+        description="Workload-specific configuration (e.g. personas, mesh, mimir settings)",
     )
 
     model_config = {
@@ -312,6 +377,10 @@ class SessionResponse(BaseModel):
         default_factory=dict,
         description="Metadata from the latest activity report",
     )
+    workload_type: str = Field(
+        default="session",
+        description="Workload type used to launch the session",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -347,7 +416,7 @@ class SessionResponse(BaseModel):
             model=session.model,
             source=session.source,
             status=session.status,
-            chat_endpoint=session.chat_endpoint,
+            chat_endpoint=_public_session_endpoint(session.chat_endpoint),
             code_endpoint=session.code_endpoint,
             created_at=session.created_at.isoformat(),
             updated_at=session.updated_at.isoformat(),
@@ -368,6 +437,7 @@ class SessionResponse(BaseModel):
             tenant_id=session.tenant_id,
             activity_state=(session.activity_state.value if session.activity_state else None),
             activity_metadata=session.activity_metadata,
+            workload_type=session.workload_type,
         )
 
 
@@ -847,12 +917,19 @@ def create_router(
     broadcaster: EventBroadcaster | None = None,
     repo_service: RepoService | None = None,
     chronicle_service: ChronicleService | None = None,
+    *,
+    prefix: str = "/api/v1/volundr",
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
-    router = APIRouter(prefix="/api/v1/volundr")
-
-    # Alias for backward compatibility within this function
-    service = session_service
+    router = APIRouter(prefix=prefix)
+    forge = ForgeService(
+        session_service,
+        stats_service=stats_service,
+        token_service=token_service,
+        pricing_provider=pricing_provider,
+        repo_service=repo_service,
+        chronicle_service=chronicle_service,
+    )
 
     async def _optional_principal(request: Request) -> Principal | None:
         """Extract principal if identity is configured, else return None.
@@ -896,6 +973,35 @@ def create_router(
             "mini_mode": settings.local_mounts.mini_mode,
         }
 
+    @router.get("/repos/branches", response_model=list[str], tags=["Repositories"])
+    async def list_branches(request: Request, repo_url: str = Query(...)) -> list[str]:
+        """Legacy Volundr compatibility route for repository branch listings."""
+        if repo_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Repo service not available",
+            )
+
+        user_id = request.headers.get("x-auth-user-id")
+
+        try:
+            return await repo_service.list_branches(repo_url, user_id=user_id)
+        except GitAuthError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(e),
+            )
+        except GitRepoNotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+
     @router.get("/auth/config", tags=["Auth"])
     async def get_auth_config(request: Request) -> dict:
         """Public auth discovery endpoint for CLI and external clients.
@@ -930,6 +1036,10 @@ def create_router(
             return None
         return principal.user_id
 
+    def _workspace_forge(request: Request) -> ForgeService:
+        """Bind the shared Forge facade to the request-scoped workspace service."""
+        return forge.with_workspace_service(request.app.state.workspace_service)
+
     @router.get("/sessions", response_model=list[SessionResponse], tags=["Sessions"])
     async def list_sessions(
         request: Request,
@@ -942,7 +1052,7 @@ def create_router(
     ) -> list[SessionResponse]:
         """List all sessions. Archived sessions are excluded by default."""
         principal = await _optional_principal(request)
-        sessions = await service.list_sessions(
+        sessions = await forge.list_sessions(
             status=status_filter,
             include_archived=include_archived,
             principal=principal,
@@ -1028,7 +1138,7 @@ def create_router(
     )
     async def archive_stopped_sessions() -> list[str]:
         """Bulk archive all stopped sessions."""
-        archived_ids = await service.archive_stopped_sessions()
+        archived_ids = await forge.archive_stopped_sessions()
         return [str(uid) for uid in archived_ids]
 
     @router.post(
@@ -1051,42 +1161,18 @@ def create_router(
         """
         principal = await _optional_principal(request)
         try:
-            session = await service.create_session(
-                name=data.name,
-                model=data.model,
-                source=data.source,
-                template_name=data.template_name,
-                preset_id=data.preset_id,
-                principal=principal,
-                workspace_id=data.workspace_id,
-                tracker_issue_id=data.issue_id,
-                issue_tracker_url=data.issue_url,
-            )
+            started = await forge.create_and_start_session(data, principal=principal)
         except RepoValidationError as e:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
             )
-
-        try:
-            started = await service.start_session(
-                session.id,
-                profile_name=data.profile_name,
-                template_name=data.template_name,
-                principal=principal,
-                terminal_restricted=data.terminal_restricted,
-                credential_names=data.credential_names,
-                integration_ids=data.integration_ids,
-                resource_config=data.resource_config or None,
-                system_prompt=data.system_prompt,
-                initial_prompt=data.initial_prompt,
-            )
-            return SessionResponse.from_session(started)
         except SessionStateError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        return SessionResponse.from_session(started)
 
     @router.get(
         "/sessions/{session_id}",
@@ -1098,7 +1184,7 @@ def create_router(
         request: Request, session_id: UUID = Path(description="Unique session identifier")
     ) -> SessionResponse:
         """Get a session by ID."""
-        session = await service.get_session(session_id)
+        session = await forge.get_session(session_id)
         if session is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1107,7 +1193,7 @@ def create_router(
 
         principal = await _optional_principal(request)
         try:
-            await service._check_access(session, principal)
+            await forge.ensure_access(session, principal)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1130,7 +1216,7 @@ def create_router(
         """Update a session."""
         principal = await _optional_principal(request)
         try:
-            session = await service.update_session(
+            session = await forge.update_session(
                 session_id=session_id,
                 name=data.name,
                 model=data.model,
@@ -1165,7 +1251,7 @@ def create_router(
         principal = await _optional_principal(request)
         cleanup_targets = body.cleanup if body else []
         try:
-            deleted = await service.delete_session(
+            deleted = await forge.delete_session(
                 session_id,
                 principal=principal,
                 cleanup_targets=cleanup_targets,
@@ -1203,7 +1289,7 @@ def create_router(
         profile_name = data.profile_name if data else None
         principal = await _optional_principal(request)
         try:
-            session = await service.start_session(
+            session = await forge.start_session(
                 session_id,
                 profile_name=profile_name,
                 principal=principal,
@@ -1240,7 +1326,7 @@ def create_router(
         """Stop a session's pods."""
         principal = await _optional_principal(request)
         try:
-            session = await service.stop_session(session_id, principal=principal)
+            session = await forge.stop_session(session_id, principal=principal)
             return SessionResponse.from_session(session)
         except SessionAccessDeniedError:
             raise HTTPException(
@@ -1276,10 +1362,10 @@ def create_router(
         """
         # Authorization: caller must own the session
         principal = await _optional_principal(request)
-        session = await service.get_session(session_id)
+        session = await forge.get_session(session_id)
         if session is not None and principal is not None:
             try:
-                await service._check_access(session, principal, "report_activity")
+                await forge.ensure_access(session, principal, "report_activity")
             except SessionAccessDeniedError:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -1290,7 +1376,7 @@ def create_router(
             activity_state = SessionActivityState(data.state)
         except ValueError:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Invalid activity state: {data.state}",
             )
 
@@ -1301,12 +1387,12 @@ def create_router(
             _sanitize_log(data.metadata),
         )
         try:
-            updated = await service.update_activity(session_id, activity_state, data.metadata)
+            updated = await forge.update_activity(session_id, activity_state, data.metadata)
             logger.info(
                 "Activity updated: session=%s state=%s broadcaster=%s",
                 _sanitize_log(session_id),
                 updated.activity_state,
-                service._broadcaster is not None,
+                forge.has_broadcaster,
             )
         except SessionNotFoundError:
             logger.warning("Activity report for unknown session: %s", _sanitize_log(session_id))
@@ -1332,7 +1418,7 @@ def create_router(
         """Archive a session. Stops pod if running."""
         principal = await _optional_principal(request)
         try:
-            session = await service.archive_session(
+            session = await forge.archive_session(
                 session_id,
                 principal=principal,
             )
@@ -1368,7 +1454,7 @@ def create_router(
         """Restore an archived session to stopped state."""
         principal = await _optional_principal(request)
         try:
-            session = await service.restore_session(
+            session = await forge.restore_session(
                 session_id,
                 principal=principal,
             )
@@ -1392,23 +1478,25 @@ def create_router(
     @router.get("/models", response_model=list[ModelInfo], tags=["Models & Stats"])
     async def list_models() -> list[ModelInfo]:
         """List available models."""
-        if pricing_provider is None:
+        try:
+            models = forge.list_models()
+        except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Pricing provider not available",
+                detail=str(exc),
             )
-        models = pricing_provider.list_models()
         return [ModelInfo.from_model(m) for m in models]
 
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
     async def get_stats() -> StatsResponse:
         """Get aggregate statistics for the dashboard."""
-        if stats_service is None:
+        try:
+            stats = await forge.get_stats()
+        except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Stats service not available",
+                detail=str(exc),
             )
-        stats = await stats_service.get_stats()
         return StatsResponse(
             active_sessions=stats.active_sessions,
             total_sessions=stats.total_sessions,
@@ -1443,10 +1531,10 @@ def create_router(
 
         # Authorization: caller must own the session
         principal = await _optional_principal(request)
-        session = await service.get_session(session_id)
+        session = await forge.get_session(session_id)
         if session is not None and principal is not None:
             try:
-                await service._check_access(session, principal, "report_usage")
+                await forge.ensure_access(session, principal, "report_usage")
             except SessionAccessDeniedError:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -1456,7 +1544,7 @@ def create_router(
         provider = ModelProvider(data.provider)
 
         try:
-            record = await token_service.record_usage(
+            record = await forge.record_usage(
                 session_id=session_id,
                 tokens=data.tokens,
                 provider=provider,
@@ -1510,25 +1598,18 @@ def create_router(
         Fetches logs from the Skuld broker's in-memory log buffer via its
         ``GET /api/logs`` endpoint.
         """
-        session = await service.get_session(session_id)
-        if session is None:
+        try:
+            _, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-
-        if not session.chat_endpoint:
+        except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session {session_id} has no active endpoint",
             )
-
-        # Derive HTTP base URL from the chat endpoint
-        # chat_endpoint is like wss://session-name.domain/session
-        base_url = session.chat_endpoint.replace("wss://", "https://").replace("ws://", "http://")
-        # Strip the /session path to get the base
-        if base_url.endswith("/session"):
-            base_url = base_url[: -len("/session")]
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1547,6 +1628,100 @@ def create_router(
         except httpx.RequestError as e:
             logger.warning(
                 "Log proxy connection failed for session %s: %s",
+                _sanitize_log(session_id),
+                e,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not connect to session pod: {e}",
+            )
+
+    @router.get(
+        "/sessions/{session_id}/logs/aggregate",
+        responses={
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+        tags=["Sessions"],
+    )
+    async def get_session_logs_aggregate(
+        session_id: UUID = Path(description="Unique session identifier"),
+        lines: int = Query(
+            default=200,
+            ge=1,
+            le=5000,
+            description="Number of interleaved log lines to retrieve",
+        ),
+        level: str = Query(
+            default="DEBUG",
+            description="Minimum log level (DEBUG, INFO, WARNING, ERROR)",
+        ),
+        participants: str | None = Query(
+            default=None,
+            description="Comma-separated participant ids to include",
+        ),
+        query: str = Query(
+            default="",
+            description="Case-insensitive text filter applied to participant, source, and message",
+        ),
+    ) -> dict:
+        """Proxy aggregated broker + flock logs from a running session pod."""
+        try:
+            session, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{base_url}/api/logs/aggregate",
+                    params={
+                        "lines": lines,
+                        "level": level,
+                        "participants": participants,
+                        "query": query,
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == status.HTTP_404_NOT_FOUND:
+                workspace_dir = _workspace_dir_from_code_endpoint(session.code_endpoint)
+                if workspace_dir is not None:
+                    requested_participants = (
+                        {item.strip() for item in participants.split(",") if item.strip()}
+                        if participants
+                        else None
+                    )
+                    payload = aggregate_workspace_logs(
+                        workspace_dir,
+                        lines=lines,
+                        level=level,
+                        participants=requested_participants,
+                        query=query,
+                    )
+                    payload["session_id"] = str(session.id)
+                    return payload
+            logger.warning(
+                "Aggregate log proxy failed for session %s: %s",
+                _sanitize_log(session_id),
+                e,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to fetch aggregate logs from session pod: {e.response.status_code}",
+            )
+        except httpx.RequestError as e:
+            logger.warning(
+                "Aggregate log proxy connection failed for session %s: %s",
                 _sanitize_log(session_id),
                 e,
             )
@@ -1582,23 +1757,22 @@ def create_router(
 
         # Verify the caller owns this session
         principal = await extract_principal(request)
-        session = await service.get_session(session_id)
-        if session is None:
+        try:
+            session, _ = await forge.get_session_proxy_target(session_id)
+        except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
         if session.owner_id and session.owner_id != principal.user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to message this session",
-            )
-
-        if not session.chat_endpoint:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session {session_id} has no active endpoint",
             )
 
         # Build WS URL with access token
@@ -1644,22 +1818,18 @@ def create_router(
         session_id: UUID = Path(description="Unique session identifier"),
     ) -> dict:
         """Proxy conversation history retrieval from a running session pod."""
-        session = await service.get_session(session_id)
-        if session is None:
+        try:
+            _, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-
-        if not session.chat_endpoint:
+        except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session {session_id} has no active endpoint",
             )
-
-        base_url = session.chat_endpoint.replace("wss://", "https://").replace("ws://", "http://")
-        if base_url.endswith("/session"):
-            base_url = base_url[: -len("/session")]
 
         # Forward the caller's auth to the session pod
         headers = {}
@@ -1686,59 +1856,6 @@ def create_router(
                 detail=f"Could not connect to session pod: {e}",
             )
 
-    @router.get(
-        "/providers",
-        response_model=list[ProviderResponse],
-        responses={503: {"model": ErrorResponse}},
-        tags=["Repositories"],
-    )
-    async def list_providers() -> list[ProviderResponse]:
-        """List all configured git providers."""
-        if repo_service is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Repo service not available",
-            )
-        providers = repo_service.list_providers()
-        return [ProviderResponse.from_provider_info(p) for p in providers]
-
-    @router.get(
-        "/repos/branches",
-        response_model=list[str],
-        responses={
-            400: {"model": ErrorResponse},
-            401: {"model": ErrorResponse},
-            404: {"model": ErrorResponse},
-            503: {"model": ErrorResponse},
-        },
-        tags=["Repositories"],
-    )
-    async def list_branches(
-        request: Request,
-        repo_url: str = Query(..., description="Repository URL"),
-    ) -> list[str]:
-        """List branches for a repository using the user's credentials."""
-        if repo_service is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Repo service not available",
-            )
-
-        from volundr.domain.ports import GitAuthError, GitRepoNotFoundError
-
-        user_id = await _optional_user_id(request)
-        try:
-            return await repo_service.list_branches(repo_url, user_id=user_id)
-        except GitAuthError as e:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=str(e),
-            )
-        except GitRepoNotFoundError as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(e),
-            )
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1767,18 +1884,12 @@ def create_router(
         Creates a new DRAFT chronicle or enriches an existing one.
         Mirrors the ``/sessions/{id}/usage`` pattern for token reporting.
         """
-        if chronicle_service is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
-            )
-
         # Authorization: caller must own the session
         principal = await _optional_principal(request)
-        session = await service.get_session(session_id)
+        session = await forge.get_session(session_id)
         if session is not None and principal is not None:
             try:
-                await service._check_access(session, principal, "report_chronicle")
+                await forge.ensure_access(session, principal, "report_chronicle")
             except SessionAccessDeniedError:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -1786,7 +1897,7 @@ def create_router(
                 )
 
         try:
-            chronicle = await chronicle_service.create_or_update_from_broker(
+            chronicle = await forge.create_or_update_chronicle_from_broker(
                 session_id=session_id,
                 summary=data.summary,
                 key_changes=data.key_changes,
@@ -1794,6 +1905,11 @@ def create_router(
                 duration_seconds=data.duration_seconds,
             )
             return ChronicleResponse.from_chronicle(chronicle)
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
         except SessionNotFoundError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1833,20 +1949,21 @@ def create_router(
         ),
     ) -> list[ChronicleResponse]:
         """List chronicles with optional filters."""
-        if chronicle_service is None:
+        tag_list = [t.strip() for t in tags.split(",")] if tags else None
+        try:
+            chronicles = await forge.list_chronicles(
+                project=project,
+                repo=repo,
+                model=model_name,
+                tags=tag_list,
+                limit=limit,
+                offset=offset,
+            )
+        except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
+                detail=str(e),
             )
-        tag_list = [t.strip() for t in tags.split(",")] if tags else None
-        chronicles = await chronicle_service.list_chronicles(
-            project=project,
-            repo=repo,
-            model=model_name,
-            tags=tag_list,
-            limit=limit,
-            offset=offset,
-        )
         return [ChronicleResponse.from_chronicle(c) for c in chronicles]
 
     @router.post(
@@ -1858,14 +1975,14 @@ def create_router(
     )
     async def create_chronicle(data: ChronicleCreate) -> ChronicleResponse:
         """Create a chronicle from a session's current state."""
-        if chronicle_service is None:
+        try:
+            chronicle = await forge.create_chronicle(data.session_id)
+            return ChronicleResponse.from_chronicle(chronicle)
+        except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
+                detail=str(e),
             )
-        try:
-            chronicle = await chronicle_service.create_chronicle(data.session_id)
-            return ChronicleResponse.from_chronicle(chronicle)
         except SessionNotFoundError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1882,12 +1999,13 @@ def create_router(
         chronicle_id: UUID = Path(description="Unique chronicle identifier"),
     ) -> ChronicleResponse:
         """Get a chronicle by ID."""
-        if chronicle_service is None:
+        try:
+            chronicle = await forge.get_chronicle(chronicle_id)
+        except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
+                detail=str(e),
             )
-        chronicle = await chronicle_service.get_chronicle(chronicle_id)
         if chronicle is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1906,13 +2024,8 @@ def create_router(
         data: ChronicleUpdate = ...,
     ) -> ChronicleResponse:
         """Update a chronicle's mutable fields."""
-        if chronicle_service is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
-            )
         try:
-            chronicle = await chronicle_service.update_chronicle(
+            chronicle = await forge.update_chronicle(
                 chronicle_id,
                 summary=data.summary,
                 key_changes=data.key_changes,
@@ -1921,6 +2034,11 @@ def create_router(
                 status=data.status,
             )
             return ChronicleResponse.from_chronicle(chronicle)
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
         except ChronicleNotFoundError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1937,12 +2055,13 @@ def create_router(
         chronicle_id: UUID = Path(description="Unique chronicle identifier"),
     ) -> None:
         """Delete a chronicle."""
-        if chronicle_service is None:
+        try:
+            deleted = await forge.delete_chronicle(chronicle_id)
+        except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
+                detail=str(e),
             )
-        deleted = await chronicle_service.delete_chronicle(chronicle_id)
         if not deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1959,14 +2078,14 @@ def create_router(
         chronicle_id: UUID = Path(description="Unique chronicle identifier"),
     ) -> SessionResponse:
         """Relaunch a session from a chronicle entry."""
-        if chronicle_service is None:
+        try:
+            session = await forge.reforge_chronicle(chronicle_id)
+            return SessionResponse.from_session(session)
+        except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
+                detail=str(e),
             )
-        try:
-            session = await chronicle_service.reforge(chronicle_id)
-            return SessionResponse.from_session(session)
         except ChronicleNotFoundError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1983,12 +2102,13 @@ def create_router(
         chronicle_id: UUID = Path(description="Unique chronicle identifier"),
     ) -> list[ChronicleResponse]:
         """Get the full reforge chain for a chronicle."""
-        if chronicle_service is None:
+        try:
+            chain = await forge.get_chronicle_chain(chronicle_id)
+        except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
+                detail=str(e),
             )
-        chain = await chronicle_service.get_chain(chronicle_id)
         return [ChronicleResponse.from_chronicle(c) for c in chain]
 
     @router.get(
@@ -2004,12 +2124,13 @@ def create_router(
         session_id: UUID = Path(description="Unique session identifier"),
     ) -> ChronicleResponse:
         """Get the most recent chronicle for a session."""
-        if chronicle_service is None:
+        try:
+            chronicle = await forge.get_session_chronicle(session_id)
+        except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
+                detail=str(e),
             )
-        chronicle = await chronicle_service.get_chronicle_by_session(session_id)
         if chronicle is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -2032,12 +2153,13 @@ def create_router(
         session_id: UUID = Path(description="Session identifier for timeline lookup"),
     ) -> TimelineResponseModel:
         """Get the event timeline for a session's chronicle."""
-        if chronicle_service is None:
+        try:
+            timeline = await forge.get_timeline(session_id)
+        except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
+                detail=str(e),
             )
-        timeline = await chronicle_service.get_timeline(session_id)
         if timeline is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -2090,36 +2212,30 @@ def create_router(
         data: TimelineEventCreate = ...,
     ) -> TimelineEventResponse:
         """Add a timeline event for a session's chronicle."""
-        if chronicle_service is None:
+        try:
+            chronicle = await forge.ensure_session_chronicle(session_id)
+        except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Chronicle service not available",
+                detail=str(e),
+            )
+        except SessionNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
             )
 
         # Authorization: caller must own the session
         principal = await extract_principal(request)
-        session = await service.get_session(session_id)
+        session = await forge.get_session(session_id)
         if session is not None:
             try:
-                await service._check_access(session, principal, "report_timeline")
+                await forge.ensure_access(session, principal, "report_timeline")
             except SessionAccessDeniedError:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Not authorized to report timeline for session {session_id}",
                 )
-
-        chronicle = await chronicle_service.get_chronicle_by_session(session_id)
-        if chronicle is None:
-            # Auto-create a draft chronicle on first timeline event
-            try:
-                chronicle = await chronicle_service.create_chronicle(session_id)
-            except SessionNotFoundError:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Session not found: {session_id}",
-                )
-
-        from datetime import datetime
 
         event = TimelineEvent(
             id=uuid4(),
@@ -2134,11 +2250,11 @@ def create_router(
             del_=data.del_,
             hash=data.hash,
             exit_code=data.exit_code,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
 
         try:
-            stored = await chronicle_service.add_timeline_event(session_id, event)
+            stored = await forge.add_timeline_event(session_id, event)
         except RuntimeError:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -2189,22 +2305,18 @@ def create_router(
                 ),
             )
 
-        session = await service.get_session(session_id)
-        if session is None:
+        try:
+            _, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-
-        if not session.chat_endpoint:
+        except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session {session_id} has no active endpoint",
             )
-
-        base_url = session.chat_endpoint.replace("wss://", "https://").replace("ws://", "http://")
-        if base_url.endswith("/session"):
-            base_url = base_url[: -len("/session")]
 
         # Forward auth header so the proxy can reach Skuld through envoy
         proxy_headers: dict[str, str] = {}
@@ -2261,11 +2373,13 @@ def create_router(
         principal = await _optional_principal(request)
         if principal is None:
             return []
-        workspace_service = request.app.state.workspace_service
+        workspace_forge = _workspace_forge(request)
         ws_status = WorkspaceStatus(status_filter) if status_filter else None
-        workspaces = await workspace_service.list_workspaces(principal.user_id, ws_status)
-        session_ids = [ws.session_id for ws in workspaces]
-        sessions_map = await session_service._repository.get_many(session_ids)
+        workspaces = await workspace_forge.list_workspaces(
+            user_id=principal.user_id,
+            status=ws_status,
+        )
+        sessions_map = await workspace_forge.get_sessions_for_workspaces(workspaces)
         return [
             WorkspaceResponse.from_workspace(ws, sessions_map.get(ws.session_id))
             for ws in workspaces
@@ -2282,14 +2396,14 @@ def create_router(
     ):
         """Delete a workspace PVC by session ID."""
         principal = await _optional_principal(request)
-        workspace_service = request.app.state.workspace_service
+        workspace_forge = _workspace_forge(request)
         # Verify ownership before deleting
-        workspaces = await workspace_service.list_workspaces(
-            principal.user_id if principal else "",
+        workspaces = await workspace_forge.list_workspaces(
+            user_id=principal.user_id if principal else "",
         )
         if not any(str(ws.session_id) == str(session_id) for ws in workspaces):
             raise HTTPException(status_code=404, detail="Workspace not found")
-        deleted = await workspace_service.delete_workspace_by_session(str(session_id))
+        deleted = await workspace_forge.delete_workspace_by_session(str(session_id))
         if not deleted:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
@@ -2312,14 +2426,13 @@ def create_router(
         _: Principal = Depends(require_role("volundr:admin")),
     ):
         """List all workspaces (admin only)."""
-        workspace_service = request.app.state.workspace_service
+        workspace_forge = _workspace_forge(request)
         ws_status = WorkspaceStatus(status_filter) if status_filter else None
         if user_id:
-            workspaces = await workspace_service.list_workspaces(user_id, ws_status)
+            workspaces = await workspace_forge.list_workspaces(user_id=user_id, status=ws_status)
         else:
-            workspaces = await workspace_service.list_all_workspaces(ws_status)
-        session_ids = [ws.session_id for ws in workspaces]
-        sessions_map = await session_service._repository.get_many(session_ids)
+            workspaces = await workspace_forge.list_all_workspaces(ws_status)
+        sessions_map = await workspace_forge.get_sessions_for_workspaces(workspaces)
         return [
             WorkspaceResponse.from_workspace(ws, sessions_map.get(ws.session_id))
             for ws in workspaces
@@ -2336,13 +2449,13 @@ def create_router(
     ):
         """Delete multiple workspaces by session IDs."""
         principal = await _optional_principal(request)
-        session_ids = body.get("session_ids", [])
+        session_ids = _workspace_bulk_delete_session_ids(body)
         if not session_ids:
             return {"deleted": 0, "failed": []}
 
-        workspace_service = request.app.state.workspace_service
-        user_workspaces = await workspace_service.list_workspaces(
-            principal.user_id if principal else "",
+        workspace_forge = _workspace_forge(request)
+        user_workspaces = await workspace_forge.list_workspaces(
+            user_id=principal.user_id if principal else "",
         )
         owned_session_ids = {str(ws.session_id) for ws in user_workspaces}
 
@@ -2353,7 +2466,7 @@ def create_router(
                 failed.append({"session_id": sid, "error": "Not found or not owned"})
                 continue
             try:
-                ok = await workspace_service.delete_workspace_by_session(str(sid))
+                ok = await workspace_forge.delete_workspace_by_session(str(sid))
                 if ok:
                     deleted += 1
                 else:
@@ -2374,16 +2487,16 @@ def create_router(
         _: Principal = Depends(require_role("volundr:admin")),
     ):
         """Delete multiple workspaces by session IDs (admin)."""
-        session_ids = body.get("session_ids", [])
+        session_ids = _workspace_bulk_delete_session_ids(body)
         if not session_ids:
             return {"deleted": 0, "failed": []}
 
-        workspace_service = request.app.state.workspace_service
+        workspace_forge = _workspace_forge(request)
         deleted = 0
         failed = []
         for sid in session_ids:
             try:
-                ok = await workspace_service.delete_workspace_by_session(str(sid))
+                ok = await workspace_forge.delete_workspace_by_session(str(sid))
                 if ok:
                     deleted += 1
                 else:

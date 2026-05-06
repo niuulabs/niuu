@@ -1,0 +1,10 @@
+/*
+ * @niuulabs/shell entrypoint stylesheet.
+ * Hand-authored Shell grid layout, then Tailwind utilities for the bits
+ * that are just utility-soup. Build: tsup → postcss → dist/styles.css.
+ */
+
+@import './Shell.css';
+
+@tailwind components;
+@tailwind utilities;

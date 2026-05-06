@@ -1,4 +1,4 @@
-import type { MimirLintReport } from '../../api/types';
+import type { LintIssue, LintSeverity, MimirLintReport } from '../../api/types';
 import styles from './LintPanel.module.css';
 
 interface LintPanelProps {
@@ -8,31 +8,52 @@ interface LintPanelProps {
 
 interface IssueGroupProps {
   title: string;
-  paths: string[];
-  variant: 'error' | 'warning' | 'info';
+  issues: LintIssue[];
+  variant: LintSeverity;
   onPageClick: (path: string) => void;
 }
 
-function IssueGroup({ title, paths, variant, onPageClick }: IssueGroupProps) {
-  if (paths.length === 0) {
+const CHECK_LABELS: Record<string, string> = {
+  L01: 'Orphaned pages',
+  L02: 'Contradictions',
+  L03: 'Stale sources',
+  L04: 'Knowledge gaps',
+  L05: 'Broken wikilinks',
+  L06: 'Missing source attribution',
+  L07: 'Thin pages',
+  L08: 'Stale content',
+  L09: 'Timeline edits',
+  L10: 'Empty compiled truth',
+  L11: 'Stale index',
+  L12: 'Invalid frontmatter',
+};
+
+function IssueGroup({ title, issues, variant, onPageClick }: IssueGroupProps) {
+  if (issues.length === 0) {
     return null;
   }
 
   return (
     <section className={styles.issueGroup}>
       <h3 className={styles.groupTitle} data-variant={variant}>
-        <span className={styles.groupCount}>{paths.length}</span>
+        <span className={styles.groupCount}>{issues.length}</span>
         {title}
       </h3>
       <ul className={styles.pathList} role="list">
-        {paths.map(path => (
-          <li key={path} className={styles.pathItem}>
+        {issues.map((issue, idx) => (
+          <li key={`${issue.id}-${issue.pagePath}-${idx}`} className={styles.pathItem}>
             <button
               className={styles.pathButton}
-              onClick={() => onPageClick(path)}
-              title={`Open ${path}`}
+              onClick={() => onPageClick(issue.pagePath)}
+              title={`Open ${issue.pagePath}`}
             >
-              {path}
+              <span className={styles.issueId}>{issue.id}</span>
+              <span className={styles.issueMessage}>{issue.message}</span>
+              {issue.autoFixable && (
+                <span className={styles.autoFixBadge} title="Auto-fixable with lint --fix">
+                  fixable
+                </span>
+              )}
             </button>
           </li>
         ))}
@@ -50,8 +71,15 @@ export function LintPanel({ report, onPageClick }: LintPanelProps) {
     );
   }
 
-  const totalIssues =
-    report.orphans.length + report.contradictions.length + report.stale.length + report.gaps.length;
+  const errors = report.issues.filter(i => i.severity === 'error');
+  const warnings = report.issues.filter(i => i.severity === 'warning');
+  const infos = report.issues.filter(i => i.severity === 'info');
+  const totalIssues = report.issues.length;
+
+  // Group by check ID within each severity tier
+  const errorGroups = groupByCheckId(errors);
+  const warningGroups = groupByCheckId(warnings);
+  const infoGroups = groupByCheckId(infos);
 
   return (
     <div className={styles.panel}>
@@ -67,6 +95,22 @@ export function LintPanel({ report, onPageClick }: LintPanelProps) {
             </span>
             <span className={styles.statLabel}>issues found</span>
           </div>
+          {report.summary.error > 0 && (
+            <div className={styles.stat}>
+              <span className={styles.statValue} data-severity="error">
+                {report.summary.error}
+              </span>
+              <span className={styles.statLabel}>errors</span>
+            </div>
+          )}
+          {report.summary.warning > 0 && (
+            <div className={styles.stat}>
+              <span className={styles.statValue} data-severity="warning">
+                {report.summary.warning}
+              </span>
+              <span className={styles.statLabel}>warnings</span>
+            </div>
+          )}
         </div>
         <span className={styles.healthBadge} data-healthy={!report.issuesFound}>
           <span className={styles.healthDot} aria-hidden="true" />
@@ -83,31 +127,44 @@ export function LintPanel({ report, onPageClick }: LintPanelProps) {
       )}
 
       <div className={styles.issueGroups}>
-        <IssueGroup
-          title="Orphaned pages"
-          paths={report.orphans}
-          variant="warning"
-          onPageClick={onPageClick}
-        />
-        <IssueGroup
-          title="Contradictions"
-          paths={report.contradictions}
-          variant="error"
-          onPageClick={onPageClick}
-        />
-        <IssueGroup
-          title="Stale pages"
-          paths={report.stale}
-          variant="warning"
-          onPageClick={onPageClick}
-        />
-        <IssueGroup
-          title="Knowledge gaps"
-          paths={report.gaps}
-          variant="info"
-          onPageClick={onPageClick}
-        />
+        {errorGroups.map(([checkId, issues]) => (
+          <IssueGroup
+            key={checkId}
+            title={CHECK_LABELS[checkId] ?? checkId}
+            issues={issues}
+            variant="error"
+            onPageClick={onPageClick}
+          />
+        ))}
+        {warningGroups.map(([checkId, issues]) => (
+          <IssueGroup
+            key={checkId}
+            title={CHECK_LABELS[checkId] ?? checkId}
+            issues={issues}
+            variant="warning"
+            onPageClick={onPageClick}
+          />
+        ))}
+        {infoGroups.map(([checkId, issues]) => (
+          <IssueGroup
+            key={checkId}
+            title={CHECK_LABELS[checkId] ?? checkId}
+            issues={issues}
+            variant="info"
+            onPageClick={onPageClick}
+          />
+        ))}
       </div>
     </div>
   );
+}
+
+function groupByCheckId(issues: LintIssue[]): [string, LintIssue[]][] {
+  const map = new Map<string, LintIssue[]>();
+  for (const issue of issues) {
+    const group = map.get(issue.id) ?? [];
+    group.push(issue);
+    map.set(issue.id, group);
+  }
+  return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
 }

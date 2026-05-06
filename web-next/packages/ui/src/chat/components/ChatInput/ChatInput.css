@@ -1,0 +1,222 @@
+.niuu-chat-input-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-bg-secondary);
+  transition: border-color var(--transition-fast);
+}
+
+.niuu-chat-input-wrapper:focus-within {
+  border-color: var(--color-border);
+}
+
+.niuu-chat-input-wrapper[data-drag-over] {
+  border-color: color-mix(in srgb, var(--color-brand) 50%, transparent);
+  background-color: color-mix(in srgb, var(--color-brand) 5%, transparent);
+}
+
+.niuu-chat-input-wrapper[data-disabled] {
+  opacity: 0.6;
+}
+
+.niuu-chat-input-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-bottom: var(--space-1);
+}
+
+.niuu-chat-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg-tertiary);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+  max-width: 200px;
+}
+
+.niuu-chat-attachment-thumbnail {
+  width: 20px;
+  height: 20px;
+  object-fit: cover;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.niuu-chat-attachment-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.niuu-chat-attachment-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: none;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+
+.niuu-chat-attachment-remove:hover {
+  color: var(--color-text-secondary);
+  background-color: var(--color-bg-elevated);
+}
+
+.niuu-chat-attachment-remove-icon {
+  width: 10px;
+  height: 10px;
+}
+
+.niuu-chat-input-area {
+  position: relative;
+}
+
+.niuu-chat-textarea {
+  width: 100%;
+  resize: none;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  outline: none;
+  min-height: 24px;
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-bg-elevated) transparent;
+}
+
+.niuu-chat-textarea::placeholder {
+  color: var(--color-text-faint);
+}
+
+.niuu-chat-textarea:disabled {
+  cursor: not-allowed;
+}
+
+.niuu-chat-input-hidden {
+  display: none;
+}
+
+.niuu-chat-input-bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.niuu-chat-input-left-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.niuu-chat-input-right-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.niuu-chat-input-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.niuu-chat-input-icon-btn:hover {
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+}
+
+.niuu-chat-input-icon-btn[data-disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.niuu-chat-input-btn-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.niuu-chat-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-accent-red) 40%, transparent);
+  border-radius: var(--radius-sm);
+  background-color: color-mix(in srgb, var(--color-accent-red) 10%, transparent);
+  color: var(--color-accent-red);
+  font-size: var(--text-xs);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.niuu-chat-stop-btn:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--color-accent-red) 20%, transparent);
+}
+
+.niuu-chat-stop-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.niuu-chat-stop-icon {
+  width: 10px;
+  height: 10px;
+}
+
+.niuu-chat-send-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text-faint);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.niuu-chat-send-btn[data-active] {
+  border-color: var(--color-brand);
+  background-color: var(--color-brand);
+  color: white;
+}
+
+.niuu-chat-send-btn:disabled {
+  cursor: not-allowed;
+}
+
+.niuu-chat-send-icon {
+  width: 16px;
+  height: 16px;
+}

@@ -14,7 +14,9 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from niuu.domain.mimir import MimirSource, compute_content_hash
+from ravn.adapters.tools.entity_extractor import EntityExtractor
 from ravn.domain.models import ToolResult
 from ravn.ports.mimir import MimirPort
 from ravn.ports.tool import ToolPort
@@ -37,8 +39,13 @@ def _source_id_from_content(title: str, content: str) -> str:
 class MimirIngestTool(ToolPort):
     """Ingest a URL or raw text as a Mímir source document."""
 
-    def __init__(self, adapter: MimirPort) -> None:
+    def __init__(
+        self,
+        adapter: MimirPort,
+        entity_extractor: EntityExtractor | None = None,
+    ) -> None:
         self._adapter = adapter
+        self._entity_extractor = entity_extractor
 
     @property
     def name(self) -> str:
@@ -104,6 +111,11 @@ class MimirIngestTool(ToolPort):
         )
 
         page_paths = await self._adapter.ingest(source)
+
+        if self._entity_extractor is not None:
+            entity_paths = await self._entity_extractor.run(source)
+            page_paths = page_paths + entity_paths
+
         result = f"Ingested source '{title}' (id={source.source_id})"
         if page_paths:
             result += f"\nPages updated: {', '.join(page_paths)}"
@@ -288,6 +300,54 @@ class MimirWriteTool(ToolPort):
     def required_permission(self) -> str:
         return _PERMISSION
 
+    async def _validate_research_page_provenance(
+        self,
+        *,
+        path: str,
+        content: str,
+    ) -> str | None:
+        if not path.startswith("research/"):
+            return None
+
+        page = parse_compiled_truth_page(content)
+        source_ids = [
+            stripped_id
+            for source_id in page.source_ids
+            if (stripped_id := str(source_id).strip())
+        ]
+        if not source_ids:
+            return (
+                "research pages must include non-empty frontmatter 'source_ids' that point to "
+                "ingested raw sources; call mimir_ingest on the sources you actually used first"
+            )
+
+        resolved_sources: list[MimirSource] = []
+        missing: list[str] = []
+        for source_id in source_ids:
+            source = await self._adapter.read_source(source_id)
+            if source is None:
+                missing.append(source_id)
+                continue
+            resolved_sources.append(source)
+
+        if missing:
+            return (
+                "research page references missing source_ids: "
+                + ", ".join(missing)
+                + "; ingest those sources before writing the page"
+            )
+
+        stripped_content = content.strip()
+        if resolved_sources and all(
+            source.content.strip() == stripped_content for source in resolved_sources
+        ):
+            return (
+                "research page provenance only points to the page content itself; ingest the "
+                "actual source material you relied on, not the final synthesized page"
+            )
+
+        return None
+
     async def execute(self, input: dict) -> ToolResult:
         path = input.get("path", "").strip()
         content = input.get("content", "").strip()
@@ -301,6 +361,17 @@ class MimirWriteTool(ToolPort):
             return ToolResult(
                 tool_call_id="",
                 content="path must end with .md",
+                is_error=True,
+            )
+
+        provenance_error = await self._validate_research_page_provenance(
+            path=path,
+            content=content,
+        )
+        if provenance_error is not None:
+            return ToolResult(
+                tool_call_id="",
+                content=provenance_error,
                 is_error=True,
             )
 
@@ -408,37 +479,37 @@ class MimirLintTool(ToolPort):
     async def execute(self, input: dict) -> ToolResult:
         report = await self._adapter.lint()
 
-        issue_count = (
-            len(report.orphans) + len(report.contradictions) + len(report.stale) + len(report.gaps)
-        )
         lines = [
             f"## Mímir lint — {report.pages_checked} pages checked\n",
-            f"Issues found: {issue_count}",
+            f"Issues found: {len(report.issues)}",
             "",
         ]
 
-        if report.orphans:
-            lines.append(f"### Orphans ({len(report.orphans)})")
-            lines.append("Pages not linked from index.md:")
-            lines.extend(f"  - {p}" for p in report.orphans)
-            lines.append("")
+        check_labels: dict[str, str] = {
+            "L01": "Orphans",
+            "L02": "Contradictions",
+            "L04": "Concept Gaps",
+            "L05": "Broken Wikilinks",
+            "L06": "Missing Source Attribution",
+            "L07": "Thin Pages",
+            "L08": "Stale Content",
+            "L09": "Timeline Edits",
+            "L10": "Empty Compiled Truth",
+            "L11": "Stale Index",
+            "L12": "Invalid Frontmatter",
+        }
 
-        if report.contradictions:
-            lines.append(f"### Contradictions ({len(report.contradictions)})")
-            lines.append("Pages with contradiction markers:")
-            lines.extend(f"  - {p}" for p in report.contradictions)
-            lines.append("")
+        by_check: dict[str, list] = {}
+        for issue in report.issues:
+            by_check.setdefault(issue.id, []).append(issue)
 
-        if report.stale:
-            lines.append(f"### Stale ({len(report.stale)})")
-            lines.append("Pages whose source content hash has changed:")
-            lines.extend(f"  - {p}" for p in report.stale)
-            lines.append("")
-
-        if report.gaps:
-            lines.append(f"### Gaps ({len(report.gaps)})")
-            lines.append("Concepts mentioned frequently but lacking a page:")
-            lines.extend(f"  - {p}" for p in report.gaps)
+        for check_id in sorted(by_check):
+            group = by_check[check_id]
+            label = check_labels.get(check_id, check_id)
+            lines.append(f"### {label} ({len(group)})")
+            for issue in group:
+                fix_tag = " [auto-fixable]" if issue.auto_fixable else ""
+                lines.append(f"  - [{issue.severity}] {issue.page_path}: {issue.message}{fix_tag}")
             lines.append("")
 
         if not report.issues_found:
@@ -452,10 +523,17 @@ class MimirLintTool(ToolPort):
 # ---------------------------------------------------------------------------
 
 
-def build_mimir_tools(adapter: MimirPort) -> list[ToolPort]:
-    """Return all six Mímir tools wired to *adapter*."""
+def build_mimir_tools(
+    adapter: MimirPort,
+    entity_extractor: EntityExtractor | None = None,
+) -> list[ToolPort]:
+    """Return all six Mímir tools wired to *adapter*.
+
+    When *entity_extractor* is provided it is wired into :class:`MimirIngestTool`
+    so that LLM-based entity detection runs automatically on every ingest.
+    """
     return [
-        MimirIngestTool(adapter),
+        MimirIngestTool(adapter, entity_extractor=entity_extractor),
         MimirQueryTool(adapter),
         MimirReadTool(adapter),
         MimirWriteTool(adapter),

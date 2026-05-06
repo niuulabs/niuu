@@ -1,0 +1,104 @@
+# Reusable: Python lint + unit-test matrix (volundr, tyr, ravn).
+# Called by ci.yaml and dev.yaml. Coverage uploaded to Codecov per package.
+name: Reusable — Python Lint + Test
+
+on:
+  workflow_call:
+    inputs:
+      skip-lint:
+        description: Set true to skip the ruff lint/format job.
+        type: boolean
+        default: false
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: "Python: Lint"
+    if: ${{ !inputs.skip-lint }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
+
+      - name: Run ruff linting
+        run: uv run ruff check src/ tests/
+
+      - name: Check ruff formatting
+        run: uv run ruff format --check src/ tests/ || echo "::warning::Formatting issues found - consider running 'ruff format src/ tests/'"
+        continue-on-error: true
+
+  test:
+    name: "Python: Test ${{ matrix.pkg.name }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg:
+          - name: Volundr
+            flag: backend-volundr
+            paths: >-
+              tests/
+              --ignore=tests/test_tyr
+              --ignore=tests/test_ravn
+              --ignore=tests/ravn
+              --ignore=tests/test_bifrost
+              --ignore=tests/test_sleipnir
+              --ignore=tests/integration
+            cov: "--cov=src/volundr --cov=src/cli --cov=src/niuu --cov=src/skuld"
+          - name: Tyr
+            flag: backend-tyr
+            paths: "tests/test_tyr"
+            cov: "--cov=src/tyr"
+          - name: Ravn
+            flag: backend-ravn
+            # src/ravn/tui/ excluded via [tool.coverage.run] omit in pyproject.toml —
+            # Textual widgets need a real terminal and cannot run under plain pytest.
+            paths: "tests/ravn tests/test_ravn"
+            cov: "--cov=src/ravn"
+          - name: Bifrost
+            flag: backend-bifrost
+            paths: "tests/test_bifrost"
+            cov: "--cov=src/bifrost"
+          - name: Sleipnir
+            flag: backend-sleipnir
+            paths: "tests/test_sleipnir"
+            cov: "--cov=src/sleipnir"
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
+
+      - name: Run tests with coverage
+        run: |
+          uv run pytest ${{ matrix.pkg.paths }} -v --tb=short \
+            --override-ini="addopts=" \
+            ${{ matrix.pkg.cov }} \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=85
+
+      - name: Upload coverage to Codecov
+        if: always() && hashFiles('coverage.xml') != ''
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        with:
+          files: coverage.xml
+          flags: ${{ matrix.pkg.flag }}
+          token: ${{ secrets.CODECOV_TOKEN }}

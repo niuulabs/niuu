@@ -1,0 +1,1 @@
+export { AgentDetailPanel } from './AgentDetailPanel';

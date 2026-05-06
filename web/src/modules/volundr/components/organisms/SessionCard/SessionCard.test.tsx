@@ -204,4 +204,226 @@ describe('SessionCard', () => {
     render(<SessionCard session={sessionWithIssue} />);
     expect(screen.getByText('NIU-44')).toBeInTheDocument();
   });
+
+  // ── Manual session (origin = 'manual') ──────────────────────
+
+  const manualSession: VolundrSession = {
+    id: 'forge-manual-01',
+    name: 'manual-debug',
+    source: { type: 'git', repo: 'kanuckvalley/debug', branch: 'main' },
+    status: 'running',
+    model: 'claude-opus-4-6',
+    lastActive: Date.now() - 1000 * 60 * 2,
+    messageCount: 12,
+    tokensUsed: 45000,
+    origin: 'manual',
+    hostname: 'my-laptop.local',
+  };
+
+  it('renders hostname for manual sessions', () => {
+    render(<SessionCard session={manualSession} />);
+    expect(screen.getByText('my-laptop.local')).toBeInTheDocument();
+  });
+
+  it('renders manual badge for manual sessions', () => {
+    render(<SessionCard session={manualSession} />);
+    expect(screen.getByText('manual')).toBeInTheDocument();
+  });
+
+  it('does not render model badge for manual session without model prop', () => {
+    render(<SessionCard session={manualSession} />);
+    expect(screen.queryByText('GPU')).not.toBeInTheDocument();
+    expect(screen.queryByText('API')).not.toBeInTheDocument();
+  });
+
+  // ── Non-git source in full mode ───────────────────────────────
+
+  it('renders source label without branch for non-git source', () => {
+    const localSession: VolundrSession = {
+      ...runningSession,
+      source: { type: 'local_mount', paths: [] },
+    };
+    render(<SessionCard session={localSession} />);
+    expect(screen.queryByText('feature/thermal-calibration')).not.toBeInTheDocument();
+  });
+
+  describe('compact mode', () => {
+    it('renders session name in compact mode', () => {
+      render(<SessionCard session={runningSession} compact={true} />);
+      expect(screen.getByText('printer-firmware-thermal')).toBeInTheDocument();
+    });
+
+    it('renders message count in compact mode', () => {
+      render(<SessionCard session={runningSession} compact={true} />);
+      expect(screen.getByText('47')).toBeInTheDocument();
+    });
+
+    it('renders last active time in compact mode', () => {
+      render(<SessionCard session={runningSession} compact={true} />);
+      expect(screen.getByText('5m')).toBeInTheDocument();
+    });
+
+    it('applies compact style class', () => {
+      const { container } = render(<SessionCard session={runningSession} compact={true} />);
+      const card = container.firstChild as HTMLElement;
+      expect(card.className).toMatch(/compact/);
+    });
+
+    it('applies status style in compact mode', () => {
+      const { container } = render(<SessionCard session={runningSession} compact={true} />);
+      const card = container.firstChild as HTMLElement;
+      expect(card.className).toMatch(/running/);
+    });
+
+    it('applies stopped status style in compact mode', () => {
+      const { container } = render(<SessionCard session={stoppedSession} compact={true} />);
+      const card = container.firstChild as HTMLElement;
+      expect(card.className).toMatch(/stopped/);
+    });
+
+    it('applies error status style in compact mode', () => {
+      const { container } = render(<SessionCard session={errorSession} compact={true} />);
+      const card = container.firstChild as HTMLElement;
+      expect(card.className).toMatch(/error/);
+    });
+
+    it('applies selected style in compact mode', () => {
+      const { container } = render(
+        <SessionCard session={runningSession} compact={true} selected={true} />
+      );
+      const card = container.firstChild as HTMLElement;
+      expect(card.className).toMatch(/selected/);
+    });
+
+    it('does not apply selected style by default in compact mode', () => {
+      const { container } = render(<SessionCard session={runningSession} compact={true} />);
+      const card = container.firstChild as HTMLElement;
+      expect(card.className).not.toMatch(/selected/);
+    });
+
+    it('renders repository link for git source in compact mode', () => {
+      render(<SessionCard session={runningSession} compact={true} />);
+      const repoLink = screen.getByTitle('Open repository');
+      expect(repoLink).toBeInTheDocument();
+      expect(repoLink).toHaveAttribute('href', 'kanuckvalley/printer-firmware');
+      expect(repoLink).toHaveAttribute('target', '_blank');
+      expect(repoLink).toHaveAttribute('rel', 'noopener noreferrer');
+    });
+
+    it('does not render repository link for non-git source in compact mode', () => {
+      const localMountSession: VolundrSession = {
+        ...runningSession,
+        source: {
+          type: 'local_mount',
+          paths: [{ host_path: '/data', mount_path: '/workspace', read_only: false }],
+        },
+      };
+      render(<SessionCard session={localMountSession} compact={true} />);
+      expect(screen.queryByTitle('Open repository')).not.toBeInTheDocument();
+    });
+
+    it('renders tracker issue link in compact mode', () => {
+      const sessionWithIssue: VolundrSession = {
+        ...runningSession,
+        trackerIssue: {
+          id: 'issue-2',
+          identifier: 'NIU-99',
+          title: 'Thermal runaway fix',
+          status: 'in_progress',
+          url: 'https://linear.app/niuu/issue/NIU-99',
+          priority: 1,
+        },
+      };
+      render(<SessionCard session={sessionWithIssue} compact={true} />);
+      const issueLink = screen.getByTitle('NIU-99');
+      expect(issueLink).toBeInTheDocument();
+      expect(issueLink).toHaveAttribute('href', 'https://linear.app/niuu/issue/NIU-99');
+      expect(issueLink).toHaveAttribute('target', '_blank');
+    });
+
+    it('does not render tracker issue link when no issue is linked', () => {
+      render(<SessionCard session={runningSession} compact={true} />);
+      expect(screen.queryByTitle('NIU-99')).not.toBeInTheDocument();
+    });
+
+    it('stops propagation on repository link click', () => {
+      const handleClick = vi.fn();
+      render(<SessionCard session={runningSession} compact={true} onClick={handleClick} />);
+
+      const repoLink = screen.getByTitle('Open repository');
+      fireEvent.click(repoLink);
+
+      expect(handleClick).not.toHaveBeenCalled();
+    });
+
+    it('stops propagation on tracker issue link click', () => {
+      const sessionWithIssue: VolundrSession = {
+        ...runningSession,
+        trackerIssue: {
+          id: 'issue-3',
+          identifier: 'NIU-55',
+          title: 'Board sensor',
+          status: 'todo',
+          url: 'https://linear.app/niuu/issue/NIU-55',
+          priority: 3,
+        },
+      };
+      const handleClick = vi.fn();
+      render(<SessionCard session={sessionWithIssue} compact={true} onClick={handleClick} />);
+
+      const issueLink = screen.getByTitle('NIU-55');
+      fireEvent.click(issueLink);
+
+      expect(handleClick).not.toHaveBeenCalled();
+    });
+
+    it('calls onClick when compact card is clicked', () => {
+      const handleClick = vi.fn();
+      render(<SessionCard session={runningSession} compact={true} onClick={handleClick} />);
+
+      const card = screen.getByRole('button');
+      fireEvent.click(card);
+
+      expect(handleClick).toHaveBeenCalledTimes(1);
+    });
+
+    it('has button role when onClick is provided in compact mode', () => {
+      render(<SessionCard session={runningSession} compact={true} onClick={() => {}} />);
+      expect(screen.getByRole('button')).toBeInTheDocument();
+    });
+
+    it('does not have button role without onClick in compact mode', () => {
+      render(<SessionCard session={runningSession} compact={true} />);
+      expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    });
+
+    it('renders status dot with activity state data attribute', () => {
+      const activeSession: VolundrSession = {
+        ...runningSession,
+        activityState: 'idle',
+      };
+      const { container } = render(<SessionCard session={activeSession} compact={true} />);
+      const dot = container.querySelector('[class*="statusDot"]');
+      expect(dot).toHaveAttribute('data-activity', 'idle');
+    });
+
+    it('defaults activity to active for running sessions without activityState', () => {
+      const { container } = render(<SessionCard session={runningSession} compact={true} />);
+      const dot = container.querySelector('[class*="statusDot"]');
+      expect(dot).toHaveAttribute('data-activity', 'active');
+    });
+
+    it('does not set activity attribute for non-running sessions without activityState', () => {
+      const { container } = render(<SessionCard session={stoppedSession} compact={true} />);
+      const dot = container.querySelector('[class*="statusDot"]');
+      expect(dot).not.toHaveAttribute('data-activity');
+    });
+
+    it('applies custom className in compact mode', () => {
+      const { container } = render(
+        <SessionCard session={runningSession} compact={true} className="my-compact" />
+      );
+      expect(container.firstChild).toHaveClass('my-compact');
+    });
+  });
 });

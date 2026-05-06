@@ -1,0 +1,11 @@
+.niuu-rune {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--color-brand);
+  line-height: 1;
+  display: inline-block;
+}
+
+.niuu-rune--muted {
+  color: var(--color-text-muted);
+}

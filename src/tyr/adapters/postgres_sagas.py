@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -10,7 +11,7 @@ from uuid import UUID
 
 import asyncpg
 
-from tyr.domain.models import Phase, Raid, RaidStatus, Saga, SagaStatus
+from tyr.domain.models import Phase, PhaseStatus, Raid, RaidStatus, Saga, SagaStatus
 from tyr.ports.saga_repository import SagaRepository
 
 
@@ -33,7 +34,7 @@ class PostgresSagaRepository(SagaRepository):
             """
             INSERT INTO phases (id, saga_id, tracker_id, number, name, status, confidence)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status
             """,
             phase.id,
             phase.saga_id,
@@ -79,9 +80,23 @@ class PostgresSagaRepository(SagaRepository):
             """
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
-                 repos, feature_branch, base_branch, status, confidence, created_at, owner_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-            ON CONFLICT (id) DO NOTHING
+                 repos, feature_branch, base_branch, status, confidence, created_at, owner_id,
+                 workflow_id, workflow_version, workflow_snapshot)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+                tracker_id = EXCLUDED.tracker_id,
+                tracker_type = EXCLUDED.tracker_type,
+                slug = EXCLUDED.slug,
+                name = EXCLUDED.name,
+                repos = EXCLUDED.repos,
+                feature_branch = EXCLUDED.feature_branch,
+                base_branch = EXCLUDED.base_branch,
+                status = EXCLUDED.status,
+                confidence = EXCLUDED.confidence,
+                owner_id = EXCLUDED.owner_id,
+                workflow_id = EXCLUDED.workflow_id,
+                workflow_version = EXCLUDED.workflow_version,
+                workflow_snapshot = EXCLUDED.workflow_snapshot
             """,
             saga.id,
             saga.tracker_id,
@@ -95,6 +110,9 @@ class PostgresSagaRepository(SagaRepository):
             saga.confidence,
             saga.created_at,
             saga.owner_id,
+            saga.workflow_id,
+            saga.workflow_version,
+            json.dumps(saga.workflow_snapshot) if saga.workflow_snapshot is not None else None,
         )
 
     async def list_sagas(self, *, owner_id: str | None = None) -> list[Saga]:
@@ -162,9 +180,155 @@ class PostgresSagaRepository(SagaRepository):
             saga_id,
         )
 
+    async def update_saga_workflow(
+        self,
+        saga_id: UUID,
+        *,
+        workflow_id: UUID | None,
+        workflow_version: str | None,
+        workflow_snapshot: dict[str, Any] | None,
+        owner_id: str | None = None,
+    ) -> None:
+        snapshot = json.dumps(workflow_snapshot) if workflow_snapshot is not None else None
+
+        if owner_id is not None:
+            await self._pool.execute(
+                """
+                UPDATE sagas
+                SET workflow_id = $1,
+                    workflow_version = $2,
+                    workflow_snapshot = $3::jsonb
+                WHERE id = $4
+                  AND owner_id = $5
+                """,
+                workflow_id,
+                workflow_version,
+                snapshot,
+                saga_id,
+                owner_id,
+            )
+            return
+
+        await self._pool.execute(
+            """
+            UPDATE sagas
+            SET workflow_id = $1,
+                workflow_version = $2,
+                workflow_snapshot = $3::jsonb
+            WHERE id = $4
+            """,
+            workflow_id,
+            workflow_version,
+            snapshot,
+            saga_id,
+        )
+
+    async def get_phase(self, phase_id: UUID) -> Phase | None:
+        row = await self._pool.fetchrow(
+            "SELECT * FROM phases WHERE id = $1",
+            phase_id,
+        )
+        if row is None:
+            return None
+        return self._row_to_phase(row)
+
+    async def get_raid(self, raid_id: UUID) -> Raid | None:
+        row = await self._pool.fetchrow(
+            "SELECT * FROM raids WHERE id = $1",
+            raid_id,
+        )
+        if row is None:
+            return None
+        return self._row_to_raid(row)
+
+    async def get_raids_by_phase(self, phase_id: UUID) -> list[Raid]:
+        rows = await self._pool.fetch(
+            "SELECT * FROM raids WHERE phase_id = $1 ORDER BY created_at ASC",
+            phase_id,
+        )
+        return [self._row_to_raid(r) for r in rows]
+
+    async def get_phases_by_saga(self, saga_id: UUID) -> list[Phase]:
+        rows = await self._pool.fetch(
+            "SELECT * FROM phases WHERE saga_id = $1 ORDER BY number ASC",
+            saga_id,
+        )
+        return [self._row_to_phase(r) for r in rows]
+
+    async def update_raid_outcome(
+        self,
+        raid_id: UUID,
+        outcome: dict[str, Any],
+        event_type: str,
+        status: RaidStatus,
+    ) -> None:
+        await self._pool.execute(
+            """
+            UPDATE raids
+            SET structured_outcome = $1,
+                outcome_event_type = $2,
+                status = $3,
+                updated_at = NOW()
+            WHERE id = $4
+            """,
+            json.dumps(outcome),
+            event_type,
+            status.value,
+            raid_id,
+        )
+
+    @staticmethod
+    def _row_to_phase(row: asyncpg.Record) -> Phase:
+        return Phase(
+            id=row["id"],
+            saga_id=row["saga_id"],
+            tracker_id=row["tracker_id"],
+            number=row["number"],
+            name=row["name"],
+            status=PhaseStatus(row.get("status", "PENDING") or "PENDING"),
+            confidence=row["confidence"] or 0.0,
+        )
+
+    @staticmethod
+    def _row_to_raid(row: asyncpg.Record) -> Raid:
+        raw_outcome = row.get("structured_outcome")
+        structured_outcome: dict | None = None
+        if raw_outcome is not None:
+            if isinstance(raw_outcome, str):
+                structured_outcome = json.loads(raw_outcome)
+            else:
+                structured_outcome = dict(raw_outcome)
+        return Raid(
+            id=row["id"],
+            phase_id=row["phase_id"],
+            tracker_id=row["tracker_id"],
+            name=row["name"],
+            description=row.get("description") or "",
+            acceptance_criteria=list(row.get("acceptance_criteria") or []),
+            declared_files=list(row.get("declared_files") or []),
+            estimate_hours=row.get("estimate_hours"),
+            status=RaidStatus(row.get("status", "PENDING") or "PENDING"),
+            confidence=row.get("confidence") or 0.0,
+            session_id=row.get("session_id"),
+            branch=row.get("branch"),
+            chronicle_summary=row.get("chronicle_summary"),
+            pr_url=row.get("pr_url"),
+            pr_id=row.get("pr_id"),
+            retry_count=row.get("retry_count") or 0,
+            created_at=row.get("created_at") or datetime.now(UTC),
+            updated_at=row.get("updated_at") or datetime.now(UTC),
+            identifier=row.get("identifier") or "",
+            url=row.get("url") or "",
+            reviewer_session_id=row.get("reviewer_session_id"),
+            review_round=row.get("review_round") or 0,
+            structured_outcome=structured_outcome,
+            outcome_event_type=row.get("outcome_event_type"),
+        )
+
     @staticmethod
     def _row_to_saga(row: asyncpg.Record) -> Saga:
         slug = row["slug"]
+        workflow_snapshot = PostgresSagaRepository._decode_jsonb(row.get("workflow_snapshot"))
         return Saga(
             id=row["id"],
             tracker_id=row["tracker_id"],
@@ -178,4 +342,15 @@ class PostgresSagaRepository(SagaRepository):
             confidence=row["confidence"] or 0.0,
             created_at=row["created_at"] or datetime.now(UTC),
             owner_id=row.get("owner_id") or "",
+            workflow_id=row.get("workflow_id"),
+            workflow_version=row.get("workflow_version"),
+            workflow_snapshot=workflow_snapshot,
         )
+
+    @staticmethod
+    def _decode_jsonb(value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return json.loads(value)
+        return dict(value)

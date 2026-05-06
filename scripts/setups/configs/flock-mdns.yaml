@@ -1,0 +1,143 @@
+# ─── flock-mdns ──────────────────────────────────────────────────────────────
+#
+# Ravn flock: multiple peers communicating over nng mesh with mDNS discovery.
+#
+# What you get:
+#   - Automatic peer discovery on the local network via mDNS (Bonjour)
+#   - nng-based mesh transport for cascade delegation and broadcast
+#   - Each ravn instance auto-announces and discovers siblings
+#   - Cascade coordination: delegate sub-tasks to peer agents
+#   - `ravn peers` shows all discovered flock members
+#   - `ravn tui --discover` connects to all peers
+#
+# Architecture:
+#   ravn-A ◄──nng──► ravn-B ◄──nng──► ravn-C
+#       \                                  /
+#        └───── mDNS discovery ───────────┘
+#
+# Use case:
+#   Multiple ravn instances on a home/office LAN collaborating on tasks.
+#   One starts a cascade, peers pick up sub-tasks automatically.
+#
+# Prerequisites:
+#   - An LLM provider configured on each machine
+#   - Machines on the same LAN (mDNS needs multicast)
+#   - Ports 7480-7481 open for nng pub/sub and req/rep
+#
+# Launch on each machine:
+#   ravn daemon --config ~/.ravn/config.yaml --persona autonomous-agent
+#
+# Check peers:
+#   ravn peers --scan --verbose
+#
+# TUI with auto-discovery:
+#   ravn tui --discover --layout flokk
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# ── Mimir ───────────────────────────────────────────────────────────────────
+mimir:
+  enabled: true
+  path: ~/.ravn/mimir
+  auto_distill: true
+  categories:
+    - technical
+    - projects
+    - research
+
+# ── Mesh: nng transport ───────────────────────────────────────────────────
+mesh:
+  enabled: true
+  adapter: nng
+  rpc_timeout_s: 10.0
+  own_peer_id: ""                        # auto: hostname
+  nng:
+    pub_sub_address: tcp://*:7480
+    req_rep_address: tcp://*:7481
+
+# ── Discovery: mDNS (LAN) ─────────────────────────────────────────────────
+discovery:
+  adapter: mdns
+  heartbeat_interval_s: 30.0
+  peer_ttl_s: 90.0
+  mdns:
+    service_type: _ravn._tcp.local
+    handshake_timeout_s: 5.0
+
+# ── Cascade: networked delegation ──────────────────────────────────────────
+cascade:
+  enabled: true
+  spawn_timeout_s: 30.0
+  collect_timeout_s: 120.0
+  mesh_delegation_timeout_s: 60.0
+  stuck_detection_threshold_s: 300.0
+  loop_detection: true
+  retry_strategy: replan
+
+# ── Gateway ────────────────────────────────────────────────────────────────
+gateway:
+  enabled: true
+  channels:
+    telegram:
+      enabled: false
+    http:
+      enabled: true
+      host: 0.0.0.0                      # listen on all interfaces for LAN access
+      port: 7477
+
+# ── Drive loop ─────────────────────────────────────────────────────────────
+initiative:
+  enabled: true
+  max_concurrent_tasks: 2
+  queue_journal_path: ~/.ravn/daemon/queue.json
+  default_output_mode: ambient
+
+# ── Triggers (light) ──────────────────────────────────────────────────────
+thread:
+  enabled: true
+  enricher_poll_interval_seconds: 600
+  enricher_llm_alias: fast
+
+wakefulness:
+  enabled: false                         # peers handle their own idle time
+
+recap:
+  enabled: false
+
+# ── Budget ─────────────────────────────────────────────────────────────────
+budget:
+  daily_cap_usd: 2.0
+  warn_at_percent: 80
+
+# ── Trust ──────────────────────────────────────────────────────────────────
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  drafting_tickets: free
+  producing_recaps: free
+  opening_tickets: approval
+  closing_tickets: approval
+  pushing_branches: approval
+  pushing_main: never
+  external_messages: approval
+  spending_beyond_cap: approval
+
+sleipnir:
+  enabled: false
+
+logging:
+  level: info

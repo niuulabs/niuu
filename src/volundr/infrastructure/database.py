@@ -196,6 +196,52 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS owner_id TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 """
 
+SESSIONS_WORKLOAD_TYPE_COLUMN_SQL = """
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS workload_type VARCHAR(100) NOT NULL DEFAULT 'session';
+"""
+
+COMMUNICATION_ROUTES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS communication_routes (
+    id UUID PRIMARY KEY,
+    platform TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    thread_id TEXT,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'room',
+    default_target TEXT,
+    active BOOLEAN NOT NULL DEFAULT true,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+"""
+
+COMMUNICATION_ROUTES_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_comm_routes_session_id
+    ON communication_routes(session_id);
+CREATE INDEX IF NOT EXISTS idx_comm_routes_owner_id
+    ON communication_routes(owner_id);
+CREATE INDEX IF NOT EXISTS idx_comm_routes_active_lookup
+    ON communication_routes(platform, conversation_id, thread_id, active);
+"""
+
+COMMUNICATION_CURSORS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS communication_cursors (
+    platform TEXT NOT NULL,
+    consumer_key TEXT NOT NULL,
+    cursor TEXT NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (platform, consumer_key)
+);
+"""
+
+COMMUNICATION_CURSORS_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_comm_cursors_updated_at
+    ON communication_cursors(updated_at);
+"""
+
 SESSIONS_IDENTITY_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_sessions_owner_id ON sessions(owner_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_tenant_id ON sessions(tenant_id);
@@ -434,7 +480,12 @@ async def init_db(pool: asyncpg.Pool) -> None:
         await conn.execute(TENANT_MEMBERSHIPS_TABLE_SQL)
         await conn.execute(TENANT_MEMBERSHIPS_INDEX_SQL)
         await conn.execute(SESSIONS_IDENTITY_COLUMNS_SQL)
+        await conn.execute(SESSIONS_WORKLOAD_TYPE_COLUMN_SQL)
         await conn.execute(SESSIONS_IDENTITY_INDEX_SQL)
+        await conn.execute(COMMUNICATION_ROUTES_TABLE_SQL)
+        await conn.execute(COMMUNICATION_ROUTES_INDEX_SQL)
+        await conn.execute(COMMUNICATION_CURSORS_TABLE_SQL)
+        await conn.execute(COMMUNICATION_CURSORS_INDEX_SQL)
         # Additional tables from migrations
         await conn.execute(SAVED_PROMPTS_TABLE_SQL)
         await conn.execute(SAVED_PROMPTS_INDEX_SQL)

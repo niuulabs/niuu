@@ -30,6 +30,23 @@ class InMemoryIntegrationRepository(IntegrationRepository):
             results = [c for c in results if c.integration_type == integration_type]
         return sorted(results, key=lambda c: c.created_at, reverse=True)
 
+    async def list_connections_global(
+        self,
+        integration_type: IntegrationType | None = None,
+        *,
+        slug: str | None = None,
+        enabled_only: bool = False,
+    ) -> list[IntegrationConnection]:
+        """List connections across all owners with optional filters."""
+        results = list(self._store.values())
+        if integration_type is not None:
+            results = [c for c in results if c.integration_type == integration_type]
+        if slug is not None:
+            results = [c for c in results if c.slug == slug]
+        if enabled_only:
+            results = [c for c in results if c.enabled]
+        return sorted(results, key=lambda c: (c.owner_id, c.created_at), reverse=True)
+
     async def get_connection(self, connection_id: str) -> IntegrationConnection | None:
         """Get a single connection by ID."""
         return self._store.get(connection_id)

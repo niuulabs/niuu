@@ -1,0 +1,74 @@
+.group {
+  border: 1px solid var(--color-border-subtle);
+  border-left: 3px solid var(--thread-border-color, var(--color-border));
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background-color: color-mix(in srgb, var(--color-bg-secondary) 80%, transparent);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--transition-fast);
+}
+
+.header:hover {
+  background-color: var(--color-bg-secondary);
+}
+
+.chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  transition: transform var(--transition-fast);
+}
+
+.label {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  flex: 1;
+}
+
+.timeRange {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  margin-left: auto;
+  white-space: nowrap;
+  opacity: 0.7;
+}
+
+/* ── Collapsible body ── */
+
+.body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--transition-normal);
+}
+
+.body[data-expanded='true'] {
+  grid-template-rows: 1fr;
+}
+
+.messages {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  padding-left: var(--space-6);
+  border-top: 1px solid var(--color-border-subtle);
+  background-color: color-mix(in srgb, var(--color-bg-secondary) 50%, transparent);
+}
+
+.body[data-expanded='false'] .messages {
+  border-top: none;
+}

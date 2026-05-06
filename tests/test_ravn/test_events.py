@@ -22,7 +22,9 @@ class TestRavnEventType:
         assert RavnEventType.TASK_COMPLETE == "task_complete"
 
     def test_member_count(self) -> None:
-        assert len(RavnEventType) == 9
+        # 11 types: THOUGHT, TOOL_START, TOOL_RESULT, RESPONSE, ERROR,
+        # DECISION, TASK_COMPLETE, TASK_STARTED, TASK_STUCK, OUTCOME, HELP_NEEDED
+        assert len(RavnEventType) == 11
 
 
 class TestRavnEvent:
@@ -75,6 +77,42 @@ class TestRavnEvent:
         assert ev.type == RavnEventType.DECISION
         assert ev.payload["prompt"] == "approve?"
         assert ev.urgency == 0.9
+
+    def test_help_needed_factory(self) -> None:
+        ev = RavnEvent.help_needed(
+            source=_SRC,
+            persona="reviewer",
+            reason="blocked",
+            summary="Cannot determine if change is safe",
+            attempted=["checked callers", "searched tests"],
+            recommendation="Confirm this function is unused",
+            correlation_id=_CID,
+            session_id=_SID,
+            task_id="task-123",
+            context={"file": "auth.py", "line": 47},
+        )
+        assert ev.type == RavnEventType.HELP_NEEDED
+        assert ev.payload["persona"] == "reviewer"
+        assert ev.payload["reason"] == "blocked"
+        assert ev.payload["summary"] == "Cannot determine if change is safe"
+        assert ev.payload["attempted"] == ["checked callers", "searched tests"]
+        assert ev.payload["recommendation"] == "Confirm this function is unused"
+        assert ev.payload["context"] == {"file": "auth.py", "line": 47}
+        assert ev.urgency == 0.85
+        assert ev.task_id == "task-123"
+
+    def test_help_needed_caps_attempted_at_three(self) -> None:
+        ev = RavnEvent.help_needed(
+            source=_SRC,
+            persona="coder",
+            reason="needs_context",
+            summary="Need more info",
+            attempted=["a", "b", "c", "d", "e"],
+            recommendation="Provide context",
+            correlation_id=_CID,
+            session_id=_SID,
+        )
+        assert len(ev.payload["attempted"]) == 3
 
     def test_task_complete_factory(self) -> None:
         ev = RavnEvent.task_complete(_SRC, True, _CID, _SID)

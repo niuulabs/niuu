@@ -1,0 +1,45 @@
+.niuu-tooltip-content {
+  z-index: 60;
+  max-width: 260px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px color-mix(in srgb, #000 25%, transparent);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  animation: niuu-tooltip-in 100ms ease;
+  will-change: transform, opacity;
+}
+
+.niuu-tooltip-content[data-state='closed'] {
+  animation: niuu-tooltip-out 80ms ease;
+}
+
+@keyframes niuu-tooltip-in {
+  from {
+    opacity: 0;
+    scale: 0.95;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes niuu-tooltip-out {
+  from {
+    opacity: 1;
+    scale: 1;
+  }
+  to {
+    opacity: 0;
+    scale: 0.95;
+  }
+}
+
+.niuu-tooltip-arrow {
+  fill: var(--color-border);
+}

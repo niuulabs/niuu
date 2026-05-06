@@ -39,6 +39,39 @@ class PostgresIntegrationRepository(IntegrationRepository):
         rows = await self._pool.fetch(query, *params)
         return [self._row_to_connection(row) for row in rows]
 
+    async def list_connections_global(
+        self,
+        integration_type: IntegrationType | None = None,
+        *,
+        slug: str | None = None,
+        enabled_only: bool = False,
+    ) -> list[IntegrationConnection]:
+        """List connections across all owners with optional filters."""
+        conditions: list[str] = []
+        params: list = []
+        idx = 1
+
+        if integration_type is not None:
+            conditions.append(f"integration_type = ${idx}")
+            params.append(str(integration_type))
+            idx += 1
+
+        if slug is not None:
+            conditions.append(f"slug = ${idx}")
+            params.append(slug)
+            idx += 1
+
+        if enabled_only:
+            conditions.append("enabled = true")
+
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = (
+            "SELECT * FROM integration_connections"
+            f"{where} ORDER BY owner_id ASC, created_at DESC"
+        )
+        rows = await self._pool.fetch(query, *params)
+        return [self._row_to_connection(row) for row in rows]
+
     async def get_connection(self, connection_id: str) -> IntegrationConnection | None:
         """Get a single connection by ID."""
         row = await self._pool.fetchrow(

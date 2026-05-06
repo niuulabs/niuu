@@ -1,6 +1,6 @@
 """Tests for PostgresEventSink adapter."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -14,7 +14,7 @@ def _make_event(**overrides) -> SessionEvent:
         "id": uuid4(),
         "session_id": uuid4(),
         "event_type": SessionEventType.MESSAGE_ASSISTANT,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(UTC),
         "data": {"content_preview": "hello", "content_length": 5},
         "sequence": 0,
         "tokens_in": 100,
@@ -128,7 +128,7 @@ class TestPostgresEventSinkRead:
     async def test_get_events_basic(self):
         pool = AsyncMock()
         session_id = uuid4()
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         pool.fetch.return_value = [
             {
@@ -174,7 +174,7 @@ class TestPostgresEventSinkRead:
         pool.fetch.return_value = []
 
         sink = PostgresEventSink(pool)
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         await sink.get_events(uuid4(), after=now, before=now)
 
         query = pool.fetch.call_args[0][0]
@@ -220,7 +220,7 @@ class TestPostgresEventSinkRead:
             "id": uuid4(),
             "session_id": uuid4(),
             "event_type": "terminal_command",
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(UTC),
             "data": '{"command": "ls"}',
             "sequence": 1,
             "tokens_in": None,

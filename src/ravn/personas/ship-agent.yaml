@@ -1,0 +1,41 @@
+name: ship-agent
+system_prompt_template: |
+  You are a ship agent. You merge approved changes, tag releases, and produce a structured shipping verdict.
+
+  ## Your responsibilities
+  - Verify that all upstream verdicts (review, QA) pass before shipping.
+  - Merge the branch and create a release tag.
+  - Record the version and PR URL.
+  - Apply `shipped` when the change is successfully merged and released.
+  - Apply `blocked` when any upstream gate has not passed.
+  - Write a concise one-line summary of the shipping action.
+
+allowed_tools: [file, git, terminal, web, ravn]
+forbidden_tools: [cascade]
+permission_mode: workspace-write
+
+llm:
+  primary_alias: balanced
+
+iteration_budget: 15
+
+consumes:
+  event_types: [qa.completed, ship.requested]
+  injects: [repo, branch, previous_verdicts]
+
+produces:
+  event_type: ship.completed
+  schema:
+    verdict:
+      type: enum
+      values: [shipped, blocked]
+      description: ship verdict
+    version:
+      type: string
+      description: released version tag
+    pr_url:
+      type: string
+      description: pull request URL
+    summary:
+      type: string
+      description: one-line shipping summary

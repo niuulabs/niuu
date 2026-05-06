@@ -15,6 +15,7 @@ TOKEN_URL = "https://keycloak.example.com/realms/test/protocol/openid-connect/to
 CLIENT_ID = "test-client"
 CLIENT_SECRET = "secret"
 SUBJECT_TOKEN = "user-access-token"
+JWT_SIGNING_KEY = "jwt-signing-key-at-least-32-bytes-long"
 
 
 def _make_jwt(sub: str = "user-1", jti: str = "tok-123", exp_offset: int = 3600) -> str:
@@ -23,7 +24,7 @@ def _make_jwt(sub: str = "user-1", jti: str = "tok-123", exp_offset: int = 3600)
         "jti": jti,
         "exp": int(time.time()) + exp_offset,
     }
-    return jwt.encode(payload, "any-key", algorithm="HS256")
+    return jwt.encode(payload, JWT_SIGNING_KEY, algorithm="HS256")
 
 
 class TestConstruction:
@@ -105,6 +106,7 @@ class TestIssueToken:
         assert result.subject == "user-42"
         assert result.token_id == "jti-abc"
         assert result.expires_at > int(time.time())
+        await issuer.close()
 
     @respx.mock
     @pytest.mark.asyncio
@@ -119,6 +121,7 @@ class TestIssueToken:
         )
         result = await issuer.issue_token(subject_token=SUBJECT_TOKEN, name="test")
         assert result.raw_token == raw_token
+        await issuer.close()
 
     @respx.mock
     @pytest.mark.asyncio

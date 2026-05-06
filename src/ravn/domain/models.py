@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 from niuu.domain.mimir import (  # noqa: F401 — re-exported for existing importers
@@ -84,6 +84,9 @@ class Episode:
     errors: list[str] = field(default_factory=list)
     cost_usd: float | None = None
     duration_seconds: float | None = None
+    # NIU-594: structured outcome parsed from ---outcome--- block
+    structured_outcome: dict[str, Any] | None = None
+    outcome_valid: bool = False
 
 
 @dataclass(frozen=True)
@@ -241,6 +244,8 @@ class TurnResult:
     tool_calls: list[ToolCall]
     tool_results: list[ToolResult]
     usage: TokenUsage
+    # NIU-594: episode recorded for this turn (None if no memory configured and no outcome block)
+    episode: Episode | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -343,98 +348,12 @@ class AgentTask:
     max_tokens: int | None = None
     deadline: datetime | None = None  # task discarded if queue time exceeds this
     output_path: Path | None = None  # where to save task output (cron tasks)
+    root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     session_id: str = field(init=False)
 
     def __post_init__(self) -> None:
         self.session_id = f"daemon_{self.task_id}"
-
-
-# ---------------------------------------------------------------------------
-# Búri knowledge memory models (NIU-541)
-# ---------------------------------------------------------------------------
-
-
-class FactType(StrEnum):
-    """Classification for knowledge facts stored in Búri memory."""
-
-    PREFERENCE = "preference"  # "I prefer early-return over nested if/else"
-    DECISION = "decision"  # "RabbitMQ chosen as Sleipnir primary transport"
-    GOAL = "goal"  # "Retire in approximately 5 years"
-    DIRECTIVE = "directive"  # "All __init__ members prefixed with underscore"
-    RELATIONSHIP = "relationship"  # "Astri is spouse. Tanngrisnir is a DGX Spark."
-    OBSERVATION = "observation"  # "Works late on Tuesdays typically"
-
-
-@dataclass
-class KnowledgeFact:
-    """A single typed fact with temporal validity bounds.
-
-    ``valid_until`` is None for current (active) facts.  When a fact is
-    superseded, ``valid_until`` is set to the time of replacement and
-    ``superseded_by`` points to the new fact_id.
-    """
-
-    fact_id: str
-    fact_type: FactType
-    content: str
-    entities: list[str]
-    confidence: float
-    source: str  # "session:<id>" or "manual"
-    valid_from: datetime
-    embedding: list[float] | None = None
-    valid_until: datetime | None = None
-    superseded_by: str | None = None
-    source_context: str = ""
-    cluster_id: str | None = None
-    tags: list[str] = field(default_factory=list)
-
-
-@dataclass
-class KnowledgeRelationship:
-    """A typed directed edge between two named entities."""
-
-    rel_id: str
-    from_entity: str
-    relation: str  # e.g. "works_at", "prefers", "owns", "decided"
-    to_entity: str
-    valid_from: datetime
-    fact_id: str | None = None
-    valid_until: datetime | None = None
-
-
-@dataclass
-class MemoryCluster:
-    """Proto-vMF cluster — a group of semantically related facts.
-
-    ``centroid`` is the unit-normalised mean embedding of member facts.
-    ``radius`` is the cosine spread (proto-κ parameter for the full vMF).
-    """
-
-    cluster_id: str
-    centroid: list[float]
-    radius: float
-    member_count: int
-    dominant_type: str | None = None
-    label: str | None = None
-
-
-@dataclass
-class SessionState:
-    """Proto-RWKV recurrent session state.
-
-    ``rolling_summary`` is a fixed-size text summary updated each turn —
-    the simple approximation of a proper RWKV hidden state tensor.
-    When Búri's full cognitive architecture is implemented, this field
-    is replaced by an actual RWKV hidden state; the surrounding code
-    stays unchanged.
-    """
-
-    session_id: str
-    rolling_summary: str
-    active_entities: list[str]
-    turn_count: int
-    last_updated: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -474,8 +393,12 @@ class RavnIdentity:
     capabilities: list[str]
     permission_mode: str  # read_only | workspace_write | full_access
     version: str
+    consumes_event_types: list[str] = field(
+        default_factory=list
+    )  # event types this persona handles
+    emits_event_types: list[str] = field(default_factory=list)
     rep_address: str | None = None  # nng REP address for mesh.send()
-    pub_address: str | None = None  # nng PUB address for mesh.subscribe()
+    pub_address: str | None = None  # nng PUB address for mesh.send()
     spiffe_id: str | None = None  # infra mode only
     sleipnir_routing_key: str | None = None  # for SleipnirMeshAdapter routing
 

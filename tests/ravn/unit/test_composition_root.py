@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ravn.adapters.personas.loader import PersonaExecutorConfig
 from ravn.config import Settings
 
 # ---------------------------------------------------------------------------
@@ -99,6 +100,26 @@ class TestBuildLlm:
         assert kwargs["api_key"] == "custom-key"
 
 
+class TestBuildExecutor:
+    def test_default_returns_agent_executor(self) -> None:
+        from ravn.cli.commands import _build_executor
+
+        executor = _build_executor()
+        assert type(executor).__name__ == "AgentExecutor"
+
+    def test_persona_executor_override_is_loaded(self) -> None:
+        from ravn.cli.commands import _build_executor
+
+        persona = MagicMock(
+            executor=PersonaExecutorConfig(
+                adapter="ravn.adapters.executors.agent.AgentExecutor",
+                kwargs={"mode": "default"},
+            )
+        )
+        executor = _build_executor(persona)
+        assert type(executor).__name__ == "AgentExecutor"
+
+
 # ---------------------------------------------------------------------------
 # _build_memory
 # ---------------------------------------------------------------------------
@@ -185,18 +206,18 @@ class TestBuildPermission:
         perm = _build_permission(settings, tmp_path, no_tools=True, persona_config=None)
         assert isinstance(perm, DenyAllPermission)
 
-    def test_read_only_persona_overrides_to_deny_all(
+    def test_read_only_persona_overrides_to_enforcer(
         self,
         settings: Settings,
         tmp_path: Path,
     ) -> None:
-        from ravn.adapters.permission.allow_deny import DenyAllPermission
+        from ravn.adapters.permission.enforcer import PermissionEnforcer
         from ravn.cli.commands import _build_permission
 
         persona = MagicMock(permission_mode="read-only")
         settings.permission.mode = "allow_all"
         perm = _build_permission(settings, tmp_path, no_tools=False, persona_config=persona)
-        assert isinstance(perm, DenyAllPermission)
+        assert isinstance(perm, PermissionEnforcer)
 
 
 # ---------------------------------------------------------------------------
@@ -684,3 +705,158 @@ class TestEffectiveModelResolution:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             assert s.effective_max_tokens() == 2048
+
+
+# ---------------------------------------------------------------------------
+# _build_mimir — adapter factory (NIU-616)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMimir:
+    def test_disabled_returns_none(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir
+
+        settings.mimir.enabled = False
+        result = _build_mimir(settings)
+        assert result is None
+
+    def test_single_local_instance_returns_markdown_adapter(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        from mimir.adapters.markdown import MarkdownMimirAdapter
+        from ravn.cli.commands import _build_mimir
+
+        settings.mimir.enabled = True
+        settings.mimir.instances = []
+        settings.mimir.path = str(tmp_path / "mimir")
+        result = _build_mimir(settings)
+        assert isinstance(result, MarkdownMimirAdapter)
+
+    def test_instance_with_path_returns_markdown_adapter(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        from mimir.adapters.markdown import MarkdownMimirAdapter
+        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+        from ravn.cli.commands import _build_mimir
+        from ravn.config import MimirInstanceConfig
+
+        settings.mimir.enabled = True
+        settings.mimir.instances = [
+            MimirInstanceConfig(
+                name="local",
+                role="local",
+                path=str(tmp_path / "mimir"),
+            )
+        ]
+        result = _build_mimir(settings)
+        assert isinstance(result, CompositeMimirAdapter)
+        # The single mount should be a MarkdownMimirAdapter
+        assert isinstance(result._mounts[0].port, MarkdownMimirAdapter)
+
+    def test_instance_with_url_returns_http_adapter(self, settings: Settings) -> None:
+        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+        from ravn.adapters.mimir.http import HttpMimirAdapter
+        from ravn.cli.commands import _build_mimir
+        from ravn.config import MimirInstanceConfig
+
+        settings.mimir.enabled = True
+        settings.mimir.instances = [
+            MimirInstanceConfig(
+                name="hosted",
+                role="shared",
+                url="https://mimir.niuu.internal",
+            )
+        ]
+        result = _build_mimir(settings)
+        assert isinstance(result, CompositeMimirAdapter)
+        assert isinstance(result._mounts[0].port, HttpMimirAdapter)
+
+    def test_mixed_instances_returns_composite(self, settings: Settings, tmp_path: Path) -> None:
+        from mimir.adapters.markdown import MarkdownMimirAdapter
+        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+        from ravn.adapters.mimir.http import HttpMimirAdapter
+        from ravn.cli.commands import _build_mimir
+        from ravn.config import MimirInstanceConfig
+
+        settings.mimir.enabled = True
+        settings.mimir.instances = [
+            MimirInstanceConfig(
+                name="local",
+                role="local",
+                path=str(tmp_path / "local"),
+            ),
+            MimirInstanceConfig(
+                name="hosted",
+                role="shared",
+                url="https://mimir.niuu.internal",
+            ),
+        ]
+        result = _build_mimir(settings)
+        assert isinstance(result, CompositeMimirAdapter)
+        assert len(result._mounts) == 2
+        port_types = {m.name: type(m.port) for m in result._mounts}
+        assert port_types["local"] is MarkdownMimirAdapter
+        assert port_types["hosted"] is HttpMimirAdapter
+
+    def test_instance_without_path_or_url_skipped(self, settings: Settings, tmp_path: Path) -> None:
+        from mimir.adapters.markdown import MarkdownMimirAdapter
+        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+        from ravn.cli.commands import _build_mimir
+        from ravn.config import MimirInstanceConfig
+
+        settings.mimir.enabled = True
+        settings.mimir.instances = [
+            MimirInstanceConfig(name="bad", role="local"),  # neither path nor url
+            MimirInstanceConfig(
+                name="local",
+                role="local",
+                path=str(tmp_path / "local"),
+            ),
+        ]
+        result = _build_mimir(settings)
+        assert isinstance(result, CompositeMimirAdapter)
+        assert len(result._mounts) == 1
+        assert isinstance(result._mounts[0].port, MarkdownMimirAdapter)
+
+    def test_all_instances_invalid_returns_none(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir
+        from ravn.config import MimirInstanceConfig
+
+        settings.mimir.enabled = True
+        settings.mimir.instances = [
+            MimirInstanceConfig(name="bad", role="local"),  # neither path nor url
+        ]
+        result = _build_mimir(settings)
+        assert result is None
+
+    def test_write_routing_applied_to_composite(self, settings: Settings, tmp_path: Path) -> None:
+        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+        from ravn.cli.commands import _build_mimir
+        from ravn.config import MimirInstanceConfig, MimirWriteRoutingConfig
+
+        settings.mimir.enabled = True
+        settings.mimir.instances = [
+            MimirInstanceConfig(
+                name="local",
+                role="local",
+                path=str(tmp_path / "local"),
+            ),
+            MimirInstanceConfig(
+                name="hosted",
+                role="shared",
+                url="https://mimir.niuu.internal",
+            ),
+        ]
+        settings.mimir.write_routing = MimirWriteRoutingConfig(
+            rules=[
+                {"prefix": "self/", "mounts": ["local"]},
+                {"prefix": "project/", "mounts": ["hosted"]},
+            ],
+            default=["local"],
+        )
+        result = _build_mimir(settings)
+        assert isinstance(result, CompositeMimirAdapter)
+        # Routing: self/ → local, project/ → hosted, default → local
+        assert result._write_routing.resolve("self/notes.md") == ["local"]
+        assert result._write_routing.resolve("project/arch.md") == ["hosted"]
+        assert result._write_routing.resolve("other/page.md") == ["local"]

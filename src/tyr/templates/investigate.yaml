@@ -1,0 +1,53 @@
+# Saga template: investigate (pipeline format)
+# Triggered by: github.issue.opened (filter: label=bug)
+# Stage 1: Triage and fix (persona: qa-agent)
+name: "Investigate: {event.title}"
+feature_branch: "fix/issue-{event.issue_number}"
+base_branch: "main"
+repos:
+  - "{event.repo}"
+
+stages:
+  - name: triage
+    sequential:
+      - name: "Triage issue #{event.issue_number}"
+        persona: qa-agent
+        description: |
+          Investigate the bug report and produce a root-cause analysis.
+
+          Issue: {event.issue_url}
+          Repository: {event.repo}
+          Title: {event.title}
+          Reporter: {event.author}
+
+          Description:
+          {event.body}
+        acceptance_criteria:
+          - Root cause has been identified
+          - Steps to reproduce have been documented
+          - A fix has been proposed or implemented
+          - Tests cover the regression scenario
+          - PR created and CI passing
+        declared_files: []
+        estimate_hours: 2.0
+        prompt: |
+          # Bug Investigation Task
+
+          A bug was reported — please investigate and fix it.
+
+          **Issue**: {event.issue_url}
+          **Repository**: {event.repo}
+          **Title**: {event.title}
+          **Reporter**: {event.author}
+
+          **Description**:
+          {event.body}
+
+          ## Instructions
+
+          1. Read CLAUDE.md and `.claude/rules/` for project conventions.
+          2. Reproduce the bug locally.
+          3. Identify the root cause.
+          4. Implement a fix with regression tests.
+          5. Create a PR against main.
+          6. Ensure CI passes before marking complete.

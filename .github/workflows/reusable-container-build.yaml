@@ -1,0 +1,135 @@
+# Reusable: build multi-arch container images and publish manifest tags.
+#
+# Splits into two matrix jobs:
+#   1. build   — per (container × platform), pushes <image>:<tag-prefix>-<platform>
+#   2. manifest — per container, creates multi-arch manifests pointing at the
+#      per-platform tags for every entry in `manifest-tags`.
+#
+# The tag scheme (prefix + manifest list) is deliberately caller-controlled —
+# PR/feature/dev callers all need different tagging.
+name: Reusable — Container Build
+
+on:
+  workflow_call:
+    inputs:
+      containers:
+        description: JSON array of container names (e.g. '["volundr","skuld"]').
+        type: string
+        required: true
+      platforms:
+        description: JSON array of platforms. Default amd64+arm64.
+        type: string
+        default: '["amd64","arm64"]'
+      tag-prefix:
+        description: Per-platform tags are `<tag-prefix>-<platform>`.
+        type: string
+        required: true
+      manifest-tags:
+        description: Space-separated list of manifest tags to create from the per-platform images.
+        type: string
+        required: true
+      build-args:
+        description: Newline-separated build args to pass to docker/build-push-action.
+        type: string
+        default: ""
+      labels:
+        description: Newline-separated OCI labels.
+        type: string
+        default: ""
+      registry:
+        description: Container registry.
+        type: string
+        default: ghcr.io
+
+permissions:
+  contents: read
+  packages: write     # Required to push container images to ghcr.io
+
+jobs:
+  build:
+    name: "Build ${{ matrix.container }} (${{ matrix.platform }})"
+    runs-on: ${{ matrix.platform == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(inputs.containers) }}
+        platform: ${{ fromJson(inputs.platforms) }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+        with:
+          context: .
+          file: ./containers/${{ matrix.container }}/Dockerfile
+          push: true
+          tags: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ inputs.tag-prefix }}-${{ matrix.platform }}
+          build-args: ${{ inputs.build-args }}
+          labels: ${{ inputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.container }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.container }}-${{ matrix.platform }}
+          platforms: linux/${{ matrix.platform }}
+          provenance: false
+
+  manifest:
+    name: "Manifest ${{ matrix.container }}"
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(inputs.containers) }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifests
+        env:
+          IMAGE: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          PLATFORMS: ${{ inputs.platforms }}
+          MANIFEST_TAGS: ${{ inputs.manifest-tags }}
+        run: |
+          set -euo pipefail
+          # Collect per-platform source tags
+          SOURCES=()
+          for plat in $(echo "${PLATFORMS}" | jq -r '.[]'); do
+            SOURCES+=("${IMAGE}:${TAG_PREFIX}-${plat}")
+          done
+          echo "Source images: ${SOURCES[*]}"
+
+          for tag in ${MANIFEST_TAGS}; do
+            echo "::group::manifest ${IMAGE}:${tag}"
+            docker manifest create "${IMAGE}:${tag}" "${SOURCES[@]}"
+            docker manifest push "${IMAGE}:${tag}"
+            echo "::endgroup::"
+          done

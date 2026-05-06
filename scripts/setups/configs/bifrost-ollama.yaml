@@ -1,0 +1,61 @@
+# ─── bifrost-ollama ──────────────────────────────────────────────────────────
+#
+# Ravn with Bifrost gateway routing to local Ollama models.
+# Fully offline — no cloud API keys required.
+#
+# What you get:
+#   - Bifrost gateway at localhost:8088
+#   - Ravn talks to Bifrost via OpenAI-compatible API
+#   - Three model tiers via Ollama: fast / balanced / best
+#   - Zero cost — everything runs locally
+#
+# Prerequisites:
+#   - Ollama installed and running: ollama serve
+#   - Models pulled:
+#       ollama pull llama3.2:1b     # fast  (1.3 GB)
+#       ollama pull llama3.2:3b     # balanced (2.0 GB)
+#       ollama pull llama3.1:8b     # best  (4.7 GB)
+#
+# Launch:
+#   bifrost --config ~/.ravn/bifrost.yaml &
+#   ravn run --config ~/.ravn/config.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: balanced                        # resolved by Bifrost alias
+  max_tokens: 4096
+  timeout: 300                           # local models are slower
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: "http://localhost:8088"
+
+memory:
+  backend: sqlite
+
+mimir:
+  enabled: false
+
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+thread:
+  enabled: false
+
+wakefulness:
+  enabled: false
+
+recap:
+  enabled: false
+
+initiative:
+  enabled: false
+
+gateway:
+  enabled: false
+
+logging:
+  level: info

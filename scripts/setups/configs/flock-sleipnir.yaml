@@ -1,0 +1,160 @@
+# ─── flock-sleipnir ──────────────────────────────────────────────────────────
+#
+# Ravn flock using Sleipnir for both mesh transport AND peer discovery.
+#
+# What you get:
+#   - Sleipnir (RabbitMQ) as the mesh transport layer
+#   - Sleipnir-based discovery: peers announce via exchange, no mDNS needed
+#   - Works across networks — peers don't need to be on the same LAN
+#   - Event backbone: all RavnEvents published for observability
+#   - Cascade delegation routes through Sleipnir exchanges
+#   - SPIFFE-based auth for zero-trust peer verification (optional)
+#
+# Architecture:
+#   ravn-A ──► RabbitMQ (ravn.mesh + ravn.events) ◄── ravn-B
+#                  ▲                                        ▲
+#                  └──────────── ravn-C ────────────────────┘
+#
+# vs mDNS flock:
+#   mDNS = LAN only, zero config, nng direct connections
+#   Sleipnir = any network, needs RabbitMQ, broker-mediated
+#
+# Prerequisites:
+#   - An LLM provider configured on each machine
+#   - SLEIPNIR_AMQP_URL on each machine
+#   - RabbitMQ reachable from all peers
+#   - Optional: RAVN_REALM_ID for realm isolation
+#   - Optional: SPIFFE_TRUST_DOMAIN for mTLS peer auth
+#
+# Quick RabbitMQ:
+#   docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
+#   export SLEIPNIR_AMQP_URL=amqp://guest:guest@rabbitmq.internal:5672/
+#
+# Launch on each machine:
+#   ravn daemon --config ~/.ravn/config.yaml
+#
+# Check peers:
+#   ravn peers --verbose
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# ── Mimir ───────────────────────────────────────────────────────────────────
+mimir:
+  enabled: true
+  path: ~/.ravn/mimir
+  auto_distill: true
+  categories:
+    - technical
+    - projects
+    - research
+
+# ── Sleipnir: event backbone + mesh transport ─────────────────────────────
+sleipnir:
+  enabled: true
+  amqp_url_env: SLEIPNIR_AMQP_URL
+  exchange: ravn.events
+  agent_id: ""                           # auto: hostname
+  reconnect_delay_s: 5.0
+  publish_timeout_s: 2.0
+
+# ── Mesh: Sleipnir transport ──────────────────────────────────────────────
+mesh:
+  enabled: true
+  adapter: sleipnir
+  rpc_timeout_s: 10.0
+  own_peer_id: ""                        # auto: hostname
+  sleipnir:
+    exchange: ravn.mesh
+    rpc_timeout_s: 10.0
+
+# ── Discovery: Sleipnir-based ─────────────────────────────────────────────
+discovery:
+  adapter: sleipnir
+  realm_id_env: RAVN_REALM_ID            # isolate flocks by realm
+  heartbeat_interval_s: 60.0
+  peer_ttl_s: 180.0
+  sleipnir:
+    heartbeat_interval_s: 60.0
+    convergence_wait_s: 5.0
+    # spiffe_audience_env: SPIFFE_TRUST_DOMAIN  # uncomment for zero-trust
+
+# ── Cascade ────────────────────────────────────────────────────────────────
+cascade:
+  enabled: true
+  spawn_timeout_s: 30.0
+  collect_timeout_s: 120.0
+  mesh_delegation_timeout_s: 60.0
+  stuck_detection_threshold_s: 300.0
+  loop_detection: true
+  retry_strategy: replan
+
+# ── Gateway ────────────────────────────────────────────────────────────────
+gateway:
+  enabled: true
+  channels:
+    telegram:
+      enabled: false
+    http:
+      enabled: true
+      host: 0.0.0.0
+      port: 7477
+
+# ── Drive loop ─────────────────────────────────────────────────────────────
+initiative:
+  enabled: true
+  max_concurrent_tasks: 3
+  queue_journal_path: ~/.ravn/daemon/queue.json
+  default_output_mode: ambient
+
+# ── Triggers ───────────────────────────────────────────────────────────────
+thread:
+  enabled: true
+  enricher_poll_interval_seconds: 300
+  enricher_llm_alias: fast
+
+wakefulness:
+  enabled: true
+  silence_threshold_seconds: 1800
+  reflection_cooldown_seconds: 3600
+  llm_alias: fast
+
+recap:
+  enabled: true
+  absence_threshold_seconds: 3600
+  return_detection_window_seconds: 300
+  persona: produce-recap
+
+# ── Budget ─────────────────────────────────────────────────────────────────
+budget:
+  daily_cap_usd: 3.0
+  warn_at_percent: 80
+
+# ── Trust ──────────────────────────────────────────────────────────────────
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  drafting_tickets: free
+  producing_recaps: free
+  opening_tickets: approval
+  closing_tickets: approval
+  pushing_branches: approval
+  pushing_main: never
+  external_messages: approval
+  spending_beyond_cap: never
+
+logging:
+  level: info

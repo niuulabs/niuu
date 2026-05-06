@@ -19,14 +19,14 @@ describe('SessionsView', () => {
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
   });
 
-  it('shows empty state when no sessions', async () => {
+  it('falls back to mock data when API returns empty', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => [],
     });
     render(<SessionsView />);
     await waitFor(() => {
-      expect(screen.getByText(/no active agent sessions/i)).toBeInTheDocument();
+      expect(screen.getByText(/demo data/i)).toBeInTheDocument();
     });
   });
 
@@ -56,11 +56,11 @@ describe('SessionsView', () => {
     });
   });
 
-  it('shows empty state when API returns non-ok response', async () => {
+  it('falls back to mock data when API returns non-ok response', async () => {
     mockFetch.mockResolvedValueOnce({ ok: false });
     render(<SessionsView />);
     await waitFor(() => {
-      expect(screen.getByText(/no active agent sessions/i)).toBeInTheDocument();
+      expect(screen.getByText(/demo data/i)).toBeInTheDocument();
     });
   });
 

@@ -124,6 +124,10 @@ class PromptBuilder:
         """Set shared Layer-3 context from parent (dynamic, not cached)."""
         self._replace_or_add(PromptSection(name="shared_context", content=text, cacheable=False))
 
+    def set_learnings_context(self, text: str) -> None:
+        """Set past learnings from Mímir (dynamic, not cached — NIU-588)."""
+        self._replace_or_add(PromptSection(name="learnings_context", content=text, cacheable=False))
+
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
@@ -365,10 +369,16 @@ def build_initiative_prompt(task: AgentTask) -> str:
         f"{task.initiative_context}\n"
         "</initiative_context>\n"
         "\n"
-        "Output instructions:\n"
-        "- Default to SILENT. Do not produce output unless something requires attention.\n"
-        "- If you find something worth surfacing, start your response with [SURFACE].\n"
-        "- Do not ask clarifying questions. You have full tool access. Act."
+        "Instructions:\n"
+        "1. Complete the task described above using available tools.\n"
+        "2. When finished, output your ---outcome--- block and STOP.\n"
+        "3. Do NOT continue calling tools after producing the outcome block.\n"
+        "4. Keep your work focused and concise. Avoid unnecessary iterations.\n"
+        "\n"
+        "Output:\n"
+        "- Default to SILENT unless something requires human attention.\n"
+        "- If escalation needed, prefix with [SURFACE].\n"
+        "- Always end with your ---outcome--- block when the task is complete."
     )
 
 

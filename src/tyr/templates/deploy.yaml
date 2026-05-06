@@ -1,0 +1,128 @@
+# Saga template: deploy (pipeline format)
+# Triggered by: github.pr.merged (filter: branch=main)
+# Stage 1: Smoke test (persona: qa-agent, condition: fan-in pass)
+# Stage 2: Monitor health (persona: qa-agent)
+# Stage 3: Release documentation (persona: retro-analyst)
+name: "Deploy: {event.repo}@{event.sha_short}"
+feature_branch: "main"
+base_branch: "main"
+repos:
+  - "{event.repo}"
+
+stages:
+  - name: smoke-test
+    sequential:
+      - name: "Smoke test after deploying {event.sha_short}"
+        persona: qa-agent
+        description: |
+          Run smoke tests against the staging/production environment after deploying the merge of {event.title} into main.
+
+          Repository: {event.repo}
+          Commit: {event.sha}
+          Merged PR: {event.pr_url}
+          Author: {event.author}
+        acceptance_criteria:
+          - Deployment pipeline succeeded without errors
+          - All health check endpoints return 200 OK
+          - Critical user flows respond correctly (no 5xx errors)
+          - No error spikes in logs within 2 minutes of deployment
+        declared_files: []
+        estimate_hours: 0.25
+        prompt: |
+          # Smoke Test Task
+
+          Verify the deployment triggered by merging {event.title} into main.
+
+          **Repository**: {event.repo}
+          **Commit**: {event.sha}
+          **PR**: {event.pr_url}
+
+          ## Instructions
+
+          1. Check CI/CD pipeline status for this commit:
+             `gh run list --repo {event.repo} --commit {event.sha} --limit 5`
+          2. Verify the deployment step succeeded (look for deploy job status).
+          3. Hit the health endpoint and verify 200 OK.
+          4. Check application logs for error spikes in the 2 minutes post-deploy.
+          5. Run a quick smoke test of critical endpoints.
+
+          If deployment failed, open an incident issue immediately and escalate.
+
+          Report: PASS (deployment healthy) or FAIL (with details).
+          Output verdict: "pass" or "fail" in your outcome block.
+
+  - name: monitor
+    sequential:
+      - name: "Monitor health for {event.repo}@{event.sha_short}"
+        persona: qa-agent
+        description: |
+          Monitor the health endpoint and error rates for 10 minutes following the deployment of {event.sha_short} to {event.repo}.
+
+          Commit: {event.sha}
+          PR: {event.pr_url}
+        acceptance_criteria:
+          - Health endpoint returns 200 OK throughout the monitoring window
+          - Error rate does not exceed baseline by more than 5%
+          - No critical alerts fired during the monitoring window
+          - P95 response time remains within acceptable bounds
+        declared_files: []
+        estimate_hours: 0.25
+        prompt: |
+          # Health Monitoring Task
+
+          Monitor the deployment of {event.sha_short} to {event.repo} for 10 minutes.
+
+          **Commit**: {event.sha}
+          **PR**: {event.pr_url}
+
+          ## Instructions
+
+          1. Poll the health endpoint every 60 seconds for 10 minutes (10 checks).
+          2. After each check, record: status code, response time, timestamp.
+          3. Watch for any alerting or error-rate anomalies.
+          4. After 10 minutes, summarise: all-green, degraded, or incident.
+
+          If any check fails, stop polling and escalate immediately.
+
+          Report a summary table of all 10 health checks with timestamps.
+          Output verdict: "pass" or "fail" in your outcome block.
+    condition: "stages.smoke-test.verdict == pass"
+
+  - name: release-docs
+    sequential:
+      - name: "Document release {event.sha_short} in Mimir"
+        persona: retro-analyst
+        description: |
+          Write structured release notes to Mimir for the deployment of {event.sha_short} to {event.repo}.
+
+          PR: {event.pr_url}
+          Author: {event.author}
+        acceptance_criteria:
+          - Release notes written to Mimir with correct metadata (repo, sha, date)
+          - Changes summary extracted from PR description and commits
+          - Deployment health outcome recorded (smoke test + monitor results)
+          - Searchable by repo, sha, and date in Mimir
+        declared_files: []
+        estimate_hours: 0.25
+        prompt: |
+          # Release Documentation Task
+
+          Write release notes for the deployment of {event.sha_short} to {event.repo}.
+
+          **Repository**: {event.repo}
+          **Commit**: {event.sha}
+          **PR**: {event.pr_url}
+          **Author**: {event.author}
+
+          ## Instructions
+
+          1. Read the PR description: `gh pr view {event.pr_url} --json body,title,commits`
+          2. Summarise the changes (features, fixes, breaking changes).
+          3. Note the deployment outcome from the previous monitoring phase.
+          4. Write structured release notes to Mimir:
+             - Title: `Release {event.repo}@{event.sha_short} — {event.title}`
+             - Sections: Summary, Changes, Deployment Health, Rollback Steps
+          5. Tag the entry with: repo={event.repo}, sha={event.sha}, type=release
+
+          Output the Mimir entry content before writing it.
+    condition: "stages.monitor.verdict == pass"

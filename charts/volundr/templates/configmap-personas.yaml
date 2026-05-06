@@ -1,0 +1,15 @@
+{{- if eq .Values.personaSource.mode "mountedVolume" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.personaSource.configmapName | default "ravn-personas" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: persona-registry
+  annotations:
+    # This ConfigMap is seeded on install/upgrade by the ravn-personas-seed job.
+    # Volundr patches it at runtime via KubernetesConfigMapPersonaRegistry.
+    helm.sh/resource-policy: keep
+data: {}
+{{- end }}

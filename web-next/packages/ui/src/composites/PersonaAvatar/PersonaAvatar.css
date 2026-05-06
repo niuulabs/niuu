@@ -1,0 +1,22 @@
+.niuu-persona-av {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.niuu-persona-av__letter {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  color: var(--brand-300);
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+  letter-spacing: 0;
+}

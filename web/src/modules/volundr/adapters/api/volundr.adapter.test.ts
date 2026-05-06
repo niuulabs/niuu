@@ -15,6 +15,8 @@ import type {
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
+import { mockResponse } from '@/test/mockFetch';
+
 /**
  * Mock SSE stream that replaces EventSource-based tests.
  * When fetch is called with the SSE endpoint URL, it returns a ReadableStream
@@ -176,14 +178,6 @@ describe('ApiVolundrService', () => {
     tier: 'balanced',
     color: 'purple',
   };
-
-  function mockResponse(data: unknown, status = 200) {
-    return Promise.resolve({
-      ok: status >= 200 && status < 300,
-      status,
-      json: () => Promise.resolve(data),
-    });
-  }
 
   describe('getSessions', () => {
     it('returns transformed sessions from API', async () => {
@@ -2615,6 +2609,1709 @@ describe('ApiVolundrService', () => {
         expect(sessions[0].source.paths).toHaveLength(1);
         expect(sessions[0].source.node_selector).toEqual({ 'kubernetes.io/hostname': 'node1' });
       }
+    });
+  });
+
+  describe('getFeatures', () => {
+    it('returns feature flags from API', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          local_mounts_enabled: true,
+          file_manager_enabled: true,
+          mini_mode: false,
+        })
+      );
+
+      const features = await service.getFeatures();
+
+      expect(features).toEqual({
+        localMountsEnabled: true,
+        fileManagerEnabled: true,
+        miniMode: false,
+      });
+    });
+
+    it('defaults fileManagerEnabled and miniMode when not provided', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          local_mounts_enabled: false,
+        })
+      );
+
+      const features = await service.getFeatures();
+
+      expect(features.localMountsEnabled).toBe(false);
+      expect(features.fileManagerEnabled).toBe(true);
+      expect(features.miniMode).toBe(false);
+    });
+
+    it('returns defaults on error', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+      const features = await service.getFeatures();
+
+      expect(features).toEqual({
+        localMountsEnabled: false,
+        fileManagerEnabled: true,
+        miniMode: false,
+      });
+    });
+  });
+
+  describe('getRepos', () => {
+    it('transforms repo info from API', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          github: [
+            {
+              provider: 'github',
+              org: 'niuu',
+              name: 'volundr',
+              clone_url: 'https://github.com/niuu/volundr.git',
+              url: 'https://github.com/niuu/volundr',
+              default_branch: 'main',
+              branches: ['main', 'dev'],
+            },
+          ],
+        })
+      );
+
+      const repos = await service.getRepos();
+
+      expect(repos).toHaveLength(1);
+      expect(repos[0]).toMatchObject({
+        provider: 'github',
+        org: 'niuu',
+        name: 'volundr',
+        cloneUrl: 'https://github.com/niuu/volundr.git',
+        url: 'https://github.com/niuu/volundr',
+        defaultBranch: 'main',
+        branches: ['main', 'dev'],
+      });
+    });
+
+    it('generates clone_url from url when not provided', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          github: [
+            {
+              provider: 'github',
+              org: 'niuu',
+              name: 'volundr',
+              url: 'https://github.com/niuu/volundr',
+              default_branch: 'main',
+            },
+          ],
+        })
+      );
+
+      const repos = await service.getRepos();
+
+      expect(repos[0].cloneUrl).toBe('https://github.com/niuu/volundr.git');
+    });
+
+    it('defaults branches to empty array when not provided', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          github: [
+            {
+              provider: 'github',
+              org: 'niuu',
+              name: 'volundr',
+              url: 'https://github.com/niuu/volundr',
+              default_branch: 'main',
+            },
+          ],
+        })
+      );
+
+      const repos = await service.getRepos();
+
+      expect(repos[0].branches).toEqual([]);
+    });
+  });
+
+  describe('getMessages', () => {
+    it('returns transformed messages', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            id: 'msg-1',
+            session_id: 'sess-1',
+            role: 'user',
+            content: 'Hello',
+            created_at: '2024-01-15T10:00:00Z',
+            tokens_in: 10,
+            tokens_out: null,
+            latency_ms: null,
+          },
+          {
+            id: 'msg-2',
+            session_id: 'sess-1',
+            role: 'assistant',
+            content: 'Hi there',
+            created_at: '2024-01-15T10:00:01Z',
+            tokens_in: null,
+            tokens_out: 50,
+            latency_ms: 1200,
+          },
+        ])
+      );
+
+      const messages = await service.getMessages('sess-1');
+
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({
+        id: 'msg-1',
+        sessionId: 'sess-1',
+        role: 'user',
+        content: 'Hello',
+        tokensIn: 10,
+        tokensOut: undefined,
+        latency: undefined,
+      });
+      expect(messages[1]).toMatchObject({
+        tokensOut: 50,
+        latency: 1200,
+      });
+    });
+  });
+
+  describe('sendMessage', () => {
+    it('sends message and returns transformed result', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          id: 'msg-new',
+          session_id: 'sess-1',
+          role: 'user',
+          content: 'Test message',
+          created_at: '2024-01-15T10:00:00Z',
+          tokens_in: null,
+          tokens_out: null,
+          latency_ms: null,
+        })
+      );
+
+      const msg = await service.sendMessage('sess-1', 'Test message');
+
+      expect(msg.content).toBe('Test message');
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.content).toBe('Test message');
+    });
+  });
+
+  describe('getLogs', () => {
+    it('returns transformed logs with default limit', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            id: 'log-1',
+            session_id: 'sess-1',
+            timestamp: '2024-01-15T10:00:00Z',
+            level: 'info',
+            source: 'agent',
+            message: 'Processing started',
+          },
+        ])
+      );
+
+      const logs = await service.getLogs('sess-1');
+
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toMatchObject({
+        id: 'log-1',
+        sessionId: 'sess-1',
+        level: 'info',
+        source: 'agent',
+        message: 'Processing started',
+      });
+    });
+
+    it('accepts custom limit', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse([]));
+
+      await service.getLogs('sess-1', 50);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('limit=50'),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('deleteSession', () => {
+    it('calls delete endpoint', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined, 204));
+
+      await service.deleteSession('sess-1');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/sessions/sess-1'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+
+    it('sends cleanup array when provided', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined, 204));
+
+      await service.deleteSession('sess-1', ['branch', 'workspace']);
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.cleanup).toEqual(['branch', 'workspace']);
+    });
+
+    it('does not send body when cleanup is empty', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined, 204));
+
+      await service.deleteSession('sess-1', []);
+
+      // No body in the request for empty cleanup array
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/sessions/sess-1'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
+  describe('archiveSession', () => {
+    it('calls archive endpoint and removes from cache', async () => {
+      // First populate cache
+      mockFetch.mockReturnValueOnce(mockResponse([mockApiSession]));
+      await service.getSessions();
+
+      // Then archive
+      mockFetch.mockReturnValueOnce(mockResponse(undefined));
+
+      await service.archiveSession(mockApiSession.id);
+
+      expect(mockFetch).toHaveBeenLastCalledWith(
+        expect.stringContaining(`/sessions/${mockApiSession.id}/archive`),
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+  });
+
+  describe('restoreSession', () => {
+    it('calls restore endpoint', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined));
+
+      await service.restoreSession('sess-1');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/sessions/sess-1/restore'),
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+  });
+
+  describe('listArchivedSessions', () => {
+    it('returns archived sessions', async () => {
+      const archivedSession = { ...mockApiSession, status: 'stopped' as const };
+      mockFetch.mockReturnValueOnce(mockResponse([archivedSession]));
+
+      const sessions = await service.listArchivedSessions();
+
+      expect(sessions).toHaveLength(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('status=archived'),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('searchTrackerIssues', () => {
+    it('returns transformed issues', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            id: 'issue-1',
+            identifier: 'NIU-100',
+            title: 'Test issue',
+            status: 'In Progress',
+            assignee: 'user-1',
+            labels: ['bug'],
+            priority: 2,
+            url: 'https://linear.app/issue/NIU-100',
+          },
+        ])
+      );
+
+      const issues = await service.searchTrackerIssues('test');
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toMatchObject({
+        id: 'issue-1',
+        identifier: 'NIU-100',
+        title: 'Test issue',
+        status: 'in_progress',
+        assignee: 'user-1',
+        labels: ['bug'],
+        priority: 2,
+      });
+    });
+
+    it('returns empty array on error', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+      const issues = await service.searchTrackerIssues('test');
+
+      expect(issues).toEqual([]);
+    });
+
+    it('maps unknown status to todo', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            id: 'issue-2',
+            identifier: 'NIU-200',
+            title: 'Unknown status',
+            status: 'weird_status',
+            url: '',
+          },
+        ])
+      );
+
+      const issues = await service.searchTrackerIssues('weird');
+
+      expect(issues[0].status).toBe('todo');
+    });
+
+    it('defaults assignee, labels, priority when missing', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            id: 'issue-3',
+            identifier: 'NIU-300',
+            title: 'Minimal',
+            status: 'backlog',
+            url: '',
+          },
+        ])
+      );
+
+      const issues = await service.searchTrackerIssues('minimal');
+
+      expect(issues[0].assignee).toBeUndefined();
+      expect(issues[0].labels).toEqual([]);
+      expect(issues[0].priority).toBe(0);
+    });
+  });
+
+  describe('updateTrackerIssueStatus', () => {
+    it('updates and returns transformed issue', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          id: 'issue-1',
+          identifier: 'NIU-100',
+          title: 'Test',
+          status: 'Done',
+          assignee: null,
+          labels: [],
+          priority: 1,
+          url: 'https://linear.app/issue/NIU-100',
+        })
+      );
+
+      const issue = await service.updateTrackerIssueStatus('issue-1', 'done');
+
+      expect(issue.status).toBe('done');
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.status).toBe('done');
+    });
+  });
+
+  describe('createTenant', () => {
+    it('creates and returns tenant', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          id: 'tenant-1',
+          path: '/orgs/test',
+          name: 'Test Org',
+          parent_id: null,
+          tier: 'standard',
+          max_sessions: 10,
+          max_storage_gb: 100,
+          created_at: '2024-01-01T00:00:00Z',
+        })
+      );
+
+      const tenant = await service.createTenant({
+        name: 'Test Org',
+        tier: 'standard',
+        maxSessions: 10,
+        maxStorageGb: 100,
+      });
+
+      expect(tenant).toMatchObject({
+        id: 'tenant-1',
+        name: 'Test Org',
+        tier: 'standard',
+        maxSessions: 10,
+        maxStorageGb: 100,
+      });
+    });
+  });
+
+  describe('deleteTenant', () => {
+    it('calls delete endpoint', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined, 204));
+
+      await service.deleteTenant('tenant-1');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/tenants/tenant-1'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
+  describe('updateTenant', () => {
+    it('updates and returns tenant', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          id: 'tenant-1',
+          path: '/orgs/test',
+          name: 'Test Org',
+          parent_id: null,
+          tier: 'enterprise',
+          max_sessions: 50,
+          max_storage_gb: 500,
+          created_at: '2024-01-01T00:00:00Z',
+        })
+      );
+
+      const tenant = await service.updateTenant('tenant-1', {
+        tier: 'enterprise',
+        maxSessions: 50,
+      });
+
+      expect(tenant.tier).toBe('enterprise');
+      expect(tenant.maxSessions).toBe(50);
+    });
+  });
+
+  describe('getTenantMembers', () => {
+    it('returns members for a tenant', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            user_id: 'user-1',
+            tenant_id: 'tenant-1',
+            role: 'admin',
+            granted_at: '2024-01-01T00:00:00Z',
+          },
+          {
+            user_id: 'user-2',
+            tenant_id: 'tenant-1',
+            role: 'member',
+            granted_at: null,
+          },
+        ])
+      );
+
+      const members = await service.getTenantMembers('tenant-1');
+
+      expect(members).toHaveLength(2);
+      expect(members[0]).toMatchObject({
+        userId: 'user-1',
+        role: 'admin',
+        grantedAt: '2024-01-01T00:00:00Z',
+      });
+      expect(members[1].grantedAt).toBeUndefined();
+    });
+  });
+
+  describe('reprovisionUser', () => {
+    it('reprovisions and returns result', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          success: true,
+          user_id: 'user-1',
+          home_pvc: 'pvc-user-1',
+          errors: [],
+        })
+      );
+
+      const result = await service.reprovisionUser('user-1');
+
+      expect(result).toEqual({
+        success: true,
+        userId: 'user-1',
+        homePvc: 'pvc-user-1',
+        errors: [],
+      });
+    });
+  });
+
+  describe('reprovisionTenant', () => {
+    it('reprovisions all users in tenant', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          { success: true, user_id: 'u1', home_pvc: 'pvc-u1', errors: [] },
+          { success: false, user_id: 'u2', errors: ['PVC create failed'] },
+        ])
+      );
+
+      const results = await service.reprovisionTenant('tenant-1');
+
+      expect(results).toHaveLength(2);
+      expect(results[0].success).toBe(true);
+      expect(results[1].success).toBe(false);
+      expect(results[1].errors).toContain('PVC create failed');
+    });
+  });
+
+  describe('getIntegrationCatalog', () => {
+    it('returns catalog entries', async () => {
+      const catalog = [{ type: 'git', name: 'GitHub', adapters: ['github'] }];
+      mockFetch.mockReturnValueOnce(mockResponse(catalog));
+
+      const result = await service.getIntegrationCatalog();
+
+      expect(result).toEqual(catalog);
+    });
+  });
+
+  describe('getIntegrations', () => {
+    it('transforms integration connections', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            id: 'int-1',
+            integration_type: 'repository',
+            adapter: 'github',
+            credential_name: 'gh-token',
+            config: { org: 'niuu' },
+            enabled: true,
+            created_at: '2024-01-01T00:00:00Z',
+            updated_at: '2024-01-01T00:00:00Z',
+            slug: 'niuu-github',
+          },
+        ])
+      );
+
+      const integrations = await service.getIntegrations();
+
+      expect(integrations).toHaveLength(1);
+      expect(integrations[0]).toMatchObject({
+        id: 'int-1',
+        integrationType: 'repository',
+        adapter: 'github',
+        credentialName: 'gh-token',
+        slug: 'niuu-github',
+      });
+    });
+
+    it('defaults empty slug to empty string', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            id: 'int-2',
+            integration_type: 'tracker',
+            adapter: 'linear',
+            credential_name: 'linear-key',
+            config: {},
+            enabled: true,
+            created_at: '2024-01-01T00:00:00Z',
+            updated_at: '2024-01-01T00:00:00Z',
+            slug: '',
+          },
+        ])
+      );
+
+      const integrations = await service.getIntegrations();
+
+      expect(integrations[0].slug).toBe('');
+    });
+  });
+
+  describe('createIntegration', () => {
+    it('creates integration and returns transformed result', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          id: 'int-new',
+          integration_type: 'repository',
+          adapter: 'github',
+          credential_name: 'gh-token',
+          config: { org: 'niuu' },
+          enabled: true,
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+          slug: 'niuu-gh',
+        })
+      );
+
+      const result = await service.createIntegration({
+        integrationType: 'repository',
+        adapter: 'github',
+        credentialName: 'gh-token',
+        config: { org: 'niuu' },
+        enabled: true,
+        slug: 'niuu-gh',
+      });
+
+      expect(result.id).toBe('int-new');
+      expect(result.slug).toBe('niuu-gh');
+    });
+  });
+
+  describe('deleteIntegration', () => {
+    it('calls delete endpoint', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined, 204));
+
+      await service.deleteIntegration('int-1');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/integrations/int-1'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
+  describe('testIntegration', () => {
+    it('tests integration and returns result', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse({ success: true, message: 'Connection OK' }));
+
+      const result = await service.testIntegration('int-1');
+
+      expect(result).toEqual({ success: true, message: 'Connection OK' });
+    });
+  });
+
+  describe('getCredentials', () => {
+    it('returns transformed credentials', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          credentials: [
+            {
+              id: 'cred-1',
+              name: 'my-token',
+              secret_type: 'api_key',
+              keys: ['token'],
+              metadata: {},
+              created_at: '2024-01-01T00:00:00Z',
+              updated_at: '2024-01-01T00:00:00Z',
+            },
+          ],
+        })
+      );
+
+      const creds = await service.getCredentials();
+
+      expect(creds).toHaveLength(1);
+      expect(creds[0]).toMatchObject({
+        id: 'cred-1',
+        name: 'my-token',
+        secretType: 'api_key',
+        keys: ['token'],
+      });
+    });
+
+    it('passes secret type filter when provided', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse({ credentials: [] }));
+
+      await service.getCredentials('api_key');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('secret_type=api_key'),
+        expect.any(Object)
+      );
+    });
+
+    it('omits filter when type not provided', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse({ credentials: [] }));
+
+      await service.getCredentials();
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.not.stringContaining('secret_type'),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('getCredential', () => {
+    it('returns credential by name', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          id: 'cred-1',
+          name: 'my-token',
+          secret_type: 'api_key',
+          keys: ['token'],
+          metadata: {},
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+        })
+      );
+
+      const cred = await service.getCredential('my-token');
+
+      expect(cred?.name).toBe('my-token');
+    });
+
+    it('returns null for 404', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse({ detail: 'Not found' }, 404));
+
+      const cred = await service.getCredential('nonexistent');
+
+      expect(cred).toBeNull();
+    });
+
+    it('throws on non-404 errors', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse({ detail: 'Server error' }, 500));
+
+      await expect(service.getCredential('bad')).rejects.toThrow();
+    });
+  });
+
+  describe('createCredential', () => {
+    it('creates and returns credential', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          id: 'cred-new',
+          name: 'new-token',
+          secret_type: 'api_key',
+          keys: ['key'],
+          metadata: {},
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+        })
+      );
+
+      const cred = await service.createCredential({
+        name: 'new-token',
+        secretType: 'api_key',
+        data: { key: 'secret' },
+      });
+
+      expect(cred.id).toBe('cred-new');
+    });
+  });
+
+  describe('deleteCredential', () => {
+    it('calls delete endpoint with encoded name', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined, 204));
+
+      await service.deleteCredential('my token');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/credentials/my%20token'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
+  describe('getCredentialTypes', () => {
+    it('returns transformed credential types', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            type: 'api_key',
+            label: 'API Key',
+            description: 'A simple API key',
+            fields: [{ name: 'key', label: 'Key', required: true }],
+            default_mount_type: 'env',
+          },
+        ])
+      );
+
+      const types = await service.getCredentialTypes();
+
+      expect(types).toHaveLength(1);
+      expect(types[0]).toMatchObject({
+        type: 'api_key',
+        label: 'API Key',
+        defaultMountType: 'env',
+      });
+    });
+  });
+
+  describe('listWorkspaces', () => {
+    const mockWorkspace = {
+      id: 'ws-1',
+      pvc_name: 'pvc-ws-1',
+      session_id: 'sess-1',
+      user_id: 'user-1',
+      tenant_id: 'tenant-1',
+      size_gb: 10,
+      status: 'active',
+      created_at: '2024-01-01T00:00:00Z',
+      archived_at: null,
+      session_name: 'My Session',
+      source_url: 'https://github.com/org/repo',
+      source_ref: 'main',
+    };
+
+    it('returns workspace list', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse([mockWorkspace]));
+
+      const workspaces = await service.listWorkspaces();
+
+      expect(workspaces).toHaveLength(1);
+      expect(workspaces[0]).toMatchObject({
+        id: 'ws-1',
+        pvcName: 'pvc-ws-1',
+        sessionId: 'sess-1',
+        status: 'active',
+        sessionName: 'My Session',
+      });
+    });
+
+    it('passes status filter when provided', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse([]));
+
+      await service.listWorkspaces('archived');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('status=archived'),
+        expect.any(Object)
+      );
+    });
+
+    it('handles null optional fields', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            ...mockWorkspace,
+            archived_at: null,
+            session_name: null,
+            source_url: null,
+            source_ref: null,
+          },
+        ])
+      );
+
+      const workspaces = await service.listWorkspaces();
+
+      expect(workspaces[0].archivedAt).toBeUndefined();
+      expect(workspaces[0].sessionName).toBeUndefined();
+      expect(workspaces[0].sourceUrl).toBeUndefined();
+      expect(workspaces[0].sourceRef).toBeUndefined();
+    });
+  });
+
+  describe('deleteWorkspace', () => {
+    it('calls delete endpoint', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined, 204));
+
+      await service.deleteWorkspace('ws-1');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/workspaces/ws-1'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
+  describe('bulkDeleteWorkspaces', () => {
+    it('sends session IDs and returns result', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse({ deleted: 2, failed: [] }));
+
+      const result = await service.bulkDeleteWorkspaces(['sess-1', 'sess-2']);
+
+      expect(result.deleted).toBe(2);
+      expect(result.failed).toEqual([]);
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.session_ids).toEqual(['sess-1', 'sess-2']);
+    });
+  });
+
+  describe('getAdminSettings', () => {
+    it('returns admin settings', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          storage: { home_enabled: true, file_manager_enabled: true },
+        })
+      );
+
+      const settings = await service.getAdminSettings();
+
+      expect(settings).toEqual({
+        storage: { homeEnabled: true, fileManagerEnabled: true },
+      });
+    });
+
+    it('defaults file_manager_enabled when missing', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          storage: { home_enabled: false },
+        })
+      );
+
+      const settings = await service.getAdminSettings();
+
+      expect(settings.storage.fileManagerEnabled).toBe(true);
+    });
+  });
+
+  describe('updateAdminSettings', () => {
+    it('updates and returns settings', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          storage: { home_enabled: false, file_manager_enabled: false },
+        })
+      );
+
+      const settings = await service.updateAdminSettings({
+        storage: { homeEnabled: false, fileManagerEnabled: false },
+      });
+
+      expect(settings.storage.homeEnabled).toBe(false);
+    });
+
+    it('sends empty body when no storage provided', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          storage: { home_enabled: true, file_manager_enabled: true },
+        })
+      );
+
+      await service.updateAdminSettings({});
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.storage).toBeUndefined();
+    });
+  });
+
+  describe('getFeatureModules', () => {
+    it('returns feature modules', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            key: 'tyr',
+            label: 'Tyr',
+            icon: 'shield',
+            scope: 'workspace',
+            enabled: true,
+            default_enabled: true,
+            admin_only: false,
+            order: 1,
+          },
+        ])
+      );
+
+      const features = await service.getFeatureModules();
+
+      expect(features).toHaveLength(1);
+      expect(features[0]).toMatchObject({
+        key: 'tyr',
+        label: 'Tyr',
+        scope: 'workspace',
+        enabled: true,
+        defaultEnabled: true,
+        adminOnly: false,
+        order: 1,
+      });
+    });
+
+    it('passes scope filter when provided', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse([]));
+
+      await service.getFeatureModules('workspace');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('scope=workspace'),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('toggleFeature', () => {
+    it('toggles feature and returns result', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          key: 'tyr',
+          label: 'Tyr',
+          icon: 'shield',
+          scope: 'workspace',
+          enabled: false,
+          default_enabled: true,
+          admin_only: false,
+          order: 1,
+        })
+      );
+
+      const feature = await service.toggleFeature('tyr', false);
+
+      expect(feature.enabled).toBe(false);
+    });
+  });
+
+  describe('getUserFeaturePreferences', () => {
+    it('returns user feature preferences', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          { feature_key: 'tyr', visible: true, sort_order: 1 },
+          { feature_key: 'storage', visible: false, sort_order: 2 },
+        ])
+      );
+
+      const prefs = await service.getUserFeaturePreferences();
+
+      expect(prefs).toHaveLength(2);
+      expect(prefs[0]).toEqual({ featureKey: 'tyr', visible: true, sortOrder: 1 });
+    });
+  });
+
+  describe('updateUserFeaturePreferences', () => {
+    it('updates and returns preferences', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([{ feature_key: 'tyr', visible: false, sort_order: 3 }])
+      );
+
+      const prefs = await service.updateUserFeaturePreferences([
+        { featureKey: 'tyr', visible: false, sortOrder: 3 },
+      ]);
+
+      expect(prefs[0].featureKey).toBe('tyr');
+      expect(prefs[0].visible).toBe(false);
+    });
+  });
+
+  describe('listTokens', () => {
+    it('returns personal access tokens', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          { id: 'tok-1', name: 'CI Token', created_at: '2024-01-01', last_used_at: '2024-06-01' },
+          { id: 'tok-2', name: 'Dev Token', created_at: '2024-02-01', last_used_at: null },
+        ])
+      );
+
+      const tokens = await service.listTokens();
+
+      expect(tokens).toHaveLength(2);
+      expect(tokens[0]).toEqual({
+        id: 'tok-1',
+        name: 'CI Token',
+        createdAt: '2024-01-01',
+        lastUsedAt: '2024-06-01',
+      });
+      expect(tokens[1].lastUsedAt).toBeNull();
+    });
+  });
+
+  describe('createToken', () => {
+    it('creates and returns token with secret', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          id: 'tok-new',
+          name: 'My Token',
+          token: 'vat_secret123',
+          created_at: '2024-01-01',
+        })
+      );
+
+      const result = await service.createToken('My Token');
+
+      expect(result).toEqual({
+        id: 'tok-new',
+        name: 'My Token',
+        token: 'vat_secret123',
+        createdAt: '2024-01-01',
+      });
+    });
+  });
+
+  describe('revokeToken', () => {
+    it('calls delete endpoint', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined, 204));
+
+      await service.revokeToken('tok-1');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/tokens/tok-1'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
+  describe('savePreset', () => {
+    it('creates new preset when no id', async () => {
+      const presetResponse = {
+        id: 'preset-new',
+        name: 'Test Preset',
+        description: 'A test preset',
+        is_default: false,
+        created_at: '2024-01-01',
+        updated_at: '2024-01-01',
+        cli_tool: 'claude',
+        workload_type: 'development',
+        model: 'claude-sonnet-4-20250514',
+        system_prompt: '',
+        resource_config: {},
+        mcp_servers: [],
+        terminal_sidecar: { enabled: false, allowed_commands: [] },
+        skills: [],
+        rules: [],
+        env_vars: {},
+        env_secret_refs: [],
+        source: null,
+        integration_ids: [],
+        setup_scripts: [],
+        workload_config: {},
+      };
+      mockFetch.mockReturnValueOnce(mockResponse(presetResponse));
+
+      const preset = await service.savePreset({
+        name: 'Test Preset',
+        description: 'A test preset',
+        isDefault: false,
+        cliTool: 'claude',
+        workloadType: 'development',
+        model: 'claude-sonnet-4-20250514',
+        systemPrompt: '',
+        resourceConfig: {},
+        mcpServers: [],
+        terminalSidecar: { enabled: false, allowedCommands: [] },
+        skills: [],
+        rules: [],
+        envVars: {},
+        envSecretRefs: [],
+        source: null,
+        integrationIds: [],
+        setupScripts: [],
+        workloadConfig: {},
+      });
+
+      expect(preset.id).toBe('preset-new');
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/presets'),
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('updates existing preset when id is provided', async () => {
+      const presetResponse = {
+        id: 'preset-existing',
+        name: 'Updated Preset',
+        description: 'Updated',
+        is_default: false,
+        created_at: '2024-01-01',
+        updated_at: '2024-01-02',
+        cli_tool: 'claude',
+        workload_type: 'development',
+        model: 'claude-sonnet-4-20250514',
+        system_prompt: '',
+        resource_config: {},
+        mcp_servers: [],
+        terminal_sidecar: { enabled: false, allowed_commands: [] },
+        skills: [],
+        rules: [],
+        env_vars: {},
+        env_secret_refs: [],
+        source: null,
+        integration_ids: [],
+        setup_scripts: [],
+        workload_config: {},
+      };
+      mockFetch.mockReturnValueOnce(mockResponse(presetResponse));
+
+      await service.savePreset({
+        id: 'preset-existing',
+        name: 'Updated Preset',
+        description: 'Updated',
+        isDefault: false,
+        cliTool: 'claude',
+        workloadType: 'development',
+        model: 'claude-sonnet-4-20250514',
+        systemPrompt: '',
+        resourceConfig: {},
+        mcpServers: [],
+        terminalSidecar: { enabled: false, allowedCommands: [] },
+        skills: [],
+        rules: [],
+        envVars: {},
+        envSecretRefs: [],
+        source: null,
+        integrationIds: [],
+        setupScripts: [],
+        workloadConfig: {},
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/presets/preset-existing'),
+        expect.objectContaining({ method: 'PUT' })
+      );
+    });
+
+    it('handles git source in preset', async () => {
+      const presetResponse = {
+        id: 'preset-git',
+        name: 'Git Preset',
+        description: '',
+        is_default: false,
+        created_at: '2024-01-01',
+        updated_at: '2024-01-01',
+        cli_tool: 'claude',
+        workload_type: 'development',
+        model: 'claude-sonnet-4-20250514',
+        system_prompt: '',
+        resource_config: {},
+        mcp_servers: [],
+        terminal_sidecar: { enabled: false, allowed_commands: [] },
+        skills: [],
+        rules: [],
+        env_vars: {},
+        env_secret_refs: [],
+        source: { type: 'git', repo: 'https://github.com/org/repo', branch: 'main' },
+        integration_ids: [],
+        setup_scripts: [],
+        workload_config: {},
+      };
+      mockFetch.mockReturnValueOnce(mockResponse(presetResponse));
+
+      const preset = await service.savePreset({
+        name: 'Git Preset',
+        description: '',
+        isDefault: false,
+        cliTool: 'claude',
+        workloadType: 'development',
+        model: 'claude-sonnet-4-20250514',
+        systemPrompt: '',
+        resourceConfig: {},
+        mcpServers: [],
+        terminalSidecar: { enabled: false, allowedCommands: [] },
+        skills: [],
+        rules: [],
+        envVars: {},
+        envSecretRefs: [],
+        source: { type: 'git', repo: 'https://github.com/org/repo', branch: 'main' },
+        integrationIds: [],
+        setupScripts: [],
+        workloadConfig: {},
+      });
+
+      expect(preset.source?.type).toBe('git');
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.source).toEqual({
+        type: 'git',
+        repo: 'https://github.com/org/repo',
+        branch: 'main',
+      });
+    });
+
+    it('handles local_mount source in preset', async () => {
+      const presetResponse = {
+        id: 'preset-mount',
+        name: 'Mount Preset',
+        description: '',
+        is_default: false,
+        created_at: '2024-01-01',
+        updated_at: '2024-01-01',
+        cli_tool: 'claude',
+        workload_type: 'development',
+        model: 'claude-sonnet-4-20250514',
+        system_prompt: '',
+        resource_config: {},
+        mcp_servers: [],
+        terminal_sidecar: { enabled: false, allowed_commands: [] },
+        skills: [],
+        rules: [],
+        env_vars: {},
+        env_secret_refs: [],
+        source: {
+          type: 'local_mount',
+          paths: [{ host_path: '/code', mount_path: '/workspace', read_only: false }],
+          node_selector: { node: 'gpu-1' },
+        },
+        integration_ids: [],
+        setup_scripts: [],
+        workload_config: {},
+      };
+      mockFetch.mockReturnValueOnce(mockResponse(presetResponse));
+
+      await service.savePreset({
+        name: 'Mount Preset',
+        description: '',
+        isDefault: false,
+        cliTool: 'claude',
+        workloadType: 'development',
+        model: 'claude-sonnet-4-20250514',
+        systemPrompt: '',
+        resourceConfig: {},
+        mcpServers: [],
+        terminalSidecar: { enabled: false, allowedCommands: [] },
+        skills: [],
+        rules: [],
+        envVars: {},
+        envSecretRefs: [],
+        source: {
+          type: 'local_mount',
+          paths: [{ host_path: '/code', mount_path: '/workspace', read_only: false }],
+          node_selector: { node: 'gpu-1' },
+        },
+        integrationIds: [],
+        setupScripts: [],
+        workloadConfig: {},
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.source.type).toBe('local_mount');
+      expect(body.source.paths).toHaveLength(1);
+    });
+  });
+
+  describe('deletePreset', () => {
+    it('calls delete endpoint', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined, 204));
+
+      await service.deletePreset('preset-1');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/presets/preset-1'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
+  describe('updateSession', () => {
+    it('updates session and notifies subscribers', async () => {
+      // First populate cache
+      mockFetch.mockReturnValueOnce(mockResponse([mockApiSession]));
+      await service.getSessions();
+
+      // Update
+      const updatedResponse = { ...mockApiSession, name: 'Updated Name' };
+      mockFetch.mockReturnValueOnce(mockResponse(updatedResponse));
+
+      const callback = vi.fn();
+      service.subscribe(callback);
+
+      const session = await service.updateSession(mockApiSession.id, { name: 'Updated Name' });
+
+      expect(session.name).toBe('Updated Name');
+    });
+  });
+
+  describe('listAllWorkspaces', () => {
+    it('calls admin endpoint', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            id: 'ws-1',
+            pvc_name: 'pvc-ws-1',
+            session_id: 'sess-1',
+            user_id: 'user-1',
+            tenant_id: 'tenant-1',
+            size_gb: 10,
+            status: 'active',
+            created_at: '2024-01-01T00:00:00Z',
+            archived_at: null,
+            session_name: null,
+            source_url: null,
+            source_ref: null,
+          },
+        ])
+      );
+
+      const workspaces = await service.listAllWorkspaces();
+
+      expect(workspaces).toHaveLength(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/admin/workspaces'),
+        expect.any(Object)
+      );
+    });
+
+    it('passes status filter when provided', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse([]));
+
+      await service.listAllWorkspaces('active');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('status=active'),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('getTemplate', () => {
+    it('returns template by name', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          name: 'default',
+          description: 'Default template',
+          is_default: true,
+          repos: [{ repo: 'https://github.com/org/repo' }],
+          setup_scripts: [],
+          workspace_layout: 'single',
+          cli_tool: 'claude',
+          workload_type: 'development',
+          model: 'claude-sonnet-4-20250514',
+          system_prompt: '',
+          resource_config: {},
+          mcp_servers: [],
+          env_vars: {},
+          env_secret_refs: [],
+          workload_config: {},
+          terminal_sidecar: null,
+          skills: [],
+          rules: [],
+        })
+      );
+
+      const template = await service.getTemplate('default');
+
+      expect(template?.name).toBe('default');
+      expect(template?.isDefault).toBe(true);
+    });
+
+    it('returns null for 404', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse({ detail: 'Not found' }, 404));
+
+      const template = await service.getTemplate('nonexistent');
+
+      expect(template).toBeNull();
+    });
+
+    it('throws on non-404 errors', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse({ detail: 'Server error' }, 500));
+
+      await expect(service.getTemplate('bad')).rejects.toThrow();
+    });
+  });
+
+  describe('getAvailableMcpServers', () => {
+    it('returns MCP server configs', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          { name: 'filesystem', type: 'stdio', command: 'node', url: null, args: ['server.js'] },
+        ])
+      );
+
+      const servers = await service.getAvailableMcpServers();
+
+      expect(servers).toHaveLength(1);
+      expect(servers[0]).toMatchObject({
+        name: 'filesystem',
+        type: 'stdio',
+        command: 'node',
+        args: ['server.js'],
+      });
+    });
+  });
+
+  describe('getAvailableSecrets', () => {
+    it('returns secret names', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(['secret-1', 'secret-2']));
+
+      const secrets = await service.getAvailableSecrets();
+
+      expect(secrets).toEqual(['secret-1', 'secret-2']);
+    });
+  });
+
+  describe('createSecret', () => {
+    it('creates and returns secret info', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse({ name: 'my-secret', keys: ['key1', 'key2'] }));
+
+      const result = await service.createSecret('my-secret', { key1: 'val1', key2: 'val2' });
+
+      expect(result).toEqual({ name: 'my-secret', keys: ['key1', 'key2'] });
+    });
+  });
+
+  describe('storeUserCredential', () => {
+    it('stores user credential', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined));
+
+      await service.storeUserCredential('gh-token', { token: 'secret' });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.name).toBe('gh-token');
+      expect(body.data.token).toBe('secret');
+    });
+  });
+
+  describe('storeTenantCredential', () => {
+    it('stores tenant credential', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(undefined));
+
+      await service.storeTenantCredential('shared-key', { key: 'value' });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.name).toBe('shared-key');
+    });
+  });
+
+  describe('listUsers', () => {
+    it('returns user list', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse([
+          {
+            id: 'u1',
+            email: 'user@test.com',
+            display_name: 'Test User',
+            status: 'active',
+            created_at: '2024-01-01',
+          },
+          {
+            id: 'u2',
+            email: 'admin@test.com',
+            display_name: 'Admin',
+            status: 'active',
+          },
+        ])
+      );
+
+      const users = await service.listUsers();
+
+      expect(users).toHaveLength(2);
+      expect(users[0].createdAt).toBe('2024-01-01');
+      expect(users[1].createdAt).toBeUndefined();
+    });
+  });
+
+  describe('getSessionMcpServers', () => {
+    it('returns empty array (not yet implemented)', async () => {
+      const result = await service.getSessionMcpServers('sess-1');
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('getProjectRepoMappings', () => {
+    it('returns empty array (not yet implemented)', async () => {
+      const result = await service.getProjectRepoMappings();
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('restoreWorkspace', () => {
+    it('is a no-op', async () => {
+      await service.restoreWorkspace('ws-1');
+      // Just ensure it doesn't throw
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('model transform edge cases', () => {
+    it('uses default cost when API does not provide cost_per_million_tokens', async () => {
+      const model = {
+        id: 'claude-opus-4-20250514',
+        name: 'Claude Opus',
+        description: 'Top model',
+        provider: 'cloud',
+        tier: 'frontier',
+        color: 'purple',
+      };
+      mockFetch.mockReturnValueOnce(mockResponse([model]));
+
+      const models = await service.getModels();
+
+      expect(models['claude-opus-4-20250514'].cost).toBe('$15/M');
+    });
+
+    it('uses API cost when cost_per_million_tokens is provided', async () => {
+      const model = {
+        id: 'claude-opus-4-20250514',
+        name: 'Claude Opus',
+        description: 'Top model',
+        provider: 'cloud',
+        tier: 'frontier',
+        color: 'purple',
+        cost_per_million_tokens: '20',
+      };
+      mockFetch.mockReturnValueOnce(mockResponse([model]));
+
+      const models = await service.getModels();
+
+      expect(models['claude-opus-4-20250514'].cost).toBe('$20/M');
+    });
+
+    it('uses default vram when API does not provide it', async () => {
+      const model = {
+        id: 'qwen2.5-coder:32b',
+        name: 'Qwen Coder',
+        description: 'Local model',
+        provider: 'local',
+        tier: 'execution',
+        color: 'cyan',
+      };
+      mockFetch.mockReturnValueOnce(mockResponse([model]));
+
+      const models = await service.getModels();
+
+      expect(models['qwen2.5-coder:32b'].vram).toBe('24GB');
+    });
+
+    it('uses API vram when provided', async () => {
+      const model = {
+        id: 'qwen2.5-coder:32b',
+        name: 'Qwen Coder',
+        description: 'Local model',
+        provider: 'local',
+        tier: 'execution',
+        color: 'cyan',
+        vram_required: '32GB',
+      };
+      mockFetch.mockReturnValueOnce(mockResponse([model]));
+
+      const models = await service.getModels();
+
+      expect(models['qwen2.5-coder:32b'].vram).toBe('32GB');
+    });
+  });
+
+  describe('SSE session_activity events', () => {
+    it('updates activity state for existing session', async () => {
+      const callback = vi.fn();
+      service.subscribe(callback);
+
+      await vi.waitFor(() => {
+        expect(MockSSEStream.instances).toHaveLength(1);
+      });
+
+      const eventSource = MockSSEStream.instances[0];
+
+      // First create a session
+      const session: SSESessionPayload = {
+        id: 'sess-activity',
+        name: 'Activity Test',
+        model: 'claude-sonnet-4-20250514',
+        source: { type: 'git', repo: 'org/repo', branch: 'main' },
+        status: 'running',
+        chat_endpoint: null,
+        code_endpoint: null,
+        created_at: '2026-02-03T12:00:00',
+        updated_at: '2026-02-03T12:00:00',
+        last_active: '2026-02-03T12:00:00',
+        message_count: 0,
+        tokens_used: 0,
+        pod_name: null,
+        error: null,
+      };
+      await eventSource.simulateEvent('session_created', session);
+
+      // Then send activity event
+      await eventSource.simulateEvent('session_activity', {
+        session_id: 'sess-activity',
+        state: 'tool_executing',
+      });
+
+      const lastCall = callback.mock.calls[callback.mock.calls.length - 1][0];
+      const updated = lastCall.find((s: { id: string }) => s.id === 'sess-activity');
+      expect(updated.activityState).toBe('tool_executing');
+    });
+
+    it('ignores activity event for unknown session', async () => {
+      const callback = vi.fn();
+      service.subscribe(callback);
+
+      await vi.waitFor(() => {
+        expect(MockSSEStream.instances).toHaveLength(1);
+      });
+
+      const callCountBefore = callback.mock.calls.length;
+
+      const eventSource = MockSSEStream.instances[0];
+      await eventSource.simulateEvent('session_activity', {
+        session_id: 'unknown-sess',
+        state: 'idle',
+      });
+
+      // Callback should not have been called again
+      expect(callback.mock.calls.length).toBe(callCountBefore);
     });
   });
 });

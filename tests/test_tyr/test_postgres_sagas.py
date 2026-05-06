@@ -53,6 +53,41 @@ class TestSaveSaga:
         call_args = mock_pool.execute.call_args
         assert "INSERT INTO sagas" in call_args[0][0]
         assert call_args[0][1] == saga.id
+        assert call_args[0][13] is None
+        assert call_args[0][14] is None
+        assert call_args[0][15] is None
+        assert "ON CONFLICT (id) DO UPDATE SET" in call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_upsert_updates_owner_and_workflow_fields(
+        self, repo: PostgresSagaRepository, saga: Saga, mock_pool: MagicMock
+    ) -> None:
+        workflow_id = uuid4()
+        updated = Saga(
+            id=saga.id,
+            tracker_id=saga.tracker_id,
+            tracker_type="native",
+            slug=saga.slug,
+            name=saga.name,
+            repos=saga.repos,
+            feature_branch=saga.feature_branch,
+            status=saga.status,
+            confidence=saga.confidence,
+            created_at=saga.created_at,
+            base_branch=saga.base_branch,
+            owner_id="dev-user",
+            workflow_id=workflow_id,
+            workflow_version="1.0.0",
+            workflow_snapshot={"name": "Review Flow"},
+        )
+
+        await repo.save_saga(updated)
+
+        call_args = mock_pool.execute.call_args
+        assert call_args[0][12] == "dev-user"
+        assert call_args[0][13] == workflow_id
+        assert call_args[0][14] == "1.0.0"
+        assert call_args[0][15] == '{"name": "Review Flow"}'
 
 
 class TestListSagas:
@@ -200,6 +235,34 @@ class TestUpdateSagaStatus:
         assert "UPDATE sagas" in call_args[0][0]
         assert call_args[0][1] == SagaStatus.COMPLETE.value
         assert call_args[0][2] == saga_id
+
+
+class TestUpdateSagaWorkflow:
+    @pytest.mark.asyncio
+    async def test_executes_update_query(
+        self,
+        repo: PostgresSagaRepository,
+        mock_pool: MagicMock,
+    ) -> None:
+        saga_id = uuid4()
+        workflow_id = uuid4()
+        snapshot = {"name": "Review Flow", "definition_yaml": "name: Review"}
+
+        await repo.update_saga_workflow(
+            saga_id,
+            workflow_id=workflow_id,
+            workflow_version="1.0.0",
+            workflow_snapshot=snapshot,
+            owner_id="user-1",
+        )
+
+        mock_pool.execute.assert_called_once()
+        call_args = mock_pool.execute.call_args
+        assert "UPDATE sagas" in call_args[0][0]
+        assert call_args[0][1] == workflow_id
+        assert call_args[0][2] == "1.0.0"
+        assert call_args[0][4] == saga_id
+        assert call_args[0][5] == "user-1"
 
 
 class TestCountByStatus:

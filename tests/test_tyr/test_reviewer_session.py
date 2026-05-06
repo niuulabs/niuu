@@ -37,6 +37,7 @@ class StubVolundr(VolundrPort):
         self.fail_spawn: bool = False
         self.fail_send: bool = False
         self.chronicle_summaries: dict[str, str] = {}
+        self.integration_ids: list[str] = []
 
     async def spawn_session(
         self, request: SpawnRequest, *, auth_token: str | None = None
@@ -76,7 +77,7 @@ class StubVolundr(VolundrPort):
         pass
 
     async def list_integration_ids(self, *, auth_token: str | None = None) -> list[str]:
-        return []
+        return list(self.integration_ids)
 
     async def list_repos(self, *, auth_token: str | None = None) -> list[dict]:
         return []
@@ -509,6 +510,24 @@ class TestSpawnReviewer:
 
         assert len(volundr.spawn_calls) == 1
         assert "Implemented auth flow" in volundr.spawn_calls[0].initial_prompt
+
+    @pytest.mark.asyncio
+    async def test_spawn_resolves_integrations_when_not_provided(self) -> None:
+        service, volundr = _make_service()
+        volundr.integration_ids = ["int-telegram", "int-linear"]
+        raid = _make_raid()
+
+        session = await service.spawn_reviewer(
+            raid=raid,
+            owner_id=OWNER_ID,
+            pr_status=None,
+            changed_files=[],
+            integration_ids=None,
+        )
+
+        assert session is not None
+        assert len(volundr.spawn_calls) == 1
+        assert volundr.spawn_calls[0].integration_ids == ["int-telegram", "int-linear"]
 
     @pytest.mark.asyncio
     async def test_spawn_with_no_chronicle(self) -> None:

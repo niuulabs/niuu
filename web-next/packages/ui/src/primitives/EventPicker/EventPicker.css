@@ -1,0 +1,92 @@
+.niuu-event-picker {
+  position: relative;
+  width: 100%;
+}
+
+.niuu-event-picker__content {
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 50;
+  width: var(--radix-popover-trigger-width);
+  max-height: 260px;
+  overflow: hidden;
+}
+
+.niuu-event-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1);
+  overflow-y: auto;
+  max-height: 252px;
+}
+
+.niuu-event-picker__option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.niuu-event-picker__option:hover {
+  background-color: color-mix(in srgb, var(--brand-500) 12%, transparent);
+}
+
+.niuu-event-picker__option--selected {
+  color: var(--brand-300);
+  background-color: color-mix(in srgb, var(--brand-500) 8%, transparent);
+}
+
+.niuu-event-picker__option--new {
+  color: var(--color-text-secondary);
+}
+
+.niuu-event-picker__option--empty {
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-style: italic;
+}
+
+.niuu-event-picker__new-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-color: color-mix(in srgb, var(--brand-500) 20%, transparent);
+  color: var(--brand-300);
+  font-size: 11px;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.niuu-event-picker__option-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.niuu-event-picker__option-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.niuu-event-picker__empty {
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}

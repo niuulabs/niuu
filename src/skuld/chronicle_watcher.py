@@ -20,6 +20,7 @@ import httpx
 from skuld.event_mapper import EventMapper
 
 logger = logging.getLogger("skuld.chronicle_watcher")
+FORGE_CHRONICLES_PATH = "/api/v1/forge/chronicles"
 
 # ---------------------------------------------------------------------------
 # State persistence
@@ -292,7 +293,7 @@ class ChronicleWatcher:
             return
 
         client = await self._get_http_client()
-        url = f"/api/v1/volundr/chronicles/{self._session_id}/timeline"
+        url = f"{FORGE_CHRONICLES_PATH}/{self._session_id}/timeline"
 
         for event in events:
             try:

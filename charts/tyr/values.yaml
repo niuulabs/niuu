@@ -49,10 +49,29 @@ config:
   host: "0.0.0.0"
   port: 8081
   workers: 2
+  cors:
+    # -- Allowed browser origins for cross-origin API requests
+    allowedOrigins:
+      - "*"
+    # -- Whether credentialed CORS requests are allowed
+    allowCredentials: true
   extra: {}
 
 # Dispatcher configuration
 dispatch:
+  # -- In-process (single-turn) dispatch configuration.
+  # Controls the LLM used by the RavnDispatcher when running review-arbiter
+  # and decomposer personas inline (no mesh, no pod).
+  # When llmConfig is empty, falls back to dispatch.flock.llmConfig.
+  #
+  # Example — force opus for all in-process calls:
+  #   inProcess:
+  #     llmConfig:
+  #       model: claude-opus-4-6
+  #       max_tokens: 8192
+  inProcess:
+    llmConfig: {}
+
   # -- Default system prompt injected into every dispatched session
   defaultSystemPrompt: |
     You are a senior software engineer working on the Niuu platform.
@@ -131,12 +150,27 @@ review:
 
 # Available AI models — overridden by global.models from the niuu umbrella chart
 aiModels:
+  - id: "claude-opus-4-7"
+    name: "Opus 4.7"
+    provider: "anthropic"
   - id: "claude-opus-4-6"
     name: "Opus 4.6"
+    provider: "anthropic"
+  - id: "claude-opus-4-5-20251101"
+    name: "Opus 4.5"
+    provider: "anthropic"
   - id: "claude-sonnet-4-6"
     name: "Sonnet 4.6"
+    provider: "anthropic"
   - id: "claude-haiku-4-5-20251001"
     name: "Haiku 4.5"
+    provider: "anthropic"
+  - id: "gpt-5.5"
+    name: "GPT-5.5"
+    provider: "openai"
+  - id: "gpt-5.4"
+    name: "GPT-5.4"
+    provider: "openai"
 
 database:
   name: tyr
@@ -220,6 +254,24 @@ envoy:
   extraHttpFilters: []
   # -- Extra upstream clusters
   extraClusters: []
+
+# Flock flow configuration — reusable named persona compositions
+flockFlows:
+  # -- Enable flock flow ConfigMap and RBAC
+  enabled: false
+  # -- Fully-qualified adapter class path
+  adapter: "tyr.adapters.flows.config.ConfigFlockFlowProvider"
+  # -- Extra kwargs forwarded to the adapter constructor
+  kwargs: {}
+  # -- Predefined flows (rendered into the ConfigMap)
+  flows: []
+  #   - name: code-review-flow
+  #     description: "Standard code review with coordinator + reviewer"
+  #     personas:
+  #       - name: coordinator
+  #       - name: reviewer
+  #     mesh_transport: nng
+  #     max_concurrent_tasks: 3
 
 credentialStore:
   # -- Fully-qualified class path for the credential store adapter

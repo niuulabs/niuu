@@ -1,0 +1,290 @@
+/* ================================================================
+   Login Page — full-viewport card layout.
+   Uses position: fixed to overlay the shell when rendered inside it.
+   All values come from design tokens.
+   ================================================================ */
+
+.login-page {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-primary);
+  color: var(--brand-400);
+  --_btn-contrast: color-mix(in srgb, var(--color-bg-primary) 85%, var(--brand-500));
+}
+
+/* ── Build info banner ─────────────────────────────────────── */
+.login-page__build {
+  position: absolute;
+  top: 18px;
+  left: 22px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  z-index: 2;
+}
+
+.login-page__build-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-400);
+  box-shadow: 0 0 8px var(--brand-400);
+  animation: login-dot-pulse 2.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes login-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.login-page__mono {
+  font-family: var(--font-mono);
+}
+
+/* ── Floating card ─────────────────────────────────────────── */
+.login-page__card {
+  position: relative;
+  z-index: 1;
+  width: 380px;
+  padding: 44px 40px 28px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand-500) 10%, var(--color-border));
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(12px);
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.6),
+    0 0 0 1px color-mix(in srgb, var(--brand-500) 3%, transparent) inset,
+    0 80px 120px -40px color-mix(in srgb, var(--brand-500) 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: login-card-in 700ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes login-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Logo mark ─────────────────────────────────────────────── */
+.login-page__mark {
+  color: var(--brand-400);
+  margin-bottom: 14px;
+  animation: login-mark-in 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes login-mark-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Wordmark ──────────────────────────────────────────────── */
+.login-page__wordmark {
+  margin: 0 0 4px;
+  font-size: 44px;
+  font-weight: 300;
+  letter-spacing: -0.04em;
+  color: var(--color-text-primary);
+  line-height: 1;
+}
+
+.login-page__wordmark-n {
+  font-weight: 500;
+}
+
+/* ── Tagline ───────────────────────────────────────────────── */
+.login-page__tag {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  margin: 0 0 28px;
+  letter-spacing: 0.02em;
+}
+
+/* ── Divider ───────────────────────────────────────────────── */
+.login-page__divider {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  margin-bottom: 18px;
+}
+
+.login-page__divider::before,
+.login-page__divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border-subtle);
+}
+
+/* ── Auth section ──────────────────────────────────────────── */
+.login-page__auth {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.login-page__btn {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background 140ms,
+    border-color 140ms,
+    box-shadow 140ms,
+    transform 80ms;
+  background: var(--brand-500);
+  color: var(--_btn-contrast);
+  border: 1px solid var(--brand-400);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--brand-500) 35%, transparent);
+}
+
+.login-page__btn:hover:not(:disabled) {
+  background: var(--brand-400);
+  box-shadow: 0 0 32px color-mix(in srgb, var(--brand-500) 45%, transparent);
+}
+
+.login-page__btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.login-page__btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* ── Loading spinner ───────────────────────────────────────── */
+.login-page__spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--_btn-contrast) 30%, transparent);
+  border-top-color: var(--_btn-contrast);
+  border-radius: 50%;
+  animation: login-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes login-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Ghost buttons (OAuth row) ─────────────────────────────── */
+.login-page__oauth-row {
+  display: flex;
+  gap: 10px;
+}
+
+.login-page__btn--ghost {
+  flex: 1;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  box-shadow: none;
+}
+
+.login-page__btn--ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand-500) 10%, var(--color-bg-tertiary));
+  border-color: color-mix(in srgb, var(--brand-500) 25%, var(--color-border));
+  box-shadow: none;
+}
+
+/* ── Keyboard hint badge ───────────────────────────────────── */
+.login-page__kbd {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--_btn-contrast) 30%, transparent);
+  border-radius: 3px;
+  color: var(--_btn-contrast);
+  opacity: 0.7;
+}
+
+/* ── Footer ────────────────────────────────────────────────── */
+.login-page__foot {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.login-page__foot-dim {
+  color: var(--color-text-muted);
+}
+
+.login-page__link {
+  color: var(--brand-300);
+  text-decoration: none;
+  transition: color 120ms;
+}
+
+.login-page__link:hover {
+  color: var(--brand-200);
+  text-decoration: underline;
+}
+
+/* ── Error message ─────────────────────────────────────────── */
+.login-page__error {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--color-critical-bg);
+  border: 1px solid var(--color-critical-bo);
+  border-radius: var(--radius-sm);
+  margin-bottom: 12px;
+  font-size: var(--text-xs);
+}
+
+.login-page__error-title {
+  color: var(--color-critical-fg);
+  font-weight: 500;
+}
+
+.login-page__error-desc {
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from volundr.domain.models import (
@@ -173,7 +173,7 @@ class ChronicleService:
         if chronicle is None:
             raise ChronicleNotFoundError(chronicle_id)
 
-        updates: dict = {"updated_at": datetime.utcnow()}
+        updates: dict = {"updated_at": datetime.now(UTC)}
         if summary is not None:
             updates["summary"] = summary
         if key_changes is not None:
@@ -217,7 +217,7 @@ class ChronicleService:
         existing = await self._chronicle_repository.get_by_session(session_id)
 
         if existing is not None and existing.status == ChronicleStatus.DRAFT:
-            updates: dict = {"updated_at": datetime.utcnow()}
+            updates: dict = {"updated_at": datetime.now(UTC)}
             if summary is not None:
                 updates["summary"] = summary
             if key_changes is not None:
@@ -240,7 +240,7 @@ class ChronicleService:
         chronicle = await self.create_chronicle(session_id)
 
         # Apply broker data on top of the freshly-created chronicle
-        updates = {"updated_at": datetime.utcnow()}
+        updates = {"updated_at": datetime.now(UTC)}
         if summary is not None:
             updates["summary"] = summary
         if key_changes is not None:

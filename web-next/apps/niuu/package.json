@@ -1,0 +1,43 @@
+{
+  "name": "@niuulabs/niuu",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@niuulabs/auth": "workspace:*",
+    "@niuulabs/design-tokens": "workspace:*",
+    "@niuulabs/domain": "workspace:*",
+    "@niuulabs/plugin-hello": "workspace:*",
+    "@niuulabs/plugin-login": "workspace:*",
+    "@niuulabs/plugin-mimir": "workspace:*",
+    "@niuulabs/plugin-observatory": "workspace:*",
+    "@niuulabs/plugin-ravn": "workspace:*",
+    "@niuulabs/plugin-tyr": "workspace:*",
+    "@niuulabs/plugin-volundr": "workspace:*",
+    "@niuulabs/plugin-sdk": "workspace:*",
+    "@niuulabs/query": "workspace:*",
+    "@niuulabs/shell": "workspace:*",
+    "@niuulabs/ui": "workspace:*",
+    "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-query-devtools": "^5.62.0",
+    "@tanstack/react-router": "^1.95.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.7",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.0"
+  }
+}

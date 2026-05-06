@@ -1,0 +1,76 @@
+# ─── mimir-remote ────────────────────────────────────────────────────────────
+#
+# Ravn connected to a remote Mimir HTTP service.
+#
+# What you get:
+#   - Conversation with Claude
+#   - Knowledge base served from a remote Mimir instance (e.g. shared team wiki)
+#   - Bearer-token authenticated access
+#   - Auto-distill writes back to the remote instance
+#
+# Prerequisites:
+#   - An LLM provider (configure below)
+#   - A running Mimir service:
+#       python -m mimir serve --path /data/wiki --port 7477 --name shared --role shared
+#   - MIMIR_BEARER_TOKEN for authentication (or remove auth block for open access)
+#
+# Launch:
+#   ravn run --config ~/.ravn/config.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# ── Mimir: single remote HTTP instance ──────────────────────────────────────
+mimir:
+  enabled: true
+  auto_distill: true
+  distill_min_session_minutes: 5
+  categories:
+    - technical
+    - projects
+    - research
+
+  instances:
+    - name: shared
+      role: shared
+      url: http://localhost:7477           # ← change to your Mimir host
+      auth:
+        type: bearer
+        token_env: MIMIR_BEARER_TOKEN      # reads token from this env var
+      read_priority: 10
+
+# Everything else off
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+thread:
+  enabled: false
+
+wakefulness:
+  enabled: false
+
+recap:
+  enabled: false
+
+initiative:
+  enabled: false
+
+gateway:
+  enabled: false
+
+logging:
+  level: info

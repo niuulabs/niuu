@@ -1,8 +1,45 @@
+/* ── Outer grid — sidebar | chat | right-panel ── */
+
+.outerGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  transition: grid-template-columns 200ms ease;
+}
+
+.outerGrid[data-has-sidebar] {
+  grid-template-columns: auto 1fr;
+}
+
+.outerGrid[data-has-sidebar][data-right-panel] {
+  grid-template-columns: auto 1fr 360px;
+}
+
+.outerGrid[data-right-panel]:not([data-has-sidebar]) {
+  grid-template-columns: 1fr 360px;
+}
+
+/* Highlight animation for scroll-to-message from outcome click */
+.wrapper [data-highlighted] {
+  animation: highlightFlash 2s ease-out;
+}
+
+@keyframes highlightFlash {
+  0% {
+    background-color: color-mix(in srgb, var(--color-accent-cyan) 20%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
 .wrapper {
   display: flex;
   flex-direction: column;
-  flex: 1;
   min-height: 0;
+  min-width: 0;
   border-radius: var(--radius-lg);
   overflow: hidden;
   background-color: var(--color-bg-primary);
@@ -89,6 +126,12 @@
   color: var(--color-text-secondary);
   border-color: var(--color-border);
   background-color: color-mix(in srgb, var(--color-bg-tertiary) 40%, transparent);
+}
+
+.controlBtnActive {
+  color: var(--color-accent-cyan);
+  border-color: color-mix(in srgb, var(--color-accent-cyan) 40%, transparent);
+  background-color: color-mix(in srgb, var(--color-accent-cyan) 10%, transparent);
 }
 
 .controlIcon {

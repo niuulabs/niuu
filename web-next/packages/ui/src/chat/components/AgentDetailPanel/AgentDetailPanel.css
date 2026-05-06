@@ -1,0 +1,203 @@
+.niuu-chat-agent-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--color-bg-secondary);
+  border-left: 1px solid var(--color-border-subtle);
+}
+
+.niuu-chat-agent-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.niuu-chat-agent-panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.niuu-chat-agent-persona-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--niuu-agent-color, var(--color-text-muted));
+  flex-shrink: 0;
+}
+
+.niuu-chat-agent-persona-name {
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--niuu-agent-color, var(--color-text-primary));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.niuu-chat-agent-panel-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.niuu-chat-agent-activity-badge {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+}
+
+.niuu-chat-agent-activity-badge[data-status='thinking'] {
+  color: var(--color-accent-purple);
+  border-color: color-mix(in srgb, var(--color-accent-purple) 30%, transparent);
+}
+
+.niuu-chat-agent-activity-badge[data-status='tool_executing'] {
+  color: var(--color-accent-cyan);
+  border-color: color-mix(in srgb, var(--color-accent-cyan) 30%, transparent);
+}
+
+.niuu-chat-agent-activity-badge[data-status='blocked'] {
+  color: var(--color-warning, #f59e0b);
+  border-color: color-mix(in srgb, var(--color-warning, #f59e0b) 30%, transparent);
+}
+
+.niuu-chat-agent-activity-badge[data-status='error'] {
+  color: var(--color-danger, #ef4444);
+  border-color: color-mix(in srgb, var(--color-danger, #ef4444) 30%, transparent);
+}
+
+.niuu-chat-agent-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.niuu-chat-agent-close-btn:hover {
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-agent-close-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.niuu-chat-agent-events-container {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-bg-elevated) transparent;
+}
+
+.niuu-chat-agent-events-inner {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.niuu-chat-agent-empty {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-faint);
+  text-align: center;
+  padding: var(--space-6);
+}
+
+.niuu-chat-agent-event {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg-primary);
+}
+
+.niuu-chat-agent-event[data-type='thought'] {
+  border-color: color-mix(in srgb, var(--color-accent-purple) 20%, transparent);
+}
+
+.niuu-chat-agent-event[data-type='tool_start'] {
+  border-color: color-mix(in srgb, var(--color-accent-cyan) 20%, transparent);
+}
+
+.niuu-chat-agent-event[data-type='tool_result'] {
+  border-color: color-mix(in srgb, var(--color-brand) 20%, transparent);
+}
+
+.niuu-chat-agent-event-label {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.niuu-chat-agent-event-content {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.niuu-chat-agent-scroll-btn {
+  position: sticky;
+  bottom: var(--space-3);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0 auto;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+}
+
+.niuu-chat-agent-scroll-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.niuu-chat-agent-scroll-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  border-radius: var(--radius-full);
+  background-color: var(--color-brand);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+}

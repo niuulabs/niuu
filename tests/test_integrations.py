@@ -9,7 +9,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from volundr.adapters.inbound.rest_integrations import create_integrations_router
+from tests.helpers.http_contracts import RouteCallSpec, assert_route_equivalence
+from volundr.adapters.inbound.rest_integrations import (
+    create_canonical_integrations_router,
+    create_integrations_router,
+)
 from volundr.adapters.outbound.jira import JiraAdapter
 from volundr.adapters.outbound.memory_integrations import InMemoryIntegrationRepository
 from volundr.domain.models import (
@@ -18,6 +22,10 @@ from volundr.domain.models import (
     TrackerIssue,
 )
 from volundr.domain.ports import CredentialStorePort
+from volundr.domain.services.integration_registry import (
+    IntegrationRegistry,
+    definitions_from_config,
+)
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
 
@@ -361,6 +369,8 @@ def integration_client(
     async def mock_extract_principal():
         return mock_principal
 
+    canonical_router = create_canonical_integrations_router(integration_repo, tracker_factory)
+    app.include_router(canonical_router)
     router = create_integrations_router(integration_repo, tracker_factory)
     app.include_router(router)
 
@@ -379,6 +389,36 @@ class TestIntegrationEndpoints:
         response = integration_client.get("/api/v1/volundr/integrations")
         assert response.status_code == 200
         assert response.json() == []
+        assert response.headers["Deprecation"] == "true"
+        assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/integrations"
+
+    def test_list_preserves_boolean_config_values(
+        self,
+        integration_client: TestClient,
+        integration_repo: InMemoryIntegrationRepository,
+    ):
+        now = datetime.now(UTC)
+        connection = IntegrationConnection(
+            id="conn-bool",
+            owner_id="user-1",
+            integration_type="messaging",
+            adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+            credential_name="telegram-main",
+            config={"notify_only": True},
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+            slug="telegram",
+        )
+        import asyncio
+
+        asyncio.run(integration_repo.save_connection(connection))
+
+        response = integration_client.get("/api/v1/volundr/integrations")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["config"]["notify_only"] is True
 
     def test_create_integration(self, integration_client: TestClient):
         response = integration_client.post(
@@ -396,9 +436,33 @@ class TestIntegrationEndpoints:
         assert data["integration_type"] == "issue_tracker"
         assert data["adapter"] == "volundr.adapters.outbound.linear.LinearAdapter"
         assert data["credential_name"] == "linear-key"
+        assert data["integrationType"] == "issue_tracker"
+        assert data["credentialName"] == "linear-key"
         assert data["enabled"] is True
         assert "id" in data
         assert "created_at" in data
+        assert data["createdAt"] == data["created_at"]
+        assert data["updatedAt"] == data["updated_at"]
+
+    def test_create_integration_accepts_camel_case_legacy_payload(
+        self,
+        integration_client: TestClient,
+    ):
+        response = integration_client.post(
+            "/api/v1/volundr/integrations",
+            json={
+                "integrationType": "issue_tracker",
+                "type": "issue_tracker",
+                "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
+                "credentialName": "linear-key",
+                "config": {},
+                "enabled": True,
+            },
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["integration_type"] == "issue_tracker"
+        assert data["credential_name"] == "linear-key"
 
     def test_create_and_list(self, integration_client: TestClient):
         integration_client.post(
@@ -411,7 +475,10 @@ class TestIntegrationEndpoints:
         )
         response = integration_client.get("/api/v1/volundr/integrations")
         assert response.status_code == 200
-        assert len(response.json()) == 1
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["integrationType"] == data[0]["integration_type"]
+        assert data[0]["credentialName"] == data[0]["credential_name"]
 
     def test_delete_integration(self, integration_client: TestClient):
         create_resp = integration_client.post(
@@ -457,6 +524,28 @@ class TestIntegrationEndpoints:
         assert update_resp.status_code == 200
         assert update_resp.json()["enabled"] is False
 
+    def test_update_integration_accepts_camel_case_legacy_payload(
+        self,
+        integration_client: TestClient,
+    ):
+        create_resp = integration_client.post(
+            "/api/v1/volundr/integrations",
+            json={
+                "integration_type": "issue_tracker",
+                "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
+                "credential_name": "key",
+                "enabled": True,
+            },
+        )
+        conn_id = create_resp.json()["id"]
+
+        update_resp = integration_client.put(
+            f"/api/v1/volundr/integrations/{conn_id}",
+            json={"credentialName": "renamed-key"},
+        )
+        assert update_resp.status_code == 200
+        assert update_resp.json()["credential_name"] == "renamed-key"
+
     def test_update_not_found(self, integration_client: TestClient):
         response = integration_client.put(
             "/api/v1/volundr/integrations/nonexistent",
@@ -490,6 +579,131 @@ class TestIntegrationEndpoints:
             "/api/v1/volundr/integrations/nonexistent/test",
         )
         assert response.status_code == 404
+
+    def test_canonical_list_matches_legacy(
+        self,
+        integration_client: TestClient,
+        integration_repo: InMemoryIntegrationRepository,
+        sample_connection: IntegrationConnection,
+    ):
+        import asyncio
+
+        asyncio.run(integration_repo.save_connection(sample_connection))
+
+        assert_route_equivalence(
+            integration_client,
+            legacy=RouteCallSpec(path="/api/v1/volundr/integrations"),
+            canonical=RouteCallSpec(path="/api/v1/integrations"),
+        )
+
+    def test_canonical_test_matches_legacy(
+        self,
+        integration_client: TestClient,
+        integration_repo: InMemoryIntegrationRepository,
+        sample_connection: IntegrationConnection,
+    ):
+        import asyncio
+
+        asyncio.run(integration_repo.save_connection(sample_connection))
+
+        assert_route_equivalence(
+            integration_client,
+            legacy=RouteCallSpec(
+                path=f"/api/v1/volundr/integrations/{sample_connection.id}/test",
+                method="POST",
+            ),
+            canonical=RouteCallSpec(
+                path=f"/api/v1/integrations/{sample_connection.id}/test",
+                method="POST",
+            ),
+        )
+
+    def test_legacy_catalog_returns_catalog_entries_with_mcp_and_oauth_metadata(
+        self,
+        integration_repo: InMemoryIntegrationRepository,
+        tracker_factory: TrackerFactory,
+        mock_principal: Principal,
+    ):
+        registry = IntegrationRegistry(
+            definitions_from_config(
+                [
+                    {
+                        "slug": "linear",
+                        "name": "Linear",
+                        "description": "Issue tracking with Linear",
+                        "integration_type": "issue_tracker",
+                        "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
+                        "icon": "linear",
+                        "credential_schema": {"type": "object"},
+                        "config_schema": {"type": "object"},
+                        "auth_type": "oauth2_authorization_code",
+                        "mcp_server": {
+                            "name": "linear-mcp",
+                            "command": "npx",
+                            "args": ["@linear/mcp-server"],
+                            "env_from_credentials": {"LINEAR_API_KEY": "token"},
+                        },
+                        "oauth": {
+                            "authorize_url": "https://linear.app/oauth/authorize",
+                            "token_url": "https://api.linear.app/oauth/token",
+                            "scopes": ["read", "write"],
+                        },
+                    }
+                ]
+            )
+        )
+        app = FastAPI()
+
+        async def mock_extract_principal():
+            return mock_principal
+
+        app.include_router(
+            create_integrations_router(
+                integration_repo,
+                tracker_factory,
+                registry=registry,
+            )
+        )
+
+        from volundr.adapters.inbound.auth import extract_principal
+
+        app.dependency_overrides[extract_principal] = mock_extract_principal
+        client = TestClient(app)
+
+        response = client.get("/api/v1/volundr/integrations/catalog")
+        assert response.status_code == 200
+        assert response.headers["Deprecation"] == "true"
+        assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/integrations/catalog"
+        data = response.json()
+        assert data == [
+            {
+                "id": "linear",
+                "slug": "linear",
+                "name": "Linear",
+                "description": "Issue tracking with Linear",
+                "integration_type": "issue_tracker",
+                "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
+                "icon": "linear",
+                "credential_schema": {"type": "object"},
+                "config_schema": {"type": "object"},
+                "mcp_server": {
+                    "name": "linear-mcp",
+                    "command": "npx",
+                    "args": ["@linear/mcp-server"],
+                    "env_from_credentials": {"LINEAR_API_KEY": "token"},
+                },
+                "auth_type": "oauth2_authorization_code",
+                "oauth_scopes": ["read", "write"],
+            }
+        ]
+
+    def test_legacy_catalog_returns_empty_without_registry(
+        self,
+        integration_client: TestClient,
+    ):
+        response = integration_client.get("/api/v1/volundr/integrations/catalog")
+        assert response.status_code == 200
+        assert response.json() == []
 
 
 class TestIntegrationTestEndpointBranches:
@@ -584,6 +798,47 @@ class TestIntegrationTestEndpointBranches:
         assert resp.json()["success"] is False
         assert resp.json()["error"] == "Credential not found"
 
+    async def test_source_control_without_credential_store(
+        self,
+        integration_repo: InMemoryIntegrationRepository,
+        tracker_factory: TrackerFactory,
+        mock_principal: Principal,
+    ):
+        app = FastAPI()
+
+        async def mock_extract_principal():
+            return mock_principal
+
+        router = create_integrations_router(
+            integration_repo,
+            tracker_factory,
+        )
+        app.include_router(router)
+
+        from volundr.adapters.inbound.auth import extract_principal
+
+        app.dependency_overrides[extract_principal] = mock_extract_principal
+        client = TestClient(app)
+
+        now = datetime.now(UTC)
+        conn = IntegrationConnection(
+            id="sc-2",
+            owner_id="user-1",
+            integration_type="source_control",
+            adapter="volundr.adapters.outbound.github.GitHubProvider",
+            credential_name="gh-token",
+            config={},
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        await integration_repo.save_connection(conn)
+
+        resp = client.post("/api/v1/volundr/integrations/sc-2/test")
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+        assert resp.json()["error"] == "Credential store not configured"
+
     async def test_messaging_type_not_supported(
         self,
         integration_repo: InMemoryIntegrationRepository,
@@ -624,6 +879,48 @@ class TestIntegrationTestEndpointBranches:
         assert resp.status_code == 200
         assert resp.json()["success"] is False
         assert "not supported" in resp.json()["error"]
+
+    async def test_issue_tracker_test_returns_serialized_exception(
+        self,
+        integration_repo: InMemoryIntegrationRepository,
+        mock_principal: Principal,
+    ):
+        app = FastAPI()
+        tracker_factory = AsyncMock(spec=TrackerFactory)
+        tracker_factory.create.side_effect = RuntimeError("tracker exploded")
+
+        async def mock_extract_principal():
+            return mock_principal
+
+        router = create_integrations_router(
+            integration_repo,
+            tracker_factory,
+        )
+        app.include_router(router)
+
+        from volundr.adapters.inbound.auth import extract_principal
+
+        app.dependency_overrides[extract_principal] = mock_extract_principal
+        client = TestClient(app)
+
+        now = datetime.now(UTC)
+        conn = IntegrationConnection(
+            id="it-1",
+            owner_id="user-1",
+            integration_type="issue_tracker",
+            adapter="volundr.adapters.outbound.linear.LinearAdapter",
+            credential_name="linear-key",
+            config={},
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        await integration_repo.save_connection(conn)
+
+        resp = client.post("/api/v1/volundr/integrations/it-1/test")
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+        assert resp.json()["error"] == "tracker exploded"
 
 
 # --- IntegrationConnection model tests ---

@@ -7,6 +7,7 @@ import {
   useHealthDetailed,
   useSagas,
 } from '../../hooks';
+import { useFlockConfig } from '../../hooks/useFlockConfig';
 import type { SseEvent } from '../../hooks';
 import type { RaidStatus } from '../../models';
 import { DashboardTopBar } from '../../components/DashboardTopBar';
@@ -16,6 +17,7 @@ import { RaidsTable } from '../../components/RaidsTable';
 import { SagasSidebar } from '../../components/SagasSidebar';
 import { SystemsHealth } from '../../components/SystemsHealth';
 import { EventLog } from '../../components/EventLog';
+import { FlockBadge } from '../../components/FlockBadge';
 import styles from './DashboardView.module.css';
 
 export function DashboardView() {
@@ -25,6 +27,7 @@ export function DashboardView() {
   const [showCompleted, setShowCompleted] = useState(false);
 
   const { raids, loading: raidsLoading, refresh: refreshRaids, patchRaid } = useActiveRaids();
+  const { config: flockConfig } = useFlockConfig();
 
   const summary = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -141,6 +144,31 @@ export function DashboardView() {
             </div>
             <SystemsHealth health={health} loading={healthLoading} />
           </div>
+          {flockConfig?.flock_enabled && (
+            <div className={styles.panel}>
+              <div className={styles.panelHeader}>
+                <span className={styles.panelTitle}>Flock</span>
+                <FlockBadge />
+              </div>
+              <div className={styles.flockStats}>
+                <span className={styles.flockStat}>
+                  <span className={styles.flockStatLabel}>Personas</span>
+                  <span className={styles.flockStatValue}>
+                    {flockConfig.flock_default_personas.map(p => p.name).join(', ') || '—'}
+                  </span>
+                </span>
+                {flockConfig.flock_llm_config &&
+                  Object.keys(flockConfig.flock_llm_config).length > 0 && (
+                    <span className={styles.flockStat}>
+                      <span className={styles.flockStatLabel}>Model</span>
+                      <span className={styles.flockStatValue}>
+                        {String(flockConfig.flock_llm_config.model ?? '—')}
+                      </span>
+                    </span>
+                  )}
+              </div>
+            </div>
+          )}
           <div className={styles.eventPanel}>
             <div className={styles.panelHeader}>
               <span className={styles.panelTitle}>Event Log</span>

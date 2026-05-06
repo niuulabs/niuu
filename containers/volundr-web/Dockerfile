@@ -15,7 +15,7 @@ ENV VITE_APP_VERSION=${APP_VERSION}
 RUN npm run build
 
 # Stage 2: Serve with nginx
-FROM nginx:1.29.8-alpine@sha256:2c4de29ca0588f9b56ced6691e0c605c2fd00501478e2e12949ba062304bc1ca
+FROM nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
 
 # Patch base image vulnerabilities (CVE-2026-22184: zlib).
 # Fix CVE-2026-22184: zlib critical vulnerability.

@@ -1,0 +1,212 @@
+# Integration tests against a live kind (Kubernetes-in-Docker) cluster.
+#
+# CI policy: ON-DEMAND ONLY
+# ──────────────────────────────────────────────────────────────────────────
+# These tests spin up a full kind cluster, install the Volundr Helm chart,
+# and exercise both MountedVolume and HTTP persona-source backends in a real
+# Kubernetes environment.  Each run takes ~8–12 minutes and requires Docker
+# and significant CPU/memory, which would slow every PR if run unconditionally.
+#
+# Trigger policy:
+#   • Manual: workflow_dispatch (run any time from the Actions tab)
+#   • Scheduled: weekly on Monday at 06:00 UTC (catches regressions between
+#     milestones without blocking daily PR throughput)
+#   • Automatic: NOT triggered on every push or PR — use the manual trigger
+#     before merging changes that affect sidecar wiring, persona adapters,
+#     flock flow providers, or Helm chart values.
+#
+# Who should trigger this workflow:
+#   • Before cutting a milestone release that touches flock composition.
+#   • After any change to charts/volundr/templates/, persona adapters, or
+#     the FlockFlowProvider implementations.
+#   • When the in-process parity test (Scenario 3) starts failing in normal
+#     CI — run the kind tests to verify the sidecar-side behaviour matches.
+#
+# Environment variables:
+#   KIND_INTEGRATION=1   — activates the @pytest.mark.kind_integration tests
+#   KIND_CLUSTER_NAME    — kind cluster name (defaults to niuu-integ)
+#
+# Failure handling:
+#   On failure the cluster is always deleted (via the `if: always()` step)
+#   so dangling clusters do not accumulate on self-hosted runners.
+# ──────────────────────────────────────────────────────────────────────────
+
+name: Integration (kind)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: "kind cluster name"
+        required: false
+        default: "niuu-integ"
+      scenario:
+        description: "Which scenario to run: all | mounted_volume | http | in_process"
+        required: false
+        default: "all"
+  schedule:
+    # Weekly: Monday 06:00 UTC
+    - cron: "0 6 * * 1"
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # In-process parity test — runs without a kind cluster
+  # Mirrors the job that runs in normal CI (Scenario 3).
+  # ---------------------------------------------------------------------------
+  in-process-parity:
+    name: In-process parity (Scenario 3)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.scenario == 'all' ||
+       github.event.inputs.scenario == 'in_process') ||
+      github.event_name == 'schedule'
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run in-process parity tests
+        run: |
+          pytest tests/integration/test_flock_composition_e2e.py::TestInProcessParity \
+            -v --tb=short
+
+  # ---------------------------------------------------------------------------
+  # MountedVolume scenario (Scenario 1)
+  # ---------------------------------------------------------------------------
+  kind-mounted-volume:
+    name: MountedVolume scenario (Scenario 1)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.scenario == 'all' ||
+       github.event.inputs.scenario == 'mounted_volume') ||
+      github.event_name == 'schedule'
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind \
+            https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1381784a5cf4 # v4
+        with:
+          version: "v1.30.0"
+
+      - name: Install Helm
+        uses: azure/setup-helm@b9e51907a09c216f2a33cd3b055b5fa77b1c0474 # v4
+        with:
+          version: "v3.15.0"
+
+      - name: Run MountedVolume integration tests
+        env:
+          KIND_INTEGRATION: "1"
+          KIND_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'niuu-mv-integ' }}
+        run: |
+          pytest tests/integration/test_flock_composition_e2e.py::TestMountedVolumeScenario \
+            -v --tb=short -m kind_integration
+
+      - name: Delete kind cluster (always)
+        if: always()
+        env:
+          KIND_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'niuu-mv-integ' }}
+        run: |
+          kind delete cluster --name "$KIND_CLUSTER_NAME" || true
+
+  # ---------------------------------------------------------------------------
+  # HTTP scenario (Scenario 2)
+  # ---------------------------------------------------------------------------
+  kind-http:
+    name: HTTP scenario (Scenario 2)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.scenario == 'all' ||
+       github.event.inputs.scenario == 'http') ||
+      github.event_name == 'schedule'
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind \
+            https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1381784a5cf4 # v4
+        with:
+          version: "v1.30.0"
+
+      - name: Install Helm
+        uses: azure/setup-helm@b9e51907a09c216f2a33cd3b055b5fa77b1c0474 # v4
+        with:
+          version: "v3.15.0"
+
+      - name: Run HTTP integration tests
+        env:
+          KIND_INTEGRATION: "1"
+          KIND_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'niuu-http-integ' }}
+        run: |
+          pytest tests/integration/test_flock_composition_e2e.py::TestHTTPScenario \
+            -v --tb=short -m kind_integration
+
+      - name: Delete kind cluster (always)
+        if: always()
+        env:
+          KIND_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'niuu-http-integ' }}
+        run: |
+          kind delete cluster --name "$KIND_CLUSTER_NAME" || true

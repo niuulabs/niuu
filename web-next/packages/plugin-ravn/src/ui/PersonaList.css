@@ -1,0 +1,148 @@
+/* Role group header — colored left border per role */
+.rv-persona-role-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  border-left: 3px solid var(--color-border);
+  padding: var(--space-1) var(--space-3);
+  background: color-mix(in srgb, var(--color-bg-secondary) 86%, transparent);
+}
+
+.rv-persona-role-header__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rv-persona-role-header__title {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+
+.rv-persona-role-header__hint {
+  font-size: 10px;
+  color: var(--color-text-faint);
+}
+
+.rv-persona-role-header__count {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--color-text-faint);
+}
+
+.rv-persona-role-header[data-role='plan'] {
+  border-left-color: var(--color-accent-cyan);
+}
+.rv-persona-role-header[data-role='build'] {
+  border-left-color: var(--color-accent-indigo);
+}
+.rv-persona-role-header[data-role='verify'] {
+  border-left-color: var(--color-accent-amber);
+}
+.rv-persona-role-header[data-role='review'] {
+  border-left-color: var(--color-accent-purple);
+}
+.rv-persona-role-header[data-role='gate'] {
+  border-left-color: var(--color-accent-red);
+}
+.rv-persona-role-header[data-role='audit'] {
+  border-left-color: var(--color-accent-orange);
+}
+.rv-persona-role-header[data-role='ship'] {
+  border-left-color: var(--color-accent-emerald);
+}
+.rv-persona-role-header[data-role='index'] {
+  border-left-color: var(--color-accent-purple);
+}
+.rv-persona-role-header[data-role='report'] {
+  border-left-color: var(--color-accent-emerald);
+}
+
+/* Selected persona row — left border indicator */
+.rv-persona-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  border-left: 3px solid transparent;
+  padding: 9px 12px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  text-align: left;
+  transition:
+    background-color 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.rv-persona-row:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.rv-persona-row--selected {
+  border-left-color: var(--brand-400);
+  background: color-mix(in srgb, var(--brand-500) 9%, var(--color-bg-tertiary));
+  color: var(--color-text-primary);
+}
+
+.rv-persona-row__copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rv-persona-row__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.rv-persona-row__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-faint);
+}
+
+.rv-persona-row__badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* OVR (override) badge */
+.rv-persona-usr-badge,
+.rv-persona-ovr-badge {
+  font-size: 9px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.rv-persona-usr-badge {
+  background: color-mix(in srgb, var(--color-text-muted) 18%, transparent);
+  color: var(--color-text-secondary);
+  border: 1px solid color-mix(in srgb, var(--color-text-muted) 28%, transparent);
+}
+
+.rv-persona-ovr-badge {
+  background: color-mix(in srgb, var(--color-accent-amber) 20%, transparent);
+  color: var(--color-accent-amber);
+  border: 1px solid color-mix(in srgb, var(--color-accent-amber) 30%, transparent);
+}

@@ -109,8 +109,8 @@ class TestUpsertPageWithThreadMeta:
     async def test_upsert_page_accepts_meta_kwarg_without_error(self, tmp_path: Path) -> None:
         """upsert_page accepts MimirPageMeta as meta kwarg without raising."""
         adapter = _make_adapter(tmp_path)
-        meta = _thread_meta(thread_state=ThreadState.assigned)
-        content = "# Assigned Thread\nBeing worked on."
+        meta = _thread_meta(thread_state=ThreadState.pulling)
+        content = "# Pulling Thread\nBeing worked on."
 
         # Should not raise even though meta may be ignored internally
         await adapter.upsert_page(meta.path, content, meta=meta)
@@ -145,7 +145,7 @@ class TestUpsertPageWithThreadMeta:
     async def test_upsert_page_with_thread_context_refs_in_content(self, tmp_path: Path) -> None:
         """Content may embed context refs as HTML comments; adapter writes it as-is."""
         adapter = _make_adapter(tmp_path)
-        refs = [ThreadContextRef(type="wiki_page", id="src-1", summary="Source page")]
+        refs = [ThreadContextRef(ref_type="ingest", ref_id="src-1", ref_summary="Source page")]
         meta = _thread_meta(thread_context_refs=refs)
         content = "# Open Thread\nSome open question.\n<!-- sources: src-1 -->\n"
 

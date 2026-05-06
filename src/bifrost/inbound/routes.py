@@ -614,7 +614,13 @@ def create_router(
         tokens: int,
         model: str,
         budget_limit: float,
+        raw_request: Request | None = None,
     ) -> None:
+        publisher = (
+            getattr(raw_request.app.state, "sleipnir_publisher", None)
+            if raw_request is not None
+            else None
+        )
         await emit_cost_events(
             emitter=event_emitter,
             store=store,
@@ -624,6 +630,7 @@ def create_router(
             model=model,
             agent_budget_limit=budget_limit,
             budget_warning_threshold_pct=config.events.budget_warning_threshold_pct,
+            sleipnir_publisher=publisher,
         )
 
     _audit_tasks: set[asyncio.Task] = set()
@@ -754,6 +761,9 @@ def create_router(
                         emitter=event_emitter,
                         agent_budget_limit=agent_budget_limit,
                         budget_warning_threshold_pct=config.events.budget_warning_threshold_pct,
+                        sleipnir_publisher=getattr(
+                            raw_request.app.state, "sleipnir_publisher", None
+                        ),
                     ),
                     media_type="text/event-stream",
                     headers={
@@ -877,6 +887,7 @@ def create_router(
                 usage.input_tokens + usage.output_tokens,
                 request.model,
                 agent_budget_limit,
+                raw_request=raw_request,
             )
             await _cache.set(cache_key, response, config.cache.default_ttl)
 
@@ -1123,6 +1134,9 @@ def create_router(
                             emitter=event_emitter,
                             agent_budget_limit=agent_budget_limit,
                             budget_warning_threshold_pct=config.events.budget_warning_threshold_pct,
+                            sleipnir_publisher=getattr(
+                                raw_request.app.state, "sleipnir_publisher", None
+                            ),
                         ),
                         message_id=message_id,
                         model=request.model,
@@ -1248,6 +1262,7 @@ def create_router(
                 usage.input_tokens + usage.output_tokens,
                 request.model,
                 agent_budget_limit,
+                raw_request=raw_request,
             )
             await _cache.set(cache_key, response, config.cache.default_ttl)
 
@@ -1385,6 +1400,9 @@ def create_router(
                             emitter=event_emitter,
                             agent_budget_limit=agent_budget_limit,
                             budget_warning_threshold_pct=config.events.budget_warning_threshold_pct,
+                            sleipnir_publisher=getattr(
+                                raw_request.app.state, "sleipnir_publisher", None
+                            ),
                         ),
                         model=request.model,
                         start=start,
@@ -1509,6 +1527,7 @@ def create_router(
                 usage.input_tokens + usage.output_tokens,
                 request.model,
                 agent_budget_limit,
+                raw_request=raw_request,
             )
             await _cache.set(cache_key, response, config.cache.default_ttl)
 

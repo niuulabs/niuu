@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from niuu.ports.mimir import MimirLintReport, MimirPageMeta, MimirSource, MimirSourceMeta
+from niuu.domain.mimir import LintIssue, MimirLintReport
+from niuu.ports.mimir import MimirPageMeta, MimirSource, MimirSourceMeta
 from ravn.adapters.triggers.mimir_source import MimirSourceTrigger
 from ravn.adapters.triggers.mimir_staleness import MimirStalenessTrigger
 from ravn.config import MimirSourceTriggerConfig, MimirStalenessTriggerConfig
@@ -55,13 +56,10 @@ def _page_meta(
 
 
 def _lint_report(stale: list[str] | None = None) -> MimirLintReport:
-    return MimirLintReport(
-        orphans=[],
-        contradictions=[],
-        stale=stale or [],
-        gaps=[],
-        pages_checked=1,
-    )
+    issues = [
+        LintIssue(id="L08", severity="info", message="stale", page_path=p) for p in (stale or [])
+    ]
+    return MimirLintReport(issues=issues, pages_checked=1)
 
 
 # ---------------------------------------------------------------------------

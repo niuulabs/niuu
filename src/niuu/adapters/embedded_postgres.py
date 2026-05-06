@@ -86,14 +86,31 @@ def _socket_path_ok(path: str) -> bool:
         return False
 
 
+def _socket_dir_candidates(data_dir: Path) -> tuple[Path, ...]:
+    """Return candidate socket directories, preferring equivalent short aliases."""
+    candidates = [data_dir]
+    path_str = str(data_dir)
+
+    if path_str.startswith("/private/"):
+        alias = Path(path_str.removeprefix("/private"))
+        try:
+            if alias.exists() and alias.resolve() == data_dir.resolve():
+                candidates.append(alias)
+        except OSError:
+            pass
+
+    return tuple(dict.fromkeys(candidates))
+
+
 def _choose_socket_dir(data_dir: Path) -> Path:
     """Choose a socket directory that fits the Unix socket path limit.
 
     Prefers the data directory itself. Falls back to a short hashed
     temp directory if the data_dir path is too long.
     """
-    if _socket_path_ok(str(data_dir)):
-        return data_dir
+    for candidate in _socket_dir_candidates(data_dir):
+        if _socket_path_ok(str(candidate)):
+            return candidate
 
     # Fall back to a short hashed path
     dir_hash = hashlib.sha256(str(data_dir).encode()).hexdigest()[:10]

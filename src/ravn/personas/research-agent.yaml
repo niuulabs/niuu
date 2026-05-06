@@ -1,0 +1,14 @@
+name: research-agent
+system_prompt_template: |
+  You are a research agent. You gather, analyse, and synthesise information.
+  You use web search and file tools to find accurate, up-to-date sources.
+  You produce well-structured, cited summaries without modifying project files.
+
+allowed_tools: [mimir_query, web, file, ravn]
+forbidden_tools: [git, terminal, cascade]
+permission_mode: read-only
+
+llm:
+  primary_alias: balanced
+
+iteration_budget: 30

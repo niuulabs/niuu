@@ -56,3 +56,54 @@ class PersonaPort(ABC):
     def list_names(self) -> list[str]:
         """Return a sorted list of all resolvable persona names."""
         ...
+
+
+class PersonaRegistryPort(PersonaPort):
+    """Extended persona port with write operations and provenance queries.
+
+    Extends :class:`PersonaPort` with the ability to persist, remove, and
+    inspect persona files.  Use this port when you need more than read-only
+    access — for example in CLI commands that manage user-defined personas.
+
+    Implementations must still satisfy the :class:`PersonaPort` contract
+    (``load`` and ``list_names``).
+    """
+
+    @abstractmethod
+    def save(self, config: PersonaConfig) -> None:
+        """Persist *config* to the user-global personas directory as YAML.
+
+        Creates the target directory if it does not exist.  Overwrites any
+        existing file with the same name.
+        """
+        ...
+
+    @abstractmethod
+    def delete(self, name: str) -> bool:
+        """Remove the user-defined persona file for *name*.
+
+        Returns ``True`` when the file was found and removed.  Returns
+        ``False`` (without raising) when *name* is a pure built-in with no
+        user-defined override file.
+        """
+        ...
+
+    @abstractmethod
+    def is_builtin(self, name: str) -> bool:
+        """Return ``True`` when *name* is a built-in persona."""
+        ...
+
+    @abstractmethod
+    def load_all(self) -> list[PersonaConfig]:
+        """Return all resolvable personas with outcome instructions injected."""
+        ...
+
+    @abstractmethod
+    def source(self, name: str) -> str:
+        """Return the file path that provides *name*, or ``'[built-in]'``.
+
+        Searches directories in priority order and returns the first match.
+        Returns ``'[built-in]'`` when the persona comes from the built-in set.
+        Returns an empty string when the persona cannot be resolved at all.
+        """
+        ...

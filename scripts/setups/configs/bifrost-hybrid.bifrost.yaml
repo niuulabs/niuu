@@ -1,0 +1,46 @@
+# ─── Bifrost config for: bifrost-hybrid ──────────────────────────────────────
+#
+# Cloud primary + local Ollama fallback.
+# Failover kicks in on 429/5xx or when cloud is unreachable.
+# ─────────────────────────────────────────────────────────────────────────────
+
+bifrost:
+  routing_strategy: failover
+
+  providers:
+    # Configure your cloud provider here
+    cloud:
+      api_key_env: ""                    # env var name for cloud provider
+      base_url: ""                       # provider API URL
+      models: []                         # list of available cloud models
+      timeout: 120
+      cost_per_token: 0.0
+
+    ollama:
+      base_url: http://localhost:11434
+      models:
+        - llama3.2:3b
+        - llama3.1:8b
+      timeout: 300
+      cost_per_token: 0.0
+
+  aliases:
+    fast: llama3.2:3b                    # map to your fastest model
+    balanced: llama3.2:3b                # map to your default model
+    powerful: llama3.1:8b                # map to your most capable model
+    local: llama3.2:3b
+    local-best: llama3.1:8b
+
+  auth_mode: open
+
+  quotas:
+    default:
+      max_cost_per_day: 5.0
+      soft_limit_fraction: 0.8
+
+  usage_store:
+    adapter: sqlite
+    path: ~/.ravn/bifrost_usage.db
+
+  host: 127.0.0.1
+  port: 8088

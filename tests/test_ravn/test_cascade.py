@@ -675,6 +675,7 @@ async def test_mode1_local_parallel_tasks():
 
     cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
     settings = MagicMock()
+    settings.skuld.enabled = False
     settings.cascade.enabled = False
     dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
 

@@ -16,13 +16,15 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     YamlConfigSettingsSource,
 )
+
+from niuu.config import CorsConfig
 
 
 # Config file search paths (in order of priority).
@@ -89,6 +91,13 @@ class AIModelConfig(BaseModel):
 
     id: str
     name: str
+    provider: str = Field(
+        default="",
+        description=(
+            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google'). "
+            "Used to filter the model dropdown by the chosen session runtime."
+        ),
+    )
 
 
 class ReviewConfig(BaseModel):
@@ -146,6 +155,21 @@ class ReviewConfig(BaseModel):
         default=6,
         ge=6,
         description="Maximum review rounds before escalating. Minimum 6.",
+    )
+    ravn_arbiter_enabled: bool = Field(
+        default=False,
+        description=(
+            "When True, ReviewEngine dispatches to the review-arbiter ravn persona "
+            "before falling back to imperative signal-based decisions."
+        ),
+    )
+    ravn_arbiter_model: str = Field(
+        default="claude-sonnet-4-6",
+        description="AI model used by the review-arbiter ravn persona.",
+    )
+    ravn_arbiter_timeout: float = Field(
+        default=60.0,
+        description="HTTP timeout in seconds for review-arbiter ravn dispatch calls.",
     )
     reviewer_system_prompt: str = Field(
         default=(
@@ -373,11 +397,159 @@ class PlannerConfig(BaseModel):
     )
 
 
+class PersonaOverride(BaseModel):
+    """Per-persona LLM and iteration override for flock dispatch.
+
+    Accepted in ``FlockConfig.default_personas`` alongside bare strings (legacy).
+    The ``llm`` dict is forwarded verbatim as the per-persona ``llm`` key in
+    ``workload_config.personas``; ravn merges it over the global ``llm_config``.
+    """
+
+    name: str = Field(description="Ravn persona name (e.g. 'coordinator', 'reviewer').")
+    llm: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Per-persona LLM override merged over the global llm_config.",
+    )
+    system_prompt_extra: str | None = Field(
+        default=None,
+        description="Extra instructions appended to this persona's system prompt.",
+    )
+    iteration_budget: int | None = Field(
+        default=None,
+        description="Max iterations for this persona; overrides the persona's own default.",
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to the wire dict format consumed by workload_config.personas."""
+        d: dict[str, Any] = {"name": self.name}
+        if self.llm:
+            d["llm"] = dict(self.llm)
+        if self.system_prompt_extra:
+            d["system_prompt_extra"] = self.system_prompt_extra
+        if self.iteration_budget is not None:
+            d["iteration_budget"] = self.iteration_budget
+        return d
+
+
+class FlockConfig(BaseModel):
+    """Flock dispatch configuration."""
+
+    enabled: bool = Field(
+        default=False,
+        description="When True, eligible raids are dispatched as ravn_flock sessions.",
+    )
+    default_personas: list[PersonaOverride] = Field(
+        default_factory=lambda: [
+            PersonaOverride(name="coordinator"),
+            PersonaOverride(name="reviewer"),
+        ],
+        description=(
+            "Ravn persona names included in every flock session. "
+            "Accepts bare strings (legacy) or per-persona override objects."
+        ),
+    )
+
+    @field_validator("default_personas", mode="before")
+    @classmethod
+    def _coerce_personas(cls, v: Any) -> list[Any]:
+        """Accept both legacy list[str] and new list[dict|PersonaOverride]."""
+        if not isinstance(v, list):
+            return v
+        result = []
+        for item in v:
+            if isinstance(item, str):
+                result.append({"name": item})
+            else:
+                result.append(item)
+        return result
+
+    mimir_hosted_url: str = Field(
+        default="",
+        description="URL of the Mimir knowledge base for coordinator context queries.",
+    )
+    mimir_registry_path: str = Field(
+        default="~/.ravn/mimir/.mimir-registry.json",
+        description=(
+            "Path to the persisted Mimir registry used to resolve registry-backed "
+            "workflow resource mounts into concrete path/url runtime config."
+        ),
+    )
+    sleipnir_publish_urls: list[str] = Field(
+        default_factory=list,
+        description="Sleipnir publish URLs for flock task event routing.",
+    )
+    llm_config: dict = Field(
+        default_factory=dict,
+        description=(
+            "LLM provider config for ravn flock nodes. "
+            "Dict matching ravn's `llm:` config block (model, max_tokens, timeout, provider). "
+            "When empty, ravn nodes use their own default or image-baked config."
+        ),
+    )
+
+
+class InProcessDispatchConfig(BaseModel):
+    """In-process (single-turn) dispatch configuration.
+
+    Controls the LLM used by :class:`~tyr.adapters.ravn_dispatcher.RavnDispatcher`
+    when running single-turn agent calls in-process (as opposed to spinning up a
+    flock pod).
+
+    Fallback chain for ``llm_config``:
+      1. ``dispatch.in_process.llm_config`` — if non-empty, use this.
+      2. ``dispatch.flock.llm_config`` — if in_process is absent/empty, mirror
+         flock config so both paths use the same model without duplication.
+
+    Example YAML::
+
+        dispatch:
+          flock:
+            llm_config:
+              model: claude-opus-4-6
+              max_tokens: 8192
+          # Optional: override model for cheaper in-process single-turn calls.
+          in_process:
+            llm_config:
+              model: claude-sonnet-4-6
+              max_tokens: 4096
+    """
+
+    llm_config: dict = Field(
+        default_factory=dict,
+        description=(
+            "LLM config for in-process RavnDispatcher calls. "
+            "Dict matching ravn's `llm:` config block (model, max_tokens, timeout). "
+            "When empty, falls back to dispatch.flock.llm_config."
+        ),
+    )
+
+
 class DispatchConfig(BaseModel):
     """Dispatcher configuration."""
 
     default_system_prompt: str = Field(default="")
     default_model: str = Field(default="claude-sonnet-4-6")
+    default_session_definition: str = Field(
+        default="",
+        description=(
+            "Default session_definition (runtime) key when a dispatch request "
+            "doesn't specify one — e.g. 'skuldClaude', 'skuldCodex', "
+            "'skuldOpenCode'. Empty falls through to volundr's "
+            "defaultDefinition (typically skuldClaude)."
+        ),
+    )
+    auto_continue: bool = Field(
+        default=False,
+        description=(
+            "Seed value for the per-owner DispatcherState.auto_continue flag "
+            "the first time it's created. Once a row exists in dispatcher_state "
+            "this config is not consulted — the API/UI is the source of truth. "
+            "Set this to true in solo-dev setups so newly-spawned owners "
+            "auto-pick the next ready issue after a phase gate unlocks."
+        ),
+    )
+    flock: FlockConfig = Field(default_factory=FlockConfig)
+    in_process: InProcessDispatchConfig = Field(default_factory=InProcessDispatchConfig)
     dispatch_prompt_template: str = Field(
         default=(
             "# Task: {identifier} — {title}\n"
@@ -470,6 +642,32 @@ class AuthConfig(BaseModel):
     )
 
 
+class WebhookConfig(BaseModel):
+    """Outbound webhook integration for raid/saga lifecycle notifications.
+
+    Fires whenever the NotificationService dispatches an event for the
+    seeded owner — REVIEW (raid ready for review), MERGED (raid merged),
+    FAILED (raid failed). The same set of events Telegram receives.
+    """
+
+    url: str = Field(
+        default="",
+        description="POST target URL. Empty disables webhook seeding.",
+    )
+    secret: str = Field(
+        default="",
+        description=(
+            "Optional HMAC-SHA256 secret. When set, the body is signed and "
+            "the digest is sent in the X-Niuu-Signature header as "
+            "'sha256=<hex>'. Receivers should verify."
+        ),
+    )
+    min_urgency: str = Field(
+        default="low",
+        description="Minimum urgency: 'low' | 'medium' | 'high'.",
+    )
+
+
 class TelegramConfig(BaseModel):
     """Telegram bot configuration for deeplink setup and webhook commands."""
 
@@ -489,6 +687,26 @@ class TelegramConfig(BaseModel):
     reply_timeout: float = Field(
         default=10.0,
         description="Timeout in seconds for Telegram Bot API reply calls.",
+    )
+    polling: bool = Field(
+        default=False,
+        description=(
+            "Enable long-polling (getUpdates) instead of relying on Telegram "
+            "calling our public webhook URL. Useful for local dev where the "
+            "platform isn't reachable from the internet. When enabled, "
+            "incoming updates are re-POSTed to /api/v1/tyr/telegram/webhook "
+            "in-process so command handlers stay shared with the webhook path."
+        ),
+    )
+    polling_self_url: str = Field(
+        default="",
+        description=(
+            "Base URL the polling shim re-POSTs updates to. When empty, "
+            "resolved at startup from NIUU_SERVER_HOST and NIUU_SERVER_PORT "
+            "(set by start-dev) so the URL matches the platform's bound "
+            "interface — sending to 127.0.0.1 fails when uvicorn binds to a "
+            "specific NIC."
+        ),
     )
     hmac_key: str = Field(default="")
     hmac_signature_length: int = Field(
@@ -537,6 +755,17 @@ class LLMConfig(BaseModel):
             "Optional identifier for the agent/saga making LLM calls. "
             "Used as correlation_id in Sleipnir events."
         ),
+    )
+    ravn_decomposer_enabled: bool = Field(
+        default=False,
+        description=(
+            "When True, BifrostAdapter dispatches to the decomposer ravn persona "
+            "before falling back to the direct Anthropic API call."
+        ),
+    )
+    ravn_decomposer_timeout: float = Field(
+        default=120.0,
+        description="HTTP timeout in seconds for decomposer ravn dispatch calls.",
     )
 
 
@@ -643,6 +872,108 @@ class SleipnirConfig(BaseModel):
     kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
+class EventTriggerRule(BaseModel):
+    """A single event-trigger rule mapping a Sleipnir event to a saga template."""
+
+    event: str = Field(description="Sleipnir event type pattern (fnmatch syntax).")
+    saga_template: str = Field(description="Name of the saga template to instantiate.")
+    auto_start: bool = Field(
+        default=True,
+        description="When True, saga raids are dispatched immediately. "
+        "When False, raids are created in PENDING state and tyr.raid.needs_approval is emitted.",
+    )
+    filter: dict[str, str] = Field(
+        default_factory=dict,
+        description="Payload key/value pairs that must all match for the rule to fire.",
+    )
+
+
+class EventTriggerConfig(BaseModel):
+    """Configuration for the Sleipnir event trigger adapter.
+
+    Example YAML::
+
+        event_triggers:
+          owner_id: dev-user
+          templates_dir: ""   # empty = bundled src/tyr/templates/
+          rules:
+            - event: "github.pr.opened"
+              saga_template: review
+              auto_start: true
+            - event: "github.pr.merged"
+              saga_template: deploy
+              auto_start: true
+              filter:
+                branch: main
+    """
+
+    enabled: bool = Field(default=False, description="Enable the event trigger adapter.")
+    owner_id: str = Field(
+        default="dev-user",
+        description="Owner ID used when creating event-triggered sagas.",
+    )
+    templates_dir: str = Field(
+        default="",
+        description="Path to saga template YAML files. Empty means the bundled templates.",
+    )
+    default_model: str = Field(
+        default="claude-sonnet-4-6",
+        description="Default AI model for event-triggered saga sessions.",
+    )
+    dedup_cache_size: int = Field(
+        default=10_000,
+        description="Maximum number of correlation IDs held in the deduplication cache.",
+    )
+    rules: list[EventTriggerRule] = Field(
+        default_factory=list,
+        description="List of event-trigger rules.",
+    )
+
+
+class RavnOutcomeConfig(BaseModel):
+    """Configuration for the RavnOutcomeHandler adapter.
+
+    Example YAML::
+
+        ravn_outcome:
+          enabled: true
+          scope_adherence_threshold: 0.7
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable the ravn.task.completed outcome subscriber.",
+    )
+    owner_id: str = Field(
+        default="api",
+        description="Owner ID used when looking up raids from ravn outcome events.",
+    )
+    scope_adherence_threshold: float = Field(
+        default=0.7,
+        description=(
+            "scope_adherence values below this threshold flag a scope breach. Range 0.0–1.0."
+        ),
+    )
+
+
+class FlockFlowsConfig(BaseModel):
+    """Flock flow provider configuration (dynamic adapter pattern).
+
+    Example YAML::
+
+        flock_flows:
+          adapter: "tyr.adapters.flows.config.ConfigFlockFlowProvider"
+          kwargs:
+            path: /etc/tyr/flock_flows.yaml
+    """
+
+    adapter: str = Field(
+        default="tyr.adapters.flows.config.ConfigFlockFlowProvider",
+        description="Fully-qualified class path for the flock flow provider.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
 class NotificationConfig(BaseModel):
     """Notification service configuration."""
 
@@ -685,13 +1016,22 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
     ai_models: list[AIModelConfig] = Field(
         default_factory=lambda: [
-            AIModelConfig(id="claude-opus-4-6", name="Opus 4.6"),
-            AIModelConfig(id="claude-sonnet-4-6", name="Sonnet 4.6"),
-            AIModelConfig(id="claude-haiku-4-5-20251001", name="Haiku 4.5"),
+            AIModelConfig(id="claude-opus-4-7", name="Opus 4.7", provider="anthropic"),
+            AIModelConfig(id="claude-opus-4-6", name="Opus 4.6", provider="anthropic"),
+            AIModelConfig(
+                id="claude-opus-4-5-20251101", name="Opus 4.5", provider="anthropic",
+            ),
+            AIModelConfig(id="claude-sonnet-4-6", name="Sonnet 4.6", provider="anthropic"),
+            AIModelConfig(
+                id="claude-haiku-4-5-20251001", name="Haiku 4.5", provider="anthropic",
+            ),
+            AIModelConfig(id="gpt-5.5", name="GPT-5.5", provider="openai"),
+            AIModelConfig(id="gpt-5.4", name="GPT-5.4", provider="openai"),
         ]
     )
     git: GitConfig = Field(default_factory=GitConfig)
@@ -709,8 +1049,12 @@ class Settings(BaseSettings):
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
+    event_triggers: EventTriggerConfig = Field(default_factory=EventTriggerConfig)
+    ravn_outcome: RavnOutcomeConfig = Field(default_factory=RavnOutcomeConfig)
+    flock_flows: FlockFlowsConfig = Field(default_factory=FlockFlowsConfig)
 
     @classmethod
     def settings_customise_sources(

@@ -1,0 +1,26 @@
+# Tyr config for M6 flock e2e testing
+dispatch:
+  flock:
+    enabled: true
+    default_personas:
+      - coordinator
+      - reviewer
+    sleipnir_publish_urls: []
+
+review:
+  auto_approve_threshold: 0.70
+  max_retries: 3
+  reviewer_session_enabled: false
+  ravn_arbiter_enabled: false
+
+ravn_outcome:
+  enabled: true
+  owner_id: dev-user
+  scope_adherence_threshold: 0.7
+
+sleipnir:
+  enabled: true
+  adapter: "sleipnir.adapters.in_process.InProcessBus"
+
+auth:
+  allow_anonymous_dev: true

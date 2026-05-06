@@ -1,6 +1,6 @@
 """Tests for domain models."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -69,7 +69,7 @@ class TestSession:
     def test_create_session_with_all_fields(self):
         """Session can be created with all fields specified."""
         session_id = uuid4()
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         session = Session(
             id=session_id,

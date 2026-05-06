@@ -104,7 +104,7 @@ class MimirStalenessTrigger(TriggerPort):
             for source_id in meta.source_ids:
                 try:
                     lint = await self._mimir.lint()
-                    if path in lint.stale:
+                    if any(i.id == "L08" and i.page_path == path for i in lint.issues):
                         stale_sources.append(source_id)
                         break
                 except Exception as exc:

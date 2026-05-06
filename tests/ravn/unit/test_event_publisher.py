@@ -263,6 +263,7 @@ async def test_drive_loop_run_task_calls_publish_twice(tmp_path: Path) -> None:
     # Patch SilentChannel to avoid surface_triggered side effects
     with patch("ravn.drive_loop.SilentChannel") as mock_ch_cls:
         mock_ch = MagicMock()
+        mock_ch.emit = AsyncMock()
         mock_ch.surface_triggered = False
         mock_ch.response_text = ""
         mock_ch_cls.return_value = mock_ch
@@ -288,7 +289,9 @@ async def test_drive_loop_run_task_publishes_task_complete_on_failure(tmp_path: 
 
     with patch("ravn.drive_loop.SilentChannel") as mock_ch_cls:
         mock_ch = MagicMock()
+        mock_ch.emit = AsyncMock()
         mock_ch.surface_triggered = False
+        mock_ch.response_text = ""
         mock_ch_cls.return_value = mock_ch
 
         task = _make_task()
@@ -311,6 +314,7 @@ async def test_drive_loop_noop_publisher_processes_task_without_errors(tmp_path:
 
     with patch("ravn.drive_loop.SilentChannel") as mock_ch_cls:
         mock_ch = MagicMock()
+        mock_ch.emit = AsyncMock()
         mock_ch.surface_triggered = False
         mock_ch.response_text = ""
         mock_ch_cls.return_value = mock_ch

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from volundr.adapters.inbound.rest_oauth import create_oauth_router
+from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router, create_oauth_router
 from volundr.config import OAuthClientConfig, OAuthConfig
 from volundr.domain.models import (
     IntegrationConnection,
@@ -68,6 +68,13 @@ def _make_app(
 
     app = FastAPI()
     app.state.identity = identity or _mock_identity()
+    canonical_router = create_canonical_oauth_router(
+        oauth_config=oauth_config,
+        integration_registry=registry,
+        credential_store=credential_store,
+        integration_repo=integration_repo,
+    )
+    app.include_router(canonical_router)
     router = create_oauth_router(
         oauth_config=oauth_config,
         integration_registry=registry,
@@ -80,6 +87,7 @@ def _make_app(
 
 AUTH = {"Authorization": "Bearer tok"}
 PREFIX = "/api/v1/volundr/integrations/oauth"
+CANONICAL_PREFIX = "/api/v1/integrations/oauth"
 
 
 class TestAuthorize:
@@ -97,6 +105,29 @@ class TestAuthorize:
         assert "https://auth.example.com/authorize" in body["url"]
         assert "client_id=cid" in body["url"]
         assert "state=" in body["url"]
+
+    def test_legacy_authorize_sets_deprecation_headers(self):
+        defn = _make_definition(slug="linear")
+        clients = {"linear": OAuthClientConfig(client_id="cid", client_secret="csec")}
+        app, _, _ = _make_app(definitions=[defn], clients=clients)
+        client = TestClient(app)
+
+        resp = client.get(f"{PREFIX}/linear/authorize", headers=AUTH)
+
+        assert resp.status_code == 200
+        assert resp.headers["Deprecation"] == "true"
+        assert resp.headers["X-Niuu-Canonical-Route"] == f"{CANONICAL_PREFIX}/linear/authorize"
+
+    def test_canonical_authorize_route_exists(self):
+        defn = _make_definition(slug="linear")
+        clients = {"linear": OAuthClientConfig(client_id="cid", client_secret="csec")}
+        app, _, _ = _make_app(definitions=[defn], clients=clients)
+        client = TestClient(app)
+
+        resp = client.get(f"{CANONICAL_PREFIX}/linear/authorize", headers=AUTH)
+
+        assert resp.status_code == 200
+        assert "url" in resp.json()
 
     def test_404_for_missing_integration(self):
         app, _, _ = _make_app(definitions=[], clients={})

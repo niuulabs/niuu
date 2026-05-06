@@ -1,0 +1,51 @@
+{
+  "theme": "ice",
+  "plugins": {
+    "login": { "enabled": true, "order": 0 },
+    "volundr": { "enabled": true, "order": 1 },
+    "tyr": { "enabled": true, "order": 2 },
+    "mimir": { "enabled": true, "order": 3 },
+    "ravn": { "enabled": true, "order": 4 },
+    "observatory": { "enabled": true, "order": 5 },
+    "settings": { "enabled": true, "order": 6 }
+  },
+  "services": {
+    "identity": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1" },
+    "features": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1" },
+    "tracker": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1" },
+    "audit": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1" },
+    "mimir": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/mimir" },
+    "observatory": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/observatory" },
+    "observatory.registry": {
+      "mode": "http",
+      "baseUrl": "http://localhost:8080/api/v1/observatory/registry"
+    },
+    "observatory.topology": {
+      "mode": "http",
+      "baseUrl": "http://localhost:8080/api/v1/observatory/topology"
+    },
+    "observatory.events": {
+      "mode": "http",
+      "baseUrl": "http://localhost:8080/api/v1/observatory/events"
+    },
+    "ravn": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/ravn" },
+    "ravn.personas": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/ravn/personas" },
+    "ravn.ravens": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/ravn/ravens" },
+    "ravn.sessions": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/ravn/sessions" },
+    "ravn.triggers": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/ravn/triggers" },
+    "ravn.budget": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/ravn/budget" },
+    "forge": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/forge" },
+    "volundr": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/volundr" },
+    "forge.pty": { "mode": "ws", "wsUrl": "ws://localhost:8080/s/{sessionId}/session" },
+    "forge.metrics": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/forge/metrics" },
+    "tyr": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/tyr" },
+    "tyr.dispatcher": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/tyr/dispatcher" },
+    "tyr.sessions": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/tyr/sessions" },
+    "tyr.dispatch": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/tyr/dispatch" },
+    "tyr.settings": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/tyr/settings" },
+    "tyr.tracker": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/tracker" },
+    "tyr.audit": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/audit" },
+    "tyr.workflows": { "mode": "http", "baseUrl": "http://localhost:8080/api/v1/tyr/workflows" },
+    "filesystem": { "mode": "http", "baseUrl": "http://localhost:8080" }
+  }
+}

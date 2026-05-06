@@ -6,6 +6,7 @@ registerModuleDefinition({
   label: 'Ravn',
   icon: RaidhoRune,
   basePath: '/ravn',
+  layout: () => import('./pages/RavnLayout').then(m => ({ default: m.RavnLayout })),
   routes: [
     { path: '', index: true, redirectTo: 'chat' },
     {
@@ -19,6 +20,14 @@ registerModuleDefinition({
     {
       path: 'config',
       load: () => import('./pages/AgentsView').then(m => ({ default: m.AgentsView })),
+    },
+    {
+      path: 'personas',
+      load: () => import('./pages/PersonasView').then(m => ({ default: m.PersonasView })),
+    },
+    {
+      path: 'personas/:name',
+      load: () => import('./pages/PersonaDetailView').then(m => ({ default: m.PersonaDetailView })),
     },
   ],
 });

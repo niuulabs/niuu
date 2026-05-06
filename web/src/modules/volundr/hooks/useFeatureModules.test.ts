@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { renderHook, waitFor, act } from '@testing-library/react';
 import { useFeatureModules } from './useFeatureModules';
 import type { IVolundrService } from '@/modules/volundr/ports';
 import type { FeatureModule, UserFeaturePreference } from '@/modules/volundr/models';
@@ -238,5 +238,68 @@ describe('useFeatureModules', () => {
     });
 
     expect(service.getFeatureModules).toHaveBeenCalledWith('admin');
+  });
+
+  it('handles non-Error thrown during fetch', async () => {
+    service = createMockService({
+      getFeatureModules: vi.fn().mockRejectedValue('string error'),
+    });
+
+    const { result } = renderHook(() => useFeatureModules('user', service));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toBe('Failed to load features');
+  });
+
+  it('skips features not in module registry', async () => {
+    const featuresWithUnknown: FeatureModule[] = [
+      { ...mockFeatures[0] },
+      {
+        key: 'unknown-module',
+        label: 'Unknown',
+        icon: 'Settings',
+        scope: 'user',
+        enabled: true,
+        defaultEnabled: true,
+        adminOnly: false,
+        order: 5,
+      },
+    ];
+
+    service = createMockService({
+      getFeatureModules: vi.fn().mockResolvedValue(featuresWithUnknown),
+    });
+
+    const { result } = renderHook(() => useFeatureModules('user', service));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    // Only credentials should appear; unknown-module is not in the registry
+    expect(result.current.sections).toHaveLength(1);
+    expect(result.current.sections[0].key).toBe('credentials');
+  });
+
+  it('refetch re-fetches features and preferences', async () => {
+    const { result } = renderHook(() => useFeatureModules('user', service));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      result.current.refetch();
+    });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    // Called twice: once on mount, once on refetch
+    expect(service.getFeatureModules).toHaveBeenCalledTimes(2);
   });
 });

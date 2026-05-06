@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("opentelemetry", reason="opentelemetry not installed")
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -22,7 +22,7 @@ def _make_event(**overrides) -> SessionEvent:
         "id": uuid4(),
         "session_id": uuid4(),
         "event_type": SessionEventType.MESSAGE_ASSISTANT,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(UTC),
         "data": {"content_preview": "hello", "finish_reason": "end_turn"},
         "sequence": 0,
         "tokens_in": 100,

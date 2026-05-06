@@ -1,0 +1,148 @@
+# Saga template: ship (pipeline format)
+# Triggered by: manual dispatch or Tyr API
+# Stage 1: Run tests  (persona: qa-agent)
+# Stage 2: Pre-ship code review (persona: reviewer)
+# Stage 3: Version bump + changelog (persona: ship-agent)
+# Stage 4: Create release PR (persona: ship-agent)
+name: "Ship: {event.repo}"
+feature_branch: "{event.branch}"
+base_branch: "{event.base_branch}"
+repos:
+  - "{event.repo}"
+
+stages:
+  - name: test-suite
+    sequential:
+      - name: "Run test suite for {event.repo}"
+        persona: qa-agent
+        description: |
+          Run the full test suite for {event.repo} on branch {event.branch} to verify it is release-ready.
+        acceptance_criteria:
+          - All backend tests pass (pytest, zero warnings)
+          - All frontend tests pass (vitest)
+          - Coverage is at or above 85%
+          - Linting is clean (ruff check + ruff format)
+          - CI is green on the feature branch
+        declared_files: []
+        estimate_hours: 0.5
+        prompt: |
+          # Test Suite Task
+
+          Verify that {event.repo} (branch: {event.branch}) is release-ready.
+
+          ## Instructions
+
+          1. Run backend tests: `make test` (or `pytest -v --tb=short`).
+          2. Run frontend tests: `cd web && npm run test:coverage`.
+          3. Run linting: `make verify`.
+          4. Check CI status: `gh run list --repo {event.repo} --branch {event.branch} --limit 3`.
+          5. Fix any failures before proceeding.
+
+          Report: PASS or FAIL with details of any failures.
+          Output verdict: "pass" or "fail" in your outcome block.
+
+  - name: pre-ship-review
+    sequential:
+      - name: "Pre-ship review of {event.repo}"
+        persona: reviewer
+        description: |
+          Review the changes accumulated on {event.branch} since the last release of {event.repo}.
+        acceptance_criteria:
+          - All changes since last release reviewed for quality and correctness
+          - No outstanding security issues
+          - CLAUDE.md and .claude/rules/ conventions followed
+          - No unintentional breaking changes
+        declared_files: []
+        estimate_hours: 1.0
+        prompt: |
+          # Pre-ship Code Review Task
+
+          Review all changes on {event.branch} in {event.repo} since the last release.
+
+          ## Instructions
+
+          1. Read CLAUDE.md and `.claude/rules/` for conventions.
+          2. Identify changed commits since last tag:
+             `git log $(git describe --tags --abbrev=0)..HEAD --oneline`
+          3. Review each changed file for quality, correctness, and convention compliance.
+          4. Check for breaking changes and document them.
+          5. Flag any security concerns.
+
+          Report all findings. Block shipping if any blocking issues remain.
+          Output verdict: "pass" or "fail" in your outcome block.
+    condition: "stages.test-suite.verdict == pass"
+
+  - name: version-bump
+    sequential:
+      - name: "Bump version and update changelog for {event.repo}"
+        persona: ship-agent
+        description: |
+          Determine the next version for {event.repo} following semantic versioning, update the changelog, and commit.
+        acceptance_criteria:
+          - Version bumped according to semver (MAJOR.MINOR.PATCH)
+          - CHANGELOG.md updated with all changes since last release
+          - Version bump committed to {event.branch} with a conventional commit
+          - Git tag created for the new version
+        declared_files:
+          - CHANGELOG.md
+        estimate_hours: 0.5
+        prompt: |
+          # Version Bump and Changelog Task
+
+          Prepare the release of {event.repo} (branch: {event.branch}).
+
+          ## Instructions
+
+          1. Determine the current version: `git describe --tags --abbrev=0`.
+          2. Analyse commits since last tag to determine bump type:
+             - `feat:` → minor bump
+             - `fix:` → patch bump
+             - `BREAKING CHANGE` in footer → major bump
+          3. Update the version in relevant files (pyproject.toml, package.json, etc.).
+          4. Update CHANGELOG.md:
+             - Add a new section: `## [X.Y.Z] — YYYY-MM-DD`
+             - List all commits grouped by type (Features, Fixes, etc.)
+          5. Commit: `chore(release): bump version to X.Y.Z`
+          6. Create a git tag: `git tag -a vX.Y.Z -m "Release X.Y.Z"`
+          7. Push the tag: `git push origin vX.Y.Z`
+    condition: "stages.pre-ship-review.verdict == pass"
+
+  - name: release-pr
+    sequential:
+      - name: "Create release PR for {event.repo}"
+        persona: ship-agent
+        description: |
+          Open a pull request from {event.branch} to {event.base_branch} for the release of {event.repo}.
+        acceptance_criteria:
+          - PR created from {event.branch} to {event.base_branch}
+          - PR title follows convention: "chore(release): vX.Y.Z"
+          - PR description includes full changelog for this release
+          - PR CI is green
+          - PR is ready for merge
+        declared_files: []
+        estimate_hours: 0.25
+        prompt: |
+          # Create Release PR Task
+
+          Open a release pull request for {event.repo}.
+
+          **From**: {event.branch}
+          **To**: {event.base_branch}
+
+          ## Instructions
+
+          1. Ensure branch is up to date and pushed:
+             `git push origin {event.branch}`
+          2. Extract the changelog section for this release from CHANGELOG.md.
+          3. Create the PR:
+             ```bash
+             gh pr create \
+               --repo {event.repo} \
+               --head {event.branch} \
+               --base {event.base_branch} \
+               --title "chore(release): $(git describe --tags --abbrev=0)" \
+               --body "$(cat RELEASE_NOTES.md)"
+             ```
+          4. Verify CI is green: `gh pr checks --repo {event.repo}`
+
+          Report the PR URL when created.

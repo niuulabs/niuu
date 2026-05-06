@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from niuu.domain.mimir import (
+    LintIssue,
     MimirLintReport,
     MimirPage,
     MimirPageMeta,
@@ -63,10 +64,7 @@ def _mock_port(
     port.ingest = AsyncMock(return_value=[])
     port.upsert_page = AsyncMock(return_value=None)
     port.update_thread_weight = AsyncMock(return_value=None)
-    port.lint = AsyncMock(
-        return_value=lint_report
-        or MimirLintReport(orphans=[], contradictions=[], stale=[], gaps=[], pages_checked=0)
-    )
+    port.lint = AsyncMock(return_value=lint_report or MimirLintReport(issues=[], pages_checked=0))
 
     if read_raises:
         port.read_page = AsyncMock(side_effect=FileNotFoundError("not found"))
@@ -319,17 +317,14 @@ async def test_upsert_multi_mount_routing() -> None:
 @pytest.mark.asyncio
 async def test_lint_merges_all_mounts() -> None:
     report_a = MimirLintReport(
-        orphans=["a.md"],
-        contradictions=[],
-        stale=[],
-        gaps=[],
+        issues=[LintIssue(id="L01", severity="warning", message="orphan", page_path="a.md")],
         pages_checked=5,
     )
     report_b = MimirLintReport(
-        orphans=[],
-        contradictions=["b.md"],
-        stale=[],
-        gaps=["concept-x"],
+        issues=[
+            LintIssue(id="L02", severity="error", message="contradiction", page_path="b.md"),
+            LintIssue(id="L04", severity="info", message="concept gap: concept-x", page_path=""),
+        ],
         pages_checked=3,
     )
 
@@ -339,9 +334,9 @@ async def test_lint_merges_all_mounts() -> None:
     adapter = CompositeMimirAdapter(mounts=[local, shared])
     merged = await adapter.lint()
 
-    assert "a.md" in merged.orphans
-    assert "b.md" in merged.contradictions
-    assert "concept-x" in merged.gaps
+    assert any(i.id == "L01" and i.page_path == "a.md" for i in merged.issues)
+    assert any(i.id == "L02" and i.page_path == "b.md" for i in merged.issues)
+    assert any(i.id == "L04" and "concept-x" in i.message for i in merged.issues)
     assert merged.pages_checked == 8
 
 

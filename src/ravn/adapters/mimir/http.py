@@ -25,6 +25,7 @@ from urllib.parse import quote
 import httpx
 
 from niuu.domain.mimir import (
+    LintIssue,
     MimirLintReport,
     MimirPage,
     MimirPageMeta,
@@ -164,17 +165,27 @@ class HttpMimirAdapter(MimirPort):
         response.raise_for_status()
         return [_parse_page_meta(m) for m in response.json()]
 
-    async def lint(self) -> MimirLintReport:
-        """GET /mimir/lint — return health-check report."""
+    async def lint(self, fix: bool = False) -> MimirLintReport:
+        """GET /mimir/lint or POST /mimir/lint/fix — return health-check report."""
         client = self._get_client()
-        response = await client.get("/mimir/lint")
+        if fix:
+            response = await client.post("/mimir/lint/fix")
+        else:
+            response = await client.get("/mimir/lint")
         response.raise_for_status()
         data = response.json()
+        issues = [
+            LintIssue(
+                id=item["id"],
+                severity=item["severity"],
+                message=item["message"],
+                page_path=item["page_path"],
+                auto_fixable=item.get("auto_fixable", False),
+            )
+            for item in data.get("issues", [])
+        ]
         return MimirLintReport(
-            orphans=data.get("orphans", []),
-            contradictions=data.get("contradictions", []),
-            stale=data.get("stale", []),
-            gaps=data.get("gaps", []),
+            issues=issues,
             pages_checked=data.get("pages_checked", 0),
         )
 

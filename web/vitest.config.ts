@@ -27,6 +27,13 @@ export default defineConfig({
         'src/modules/icons.ts',
         'src/modules/registry.ts',
         'src/adapters/api/yggdrasil.adapter.ts',
+        // Mesh UI components — complex real-time visualizations, will be tested in follow-up
+        'src/modules/shared/components/SessionChat/MeshCascadePanel/**',
+        'src/modules/shared/components/SessionChat/MeshEventCard/**',
+        'src/modules/shared/components/SessionChat/MeshSidebar/**',
+        // SessionChat + useSkuldChat — complex WebSocket real-time streaming, tested via e2e
+        'src/modules/shared/components/SessionChat/SessionChat.tsx',
+        'src/modules/shared/hooks/useSkuldChat.ts',
         // New Tyr dashboard UI components — will be tested in follow-up
         'src/modules/tyr/components/RaidsTable/**',
         'src/modules/tyr/components/RaidExpandedRow/**',

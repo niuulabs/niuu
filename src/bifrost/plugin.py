@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from niuu.ports.plugin import Service, ServiceDefinition, ServicePlugin
+from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin
 
 
 class _BifrostService(Service):
@@ -49,3 +49,31 @@ class BifrostPlugin(ServicePlugin):
         from bifrost.config import BifrostConfig
 
         return create_app(BifrostConfig())
+
+    def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
+        return (
+            APIRouteDomain(
+                name="llm-api",
+                prefixes=(
+                    "/api/v1/bifrost/health",
+                    "/api/v1/bifrost/admin",
+                    "/api/v1/bifrost/v1",
+                    "/api/v1/bifrost/api",
+                ),
+                description="Bifrost gateway, model, cache, and admin routes.",
+            ),
+            APIRouteDomain(
+                name="bifrost-observability-api",
+                prefixes=(
+                    "/api/v1/bifrost/metrics",
+                    "/api/v1/bifrost/healthz",
+                    "/api/v1/bifrost/readyz",
+                ),
+                description="Bifrost metrics and readiness/liveness routes.",
+            ),
+            APIRouteDomain(
+                name="bifrost-api",
+                prefixes=("/api/v1/bifrost",),
+                description="All currently mounted Bifrost routes.",
+            ),
+        )

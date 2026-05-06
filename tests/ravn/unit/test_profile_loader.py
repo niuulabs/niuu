@@ -213,3 +213,48 @@ class TestProfileLoaderToYaml:
         result = ProfileLoader.to_yaml(p)
         assert isinstance(result, str)
         assert "name: x" in result
+
+
+# ---------------------------------------------------------------------------
+# _safe_bool / _safe_int helpers (covering str / error paths)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileLoaderHelpers:
+    def test_safe_bool_string_true(self) -> None:
+        from ravn.adapters.profiles.loader import _safe_bool
+
+        assert _safe_bool("true") is True
+        assert _safe_bool("yes") is True
+        assert _safe_bool("1") is True
+
+    def test_safe_bool_string_false(self) -> None:
+        from ravn.adapters.profiles.loader import _safe_bool
+
+        assert _safe_bool("false") is False
+        assert _safe_bool("no") is False
+
+    def test_safe_bool_unknown_type_returns_default(self) -> None:
+        from ravn.adapters.profiles.loader import _safe_bool
+
+        assert _safe_bool(None, default=True) is True
+        assert _safe_bool([], default=False) is False
+
+    def test_safe_int_invalid_returns_default(self) -> None:
+        from ravn.adapters.profiles.loader import _safe_int
+
+        assert _safe_int("not-a-number") == 0
+        assert _safe_int(None, default=5) == 5
+
+    def test_parse_non_dict_yaml_returns_none(self) -> None:
+        """YAML that is a list, not a dict, must return None."""
+        assert ProfileLoader.parse("- item1\n- item2\n") is None
+
+    def test_list_names_discovers_yaml_files(self, tmp_path: Path) -> None:
+        """list_names() unions built-ins with YAML files in profiles_dir."""
+        (tmp_path / "my-profile.yaml").write_text("name: my-profile\n")
+        loader = ProfileLoader(profiles_dir=tmp_path)
+        names = loader.list_names()
+        assert "my-profile" in names
+        # Built-ins are still present
+        assert "local" in names

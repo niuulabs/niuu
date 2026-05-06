@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { cn } from '@/utils';
 import styles from './FilterTabs.module.css';
 
@@ -8,11 +9,13 @@ export interface FilterTabsProps {
   value: string;
   /** Callback when selection changes */
   onChange: (value: string) => void;
+  /** Custom renderer for option content; falls back to the option string */
+  renderOption?: (option: string) => ReactNode;
   /** Additional CSS class */
   className?: string;
 }
 
-export function FilterTabs({ options, value, onChange, className }: FilterTabsProps) {
+export function FilterTabs({ options, value, onChange, renderOption, className }: FilterTabsProps) {
   return (
     <div className={cn(styles.container, className)}>
       {options.map(option => (
@@ -22,7 +25,7 @@ export function FilterTabs({ options, value, onChange, className }: FilterTabsPr
           className={cn(styles.tab, value === option && styles.active)}
           onClick={() => onChange(option)}
         >
-          {option}
+          {renderOption?.(option) ?? option}
         </button>
       ))}
     </div>

@@ -38,9 +38,6 @@ nginx:
       memory: "64Mi"
       cpu: "50m"
 
-reh:
-  enabled: false
-
 localServices:
   enabled: false
 

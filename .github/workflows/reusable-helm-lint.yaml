@@ -1,0 +1,39 @@
+# Reusable: helm lint for every chart under charts/.
+# Called by ci.yaml and dev.yaml.
+name: Reusable — Helm Lint
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: "Helm: Lint"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.14.0
+
+      - name: Lint leaf charts
+        run: |
+          for chart in skuld volundr tyr skuld-planner niuu-shared; do
+            echo "::group::helm lint $chart"
+            helm lint "charts/${chart}/"
+            echo "::endgroup::"
+          done
+
+      - name: Lint niuu umbrella chart
+        run: |
+          helm dependency build charts/niuu
+          helm lint charts/niuu/

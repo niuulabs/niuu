@@ -635,6 +635,75 @@ class TestMCPManager:
         mgr = MCPManager(configs=[_stdio_cfg("x")])
         assert mgr.tools == []
 
+    @pytest.mark.asyncio
+    async def test_shutdown_with_no_clients_is_noop(self) -> None:
+        """shutdown() returns early without error when no clients are active."""
+        mgr = MCPManager(configs=[])
+        # Never called start() — _clients is empty; should not raise.
+        await mgr.shutdown()
+        assert mgr.tools == []
+
+    @pytest.mark.asyncio
+    async def test_resolve_auth_headers_unknown_type_returns_empty(self) -> None:
+        """Unknown auth_type logs a warning and returns empty headers."""
+        from ravn.adapters.mcp.manager import MCPManager
+        from ravn.config import MCPAuthConfig, MCPServerConfig
+
+        auth = MCPAuthConfig(auth_type="magic_cookie")
+        cfg = MCPServerConfig(name="test", auth=auth)
+        headers = await MCPManager._resolve_auth_headers(cfg)
+        assert headers == {}
+
+    @pytest.mark.asyncio
+    async def test_auth_error_continues_without_auth(self) -> None:
+        """When _resolve_auth_headers raises, the server still connects (degraded)."""
+        client, transport = _make_healthy_client(["tool_x"])
+        from ravn.config import MCPAuthConfig
+
+        cfg = _stdio_cfg("authed", auth=MCPAuthConfig(auth_type="api_key"))
+
+        with (
+            patch("ravn.adapters.mcp.manager._build_transport", return_value=transport),
+            patch.object(
+                MCPManager,
+                "_resolve_auth_headers",
+                side_effect=RuntimeError("auth failed"),
+            ),
+        ):
+            mgr = MCPManager(configs=[cfg])
+            tools = await mgr.start()
+
+        # Server still connects despite auth failure
+        assert len(tools) == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_auth_headers_api_key_type(self) -> None:
+        """api_key auth type calls acquire_api_key and returns an auth header."""
+        from unittest.mock import AsyncMock
+
+        from ravn.adapters.mcp.manager import MCPManager
+        from ravn.config import MCPAuthConfig, MCPServerConfig
+
+        class _FakeToken:
+            def auth_header_value(self) -> str:
+                return "Bearer fake-token"
+
+        auth = MCPAuthConfig(
+            auth_type="api_key",
+            api_key_env="MY_API_KEY",
+            api_key_header="Authorization",
+            api_key_prefix="Bearer",
+        )
+        cfg = MCPServerConfig(name="keyed", auth=auth)
+
+        with patch(
+            "ravn.adapters.mcp.auth.acquire_api_key",
+            new=AsyncMock(return_value=_FakeToken()),
+        ):
+            headers = await MCPManager._resolve_auth_headers(cfg)
+
+        assert headers == {"Authorization": "Bearer fake-token"}
+
 
 # ---------------------------------------------------------------------------
 # _build_input_schema helper

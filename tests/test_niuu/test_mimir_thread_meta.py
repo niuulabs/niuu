@@ -26,11 +26,11 @@ class TestThreadState:
     def test_open_value(self) -> None:
         assert ThreadState.open == "open"
 
-    def test_assigned_value(self) -> None:
-        assert ThreadState.assigned == "assigned"
-
     def test_pulling_value(self) -> None:
         assert ThreadState.pulling == "pulling"
+
+    def test_blocked_value(self) -> None:
+        assert ThreadState.blocked == "blocked"
 
     def test_closed_value(self) -> None:
         assert ThreadState.closed == "closed"
@@ -38,9 +38,23 @@ class TestThreadState:
     def test_dissolved_value(self) -> None:
         assert ThreadState.dissolved == "dissolved"
 
-    def test_all_five_states_exist(self) -> None:
+    def test_waiting_for_peer_value(self) -> None:
+        assert ThreadState.waiting_for_peer == "waiting_for_peer"
+
+    def test_waiting_for_operator_value(self) -> None:
+        assert ThreadState.waiting_for_operator == "waiting_for_operator"
+
+    def test_all_states_exist(self) -> None:
         values = {s.value for s in ThreadState}
-        assert values == {"open", "assigned", "pulling", "closed", "dissolved"}
+        assert values == {
+            "open",
+            "pulling",
+            "blocked",
+            "waiting_for_peer",
+            "waiting_for_operator",
+            "closed",
+            "dissolved",
+        }
 
     def test_is_str_enum(self) -> None:
         # StrEnum members compare equal to their string values
@@ -59,27 +73,29 @@ class TestThreadState:
 
 class TestThreadContextRef:
     def test_constructs_with_all_fields(self) -> None:
-        ref = ThreadContextRef(type="conversation", id="sess-abc", summary="User asked about auth")
-        assert ref.type == "conversation"
-        assert ref.id == "sess-abc"
-        assert ref.summary == "User asked about auth"
+        ref = ThreadContextRef(
+            ref_type="conversation", ref_id="sess-abc", ref_summary="User asked about auth"
+        )
+        assert ref.ref_type == "conversation"
+        assert ref.ref_id == "sess-abc"
+        assert ref.ref_summary == "User asked about auth"
 
-    def test_constructs_wiki_page_type(self) -> None:
-        ref = ThreadContextRef(type="wiki_page", id="src-001", summary="")
-        assert ref.type == "wiki_page"
-        assert ref.id == "src-001"
-        assert ref.summary == ""
+    def test_constructs_ingest_type(self) -> None:
+        ref = ThreadContextRef(ref_type="ingest", ref_id="src-001", ref_summary="")
+        assert ref.ref_type == "ingest"
+        assert ref.ref_id == "src-001"
+        assert ref.ref_summary == ""
 
-    def test_constructs_issue_type(self) -> None:
-        ref = ThreadContextRef(type="issue", id="NIU-100", summary="Linked Linear issue")
-        assert ref.type == "issue"
-        assert ref.id == "NIU-100"
+    def test_constructs_observation_type(self) -> None:
+        ref = ThreadContextRef(ref_type="observation", ref_id="obs-42", ref_summary="Note")
+        assert ref.ref_type == "observation"
+        assert ref.ref_id == "obs-42"
 
     def test_fields_are_plain_strings(self) -> None:
-        ref = ThreadContextRef(type="t", id="i", summary="s")
-        assert isinstance(ref.type, str)
-        assert isinstance(ref.id, str)
-        assert isinstance(ref.summary, str)
+        ref = ThreadContextRef(ref_type="search", ref_id="q-1", ref_summary="s")
+        assert isinstance(ref.ref_type, str)
+        assert isinstance(ref.ref_id, str)
+        assert isinstance(ref.ref_summary, str)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +117,9 @@ class TestMimirPageMetaWithThreadFields:
             is_thread=True,
             thread_weight_signals={"age_days": 0.0, "mention_count": 2},
             thread_next_action_hint="Review token storage approach",
-            thread_context_refs=[ThreadContextRef(type="wiki_page", id="src-1", summary="")],
+            thread_context_refs=[
+                ThreadContextRef(ref_type="ingest", ref_id="src-1", ref_summary="")
+            ],
             produced_by_thread=False,
         )
         defaults.update(overrides)
@@ -131,8 +149,8 @@ class TestMimirPageMetaWithThreadFields:
     def test_thread_context_refs_set(self) -> None:
         meta = self._make_meta()
         assert len(meta.thread_context_refs) == 1
-        assert meta.thread_context_refs[0].type == "wiki_page"
-        assert meta.thread_context_refs[0].id == "src-1"
+        assert meta.thread_context_refs[0].ref_type == "ingest"
+        assert meta.thread_context_refs[0].ref_id == "src-1"
 
     def test_produced_by_thread_false(self) -> None:
         meta = self._make_meta()
@@ -149,22 +167,24 @@ class TestMimirPageMetaWithThreadFields:
         assert meta.category == "technical"
         assert meta.source_ids == ["src-1"]
 
-    def test_assigned_thread_state(self) -> None:
-        meta = self._make_meta(thread_state=ThreadState.assigned)
-        assert meta.thread_state == ThreadState.assigned
-
     def test_pulling_thread_state(self) -> None:
         meta = self._make_meta(thread_state=ThreadState.pulling)
         assert meta.thread_state == ThreadState.pulling
 
+    def test_blocked_thread_state(self) -> None:
+        meta = self._make_meta(thread_state=ThreadState.blocked)
+        assert meta.thread_state == ThreadState.blocked
+
     def test_multiple_context_refs(self) -> None:
         refs = [
-            ThreadContextRef(type="wiki_page", id="src-1", summary=""),
-            ThreadContextRef(type="conversation", id="sess-99", summary="live discussion"),
+            ThreadContextRef(ref_type="ingest", ref_id="src-1", ref_summary=""),
+            ThreadContextRef(
+                ref_type="conversation", ref_id="sess-99", ref_summary="live discussion"
+            ),
         ]
         meta = self._make_meta(thread_context_refs=refs)
         assert len(meta.thread_context_refs) == 2
-        assert meta.thread_context_refs[1].id == "sess-99"
+        assert meta.thread_context_refs[1].ref_id == "sess-99"
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +211,8 @@ class TestMimirPageMetaWithoutThreadFields:
     def test_is_thread_is_false(self) -> None:
         assert self._make_plain_meta().is_thread is False
 
-    def test_thread_weight_signals_is_empty_dict(self) -> None:
-        assert self._make_plain_meta().thread_weight_signals == {}
+    def test_thread_weight_signals_is_none(self) -> None:
+        assert self._make_plain_meta().thread_weight_signals is None
 
     def test_thread_next_action_hint_is_none(self) -> None:
         assert self._make_plain_meta().thread_next_action_hint is None

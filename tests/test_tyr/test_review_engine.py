@@ -175,6 +175,7 @@ class StubTracker(TrackerPort):
         phase_tracker_id: str | None = None,
         saga_tracker_id: str | None = None,
         chronicle_summary: str | None = None,
+        reviewer_session_id: str | None = None,
     ) -> Raid:
         raid = self.raids.get(tracker_id)
         if raid is None:
@@ -200,6 +201,11 @@ class StubTracker(TrackerPort):
             retry_count=retry_count if retry_count is not None else raid.retry_count,
             created_at=raid.created_at,
             updated_at=datetime.now(UTC),
+            reviewer_session_id=(
+                reviewer_session_id
+                if reviewer_session_id is not None
+                else raid.reviewer_session_id
+            ),
         )
         self.raids[tracker_id] = updated
         return updated
@@ -356,6 +362,7 @@ def _make_raid(
     branch: str | None = "raid/test-branch",
     declared_files: list[str] | None = None,
     retry_count: int = 0,
+    reviewer_session_id: str | None = None,
 ) -> Raid:
     return Raid(
         id=raid_id or uuid4(),
@@ -376,6 +383,7 @@ def _make_raid(
         retry_count=retry_count,
         created_at=NOW,
         updated_at=NOW,
+        reviewer_session_id=reviewer_session_id,
     )
 
 
@@ -1441,3 +1449,219 @@ class TestWorkingSessionCleanup:
         assert any("Working Session Transcript" in title for _, title, _ in repo.attached_documents)
         # Session should NOT be stopped for escalation
         assert raid.session_id not in volundr.stopped_sessions
+
+
+# ---------------------------------------------------------------------------
+# Regression: ReviewEngine respects persona LLM via default_llm_config
+# (NIU-645 — RavnDispatcher honors persona.llm + flock LLM config)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewEngineLLMConfigRegression:
+    """Changing default_llm_config on RavnDispatcher changes the model used."""
+
+    @pytest.mark.asyncio
+    async def test_changing_llm_config_changes_model_dispatched(self) -> None:
+        """When reviewer persona has llm.primary_alias='powerful' but a cheap
+        global override is set, the cheap model is used.
+
+        This is the NIU-645 regression: previously RavnDispatcher always used
+        the hardcoded constructor arg regardless of persona or config.
+        """
+        import json
+
+        import httpx
+        import respx
+
+        from tyr.adapters.ravn_dispatcher import RavnDispatcher
+
+        captured_models: list[str] = []
+
+        def mock_llm(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            captured_models.append(body["model"])
+            outcome = "---outcome---\nverdict: approve\nreason: clean\n---end---"
+            return httpx.Response(
+                200,
+                json={
+                    "content": [{"type": "text", "text": outcome}],
+                    "usage": {"input_tokens": 10, "output_tokens": 20},
+                },
+            )
+
+        with respx.mock:
+            respx.post("http://ravn.test/v1/messages").mock(side_effect=mock_llm)
+
+            # Dispatcher configured with explicit global model override
+            ravn = RavnDispatcher(
+                base_url="http://ravn.test",
+                api_key="key",
+                model="claude-sonnet-4-6",  # constructor default
+                default_llm_config={"model": "claude-opus-4-6"},  # global override
+            )
+            try:
+                tracker = StubTracker()
+                git = StubGit()
+                cfg = ReviewConfig(
+                    reviewer_session_enabled=False,
+                    ravn_arbiter_enabled=True,
+                    auto_approve_threshold=0.80,
+                    max_retries=3,
+                )
+
+                class _FakeFactory:
+                    async def for_owner(self, owner_id: str) -> list[StubTracker]:
+                        return [tracker]
+
+                    async def primary_for_owner(self, owner_id: str) -> StubTracker | None:
+                        return None
+
+                engine = ReviewEngine(
+                    tracker_factory=StubTrackerFactory(tracker),
+                    volundr_factory=_FakeFactory(),
+                    git=git,
+                    review_config=cfg,
+                    event_bus=InMemoryEventBus(),
+                    ravn_dispatcher=ravn,
+                )
+
+                raid = _make_raid(confidence=0.9)
+                tracker.raids[raid.tracker_id] = raid
+                tracker.saga = _make_saga()
+                tracker.phase = _make_phase()
+                git.pr_statuses[raid.pr_id] = PRStatus(
+                    pr_id=raid.pr_id,
+                    url="https://github.com/org/repo/pull/42",
+                    state="open",
+                    mergeable=True,
+                    ci_passed=True,
+                )
+                git.changed_files[raid.pr_id] = list(raid.declared_files)
+
+                await engine.evaluate(raid.tracker_id, "owner-llm-test")
+            finally:
+                await ravn.close()
+
+        # The model used must be the one from default_llm_config, not the constructor default
+        assert len(captured_models) >= 1
+        assert captured_models[0] == "claude-opus-4-6", (
+            f"Expected claude-opus-4-6 (from default_llm_config), "
+            f"got {captured_models[0]!r} — NIU-645 regression"
+        )
+
+    @pytest.mark.asyncio
+    async def test_different_llm_config_uses_different_model(self) -> None:
+        """Two dispatchers with different default_llm_config use different models.
+
+        Verifies that swapping the config changes behavior without restarting —
+        the key acceptance criterion for NIU-645.
+        """
+        import json
+
+        import httpx
+        import respx
+
+        from tyr.adapters.ravn_dispatcher import RavnDispatcher
+
+        async def _run_with_config(model_override: str) -> str:
+            """Run one dispatch and return the model that was sent to the API."""
+            sent_models: list[str] = []
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                body = json.loads(request.content)
+                sent_models.append(body["model"])
+                outcome = "---outcome---\nverdict: escalate\nreason: test\n---end---"
+                return httpx.Response(
+                    200,
+                    json={
+                        "content": [{"type": "text", "text": outcome}],
+                        "usage": {"input_tokens": 5, "output_tokens": 10},
+                    },
+                )
+
+            with respx.mock:
+                respx.post("http://ravn2.test/v1/messages").mock(side_effect=handler)
+
+                ravn = RavnDispatcher(
+                    base_url="http://ravn2.test",
+                    api_key="key",
+                    model="claude-sonnet-4-6",
+                    default_llm_config={"model": model_override},
+                )
+                try:
+                    tracker = StubTracker()
+                    git = StubGit()
+                    cfg = ReviewConfig(
+                        reviewer_session_enabled=False,
+                        ravn_arbiter_enabled=True,
+                    )
+
+                    class _FF:
+                        async def for_owner(self, owner_id: str) -> list[StubTracker]:
+                            return [tracker]
+
+                        async def primary_for_owner(self, owner_id: str) -> StubTracker | None:
+                            return None
+
+                    engine = ReviewEngine(
+                        tracker_factory=StubTrackerFactory(tracker),
+                        volundr_factory=_FF(),
+                        git=git,
+                        review_config=cfg,
+                        event_bus=InMemoryEventBus(),
+                        ravn_dispatcher=ravn,
+                    )
+                    raid = _make_raid(confidence=0.5)
+                    tracker.raids[raid.tracker_id] = raid
+                    git.pr_statuses[raid.pr_id] = PRStatus(
+                        pr_id=raid.pr_id,
+                        url="https://github.com/org/repo/pull/42",
+                        state="open",
+                        mergeable=True,
+                        ci_passed=True,
+                    )
+                    await engine.evaluate(raid.tracker_id, "owner-diff-model")
+                finally:
+                    await ravn.close()
+
+            return sent_models[0] if sent_models else ""
+
+        model_a = await _run_with_config("claude-opus-4-6")
+        model_b = await _run_with_config("claude-haiku-4-5-20251001")
+
+        assert model_a == "claude-opus-4-6"
+        assert model_b == "claude-haiku-4-5-20251001"
+        assert model_a != model_b
+
+
+# ---------------------------------------------------------------------------
+# Reviewer-failure handler — recovery from spawn failures (e.g. cap reached)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerFailure:
+    @pytest.mark.asyncio
+    async def test_reviewer_failure_marks_raid_failed(self) -> None:
+        """When a tracked reviewer dies, the raid transitions to FAILED."""
+        engine, tracker, _git, _ev, _vol = _make_engine()
+        reviewer_id = "reviewer-session-xyz"
+        raid = _make_raid(
+            tracker_id="NIU-777",
+            status=RaidStatus.REVIEW,
+            reviewer_session_id=reviewer_id,
+        )
+        tracker.raids[raid.tracker_id] = raid
+        engine._reviewer_sessions[reviewer_id] = (raid.tracker_id, "dev-user")
+
+        await engine.handle_reviewer_failure(reviewer_id, reason="Max concurrent")
+
+        updated = tracker.raids[raid.tracker_id]
+        assert updated.status == RaidStatus.FAILED
+        assert reviewer_id not in engine._reviewer_sessions
+
+    @pytest.mark.asyncio
+    async def test_reviewer_failure_for_untracked_session_is_noop(self) -> None:
+        """Failures for unknown sessions are silently ignored."""
+        engine, _t, _g, _e, _v = _make_engine()
+        # Should not raise even though no mapping exists.
+        await engine.handle_reviewer_failure("nope", reason="something")

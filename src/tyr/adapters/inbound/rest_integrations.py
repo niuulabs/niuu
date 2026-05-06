@@ -7,6 +7,7 @@ import hmac
 import logging
 import time
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
@@ -67,7 +68,7 @@ class IntegrationCreateRequest(BaseModel):
         min_length=1,
         description="Secret value (PAT, token) — stored in credential store, never persisted raw",
     )
-    config: dict[str, str] = Field(
+    config: dict[str, Any] = Field(
         default_factory=dict,
         description="Adapter-specific configuration",
     )
@@ -152,7 +153,7 @@ def create_integrations_router() -> APIRouter:
         )
         if not test_result.success:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Connection test failed: {test_result.message}",
             )
 
@@ -266,14 +267,12 @@ def create_telegram_setup_router(
 ) -> APIRouter:
     """Create router for the Telegram deeplink setup endpoint."""
     router = APIRouter(
-        prefix="/api/v1/tyr/telegram",
+        prefix="/api/v1/tyr",
         tags=["Tyr Telegram"],
     )
 
-    @router.get(
-        "/setup",
-        response_model=TelegramSetupResponse,
-    )
+    @router.get("/telegram/setup", response_model=TelegramSetupResponse)
+    @router.get("/integrations/telegram/setup", response_model=TelegramSetupResponse)
     async def telegram_setup(
         principal: Principal = Depends(extract_principal),
     ) -> TelegramSetupResponse:

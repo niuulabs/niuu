@@ -225,6 +225,69 @@ describe('useTrackerBrowser', () => {
     expect(vi.mocked(trackerService.importProject).mock.calls.length).toBe(callsBefore);
   });
 
+  it('should handle importProject error', async () => {
+    vi.mocked(trackerService.importProject).mockRejectedValue(new Error('import fail'));
+    const { result } = renderHook(() => useTrackerBrowser());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      result.current.selectProject('p-1');
+    });
+    await waitFor(() => expect(result.current.selectedProject).not.toBeNull());
+
+    act(() => {
+      result.current.toggleRepo('https://github.com/org/repo');
+    });
+
+    await act(async () => {
+      try {
+        await result.current.importProject();
+      } catch {
+        // expected
+      }
+    });
+    expect(result.current.error).toBe('import fail');
+  });
+
+  it('should handle importProject non-Error rejection', async () => {
+    vi.mocked(trackerService.importProject).mockRejectedValue('string import error');
+    const { result } = renderHook(() => useTrackerBrowser());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      result.current.selectProject('p-1');
+    });
+    await waitFor(() => expect(result.current.selectedProject).not.toBeNull());
+
+    act(() => {
+      result.current.toggleRepo('https://github.com/org/repo');
+    });
+
+    await act(async () => {
+      try {
+        await result.current.importProject();
+      } catch {
+        // expected
+      }
+    });
+    expect(result.current.error).toBe('string import error');
+  });
+
+  it('should set branch for non-matching repo id (no-op)', async () => {
+    const { result } = renderHook(() => useTrackerBrowser());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      result.current.toggleRepo('https://github.com/org/repo');
+    });
+
+    act(() => {
+      result.current.setBranch('nonexistent-repo', 'develop');
+    });
+    // Original repo unchanged
+    expect(result.current.selectedRepos[0].branch).toBe('main');
+  });
+
   it('should noop import when no repos selected', async () => {
     const { result } = renderHook(() => useTrackerBrowser());
     await waitFor(() => expect(result.current.loading).toBe(false));

@@ -19,8 +19,16 @@ _DEFAULT_AUTO_CONTINUE = False
 class PostgresDispatcherRepository(DispatcherRepository):
     """Dispatcher state persistence backed by asyncpg."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        auto_continue_default: bool | None = None,
+    ) -> None:
         self._pool = pool
+        self._auto_continue_default = (
+            auto_continue_default if auto_continue_default is not None else _DEFAULT_AUTO_CONTINUE
+        )
 
     async def get_or_create(self, owner_id: str) -> DispatcherState:
         row = await self._pool.fetchrow(
@@ -36,7 +44,7 @@ class PostgresDispatcherRepository(DispatcherRepository):
             _DEFAULT_RUNNING,
             _DEFAULT_THRESHOLD,
             _DEFAULT_MAX_CONCURRENT_RAIDS,
-            _DEFAULT_AUTO_CONTINUE,
+            self._auto_continue_default,
         )
         return self._row_to_state(row)
 

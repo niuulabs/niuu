@@ -1,115 +1,228 @@
-"""CompositeMeshAdapter — tries infra transport first, falls back to nng (NIU-517).
+"""CompositeMeshAdapter — all-active multi-transport mesh.
 
-Designed for hybrid Pi+cluster deployments where a Pi Ravn may be talking to
-a cluster Ravn: the infra (Sleipnir/RabbitMQ) adapter is attempted first, and
-on failure the nng adapter is used as a fallback.
+Runs ALL configured mesh transports simultaneously. This is NOT a failover
+chain — events are fanned out to all transports on publish, and the first
+successful response wins on send.
 
-For ``publish`` and ``subscribe`` the composite delegates to both adapters so
-that peers on either transport receive the message.  For ``send`` the infra
-adapter is tried first; if it raises an exception the nng adapter is tried
-next.  ``start`` and ``stop`` are applied to both adapters.
+**Pub/sub**: ``publish()`` broadcasts to ALL transports (fire-and-forget).
+``subscribe()`` registers the handler on ALL transports, so events arrive
+regardless of which transport the sender used.
+
+**RPC (send)**: Tries each transport in order until one succeeds. The order
+is determined by the config list order.
+
+**Why all-active?**: In mixed environments (some peers reachable via nng,
+others via webhook), you don't know which transport will reach which peer.
+By running all transports, you maximize connectivity without manual routing.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from ravn.domain.events import RavnEvent
-from ravn.ports.mesh import MeshPort, PeerNotFoundError
+from ravn.ports.mesh import PeerNotFoundError
 
 logger = logging.getLogger(__name__)
 
 
 class CompositeMeshAdapter:
-    """Mesh adapter that delegates to *primary* first and *fallback* on error.
+    """All-active multi-transport mesh adapter.
+
+    Runs all configured transports simultaneously. Publish fans out to all,
+    subscribe registers on all, send tries each until success.
 
     Parameters
     ----------
-    primary:
-        The preferred transport (typically ``SleipnirMeshAdapter``).
-    fallback:
-        The fallback transport (typically ``NngMeshAdapter``).
+    transports:
+        List of mesh adapters (must implement MeshPort protocol).
+    own_peer_id:
+        This Ravn's unique peer identifier.
+    **kwargs:
+        Ignored — allows forward compatibility with new config fields.
     """
 
-    def __init__(self, primary: MeshPort, fallback: MeshPort) -> None:
-        self._primary = primary
-        self._fallback = fallback
+    def __init__(
+        self,
+        transports: list[Any],
+        own_peer_id: str = "",
+        **kwargs: Any,  # noqa: ARG002 — ignored
+    ) -> None:
+        self._transports = transports
+        self._own_peer_id = own_peer_id
+        self._rpc_handler: Callable[[dict], Awaitable[dict]] | None = None
+
+    # ------------------------------------------------------------------
+    # MeshPort interface
+    # ------------------------------------------------------------------
 
     async def publish(self, event: RavnEvent, topic: str) -> None:
-        """Publish *event* via both adapters (best-effort)."""
-        try:
-            await self._primary.publish(event, topic)
-        except Exception as exc:
-            logger.debug("composite_mesh: primary publish failed (%s), trying fallback", exc)
-        try:
-            await self._fallback.publish(event, topic)
-        except Exception as exc:
-            logger.debug("composite_mesh: fallback publish failed (%s)", exc)
+        """Broadcast event to all transports (fan-out)."""
+        if not self._transports:
+            return
+
+        # Fan out to all transports concurrently
+        tasks = [self._safe_publish(transport, event, topic) for transport in self._transports]
+        await asyncio.gather(*tasks)
 
     async def subscribe(
         self,
         topic: str,
         handler: Callable[[RavnEvent], Awaitable[None]],
     ) -> None:
-        """Subscribe to *topic* on both adapters."""
-        try:
-            await self._primary.subscribe(topic, handler)
-        except Exception as exc:
-            logger.debug("composite_mesh: primary subscribe failed (%s)", exc)
-        try:
-            await self._fallback.subscribe(topic, handler)
-        except Exception as exc:
-            logger.debug("composite_mesh: fallback subscribe failed (%s)", exc)
+        """Register handler on ALL transports."""
+        for transport in self._transports:
+            try:
+                await transport.subscribe(topic, handler)
+            except Exception as exc:
+                logger.debug(
+                    "composite_mesh: subscribe failed on %s: %s",
+                    type(transport).__name__,
+                    exc,
+                )
 
     async def unsubscribe(self, topic: str) -> None:
-        """Unsubscribe from *topic* on both adapters."""
-        for adapter in (self._primary, self._fallback):
+        """Unsubscribe from ALL transports."""
+        for transport in self._transports:
             try:
-                await adapter.unsubscribe(topic)
+                await transport.unsubscribe(topic)
             except Exception as exc:
-                logger.debug("composite_mesh: unsubscribe failed on %s: %s", adapter, exc)
+                logger.debug(
+                    "composite_mesh: unsubscribe failed on %s: %s",
+                    type(transport).__name__,
+                    exc,
+                )
 
     async def send(
         self,
         target_peer_id: str,
         message: dict,
         *,
-        timeout_s: float = 10.0,
+        timeout_s: float | None = None,
     ) -> dict:
-        """Send *message* to *target_peer_id*, trying primary then fallback.
+        """Send message to peer, trying each transport until success.
 
-        Raises ``PeerNotFoundError`` only if both adapters report the peer as
-        not found.  Raises the original ``TimeoutError`` if both adapters
-        time out.
+        Transports are tried in config order. The first successful response
+        is returned. If all transports fail, raises the last exception.
         """
-        try:
-            return await self._primary.send(target_peer_id, message, timeout_s=timeout_s)
-        except PeerNotFoundError:
-            logger.debug(
-                "composite_mesh: peer %r not found in primary, trying fallback",
-                target_peer_id,
-            )
-        except Exception as exc:
-            logger.debug("composite_mesh: primary send failed (%s), trying fallback", exc)
+        if not self._transports:
+            raise PeerNotFoundError(target_peer_id)
 
-        return await self._fallback.send(target_peer_id, message, timeout_s=timeout_s)
+        last_error: Exception | None = None
+
+        for transport in self._transports:
+            try:
+                return await transport.send(target_peer_id, message, timeout_s=timeout_s)
+            except PeerNotFoundError:
+                # Peer not in this transport's discovery — try next
+                last_error = PeerNotFoundError(target_peer_id)
+                continue
+            except TimeoutError as exc:
+                # Timeout on this transport — try next
+                last_error = exc
+                logger.debug(
+                    "composite_mesh: send timeout on %s for peer %s",
+                    type(transport).__name__,
+                    target_peer_id,
+                )
+                continue
+            except Exception as exc:
+                # Other error — log and try next
+                last_error = exc
+                logger.debug(
+                    "composite_mesh: send failed on %s: %s",
+                    type(transport).__name__,
+                    exc,
+                )
+                continue
+
+        # All transports failed
+        if last_error is not None:
+            raise last_error
+        raise PeerNotFoundError(target_peer_id)
 
     async def start(self) -> None:
-        """Start both adapters."""
-        try:
-            await self._primary.start()
-        except Exception as exc:
-            logger.warning("composite_mesh: primary start failed: %s", exc)
-        try:
-            await self._fallback.start()
-        except Exception as exc:
-            logger.warning("composite_mesh: fallback start failed: %s", exc)
+        """Start all transports."""
+        for transport in self._transports:
+            try:
+                await transport.start()
+            except Exception as exc:
+                logger.warning(
+                    "composite_mesh: start failed on %s: %s",
+                    type(transport).__name__,
+                    exc,
+                )
+
+        # Propagate RPC handler to all transports
+        if self._rpc_handler is not None:
+            self._set_rpc_handler_on_all(self._rpc_handler)
+
+        transport_names = [type(t).__name__ for t in self._transports]
+        logger.info(
+            "composite_mesh: started peer=%s transports=%s",
+            self._own_peer_id,
+            transport_names,
+        )
 
     async def stop(self) -> None:
-        """Stop both adapters."""
-        for adapter in (self._primary, self._fallback):
+        """Stop all transports."""
+        for transport in self._transports:
             try:
-                await adapter.stop()
+                await transport.stop()
             except Exception as exc:
-                logger.debug("composite_mesh: stop failed on %s: %s", adapter, exc)
+                logger.debug(
+                    "composite_mesh: stop failed on %s: %s",
+                    type(transport).__name__,
+                    exc,
+                )
+
+        logger.info("composite_mesh: stopped peer=%s", self._own_peer_id)
+
+    def set_rpc_handler(self, handler: Callable[[dict], Awaitable[dict]]) -> None:
+        """Register RPC handler on all transports."""
+        self._rpc_handler = handler
+        self._set_rpc_handler_on_all(handler)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _safe_publish(
+        self,
+        transport: Any,
+        event: RavnEvent,
+        topic: str,
+    ) -> None:
+        """Publish to a transport, catching exceptions."""
+        try:
+            await transport.publish(event, topic)
+        except Exception as exc:
+            logger.debug(
+                "composite_mesh: publish failed on %s: %s",
+                type(transport).__name__,
+                exc,
+            )
+
+    def _set_rpc_handler_on_all(
+        self,
+        handler: Callable[[dict], Awaitable[dict]],
+    ) -> None:
+        """Set RPC handler on all transports that support it."""
+        for transport in self._transports:
+            if hasattr(transport, "set_rpc_handler"):
+                try:
+                    transport.set_rpc_handler(handler)
+                except Exception as exc:
+                    logger.debug(
+                        "composite_mesh: set_rpc_handler failed on %s: %s",
+                        type(transport).__name__,
+                        exc,
+                    )
+
+    @property
+    def transports(self) -> list[Any]:
+        """Return list of active transports (for introspection)."""
+        return list(self._transports)

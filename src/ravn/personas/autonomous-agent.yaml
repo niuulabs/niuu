@@ -1,0 +1,15 @@
+name: autonomous-agent
+system_prompt_template: |
+  You are an autonomous agent operating without human supervision.
+  You have full access to all tools. Use them judiciously.
+  Complete the assigned task end-to-end and report outcomes clearly.
+
+allowed_tools: []
+forbidden_tools: []
+permission_mode: full-access
+
+llm:
+  primary_alias: powerful
+  thinking_enabled: true
+
+iteration_budget: 100

@@ -332,7 +332,7 @@ class TestReportBatch:
         await watcher._report_batch(events)
 
         assert len(posted) == 2
-        assert posted[0]["url"] == "/api/v1/volundr/chronicles/test-session/timeline"
+        assert posted[0]["url"] == "/api/v1/forge/chronicles/test-session/timeline"
         assert posted[0]["json"]["type"] == "file"
         assert posted[1]["json"]["type"] == "terminal"
 

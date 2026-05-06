@@ -53,6 +53,7 @@ def _make_drive_loop(cascade_enabled: bool = False) -> DriveLoop:
     agent_factory = MagicMock(return_value=AsyncMock())
     cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
     settings = MagicMock()
+    settings.skuld.enabled = False
     settings.cascade.enabled = cascade_enabled
     settings.budget.daily_cap_usd = 1.0
     settings.budget.warn_at_percent = 80
@@ -341,6 +342,7 @@ class TestDriveLoopCaptureIntegration:
 
         cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
         settings = MagicMock()
+        settings.skuld.enabled = False
         settings.cascade.enabled = True
         dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
 
@@ -380,6 +382,7 @@ class TestDriveLoopCaptureIntegration:
 
         cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=1, task_queue_max=10)
         settings = MagicMock()
+        settings.skuld.enabled = False
         settings.cascade.enabled = False
         dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
 
@@ -412,6 +415,7 @@ class TestDriveLoopCaptureIntegration:
 
         cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=1, task_queue_max=10)
         settings = MagicMock()
+        settings.skuld.enabled = False
         settings.cascade.enabled = True
         dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
 
@@ -619,6 +623,7 @@ async def test_integration_two_local_tasks_progress_and_collect():
 
     cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
     settings = MagicMock()
+    settings.skuld.enabled = False
     settings.cascade.enabled = True
     dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
 
@@ -650,14 +655,16 @@ async def test_integration_two_local_tasks_progress_and_collect():
         progress1 = dl.task_status(task_1, include_progress=True)
         assert isinstance(progress1, dict)
         assert progress1["status"] == "running"
-        assert len(progress1["events"]) == 1
-        assert "task1 thinking" in progress1["events"][0]["summary"]
+        assert len(progress1["events"]) == 2
+        assert progress1["events"][0]["type"] == "task_started"
+        assert "task1 thinking" in progress1["events"][1]["summary"]
 
         # Poll progress on task 2 while it's running
         progress2 = dl.task_status(task_2, include_progress=True)
         assert isinstance(progress2, dict)
         assert progress2["status"] == "running"
-        assert len(progress2["events"]) == 1
+        assert len(progress2["events"]) == 2
+        assert progress2["events"][0]["type"] == "task_started"
 
         # Complete task 1 first — emit RESPONSE then release barrier
         await ch1.emit(_make_event(RavnEventType.RESPONSE, {"text": "task1 completed output"}))

@@ -208,4 +208,53 @@ describe('useContextSidebar', () => {
     expect(result.current.tokenUsage?.averageBurn).toBe(0);
     expect(result.current.tokenUsage?.peakBurn).toBe(0);
   });
+
+  it('cancels in-flight MCP fetch when session changes', async () => {
+    // Make the first fetch hang
+    let resolveFirst: () => void = () => {};
+    mockGetSessionMcpServers.mockImplementationOnce(
+      () =>
+        new Promise<never[]>(resolve => {
+          resolveFirst = () => resolve([]);
+        })
+    );
+
+    const session2: VolundrSession = { ...mockSession, id: 'session-002' };
+
+    const { rerender } = renderHook(
+      ({ session }) => useContextSidebar(session, mockChronicle, mockPR),
+      { initialProps: { session: mockSession } }
+    );
+
+    // First fetch is in flight
+    expect(mockGetSessionMcpServers).toHaveBeenCalledWith('session-001');
+
+    // Change session, which cancels the first and starts a new fetch
+    rerender({ session: session2 });
+
+    await waitFor(() => {
+      expect(mockGetSessionMcpServers).toHaveBeenCalledWith('session-002');
+    });
+
+    // Resolve the first (should be ignored because cancelled)
+    resolveFirst!();
+
+    // Verify the second fetch completed
+    await waitFor(() => {
+      expect(mockGetSessionMcpServers).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('returns mcpServersLoading as false when session is null', () => {
+    const { result } = renderHook(() => useContextSidebar(null, mockChronicle, mockPR));
+    expect(result.current.mcpServersLoading).toBe(false);
+  });
+
+  it('handles custom task type not in TASK_TYPES', () => {
+    const session = { ...mockSession, taskType: 'custom-task' };
+    const { result } = renderHook(() => useContextSidebar(session, mockChronicle, mockPR));
+
+    expect(result.current.modelConfig?.taskType).toBe('custom-task');
+    expect(result.current.modelConfig?.taskDescription).toBe('');
+  });
 });

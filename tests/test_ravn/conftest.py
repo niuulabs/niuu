@@ -101,6 +101,7 @@ def _make_drive_loop(
         heartbeat_interval_seconds=heartbeat_seconds,
     )
     settings = MagicMock()
+    settings.skuld.enabled = False
     settings.cascade.enabled = False
     settings.budget.daily_cap_usd = 1.0
     settings.budget.warn_at_percent = 80

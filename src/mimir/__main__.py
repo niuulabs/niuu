@@ -4,9 +4,12 @@ Usage::
 
     python -m mimir serve --path ~/.ravn/mimir --port 7477
     python -m mimir serve --name shared --role shared --announce-url https://mimir.odin.niuu.world
+    python -m mimir mcp --path ~/.ravn/mimir
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import typer
 import uvicorn
@@ -37,6 +40,33 @@ def serve(
     )
     fastapi_app = create_app(config)
     uvicorn.run(fastapi_app, host=host, port=port)
+
+
+@app.command()
+def mcp(
+    path: str = typer.Option("~/.ravn/mimir", help="Root directory for the Mímir store."),
+    name: str = typer.Option("local", help="Instance name reported in the MCP handshake."),
+) -> None:
+    """Run the Mímir MCP server in stdio mode (no running Mímir service required).
+
+    Configure in .mcp.json::
+
+        {
+          "mcpServers": {
+            "mimir": {
+              "type": "stdio",
+              "command": "python3",
+              "args": ["-m", "mimir", "mcp", "--path", "~/.ravn/mimir"]
+            }
+          }
+        }
+    """
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from mimir.mcp import MimirMcpServer
+
+    adapter = MarkdownMimirAdapter(root=path)
+    server = MimirMcpServer(adapter=adapter, name=name)
+    asyncio.run(server.run_stdio())
 
 
 def main() -> None:

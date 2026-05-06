@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from niuu.ports.plugin import Service, ServiceDefinition, ServicePlugin
+from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin
 
 
 class _NiuuStub(Service):
@@ -51,6 +51,15 @@ class NiuuPlugin(ServicePlugin):
         from niuu.main import create_app
 
         return create_app()
+
+    def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
+        return (
+            APIRouteDomain(
+                name="niuu-api",
+                prefixes=("/api/v1/niuu",),
+                description="Shared Niuu API routes.",
+            ),
+        )
 
     def create_api_client(self) -> Any:
         from niuu.cli_api_client import CLIAPIClient

@@ -145,6 +145,9 @@ class WakefulnessTrigger(TriggerPort):
                 raise
             except Exception as exc:
                 logger.warning("WakefulnessTrigger: poll error: %s", exc)
+                # Prevent tight loop on repeated errors
+                await asyncio.sleep(self._config.poll_interval_seconds)
+                continue
 
             await asyncio.sleep(self._config.poll_interval_seconds)
 
@@ -271,6 +274,9 @@ class WakefulnessTrigger(TriggerPort):
                 )
         except Exception as exc:
             logger.warning("WakefulnessTrigger: could not load state: %s", exc)
+            # Reset state on load failure to avoid stuck cooldowns
+            self._last_reflection_at = None
+            self._last_deep_reflection_at = None
 
     def _save_state(self) -> None:
         """Persist reflection timestamps to the state file."""

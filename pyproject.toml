@@ -10,30 +10,30 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "pyyaml>=6.0",
-    "asyncpg>=0.29",
-    "httpx>=0.27",
+    "claude-agent-sdk==0.1.74",
+    "asyncpg>=0.31.0",
+    "httpx>=0.28.1",
     "fastapi>=0.109",
-    "python-multipart>=0.0.9",
+    "python-multipart>=0.0.27",
     "PyJWT>=2.8",
-    "uvicorn>=0.27",
-    "websockets>=12.0",
-    "python-on-whales>=0.70",
+    "uvicorn>=0.44.0",
+    "websockets>=16.0",
+    "python-on-whales>=0.81.0",
     "gitpython>=3.1",
-    "msgpack>=1.0",
-    "typer>=0.24.1",
+    "msgpack>=1.1.2",
+    "typer>=0.25.1",
     "respx>=0.21",
+    "pynng>=0.9.0",
+    "zeroconf>=0.148.0",
+    "python-telegram-bot>=21.0",
 ]
 
 [project.optional-dependencies]
-nng = [
-    "pynng>=0.9.0",
-    "zeroconf>=0.131",
-]
 nats = [
-    "nats-py>=2.3",
+    "nats-py>=2.14.0",
 ]
 test = [
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
     "respx>=0.22.0",
@@ -49,20 +49,20 @@ k8s = [
 ]
 otel = [
     "opentelemetry-api>=1.25",
-    "opentelemetry-sdk>=1.25",
+    "opentelemetry-sdk>=1.41.1",
     "opentelemetry-exporter-otlp-proto-grpc>=1.25",
 ]
 encryption = [
     "cryptography>=42.0",
 ]
 browser = [
-    "playwright>=1.44",
+    "playwright>=1.59.0",
 ]
 infra = [
     "redis>=5.0",
 ]
 cli = [
-    "typer>=0.12",
+    "typer>=0.25.1",
     "textual>=0.79",
     "nuitka>=2.1",
     "ordered-set>=4.1",
@@ -72,19 +72,19 @@ tui = [
     "textual>=0.79",
 ]
 dev = [
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.8,<0.16",
+    "ruff>=0.15.12,<0.16",
     "respx>=0.22.0",
     "cryptography>=42.0",
     "textual>=0.79",
-    "typer>=0.24.1",
-    "nats-py>=2.3",
+    "typer>=0.25.1",
+    "nats-py>=2.14.0",
 ]
 
 [project.scripts]
-niuu = "cli.main:main"
+niuu = "niuu.__main__:main"
 volundr = "volundr.main:main"
 skuld = "skuld.broker:main"
 bifrost = "bifrost.__main__:main"
@@ -99,8 +99,11 @@ ravn-mimir = "ravn.cli.commands:mimir_main"
 niuu = "niuu.plugin:NiuuPlugin"
 volundr = "volundr.plugin:VolundrPlugin"
 tyr = "tyr.plugin:TyrPlugin"
+mimir = "mimir.plugin:MimirPlugin"
 ravn = "ravn.plugin:RavnPlugin"
 bifrost = "bifrost.plugin:BifrostPlugin"
+observatory = "observatory.plugin:ObservatoryPlugin"
+personas = "personas.plugin:PersonasPlugin"
 
 [project.urls]
 Homepage = "https://github.com/niuulabs/volundr"
@@ -113,19 +116,21 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cli", "src/niuu", "src/volundr", "src/tyr", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir"]
+packages = ["src/cli", "src/niuu", "src/volundr", "src/tyr", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-v --tb=short -m 'not integration and not broker'"
+addopts = "-v --tb=short -m 'not integration and not broker and not kind_integration'"
 markers = [
     "integration: tests that require a real PostgreSQL database",
     "broker: tests that require real message broker services (NATS, RabbitMQ, Redis)",
     "ravn: tests for the Ravn agent module",
     "e2e: end-to-end tests for full agent conversation flows",
     "browser: tests that require a real browser (Playwright + Chromium)",
+    "kind_integration: tests that require a live kind cluster (set KIND_INTEGRATION=1 to enable)",
 ]
 
 [tool.ruff]
@@ -136,12 +141,30 @@ line-length = 100
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.coverage.run]
-source = ["src/volundr", "src/cli", "src/tyr", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost"]
+source = ["src/volundr", "src/cli", "src/tyr", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir"]
 branch = true
-# Textual TUI widgets (src/ravn/tui/) require a running terminal and cannot be
-# exercised with plain pytest. They are excluded from coverage measurement until
-# Textual Pilot-based widget tests are added.
-omit = ["src/ravn/tui/*"]
+# Textual TUI widgets require a running terminal and cannot be exercised with
+# plain pytest. They are excluded from coverage measurement until Textual
+# Pilot-based widget tests are added. The same applies to tyr/tui/ and
+# tyr/plugin.py (CLI plugin registration with TUI imports).
+# Sleipnir transport adapters require live broker services (NATS, NNG, RabbitMQ)
+# and cannot be tested in CI without those services running.
+# Ravn infrastructure adapters that require live Kubernetes, PostgreSQL, mDNS,
+# or HTTP services are also excluded from coverage measurement.
+omit = [
+    "src/ravn/tui/*",
+    "src/tyr/tui/*",
+    "src/tyr/plugin.py",
+    "src/sleipnir/adapters/nats_transport.py",
+    "src/sleipnir/adapters/nng_transport.py",
+    "src/sleipnir/adapters/rabbitmq.py",
+    "src/ravn/adapters/checkpoint/postgres.py",
+    "src/ravn/adapters/checkpoint/sleipnir_trigger.py",
+    "src/ravn/adapters/discovery/mdns.py",
+    "src/ravn/adapters/mesh/webhook.py",
+    "src/ravn/adapters/mesh/composite.py",
+    "src/ravn/adapters/spawn/kubernetes_spawn.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -152,8 +175,8 @@ exclude_lines = [
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.8,<0.15",
+    "ruff>=0.15.12,<0.16",
 ]

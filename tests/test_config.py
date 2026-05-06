@@ -9,11 +9,31 @@ from volundr.config import (
     GitHubInstance,
     GitLabConfig,
     GitLabInstance,
+    IntegrationType,
     OtelConfig,
     RabbitMQConfig,
+    SecretType,
+    SeededIntegrationConnectionConfig,
     Settings,
     _default_feature_modules,
 )
+
+_VOLUNDR_SETTINGS_ENV_VARS = (
+    "NIUU_CONFIG",
+    "DATABASE__HOST",
+    "DATABASE__PORT",
+    "POD_MANAGER__ADAPTER",
+    "POD_MANAGER__KWARGS__WORKSPACES_DIR",
+    "POD_MANAGER__KWARGS__CLAUDE_BINARY",
+    "POD_MANAGER__KWARGS__MAX_CONCURRENT",
+    "POD_MANAGER__KWARGS__SDK_PORT_START",
+)
+
+
+def _clear_settings_env(monkeypatch) -> None:
+    """Remove env vars that can leak between config tests in the full suite."""
+    for name in _VOLUNDR_SETTINGS_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 class TestDatabaseConfig:
@@ -614,10 +634,7 @@ pod_manager:
 
         # Change working directory so ./config.yaml resolves to our temp file
         monkeypatch.chdir(tmp_path)
-        # Clear env vars that could leak from embedded PG or NIUU_CONFIG
-        monkeypatch.delenv("NIUU_CONFIG", raising=False)
-        monkeypatch.delenv("DATABASE__HOST", raising=False)
-        monkeypatch.delenv("DATABASE__PORT", raising=False)
+        _clear_settings_env(monkeypatch)
 
         settings = Settings()
 
@@ -639,9 +656,7 @@ database:
         config_file.write_text(yaml_content)
 
         monkeypatch.chdir(tmp_path)
-        # Clear env vars that could leak from embedded PG
-        monkeypatch.delenv("NIUU_CONFIG", raising=False)
-        monkeypatch.delenv("DATABASE__PORT", raising=False)
+        _clear_settings_env(monkeypatch)
         # Use nested delimiter (DATABASE__HOST) to override nested config
         monkeypatch.setenv("DATABASE__HOST", "env-host")
 
@@ -672,6 +687,7 @@ git:
         config_file.write_text(yaml_content)
 
         monkeypatch.chdir(tmp_path)
+        _clear_settings_env(monkeypatch)
 
         settings = Settings()
 
@@ -690,11 +706,96 @@ git:
         """Settings uses defaults when no YAML file exists."""
         # Change to a directory without config.yaml
         monkeypatch.chdir(tmp_path)
+        _clear_settings_env(monkeypatch)
 
         settings = Settings()
 
         assert settings.database.host == "localhost"
         assert settings.pod_manager.kwargs == {}
+
+    def test_settings_reloads_config_paths_when_niuu_config_changes(self, tmp_path, monkeypatch):
+        """Settings should resolve NIUU_CONFIG at instantiation time, not import time."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+pod_manager:
+  kwargs:
+    namespace: dynamic-test
+""".strip()
+        )
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+
+        _clear_settings_env(monkeypatch)
+        monkeypatch.setenv("NIUU_CONFIG", str(config_file))
+        configured = Settings()
+        assert configured.pod_manager.kwargs == {"namespace": "dynamic-test"}
+
+        monkeypatch.chdir(empty_dir)
+        _clear_settings_env(monkeypatch)
+        defaults = Settings()
+        assert defaults.pod_manager.kwargs == {}
+
+    def test_settings_loads_seeded_integrations_from_yaml(self, tmp_path, monkeypatch):
+        """Settings parses config-seeded integration connections."""
+        yaml_content = """
+integrations:
+  seed_connections:
+    - id: linear-seed
+      owner_id: dev-user
+      integration_type: issue_tracker
+      adapter: volundr.adapters.outbound.linear.LinearAdapter
+      credential_name: linear-config
+      slug: linear
+      enabled: true
+      credential:
+        secret_type: api_key
+        data:
+          api_key: linear-foobar
+    - owner_id: dev-user
+      integration_type: messaging
+      adapter: tyr.adapters.telegram_notification.TelegramNotificationAdapter
+      credential_name: telegram-main
+      slug: telegram
+      enabled: true
+      config:
+        notify_only: true
+      credential:
+        secret_type: generic
+        data:
+          bot_token: foobar
+          chat_id: foobar
+"""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml_content)
+
+        monkeypatch.chdir(tmp_path)
+        _clear_settings_env(monkeypatch)
+
+        settings = Settings()
+
+        assert len(settings.integrations.seed_connections) == 2
+        linear_seed = settings.integrations.seed_connections[0]
+        assert linear_seed.id == "linear-seed"
+        assert linear_seed.integration_type == IntegrationType.ISSUE_TRACKER
+        assert linear_seed.adapter == "volundr.adapters.outbound.linear.LinearAdapter"
+        assert linear_seed.credential_name == "linear-config"
+        assert linear_seed.slug == "linear"
+        assert linear_seed.credential is not None
+        assert linear_seed.credential.secret_type == SecretType.API_KEY
+        assert linear_seed.credential.data == {"api_key": "linear-foobar"}
+
+        seed = settings.integrations.seed_connections[1]
+        assert isinstance(seed, SeededIntegrationConnectionConfig)
+        assert seed.owner_id == "dev-user"
+        assert seed.integration_type == IntegrationType.MESSAGING
+        assert seed.adapter == "tyr.adapters.telegram_notification.TelegramNotificationAdapter"
+        assert seed.credential_name == "telegram-main"
+        assert seed.slug == "telegram"
+        assert seed.config == {"notify_only": True}
+        assert seed.credential is not None
+        assert seed.credential.secret_type == SecretType.GENERIC
+        assert seed.credential.data == {"bot_token": "foobar", "chat_id": "foobar"}
 
 
 class TestFeatureModuleConfig:
@@ -759,6 +860,7 @@ features:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml_content)
         monkeypatch.chdir(tmp_path)
+        _clear_settings_env(monkeypatch)
 
         settings = Settings()
         assert len(settings.features) == 1

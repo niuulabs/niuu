@@ -25,6 +25,19 @@ export function LintView() {
     }
   }, []);
 
+  const runFix = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await mimirClient.lintFix();
+      setReport(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply fixes');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchLint();
   }, [fetchLint]);
@@ -44,14 +57,27 @@ export function LintView() {
           <h1 className={styles.heading}>Health Report</h1>
           <p className={styles.subheading}>{subheadingText}</p>
         </div>
-        <button
-          className={styles.refreshButton}
-          onClick={fetchLint}
-          disabled={loading}
-          type="button"
-        >
-          {loading ? 'Checking...' : 'Re-check'}
-        </button>
+        <div className={styles.headerActions}>
+          {report?.issuesFound && (
+            <button
+              className={styles.fixButton}
+              onClick={runFix}
+              disabled={loading}
+              type="button"
+              title="Auto-fix L05, L11, and L12 issues"
+            >
+              {loading ? 'Fixing...' : 'Fix issues'}
+            </button>
+          )}
+          <button
+            className={styles.refreshButton}
+            onClick={fetchLint}
+            disabled={loading}
+            type="button"
+          >
+            {loading ? 'Checking...' : 'Re-check'}
+          </button>
+        </div>
       </div>
 
       {error && <div className={styles.error}>{error}</div>}

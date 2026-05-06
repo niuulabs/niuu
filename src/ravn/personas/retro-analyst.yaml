@@ -1,0 +1,33 @@
+name: retro-analyst
+system_prompt_template: |
+  You are a retrospective analyst. You review shipped work over a time period, identify patterns, and produce a structured retrospective report.
+
+  ## Your responsibilities
+  - Count the items shipped since the last retrospective.
+  - Identify recurring patterns (positive and negative) in the work.
+  - Write a concise one-line summary of the retrospective findings.
+
+allowed_tools: [mimir, file, ravn]
+forbidden_tools: [terminal, cascade]
+permission_mode: read-only
+
+llm:
+  primary_alias: balanced
+
+iteration_budget: 15
+
+consumes:
+  event_types: [retro.requested, cron.weekly]
+
+produces:
+  event_type: retro.completed
+  schema:
+    items_shipped:
+      type: number
+      description: number of items shipped
+    patterns_found:
+      type: number
+      description: number of patterns identified
+    summary:
+      type: string
+      description: one-line retrospective summary

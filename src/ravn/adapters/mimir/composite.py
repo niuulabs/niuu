@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 
 from niuu.domain.mimir import (
+    LintIssue,
     MimirLintReport,
     MimirPage,
     MimirPageMeta,
@@ -197,28 +198,20 @@ class CompositeMimirAdapter(MimirPort):
 
         return results
 
-    async def lint(self) -> MimirLintReport:
+    async def lint(self, fix: bool = False) -> MimirLintReport:
         """Run lint on all mounts, merge issue lists."""
-        merged = MimirLintReport(
-            orphans=[],
-            contradictions=[],
-            stale=[],
-            gaps=[],
-            pages_checked=0,
-        )
+        all_issues: list[LintIssue] = []
+        pages_checked = 0
 
         for mount in self._mounts:
             try:
-                report = await mount.port.lint()
-                merged.orphans.extend(report.orphans)
-                merged.contradictions.extend(report.contradictions)
-                merged.stale.extend(report.stale)
-                merged.gaps.extend(report.gaps)
-                merged.pages_checked += report.pages_checked
+                report = await mount.port.lint(fix=fix)
+                all_issues.extend(report.issues)
+                pages_checked += report.pages_checked
             except Exception as exc:
                 logger.warning("composite mimir: lint failed on %r: %s", mount.name, exc)
 
-        return merged
+        return MimirLintReport(issues=all_issues, pages_checked=pages_checked)
 
     async def list_threads(
         self,

@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _STATUS_NOTIFICATION_MAP: dict[str, dict[str, Any]] = {
+    "RUNNING": {
+        "title": "Raid started",
+        "body_template": "Raid {tracker_id} has started running.",
+        "urgency": NotificationUrgency.LOW,
+    },
     "REVIEW": {
         "title": "Raid ready for review",
         "body_template": "Raid {tracker_id} is ready for review.",
@@ -143,6 +148,8 @@ class NotificationService:
                 return self._map_saga_pr_created(event.data)
             case "phase.unlocked":
                 return self._map_phase_unlocked(event.data)
+            case "raid.needs_approval":
+                return self._map_raid_needs_approval(event.data)
             case _:
                 return None
 
@@ -159,7 +166,9 @@ class NotificationService:
             return None
 
         tracker_id = data.get("tracker_id", "") or data.get("raid_id", "")
-        pr_url = data.get("pr_url", "")
+        url = data.get("url", "") or ""
+        pr_url = data.get("pr_url", "") or ""
+        pr_id = data.get("pr_id", "") or ""
         retry_count = data.get("retry_count", 0)
 
         body = mapping["body_template"].format(
@@ -169,12 +178,18 @@ class NotificationService:
 
         if pr_url:
             body += f"\nPR: {pr_url}"
+        if url:
+            body += f"\nTicket: {url}"
 
         metadata: dict[str, str] = {}
-        if pr_url:
-            metadata["pr_url"] = pr_url
         if tracker_id:
             metadata["tracker_id"] = tracker_id
+        if url:
+            metadata["url"] = url
+        if pr_url:
+            metadata["pr_url"] = pr_url
+        if pr_id:
+            metadata["pr_id"] = pr_id
 
         return Notification(
             title=mapping["title"],
@@ -232,6 +247,32 @@ class NotificationService:
             owner_id=owner_id,
             event_type="saga.complete",
             metadata=metadata,
+        )
+
+    @staticmethod
+    def _map_raid_needs_approval(data: dict[str, Any]) -> Notification | None:
+        """Map a raid.needs_approval event to a notification."""
+        owner_id = data.get("owner_id", "")
+        if not owner_id:
+            return None
+
+        raid_name = data.get("raid_name", data.get("raid_id", ""))
+        saga_name = data.get("saga_name", "")
+
+        body = f'Raid "{raid_name}" is waiting for your approval before it can start.'
+        if saga_name:
+            body += f'\nSaga: "{saga_name}"'
+
+        return Notification(
+            title="Raid awaiting approval",
+            body=body,
+            urgency=NotificationUrgency.HIGH,
+            owner_id=owner_id,
+            event_type="raid.needs_approval",
+            metadata={
+                "raid_id": str(data.get("raid_id", "")),
+                "saga_id": str(data.get("saga_id", "")),
+            },
         )
 
     @staticmethod

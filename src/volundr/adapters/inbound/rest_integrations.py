@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from niuu.adapters.inbound.rest_integration_models import IntegrationResponse
+from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.models import (
     IntegrationConnection,
@@ -35,8 +37,11 @@ def _sanitize_log(value: object) -> str:
 class IntegrationCreateRequest(BaseModel):
     """Request model for creating an integration connection."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     integration_type: str = Field(
         ...,
+        validation_alias=AliasChoices("integration_type", "integrationType", "type"),
         min_length=1,
         max_length=50,
         description="Integration category (source_control, issue_tracker, etc.)",
@@ -50,12 +55,13 @@ class IntegrationCreateRequest(BaseModel):
     )
     credential_name: str = Field(
         ...,
+        validation_alias=AliasChoices("credential_name", "credentialName"),
         min_length=1,
         max_length=253,
         description="Stored credential name for authentication",
         examples=["linear-api-key"],
     )
-    config: dict[str, str] = Field(
+    config: dict[str, Any] = Field(
         default_factory=dict,
         description="Adapter-specific configuration key-value pairs",
         examples=[{"team_id": "TEAM-1"}],
@@ -76,13 +82,16 @@ class IntegrationCreateRequest(BaseModel):
 class IntegrationUpdateRequest(BaseModel):
     """Request model for updating an integration connection."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     credential_name: str | None = Field(
         default=None,
+        validation_alias=AliasChoices("credential_name", "credentialName"),
         max_length=253,
         description="New credential name (null to keep current)",
         examples=["linear-api-key"],
     )
-    config: dict[str, str] | None = Field(
+    config: dict[str, Any] | None = Field(
         default=None,
         description="New adapter config (null to keep current)",
         examples=[{"team_id": "TEAM-2"}],
@@ -109,6 +118,7 @@ class MCPServerSpecResponse(BaseModel):
 class CatalogEntryResponse(BaseModel):
     """Response model for a single catalog entry."""
 
+    id: str = Field(description="Unique integration identifier", examples=["linear"])
     slug: str = Field(description="Unique integration identifier", examples=["linear"])
     name: str = Field(description="Human-readable integration name", examples=["Linear"])
     description: str = Field(
@@ -161,6 +171,7 @@ class CatalogEntryResponse(BaseModel):
         if defn.oauth is not None:
             oauth_scopes = list(defn.oauth.scopes)
         return cls(
+            id=defn.slug,
             slug=defn.slug,
             name=defn.name,
             description=defn.description,
@@ -200,15 +211,19 @@ class IntegrationTestResult(BaseModel):
 # --- Router factory ---
 
 
-def create_integrations_router(
+def _build_integrations_router(
     integration_repo: IntegrationRepository,
     tracker_factory: TrackerFactory,
+    *,
+    prefix: str,
+    deprecated: bool = False,
+    canonical_prefix: str | None = None,
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
 ) -> APIRouter:
     """Create FastAPI router for integration management endpoints."""
     router = APIRouter(
-        prefix="/api/v1/volundr/integrations",
+        prefix=prefix,
         tags=["Integrations"],
     )
 
@@ -216,8 +231,20 @@ def create_integrations_router(
         "/catalog",
         response_model=list[CatalogEntryResponse],
     )
-    async def list_catalog() -> list[CatalogEntryResponse]:
+    async def list_catalog(
+        request: Request,
+        response: Response,
+    ) -> list[CatalogEntryResponse]:
         """List all available integration definitions from the catalog."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=f"{prefix}/catalog",
+                    canonical_path=f"{canonical_prefix}/catalog",
+                ),
+            )
         if registry is None:
             return []
         definitions = registry.list_definitions()
@@ -228,9 +255,20 @@ def create_integrations_router(
         response_model=list[IntegrationResponse],
     )
     async def list_integrations(
+        request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> list[IntegrationResponse]:
         """List the current user's integration connections."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=prefix,
+                    canonical_path=canonical_prefix,
+                ),
+            )
         connections = await integration_repo.list_connections(principal.user_id)
         return [IntegrationResponse.from_connection(c) for c in connections]
 
@@ -240,10 +278,21 @@ def create_integrations_router(
         status_code=status.HTTP_201_CREATED,
     )
     async def create_integration(
+        request: Request,
+        response: Response,
         data: IntegrationCreateRequest,
         principal: Principal = Depends(extract_principal),
     ) -> IntegrationResponse:
         """Create a new integration connection."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=prefix,
+                    canonical_path=canonical_prefix,
+                ),
+            )
         now = datetime.now(UTC)
         connection = IntegrationConnection(
             id=str(uuid4()),
@@ -271,11 +320,22 @@ def create_integrations_router(
         response_model=IntegrationResponse,
     )
     async def update_integration(
+        request: Request,
+        response: Response,
         data: IntegrationUpdateRequest,
         connection_id: str = Path(description="Integration connection UUID to update"),
         principal: Principal = Depends(extract_principal),
     ) -> IntegrationResponse:
         """Update an integration connection."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=f"{prefix}/{connection_id}",
+                    canonical_path=f"{canonical_prefix}/{connection_id}",
+                ),
+            )
         existing = await integration_repo.get_connection(connection_id)
         if existing is None or existing.owner_id != principal.user_id:
             raise HTTPException(
@@ -308,10 +368,21 @@ def create_integrations_router(
         status_code=status.HTTP_204_NO_CONTENT,
     )
     async def delete_integration(
+        request: Request,
+        response: Response,
         connection_id: str = Path(description="Integration connection UUID to delete"),
         principal: Principal = Depends(extract_principal),
     ) -> None:
         """Delete an integration connection."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=f"{prefix}/{connection_id}",
+                    canonical_path=f"{canonical_prefix}/{connection_id}",
+                ),
+            )
         existing = await integration_repo.get_connection(connection_id)
         if existing is None or existing.owner_id != principal.user_id:
             raise HTTPException(
@@ -325,10 +396,21 @@ def create_integrations_router(
         response_model=IntegrationTestResult,
     )
     async def test_integration(
+        request: Request,
+        response: Response,
         connection_id: str = Path(description="Integration connection UUID to test"),
         principal: Principal = Depends(extract_principal),
     ) -> IntegrationTestResult:
         """Test an integration connection by instantiating the adapter."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=f"{prefix}/{connection_id}/test",
+                    canonical_path=f"{canonical_prefix}/{connection_id}/test",
+                ),
+            )
         existing = await integration_repo.get_connection(connection_id)
         if existing is None or existing.owner_id != principal.user_id:
             raise HTTPException(
@@ -387,3 +469,37 @@ def create_integrations_router(
             )
 
     return router
+
+
+def create_integrations_router(
+    integration_repo: IntegrationRepository,
+    tracker_factory: TrackerFactory,
+    registry: IntegrationRegistry | None = None,
+    credential_store: CredentialStorePort | None = None,
+) -> APIRouter:
+    """Create the legacy Volundr integrations router."""
+    return _build_integrations_router(
+        integration_repo,
+        tracker_factory,
+        prefix="/api/v1/volundr/integrations",
+        deprecated=True,
+        canonical_prefix="/api/v1/integrations",
+        registry=registry,
+        credential_store=credential_store,
+    )
+
+
+def create_canonical_integrations_router(
+    integration_repo: IntegrationRepository,
+    tracker_factory: TrackerFactory,
+    registry: IntegrationRegistry | None = None,
+    credential_store: CredentialStorePort | None = None,
+) -> APIRouter:
+    """Create the canonical shared integrations router."""
+    return _build_integrations_router(
+        integration_repo,
+        tracker_factory,
+        prefix="/api/v1/integrations",
+        registry=registry,
+        credential_store=credential_store,
+    )

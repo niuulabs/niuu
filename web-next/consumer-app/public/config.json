@@ -1,0 +1,9 @@
+{
+  "theme": "ice",
+  "plugins": {
+    "tyr": { "enabled": true, "order": 1 }
+  },
+  "services": {
+    "tyr": { "mode": "mock" }
+  }
+}

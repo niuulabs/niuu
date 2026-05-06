@@ -1,6 +1,6 @@
 """Mesh transport adapters (NIU-517).
 
-- ``NngMeshAdapter``       — Pi mode, nng PUB/SUB + REQ/REP, no broker required
-- ``SleipnirMeshAdapter``  — infra mode, RabbitMQ topic exchange + RPC
-- ``CompositeMeshAdapter`` — tries infra first, falls back to nng
+- ``SleipnirMeshAdapter``  — transport-agnostic via Sleipnir (nng, RabbitMQ, NATS, Redis)
+- ``WebhookMeshAdapter``   — HTTP-based for cross-network/serverless environments
+- ``CompositeMeshAdapter`` — all-active: fans out to all transports simultaneously
 """

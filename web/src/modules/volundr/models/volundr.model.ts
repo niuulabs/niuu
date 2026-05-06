@@ -106,6 +106,14 @@ export const TASK_TYPES: Record<string, TaskType> = {
   },
 };
 
+export interface SessionDefinition {
+  key: string;
+  displayName: string;
+  description: string;
+  labels: string[];
+  defaultModel: string;
+}
+
 export interface VolundrSession {
   id: string;
   name: string;

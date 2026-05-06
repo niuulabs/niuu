@@ -45,3 +45,9 @@ updates:
     target-branch: dev
     schedule:
       interval: weekly
+
+  - package-ecosystem: docker
+    directory: /containers/niuu-web
+    target-branch: dev
+    schedule:
+      interval: weekly

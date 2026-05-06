@@ -426,3 +426,32 @@ describe('RenderedContent — complex scenarios', () => {
     expect(screen.getByText('tests').tagName).toBe('STRONG');
   });
 });
+
+/* ================================================================== */
+/*  RenderedContent — Outcome blocks (integration)                     */
+/* ================================================================== */
+
+describe('RenderedContent — outcome blocks', () => {
+  const outcomeBlock = `---outcome---
+verdict: approve
+summary: Implementation complete
+---end---`;
+
+  it('renders an outcome block as a card instead of raw text', () => {
+    const { container } = render(<RenderedContent content={outcomeBlock} />);
+
+    expect(screen.queryByText(/---outcome---/)).toBeNull();
+    expect(screen.queryByText(/---end---/)).toBeNull();
+    expect(screen.getByText('Outcome')).toBeInTheDocument();
+    expect(container.querySelector('[class*="outcomeCard"]')).toBeInTheDocument();
+  });
+
+  it('strips outcome markers from surrounding message text', () => {
+    const content = `Before the outcome.\n\n${outcomeBlock}\n\nAfter the outcome.`;
+    render(<RenderedContent content={content} />);
+
+    expect(screen.getByText('Before the outcome.')).toBeInTheDocument();
+    expect(screen.getByText('After the outcome.')).toBeInTheDocument();
+    expect(screen.getByText('Outcome')).toBeInTheDocument();
+  });
+});

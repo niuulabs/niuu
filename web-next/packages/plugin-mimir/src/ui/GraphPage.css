@@ -1,0 +1,77 @@
+/*
+ * GraphPage.css — full-bleed graph canvas + floating overlays.
+ */
+
+/* ── Full-bleed canvas wrapper ───────────────────────────────────────────── */
+
+.niuu-graph-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+}
+
+.niuu-graph-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Floating overlay cards ──────────────────────────────────────────────── */
+
+.niuu-graph-overlay {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  z-index: 1;
+}
+
+.niuu-graph-overlay--legend {
+  top: var(--space-4);
+  left: var(--space-4);
+  min-width: 120px;
+}
+
+.niuu-graph-overlay--info {
+  top: var(--space-4);
+  right: var(--space-4);
+}
+
+/* ── Legend dot colors (brand-derived only) ───────────────────────────────── */
+
+.niuu-graph-legend-dot[data-color-idx='0'] {
+  background: var(--brand-300);
+}
+.niuu-graph-legend-dot[data-color-idx='1'] {
+  background: var(--brand-400);
+}
+.niuu-graph-legend-dot[data-color-idx='2'] {
+  background: var(--brand-500);
+}
+.niuu-graph-legend-dot[data-color-idx='3'] {
+  background: var(--brand-200);
+}
+.niuu-graph-legend-dot[data-color-idx='4'] {
+  background: var(--color-text-secondary);
+}
+.niuu-graph-legend-dot[data-color-idx='5'] {
+  background: var(--brand-600);
+}
+.niuu-graph-legend-dot[data-color-idx='6'] {
+  background: var(--color-text-muted);
+}
+.niuu-graph-legend-dot[data-color-idx='7'] {
+  background: var(--brand-700);
+}
+
+/* ── SVG node hover glow ───────────────────────────────────────────────────── */
+
+.niuu-graph-node:hover .niuu-graph-node-circle {
+  filter: url(#niuu-node-glow);
+}

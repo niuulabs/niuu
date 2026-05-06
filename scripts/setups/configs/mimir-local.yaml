@@ -1,0 +1,77 @@
+# ─── mimir-local ─────────────────────────────────────────────────────────────
+#
+# Ravn with a local filesystem-backed Mimir knowledge base.
+#
+# What you get:
+#   - Conversation with Claude
+#   - Persistent knowledge base at ~/.ravn/mimir
+#   - Auto-distillation: session insights automatically written to wiki pages
+#   - Full-text search across your knowledge base
+#   - Wiki categories: technical, projects, research, household, self
+#
+# Prerequisites:
+#   - An LLM provider (configure below)
+#
+# Launch:
+#   ravn run --config ~/.ravn/config.yaml
+#
+# Ingest existing documents:
+#   ravn mimir ingest ~/notes/architecture.md --title "Architecture Notes"
+#   ravn mimir ingest ~/docs/ --type technical
+#   cat README.md | ravn mimir ingest - --title "Project README"
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# ── Mimir: local filesystem wiki ────────────────────────────────────────────
+mimir:
+  enabled: true
+  path: ~/.ravn/mimir
+  auto_distill: true
+  distill_min_session_minutes: 5
+  idle_lint_threshold_minutes: 60
+  continuation_threshold_minutes: 30
+  categories:
+    - technical
+    - projects
+    - research
+    - household
+    - self
+  search:
+    backend: fts     # full-text search (no embedding model needed)
+
+# Everything else off
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+thread:
+  enabled: false
+
+wakefulness:
+  enabled: false
+
+recap:
+  enabled: false
+
+initiative:
+  enabled: false
+
+gateway:
+  enabled: false
+
+logging:
+  level: info

@@ -423,6 +423,19 @@ class TestCompositeChannel:
 
         ch.emit.assert_awaited_once_with(event)
 
+    @pytest.mark.asyncio
+    async def test_exception_in_one_channel_does_not_block_others(self) -> None:
+        """Channels that raise are silently skipped; remaining channels still receive."""
+        bad_ch = MagicMock()
+        bad_ch.emit = AsyncMock(side_effect=RuntimeError("boom"))
+        good_ch = MagicMock()
+        good_ch.emit = AsyncMock()
+
+        composite = CompositeChannel([bad_ch, good_ch])
+        await composite.emit(_event())  # must not raise
+
+        good_ch.emit.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # SleipnirConfig defaults

@@ -1,0 +1,55 @@
+# Saga template: reflect (pipeline format)
+# Triggered by: ravn.session.ended
+# Stage 1: Extract learnings and write to Mimir (persona: retro-analyst)
+name: "Reflect: {event.session_id}"
+feature_branch: "reflect/{event.session_id}"
+base_branch: "main"
+repos:
+  - "{event.repo}"
+
+stages:
+  - name: reflection
+    sequential:
+      - name: "Reflect on session {event.session_id}"
+        persona: retro-analyst
+        description: |
+          Analyse the completed agent session and extract learnings for Mimir.
+
+          Session ID: {event.session_id}
+          Repository: {event.repo}
+          Outcome: {event.outcome}
+          Duration: {event.duration_seconds}s
+        acceptance_criteria:
+          - Session transcript has been reviewed
+          - Key decisions and learnings extracted
+          - Learnings written to Mimir as structured pages
+          - Any patterns worth remembering are captured
+        declared_files: []
+        estimate_hours: 0.5
+        prompt: |
+          # Post-Session Reflection Task
+
+          An agent session has ended — please extract learnings and write them to Mimir.
+
+          **Session ID**: {event.session_id}
+          **Repository**: {event.repo}
+          **Outcome**: {event.outcome}
+          **Duration**: {event.duration_seconds}s
+
+          ## Instructions
+
+          1. Review the session transcript and any PR/commits produced.
+          2. Identify:
+             - What worked well
+             - What problems were encountered and how they were resolved
+             - Any architectural decisions made
+             - Patterns that should be repeated or avoided
+          3. Write structured learnings to Mimir:
+             ```python
+             # Use the Mimir MCP tools or the niuu.ports.mimir.MimirPort
+             # Page type: "observation" for session-specific findings
+             # Page type: "directive" for actionable patterns
+             ```
+          4. Ensure pages are tagged with the repository and session context.
+
+          Focus on insights that will help future sessions in this repository.

@@ -9,7 +9,7 @@
 #
 # Environment variable override format (RAVN_ prefix, __ for nesting):
 #   RAVN_ANTHROPIC__API_KEY=...
-#   RAVN_LLM__MODEL=claude-opus-4-6
+#   RAVN_LLM__MODEL=your-model-name
 #   RAVN_THREAD__ENABLED=true
 #
 # Precedence (highest to lowest): env vars > yaml file > defaults
@@ -25,10 +25,15 @@
 # LLM
 # ---------------------------------------------------------------------------
 # llm:
-#   model: claude-sonnet-4-6
+#   model: ""                    # your model name
 #   max_tokens: 8192
 #   max_retries: 3
 #   timeout: 120
+#   provider:
+#     adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+#     kwargs:
+#       base_url: ""             # your provider URL
+#       api_key_env: ""          # env var name containing API key
 
 # ---------------------------------------------------------------------------
 # Thread enrichment queue (NIU-558)
@@ -96,6 +101,29 @@ recap:
   poll_interval_seconds: 60
 
 # ---------------------------------------------------------------------------
+# Dream cycle trigger (NIU-587)
+#
+# Fires the mimir-curator persona on a cron schedule to run a nightly
+# enrichment pass over the Mímir knowledge base:
+#   1. Scan log entries since last run
+#   2. Detect entities in new/modified raw sources
+#   3. Audit and update compiled truth pages
+#   4. Run mimir_lint --fix for auto-fixable issues
+#   5. Add missing cross-reference links
+#   6. Write log entry and emit mimir.dream.completed event
+#
+# Idempotent: running twice in a row produces no additional changes.
+# ---------------------------------------------------------------------------
+dream_cycle:
+  enabled: false
+  cron_expression: "0 3 * * *"     # 3 am daily
+  persona: mimir-curator
+  task_description: "Nightly dream cycle: enrich, lint, cross-reference"
+  token_budget_usd: 0.50           # configurable cost cap per run
+  poll_interval_seconds: 60
+  state_dir: ~/.ravn/daemon
+
+# ---------------------------------------------------------------------------
 # Daily budget (NIU-570)
 #
 # Gates new initiative tasks when the configured daily USD spend cap is reached.
@@ -129,6 +157,30 @@ trust:
   pushing_main: never
   external_messages: approval
   spending_beyond_cap: approval
+
+# ---------------------------------------------------------------------------
+# Persona source (NIU-639)
+#
+# Swap the persona backend without editing container wiring.  The adapter
+# class is loaded dynamically via import_class(); kwargs are forwarded to
+# its constructor.
+#
+# Default: FilesystemPersonaAdapter — three-layer YAML lookup:
+#   <cwd>/.ravn/personas/ → ~/.ravn/personas/ → bundled
+# ---------------------------------------------------------------------------
+# persona_source:
+#   adapter: ravn.adapters.personas.loader.FilesystemPersonaAdapter
+#   kwargs:
+#     persona_dirs: [".ravn/personas"]
+
+# ---------------------------------------------------------------------------
+# Mímir
+# ---------------------------------------------------------------------------
+# mimir:
+#   ingest:
+#     entity_detection: true           # enable LLM entity extraction on ingest
+#     entity_model: claude-haiku-4-5-20251001  # cheap/fast model for extraction
+#     entity_max_tokens: 1024
 
 # ---------------------------------------------------------------------------
 # Memory

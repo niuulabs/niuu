@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, WrapText } from 'lucide-react';
 import { cn } from '@/utils';
+import { OutcomeCard, OUTCOME_RE, OUTCOME_EXTRACT_RE } from './OutcomeCard';
 import styles from './MarkdownContent.module.css';
 
 const COLLAPSE_LINE_THRESHOLD = 25;
@@ -191,12 +192,31 @@ const markdownComponents: Record<string, React.ComponentType<any>> = {
   hr: () => <hr className={styles.hr} />,
 };
 
+/* ------------------------------------------------------------------ */
+/*  MarkdownContent                                                     */
+/* ------------------------------------------------------------------ */
+
 export function MarkdownContent({ content, isStreaming, className }: MarkdownContentProps) {
+  const segments = content.split(OUTCOME_RE);
+
   return (
     <div className={cn(styles.content, className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-        {content}
-      </ReactMarkdown>
+      {segments.map((segment, i) => {
+        const match = segment.match(OUTCOME_EXTRACT_RE);
+        if (match) {
+          return <OutcomeCard key={`outcome-${i}`} yaml={match[1]} />;
+        }
+        if (!segment.trim()) return null;
+        return (
+          <ReactMarkdown
+            key={`md-${i}`}
+            remarkPlugins={[remarkGfm]}
+            components={markdownComponents}
+          >
+            {segment}
+          </ReactMarkdown>
+        );
+      })}
       {isStreaming && <span className={styles.streamingCursor} />}
     </div>
   );

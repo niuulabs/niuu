@@ -1,0 +1,131 @@
+# ─── daemon-telegram ─────────────────────────────────────────────────────────
+#
+# Ravn running as a persistent daemon with Telegram as the conversation
+# channel and the drive loop for autonomous task execution.
+#
+# What you get:
+#   - Telegram bot polling for messages
+#   - Drive loop: initiative engine picks up tasks and executes autonomously
+#   - Trust gradient: controls what the daemon can do without approval
+#   - Daily budget cap to prevent runaway spending
+#   - Local Mimir for persistent knowledge
+#   - Thread enrichment + wakefulness triggers
+#
+# Prerequisites:
+#   - An LLM provider (configure below)
+#   - TELEGRAM_BOT_TOKEN environment variable (from @BotFather)
+#   - Optional: set allowed_chat_ids to restrict who can talk to the bot
+#
+# Launch:
+#   ravn daemon --config ~/.ravn/config.yaml --persona autonomous-agent
+#
+# Or with a specific persona:
+#   ravn daemon --config ~/.ravn/config.yaml --persona coding-agent
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# ── Mimir ───────────────────────────────────────────────────────────────────
+mimir:
+  enabled: true
+  path: ~/.ravn/mimir
+  auto_distill: true
+  distill_min_session_minutes: 5
+  categories:
+    - technical
+    - projects
+    - research
+    - self
+
+# ── Gateway: Telegram channel ──────────────────────────────────────────────
+gateway:
+  enabled: true
+  channels:
+    telegram:
+      enabled: true
+      token_env: TELEGRAM_BOT_TOKEN
+      allowed_chat_ids: []               # empty = allow all (set yours for security)
+      poll_timeout: 30
+      retry_delay: 5.0
+      message_max_chars: 4096
+    http:
+      enabled: false
+
+# ── Drive loop: autonomous task execution ──────────────────────────────────
+initiative:
+  enabled: true
+  max_concurrent_tasks: 2
+  task_queue_max: 20
+  queue_journal_path: ~/.ravn/daemon/queue.json
+  default_output_mode: ambient
+  heartbeat_interval_seconds: 60
+  cron_tick_seconds: 30.0
+
+# ── Thread enrichment ──────────────────────────────────────────────────────
+thread:
+  enabled: true
+  max_queue_size: 200
+  enricher_poll_interval_seconds: 300
+  enricher_llm_alias: fast
+  decay_rate_per_day: 0.05
+
+# ── Wakefulness: reflect during silence ────────────────────────────────────
+wakefulness:
+  enabled: true
+  silence_threshold_seconds: 1800
+  reflection_cooldown_seconds: 3600
+  deep_reflection_threshold_seconds: 7200
+  deep_reflection_cooldown_seconds: 14400
+  llm_alias: fast
+  max_intents_per_reflection: 5
+
+# ── Recap: summary when operator returns ───────────────────────────────────
+recap:
+  enabled: true
+  absence_threshold_seconds: 3600
+  return_detection_window_seconds: 300
+  max_threads_in_recap: 10
+  persona: produce-recap
+  poll_interval_seconds: 60
+
+# ── Daily budget ───────────────────────────────────────────────────────────
+budget:
+  daily_cap_usd: 2.0
+  input_token_cost_per_million: 3.0
+  output_token_cost_per_million: 15.0
+  warn_at_percent: 80
+
+# ── Trust gradient ─────────────────────────────────────────────────────────
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  drafting_tickets: free
+  producing_recaps: free
+  opening_tickets: approval
+  closing_tickets: approval
+  pushing_branches: approval
+  pushing_main: never
+  external_messages: approval
+  spending_beyond_cap: never
+
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+logging:
+  level: info

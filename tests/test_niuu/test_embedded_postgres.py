@@ -6,6 +6,7 @@ actually starting an embedded PostgreSQL instance.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -73,16 +74,19 @@ class TestFindPgBinDir:
 
 
 class TestSocketPath:
-    def test_short_path_ok(self, tmp_path: Path) -> None:
-        assert _socket_path_ok(str(tmp_path))
+    def test_short_path_ok(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="niuu-socket-") as short_path:
+            assert _socket_path_ok(short_path)
 
     def test_long_path_fails(self) -> None:
         long_path = "/tmp/" + "a" * 200
         assert not _socket_path_ok(long_path)
 
-    def test_choose_socket_dir_uses_data_dir_when_short(self, tmp_path: Path) -> None:
-        result = _choose_socket_dir(tmp_path)
-        assert result == tmp_path
+    def test_choose_socket_dir_uses_data_dir_when_short(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="niuu-socket-") as short_path:
+            short_dir = Path(short_path)
+            result = _choose_socket_dir(short_dir)
+            assert result.resolve() == short_dir.resolve()
 
     def test_choose_socket_dir_falls_back_for_long_paths(self) -> None:
         long_path = Path("/tmp/" + "a" * 200)

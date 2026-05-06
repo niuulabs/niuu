@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUN_DIR="${ROOT_DIR}/build/dev-run"
+PLATFORM_PID_FILE="${RUN_DIR}/platform.pid"
+PG_CTL="${ROOT_DIR}/build/pginstall/bin/pg_ctl"
+PG_DATA="${HOME}/.niuu/pgdata"
+PLATFORM_PORT="8080"
+
+stop_pid_file() {
+  local pid_file="$1"
+  local label="$2"
+
+  if [[ ! -f "${pid_file}" ]]; then
+    return 0
+  fi
+
+  local pid
+  pid="$(cat "${pid_file}")"
+
+  if [[ -n "${pid}" ]] && kill -0 "${pid}" >/dev/null 2>&1; then
+    echo "Stopping ${label} (${pid})..."
+    kill "${pid}" >/dev/null 2>&1 || true
+
+    for _ in {1..20}; do
+      if ! kill -0 "${pid}" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+
+    if kill -0 "${pid}" >/dev/null 2>&1; then
+      kill -9 "${pid}" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  rm -f "${pid_file}"
+}
+
+stop_pid_file "${PLATFORM_PID_FILE}" "platform"
+
+stop_matching_processes() {
+  local pattern="$1"
+  local label="$2"
+  local pids
+
+  pids="$(pgrep -f "${pattern}" || true)"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+
+  echo "Stopping ${label}: ${pids//$'\n'/ }..."
+  while IFS= read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    kill "${pid}" >/dev/null 2>&1 || true
+  done <<< "${pids}"
+
+  sleep 1
+
+  while IFS= read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    if kill -0 "${pid}" >/dev/null 2>&1; then
+      kill -9 "${pid}" >/dev/null 2>&1 || true
+    fi
+  done <<< "${pids}"
+}
+
+stop_matching_processes "${ROOT_DIR}/\\.venv/bin/niuu platform up" "platform hosts"
+stop_matching_processes "uv run niuu platform up --skip-preflight --no-web" "uv launchers"
+stop_matching_processes "pnpm --dir ${ROOT_DIR}/web-next dev" "web dev servers"
+stop_matching_processes "${ROOT_DIR}/web-next/apps/niuu'.*pnpm exec vite --host 127.0.0.1" "web app launchers"
+stop_matching_processes "pnpm exec vite --host 127.0.0.1" "vite launchers"
+stop_matching_processes "${ROOT_DIR}/web-next/node_modules/.bin/.*/vite" "vite workers"
+
+stop_repo_port_listener() {
+  local port="$1"
+  local label="$2"
+  local pids
+
+  pids="$(lsof -nP -t -iTCP:${port} -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    if ! lsof -a -p "${pid}" -d cwd -Fn 2>/dev/null | grep -Fxq "n${ROOT_DIR}"; then
+      continue
+    fi
+
+    echo "Stopping ${label} (${pid})..."
+    kill "${pid}" >/dev/null 2>&1 || true
+
+    for _ in {1..20}; do
+      if ! kill -0 "${pid}" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+
+    if kill -0 "${pid}" >/dev/null 2>&1; then
+      kill -9 "${pid}" >/dev/null 2>&1 || true
+    fi
+  done <<< "${pids}"
+}
+
+stop_repo_port_listener "${PLATFORM_PORT}" "repo platform listener on :${PLATFORM_PORT}"
+
+if [[ -x "${PG_CTL}" ]]; then
+  "${PG_CTL}" -D "${PG_DATA}" stop -m fast >/dev/null 2>&1 || true
+fi
+
+echo "Stopped."

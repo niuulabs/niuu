@@ -176,9 +176,47 @@
     color 150ms ease,
     background-color 150ms ease;
   word-break: break-all;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
 }
 
 .pathButton:hover {
   color: var(--color-text-primary);
   background-color: var(--color-bg-tertiary);
+}
+
+.issueId {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  min-width: 2.5rem;
+}
+
+.issueMessage {
+  flex: 1;
+  text-align: left;
+  word-break: break-word;
+}
+
+.autoFixBadge {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  background-color: color-mix(in srgb, var(--color-accent-emerald) 15%, transparent);
+  color: var(--color-accent-emerald);
+  border: 1px solid color-mix(in srgb, var(--color-accent-emerald) 25%, transparent);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.statValue[data-severity='error'] {
+  color: var(--color-accent-red);
+}
+
+.statValue[data-severity='warning'] {
+  color: var(--color-accent-amber);
 }

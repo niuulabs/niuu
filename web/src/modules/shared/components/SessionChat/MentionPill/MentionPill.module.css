@@ -1,4 +1,4 @@
-/* MentionPill — inline pill for @-mentioned files/directories */
+/* MentionPill — inline pill for @-mentioned files, directories, and agents */
 
 .pill {
   display: inline-flex;
@@ -11,6 +11,22 @@
   background-color: color-mix(in srgb, var(--color-brand) 15%, transparent);
   color: var(--color-brand);
   border: 1px solid color-mix(in srgb, var(--color-brand) 30%, transparent);
+}
+
+/* Agent pills use the participant's accent color */
+.pill[data-kind='agent'] {
+  background-color: color-mix(in srgb, var(--pill-color, var(--color-brand)) 15%, transparent);
+  color: var(--pill-color, var(--color-brand));
+  border-color: color-mix(in srgb, var(--pill-color, var(--color-brand)) 30%, transparent);
+}
+
+/* Colored dot for agent pills */
+.agentDot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background-color: var(--pill-color, var(--color-text-muted));
+  flex-shrink: 0;
 }
 
 .icon {
@@ -40,6 +56,10 @@
   cursor: pointer;
   transition: all var(--transition-fast);
   flex-shrink: 0;
+}
+
+.pill[data-kind='agent'] .remove {
+  color: var(--pill-color, var(--color-brand));
 }
 
 .remove:hover {

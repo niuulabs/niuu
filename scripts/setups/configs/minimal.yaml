@@ -1,0 +1,57 @@
+# ─── minimal ────────────────────────────────────────────────────────────────
+#
+# The simplest possible Ravn setup.
+#
+# What you get:
+#   - Single-turn or REPL conversation
+#   - SQLite-backed conversation memory
+#   - No Mimir, no Bifrost, no gateway, no daemon
+#
+# Prerequisites:
+#   - An LLM provider (configure below)
+#
+# Launch:
+#   ravn run --config ~/.ravn/config.yaml
+#   ravn run --config ~/.ravn/config.yaml "explain this codebase"
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# Everything else off
+mimir:
+  enabled: false
+
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+thread:
+  enabled: false
+
+wakefulness:
+  enabled: false
+
+recap:
+  enabled: false
+
+initiative:
+  enabled: false
+
+gateway:
+  enabled: false
+
+logging:
+  level: info

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from volundr.domain.ports import GitWorkspacePort
@@ -117,6 +118,19 @@ def parse_pr_view(raw: str) -> dict[str, Any] | None:
     }
 
 
+def resolve_repo_dir(workspace_dir: str) -> str:
+    """Resolve the actual git checkout directory for a workspace.
+
+    Git-backed mini-mode sessions clone the repository into ``workspace/repo``.
+    Other workspace types operate directly in the workspace root.
+    """
+    workspace = Path(workspace_dir)
+    repo_dir = workspace / "repo"
+    if (repo_dir / ".git").exists():
+        return str(repo_dir)
+    return workspace_dir
+
+
 class LocalGitService(GitWorkspacePort):
     """GitWorkspacePort implementation that shells out to git/gh CLIs."""
 
@@ -124,12 +138,13 @@ class LocalGitService(GitWorkspacePort):
         self._timeout = subprocess_timeout
 
     async def diff_files(self, workspace_dir: str) -> list[dict[str, str | int]]:
+        repo_dir = resolve_repo_dir(workspace_dir)
         rc, stdout, stderr = await _run(
             "git",
             "diff",
             "HEAD",
             "--numstat",
-            cwd=workspace_dir,
+            cwd=repo_dir,
             timeout=self._timeout,
         )
         if rc != 0:
@@ -143,13 +158,14 @@ class LocalGitService(GitWorkspacePort):
         path: str,
         base_branch: str = "main",
     ) -> str | None:
+        repo_dir = resolve_repo_dir(workspace_dir)
         rc, stdout, stderr = await _run(
             "git",
             "diff",
             f"{base_branch}...HEAD",
             "--",
             path,
-            cwd=workspace_dir,
+            cwd=repo_dir,
             timeout=self._timeout,
         )
         if rc != 0:
@@ -162,23 +178,25 @@ class LocalGitService(GitWorkspacePort):
         workspace_dir: str,
         since: str | None = None,
     ) -> list[dict[str, str]]:
+        repo_dir = resolve_repo_dir(workspace_dir)
         cmd = ["git", "log", f"--pretty=format:%h{_LOG_DELIM}%s{_LOG_DELIM}%H"]
         if since:
             cmd.append(f"--since={since}")
-        rc, stdout, stderr = await _run(*cmd, cwd=workspace_dir, timeout=self._timeout)
+        rc, stdout, stderr = await _run(*cmd, cwd=repo_dir, timeout=self._timeout)
         if rc != 0:
             logger.warning("git log failed (rc=%d): %s", rc, stderr)
             return []
         return parse_log(stdout)
 
     async def pr_status(self, workspace_dir: str) -> dict[str, Any] | None:
+        repo_dir = resolve_repo_dir(workspace_dir)
         rc, stdout, stderr = await _run(
             "gh",
             "pr",
             "view",
             "--json",
             "number,url,state,mergeable,statusCheckRollup",
-            cwd=workspace_dir,
+            cwd=repo_dir,
             timeout=self._timeout,
         )
         if rc != 0:
@@ -188,12 +206,13 @@ class LocalGitService(GitWorkspacePort):
         return parse_pr_view(stdout)
 
     async def current_branch(self, workspace_dir: str) -> str | None:
+        repo_dir = resolve_repo_dir(workspace_dir)
         rc, stdout, stderr = await _run(
             "git",
             "rev-parse",
             "--abbrev-ref",
             "HEAD",
-            cwd=workspace_dir,
+            cwd=repo_dir,
             timeout=self._timeout,
         )
         if rc != 0:

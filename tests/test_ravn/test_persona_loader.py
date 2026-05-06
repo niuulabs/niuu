@@ -6,10 +6,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ravn.adapters.personas.loader import (
-    _BUILTIN_PERSONAS,
+    _BUILTIN_PERSONAS_DIR,
+    FilesystemPersonaAdapter,
     PersonaConfig,
     PersonaLLMConfig,
-    PersonaLoader,
     _safe_bool,
 )
 from ravn.config import ProjectConfig, _safe_int
@@ -49,6 +49,14 @@ _NOT_A_DICT_YAML = """\
 - just a list
 - of items
 """
+
+# Convenience dict: load all built-in personas once for specialist persona tests
+_loader = FilesystemPersonaAdapter()
+_BUILTIN_PERSONAS: dict[str, PersonaConfig] = {}
+for _p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
+    _cfg = _loader.load_from_file(_p)
+    if _cfg is not None:
+        _BUILTIN_PERSONAS[_p.stem] = _cfg
 
 
 # ---------------------------------------------------------------------------
@@ -105,13 +113,13 @@ class TestSafeInt:
 
 
 # ---------------------------------------------------------------------------
-# PersonaLoader.parse
+# FilesystemPersonaAdapter.parse
 # ---------------------------------------------------------------------------
 
 
-class TestPersonaLoaderParse:
+class TestFilesystemPersonaAdapterParse:
     def test_full_yaml_parses_all_fields(self) -> None:
-        cfg = PersonaLoader.parse(_FULL_PERSONA_YAML)
+        cfg = FilesystemPersonaAdapter.parse(_FULL_PERSONA_YAML)
         assert cfg is not None
         assert cfg.name == "test-agent"
         assert "test agent" in cfg.system_prompt_template
@@ -123,7 +131,7 @@ class TestPersonaLoaderParse:
         assert cfg.iteration_budget == 25
 
     def test_minimal_yaml_defaults_empty_fields(self) -> None:
-        cfg = PersonaLoader.parse(_MINIMAL_PERSONA_YAML)
+        cfg = FilesystemPersonaAdapter.parse(_MINIMAL_PERSONA_YAML)
         assert cfg is not None
         assert cfg.name == "minimal-agent"
         assert cfg.system_prompt_template == ""
@@ -135,73 +143,86 @@ class TestPersonaLoaderParse:
         assert cfg.iteration_budget == 0
 
     def test_missing_name_returns_none(self) -> None:
-        assert PersonaLoader.parse(_NO_NAME_YAML) is None
+        assert FilesystemPersonaAdapter.parse(_NO_NAME_YAML) is None
 
     def test_invalid_yaml_returns_none(self) -> None:
-        assert PersonaLoader.parse(_INVALID_YAML) is None
+        assert FilesystemPersonaAdapter.parse(_INVALID_YAML) is None
 
     def test_empty_string_returns_none(self) -> None:
-        assert PersonaLoader.parse("") is None
+        assert FilesystemPersonaAdapter.parse("") is None
 
     def test_whitespace_only_returns_none(self) -> None:
-        assert PersonaLoader.parse("   \n  ") is None
+        assert FilesystemPersonaAdapter.parse("   \n  ") is None
 
     def test_non_dict_yaml_returns_none(self) -> None:
-        assert PersonaLoader.parse(_NOT_A_DICT_YAML) is None
+        assert FilesystemPersonaAdapter.parse(_NOT_A_DICT_YAML) is None
 
     def test_allowed_tools_non_list_becomes_empty(self) -> None:
         yaml = "name: x\nallowed_tools: not-a-list\n"
-        cfg = PersonaLoader.parse(yaml)
+        cfg = FilesystemPersonaAdapter.parse(yaml)
         assert cfg is not None
         assert cfg.allowed_tools == []
 
     def test_forbidden_tools_non_list_becomes_empty(self) -> None:
         yaml = "name: x\nforbidden_tools: not-a-list\n"
-        cfg = PersonaLoader.parse(yaml)
+        cfg = FilesystemPersonaAdapter.parse(yaml)
         assert cfg is not None
         assert cfg.forbidden_tools == []
 
     def test_llm_non_dict_uses_defaults(self) -> None:
         yaml = "name: x\nllm: some-string\n"
-        cfg = PersonaLoader.parse(yaml)
+        cfg = FilesystemPersonaAdapter.parse(yaml)
         assert cfg is not None
         assert cfg.llm.primary_alias == ""
         assert cfg.llm.thinking_enabled is False
 
     def test_thinking_enabled_string_true(self) -> None:
         yaml = "name: x\nllm:\n  thinking_enabled: 'yes'\n"
-        cfg = PersonaLoader.parse(yaml)
+        cfg = FilesystemPersonaAdapter.parse(yaml)
         assert cfg is not None
         assert cfg.llm.thinking_enabled is True
 
     def test_iteration_budget_invalid_string_becomes_zero(self) -> None:
         yaml = "name: x\niteration_budget: many\n"
-        cfg = PersonaLoader.parse(yaml)
+        cfg = FilesystemPersonaAdapter.parse(yaml)
         assert cfg is not None
         assert cfg.iteration_budget == 0
 
+    def test_executor_config_parses(self) -> None:
+        yaml = (
+            "name: x\n"
+            "executor:\n"
+            "  adapter: ravn.adapters.executors.agent.AgentExecutor\n"
+            "  kwargs:\n"
+            "    mode: default\n"
+        )
+        cfg = FilesystemPersonaAdapter.parse(yaml)
+        assert cfg is not None
+        assert cfg.executor.adapter == "ravn.adapters.executors.agent.AgentExecutor"
+        assert cfg.executor.kwargs == {"mode": "default"}
+
 
 # ---------------------------------------------------------------------------
-# PersonaLoader.load_from_file
+# FilesystemPersonaAdapter.load_from_file
 # ---------------------------------------------------------------------------
 
 
-class TestPersonaLoaderLoadFromFile:
+class TestFilesystemPersonaAdapterLoadFromFile:
     def test_load_valid_file(self, tmp_path: Path) -> None:
         p = tmp_path / "test-agent.yaml"
         p.write_text(_FULL_PERSONA_YAML, encoding="utf-8")
-        loader = PersonaLoader(personas_dir=tmp_path)
+        loader = FilesystemPersonaAdapter([str(tmp_path)])
         cfg = loader.load_from_file(p)
         assert cfg is not None
         assert cfg.name == "test-agent"
 
     def test_load_missing_file_returns_none(self, tmp_path: Path) -> None:
-        loader = PersonaLoader(personas_dir=tmp_path)
+        loader = FilesystemPersonaAdapter([str(tmp_path)])
         result = loader.load_from_file(tmp_path / "nonexistent.yaml")
         assert result is None
 
     def test_load_unreadable_path_returns_none(self, tmp_path: Path) -> None:
-        loader = PersonaLoader(personas_dir=tmp_path)
+        loader = FilesystemPersonaAdapter([str(tmp_path)])
         # Directory is not a readable YAML file.
         result = loader.load_from_file(tmp_path)
         assert result is None
@@ -209,19 +230,19 @@ class TestPersonaLoaderLoadFromFile:
     def test_load_invalid_yaml_returns_none(self, tmp_path: Path) -> None:
         p = tmp_path / "bad.yaml"
         p.write_text(_INVALID_YAML, encoding="utf-8")
-        loader = PersonaLoader(personas_dir=tmp_path)
+        loader = FilesystemPersonaAdapter([str(tmp_path)])
         result = loader.load_from_file(p)
         assert result is None
 
 
 # ---------------------------------------------------------------------------
-# PersonaLoader.list_builtin_names
+# FilesystemPersonaAdapter.list_builtin_names
 # ---------------------------------------------------------------------------
 
 
 class TestListBuiltinNames:
     def test_returns_expected_personas(self) -> None:
-        names = PersonaLoader().list_builtin_names()
+        names = FilesystemPersonaAdapter().list_builtin_names()
         assert "coding-agent" in names
         assert "research-agent" in names
         assert "planning-agent" in names
@@ -233,15 +254,16 @@ class TestListBuiltinNames:
         assert "security-auditor" in names
         assert "ship-agent" in names
         assert "retro-analyst" in names
-        assert "memory-evaluator" in names
+        assert "mimir-curator" in names
 
     def test_returns_sorted_list(self) -> None:
-        names = PersonaLoader().list_builtin_names()
+        names = FilesystemPersonaAdapter().list_builtin_names()
         assert names == sorted(names)
 
-    def test_matches_builtin_dict_keys(self) -> None:
-        loader = PersonaLoader()
-        assert set(loader.list_builtin_names()) == set(_BUILTIN_PERSONAS)
+    def test_matches_builtin_dir_files(self) -> None:
+        loader = FilesystemPersonaAdapter()
+        expected = {p.stem for p in _BUILTIN_PERSONAS_DIR.glob("*.yaml")}
+        assert set(loader.list_builtin_names()) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -250,8 +272,15 @@ class TestListBuiltinNames:
 
 
 class TestBuiltinPersonas:
+    _loader = FilesystemPersonaAdapter()
+
+    def _load(self, name: str) -> PersonaConfig:
+        cfg = self._loader.load_from_file(_BUILTIN_PERSONAS_DIR / f"{name}.yaml")
+        assert cfg is not None, f"Failed to load built-in persona {name!r}"
+        return cfg
+
     def test_coding_agent_exists(self) -> None:
-        cfg = _BUILTIN_PERSONAS["coding-agent"]
+        cfg = self._load("coding-agent")
         assert cfg.name == "coding-agent"
         assert cfg.permission_mode == "workspace-write"
         assert cfg.llm.thinking_enabled is True
@@ -261,7 +290,7 @@ class TestBuiltinPersonas:
         assert "terminal" in cfg.allowed_tools
 
     def test_research_agent_exists(self) -> None:
-        cfg = _BUILTIN_PERSONAS["research-agent"]
+        cfg = self._load("research-agent")
         assert cfg.name == "research-agent"
         assert cfg.permission_mode == "read-only"
         assert "web" in cfg.allowed_tools
@@ -269,20 +298,20 @@ class TestBuiltinPersonas:
         assert "terminal" not in cfg.allowed_tools
 
     def test_planning_agent_exists(self) -> None:
-        cfg = _BUILTIN_PERSONAS["planning-agent"]
+        cfg = self._load("planning-agent")
         assert cfg.name == "planning-agent"
         assert cfg.llm.thinking_enabled is True
         assert cfg.permission_mode == "read-only"
 
     def test_autonomous_agent_exists(self) -> None:
-        cfg = _BUILTIN_PERSONAS["autonomous-agent"]
+        cfg = self._load("autonomous-agent")
         assert cfg.name == "autonomous-agent"
         assert cfg.permission_mode == "full-access"
         assert cfg.allowed_tools == []
         assert cfg.forbidden_tools == []
 
     def test_draft_a_note_exists(self) -> None:
-        cfg = _BUILTIN_PERSONAS["draft-a-note"]
+        cfg = self._load("draft-a-note")
         assert cfg.name == "draft-a-note"
         assert cfg.permission_mode == "read-only"
         assert cfg.iteration_budget == 5
@@ -292,27 +321,27 @@ class TestBuiltinPersonas:
         assert "mimir_write" in cfg.allowed_tools
 
     def test_draft_a_note_forbids_external_tools(self) -> None:
-        cfg = _BUILTIN_PERSONAS["draft-a-note"]
+        cfg = self._load("draft-a-note")
         assert "bash" in cfg.forbidden_tools
         assert "web_search" in cfg.forbidden_tools
         assert "web_fetch" in cfg.forbidden_tools
         assert "terminal" in cfg.forbidden_tools
 
     def test_draft_a_note_lower_budget_than_research_agent(self) -> None:
-        draft = _BUILTIN_PERSONAS["draft-a-note"]
-        research = _BUILTIN_PERSONAS["research-agent"]
+        draft = self._load("draft-a-note")
+        research = self._load("research-agent")
         assert draft.iteration_budget < research.iteration_budget
 
     def test_draft_a_note_system_prompt_mentions_produced_by_thread(self) -> None:
-        cfg = _BUILTIN_PERSONAS["draft-a-note"]
+        cfg = self._load("draft-a-note")
         assert "produced_by_thread" in cfg.system_prompt_template
 
     def test_draft_a_note_system_prompt_mentions_notes_path(self) -> None:
-        cfg = _BUILTIN_PERSONAS["draft-a-note"]
+        cfg = self._load("draft-a-note")
         assert "notes/" in cfg.system_prompt_template
 
     def test_research_and_distill_exists(self) -> None:
-        cfg = _BUILTIN_PERSONAS["research-and-distill"]
+        cfg = self._load("research-and-distill")
         assert cfg.name == "research-and-distill"
         assert cfg.permission_mode == "read-only"
         assert cfg.iteration_budget == 15
@@ -328,20 +357,22 @@ class TestBuiltinPersonas:
         assert "write_file" in cfg.forbidden_tools
 
     def test_research_and_distill_system_prompt_mentions_produced_by_thread(self) -> None:
-        cfg = _BUILTIN_PERSONAS["research-and-distill"]
+        cfg = self._load("research-and-distill")
         assert "produced_by_thread" in cfg.system_prompt_template
 
     def test_research_and_distill_system_prompt_mentions_word_limit(self) -> None:
-        cfg = _BUILTIN_PERSONAS["research-and-distill"]
+        cfg = self._load("research-and-distill")
         assert "1500" in cfg.system_prompt_template
 
     def test_all_builtins_have_system_prompts(self) -> None:
-        for name, cfg in _BUILTIN_PERSONAS.items():
-            assert cfg.system_prompt_template, f"{name} has empty system_prompt_template"
+        for p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
+            cfg = self._load(p.stem)
+            assert cfg.system_prompt_template, f"{p.stem} has empty system_prompt_template"
 
     def test_all_builtins_have_positive_budgets(self) -> None:
-        for name, cfg in _BUILTIN_PERSONAS.items():
-            assert cfg.iteration_budget > 0, f"{name} has non-positive iteration_budget"
+        for p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
+            cfg = self._load(p.stem)
+            assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
 
     # ------------------------------------------------------------------
     # Specialist personas (NIU-586)
@@ -351,31 +382,25 @@ class TestBuiltinPersonas:
         cfg = _BUILTIN_PERSONAS["reviewer"]
         assert cfg.name == "reviewer"
         assert cfg.permission_mode == "read-only"
-        assert cfg.iteration_budget == 30
+        assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
-        assert cfg.llm.primary_alias == "powerful"
+        assert cfg.llm.primary_alias == "balanced"
 
     def test_reviewer_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
         assert "file" in cfg.allowed_tools
         assert "git" in cfg.allowed_tools
-        assert "terminal" in cfg.allowed_tools
-        assert "introspection" in cfg.allowed_tools
+        assert "web" in cfg.allowed_tools
+        assert "ravn" in cfg.allowed_tools
 
     def test_reviewer_forbidden_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
+        assert "terminal" in cfg.forbidden_tools
         assert "cascade" in cfg.forbidden_tools
-        assert "volundr" in cfg.forbidden_tools
-        assert "edit_file" in cfg.forbidden_tools
-        assert "write_file" in cfg.forbidden_tools
 
     def test_reviewer_system_prompt_mentions_sql_safety(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
         assert "SQL" in cfg.system_prompt_template
-
-    def test_reviewer_system_prompt_mentions_trust_boundary(self) -> None:
-        cfg = _BUILTIN_PERSONAS["reviewer"]
-        assert "trust boundary" in cfg.system_prompt_template.lower()
 
     def test_reviewer_system_prompt_mentions_error_handling(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
@@ -385,7 +410,7 @@ class TestBuiltinPersonas:
         cfg = _BUILTIN_PERSONAS["qa-agent"]
         assert cfg.name == "qa-agent"
         assert cfg.permission_mode == "workspace-write"
-        assert cfg.iteration_budget == 50
+        assert cfg.iteration_budget == 30
         assert cfg.llm.thinking_enabled is False
 
     def test_qa_agent_allowed_tools(self) -> None:
@@ -393,46 +418,44 @@ class TestBuiltinPersonas:
         assert "file" in cfg.allowed_tools
         assert "git" in cfg.allowed_tools
         assert "terminal" in cfg.allowed_tools
-        assert "todo" in cfg.allowed_tools
+        assert "ravn" in cfg.allowed_tools
 
-    def test_qa_agent_system_prompt_mentions_loop(self) -> None:
+    def test_qa_agent_forbidden_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["qa-agent"]
-        prompt = cfg.system_prompt_template.lower()
-        assert "loop" in prompt or "re-run" in prompt
+        assert "cascade" in cfg.forbidden_tools
+        assert "volundr" in cfg.forbidden_tools
 
-    def test_qa_agent_system_prompt_mentions_commit(self) -> None:
+    def test_qa_agent_system_prompt_mentions_tests(self) -> None:
         cfg = _BUILTIN_PERSONAS["qa-agent"]
-        assert "commit" in cfg.system_prompt_template.lower()
+        assert "test" in cfg.system_prompt_template.lower()
+
+    def test_qa_agent_system_prompt_mentions_verdict(self) -> None:
+        cfg = _BUILTIN_PERSONAS["qa-agent"]
+        assert "verdict" in cfg.system_prompt_template.lower()
 
     def test_security_auditor_exists(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
         assert cfg.name == "security-auditor"
         assert cfg.permission_mode == "read-only"
-        assert cfg.iteration_budget == 40
+        assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
-        assert cfg.llm.primary_alias == "powerful"
+        assert cfg.llm.primary_alias == "balanced"
 
     def test_security_auditor_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
         assert "file" in cfg.allowed_tools
         assert "git" in cfg.allowed_tools
-        assert "terminal" in cfg.allowed_tools
         assert "web" in cfg.allowed_tools
+        assert "ravn" in cfg.allowed_tools
 
     def test_security_auditor_forbidden_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
+        assert "terminal" in cfg.forbidden_tools
         assert "cascade" in cfg.forbidden_tools
-        assert "volundr" in cfg.forbidden_tools
-        assert "edit_file" in cfg.forbidden_tools
-        assert "write_file" in cfg.forbidden_tools
 
     def test_security_auditor_system_prompt_mentions_owasp(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
         assert "OWASP" in cfg.system_prompt_template
-
-    def test_security_auditor_system_prompt_mentions_stride(self) -> None:
-        cfg = _BUILTIN_PERSONAS["security-auditor"]
-        assert "STRIDE" in cfg.system_prompt_template
 
     def test_security_auditor_system_prompt_mentions_secrets(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
@@ -442,104 +465,55 @@ class TestBuiltinPersonas:
         cfg = _BUILTIN_PERSONAS["ship-agent"]
         assert cfg.name == "ship-agent"
         assert cfg.permission_mode == "workspace-write"
-        assert cfg.iteration_budget == 30
+        assert cfg.iteration_budget == 15
         assert cfg.llm.thinking_enabled is False
-        assert cfg.llm.primary_alias == "fast"
+        assert cfg.llm.primary_alias == "balanced"
 
     def test_ship_agent_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["ship-agent"]
         assert "file" in cfg.allowed_tools
         assert "git" in cfg.allowed_tools
         assert "terminal" in cfg.allowed_tools
-        assert "todo" in cfg.allowed_tools
+        assert "web" in cfg.allowed_tools
+        assert "ravn" in cfg.allowed_tools
 
-    def test_ship_agent_system_prompt_mentions_changelog(self) -> None:
+    def test_ship_agent_system_prompt_mentions_merge(self) -> None:
         cfg = _BUILTIN_PERSONAS["ship-agent"]
-        prompt = cfg.system_prompt_template
-        assert "CHANGELOG" in prompt or "changelog" in prompt.lower()
+        assert "merge" in cfg.system_prompt_template.lower()
 
-    def test_ship_agent_system_prompt_mentions_version_bump(self) -> None:
+    def test_ship_agent_system_prompt_mentions_verdict(self) -> None:
+        cfg = _BUILTIN_PERSONAS["ship-agent"]
+        assert "verdict" in cfg.system_prompt_template.lower()
+
+    def test_ship_agent_system_prompt_mentions_version(self) -> None:
         cfg = _BUILTIN_PERSONAS["ship-agent"]
         assert "version" in cfg.system_prompt_template.lower()
-
-    def test_ship_agent_system_prompt_forbids_main_push(self) -> None:
-        cfg = _BUILTIN_PERSONAS["ship-agent"]
-        assert "main" in cfg.system_prompt_template
-
-    def test_ship_agent_diff_uses_generic_base_branch(self) -> None:
-        cfg = _BUILTIN_PERSONAS["ship-agent"]
-        assert "git diff main...HEAD" not in cfg.system_prompt_template
-        assert "base-branch" in cfg.system_prompt_template
 
     def test_retro_analyst_exists(self) -> None:
         cfg = _BUILTIN_PERSONAS["retro-analyst"]
         assert cfg.name == "retro-analyst"
         assert cfg.permission_mode == "read-only"
-        assert cfg.iteration_budget == 20
+        assert cfg.iteration_budget == 15
         assert cfg.llm.thinking_enabled is False
 
     def test_retro_analyst_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["retro-analyst"]
-        assert "file" in cfg.allowed_tools
-        assert "git" in cfg.allowed_tools
-        assert "terminal" in cfg.allowed_tools
         assert "mimir" in cfg.allowed_tools
-        assert "introspection" in cfg.allowed_tools
+        assert "file" in cfg.allowed_tools
+        assert "ravn" in cfg.allowed_tools
 
     def test_retro_analyst_forbidden_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["retro-analyst"]
-        assert "cascade" in cfg.forbidden_tools
-        assert "volundr" in cfg.forbidden_tools
-
-    def test_retro_analyst_system_prompt_mentions_7_days(self) -> None:
-        cfg = _BUILTIN_PERSONAS["retro-analyst"]
-        assert "7 days" in cfg.system_prompt_template
-
-    def test_retro_analyst_system_prompt_mentions_mimir_write(self) -> None:
-        cfg = _BUILTIN_PERSONAS["retro-analyst"]
-        assert "mimir_write" in cfg.system_prompt_template
-
-    def test_retro_analyst_system_prompt_mentions_retro_path(self) -> None:
-        cfg = _BUILTIN_PERSONAS["retro-analyst"]
-        assert "retro/" in cfg.system_prompt_template
-
-    def test_memory_evaluator_exists(self) -> None:
-        cfg = _BUILTIN_PERSONAS["memory-evaluator"]
-        assert cfg.name == "memory-evaluator"
-        assert cfg.permission_mode == "read-only"
-        assert cfg.iteration_budget == 15
-        assert cfg.llm.thinking_enabled is False
-
-    def test_memory_evaluator_allowed_tools(self) -> None:
-        cfg = _BUILTIN_PERSONAS["memory-evaluator"]
-        assert "file" in cfg.allowed_tools
-        assert "mimir" in cfg.allowed_tools
-        assert "introspection" in cfg.allowed_tools
-
-    def test_memory_evaluator_forbidden_tools(self) -> None:
-        cfg = _BUILTIN_PERSONAS["memory-evaluator"]
-        assert "git" in cfg.forbidden_tools
         assert "terminal" in cfg.forbidden_tools
         assert "cascade" in cfg.forbidden_tools
-        assert "volundr" in cfg.forbidden_tools
-        assert "edit_file" in cfg.forbidden_tools
-        assert "write_file" in cfg.forbidden_tools
 
-    def test_memory_evaluator_system_prompt_mentions_precision(self) -> None:
-        cfg = _BUILTIN_PERSONAS["memory-evaluator"]
-        assert "precision" in cfg.system_prompt_template.lower()
+    def test_retro_analyst_system_prompt_mentions_patterns(self) -> None:
+        cfg = _BUILTIN_PERSONAS["retro-analyst"]
+        assert "pattern" in cfg.system_prompt_template.lower()
 
-    def test_memory_evaluator_system_prompt_mentions_recall(self) -> None:
-        cfg = _BUILTIN_PERSONAS["memory-evaluator"]
-        assert "recall" in cfg.system_prompt_template.lower()
-
-    def test_memory_evaluator_system_prompt_mentions_f1(self) -> None:
-        cfg = _BUILTIN_PERSONAS["memory-evaluator"]
-        assert "F1" in cfg.system_prompt_template or "f1" in cfg.system_prompt_template.lower()
-
-    def test_memory_evaluator_system_prompt_mentions_evals_path(self) -> None:
-        cfg = _BUILTIN_PERSONAS["memory-evaluator"]
-        assert "evals/" in cfg.system_prompt_template
+    def test_retro_analyst_system_prompt_mentions_shipped(self) -> None:
+        cfg = _BUILTIN_PERSONAS["retro-analyst"]
+        assert "shipped" in cfg.system_prompt_template.lower()
 
     def test_specialist_personas_in_builtin_list(self) -> None:
         names = set(_BUILTIN_PERSONAS)
@@ -549,12 +523,11 @@ class TestBuiltinPersonas:
             "security-auditor",
             "ship-agent",
             "retro-analyst",
-            "memory-evaluator",
         ]:
             assert expected in names, f"{expected} missing from _BUILTIN_PERSONAS"
 
     def test_read_only_personas_cannot_write(self) -> None:
-        read_only = ["reviewer", "security-auditor", "retro-analyst", "memory-evaluator"]
+        read_only = ["reviewer", "security-auditor", "retro-analyst"]
         for name in read_only:
             cfg = _BUILTIN_PERSONAS[name]
             assert cfg.permission_mode == "read-only", f"{name} should be read-only"
@@ -565,26 +538,26 @@ class TestBuiltinPersonas:
             cfg = _BUILTIN_PERSONAS[name]
             assert cfg.permission_mode == "workspace-write", f"{name} should be workspace-write"
 
-    def test_high_budget_qa_agent_vs_memory_evaluator(self) -> None:
+    def test_high_budget_qa_agent_vs_retro_analyst(self) -> None:
         qa = _BUILTIN_PERSONAS["qa-agent"]
-        mem = _BUILTIN_PERSONAS["memory-evaluator"]
-        assert qa.iteration_budget > mem.iteration_budget
+        retro = _BUILTIN_PERSONAS["retro-analyst"]
+        assert qa.iteration_budget > retro.iteration_budget
 
 
 # ---------------------------------------------------------------------------
-# PersonaLoader.load — file vs built-in resolution
+# FilesystemPersonaAdapter.load — file vs built-in resolution
 # ---------------------------------------------------------------------------
 
 
-class TestPersonaLoaderLoad:
+class TestFilesystemPersonaAdapterLoad:
     def test_load_builtin_by_name(self) -> None:
-        loader = PersonaLoader()
+        loader = FilesystemPersonaAdapter()
         cfg = loader.load("coding-agent")
         assert cfg is not None
         assert cfg.name == "coding-agent"
 
     def test_load_unknown_name_returns_none(self) -> None:
-        loader = PersonaLoader()
+        loader = FilesystemPersonaAdapter()
         assert loader.load("nonexistent-persona") is None
 
     def test_file_persona_takes_precedence_over_builtin(self, tmp_path: Path) -> None:
@@ -594,7 +567,7 @@ class TestPersonaLoaderLoad:
             "name: coding-agent\nsystem_prompt_template: overridden prompt\n",
             encoding="utf-8",
         )
-        loader = PersonaLoader(personas_dir=tmp_path)
+        loader = FilesystemPersonaAdapter([str(tmp_path)])
         cfg = loader.load("coding-agent")
         assert cfg is not None
         assert cfg.system_prompt_template == "overridden prompt"
@@ -602,7 +575,7 @@ class TestPersonaLoaderLoad:
     def test_custom_persona_from_file(self, tmp_path: Path) -> None:
         custom = tmp_path / "my-persona.yaml"
         custom.write_text(_FULL_PERSONA_YAML, encoding="utf-8")
-        loader = PersonaLoader(personas_dir=tmp_path)
+        loader = FilesystemPersonaAdapter([str(tmp_path)])
         cfg = loader.load("test-agent")  # name inside the file, not filename
         # Only the builtin lookup uses name; file lookup uses filename key
         assert cfg is None  # filename is my-persona.yaml, not test-agent.yaml
@@ -610,25 +583,25 @@ class TestPersonaLoaderLoad:
     def test_load_uses_filename_not_yaml_name(self, tmp_path: Path) -> None:
         p = tmp_path / "myfile.yaml"
         p.write_text("name: other-name\niteration_budget: 7\n", encoding="utf-8")
-        loader = PersonaLoader(personas_dir=tmp_path)
+        loader = FilesystemPersonaAdapter([str(tmp_path)])
         cfg = loader.load("myfile")  # lookup by filename stem
         assert cfg is not None
         assert cfg.name == "other-name"
         assert cfg.iteration_budget == 7
 
     def test_default_personas_dir_used_when_not_specified(self) -> None:
-        loader = PersonaLoader()
+        loader = FilesystemPersonaAdapter()
         # Just ensure it doesn't crash; no ~/.ravn/personas likely in test env.
         result = loader.load("coding-agent")
         assert result is not None  # falls back to builtin
 
 
 # ---------------------------------------------------------------------------
-# PersonaLoader.merge
+# FilesystemPersonaAdapter.merge
 # ---------------------------------------------------------------------------
 
 
-class TestPersonaLoaderMerge:
+class TestFilesystemPersonaAdapterMerge:
     def _make_persona(self, **overrides) -> PersonaConfig:
         defaults = dict(
             name="base",
@@ -658,7 +631,7 @@ class TestPersonaLoaderMerge:
     def test_empty_project_config_returns_persona_unchanged(self) -> None:
         persona = self._make_persona()
         project = self._make_project()
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.allowed_tools == ["file"]
         assert merged.forbidden_tools == ["cascade"]
         assert merged.permission_mode == "workspace-write"
@@ -667,62 +640,62 @@ class TestPersonaLoaderMerge:
     def test_project_allowed_tools_override(self) -> None:
         persona = self._make_persona(allowed_tools=["file"])
         project = self._make_project(allowed_tools=["web", "git"])
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.allowed_tools == ["web", "git"]
 
     def test_project_forbidden_tools_override(self) -> None:
         persona = self._make_persona(forbidden_tools=["cascade"])
         project = self._make_project(forbidden_tools=["volundr", "cascade"])
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.forbidden_tools == ["volundr", "cascade"]
 
     def test_project_permission_mode_override(self) -> None:
         persona = self._make_persona(permission_mode="workspace-write")
         project = self._make_project(permission_mode="read-only")
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.permission_mode == "read-only"
 
     def test_project_iteration_budget_override(self) -> None:
         persona = self._make_persona(iteration_budget=40)
         project = self._make_project(iteration_budget=10)
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.iteration_budget == 10
 
     def test_llm_config_preserved_from_persona(self) -> None:
         persona = self._make_persona()
         project = self._make_project(permission_mode="read-only")
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.llm.primary_alias == "balanced"
         assert merged.llm.thinking_enabled is True
 
     def test_system_prompt_preserved_from_persona(self) -> None:
         persona = self._make_persona(system_prompt_template="special prompt")
         project = self._make_project()
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.system_prompt_template == "special prompt"
 
     def test_name_preserved_from_persona(self) -> None:
         persona = self._make_persona(name="original")
         project = self._make_project()
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.name == "original"
 
     def test_project_zero_budget_keeps_persona_budget(self) -> None:
         persona = self._make_persona(iteration_budget=40)
         project = self._make_project(iteration_budget=0)
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.iteration_budget == 40
 
     def test_project_empty_tools_keep_persona_tools(self) -> None:
         persona = self._make_persona(allowed_tools=["file", "git"])
         project = self._make_project(allowed_tools=[])
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged.allowed_tools == ["file", "git"]
 
     def test_returns_new_instance_not_mutating_original(self) -> None:
         persona = self._make_persona()
         project = self._make_project(permission_mode="read-only")
-        merged = PersonaLoader.merge(persona, project)
+        merged = FilesystemPersonaAdapter.merge(persona, project)
         assert merged is not persona
         assert persona.permission_mode == "workspace-write"
 
@@ -853,7 +826,7 @@ class TestBuildAgentWithPersona:
     def test_read_only_persona_uses_deny_all_permission(self) -> None:
         from unittest.mock import MagicMock, patch
 
-        from ravn.adapters.permission.allow_deny import DenyAllPermission
+        from ravn.adapters.permission.enforcer import PermissionEnforcer
         from ravn.cli.commands import _build_agent
         from ravn.config import Settings
 
@@ -867,7 +840,7 @@ class TestBuildAgentWithPersona:
             mock_cls.return_value = MagicMock()
             agent, _ = _build_agent(settings, persona_config=persona)
 
-        assert isinstance(agent._permission, DenyAllPermission)
+        assert isinstance(agent._permission, PermissionEnforcer)
 
     def test_non_read_only_persona_uses_permission_enforcer(self) -> None:
         from unittest.mock import MagicMock, patch

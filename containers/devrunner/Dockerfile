@@ -1,4 +1,4 @@
-FROM python:3.14-slim@sha256:5e59aae31ff0e87511226be8e2b94d78c58f05216efda3b07dbbed938ec8583b
+FROM python:3.14-slim-bookworm@sha256:2e256d0381371566ed96980584957ed31297f437569b79b0e5f7e17f2720e53a
 
 
 LABEL org.opencontainers.image.title="devrunner"
@@ -40,13 +40,16 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade bundled npm to fix GHSA-qffp-2rhf-9h96 (tar) and GHSA-*-minimatch CVEs
-RUN npm install -g npm@11.3.0
+RUN npm install -g npm@11.13.0
 
-# Install Claude Code CLI globally via npm (same method as skuld pod)
-RUN npm install -g @anthropic-ai/claude-code@2.1.81
+# Install Claude Code CLI globally via npm
+RUN npm install -g @anthropic-ai/claude-code@2.1.121
 
-# Install OpenAI Codex CLI
-RUN npm install -g @openai/codex@0.114.0
+# Install OpenAI Codex CLI globally via npm
+RUN npm install -g @openai/codex@0.125.0
+
+# Install OpenCode (opencode.ai) globally via npm
+RUN npm install -g opencode-ai@1.14.29
 
 # Install PostgreSQL 16
 RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
@@ -58,7 +61,7 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg ma
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip to fix GHSA-4xh5-x5gv-qwph / GHSA-6vgw-5pg2-w6jp
-RUN pip install --no-cache-dir --upgrade pip==25.0.1
+RUN pip install --no-cache-dir --upgrade pip==26.1.1
 
 # Common Python packages for web dev
 RUN pip install --no-cache-dir \

@@ -8,16 +8,17 @@ from typing import TYPE_CHECKING
 from ravn.domain.models import (
     Episode,
     EpisodeMatch,
-    FactType,
-    KnowledgeFact,
-    KnowledgeRelationship,
-    SessionState,
     SessionSummary,
     SharedContext,
 )
 
 if TYPE_CHECKING:
     from ravn.ports.tool import ToolPort
+
+# Default maximum characters for the in-memory rolling session summary.
+# Override per-instance by setting ``adapter._rolling_summary_max_chars``
+# after construction (done by ``_build_memory`` from the loaded config).
+_ROLLING_SUMMARY_MAX_CHARS = 2_000
 
 
 class MemoryPort(ABC):
@@ -85,9 +86,9 @@ class MemoryPort(ABC):
     def extra_tools(self, session_id: str) -> list[ToolPort]:
         """Return any additional agent tools this memory adapter provides.
 
-        Default implementation returns an empty list. Adapters that offer
-        agent-facing tools (e.g. buri_recall, buri_facts) override this.
-        Called once by _build_tools() alongside all other tool registration.
+        Default implementation returns an empty list.  Adapters that offer
+        agent-facing tools override this method.  Called once by
+        ``_build_tools()`` alongside all other tool registration.
         No isinstance checks needed at the call site.
         """
         return []
@@ -96,9 +97,13 @@ class MemoryPort(ABC):
         """Detect and persist inline fact patterns from *user_input*.
 
         Default implementation is a no-op returning an empty list.
-        BuriMemoryAdapter overrides this for regex-based fact detection.
+        Custom memory adapters may override this for backend-specific handling.
         Called unconditionally at the start of run_turn() — no isinstance
         check at the call site.
+
+        Note: when a Mímir adapter is wired, the agent loop calls
+        ``inline_facts.detect_and_write()`` directly, independently of this
+        hook.
         """
         return []
 
@@ -116,109 +121,22 @@ class MemoryPort(ABC):
         user_input: str,
         response_summary: str,
     ) -> None:
-        """Hook called by the agent after every run_turn() completes.
+        """Update the rolling session summary after each turn.
 
-        Default implementation is a no-op. BuriMemoryAdapter overrides this
-        to update the rolling session summary (proto-RWKV).
-        Called unconditionally on every turn — no isinstance check at the
-        call site.
+        Default implementation maintains an in-memory rolling summary using
+        simple truncation — no separate database table required.  Subclasses
+        may override to persist the summary across process restarts.
         """
+        summaries: dict[str, str] = self.__dict__.setdefault("_rolling_summaries", {})
+        max_chars: int = self.__dict__.get("_rolling_summary_max_chars", _ROLLING_SUMMARY_MAX_CHARS)
+        existing = summaries.get(session_id, "")
+        entry = f"U: {user_input[:200]}\nA: {response_summary[:400]}"
+        updated = f"{existing}\n\n{entry}".strip() if existing else entry
+        if len(updated) > max_chars:
+            updated = updated[-max_chars:]
+        summaries[session_id] = updated
 
-
-class BuriMemoryPort(MemoryPort):
-    """Extended memory port with typed fact graph, proto-RWKV session state,
-    and proto-vMF embedding clusters (NIU-541).
-
-    Builds on MemoryPort; all episodic memory methods are inherited and must
-    still be implemented.  Concrete adapters only need to implement the Búri
-    extensions declared here.
-    """
-
-    @abstractmethod
-    async def ingest_fact(self, fact: KnowledgeFact) -> None:
-        """Persist a typed knowledge fact.
-
-        Supersession check (cosine > 0.85 + type match + entity overlap) is
-        performed before writing; the old fact is invalidated if a match is
-        found.  Cluster assignment is handled internally.
-        """
-        ...
-
-    @abstractmethod
-    async def query_facts(
-        self,
-        query: str,
-        *,
-        fact_type: FactType | None = None,
-        limit: int = 10,
-        include_superseded: bool = False,
-    ) -> list[KnowledgeFact]:
-        """Two-stage semantic retrieval: cluster centroids → within-cluster facts.
-
-        Returns current facts (``valid_until IS NULL``) ordered by type-weighted
-        score.  Pass ``include_superseded=True`` to include historical facts.
-        """
-        ...
-
-    @abstractmethod
-    async def get_facts_for_entity(
-        self,
-        entity: str,
-        *,
-        fact_type: FactType | None = None,
-        include_superseded: bool = False,
-    ) -> list[KnowledgeFact]:
-        """Return all facts that reference *entity* in their entities list."""
-        ...
-
-    @abstractmethod
-    async def supersede_fact(self, old_fact_id: str, new_fact: KnowledgeFact) -> None:
-        """Mark *old_fact_id* as superseded and write *new_fact* as its replacement."""
-        ...
-
-    @abstractmethod
-    async def forget_fact(self, query: str) -> KnowledgeFact | None:
-        """Find the best-matching current fact by semantic search and invalidate it.
-
-        Returns the invalidated fact, or None if no match was found.
-        Takes a natural language description, not a raw ID.
-        """
-        ...
-
-    @abstractmethod
-    async def get_relationships(
-        self,
-        entity: str,
-        *,
-        hops: int = 2,
-    ) -> list[KnowledgeRelationship]:
-        """Return relationships involving *entity*, expanding up to *hops* hops."""
-        ...
-
-    @abstractmethod
-    async def update_session_state(
-        self,
-        session_id: str,
-        user_input: str,
-        response_summary: str,
-    ) -> None:
-        """Update the proto-RWKV rolling summary for *session_id*.
-
-        Called at the end of each ``run_turn()`` call.  Uses a cheap small-model
-        LLM call to produce a concise updated state (≤ summary_max_tokens).
-        """
-        ...
-
-    @abstractmethod
-    async def get_session_state(self, session_id: str) -> SessionState | None:
-        """Return the current session state for *session_id*, or None."""
-        ...
-
-    @abstractmethod
-    async def build_knowledge_context(self, query: str) -> str:
-        """Build the structured context block for system prompt injection.
-
-        Returns a formatted block with sections:
-        [DIRECTIVES], [CURRENT GOALS], [RELEVANT DECISIONS], [SESSION CONTEXT]
-        """
-        ...
+    def get_rolling_summary(self, session_id: str) -> str:
+        """Return the in-memory rolling summary for *session_id*, or empty string."""
+        summaries: dict[str, str] = self.__dict__.get("_rolling_summaries", {})
+        return summaries.get(session_id, "")

@@ -1,0 +1,64 @@
+.niuu-chat-mention-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-brand) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-brand) 30%, transparent);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.niuu-chat-mention-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.niuu-chat-mention-pill-file-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--color-brand);
+}
+
+.niuu-chat-mention-pill-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.niuu-chat-mention-pill-text--path {
+  max-width: 120px;
+  direction: rtl;
+  text-align: left;
+}
+
+.niuu-chat-mention-pill-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  transition: color var(--transition-fast);
+}
+
+.niuu-chat-mention-pill-remove:hover {
+  color: var(--color-critical);
+}
+
+.niuu-chat-mention-pill-remove-icon {
+  width: 10px;
+  height: 10px;
+}

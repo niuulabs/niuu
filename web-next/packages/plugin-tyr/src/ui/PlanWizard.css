@@ -1,0 +1,169 @@
+.tyr-plan-shell {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      circle at top right,
+      color-mix(in srgb, var(--color-brand) 7%, transparent),
+      transparent 34%
+    ),
+    var(--color-bg-primary);
+}
+
+.tyr-plan-main {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.tyr-plan-main__inner {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.tyr-plan-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.tyr-plan-title__copy {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+
+.tyr-plan-rail {
+  border-left: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-bg-primary) 85%, black);
+  overflow-y: auto;
+}
+
+.tyr-plan-card {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 92%, black);
+  padding: 20px;
+}
+
+.tyr-plan-step-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.tyr-plan-step-index {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-brand) 40%, var(--color-border-subtle));
+  background: color-mix(in srgb, var(--color-brand) 16%, transparent);
+  color: var(--brand-300);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.tyr-plan-input {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  padding: 10px 12px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+}
+
+.tyr-plan-textarea {
+  min-height: 140px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.tyr-plan-hint-chip {
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.tyr-plan-hint-chip:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.tyr-plan-primary-btn {
+  padding: 6px 12px;
+  background: var(--color-brand);
+  color: var(--color-bg-primary);
+  border: 1px solid var(--color-brand);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.tyr-plan-secondary-btn {
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.tyr-plan-secondary-btn:hover {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.tyr-plan-quote {
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+  padding: 14px 16px;
+}
+
+.tyr-plan-workflow-chip {
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  padding: 12px;
+  text-align: left;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+  background: var(--color-bg-secondary);
+}
+
+.tyr-plan-workflow-chip:hover,
+.tyr-plan-workflow-chip--selected {
+  border-color: color-mix(in srgb, var(--color-brand) 55%, var(--color-border));
+  background: color-mix(in srgb, var(--color-brand) 10%, var(--color-bg-secondary));
+}
+
+.tyr-plan-draft-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-elevated);
+  padding: 14px 16px;
+}

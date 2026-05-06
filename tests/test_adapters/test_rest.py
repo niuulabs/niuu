@@ -1,8 +1,10 @@
 """Tests for the REST adapter."""
 
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -79,7 +81,9 @@ def app(
 @pytest.fixture
 def client(app: FastAPI) -> TestClient:
     """Create a test client."""
-    return TestClient(app)
+    client = TestClient(app)
+    yield client
+    client.close()
 
 
 class TestSessionCreate:
@@ -169,6 +173,21 @@ class TestSessionResponse:
         assert response.pod_name == "volundr-abc123"
         assert session.created_at.isoformat() in response.created_at
 
+    def test_from_session_normalizes_loopback_chat_endpoint(self):
+        """Loopback chat endpoints should prefer localhost for browser clients."""
+        session = Session(
+            id=uuid4(),
+            name="Test",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://127.0.0.1:8080/s/example/session",
+        )
+
+        response = SessionResponse.from_session(session)
+
+        assert response.chat_endpoint == "ws://localhost:8080/s/example/session"
+
 
 class TestListSessions:
     """Tests for GET /api/v1/volundr/sessions."""
@@ -202,6 +221,22 @@ class TestListSessions:
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
+
+    def test_forge_alias_prefix_renders_same_sessions_endpoint(
+        self, service: SessionService, stats_service: StatsService
+    ):
+        """The canonical /api/v1/forge alias should expose the same routes."""
+        app = FastAPI()
+        app.include_router(create_router(service, stats_service, prefix="/api/v1/forge"))
+
+        client = TestClient(app)
+        try:
+            response = client.get("/api/v1/forge/sessions")
+        finally:
+            client.close()
+
+        assert response.status_code == 200
+        assert response.json() == []
 
 
 class TestCreateSession:
@@ -535,6 +570,127 @@ class TestStopSession:
         assert "cannot stop" in response.json()["detail"].lower()
 
 
+class TestSessionLogAggregationProxy:
+    """Tests for aggregated session log proxy endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_session_logs_aggregate_success(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        await service.start_session(session.id)
+
+        response_payload = {
+            "session_id": str(session.id),
+            "available_participants": [
+                {"id": "skuld", "label": "Skuld", "kind": "broker"},
+                {"id": "coder", "label": "Coder", "kind": "ravn"},
+            ],
+            "lines": [
+                {
+                    "id": "agg-1",
+                    "timestamp": "2026-05-01T15:19:51.232000+00:00",
+                    "level": "INFO",
+                    "participant": "coder",
+                    "participant_label": "Coder",
+                    "participant_kind": "ravn",
+                    "source": "ravn.cli.commands",
+                    "message": "mesh: received outcome event_type=code.requested",
+                    "sequence": 28,
+                    "stream": "logs/coder.log",
+                }
+            ],
+        }
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = response_payload
+        mock_response.raise_for_status.return_value = None
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(
+                f"/api/v1/volundr/sessions/{session.id}/logs/aggregate?lines=50&level=WARNING&participants=coder&query=mesh"
+            )
+
+        assert response.status_code == 200
+        assert response.json() == response_payload
+        mock_client.get.assert_awaited_once_with(
+            f"http://localhost:8080/s/{session.id}/api/logs/aggregate",
+            params={
+                "lines": 50,
+                "level": "WARNING",
+                "participants": "coder",
+                "query": "mesh",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_session_logs_aggregate_falls_back_to_local_workspace_on_404(
+        self,
+        client: TestClient,
+        service: SessionService,
+        tmp_path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        flock_logs = workspace / ".flock" / "logs"
+        flock_logs.mkdir(parents=True)
+        (workspace / ".skuld.log").write_text(
+            "2026-05-01 15:19:48,121 - skuld.broker - INFO - Starting Skuld broker\n",
+            encoding="utf-8",
+        )
+        (flock_logs / "coder.log").write_text(
+            "2026-05-01 15:19:58,326 ravn.drive_loop ERROR "
+            "drive_loop: task failed after 3 retries\n",
+            encoding="utf-8",
+        )
+
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file://{workspace}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/logs/aggregate")
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(
+                f"/api/v1/volundr/sessions/{session.id}/logs/aggregate?lines=10&level=DEBUG"
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["session_id"] == str(session.id)
+        assert {participant["id"] for participant in data["available_participants"]} == {
+            "skuld",
+            "coder",
+        }
+        assert [line["participant"] for line in data["lines"]] == ["skuld", "coder"]
+
+
 class TestFeatureFlags:
     """Tests for GET /api/v1/volundr/feature-flags."""
 
@@ -612,9 +768,8 @@ class TestListModels:
         app = FastAPI()
         router = create_router(service, stats_service, pricing_provider=None)
         app.include_router(router)
-        client = TestClient(app)
-
-        response = client.get("/api/v1/volundr/models")
+        with TestClient(app) as client:
+            response = client.get("/api/v1/volundr/models")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
@@ -672,9 +827,8 @@ class TestGetStats:
         app = FastAPI()
         router = create_router(service, stats_service=None)
         app.include_router(router)
-        client = TestClient(app)
-
-        response = client.get("/api/v1/volundr/stats")
+        with TestClient(app) as client:
+            response = client.get("/api/v1/volundr/stats")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
@@ -685,68 +839,14 @@ class TestGetStats:
         app = FastAPI()
         router = create_router(service, stats_svc)
         app.include_router(router)
-        client = TestClient(app)
-
-        response = client.get("/api/v1/volundr/stats")
+        with TestClient(app) as client:
+            response = client.get("/api/v1/volundr/stats")
         assert response.status_code == 200
         data = response.json()
         assert data["active_sessions"] == 0
         assert data["total_sessions"] == 0
         assert data["tokens_today"] == 0
         assert data["cost_today"] == 0.0
-
-
-class TestListProviders:
-    """Tests for GET /api/v1/volundr/providers."""
-
-    @pytest.fixture
-    def repo_service(self) -> RepoService:
-        """Create a RepoService with mock providers."""
-        gh = MockGitProvider(
-            name="GitHub",
-            provider_type=GitProviderType.GITHUB,
-            orgs=("my-org",),
-        )
-        gl = MockGitProvider(
-            name="Internal GitLab",
-            provider_type=GitProviderType.GITLAB,
-            supported_hosts=["gitlab.internal.com"],
-            orgs=("platform", "infra"),
-        )
-        registry = MockGitRegistry([gh, gl])
-        return RepoService(registry)
-
-    @pytest.fixture
-    def providers_client(self, service: SessionService, repo_service: RepoService) -> TestClient:
-        """Create a test client with repo_service."""
-        app = FastAPI()
-        router = create_router(service, repo_service=repo_service)
-        app.include_router(router)
-        return TestClient(app)
-
-    def test_list_providers_success(self, providers_client: TestClient):
-        """Returns list of configured providers."""
-        response = providers_client.get("/api/v1/volundr/providers")
-        assert response.status_code == 200
-        data = response.json()
-        assert len(data) == 2
-        assert data[0]["name"] == "GitHub"
-        assert data[0]["type"] == "github"
-        assert data[0]["orgs"] == ["my-org"]
-        assert data[1]["name"] == "Internal GitLab"
-        assert data[1]["type"] == "gitlab"
-        assert data[1]["orgs"] == ["platform", "infra"]
-
-    def test_list_providers_without_service(self, service: SessionService):
-        """Returns 503 when repo service is not available."""
-        app = FastAPI()
-        router = create_router(service, repo_service=None)
-        app.include_router(router)
-        client = TestClient(app)
-
-        response = client.get("/api/v1/volundr/providers")
-        assert response.status_code == 503
-        assert "not available" in response.json()["detail"].lower()
 
 
 class TestListRepos:
@@ -791,7 +891,9 @@ class TestListRepos:
 
         app = FastAPI()
         app.include_router(create_repos_router(repo_service))
-        return TestClient(app)
+        client = TestClient(app)
+        yield client
+        client.close()
 
     def test_list_repos_success(self, repos_client: TestClient):
         """Returns repos grouped by provider name."""
@@ -811,9 +913,8 @@ class TestListRepos:
 
         app = FastAPI()
         app.include_router(create_repos_router(None))
-        client = TestClient(app)
-
-        response = client.get("/api/v1/niuu/repos")
+        with TestClient(app) as client:
+            response = client.get("/api/v1/niuu/repos")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
@@ -826,8 +927,7 @@ class TestListRepos:
         repo_service = RepoService(registry)
         app = FastAPI()
         app.include_router(create_repos_router(repo_service))
-        client = TestClient(app)
-
-        response = client.get("/api/v1/niuu/repos")
+        with TestClient(app) as client:
+            response = client.get("/api/v1/niuu/repos")
         assert response.status_code == 200
         assert response.json() == {}

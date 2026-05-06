@@ -202,4 +202,19 @@ describe('Module Definition Registry', () => {
   it('returns undefined for unregistered definition', () => {
     expect(getModuleDefinition('nonexistent-def')).toBeUndefined();
   });
+
+  it('falls back to dummy load when no layout and no route with load', () => {
+    registerModuleDefinition({
+      key: 'def-no-load',
+      label: 'No Load',
+      icon: Compass,
+      basePath: '/no-load',
+      routes: [{ path: '', index: true, redirectTo: 'dashboard' }],
+    });
+
+    const products = getProductModules();
+    const found = products.find(m => m.key === 'def-no-load');
+    expect(found).toBeDefined();
+    expect(typeof found!.load).toBe('function');
+  });
 });

@@ -12,7 +12,7 @@ from cli.api.client import APIClient
 from cli.api.volundr import VolundrAPI
 
 BASE = "http://volundr.test"
-V1 = "/api/v1/volundr"
+V1 = "/api/v1/forge"
 
 
 @pytest.fixture
@@ -117,17 +117,17 @@ class TestStartStopDelete:
 
     async def test_stop_session(self, api: VolundrAPI) -> None:
         with respx.mock:
-            respx.delete(f"{BASE}{V1}/sessions/s1").mock(return_value=httpx.Response(204))
+            respx.post(f"{BASE}{V1}/sessions/s1/stop").mock(return_value=httpx.Response(200))
             await api.stop_session("s1")
 
     async def test_stop_session_404_is_ok(self, api: VolundrAPI) -> None:
         with respx.mock:
-            respx.delete(f"{BASE}{V1}/sessions/gone").mock(return_value=httpx.Response(404))
+            respx.post(f"{BASE}{V1}/sessions/gone/stop").mock(return_value=httpx.Response(404))
             await api.stop_session("gone")
 
     async def test_delete_session(self, api: VolundrAPI) -> None:
         with respx.mock:
-            respx.delete(f"{BASE}{V1}/sessions/s1/delete").mock(return_value=httpx.Response(204))
+            respx.delete(f"{BASE}{V1}/sessions/s1").mock(return_value=httpx.Response(204))
             await api.delete_session("s1")
 
 
@@ -142,22 +142,30 @@ class TestChronicleTimelineStats:
 
     async def test_get_timeline(self, api: VolundrAPI) -> None:
         with respx.mock:
-            respx.get(f"{BASE}{V1}/sessions/s1/timeline").mock(
+            respx.get(f"{BASE}{V1}/chronicles/s1/timeline").mock(
                 return_value=httpx.Response(
                     200,
-                    json=[
-                        {"timestamp": "2026-01-01T00:00:00Z", "event": "started", "details": {}},
-                    ],
+                    json={
+                        "events": [{"t": 12, "type": "session", "label": "started"}],
+                        "files": [],
+                        "commits": [],
+                        "token_burn": [],
+                    },
                 )
             )
             timeline = await api.get_timeline("s1")
         assert len(timeline) == 1
-        assert timeline[0].event == "started"
+        assert timeline[0].timestamp == "12"
+        assert timeline[0].event == "session"
+        assert timeline[0].details["label"] == "started"
 
     async def test_get_stats(self, api: VolundrAPI) -> None:
         with respx.mock:
-            respx.get(f"{BASE}{V1}/sessions/s1/stats").mock(
-                return_value=httpx.Response(200, json={"tokens_in": 100, "tokens_out": 200})
+            respx.get(f"{BASE}{V1}/stats").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"active_sessions": 1, "total_sessions": 2, "tokens_today": 300},
+                )
             )
             stats = await api.get_stats("s1")
-        assert stats["tokens_in"] == 100
+        assert stats["tokens_today"] == 300

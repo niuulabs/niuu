@@ -1,3 +1,4 @@
+import { Toggle } from '@/modules/shared';
 import { useDispatcher } from '@/modules/tyr/hooks/useDispatcher';
 import styles from './DispatcherSettingsSection.module.css';
 
@@ -26,8 +27,8 @@ export function DispatcherSettingsSection() {
     return null;
   }
 
-  const handleToggle = () => {
-    void setAutoContinue(!state.auto_continue);
+  const handleToggle = (next: boolean) => {
+    void setAutoContinue(next);
   };
 
   return (
@@ -40,15 +41,7 @@ export function DispatcherSettingsSection() {
             Automatically dispatch newly unblocked raids after merge
           </span>
         </div>
-        <button
-          type="button"
-          className={styles.toggle}
-          role="switch"
-          aria-checked={state.auto_continue}
-          onClick={handleToggle}
-        >
-          <span className={styles.toggleThumb} />
-        </button>
+        <Toggle checked={state.auto_continue} onChange={handleToggle} label="Auto-continue" />
       </div>
     </section>
   );

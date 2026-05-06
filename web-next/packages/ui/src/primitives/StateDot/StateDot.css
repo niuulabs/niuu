@@ -1,0 +1,65 @@
+.niuu-state-dot {
+  display: inline-block;
+  border-radius: var(--radius-full);
+  background: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.niuu-state-dot--healthy {
+  background: var(--status-healthy);
+}
+.niuu-state-dot--running {
+  background: var(--status-running);
+}
+.niuu-state-dot--observing {
+  background: var(--status-observing);
+}
+.niuu-state-dot--merged {
+  background: var(--status-merged);
+}
+.niuu-state-dot--attention {
+  background: var(--status-attention);
+}
+.niuu-state-dot--review {
+  background: var(--status-review);
+}
+.niuu-state-dot--queued {
+  background: var(--status-queued);
+}
+.niuu-state-dot--processing {
+  background: var(--status-processing);
+}
+.niuu-state-dot--deciding {
+  background: var(--status-deciding);
+}
+.niuu-state-dot--failed {
+  background: var(--status-failed);
+}
+.niuu-state-dot--degraded {
+  background: var(--status-degraded);
+}
+.niuu-state-dot--unknown {
+  background: var(--status-unknown);
+}
+.niuu-state-dot--idle {
+  background: var(--status-idle);
+}
+.niuu-state-dot--archived {
+  background: var(--status-archived);
+}
+
+.niuu-state-dot--pulse {
+  animation: niuu-state-dot-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes niuu-state-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  50% {
+    opacity: 0.75;
+    box-shadow: 0 0 0 4px transparent;
+  }
+}

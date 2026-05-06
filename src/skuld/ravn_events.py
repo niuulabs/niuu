@@ -46,6 +46,9 @@ class RavnEventType(StrEnum):
     #: The agent cannot proceed without a human decision.
     DECISION_REQUIRED = "ravn.decision.required"
 
+    #: The agent needs human help to proceed (less urgent than DECISION_REQUIRED).
+    HELP_NEEDED = "ravn.help.needed"
+
     # --- Lower-level / legacy types (kept for compatibility) -----------------
 
     #: A tool call was dispatched (legacy name; prefer TOOL_START for new code).

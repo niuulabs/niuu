@@ -47,11 +47,12 @@ class MimirPort(ABC):
         ...
 
     @abstractmethod
-    async def lint(self) -> MimirLintReport:
-        """Health-check the wiki.
+    async def lint(self, fix: bool = False) -> MimirLintReport:
+        """Health-check the wiki across 12 check types (L01–L12).
 
-        Scans for orphan pages, contradictions, stale sources, and concept
-        gaps.  Appends a lint entry to ``wiki/log.md``.
+        When *fix* is ``True``, auto-fixable issues (L05, L11, L12) are
+        corrected in-place before the report is returned.  Appends an entry
+        to ``wiki/log.md``.
         """
         ...
 

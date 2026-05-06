@@ -17,8 +17,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-import yaml
-
 # ---------------------------------------------------------------------------
 # Compiled-truth page taxonomy enums
 # ---------------------------------------------------------------------------
@@ -58,155 +56,6 @@ class EntityType(StrEnum):
 def compute_content_hash(content: str) -> str:
     """Return the SHA-256 hex digest of *content*."""
     return hashlib.sha256(content.encode()).hexdigest()
-
-
-# ---------------------------------------------------------------------------
-# Thread domain types
-# ---------------------------------------------------------------------------
-
-
-class ThreadState(StrEnum):
-    """Lifecycle states for a Mímir thread."""
-
-    open = "open"
-    assigned = "assigned"
-    pulling = "pulling"  # actively being worked by a Ravn instance
-    closed = "closed"
-    dissolved = "dissolved"
-
-
-@dataclass
-class ThreadContextRef:
-    """A reference to an external context item (e.g. a conversation session)."""
-
-    type: str  # e.g. "conversation", "wiki_page", "issue"
-    id: str
-    summary: str
-
-
-class ThreadSchemaError(ValueError):
-    """Raised when a thread YAML file fails validation."""
-
-
-class ThreadOwnershipError(RuntimeError):
-    """Raised when assign_thread_owner detects a conflicting owner."""
-
-    def __init__(self, path: str, current_owner: str) -> None:
-        super().__init__(f"Thread '{path}' already owned by '{current_owner}'")
-        self.path = path
-        self.current_owner = current_owner
-
-
-# ---------------------------------------------------------------------------
-# ThreadYamlSchema
-# ---------------------------------------------------------------------------
-
-_REQUIRED_FIELDS = (
-    "title",
-    "state",
-    "weight",
-    "created_at",
-    "updated_at",
-)
-
-
-@dataclass
-class ThreadYamlSchema:
-    """Validated structure of a thread's ``{slug}.yaml`` file.
-
-    Serialised to/from YAML for the hot-path queue and state transitions.
-    """
-
-    title: str
-    state: ThreadState
-    weight: float
-    created_at: datetime
-    updated_at: datetime
-    owner_id: str | None = None
-    next_action_hint: str | None = None
-    resolved_artifact_path: str | None = None
-    context_refs: list[ThreadContextRef] = field(default_factory=list)
-    weight_signals: dict = field(default_factory=dict)
-
-    # ------------------------------------------------------------------
-    # Serialisation
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def from_yaml(cls, path: Path) -> ThreadYamlSchema:
-        """Parse and validate a thread YAML file.
-
-        Raises ``ThreadSchemaError`` on missing required fields, invalid
-        ``state`` values, or malformed ISO-8601 dates.
-        """
-        try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception as exc:
-            raise ThreadSchemaError(f"Cannot read '{path}': {exc}") from exc
-
-        for required in _REQUIRED_FIELDS:
-            if required not in raw:
-                raise ThreadSchemaError(f"Thread YAML '{path}' missing required field '{required}'")
-
-        try:
-            state = ThreadState(raw["state"])
-        except ValueError:
-            valid = ", ".join(s.value for s in ThreadState)
-            raise ThreadSchemaError(
-                f"Thread YAML '{path}' has invalid state '{raw['state']}' (valid: {valid})"
-            )
-
-        try:
-            created_at = datetime.fromisoformat(str(raw["created_at"]))
-        except (ValueError, TypeError) as exc:
-            raise ThreadSchemaError(f"Thread YAML '{path}' has invalid created_at: {exc}") from exc
-
-        try:
-            updated_at = datetime.fromisoformat(str(raw["updated_at"]))
-        except (ValueError, TypeError) as exc:
-            raise ThreadSchemaError(f"Thread YAML '{path}' has invalid updated_at: {exc}") from exc
-
-        context_refs = [
-            ThreadContextRef(
-                type=ref.get("type", ""),
-                id=ref.get("id", ""),
-                summary=ref.get("summary", ""),
-            )
-            for ref in raw.get("context_refs", [])
-            if isinstance(ref, dict)
-        ]
-
-        return cls(
-            title=str(raw["title"]),
-            state=state,
-            weight=float(raw["weight"]),
-            created_at=created_at,
-            updated_at=updated_at,
-            owner_id=raw.get("owner_id"),
-            next_action_hint=raw.get("next_action_hint"),
-            resolved_artifact_path=raw.get("resolved_artifact_path"),
-            context_refs=context_refs,
-            weight_signals=raw.get("weight_signals") or {},
-        )
-
-    def to_yaml(self, path: Path) -> None:
-        """Serialise this schema to a YAML file at *path*."""
-        data: dict = {
-            "title": self.title,
-            "state": self.state.value,
-            "weight": self.weight,
-            "owner_id": self.owner_id,
-            "next_action_hint": self.next_action_hint,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-            "resolved_artifact_path": self.resolved_artifact_path,
-            "context_refs": [
-                {"type": ref.type, "id": ref.id, "summary": ref.summary}
-                for ref in self.context_refs
-            ],
-            "weight_signals": self.weight_signals,
-        }
-        path.write_text(yaml.dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +127,15 @@ class ThreadContextRef:
     ref_summary: str
 
 
+class ThreadOwnershipError(RuntimeError):
+    """Raised when assign_thread_owner detects a conflicting owner."""
+
+    def __init__(self, path: str, current_owner: str) -> None:
+        super().__init__(f"Thread '{path}' already owned by '{current_owner}'")
+        self.path = path
+        self.current_owner = current_owner
+
+
 # ---------------------------------------------------------------------------
 # Wiki page types
 # ---------------------------------------------------------------------------
@@ -298,19 +156,11 @@ class MimirPageMeta:
     confidence: PageConfidence | None = None
     entity_type: EntityType | None = None
     related_entities: list[str] = field(default_factory=list)
-    # Thread-specific fields (None for wiki pages)
-    thread_state: ThreadState | None = None
-    thread_weight: float | None = None
     is_thread: bool = False
-    # Set by the thread enricher after LLM classification
-    thread_weight_signals: dict = field(default_factory=dict)
-    thread_next_action_hint: str | None = None
-    thread_context_refs: list[ThreadContextRef] = field(default_factory=list)
     # Set by action shapes when they write artifacts derived from a thread.
     # The enricher skips pages with this flag to prevent feedback loops.
     produced_by_thread: bool = False
-
-    # Thread fields — all None / empty for non-thread pages
+    # Thread-specific fields (None / empty for wiki pages)
     thread_state: ThreadState | None = None
     thread_weight: float | None = None
     thread_owner_id: str | None = None
@@ -349,22 +199,46 @@ class MimirSourceMeta:
 
 
 @dataclass
+class LintIssue:
+    """A single issue found during a Mímir wiki health check.
+
+    Each issue has a machine-readable ``id`` (L01–L12), a ``severity``
+    (``"error"``, ``"warning"``, or ``"info"``), a human-readable ``message``,
+    the ``page_path`` of the affected page (relative to the wiki root), and an
+    ``auto_fixable`` flag indicating whether the adapter can correct the issue
+    automatically when ``lint(fix=True)`` is called.
+    """
+
+    id: str  # L01–L12
+    severity: str  # "error", "warning", "info"
+    message: str
+    page_path: str
+    auto_fixable: bool = False
+
+
+@dataclass
 class MimirLintReport:
     """Health-check report produced by MimirPort.lint().
 
-    Each list contains paths (relative to wiki root) of affected pages.
-    ``issues_found`` is True when any list is non-empty.
+    ``issues`` contains all findings across the 12 check types.
+    ``summary`` provides per-severity counts for quick filtering.
+    ``issues_found`` is True when any issue is present.
     """
 
-    orphans: list[str]  # pages not linked from index.md
-    contradictions: list[str]  # pages with flagged contradictions
-    stale: list[str]  # pages whose source content_hash has changed
-    gaps: list[str]  # concepts mentioned often but without a dedicated page
+    issues: list[LintIssue]
     pages_checked: int
 
     @property
     def issues_found(self) -> bool:
-        return bool(self.orphans or self.contradictions or self.stale or self.gaps)
+        return bool(self.issues)
+
+    @property
+    def summary(self) -> dict[str, int]:
+        """Count of issues per severity: error, warning, info."""
+        counts: dict[str, int] = {"error": 0, "warning": 0, "info": 0}
+        for issue in self.issues:
+            counts[issue.severity] = counts.get(issue.severity, 0) + 1
+        return counts
 
 
 # ---------------------------------------------------------------------------

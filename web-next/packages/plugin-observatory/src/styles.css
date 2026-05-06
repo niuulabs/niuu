@@ -1,0 +1,160 @@
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  /* Section headers in TypePreviewDrawer */
+  .registry-section-head {
+    @apply niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-text-text-muted niuu-mb-2 niuu-font-medium;
+    letter-spacing: 0.07em;
+  }
+
+  /* Tab bar buttons */
+  .registry-tab-btn {
+    @apply niuu-text-text-muted niuu-cursor-pointer niuu-font-sans niuu-text-sm niuu-font-normal niuu-px-3 niuu-py-2;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+
+  .registry-tab-btn[aria-selected='true'] {
+    border-bottom-color: var(--color-brand);
+    @apply niuu-text-text-primary niuu-font-semibold;
+  }
+
+  /* Type card grid */
+  .type-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--space-3);
+  }
+
+  .type-card {
+    display: grid;
+    grid-template-columns: 36px 1fr auto;
+    grid-template-rows: auto auto;
+    gap: 2px 12px;
+    align-items: start;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4);
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    transition:
+      border-color 120ms ease,
+      background 120ms ease;
+  }
+
+  .type-card:hover {
+    border-color: var(--color-border);
+  }
+
+  .type-card[data-selected='true'] {
+    border-color: color-mix(in srgb, var(--color-brand) 40%, transparent);
+    background: color-mix(in srgb, var(--color-brand) 6%, var(--color-bg-secondary));
+  }
+
+  .type-swatch {
+    grid-row: span 2;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-bg-tertiary);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border-subtle);
+  }
+
+  .type-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    line-height: 1.3;
+  }
+
+  .type-desc {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    grid-column: 2 / 3;
+    line-height: 1.4;
+  }
+
+  .type-meta {
+    grid-row: span 2;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-text-muted);
+  }
+
+  /* Containment hint box */
+  .containment-hint {
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    margin: 0 0 var(--space-4) 0;
+    padding: 10px 12px;
+    background: var(--color-bg-tertiary);
+    border: 1px dashed var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    line-height: 1.5;
+  }
+
+  .containment-hint code {
+    background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+    color: var(--brand-300);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+  }
+
+  /* Containment tree children connector */
+  .registry-tree-children {
+    margin-left: 16px;
+    border-left: 1px dashed var(--color-border-subtle);
+    padding-left: 8px;
+  }
+
+  /* Containment tree nodes */
+  .registry-tree-node {
+    @apply niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-sm niuu-border niuu-border-transparent niuu-cursor-grab;
+    padding: 4px 8px;
+  }
+
+  .registry-tree-node[data-selected='true'] {
+    background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+  }
+
+  .registry-tree-node[data-dragging='true'] {
+    @apply niuu-opacity-40 niuu-cursor-grabbing;
+  }
+
+  .registry-tree-node[data-drag-state='ok'] {
+    outline: 1px dashed color-mix(in srgb, var(--color-brand) 30%, transparent);
+    outline-offset: -1px;
+  }
+
+  .registry-tree-node[data-drag-state='target'] {
+    background: color-mix(in srgb, var(--color-brand) 20%, transparent);
+    outline: 1px solid var(--color-brand);
+    outline-offset: -1px;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-brand) 30%, transparent);
+  }
+
+  .registry-tree-node[data-drag-state='invalid'] {
+    background: color-mix(in srgb, var(--color-critical) 15%, transparent);
+    outline: 1px solid var(--color-critical);
+    outline-offset: -1px;
+    cursor: not-allowed;
+  }
+}

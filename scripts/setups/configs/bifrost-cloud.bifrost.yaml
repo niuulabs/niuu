@@ -1,0 +1,48 @@
+# ─── Bifrost config for: bifrost-cloud ───────────────────────────────────────
+#
+# Multi-provider cloud gateway with failover routing.
+# ─────────────────────────────────────────────────────────────────────────────
+
+bifrost:
+  # failover: try Anthropic first, fall back to OpenAI on 429/5xx
+  # alternatives: cost_optimised, round_robin, latency_optimised
+  routing_strategy: failover
+
+  providers:
+    # Configure your providers here. Each provider needs an api_key_env
+    # pointing to an environment variable (not the key itself).
+    primary:
+      api_key_env: ""                    # env var name for primary provider
+      base_url: ""                       # provider API URL
+      models: []                         # list of available models
+      timeout: 120
+      cost_per_token: 0.0
+
+    failover:
+      api_key_env: ""                    # env var name for failover provider
+      base_url: ""                       # provider API URL
+      models: []
+      timeout: 120
+      cost_per_token: 0.0
+
+  aliases:
+    fast: ""                             # map to your fastest model
+    balanced: ""                         # map to your default model
+    powerful: ""                         # map to your most capable model
+
+  auth_mode: open
+
+  # Per-agent usage limits
+  quotas:
+    default:
+      max_tokens_per_day: 1000000
+      max_cost_per_day: 5.0
+      max_requests_per_hour: 200
+      soft_limit_fraction: 0.8
+
+  usage_store:
+    adapter: sqlite
+    path: ~/.ravn/bifrost_usage.db
+
+  host: 127.0.0.1
+  port: 8088

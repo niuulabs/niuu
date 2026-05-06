@@ -63,6 +63,12 @@ class TestNiuuPlugin:
         assert app is not None
         assert app.title == "Niuu Shared Services"
 
+    def test_api_route_domains(self, plugin: NiuuPlugin) -> None:
+        route_domains = plugin.api_route_domains()
+        assert route_domains
+        assert route_domains[0].name == "niuu-api"
+        assert route_domains[0].prefixes == ("/api/v1/niuu",)
+
 
 class TestNiuuStub:
     """Tests for the _NiuuStub service lifecycle."""

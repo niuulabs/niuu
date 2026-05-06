@@ -1,9 +1,12 @@
 """Tests for Skuld broker service."""
 
+import asyncio
+import json
 import logging
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
@@ -11,13 +14,16 @@ from fastapi.testclient import TestClient
 from skuld.broker import (
     Broker,
     _log_buffer,
+    _SendMessageRequest,
     _TokenRedactFilter,
     app,
     broker,
+    send_message_to_session,
 )
 from skuld.config import SkuldSettings
 from skuld.transports import (
     CodexSubprocessTransport,
+    SDKTransport,
     SdkWebSocketTransport,
     SubprocessTransport,
     TransportCapabilities,
@@ -106,6 +112,17 @@ class TestBroker:
         assert isinstance(transport, SdkWebSocketTransport)
         assert transport._model == "claude-opus-4-20250514"
 
+    def test_create_transport_passes_mcp_servers(self, tmp_path):
+        settings = SkuldSettings(
+            transport="sdk",
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            mcp_servers=[{"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}],
+        )
+        b = Broker(settings=settings)
+        transport = b._create_transport()
+        assert isinstance(transport, SdkWebSocketTransport)
+        assert transport._mcp_config is not None
+
     def test_create_transport_dynamic_import(self, tmp_path):
         """Dynamic transport factory uses importlib to load the configured adapter."""
         settings = SkuldSettings(
@@ -120,6 +137,15 @@ class TestBroker:
 
         mock_import.assert_called_once_with("skuld.transports.subprocess.SubprocessTransport")
         assert isinstance(transport, SubprocessTransport)
+
+    def test_create_transport_sdk_adapter_path(self, tmp_path):
+        settings = SkuldSettings(
+            transport_adapter="skuld.transports.sdk.SDKTransport",
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+        )
+        b = Broker(settings=settings)
+        transport = b._create_transport()
+        assert isinstance(transport, SDKTransport)
 
     def test_create_transport_invalid_adapter_path(self, tmp_path):
         """Invalid adapter path (no dot) raises ValueError."""
@@ -155,6 +181,68 @@ class TestBroker:
 
         assert os.path.exists(test_broker.workspace_dir)
         assert test_broker._transport is not None
+
+    @pytest.mark.asyncio
+    async def test_startup_dispatches_workflow_trigger_instead_of_auto_starting_transport(
+        self, tmp_path
+    ):
+        settings = SkuldSettings(
+            session={
+                "id": "wf-session-1",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Implement the requested change",
+            },
+            mesh={"enabled": True, "peer_id": "skuld-wf"},
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "label": "Dispatch",
+                "source": "manual dispatch",
+                "event_type": "code.requested",
+                "startup_delay_s": 0.0,
+            },
+            chronicle_watcher_enabled=False,
+        )
+        broker = Broker(settings=settings)
+        mock_transport = AsyncMock()
+        mock_transport.on_event = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter.peer_id = "skuld-wf"
+        mock_adapter.publish = AsyncMock()
+        mock_channel = AsyncMock()
+        mock_channel.channel_type = "telegram"
+        mock_channel.is_open = True
+        broker._channels.add(mock_channel)
+
+        with (
+            patch.object(broker, "_create_transport", return_value=mock_transport),
+            patch("skuld.broker.ServiceManager") as mock_service_manager_cls,
+            patch.object(
+                broker,
+                "_start_mesh_adapter",
+                new=AsyncMock(
+                    side_effect=lambda: setattr(broker, "_mesh_adapter", mock_adapter),
+                ),
+            ),
+        ):
+            mock_service_manager = AsyncMock()
+            mock_service_manager_cls.return_value = mock_service_manager
+            await broker.startup()
+
+        mock_transport.start.assert_not_called()
+        mock_adapter.publish.assert_awaited_once()
+        published_event = mock_adapter.publish.await_args.args[0]
+        published_topic = mock_adapter.publish.await_args.args[1]
+        assert published_topic == "code.requested"
+        assert published_event.payload["task_description"] == "Implement the requested change"
+        assert published_event.payload["workflow_trigger_node_id"] == "trigger-1"
+        assert [turn.role for turn in broker._conversation_turns] == ["user"]
+        assert broker._conversation_turns[0].content == "Implement the requested change"
+        assert any(
+            call.args[0].get("type") == "user_confirmed"
+            and call.args[0].get("content") == "Implement the requested change"
+            for call in mock_channel.send_event.await_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_shutdown_stops_transport(self, test_broker):
@@ -314,6 +402,57 @@ class TestBroker:
         with pytest.raises(ValueError, match="Cannot load transport adapter"):
             b._create_transport()
 
+    @pytest.mark.asyncio
+    async def test_peer_watchdog_surfaces_silent_peer_in_chat(self, test_broker):
+        test_broker._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        test_broker._room_bridge = MagicMock()
+        test_broker._room_bridge.participants = {
+            "flock-coder": MagicMock(
+                display_name="coder",
+                persona="coder",
+                participant_type="ravn",
+            )
+        }
+        test_broker._room_bridge.broadcast_cli_activity = AsyncMock()
+        test_broker._room_bridge.broadcast_cli_message = AsyncMock()
+        test_broker._report_timeline_event = AsyncMock()
+
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "task_started",
+            {"metadata": {"task_id": "task-1", "title": "Handle code.requested"}},
+        )
+
+        watch = test_broker._peer_watches["flock-coder"]
+        watch.last_progress_at -= 60
+
+        await test_broker._check_peer_watchdog_once()
+
+        test_broker._room_bridge.broadcast_cli_activity.assert_awaited_once()
+        test_broker._room_bridge.broadcast_cli_message.assert_awaited_once()
+        message = test_broker._room_bridge.broadcast_cli_message.await_args.args[1]
+        assert "Skuld watchdog" in message
+        assert "Handle code.requested" in message
+        assert "no visible progress" in message
+
+    @pytest.mark.asyncio
+    async def test_peer_watchdog_clears_watch_on_error(self, test_broker):
+        test_broker._room_bridge = MagicMock()
+
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "task_started",
+            {"metadata": {"task_id": "task-1", "title": "Handle code.requested"}},
+        )
+        assert "flock-coder" in test_broker._peer_watches
+
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "error",
+            {"data": "backend unavailable"},
+        )
+        assert "flock-coder" not in test_broker._peer_watches
+
     def test_create_transport_invalid_class(self, tmp_path):
         """Valid module but missing class raises ValueError via AttributeError."""
         settings = SkuldSettings(
@@ -359,6 +498,27 @@ class TestBroker:
         assert kwargs["system_prompt"] == "be helpful"
         assert kwargs["initial_prompt"] == "hello"
 
+    def test_build_transport_kwargs_omits_initial_prompt_for_workflow_trigger(self, tmp_path):
+        settings = SkuldSettings(
+            session={
+                "id": "s1",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "dispatch this task",
+            },
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "label": "Dispatch",
+                "source": "manual dispatch",
+                "event_type": "code.requested",
+            },
+        )
+        b = Broker(settings=settings)
+
+        kwargs = b._build_transport_kwargs()
+
+        assert kwargs["initial_prompt"] == ""
+
     def test_create_transport_filters_kwargs(self, tmp_path):
         """Only kwargs matching the constructor signature are passed."""
         settings = SkuldSettings(
@@ -389,12 +549,45 @@ class TestDispatchBrowserMessage:
     @pytest.mark.asyncio
     async def test_dispatch_user_message(self, test_broker):
         await test_broker._dispatch_browser_message({"content": "hello"})
+        # send_message now runs in a background task so the WS handler
+        # doesn't block on the per-turn lock; pump the loop so the task runs.
+        await asyncio.sleep(0)
         test_broker._transport.send_message.assert_called_once_with("hello")
 
     @pytest.mark.asyncio
     async def test_dispatch_user_message_empty_ignored(self, test_broker):
         await test_broker._dispatch_browser_message({"content": ""})
         test_broker._transport.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_user_message_rejected_for_workflow_room_session(self, tmp_path):
+        settings = SkuldSettings(
+            session={
+                "id": "test-session",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Do the work",
+            },
+            transport="sdk",
+            room={"enabled": True},
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "label": "Dispatch",
+                "source": "manual dispatch",
+                "event_type": "code.requested",
+            },
+        )
+        broker = Broker(settings=settings)
+        broker._transport = AsyncMock()
+        sender_ws = AsyncMock()
+
+        await broker._dispatch_browser_message({"content": "hello"}, sender_ws=sender_ws)
+
+        broker._transport.send_message.assert_not_called()
+        sender_ws.send_json.assert_called_once()
+        sent = sender_ws.send_json.call_args[0][0]
+        assert sent["type"] == "error"
+        assert "Target a mesh peer instead" in sent["content"]
 
     @pytest.mark.asyncio
     async def test_dispatch_permission_response_allow(self, test_broker):
@@ -601,9 +794,9 @@ class TestFastAPIEndpoints:
 
     @pytest.fixture
     def client(self):
-        from fastapi.testclient import TestClient
-
-        return TestClient(app)
+        client = TestClient(app)
+        yield client
+        client.close()
 
     def test_health_endpoint(self, client, monkeypatch):
         broker.session_id = "test-123"
@@ -645,6 +838,35 @@ class TestFastAPIEndpoints:
         assert data["returned"] >= 1
         msgs = [e["message"] for e in data["lines"]]
         assert "hello from test" in msgs
+
+    def test_aggregate_logs_endpoint(self, client, tmp_path):
+        original_workspace = broker.workspace_dir
+        broker.workspace_dir = str(tmp_path)
+        try:
+            (tmp_path / ".flock" / "logs").mkdir(parents=True)
+            (tmp_path / ".skuld.log").write_text(
+                "2026-05-01 15:19:48,121 - skuld.broker - INFO - Starting Skuld broker\n",
+                encoding="utf-8",
+            )
+            (tmp_path / ".flock" / "logs" / "coder.log").write_text(
+                (
+                    "2026-05-01 15:19:58,326 ravn.drive_loop ERROR "
+                    "drive_loop: task failed after 3 retries\n"
+                ),
+                encoding="utf-8",
+            )
+
+            response = client.get("/api/logs/aggregate?lines=10&level=INFO")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["session_id"] == broker.session_id
+            assert {participant["id"] for participant in data["available_participants"]} == {
+                "skuld",
+                "coder",
+            }
+            assert [line["participant"] for line in data["lines"]] == ["skuld", "coder"]
+        finally:
+            broker.workspace_dir = original_workspace
 
     def test_capabilities_endpoint_returns_transport_caps(self, client):
         """GET /api/capabilities returns transport capabilities as JSON."""
@@ -690,7 +912,9 @@ class TestCORSMiddleware:
 
     @pytest.fixture
     def client(self):
-        return TestClient(app)
+        client = TestClient(app)
+        yield client
+        client.close()
 
     def test_cors_allows_all_origins(self, client):
         """CORS preflight should succeed for any origin."""
@@ -730,7 +954,11 @@ class TestReportUsage:
             session={"id": "sess-abc", "workspace_dir": str(tmp_path)},
             volundr_api_url="http://volundr.test:80",
         )
-        return Broker(settings=settings)
+        test_broker = Broker(settings=settings)
+        yield test_broker
+        if isinstance(test_broker._http_client, httpx.AsyncClient):
+            asyncio.run(test_broker._http_client.aclose())
+            test_broker._http_client = None
 
     @pytest.mark.asyncio
     async def test_report_usage_posts_to_api(self, test_broker):
@@ -756,12 +984,29 @@ class TestReportUsage:
 
         mock_client.post.assert_called_once()
         args, kwargs = mock_client.post.call_args
-        assert args[0] == "/api/v1/volundr/sessions/sess-abc/usage"
+        assert args[0] == "/api/v1/forge/sessions/sess-abc/usage"
         payload = kwargs["json"]
         assert payload["tokens"] == 3 + 12 + 100 + 50
         assert payload["provider"] == "cloud"
         assert payload["model"] == "claude-opus-4-5-20251101"
         assert payload["cost"] == 0.05
+
+    @pytest.mark.asyncio
+    async def test_report_activity_state_posts_to_forge_route(self, test_broker):
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.url = "http://volundr.test/api/v1/forge/sessions/sess-abc/activity"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        test_broker._http_client = mock_client
+        test_broker.volundr_api_url = "http://volundr.test:80"
+
+        await test_broker._report_activity_state("active")
+
+        mock_client.post.assert_called_once()
+        args, kwargs = mock_client.post.call_args
+        assert args[0] == "/api/v1/forge/sessions/sess-abc/activity"
+        assert kwargs["json"]["state"] == "active"
 
     @pytest.mark.asyncio
     async def test_report_usage_skips_when_no_url(self, tmp_path):
@@ -915,6 +1160,79 @@ class TestSessionArtifacts:
         # duration should be >= 0
         assert artifacts.duration_seconds >= 0
 
+    def test_record_tool_use_sdk_message_format(self):
+        """SDK WebSocket transport nests content under message.content."""
+        from skuld.broker import SessionArtifacts
+
+        artifacts = SessionArtifacts()
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Edit",
+                        "input": {"file_path": "/src/main.py"},
+                        "id": "tu_1",
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "Write",
+                        "input": {"file_path": "/src/new_file.py"},
+                        "id": "tu_2",
+                    },
+                ]
+            },
+        }
+        events = artifacts.record_tool_use(data)
+        assert artifacts.files_changed == ["/src/main.py", "/src/new_file.py"]
+        assert len(events) == 2
+
+    def test_record_tool_use_sdk_format_no_top_level_content(self):
+        """When top-level content is absent, falls back to message.content."""
+        from skuld.broker import SessionArtifacts
+
+        artifacts = SessionArtifacts()
+        data = {
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Edit",
+                        "input": {"file_path": "/src/fix.py"},
+                        "id": "tu_3",
+                    },
+                ]
+            },
+        }
+        artifacts.record_tool_use(data)
+        assert artifacts.files_changed == ["/src/fix.py"]
+
+    def test_record_tool_use_prefers_top_level_content(self):
+        """When both top-level and message.content exist, uses top-level."""
+        from skuld.broker import SessionArtifacts
+
+        artifacts = SessionArtifacts()
+        data = {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "input": {"file_path": "/src/top.py"},
+                },
+            ],
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "input": {"file_path": "/src/nested.py"},
+                    },
+                ]
+            },
+        }
+        artifacts.record_tool_use(data)
+        assert artifacts.files_changed == ["/src/top.py"]
+        assert "/src/nested.py" not in artifacts.files_changed
+
 
 class TestHandleCliEventArtifacts:
     """Tests for artifact accumulation in _handle_cli_event."""
@@ -946,6 +1264,183 @@ class TestHandleCliEventArtifacts:
         assert test_broker._artifacts.turn_count == 1
 
 
+class TestHandleCliEventSdkFormat:
+    """Tests for artifact accumulation from SDK WebSocket message format."""
+
+    @pytest.fixture
+    def test_broker(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "test-session-sdk", "workspace_dir": str(tmp_path)},
+            transport="subprocess",
+        )
+        return Broker(settings=settings)
+
+    @pytest.mark.asyncio
+    async def test_assistant_event_sdk_format_records_tool_use(self, test_broker):
+        """SDK format: content nested under message.content."""
+        data = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Edit",
+                        "input": {"file_path": "/src/module.py"},
+                        "id": "tu_sdk_1",
+                    },
+                ]
+            },
+        }
+        await test_broker._handle_cli_event(data)
+        assert "/src/module.py" in test_broker._artifacts.files_changed
+
+
+class TestGitDiffSummary:
+    """Tests for Broker._git_diff_summary."""
+
+    @pytest.fixture
+    def test_broker(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "test-diff", "workspace_dir": str(tmp_path)},
+        )
+        return Broker(settings=settings)
+
+    @pytest.mark.asyncio
+    async def test_returns_committed_diff(self, test_broker):
+        """HEAD~1..HEAD is tried first and returned when non-empty."""
+        diff_text = "diff --git a/main.py b/main.py\n+hello"
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(diff_text.encode(), b""))
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await test_broker._git_diff_summary()
+        assert "diff --git" in result
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_uncommitted_diff(self, test_broker):
+        """When HEAD~1..HEAD is empty, falls back to diff HEAD."""
+        call_count = 0
+
+        async def mock_exec(*args, **kwargs):
+            nonlocal call_count
+            proc = AsyncMock()
+            if call_count == 0:
+                # HEAD~1..HEAD returns empty
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+            else:
+                # diff HEAD returns content
+                proc.communicate = AsyncMock(return_value=(b"diff --git uncommitted\n+new", b""))
+            call_count += 1
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=mock_exec):
+            result = await test_broker._git_diff_summary()
+        assert "uncommitted" in result
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_truncates_large_diff(self, test_broker):
+        test_broker._settings.mesh.diff_max_bytes = 100
+        diff_text = "x" * 10000
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(diff_text.encode(), b""))
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await test_broker._git_diff_summary()
+        assert len(result) < 200
+        assert "truncated" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_error(self, test_broker):
+        with patch("asyncio.create_subprocess_exec", side_effect=OSError("no git")):
+            result = await test_broker._git_diff_summary()
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_uses_config_timeout(self, test_broker):
+        """Timeout value comes from settings.mesh.diff_timeout_s."""
+        test_broker._settings.mesh.diff_timeout_s = 5.0
+        diff_text = "diff content"
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(diff_text.encode(), b""))
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            with patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait:
+                result = await test_broker._git_diff_summary()
+                assert mock_wait.call_args[1]["timeout"] == 5.0
+        assert result == "diff content"
+
+
+class TestPublishMeshOutcome:
+    """Tests for Broker._publish_mesh_outcome with enriched payload."""
+
+    @pytest.fixture
+    def test_broker(self, tmp_path):
+        settings = SkuldSettings(
+            session={
+                "id": "test-mesh-pub",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Fix the login bug",
+            },
+        )
+        b = Broker(settings=settings)
+        b._artifacts.files_changed = ["/src/auth.py", "/src/login.py"]
+        b._artifacts.turn_count = 5
+        return b
+
+    @pytest.mark.asyncio
+    async def test_payload_includes_workspace_and_task(self, test_broker):
+        mock_mesh = AsyncMock()
+        mock_adapter = MagicMock()
+        mock_adapter.peer_id = "peer-1"
+        mock_adapter._mesh = mock_mesh
+        test_broker._mesh_adapter = mock_adapter
+
+        with patch.object(test_broker, "_git_diff_summary", return_value="diff content"):
+            await test_broker._publish_mesh_outcome()
+
+        call_args = mock_mesh.publish.call_args
+        event = call_args[0][0]
+        payload = event.payload
+
+        assert payload["workspace_path"] == test_broker.workspace_dir
+        assert payload["task_description"] == "Fix the login bug"
+        assert payload["diff_summary"] == "diff content"
+        assert payload["files_changed"] == ["/src/auth.py", "/src/login.py"]
+        assert "5 turns" in payload["summary"]
+        assert "2 files" in payload["summary"]
+
+    @pytest.mark.asyncio
+    async def test_no_mesh_adapter_returns_early(self, test_broker):
+        test_broker._mesh_adapter = None
+        # Should not raise
+        await test_broker._publish_mesh_outcome()
+
+    @pytest.mark.asyncio
+    async def test_payload_omits_empty_fields(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SESSION_INITIAL_PROMPT", raising=False)
+        settings = SkuldSettings(
+            session={
+                "id": "test-mesh-empty",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "",
+            },
+        )
+        b = Broker(settings=settings)
+        mock_mesh = AsyncMock()
+        mock_adapter = MagicMock()
+        mock_adapter.peer_id = "peer-2"
+        mock_adapter._mesh = mock_mesh
+        b._mesh_adapter = mock_adapter
+        b._room_bridge = None
+
+        with patch.object(b, "_git_diff_summary", return_value=""):
+            await b._publish_mesh_outcome()
+
+        event = mock_mesh.publish.call_args[0][0]
+        payload = event.payload
+        assert "task_description" not in payload
+        assert "diff_summary" not in payload
+        assert "files_changed" not in payload
+
+
 class TestReportChronicle:
     """Tests for Broker._report_chronicle."""
 
@@ -975,14 +1470,14 @@ class TestReportChronicle:
         assert mock_client.post.call_count == 2
         chronicle_call = mock_client.post.call_args_list[0]
         args, kwargs = chronicle_call
-        assert args[0] == "/api/v1/volundr/sessions/sess-chronicle/chronicle"
+        assert args[0] == "/api/v1/forge/sessions/sess-chronicle/chronicle"
         payload = kwargs["json"]
         assert "duration_seconds" in payload
         assert payload["key_changes"] == ["/src/main.py"]
 
         pipeline_call = mock_client.post.call_args_list[1]
         p_args, p_kwargs = pipeline_call
-        assert p_args[0] == "/api/v1/volundr/events"
+        assert p_args[0] == "/api/v1/forge/events"
         assert p_kwargs["json"]["event_type"] == "session_stop"
 
     @pytest.mark.asyncio
@@ -999,6 +1494,26 @@ class TestReportChronicle:
 
         await b._report_chronicle()
         mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_message_to_session_uses_forge_route(self, monkeypatch):
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        monkeypatch.setattr(broker, "volundr_api_url", "http://volundr.test:80")
+        monkeypatch.setattr(broker, "_get_http_client", AsyncMock(return_value=mock_client))
+
+        response = await send_message_to_session(
+            _SendMessageRequest(session_id="sess-target", content="hello from broker")
+        )
+
+        assert response == {"status": "sent", "target_session_id": "sess-target"}
+        mock_client.post.assert_awaited_once_with(
+            "/api/v1/forge/sessions/sess-target/messages",
+            json={"content": "hello from broker"},
+        )
 
     @pytest.mark.asyncio
     async def test_report_chronicle_skips_when_no_turns(self, test_broker):
@@ -1209,6 +1724,8 @@ class TestHandleWebSocket:
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
 
         await test_broker.handle_websocket(mock_ws)
+        # send_message runs in a background task; pump the loop so it runs.
+        await asyncio.sleep(0)
 
         mock_ws.accept.assert_called_once()
         # Welcome message + no error
@@ -1261,8 +1778,51 @@ class TestHandleWebSocket:
         mock_transport.start.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_handle_websocket_dispatch_error(self, test_broker):
-        """Errors during dispatch are sent as error events to the browser."""
+    async def test_handle_websocket_does_not_start_transport_for_workflow_room_session(
+        self, tmp_path
+    ):
+        settings = SkuldSettings(
+            session={
+                "id": "ws-session",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Do the work",
+            },
+            transport="sdk",
+            room={"enabled": True},
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "label": "Dispatch",
+                "source": "manual dispatch",
+                "event_type": "code.requested",
+            },
+        )
+        broker = Broker(settings=settings)
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = False
+        mock_transport.capabilities = TransportCapabilities()
+        broker._transport = mock_transport
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
+
+        await broker.handle_websocket(mock_ws)
+
+        mock_transport.start.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_dispatch_error(
+        self, test_broker, caplog: pytest.LogCaptureFixture
+    ):
+        """Errors raised by transport.send_message are caught + logged.
+
+        send_message now runs in a background task so the WS receive loop
+        doesn't stall for the duration of a turn. The error is surfaced via
+        ``_safe_transport_send``: log the exception and broadcast an error
+        event to any still-open channels. Tests check the log; broadcasting
+        is best-effort because by the time the background task runs, the WS
+        the user typed from may already have disconnected.
+        """
         mock_transport = AsyncMock()
         mock_transport.is_alive = True
         mock_transport.capabilities = TransportCapabilities()
@@ -1272,14 +1832,13 @@ class TestHandleWebSocket:
         mock_ws = AsyncMock()
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
 
-        await test_broker.handle_websocket(mock_ws)
+        with caplog.at_level("ERROR"):
+            await test_broker.handle_websocket(mock_ws)
+            # Let the background send_message task run.
+            await asyncio.sleep(0)
 
-        # Should have sent an error message
-        error_calls = [
-            c for c in mock_ws.send_json.call_args_list if c[0][0].get("type") == "error"
-        ]
-        assert len(error_calls) == 1
-        assert "CLI error" in error_calls[0][0][0]["content"]
+        assert mock_transport.send_message.await_count == 1
+        assert "Transport send_message failed" in caplog.text
 
     @pytest.mark.asyncio
     async def test_handle_websocket_unexpected_exception(self, test_broker):
@@ -1355,7 +1914,9 @@ class TestServiceAPIEndpoints:
 
     @pytest.fixture
     def client(self):
-        return TestClient(app)
+        client = TestClient(app)
+        yield client
+        client.close()
 
     def test_create_service_no_manager(self, client):
         broker.service_manager = None
@@ -1952,7 +2513,7 @@ class TestPipelineEventEmission:
 
         mock_client.post.assert_called_once()
         args, kwargs = mock_client.post.call_args
-        assert args[0] == "/api/v1/volundr/events"
+        assert args[0] == "/api/v1/forge/events"
         payload = kwargs["json"]
         assert payload["event_type"] == "file_modified"
         assert payload["session_id"] == "sess-pipeline"
@@ -2001,7 +2562,7 @@ class TestPipelineEventEmission:
 
         # Should have called timeline + pipeline events
         calls = mock_client.post.call_args_list
-        pipeline_calls = [c for c in calls if c[0][0] == "/api/v1/volundr/events"]
+        pipeline_calls = [c for c in calls if c[0][0] == "/api/v1/forge/events"]
         assert len(pipeline_calls) == 1
         payload = pipeline_calls[0][1]["json"]
         assert payload["event_type"] == "session_start"
@@ -2087,10 +2648,9 @@ class TestTokenRedactFilter:
         f.filter(record)
         assert record.msg == "first access_token=[REDACTED] second access_token=[REDACTED]"
 
-    def test_filter_attached_during_lifespan(self):
+    @pytest.mark.asyncio
+    async def test_filter_attached_during_lifespan(self):
         """Lifespan attaches redact filter to uvicorn loggers."""
-        import asyncio
-
         from skuld.broker import lifespan
 
         async def check():
@@ -2105,4 +2665,374 @@ class TestTokenRedactFilter:
                             has_redact = any(isinstance(f, _TokenRedactFilter) for f in lgr.filters)
                             assert has_redact, f"{name} missing _TokenRedactFilter"
 
-        asyncio.run(check())
+        await check()
+
+
+# ---------------------------------------------------------------------------
+# Room bridge integration in Broker (NIU-602)
+# ---------------------------------------------------------------------------
+
+
+class TestBrokerRoomBridge:
+    """Tests for RoomBridge wiring inside Broker."""
+
+    @pytest.fixture
+    def room_settings(self, tmp_path):
+        return SkuldSettings(
+            session={"id": "room-session", "workspace_dir": str(tmp_path)},
+            transport="sdk",
+            room={"enabled": True},
+        )
+
+    @pytest.fixture
+    def no_room_settings(self, tmp_path):
+        return SkuldSettings(
+            session={"id": "noroom-session", "workspace_dir": str(tmp_path)},
+            transport="sdk",
+            room={"enabled": False},
+        )
+
+    def test_room_bridge_created_when_enabled(self, room_settings):
+        from skuld.room_bridge import RoomBridge
+
+        b = Broker(settings=room_settings)
+        assert b._room_bridge is not None
+        assert isinstance(b._room_bridge, RoomBridge)
+
+    def test_room_bridge_none_when_disabled(self, no_room_settings):
+        b = Broker(settings=no_room_settings)
+        assert b._room_bridge is None
+
+    # -----------------------------------------------------------------------
+    # directed_message dispatch
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_dispatch_directed_message_with_room_bridge(self, room_settings):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        mock_bridge = AsyncMock()
+        b._room_bridge = mock_bridge
+
+        await b._dispatch_browser_message(
+            {"type": "directed_message", "targetPeerId": "agent-1", "content": "Hi!"}
+        )
+
+        mock_bridge.route_directed_message.assert_awaited_once_with("agent-1", "Hi!")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_directed_message_empty_target_ignored(self, room_settings):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        mock_bridge = AsyncMock()
+        b._room_bridge = mock_bridge
+
+        await b._dispatch_browser_message(
+            {"type": "directed_message", "targetPeerId": "", "content": "Hi!"}
+        )
+
+        mock_bridge.route_directed_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_directed_message_room_disabled_sends_error(self, no_room_settings):
+        b = Broker(settings=no_room_settings)
+        b._transport = AsyncMock()
+        mock_ws = AsyncMock()
+
+        await b._dispatch_browser_message(
+            {"type": "directed_message", "targetPeerId": "p1", "content": "Hi!"},
+            sender_ws=mock_ws,
+        )
+
+        mock_ws.send_json.assert_awaited_once()
+        sent = mock_ws.send_json.call_args[0][0]
+        assert sent["type"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_handle_human_room_message_records_and_broadcasts(self, room_settings):
+        b = Broker(settings=room_settings)
+        transport = AsyncMock()
+        transport.is_alive = False
+        b._transport = transport
+        assert b._room_bridge is not None
+        await b._room_bridge.register("peer-1", "coder", AsyncMock(), display_name="Coder")
+        broadcast = AsyncMock()
+        b._channels = MagicMock()
+        b._channels.broadcast = broadcast
+
+        message_id = await b.handle_human_room_message("Hello from Telegram", source="telegram")
+
+        assert message_id
+        assert b._conversation_turns[-1].role == "user"
+        assert b._conversation_turns[-1].content == "Hello from Telegram"
+        broadcast.assert_awaited_once()
+        sent = broadcast.await_args.args[0]
+        assert sent["type"] == "user_confirmed"
+        assert sent["content"] == "Hello from Telegram"
+        assert sent["source"] == "telegram"
+        transport.start.assert_awaited_once()
+        transport.send_message.assert_awaited_once()
+        outbound = transport.send_message.await_args.args[0]
+        assert "Hello from Telegram" in outbound
+        assert "You are Skuld, the observer/coordinator for an active flock session." in outbound
+        assert "Coder (peer_id=peer-1, type=ravn" in outbound
+
+    @pytest.mark.asyncio
+    async def test_handle_directed_room_message_routes_to_target(self, room_settings):
+        b = Broker(settings=room_settings)
+        transport = AsyncMock()
+        transport.is_alive = False
+        b._transport = transport
+        assert b._room_bridge is not None
+        register_ws = AsyncMock()
+        await b._room_bridge.register("peer-1", "coder", register_ws, display_name="Coder")
+        broadcast = AsyncMock()
+        b._channels = MagicMock()
+        b._channels.broadcast = broadcast
+
+        message_id = await b.handle_directed_room_message(
+            "peer-1",
+            "Please investigate this",
+            source="telegram",
+        )
+
+        assert message_id
+        assert b._conversation_turns[-1].content == "@coder Please investigate this"
+        register_ws.send_text.assert_awaited_once()
+        payload = json.loads(register_ws.send_text.await_args.args[0])
+        assert payload["type"] == "directed_message"
+        assert payload["content"] == "Please investigate this"
+        transport.start.assert_not_awaited()
+        transport.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_transport_user_echo_does_not_duplicate_explicit_human_room_message(
+        self, room_settings
+    ):
+        b = Broker(settings=room_settings)
+        transport = AsyncMock()
+        transport.is_alive = True
+        b._transport = transport
+        b._channels = MagicMock()
+        b._channels.broadcast = AsyncMock()
+
+        await b.handle_human_room_message("Hello from Telegram", source="telegram")
+        assert len(b._conversation_turns) == 1
+
+        await b._handle_cli_event({"type": "user", "message": {"content": "Hello from Telegram"}})
+
+        assert len(b._conversation_turns) == 1
+
+    @pytest.mark.asyncio
+    async def test_explicit_human_room_response_is_room_only(self, room_settings):
+        b = Broker(settings=room_settings)
+        transport = AsyncMock()
+        transport.is_alive = True
+        b._transport = transport
+        b._channels = MagicMock()
+        b._channels.broadcast = AsyncMock()
+        b._mesh_adapter = MagicMock()
+        b._mesh_adapter.peer_id = "skuld-room"
+        assert b._room_bridge is not None
+        await b._room_bridge.register_mesh_peer(
+            "skuld-room",
+            "Skuld",
+            display_name="Skuld",
+            participant_type="skuld",
+        )
+
+        publish_mesh = AsyncMock()
+        b._on_result_publish_mesh = publish_mesh
+
+        await b.handle_human_room_message("Who is in this flock?", source="telegram")
+        assert len(b._conversation_turns) == 1
+
+        await b._handle_cli_event(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Skuld sees coder, reviewer, and verifier.",
+                        }
+                    ]
+                },
+            }
+        )
+        await b._handle_cli_event(
+            {
+                "type": "result",
+                "result": "Skuld sees coder, reviewer, and verifier.",
+                "modelUsage": {},
+            }
+        )
+
+        assert b._channels.broadcast.await_count == 1
+        assert publish_mesh.await_count == 0
+        assert len(b._conversation_turns) == 2
+        assert b._conversation_turns[-1].content == "Skuld sees coder, reviewer, and verifier."
+        assert b._conversation_turns[-1].participant_id == "skuld-room"
+
+    @pytest.mark.asyncio
+    async def test_get_room_participants_returns_snapshot(self, room_settings):
+        b = Broker(settings=room_settings)
+        assert b._room_bridge is not None
+        await b._room_bridge.register("peer-1", "coder", AsyncMock(), display_name="Coder")
+
+        participants = b.get_room_participants()
+
+        assert participants
+        assert participants[0]["peer_id"] == "peer-1"
+        assert participants[0]["persona"] == "coder"
+
+    def test_get_communication_routes_returns_channel_routes(self, room_settings):
+        b = Broker(settings=room_settings)
+        mock_channel = MagicMock()
+        mock_channel.channel_type = "telegram"
+        mock_channel.communication_route.return_value = {
+            "platform": "telegram",
+            "conversation_id": "chat-1",
+            "thread_id": "5",
+            "mode": "room",
+            "metadata": {"topic_mode": "topic_per_session"},
+        }
+        b._channels.add(mock_channel)
+
+        routes = b.get_communication_routes()
+
+        assert routes == [
+            {
+                "platform": "telegram",
+                "conversation_id": "chat-1",
+                "thread_id": "5",
+                "mode": "room",
+                "metadata": {"topic_mode": "topic_per_session"},
+            }
+        ]
+
+    # -----------------------------------------------------------------------
+    # room_state on browser connect
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_sends_room_state_when_room_enabled(self, room_settings):
+        b = Broker(settings=room_settings)
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        b._transport = mock_transport
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
+
+        await b.handle_websocket(mock_ws)
+
+        calls = [c[0][0] for c in mock_ws.send_json.call_args_list]
+        room_state_calls = [c for c in calls if c.get("type") == "room_state"]
+        assert len(room_state_calls) == 1
+        assert "participants" in room_state_calls[0]
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_no_room_state_when_room_disabled(self, no_room_settings):
+        b = Broker(settings=no_room_settings)
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        b._transport = mock_transport
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
+
+        await b.handle_websocket(mock_ws)
+
+        calls = [c[0][0] for c in mock_ws.send_json.call_args_list]
+        room_state_calls = [c for c in calls if c.get("type") == "room_state"]
+        assert len(room_state_calls) == 0
+
+    # -----------------------------------------------------------------------
+    # handle_ravn_websocket
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_handle_ravn_websocket_rejects_when_room_disabled(self, no_room_settings):
+        b = Broker(settings=no_room_settings)
+        mock_ws = AsyncMock()
+
+        await b.handle_ravn_websocket(mock_ws, "agent-1")
+
+        mock_ws.close.assert_awaited_once()
+        assert mock_ws.close.call_args[1]["code"] == 1008
+
+    @pytest.mark.asyncio
+    async def test_handle_ravn_websocket_registers_on_connect(self, room_settings):
+        b = Broker(settings=room_settings)
+        mock_bridge = AsyncMock()
+        mock_bridge.register = AsyncMock(
+            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
+        )
+        b._room_bridge = mock_bridge
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_text = AsyncMock(side_effect=WebSocketDisconnect())
+
+        await b.handle_ravn_websocket(mock_ws, "agent-1")
+
+        mock_ws.accept.assert_awaited_once()
+        mock_bridge.register.assert_awaited()
+        mock_bridge.unregister.assert_awaited_once_with("agent-1")
+
+    @pytest.mark.asyncio
+    async def test_handle_ravn_websocket_forwards_frames(self, room_settings):
+        import json as _json
+
+        b = Broker(settings=room_settings)
+        mock_bridge = AsyncMock()
+        mock_bridge.register = AsyncMock(
+            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
+        )
+        b._room_bridge = mock_bridge
+
+        frame = _json.dumps({"type": "response", "data": "Hello", "metadata": {}}) + "\n"
+        mock_ws = AsyncMock()
+        mock_ws.receive_text = AsyncMock(side_effect=[frame, WebSocketDisconnect()])
+
+        await b.handle_ravn_websocket(mock_ws, "agent-1")
+
+        mock_bridge.handle_ravn_frame.assert_awaited_once()
+        call_args = mock_bridge.handle_ravn_frame.call_args[0]
+        assert call_args[0] == "agent-1"
+        assert call_args[1]["type"] == "response"
+
+    @pytest.mark.asyncio
+    async def test_handle_ravn_websocket_skips_invalid_json(self, room_settings):
+        b = Broker(settings=room_settings)
+        mock_bridge = AsyncMock()
+        mock_bridge.register = AsyncMock(
+            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
+        )
+        b._room_bridge = mock_bridge
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_text = AsyncMock(side_effect=["not valid json\n", WebSocketDisconnect()])
+
+        await b.handle_ravn_websocket(mock_ws, "agent-1")
+
+        mock_bridge.handle_ravn_frame.assert_not_awaited()
+        mock_bridge.unregister.assert_awaited_once_with("agent-1")
+
+    @pytest.mark.asyncio
+    async def test_handle_ravn_websocket_unregisters_on_exception(self, room_settings):
+        b = Broker(settings=room_settings)
+        mock_bridge = AsyncMock()
+        mock_bridge.register = AsyncMock(
+            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
+        )
+        b._room_bridge = mock_bridge
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_text = AsyncMock(side_effect=RuntimeError("unexpected"))
+
+        await b.handle_ravn_websocket(mock_ws, "agent-1")
+
+        mock_bridge.unregister.assert_awaited_once_with("agent-1")

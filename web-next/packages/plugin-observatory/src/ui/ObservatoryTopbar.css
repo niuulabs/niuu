@@ -1,0 +1,29 @@
+.obs-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.obs-topbar__stat {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.obs-topbar__stat--accent {
+  color: var(--brand-300, var(--color-brand));
+}
+
+.obs-topbar__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  text-transform: lowercase;
+}
+
+.obs-topbar__value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}

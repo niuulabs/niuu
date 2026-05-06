@@ -16,6 +16,8 @@ from skuld.transports import (
     _map_codex_tool,
     _stop_process,
 )
+from skuld.transports import subprocess as subprocess_transport
+from skuld.transports.codex import resolve_codex_cli
 
 # ---------------------------------------------------------------------------
 # TransportCapabilities
@@ -163,16 +165,84 @@ class TestSubprocessTransport:
     def transport(self, tmp_path):
         return SubprocessTransport(str(tmp_path))
 
+    @staticmethod
+    def _mock_process(*, stdout_lines, exit_code=0):
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(side_effect=[*stdout_lines, b""])
+
+        mock_stdin = MagicMock()
+        mock_stdin.write = MagicMock()
+        mock_stdin.drain = AsyncMock()
+        mock_stdin.close = MagicMock()
+        mock_stdin.wait_closed = AsyncMock()
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.stdin = mock_stdin
+        mock_process.wait = AsyncMock(return_value=exit_code)
+        mock_process.returncode = exit_code
+        mock_process.pid = 12345
+        return mock_process
+
     def test_init(self, transport, tmp_path):
         assert transport.workspace_dir == str(tmp_path)
+        assert transport._model == ""
+        assert transport._skip_permissions is True
+        assert transport._agent_teams is False
+        assert transport._system_prompt == ""
+        assert transport._initial_prompt == ""
         assert transport.session_id is None
         assert transport.last_result is None
         assert transport.is_alive is False
 
+    def test_init_with_optional_settings(self, tmp_path):
+        transport = SubprocessTransport(
+            str(tmp_path),
+            model="claude-opus-4-6",
+            skip_permissions=False,
+            agent_teams=True,
+            system_prompt="Be precise.",
+            initial_prompt="Fix the bug.",
+        )
+
+        assert transport._model == "claude-opus-4-6"
+        assert transport._skip_permissions is False
+        assert transport._agent_teams is True
+        assert transport._system_prompt == "Be precise."
+        assert transport._initial_prompt == "Fix the bug."
+
+    def test_init_with_mcp_servers(self, tmp_path):
+        transport = SubprocessTransport(
+            str(tmp_path),
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+        assert transport._mcp_config is not None
+        payload = json.loads(transport._mcp_config)
+        assert payload["mcpServers"]["mimir-local"]["command"] == "python3"
+
     @pytest.mark.asyncio
-    async def test_start_is_validation_only(self, transport):
-        await transport.start()
-        assert transport._process is None
+    async def test_start_with_initial_prompt_sends_message(self, tmp_path):
+        transport = SubprocessTransport(str(tmp_path), initial_prompt="bootstrap prompt")
+
+        with patch.object(transport, "send_message", new_callable=AsyncMock) as mock_send:
+            await transport.start()
+
+        mock_send.assert_awaited_once_with("bootstrap prompt")
+        assert transport._initial_prompt_sent is True
+
+    @pytest.mark.asyncio
+    async def test_start_without_initial_prompt_no_send(self, transport):
+        with patch.object(transport, "send_message", new_callable=AsyncMock) as mock_send:
+            await transport.start()
+
+        mock_send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_terminates_running_process(self, transport):
@@ -205,20 +275,15 @@ class TestSubprocessTransport:
     @pytest.mark.asyncio
     async def test_send_message_spawns_process(self, transport):
         """Test send_message spawns claude with correct args."""
-        responses = [
-            (
-                b'{"type": "content_block_delta", "index": 0,'
-                b' "delta": {"type": "text_delta", "text": "Hello"}}\n'
-            ),
-            b'{"type": "result", "result": "Hello", "session_id": "sess-123"}\n',
-        ]
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=responses)
-
-        mock_subprocess = MagicMock()
-        mock_subprocess.stdout = mock_stdout
-        mock_subprocess.stderr = None
-        mock_subprocess.wait = AsyncMock(return_value=0)
+        mock_subprocess = self._mock_process(
+            stdout_lines=[
+                (
+                    b'{"type": "content_block_delta", "index": 0,'
+                    b' "delta": {"type": "text_delta", "text": "Hello"}}\n'
+                ),
+                b'{"type": "result", "result": "Hello", "session_id": "sess-123"}\n',
+            ]
+        )
 
         callback = AsyncMock()
         transport.on_event(callback)
@@ -233,9 +298,19 @@ class TestSubprocessTransport:
             call_args = mock_exec.call_args[0]
             assert call_args[0] == "claude"
             assert "-p" in call_args
-            assert "Hi" in call_args
             assert "--output-format" in call_args
             assert "stream-json" in call_args
+            assert "--input-format" in call_args
+            assert "--permission-mode" in call_args
+            assert "bypassPermissions" in call_args
+
+            stdin_payload = b"".join(
+                call.args[0] for call in mock_subprocess.stdin.write.call_args_list
+            )
+            sent = json.loads(stdin_payload.decode().strip())
+            assert sent["type"] == "user"
+            assert sent["message"]["role"] == "user"
+            assert sent["message"]["content"] == "Hi"
 
         # Both events emitted via callback
         assert callback.call_count == 2
@@ -246,16 +321,9 @@ class TestSubprocessTransport:
 
     @pytest.mark.asyncio
     async def test_send_message_tracks_session_id(self, transport):
-        responses = [
-            b'{"type": "result", "result": "Done", "session_id": "sess-456"}\n',
-        ]
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[*responses, b""])
-
-        mock_subprocess = MagicMock()
-        mock_subprocess.stdout = mock_stdout
-        mock_subprocess.stderr = None
-        mock_subprocess.wait = AsyncMock(return_value=0)
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done", "session_id": "sess-456"}\n']
+        )
 
         transport.on_event(AsyncMock())
 
@@ -272,16 +340,9 @@ class TestSubprocessTransport:
     async def test_send_message_resumes_session(self, transport):
         transport._session_id = "sess-existing"
 
-        responses = [
-            b'{"type": "result", "result": "ok", "session_id": "sess-existing"}\n',
-        ]
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[*responses, b""])
-
-        mock_subprocess = MagicMock()
-        mock_subprocess.stdout = mock_stdout
-        mock_subprocess.stderr = None
-        mock_subprocess.wait = AsyncMock(return_value=0)
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "ok", "session_id": "sess-existing"}\n']
+        )
 
         transport.on_event(AsyncMock())
 
@@ -298,13 +359,10 @@ class TestSubprocessTransport:
 
     @pytest.mark.asyncio
     async def test_send_message_raises_on_nonzero_exit(self, transport):
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
-
-        mock_subprocess = MagicMock()
-        mock_subprocess.stdout = mock_stdout
-        mock_subprocess.stderr = None
-        mock_subprocess.wait = AsyncMock(return_value=1)
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done"}\n'],
+            exit_code=1,
+        )
 
         transport.on_event(AsyncMock())
 
@@ -321,7 +379,10 @@ class TestSubprocessTransport:
         mock_subprocess = MagicMock()
         mock_subprocess.stdout = None
         mock_subprocess.stderr = None
+        mock_subprocess.stdin = AsyncMock()
         mock_subprocess.wait = AsyncMock(return_value=0)
+        mock_subprocess.returncode = 0
+        mock_subprocess.pid = 12345
 
         transport.on_event(AsyncMock())
 
@@ -335,17 +396,12 @@ class TestSubprocessTransport:
 
     @pytest.mark.asyncio
     async def test_send_message_skips_non_json_lines(self, transport):
-        responses = [
-            b"some debug output\n",
-            b'{"type": "result", "result": "Done"}\n',
-        ]
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[*responses, b""])
-
-        mock_subprocess = MagicMock()
-        mock_subprocess.stdout = mock_stdout
-        mock_subprocess.stderr = None
-        mock_subprocess.wait = AsyncMock(return_value=0)
+        mock_subprocess = self._mock_process(
+            stdout_lines=[
+                b"some debug output\n",
+                b'{"type": "result", "result": "Done"}\n',
+            ]
+        )
 
         callback = AsyncMock()
         transport.on_event(callback)
@@ -368,14 +424,9 @@ class TestSubprocessTransport:
             "session_id": "s1",
             "modelUsage": {"opus": {"inputTokens": 10}},
         }
-        responses = [json.dumps(result_data).encode() + b"\n"]
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[*responses, b""])
-
-        mock_subprocess = MagicMock()
-        mock_subprocess.stdout = mock_stdout
-        mock_subprocess.stderr = None
-        mock_subprocess.wait = AsyncMock(return_value=0)
+        mock_subprocess = self._mock_process(
+            stdout_lines=[json.dumps(result_data).encode() + b"\n"]
+        )
 
         transport.on_event(AsyncMock())
 
@@ -392,18 +443,13 @@ class TestSubprocessTransport:
     @pytest.mark.asyncio
     async def test_send_message_filters_empty_content_block(self, transport):
         """Empty content_block_delta events should not be emitted."""
-        responses = [
-            b'{"type": "content_block_delta", "index": 0, "delta": {"text": ""}}\n',
-            b'{"type": "content_block_delta", "index": 0, "delta": {"text": "Hi"}}\n',
-            b'{"type": "result", "result": "Hi"}\n',
-        ]
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[*responses, b""])
-
-        mock_subprocess = MagicMock()
-        mock_subprocess.stdout = mock_stdout
-        mock_subprocess.stderr = None
-        mock_subprocess.wait = AsyncMock(return_value=0)
+        mock_subprocess = self._mock_process(
+            stdout_lines=[
+                b'{"type": "content_block_delta", "index": 0, "delta": {"text": ""}}\n',
+                b'{"type": "content_block_delta", "index": 0, "delta": {"text": "Hi"}}\n',
+                b'{"type": "result", "result": "Hi"}\n',
+            ]
+        )
 
         callback = AsyncMock()
         transport.on_event(callback)
@@ -422,14 +468,9 @@ class TestSubprocessTransport:
 
     @pytest.mark.asyncio
     async def test_process_cleaned_up_after_send(self, transport):
-        responses = [b'{"type": "result", "result": "Done"}\n']
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[*responses, b""])
-
-        mock_subprocess = MagicMock()
-        mock_subprocess.stdout = mock_stdout
-        mock_subprocess.stderr = None
-        mock_subprocess.wait = AsyncMock(return_value=0)
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done"}\n']
+        )
 
         transport.on_event(AsyncMock())
 
@@ -441,6 +482,203 @@ class TestSubprocessTransport:
             await transport.send_message("test")
 
         assert transport._process is None
+
+    @pytest.mark.asyncio
+    async def test_send_message_passes_model_system_prompt_and_agent_teams(self, tmp_path):
+        transport = SubprocessTransport(
+            str(tmp_path),
+            model="claude-opus-4-6",
+            skip_permissions=False,
+            agent_teams=True,
+            system_prompt="Be careful.",
+        )
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done"}\n']
+        )
+
+        transport.on_event(AsyncMock())
+
+        with patch(
+            "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_subprocess
+            await transport.send_message("test")
+
+            call_args = mock_exec.call_args[0]
+            call_kwargs = mock_exec.call_args[1]
+            assert "--model" in call_args
+            assert "claude-opus-4-6" in call_args
+            assert "--permission-mode" not in call_args
+            assert "--append-system-prompt" in call_args
+            assert "Be careful." in call_args
+            assert call_kwargs["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_send_message_omits_system_prompt_when_resuming(self, tmp_path):
+        transport = SubprocessTransport(
+            str(tmp_path),
+            system_prompt="Be careful.",
+        )
+        transport._session_id = "sess-existing"
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done", "session_id": "sess-existing"}\n']
+        )
+
+        transport.on_event(AsyncMock())
+
+        with patch(
+            "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_subprocess
+            await transport.send_message("test")
+
+            call_args = mock_exec.call_args[0]
+            assert "--resume" in call_args
+            assert "--append-system-prompt" not in call_args
+
+    @pytest.mark.asyncio
+    async def test_send_message_passes_mcp_config(self, tmp_path):
+        transport = SubprocessTransport(
+            str(tmp_path),
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done"}\n']
+        )
+
+        transport.on_event(AsyncMock())
+
+        with patch(
+            "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_subprocess
+            await transport.send_message("test")
+
+            call_args = mock_exec.call_args[0]
+            assert "--mcp-config" in call_args
+            config = json.loads(call_args[call_args.index("--mcp-config") + 1])
+            assert "mimir-local" in config["mcpServers"]
+
+    @pytest.mark.asyncio
+    async def test_send_message_retries_transient_error(self, transport):
+        first_process = self._mock_process(
+            stdout_lines=[
+                b'{"type": "error", "message": "ProcessTransport not ready for writing"}\n'
+            ]
+        )
+        second_process = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done", "session_id": "sess-789"}\n']
+        )
+
+        transport.on_event(AsyncMock())
+
+        with (
+            patch(
+                "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.subprocess.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as mock_sleep,
+        ):
+            mock_exec.side_effect = [first_process, second_process]
+            await transport.send_message("retry me")
+
+        assert mock_exec.await_count == 2
+        mock_sleep.assert_awaited_once()
+        assert transport.session_id == "sess-789"
+
+    @pytest.mark.asyncio
+    async def test_send_message_does_not_retry_after_meaningful_output(self, transport):
+        mock_subprocess = self._mock_process(
+            stdout_lines=[
+                b'{"type": "content_block_delta", "delta": {"text": "partial"}}\n',
+                b'{"type": "error", "message": "ProcessTransport not ready for writing"}\n',
+            ]
+        )
+
+        callback = AsyncMock()
+        transport.on_event(callback)
+
+        with (
+            patch(
+                "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.subprocess.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as mock_sleep,
+        ):
+            mock_exec.return_value = mock_subprocess
+            with pytest.raises(RuntimeError, match="completed without a result event"):
+                await transport.send_message("test")
+
+        assert mock_exec.await_count == 1
+        mock_sleep.assert_not_called()
+        assert callback.call_count == 2
+        assert callback.call_args_list[0][0][0]["type"] == "content_block_delta"
+        assert callback.call_args_list[1][0][0]["type"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_send_message_raises_when_stdin_write_fails(self, transport):
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done"}\n']
+        )
+        mock_subprocess.stdin.write.side_effect = BrokenPipeError("pipe closed")
+
+        transport.on_event(AsyncMock())
+
+        with patch(
+            "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_subprocess
+            with pytest.raises(RuntimeError, match="Failed to write Claude CLI stdin"):
+                await transport.send_message("test")
+
+    @pytest.mark.asyncio
+    async def test_send_message_raises_without_result_event(self, transport):
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "content_block_delta", "delta": {"text": "partial"}}\n']
+        )
+
+        transport.on_event(AsyncMock())
+
+        with patch(
+            "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_subprocess
+            with pytest.raises(RuntimeError, match="completed without a result event"):
+                await transport.send_message("test")
+
+
+class TestSubprocessHelpers:
+    def test_extract_error_message_prefers_nested_error_message(self):
+        data = {"error": {"message": "nested error"}}
+        assert subprocess_transport._extract_error_message(data) == "nested error"
+
+    def test_extract_error_message_falls_back_to_serialized_payload(self):
+        data = {"type": "error", "detail": "missing"}
+        message = subprocess_transport._extract_error_message(data)
+        assert '"detail": "missing"' in message
+
+    def test_retryable_error_detection_and_output_classification(self):
+        assert subprocess_transport._is_retryable_error("ProcessTransport not ready for writing")
+        assert not subprocess_transport._is_retryable_error("permission denied")
+        assert subprocess_transport._counts_as_output({"type": "assistant"})
+        assert not subprocess_transport._counts_as_output({"type": "system"})
 
 
 # ---------------------------------------------------------------------------
@@ -1057,6 +1295,36 @@ class TestSdkWebSocketTransport:
             assert call_args[idx + 1] == "You are an agent."
 
     @pytest.mark.asyncio
+    async def test_spawn_with_mcp_config(self, tmp_path):
+        t = SdkWebSocketTransport(
+            workspace_dir=str(tmp_path),
+            sdk_port=8081,
+            session_id="s1",
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+        with patch(
+            "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_process = MagicMock()
+            mock_process.stdout = None
+            mock_process.stderr = None
+            mock_exec.return_value = mock_process
+
+            await t.start()
+
+            call_args = mock_exec.call_args[0]
+            assert "--mcp-config" in call_args
+            config = json.loads(call_args[call_args.index("--mcp-config") + 1])
+            assert "mimir-local" in config["mcpServers"]
+
+    @pytest.mark.asyncio
     async def test_spawn_without_system_prompt_omits_flag(self, transport):
         with patch(
             "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
@@ -1180,6 +1448,16 @@ class TestCodexSubprocessTransport:
         assert caps.slash_commands is False
         assert caps.skills is False
 
+    def test_resolve_codex_cli_prefers_env_var(self, monkeypatch):
+        monkeypatch.setenv("CODEX_CLI_PATH", "/tmp/custom-codex")
+        assert resolve_codex_cli() == "/tmp/custom-codex"
+
+    def test_resolve_codex_cli_uses_path(self, monkeypatch):
+        monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
+        monkeypatch.delenv("SKULD_CODEX_CLI_PATH", raising=False)
+        with patch("skuld.transports.codex.shutil.which", return_value="/usr/local/bin/codex"):
+            assert resolve_codex_cli() == "/usr/local/bin/codex"
+
     @pytest.mark.asyncio
     async def test_start_is_noop(self, transport):
         await transport.start()
@@ -1217,16 +1495,58 @@ class TestCodexSubprocessTransport:
         with patch(
             "skuld.transports.codex.asyncio.create_subprocess_exec",
             new_callable=AsyncMock,
+        ) as mock_exec, patch(
+            "skuld.transports.codex.resolve_codex_cli",
+            return_value="/Applications/Codex.app/Contents/Resources/codex",
+        ):
+            mock_exec.return_value = mock_process
+            await transport.send_message("refactor the auth module")
+
+            call_args = mock_exec.call_args[0]
+            assert call_args[0] == "/Applications/Codex.app/Contents/Resources/codex"
+            assert call_args[1] == "exec"
+            assert "--model" in call_args
+            assert "o4-mini" in call_args
+            assert "--full-auto" in call_args
+            assert "--json" in call_args
+            assert "--quiet" not in call_args
+            assert "refactor the auth module" in call_args
+
+    @pytest.mark.asyncio
+    async def test_send_message_spawns_codex_with_mcp_overrides(self, tmp_path):
+        transport = CodexSubprocessTransport(
+            str(tmp_path),
+            mcp_servers=[
+                {
+                    "name": "mimir-local",
+                    "command": "python3",
+                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                }
+            ],
+        )
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(return_value=b"")
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        transport.on_event(AsyncMock())
+
+        with patch(
+            "skuld.transports.codex.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
         ) as mock_exec:
             mock_exec.return_value = mock_process
             await transport.send_message("refactor the auth module")
 
             call_args = mock_exec.call_args[0]
-            assert call_args[0] == "codex"
-            assert "--model" in call_args
-            assert "o4-mini" in call_args
-            assert "--full-auto" in call_args
-            assert "refactor the auth module" in call_args
+            assert "-c" in call_args
+            assert any(
+                arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
+            )
 
     @pytest.mark.asyncio
     async def test_send_message_emits_text_delta_for_json_events(self, transport):
@@ -1547,6 +1867,7 @@ class TestStopProcess:
     async def test_terminate_succeeds(self):
         proc = MagicMock(spec=asyncio.subprocess.Process)
         proc.returncode = None
+        proc.pid = 12345
         proc.terminate = MagicMock()
 
         wait_future: asyncio.Future[int] = asyncio.get_event_loop().create_future()
@@ -1560,6 +1881,7 @@ class TestStopProcess:
     async def test_kill_on_timeout(self):
         proc = MagicMock(spec=asyncio.subprocess.Process)
         proc.returncode = None
+        proc.pid = 12345
         proc.terminate = MagicMock()
         proc.kill = MagicMock()
 

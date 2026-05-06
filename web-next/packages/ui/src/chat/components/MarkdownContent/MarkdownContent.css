@@ -1,0 +1,199 @@
+.niuu-chat-md {
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.niuu-chat-md-h1 {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  margin: var(--space-4) 0 var(--space-2);
+}
+.niuu-chat-md-h2 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  margin: var(--space-3) 0 var(--space-2);
+}
+.niuu-chat-md-h3 {
+  font-size: var(--text-base);
+  font-weight: 600;
+  margin: var(--space-3) 0 var(--space-1);
+}
+.niuu-chat-md-h4,
+.niuu-chat-md-h5,
+.niuu-chat-md-h6 {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin: var(--space-2) 0 var(--space-1);
+}
+
+.niuu-chat-md-p {
+  margin: 0 0 var(--space-2);
+}
+
+.niuu-chat-md-ul,
+.niuu-chat-md-ol {
+  margin: var(--space-1) 0 var(--space-2) var(--space-4);
+  padding: 0;
+}
+
+.niuu-chat-md-ul li,
+.niuu-chat-md-ol li {
+  margin-bottom: var(--space-1);
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-md-blockquote {
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-4);
+  border-left: 3px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.niuu-chat-md-inline-code {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-brand);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.niuu-chat-md-link {
+  color: var(--color-tool-web);
+  text-decoration: underline;
+}
+
+.niuu-chat-md-table-wrap {
+  margin: var(--space-2) 0;
+  overflow-x: auto;
+}
+
+.niuu-chat-md-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  font-size: var(--text-xs);
+}
+
+.niuu-chat-md-table-head,
+.niuu-chat-md-table-cell {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-right: 1px solid var(--color-border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+
+.niuu-chat-md-table-head:last-child,
+.niuu-chat-md-table-cell:last-child {
+  border-right: none;
+}
+
+.niuu-chat-md-table thead {
+  background: var(--color-bg-tertiary);
+}
+
+.niuu-chat-md-table-head {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-md-table-cell {
+  color: var(--color-text-secondary);
+}
+
+.niuu-chat-md-table tbody tr:last-child .niuu-chat-md-table-cell {
+  border-bottom: none;
+}
+
+.niuu-chat-md-cursor {
+  display: inline-block;
+  animation: niuu-chat-cursor-blink 1s step-start infinite;
+  color: var(--color-brand);
+}
+
+@keyframes niuu-chat-cursor-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ── Code Block ─────────────────────────────────────────── */
+
+.niuu-chat-md-codeblock {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin: var(--space-2) 0;
+}
+
+.niuu-chat-md-codeblock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-bg-tertiary);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.niuu-chat-md-codeblock-lang {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-md-codeblock-actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.niuu-chat-md-codeblock-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.niuu-chat-md-codeblock-btn:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-elevated);
+}
+
+.niuu-chat-md-codeblock-btn-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.niuu-chat-md-codeblock-pre {
+  margin: 0;
+  padding: var(--space-4);
+  background: var(--color-bg-primary);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  white-space: pre;
+  scrollbar-width: thin;
+}
+
+.niuu-chat-md-codeblock-pre--wrap {
+  white-space: pre-wrap;
+  word-break: break-all;
+}

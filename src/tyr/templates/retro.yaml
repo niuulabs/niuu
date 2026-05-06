@@ -1,0 +1,82 @@
+# Saga template: retro (pipeline format)
+# Triggered by: cron.weekly (0 9 * * 1 — Monday 9am)
+# Stage 1: Retrospective analysis (persona: retro-analyst)
+# Stage 2: Write retrospective to Mimir (persona: retro-analyst)
+name: "Weekly Retro: {event.week}"
+feature_branch: "main"
+base_branch: "main"
+repos: []
+
+stages:
+  - name: retrospective-analysis
+    sequential:
+      - name: "Retrospective analysis for week {event.week}"
+        persona: retro-analyst
+        description: |
+          Analyse the past week's engineering activity, identify patterns, blockers, and learnings.
+
+          Week: {event.week}
+        acceptance_criteria:
+          - Git commit history for the week reviewed
+          - Open PRs and recently merged PRs reviewed
+          - Blockers and incidents identified and documented
+          - Key learnings and patterns extracted
+          - Action items for the coming week drafted
+        declared_files: []
+        estimate_hours: 1.0
+        prompt: |
+          # Weekly Retrospective Analysis Task
+
+          Perform a retrospective for week {event.week}.
+
+          ## Instructions
+
+          1. Review git activity for the past week:
+             `git log --since="7 days ago" --oneline --all`
+          2. Check open and recently merged PRs:
+             `gh pr list --state all --limit 20`
+          3. Review any Linear tickets closed or moved this week.
+          4. Identify:
+             - What went well (wins, smooth deliveries)
+             - What was blocked or slowed (friction points)
+             - Surprises or incidents
+             - Patterns worth capturing as learnings
+          5. Draft 3–5 action items for the coming week.
+
+          Output a structured retro document with sections:
+          - Wins
+          - Friction Points
+          - Surprises / Incidents
+          - Learnings
+          - Action Items
+
+  - name: write-to-mimir
+    sequential:
+      - name: "Write retro for week {event.week} to Mimir"
+        persona: retro-analyst
+        description: |
+          Write the completed retrospective for week {event.week} to Mimir for long-term storage and searchability.
+        acceptance_criteria:
+          - Retrospective written to Mimir with correct metadata (week, date, team)
+          - Structured sections: Wins, Friction Points, Surprises, Learnings, Action Items
+          - Searchable by week and date in Mimir
+          - Action items tagged for follow-up
+        declared_files: []
+        estimate_hours: 0.25
+        prompt: |
+          # Write Retrospective to Mimir Task
+
+          Write the weekly retrospective for week {event.week} to Mimir.
+
+          ## Instructions
+
+          1. Read the retrospective analysis from the previous phase output.
+          2. Format it as a structured Mimir entry:
+             - Title: `Weekly Retro — {event.week}`
+             - Tags: week={event.week}, type=retro, team=engineering
+             - Sections: Wins, Friction Points, Surprises/Incidents, Learnings, Action Items
+          3. Write to Mimir using the available Mimir tool.
+          4. Verify the entry is searchable: search Mimir for "retro week:{event.week}".
+          5. Create follow-up tasks for each action item if a task tracker is configured.
+
+          Confirm the Mimir entry URL or ID after writing.

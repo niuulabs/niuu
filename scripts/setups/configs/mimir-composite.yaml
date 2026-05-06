@@ -1,0 +1,118 @@
+# ─── mimir-composite ─────────────────────────────────────────────────────────
+#
+# Ravn with BOTH a local Mimir and a shared remote Mimir.
+#
+# What you get:
+#   - Local Mimir for personal notes (fast, always available)
+#   - Remote shared Mimir for team knowledge
+#   - Read priority: local searched first, then remote
+#   - Write routing: personal/* goes to local, wiki/* goes to shared
+#   - Default writes go to local
+#
+# Use case:
+#   Your personal notes stay on your machine; team wiki pages are read from
+#   and written to the shared server. Searches combine both.
+#
+# Prerequisites:
+#   - An LLM provider (configure below)
+#   - A running remote Mimir service for the shared instance
+#   - MIMIR_BEARER_TOKEN for shared instance auth
+#
+# Launch:
+#   ravn run --config ~/.ravn/config.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# ── Mimir: composite (local + remote) ──────────────────────────────────────
+mimir:
+  enabled: true
+  auto_distill: true
+  distill_min_session_minutes: 5
+  idle_lint_threshold_minutes: 60
+  continuation_threshold_minutes: 30
+  categories:
+    - technical
+    - projects
+    - research
+    - household
+    - self
+
+  instances:
+    # Local filesystem — personal notes, always available
+    - name: local
+      role: local
+      path: ~/.ravn/mimir
+      read_priority: 20                  # searched first (higher = earlier)
+
+    # Remote shared — team wiki
+    - name: shared
+      role: shared
+      url: http://mimir.internal:7477    # ← change to your Mimir host
+      auth:
+        type: bearer
+        token_env: MIMIR_BEARER_TOKEN
+      read_priority: 10                  # searched second
+
+  # Write routing: prefix-based rules decide where new pages land
+  write_routing:
+    rules:
+      - prefix: "personal/"
+        mounts: ["local"]
+      - prefix: "wiki/"
+        mounts: ["shared"]
+      - prefix: "projects/"
+        mounts: ["shared"]
+    default: ["local"]                   # anything else stays local
+
+  # Source synthesis: auto-create wiki pages from ingested sources
+  source_trigger:
+    enabled: true
+    poll_interval_seconds: 300           # check every 5 min
+    persona: research-and-distill
+    max_tokens: 4096
+    retry_after_seconds: 600
+
+  # Staleness refresh: re-check and update old pages
+  staleness_trigger:
+    enabled: true
+    schedule_hours: 168                  # weekly
+    top_n: 20
+    persona: mimir-curator
+    max_tokens: 4096
+
+# Everything else off
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+thread:
+  enabled: false
+
+wakefulness:
+  enabled: false
+
+recap:
+  enabled: false
+
+initiative:
+  enabled: false
+
+gateway:
+  enabled: false
+
+logging:
+  level: info

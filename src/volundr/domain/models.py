@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -24,6 +24,11 @@ from niuu.domain.models import (  # noqa: F401
     SecretType,
     StoredCredential,
 )
+
+
+def _utc_now() -> datetime:
+    """Return a timezone-aware UTC timestamp."""
+    return datetime.now(UTC)
 
 
 class UserStatus(StrEnum):
@@ -142,6 +147,21 @@ class EventType(StrEnum):
     PR_CREATED = "pr_created"
     PR_MERGED = "pr_merged"
     SESSION_ACTIVITY = "session_activity"
+
+
+class CommunicationPlatform(StrEnum):
+    """External communication platform."""
+
+    TELEGRAM = "telegram"
+    SLACK = "slack"
+    DISCORD = "discord"
+    WHATSAPP = "whatsapp"
+
+
+class CommunicationRouteMode(StrEnum):
+    """How inbound communication should enter the target session."""
+
+    ROOM = "room"
 
 
 class ModelProvider(StrEnum):
@@ -324,11 +344,11 @@ class Session(BaseModel):
         description="URL for the editor IDE when running",
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="Timestamp when the session was created",
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="Timestamp of the last session update",
     )
     last_active: datetime | None = Field(
@@ -389,6 +409,10 @@ class Session(BaseModel):
         default_factory=dict,
         description="Metadata from the latest activity report",
     )
+    workload_type: str = Field(
+        default="session",
+        description="Workload type used to launch the session",
+    )
 
     model_config = {"frozen": False}
 
@@ -425,7 +449,7 @@ class Session(BaseModel):
 
     def with_status(self, status: SessionStatus) -> Session:
         """Return a copy with updated status and timestamp."""
-        return self.model_copy(update={"status": status, "updated_at": datetime.utcnow()})
+        return self.model_copy(update={"status": status, "updated_at": datetime.now(UTC)})
 
     def with_endpoints(self, chat_endpoint: str, code_endpoint: str) -> Session:
         """Return a copy with updated endpoints and timestamp."""
@@ -433,7 +457,7 @@ class Session(BaseModel):
             update={
                 "chat_endpoint": chat_endpoint,
                 "code_endpoint": code_endpoint,
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(UTC),
             }
         )
 
@@ -443,7 +467,7 @@ class Session(BaseModel):
             update={
                 "chat_endpoint": None,
                 "code_endpoint": None,
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(UTC),
             }
         )
 
@@ -452,7 +476,7 @@ class Session(BaseModel):
         return self.model_copy(
             update={
                 "pod_name": pod_name,
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(UTC),
             }
         )
 
@@ -461,13 +485,13 @@ class Session(BaseModel):
         return self.model_copy(
             update={
                 "error": error,
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(UTC),
             }
         )
 
     def with_activity(self, message_count: int, tokens: int) -> Session:
         """Return a copy with updated activity metrics and timestamp."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         return self.model_copy(
             update={
                 "message_count": message_count,
@@ -476,6 +500,60 @@ class Session(BaseModel):
                 "updated_at": now,
             }
         )
+
+
+@dataclass(frozen=True)
+class CommunicationRoute:
+    """Route an external conversation/thread back to a live session."""
+
+    id: UUID
+    platform: CommunicationPlatform
+    conversation_id: str
+    thread_id: str | None
+    session_id: UUID
+    owner_id: str
+    mode: CommunicationRouteMode = CommunicationRouteMode.ROOM
+    default_target: str | None = None
+    active: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=_utc_now)
+    updated_at: datetime = field(default_factory=_utc_now)
+
+
+@dataclass(frozen=True)
+class InboundCommunicationMessage:
+    """Normalized inbound human message from an external communication channel."""
+
+    platform: CommunicationPlatform
+    conversation_id: str
+    thread_id: str | None
+    sender_external_id: str
+    sender_display_name: str
+    text: str
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RoomParticipantInfo:
+    """Minimal participant information for dynamic targeting."""
+
+    peer_id: str
+    persona: str
+    display_name: str = ""
+    participant_type: str = "ravn"
+    status: str = "idle"
+
+
+@dataclass(frozen=True)
+class SessionCommunicationTarget:
+    """Resolved external communication target exposed by a live session."""
+
+    platform: CommunicationPlatform
+    conversation_id: str
+    thread_id: str | None = None
+    mode: CommunicationRouteMode = CommunicationRouteMode.ROOM
+    default_target: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class TimelineEventType(StrEnum):
@@ -622,11 +700,11 @@ class Chronicle(BaseModel):
         description="Parent chronicle ID for reforge chains",
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="Timestamp when the chronicle was created",
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="Timestamp of the last chronicle update",
     )
 
@@ -738,11 +816,11 @@ class SavedPrompt(BaseModel):
         description="Tags for categorization and search",
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="Timestamp when the prompt was created",
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="Timestamp of the last prompt update",
     )
 
@@ -795,7 +873,7 @@ class ProjectMapping(BaseModel):
         description="Human-readable project name",
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="Timestamp when the mapping was created",
     )
 
@@ -962,6 +1040,8 @@ class PodSpecAdditions:
     annotations: dict[str, str] = ()  # type: ignore[assignment]
     env: tuple[dict, ...] = ()
     service_account: str | None = None
+    extra_containers: tuple[dict, ...] = ()
+    init_containers: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
         # Ensure dict fields default to empty dicts, not empty tuples
@@ -969,6 +1049,31 @@ class PodSpecAdditions:
             object.__setattr__(self, "labels", {})
         if not isinstance(self.annotations, dict):
             object.__setattr__(self, "annotations", {})
+
+
+@dataclass(frozen=True)
+class WorkloadPersonaOverride:
+    """Typed helper for per-persona overrides in workload_config.
+
+    Callers can build these instead of raw dicts.  The ``llm`` dict is
+    merged with global/default LLM config via ``niuu.domain.llm_merge.merge_llm``.
+    """
+
+    name: str
+    llm: dict[str, Any] = field(default_factory=dict)
+    system_prompt_extra: str | None = None
+    iteration_budget: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to the wire dict format consumed by workload_config."""
+        d: dict[str, Any] = {"name": self.name}
+        if self.llm:
+            d["llm"] = dict(self.llm)
+        if self.system_prompt_extra:
+            d["system_prompt_extra"] = self.system_prompt_extra
+        if self.iteration_budget is not None:
+            d["iteration_budget"] = self.iteration_budget
+        return d
 
 
 class MountType(StrEnum):
@@ -1233,11 +1338,11 @@ class Preset(BaseModel):
         description="Additional workload-specific configuration",
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="Timestamp when the preset was created",
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="Timestamp of the last preset update",
     )
 
@@ -1399,10 +1504,35 @@ from niuu.domain.models import PersonalAccessToken  # noqa: F401, E402
 def _deep_merge(base: dict, override: dict) -> None:
     """Deep-merge override into base in place."""
     for key, value in override.items():
+        if key == "mcpServers" and isinstance(base.get(key), list) and isinstance(value, list):
+            base[key] = _merge_mcp_server_lists(base[key], value)
+            continue
         if key in base and isinstance(base[key], dict) and isinstance(value, dict):
             _deep_merge(base[key], value)
         else:
             base[key] = value
+
+
+def _merge_mcp_server_lists(existing: list, override: list) -> list:
+    """Merge MCP server lists by ``name``, preserving order and later overrides."""
+    merged: list = []
+    index_by_name: dict[str, int] = {}
+
+    for entry in list(existing) + list(override):
+        if not isinstance(entry, dict):
+            merged.append(entry)
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            merged.append(dict(entry))
+            continue
+        if name in index_by_name:
+            merged[index_by_name[name]] = dict(entry)
+            continue
+        index_by_name[name] = len(merged)
+        merged.append(dict(entry))
+
+    return merged
 
 
 def _merge_pod_specs(a: PodSpecAdditions, b: PodSpecAdditions) -> PodSpecAdditions:
@@ -1414,4 +1544,6 @@ def _merge_pod_specs(a: PodSpecAdditions, b: PodSpecAdditions) -> PodSpecAdditio
         annotations={**a.annotations, **b.annotations},
         env=a.env + b.env,
         service_account=b.service_account or a.service_account,
+        extra_containers=a.extra_containers + b.extra_containers,
+        init_containers=a.init_containers + b.init_containers,
     )

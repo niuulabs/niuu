@@ -1,0 +1,70 @@
+.niuu-chat-room-message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.niuu-chat-room-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.niuu-chat-room-persona-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--radius-full);
+  transition: background-color var(--transition-fast);
+}
+
+.niuu-chat-room-persona-btn:hover {
+  background: color-mix(in srgb, var(--niuu-persona-color, var(--color-brand)) 10%, transparent);
+}
+
+.niuu-chat-room-persona-btn--selected {
+  background: color-mix(in srgb, var(--niuu-persona-color, var(--color-brand)) 15%, transparent);
+}
+
+.niuu-chat-room-persona-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--niuu-persona-color, var(--color-brand));
+  flex-shrink: 0;
+}
+
+.niuu-chat-room-persona-name {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--niuu-persona-color, var(--color-text-secondary));
+}
+
+.niuu-chat-room-detail-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast);
+}
+
+.niuu-chat-room-detail-btn:hover {
+  color: var(--color-text-secondary);
+}
+
+.niuu-chat-room-detail-icon {
+  width: 12px;
+  height: 12px;
+}

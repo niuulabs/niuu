@@ -88,21 +88,22 @@ def test_slugify_unicode_to_ascii() -> None:
 
 def test_thread_state_values() -> None:
     assert ThreadState.open == "open"
-    assert ThreadState.assigned == "assigned"
+    assert ThreadState.pulling == "pulling"
+    assert ThreadState.blocked == "blocked"
     assert ThreadState.closed == "closed"
     assert ThreadState.dissolved == "dissolved"
 
 
 def test_thread_state_from_string() -> None:
     assert ThreadState("open") == ThreadState.open
-    assert ThreadState("assigned") == ThreadState.assigned
+    assert ThreadState("pulling") == ThreadState.pulling
     assert ThreadState("closed") == ThreadState.closed
 
 
-def test_thread_state_assigned_is_str() -> None:
-    """ThreadState.assigned must be a plain string (StrEnum behaviour)."""
-    assert isinstance(ThreadState.assigned, str)
-    assert str(ThreadState.assigned) == "assigned"
+def test_thread_state_pulling_is_str() -> None:
+    """ThreadState.pulling must be a plain string (StrEnum behaviour)."""
+    assert isinstance(ThreadState.pulling, str)
+    assert str(ThreadState.pulling) == "pulling"
 
 
 # ---------------------------------------------------------------------------
@@ -111,10 +112,12 @@ def test_thread_state_assigned_is_str() -> None:
 
 
 def test_thread_context_ref_fields() -> None:
-    ref = ThreadContextRef(type="conversation", id="session_abc", summary="Evening discussion")
-    assert ref.type == "conversation"
-    assert ref.id == "session_abc"
-    assert ref.summary == "Evening discussion"
+    ref = ThreadContextRef(
+        ref_type="conversation", ref_id="session_abc", ref_summary="Evening discussion"
+    )
+    assert ref.ref_type == "conversation"
+    assert ref.ref_id == "session_abc"
+    assert ref.ref_summary == "Evening discussion"
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +149,9 @@ def test_thread_yaml_schema_round_trip(tmp_path: Path) -> None:
         owner_id=None,
         next_action_hint="Compare HNSW vs flat",
         resolved_artifact_path=None,
-        context_refs=[ThreadContextRef(type="conversation", id="s1", summary="Evening chat")],
+        context_refs=[
+            ThreadContextRef(ref_type="conversation", ref_id="s1", ref_summary="Evening chat")
+        ],
         weight_signals={"age_days": 1.0, "mention_count": 2},
     )
     yaml_path = tmp_path / "test.yaml"
@@ -160,8 +165,8 @@ def test_thread_yaml_schema_round_trip(tmp_path: Path) -> None:
     assert loaded.owner_id is None
     assert loaded.resolved_artifact_path is None
     assert len(loaded.context_refs) == 1
-    assert loaded.context_refs[0].type == "conversation"
-    assert loaded.context_refs[0].id == "s1"
+    assert loaded.context_refs[0].ref_type == "conversation"
+    assert loaded.context_refs[0].ref_id == "s1"
     assert loaded.weight_signals["mention_count"] == 2
 
 
@@ -193,7 +198,7 @@ def test_from_yaml_raises_on_missing_required_field(tmp_path: Path) -> None:
     """Missing required fields must raise ThreadSchemaError."""
     yaml_path = tmp_path / "bad.yaml"
     yaml_path.write_text("title: Only Title\n", encoding="utf-8")
-    with pytest.raises(ThreadSchemaError, match="missing required field"):
+    with pytest.raises(ThreadSchemaError, match="is required"):
         ThreadYamlSchema.from_yaml(yaml_path)
 
 
@@ -204,7 +209,7 @@ def test_from_yaml_raises_on_invalid_state(tmp_path: Path) -> None:
         f"title: T\nstate: flying\nweight: 0.5\ncreated_at: {now}\nupdated_at: {now}\n",
         encoding="utf-8",
     )
-    with pytest.raises(ThreadSchemaError, match="invalid state"):
+    with pytest.raises(ThreadSchemaError, match="not a valid ThreadState"):
         ThreadYamlSchema.from_yaml(yaml_path)
 
 
@@ -214,7 +219,7 @@ def test_from_yaml_raises_on_invalid_date(tmp_path: Path) -> None:
         "title: T\nstate: open\nweight: 0.5\ncreated_at: not-a-date\nupdated_at: also-bad\n",
         encoding="utf-8",
     )
-    with pytest.raises(ThreadSchemaError, match="invalid created_at"):
+    with pytest.raises(ThreadSchemaError, match="created_at"):
         ThreadYamlSchema.from_yaml(yaml_path)
 
 
@@ -314,7 +319,9 @@ async def test_create_thread_md_has_sections(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_create_thread_with_context_refs(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
-    refs = [ThreadContextRef(type="conversation", id="sess_abc", summary="Evening chat")]
+    refs = [
+        ThreadContextRef(ref_type="conversation", ref_id="sess_abc", ref_summary="Evening chat")
+    ]
     page = await adapter.create_thread(title="Context Thread", context_refs=refs)
     assert page.meta.is_thread is True
     # MD history should include the context summary
@@ -561,15 +568,28 @@ async def test_list_threads_filtered_by_state(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_threads_filtered_by_assigned_state(tmp_path: Path) -> None:
-    """ThreadState.assigned must work as a filter value."""
+async def test_list_threads_filtered_by_blocked_state(tmp_path: Path) -> None:
+    """ThreadState.blocked must work as a filter value."""
     adapter = _make_adapter(tmp_path)
     await adapter.create_thread(title="Open Thread 2")
-    await adapter.create_thread(title="Assigned Thread")
-    await adapter.update_thread_state("threads/assigned-thread", ThreadState.assigned)
-    pages = await adapter.list_threads(state=ThreadState.assigned)
+    await adapter.create_thread(title="Blocked Thread")
+    await adapter.update_thread_state("threads/blocked-thread", ThreadState.blocked)
+    pages = await adapter.list_threads(state=ThreadState.blocked)
     titles = [p.meta.title for p in pages]
-    assert "Assigned Thread" in titles
+    assert "Blocked Thread" in titles
+    assert "Open Thread 2" not in titles
+
+
+@pytest.mark.asyncio
+async def test_list_threads_filtered_by_pulling_state(tmp_path: Path) -> None:
+    """ThreadState.pulling must work as a filter value."""
+    adapter = _make_adapter(tmp_path)
+    await adapter.create_thread(title="Open Thread 2")
+    await adapter.create_thread(title="Pulling Thread")
+    await adapter.update_thread_state("threads/pulling-thread", ThreadState.pulling)
+    pages = await adapter.list_threads(state=ThreadState.pulling)
+    titles = [p.meta.title for p in pages]
+    assert "Pulling Thread" in titles
     assert "Open Thread 2" not in titles
 
 

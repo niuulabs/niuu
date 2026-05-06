@@ -12,7 +12,7 @@ import typer
 
 from niuu.cli_api_client import CLIAPIClient
 from niuu.cli_output import print_json, print_success, print_table
-from niuu.ports.plugin import Service, ServiceDefinition, ServicePlugin, TUIPageSpec
+from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin, TUIPageSpec
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -49,10 +49,10 @@ class RavnPlugin(ServicePlugin):
     def register_service(self) -> ServiceDefinition:
         return ServiceDefinition(
             name="ravn",
-            description="AI agent with tool calling",
+            description="Agent runtime and session management",
             factory=_RavnService,
             default_enabled=True,
-            depends_on=[],
+            depends_on=["postgres"],
         )
 
     def create_service(self) -> Service:
@@ -65,6 +65,41 @@ class RavnPlugin(ServicePlugin):
 
     def create_api_client(self) -> Any:
         return CLIAPIClient(base_url="http://localhost:8080", service_name="Ravn")
+
+    def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
+        return (
+            APIRouteDomain(
+                name="ravn-runtime-api",
+                prefixes=(
+                    "/api/v1/ravn/ravens",
+                    "/api/v1/ravn/sessions",
+                ),
+                description="Ravn runtime fleet and session routes.",
+            ),
+            APIRouteDomain(
+                name="ravn-trigger-api",
+                prefixes=("/api/v1/ravn/triggers",),
+                description="Ravn trigger definition routes.",
+            ),
+            APIRouteDomain(
+                name="ravn-budget-api",
+                prefixes=("/api/v1/ravn/budget",),
+                description="Ravn per-agent and fleet budget routes.",
+            ),
+            APIRouteDomain(
+                name="ravn-session-api",
+                prefixes=(
+                    "/api/v1/ravn/status",
+                    "/api/v1/ravn/sessions",
+                ),
+                description="Ravn session inventory and platform status routes.",
+            ),
+            APIRouteDomain(
+                name="ravn-api",
+                prefixes=("/api/v1/ravn",),
+                description="All currently mounted Ravn API routes.",
+            ),
+        )
 
     def depends_on(self) -> Sequence[str]:
         return []

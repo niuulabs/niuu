@@ -1,0 +1,41 @@
+{{- if and .Values.rbac.create (eq .Values.personaSource.mode "mountedVolume") }}
+---
+# Role granting volundr least-privilege write access to the personas ConfigMap.
+# Verbs: get/list/watch/update/patch scoped to the named ConfigMap, plus
+# create (unscoped by resourceNames) for auto-creation on first save.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "volundr.fullname" . }}-personas
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: persona-registry
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames:
+      - {{ .Values.personaSource.configmapName | default "ravn-personas" | quote }}
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Allow creating the ConfigMap if it doesn't exist yet (first save auto-create).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "volundr.fullname" . }}-personas
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: persona-registry
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "volundr.fullname" . }}-personas
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "volundr.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

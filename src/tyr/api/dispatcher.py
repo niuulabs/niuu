@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Annotated
 
@@ -45,6 +46,13 @@ class ActivityEventResponse(BaseModel):
 class ActivityLogResponse(BaseModel):
     events: list[ActivityEventResponse]
     total: int
+
+
+def _format_activity_log_line(event_type: str, timestamp: datetime, payload: dict) -> str:
+    stamp = timestamp.isoformat()
+    if not payload:
+        return f"[{stamp}] {event_type}"
+    return f"[{stamp}] {event_type} {json.dumps(payload, sort_keys=True)}"
 
 
 # ---------------------------------------------------------------------------
@@ -108,30 +116,49 @@ def create_dispatcher_router() -> APIRouter:
             updated_at=state.updated_at,
         )
 
-    @router.get("/log", response_model=ActivityLogResponse)
+    @router.get("/log")
     async def get_activity_log(
-        n: Annotated[int, Query(ge=1, le=1000, description="Number of events to return.")] = 100,
+        n: Annotated[
+            int | None,
+            Query(ge=1, le=1000, description="Number of events to return."),
+        ] = None,
+        limit: Annotated[
+            int | None,
+            Query(ge=1, le=1000, description="Legacy alias for number of events to return."),
+        ] = None,
         _principal: Principal = Depends(extract_principal),
         event_bus: EventBusPort = Depends(resolve_event_bus),
-    ) -> ActivityLogResponse:
+    ) -> ActivityLogResponse | list[str]:
         """Return the last N activity events from the dispatcher event bus.
 
         Events are ordered oldest-first.  Use the ``n`` query parameter to
         control how many events are returned (default 100, max 1000).
         """
-        events = event_bus.get_log(n)
-        return ActivityLogResponse(
-            events=[
-                ActivityEventResponse(
-                    id=e.id,
-                    event=e.event,
-                    data=e.data,
-                    owner_id=e.owner_id,
-                    timestamp=e.timestamp,
-                )
-                for e in events
-            ],
-            total=len(events),
-        )
+        size = limit if limit is not None else (n if n is not None else 100)
+        events = event_bus.get_log(size)
+
+        if limit is not None:
+            return ActivityLogResponse(
+                events=[
+                    ActivityEventResponse(
+                        id=e.id,
+                        event=e.event,
+                        data=e.data,
+                        owner_id=e.owner_id,
+                        timestamp=e.timestamp,
+                    )
+                    for e in events
+                ],
+                total=len(events),
+            )
+
+        return [
+            _format_activity_log_line(
+                event_type=e.event,
+                timestamp=e.timestamp,
+                payload=e.data,
+            )
+            for e in events
+        ]
 
     return router

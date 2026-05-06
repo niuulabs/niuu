@@ -17,8 +17,8 @@ from sleipnir.domain.registry import (
     BIFROST_REQUEST_COMPLETE,
 )
 from sleipnir.testing import EventCapture
+from tyr.adapters.anthropic_client import ANTHROPIC_API_VERSION
 from tyr.adapters.bifrost import (
-    ANTHROPIC_API_VERSION,
     DECOMPOSITION_PROMPT,
     BifrostAdapter,
     DecompositionError,

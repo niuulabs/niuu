@@ -1,0 +1,7 @@
+.ambient-preview {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  background: var(--color-bg-primary, #09090b);
+  overflow: hidden;
+}

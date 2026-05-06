@@ -376,6 +376,161 @@ class InitCommand(SlashCommandPort):
         return f"Bootstrapped RAVN.md at {ravn_md} (detected project type: {project_type})"
 
 
+class PersonaCommand(SlashCommandPort):
+    """Manage Ravn personas.
+
+    Subcommands:
+        (no args) / create — print guidance message to start persona creation
+        list               — list all personas with source and permission mode
+        show <name>        — display formatted config for a named persona
+        delete <name>      — delete a custom persona file (refuses built-ins)
+    """
+
+    @property
+    def name(self) -> str:
+        return "/persona"
+
+    @property
+    def aliases(self) -> list[str]:
+        return ["/personas"]
+
+    @property
+    def description(self) -> str:
+        return "manage personas (list / show / delete / create)"
+
+    def handle(self, args: str, ctx: SlashCommandContext) -> str:
+        sub_parts = args.split(maxsplit=1)
+        subcommand = sub_parts[0].lower() if sub_parts else ""
+        rest = sub_parts[1].strip() if len(sub_parts) > 1 else ""
+
+        match subcommand:
+            case "list":
+                return self._list()
+            case "show":
+                return self._show(rest)
+            case "delete":
+                return self._delete(rest)
+            case "" | "create":
+                return (
+                    "Describe the persona you want and I'll help you create it.\n\n"
+                    "I'll guide you through: role, name, system prompt, tools, "
+                    "permissions, LLM settings, and (optionally) pipeline config.\n\n"
+                    "Or use '/persona list' to see existing personas, "
+                    "'/persona show <name>' to inspect one."
+                )
+            case _:
+                return (
+                    f"Unknown subcommand: {subcommand!r}.\n"
+                    "Usage: /persona [list | show <name> | delete <name> | create]"
+                )
+
+    def _list(self) -> str:
+        from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+
+        loader = FilesystemPersonaAdapter()
+        names = loader.list_names()
+        if not names:
+            return "No personas found."
+
+        lines = [f"Personas ({len(names)}):", ""]
+        for persona_name in names:
+            source = loader.source(persona_name)
+            persona = loader.load(persona_name)
+            perm = persona.permission_mode if persona else ""
+            source_display = source if source else "(unknown)"
+            perm_display = f"  [{perm}]" if perm else ""
+            lines.append(f"  {persona_name:<28} {source_display}{perm_display}")
+        return "\n".join(lines)
+
+    def _show(self, name: str) -> str:
+        if not name:
+            return "Usage: /persona show <name>"
+
+        from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+
+        loader = FilesystemPersonaAdapter()
+        persona = loader.load(name)
+        if persona is None:
+            return f"Persona '{name}' not found. Use '/persona list' to see available personas."
+
+        source = loader.source(name)
+        lines = [
+            f"Persona: {persona.name}",
+            f"Source : {source or '(unknown)'}",
+            "",
+        ]
+
+        if persona.permission_mode:
+            lines.append(f"Permission mode : {persona.permission_mode}")
+        if persona.iteration_budget:
+            lines.append(f"Iteration budget: {persona.iteration_budget}")
+
+        if persona.llm.primary_alias or persona.llm.thinking_enabled or persona.llm.max_tokens:
+            llm_parts = []
+            if persona.llm.primary_alias:
+                llm_parts.append(f"alias={persona.llm.primary_alias}")
+            if persona.llm.thinking_enabled:
+                llm_parts.append("thinking=true")
+            if persona.llm.max_tokens:
+                llm_parts.append(f"max_tokens={persona.llm.max_tokens}")
+            lines.append(f"LLM             : {', '.join(llm_parts)}")
+
+        if persona.allowed_tools:
+            lines.append(f"Allowed tools   : {persona.allowed_tools}")
+        if persona.forbidden_tools:
+            lines.append(f"Forbidden tools : {persona.forbidden_tools}")
+
+        if persona.produces.event_type:
+            lines.append(f"Produces        : {persona.produces.event_type}")
+            if persona.produces.schema:
+                schema_fields = list(persona.produces.schema)
+                lines.append(f"  Schema fields : {schema_fields}")
+        if persona.consumes.event_types:
+            lines.append(f"Consumes        : {persona.consumes.event_types}")
+        if persona.fan_in.contributes_to or persona.fan_in.strategy != "merge":
+            lines.append(
+                f"Fan-in          : strategy={persona.fan_in.strategy}"
+                + (
+                    f", contributes_to={persona.fan_in.contributes_to}"
+                    if persona.fan_in.contributes_to
+                    else ""
+                )
+            )
+
+        if persona.system_prompt_template:
+            preview = persona.system_prompt_template[:200]
+            if len(persona.system_prompt_template) > 200:
+                preview += "…"
+            lines.append("")
+            lines.append("System prompt preview:")
+            lines.append(f"  {preview}")
+
+        return "\n".join(lines)
+
+    def _delete(self, name: str) -> str:
+        if not name:
+            return "Usage: /persona delete <name>"
+
+        from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
+
+        loader = FilesystemPersonaAdapter()
+
+        source = loader.source(name)
+        if not source:
+            return f"Persona '{name}' not found."
+
+        if source == "[built-in]":
+            return (
+                f"Cannot delete '{name}': it is a built-in persona. "
+                "Built-in personas cannot be removed."
+            )
+
+        deleted = loader.delete(name)
+        if deleted:
+            return f"Persona '{name}' deleted (was at {source})."
+        return f"Persona '{name}' could not be deleted."
+
+
 class CheckpointCommand(SlashCommandPort):
     """Manage session checkpoints.
 
@@ -570,6 +725,7 @@ default_registry.register(TodoCommand())
 default_registry.register(StatusCommand())
 default_registry.register(SkillsCommand())
 default_registry.register(InitCommand())
+default_registry.register(PersonaCommand())
 default_registry.register(CheckpointCommand())
 # HelpCommand registered last — it enumerates the registry at call time
 default_registry.register(HelpCommand(default_registry))

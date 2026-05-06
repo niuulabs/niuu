@@ -12,7 +12,32 @@ from tyr.domain.models import PRStatus
 
 @dataclass(frozen=True)
 class SpawnRequest:
-    """Everything needed to spawn a Volundr session for a raid."""
+    """Everything needed to spawn a Volundr session for a raid.
+
+    ``workload_config`` accepts two persona formats — both are valid on
+    the wire and normalised to the dict form inside
+    ``RavnFlockContributor.contribute()``:
+
+    **Legacy (list[str])** — all personas share the global ``llm_config``::
+
+        workload_config = {
+            "personas": ["coordinator", "reviewer"],
+            "llm_config": {...},
+        }
+
+    **New (list[dict])** — per-persona overrides merged on top of
+    the global ``llm_config`` via ``niuu.domain.llm_merge.merge_llm``::
+
+        workload_config = {
+            "personas": [
+                {"name": "coordinator"},
+                {"name": "reviewer", "llm": {"primary_alias": "powerful"}},
+            ],
+            "llm_config": {...},  # global fallback
+        }
+
+    See ``niuu.domain.llm_merge`` for merge semantics.
+    """
 
     name: str
     repo: str
@@ -24,6 +49,8 @@ class SpawnRequest:
     initial_prompt: str
     base_branch: str
     workload_type: str = "default"
+    workload_config: dict = field(default_factory=dict)
+    definition: str | None = None
     profile: str | None = None
     integration_ids: list[str] = field(default_factory=list)
 
@@ -41,6 +68,7 @@ class VolundrSession:
     repo: str = ""
     branch: str = ""
     base_branch: str = ""
+    workload_type: str = "default"
 
 
 @dataclass(frozen=True)

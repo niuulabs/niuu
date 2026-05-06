@@ -1,0 +1,33 @@
+.niuu-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.niuu-chip--brand {
+  color: var(--brand-300);
+  border-color: color-mix(in srgb, var(--brand-500) 35%, transparent);
+  background: color-mix(in srgb, var(--brand-500) 12%, transparent);
+}
+
+.niuu-chip--critical {
+  color: var(--color-critical-fg);
+  border-color: color-mix(in srgb, var(--color-critical-fg) 36%, transparent);
+  background: color-mix(in srgb, var(--color-critical) 16%, var(--color-bg-secondary));
+  border-style: dashed;
+  border-radius: 8px;
+}
+
+.niuu-chip--muted {
+  color: var(--color-text-muted);
+  background: transparent;
+}

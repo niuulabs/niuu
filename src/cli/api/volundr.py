@@ -12,7 +12,7 @@ from cli.api.client import APIClient
 
 logger = logging.getLogger(__name__)
 
-V1 = "/api/v1/volundr"
+V1 = "/api/v1/forge"
 
 
 @dataclass(frozen=True)
@@ -134,13 +134,13 @@ class VolundrAPI:
         resp.raise_for_status()
 
     async def stop_session(self, session_id: str) -> None:
-        resp = await self._client.delete(f"{V1}/sessions/{session_id}")
+        resp = await self._client.post(f"{V1}/sessions/{session_id}/stop")
         if resp.status_code == 404:
             return
         resp.raise_for_status()
 
     async def delete_session(self, session_id: str) -> None:
-        resp = await self._client.delete(f"{V1}/sessions/{session_id}/delete")
+        resp = await self._client.delete(f"{V1}/sessions/{session_id}")
         if resp.status_code == 404:
             return
         resp.raise_for_status()
@@ -151,19 +151,24 @@ class VolundrAPI:
         return resp.json().get("summary", "")
 
     async def get_timeline(self, session_id: str) -> list[TimelineEntry]:
-        resp = await self._client.get(f"{V1}/sessions/{session_id}/timeline")
+        resp = await self._client.get(f"{V1}/chronicles/{session_id}/timeline")
         resp.raise_for_status()
+        payload = resp.json()
         return [
             TimelineEntry(
-                timestamp=e["timestamp"],
-                event=e["event"],
-                details=e.get("details", {}),
+                timestamp=str(e.get("t", "")),
+                event=e.get("type", ""),
+                details={
+                    "label": e.get("label", ""),
+                    **({k: v for k, v in e.items() if k not in {"t", "type", "label"}}),
+                },
             )
-            for e in resp.json()
+            for e in payload.get("events", [])
         ]
 
     async def get_stats(self, session_id: str) -> dict[str, Any]:
-        resp = await self._client.get(f"{V1}/sessions/{session_id}/stats")
+        del session_id
+        resp = await self._client.get(f"{V1}/stats")
         resp.raise_for_status()
         return resp.json()
 

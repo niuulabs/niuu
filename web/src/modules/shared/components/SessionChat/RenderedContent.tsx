@@ -1,5 +1,6 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { cn } from '@/utils';
+import { OutcomeCard, OUTCOME_RE, OUTCOME_EXTRACT_RE } from './OutcomeCard';
 import styles from './RenderedContent.module.css';
 
 /* ------------------------------------------------------------------ */
@@ -179,29 +180,41 @@ function renderProseBlock(block: string, blockKey: number): ReactNode[] {
 /* ------------------------------------------------------------------ */
 
 export function RenderedContent({ content, className }: RenderedContentProps) {
-  // Split by fenced code blocks: ```lang\n...\n```
-  const blocks = content.split(/(```\w*\n[\s\S]*?```)/g);
+  // Split by outcome blocks first: ---outcome--- ... ---end--- (or standalone ---)
+  const segments = content.split(OUTCOME_RE);
 
   const rendered: ReactNode[] = [];
 
-  for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i];
+  for (let si = 0; si < segments.length; si++) {
+    const segment = segments[si];
 
-    // Fenced code block
-    const codeMatch = block.match(/^```(\w*)\n([\s\S]*?)```$/);
-    if (codeMatch) {
-      rendered.push(
-        <CodeBlock
-          key={`code-${i}`}
-          language={codeMatch[1]}
-          code={codeMatch[2].replace(/\n$/, '')}
-        />
-      );
+    // Outcome block
+    const outcomeMatch = segment.match(OUTCOME_EXTRACT_RE);
+    if (outcomeMatch) {
+      rendered.push(<OutcomeCard key={`outcome-${si}`} yaml={outcomeMatch[1]} />);
       continue;
     }
 
-    // Prose content
-    rendered.push(...renderProseBlock(block, i));
+    // Split remaining content by fenced code blocks: ```lang\n...\n```
+    const blocks = segment.split(/(```\w*\n[\s\S]*?```)/g);
+
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+
+      const codeMatch = block.match(/^```(\w*)\n([\s\S]*?)```$/);
+      if (codeMatch) {
+        rendered.push(
+          <CodeBlock
+            key={`code-${si}-${i}`}
+            language={codeMatch[1]}
+            code={codeMatch[2].replace(/\n$/, '')}
+          />
+        );
+        continue;
+      }
+
+      rendered.push(...renderProseBlock(block, si * 100 + i));
+    }
   }
 
   return <div className={cn(styles.content, className)}>{rendered}</div>;

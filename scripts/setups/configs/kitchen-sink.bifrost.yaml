@@ -1,0 +1,64 @@
+# ─── Bifrost config for: kitchen-sink ────────────────────────────────────────
+#
+# Multi-provider with cost-optimised routing + local fallback.
+# ─────────────────────────────────────────────────────────────────────────────
+
+bifrost:
+  routing_strategy: failover
+
+  providers:
+    # Configure your primary cloud provider
+    primary:
+      api_key_env: ""                    # env var name for primary provider
+      base_url: ""                       # provider API URL
+      models: []                         # list of primary models
+      timeout: 120
+      cost_per_token: 0.0
+
+    # Configure a failover cloud provider (optional)
+    failover:
+      api_key_env: ""                    # env var name for failover provider
+      base_url: ""                       # provider API URL
+      models: []                         # list of failover models
+      timeout: 120
+      cost_per_token: 0.0
+
+    ollama:
+      base_url: http://localhost:11434
+      models:
+        - llama3.2:3b
+        - llama3.1:8b
+      timeout: 300
+      cost_per_token: 0.0
+
+  aliases:
+    fast: llama3.2:3b                    # map to your fastest model
+    balanced: llama3.2:3b                # map to your default model
+    powerful: llama3.1:8b                # map to your most capable model
+    local: llama3.2:3b
+    local-best: llama3.1:8b
+
+  auth_mode: open
+
+  quotas:
+    default:
+      max_tokens_per_day: 2000000
+      max_cost_per_day: 10.0
+      max_requests_per_hour: 500
+      soft_limit_fraction: 0.8
+
+  # Custom pricing overrides — add your model pricing here
+  # pricing:
+  #   your-model-name:
+  #     input_per_million: 0.0
+  #     output_per_million: 0.0
+
+  latency_estimator:
+    alpha: 0.3
+
+  usage_store:
+    adapter: sqlite
+    path: ~/.ravn/bifrost_usage.db
+
+  host: 0.0.0.0
+  port: 8088

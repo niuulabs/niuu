@@ -9,17 +9,24 @@ import {
 import { ArrowUp, Mic, MicOff, Paperclip, Square, X } from 'lucide-react';
 import { cn } from '@/utils';
 import { useSpeechRecognition } from '@/hooks';
+import type { RoomParticipant } from '@/modules/shared/hooks/useSkuldChat';
 import type { SlashCommand } from './slashCommands';
 import { SlashCommandMenu } from './SlashCommandMenu';
 import { useSlashMenu } from './useSlashMenu';
 import { MentionMenu } from './MentionMenu';
 import { MentionPill } from './MentionPill';
 import { useMentionMenu } from './useMentionMenu';
+import type { SelectedMention } from './useMentionMenu';
 import { useFileAttachments, type FileAttachment } from './useFileAttachments';
 import styles from './ChatInput.module.css';
 
 interface ChatInputProps {
   onSend: (text: string, attachments: FileAttachment[]) => void;
+  onSendDirected?: (
+    participants: RoomParticipant[],
+    text: string,
+    attachments: FileAttachment[]
+  ) => void;
   isLoading: boolean;
   onStop: () => void;
   disabled?: boolean;
@@ -29,6 +36,7 @@ interface ChatInputProps {
   sessionHost?: string | null;
   chatEndpoint?: string | null;
   availableCommands?: readonly SlashCommand[];
+  participants?: ReadonlyMap<string, RoomParticipant>;
 }
 
 const ACCEPTED_FILE_TYPES = [
@@ -61,6 +69,7 @@ const ACCEPTED_FILE_TYPES = [
 
 export function ChatInput({
   onSend,
+  onSendDirected,
   isLoading,
   onStop,
   disabled = false,
@@ -70,6 +79,7 @@ export function ChatInput({
   sessionHost = null,
   chatEndpoint = null,
   availableCommands,
+  participants = new Map(),
 }: ChatInputProps) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -95,7 +105,7 @@ export function ChatInput({
   }, [input, rawStartListening]);
 
   const slashMenu = useSlashMenu(availableCommands as SlashCommand[] | undefined);
-  const mentionMenu = useMentionMenu(sessionId, sessionHost, chatEndpoint);
+  const mentionMenu = useMentionMenu(sessionId, sessionHost, chatEndpoint, participants);
   const {
     attachments: fileAttachmentsList,
     isDragging,
@@ -135,17 +145,43 @@ export function ChatInput({
     if (!trimmed || disabled) {
       return;
     }
-    // Prepend mention paths to the message so the backend knows which files are referenced
-    const mentionPaths = mentionMenu.mentions.map(m => `@${m.path}`);
-    const fullMessage = mentionPaths.length > 0 ? `${mentionPaths.join(' ')} ${trimmed}` : trimmed;
-    onSend(fullMessage, fileAttachmentsList);
+
+    // Separate agent mentions from file mentions
+    const agentMentions = mentionMenu.mentions
+      .filter((m): m is { kind: 'agent'; participant: RoomParticipant } => m.kind === 'agent')
+      .map(m => m.participant);
+
+    const fileMentions = mentionMenu.mentions.filter(
+      (m): m is Extract<SelectedMention, { kind: 'file' }> => m.kind === 'file'
+    );
+
+    const agentPrefixes = agentMentions.map(p => `@${p.persona}`);
+    const filePaths = fileMentions.map(m => `@${m.entry.path}`);
+    const allPrefixes = [...agentPrefixes, ...filePaths];
+    const fullMessage = allPrefixes.length > 0 ? `${allPrefixes.join(' ')} ${trimmed}` : trimmed;
+
+    if (agentMentions.length > 0 && onSendDirected) {
+      onSendDirected(agentMentions, fullMessage, fileAttachmentsList);
+    } else {
+      onSend(fullMessage, fileAttachmentsList);
+    }
+
     setInput('');
     clearFileAttachments();
-    // Clear mentions after send
+    // Clear all mentions after send
     for (const m of mentionMenu.mentions) {
-      mentionMenu.removeMention(m.path);
+      const id = m.kind === 'file' ? m.entry.path : m.participant.peerId;
+      mentionMenu.removeMention(id);
     }
-  }, [input, disabled, onSend, mentionMenu, fileAttachmentsList, clearFileAttachments]);
+  }, [
+    input,
+    disabled,
+    onSend,
+    onSendDirected,
+    mentionMenu,
+    fileAttachmentsList,
+    clearFileAttachments,
+  ]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -170,17 +206,21 @@ export function ChatInput({
         if (handled) {
           if (e.key === 'Enter') {
             const selected = mentionMenu.items[mentionMenu.selectedIndex];
-            // Directories expand on Enter; only select files
-            if (selected && selected.entry.type !== 'directory') {
-              const selectedPath = mentionMenu.selectItem(selected);
-              const textarea = textareaRef.current;
-              if (textarea) {
-                const cursorPos = textarea.selectionStart;
-                const before = input.slice(0, cursorPos);
-                const atIndex = before.lastIndexOf('@');
-                if (atIndex !== -1) {
-                  const after = input.slice(cursorPos);
-                  setInput(before.slice(0, atIndex) + '@' + selectedPath + ' ' + after);
+            // For files: directories expand on Enter; only select files
+            // For agents: select immediately
+            if (selected) {
+              const isDirectory = selected.kind === 'file' && selected.entry.type === 'directory';
+              if (!isDirectory) {
+                const selectedLabel = mentionMenu.selectItem(selected);
+                const textarea = textareaRef.current;
+                if (textarea) {
+                  const cursorPos = textarea.selectionStart;
+                  const before = input.slice(0, cursorPos);
+                  const atIndex = before.lastIndexOf('@');
+                  if (atIndex !== -1) {
+                    const after = input.slice(cursorPos);
+                    setInput(before.slice(0, atIndex) + '@' + selectedLabel + ' ' + after);
+                  }
                 }
               }
             }
@@ -255,8 +295,12 @@ export function ChatInput({
     >
       {(fileAttachmentsList.length > 0 || mentionMenu.mentions.length > 0) && (
         <div className={styles.attachments}>
-          {mentionMenu.mentions.map(entry => (
-            <MentionPill key={entry.path} entry={entry} onRemove={mentionMenu.removeMention} />
+          {mentionMenu.mentions.map(mention => (
+            <MentionPill
+              key={mention.kind === 'file' ? mention.entry.path : mention.participant.peerId}
+              mention={mention}
+              onRemove={mentionMenu.removeMention}
+            />
           ))}
           {fileAttachmentsList.map(attachment => (
             <span key={attachment.id} className={styles.attachmentChip}>
@@ -299,7 +343,7 @@ export function ChatInput({
             selectedIndex={mentionMenu.selectedIndex}
             loading={mentionMenu.loading}
             onSelect={item => {
-              const selectedPath = mentionMenu.selectItem(item);
+              const selectedLabel = mentionMenu.selectItem(item);
               const textarea = textareaRef.current;
               if (textarea) {
                 const cursorPos = textarea.selectionStart;
@@ -307,7 +351,7 @@ export function ChatInput({
                 const atIndex = before.lastIndexOf('@');
                 if (atIndex !== -1) {
                   const after = input.slice(cursorPos);
-                  setInput(before.slice(0, atIndex) + '@' + selectedPath + ' ' + after);
+                  setInput(before.slice(0, atIndex) + '@' + selectedLabel + ' ' + after);
                 }
               }
               textareaRef.current?.focus();

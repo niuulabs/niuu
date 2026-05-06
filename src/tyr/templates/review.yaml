@@ -1,0 +1,121 @@
+# Saga template: review (pipeline format)
+# Triggered by: github.pr.opened
+# Stage 1: Parallel code review + security audit  (fan_in: all_must_pass)
+# Stage 2: QA test run  (condition: review stage passed)
+# Stage 3: Human approval gate
+name: "Review: {event.repo}#{event.pr_number}"
+feature_branch: "{event.branch}"
+base_branch: "{event.base_branch}"
+repos:
+  - "{event.repo}"
+
+stages:
+  - name: parallel-review
+    parallel:
+      - name: "Code review for PR #{event.pr_number}"
+        persona: reviewer
+        description: |
+          Review code quality, conventions, and architecture for PR #{event.pr_number} in {event.repo}.
+        acceptance_criteria:
+          - All changed files have been read and understood
+          - Code follows project conventions (CLAUDE.md and .claude/rules/)
+          - Tests are present and coverage meets the 85% threshold
+          - Architecture boundaries are respected (no layer violations)
+          - Review findings addressed or acknowledged
+        declared_files: []
+        estimate_hours: 1.0
+        prompt: |
+          # Code Review Task
+
+          Please review the following pull request:
+
+          **PR**: {event.pr_url}
+          **Repository**: {event.repo}
+          **Branch**: {event.branch} → {event.base_branch}
+          **Title**: {event.title}
+          **Author**: {event.author}
+
+          ## Instructions
+
+          1. Read CLAUDE.md and `.claude/rules/` for project conventions.
+          2. Fetch the full PR diff: `gh pr diff {event.pr_number} --repo {event.repo}`
+          3. Read every changed file (not just the diff lines) to understand context.
+          4. Check CI status: `gh pr checks {event.pr_number} --repo {event.repo}`
+          5. Verify all acceptance criteria are met.
+          6. If changes are needed, push fixes; otherwise note findings for escalation.
+
+          Report your findings clearly, including file:line references.
+          Output verdict: "pass" or "fail" in your outcome block.
+
+      - name: "Security audit for PR #{event.pr_number}"
+        persona: security-auditor
+        description: |
+          Perform a security review of the changes in PR #{event.pr_number} ({event.repo}).
+        acceptance_criteria:
+          - OWASP Top 10 vulnerabilities checked (injection, XSS, auth bypass, etc.)
+          - No secrets, tokens, or credentials hardcoded in changed files
+          - Input validation present at system boundaries
+          - No unsafe deserialization or unsafe direct object references
+          - Dependencies introduced have no known critical CVEs
+        declared_files: []
+        estimate_hours: 0.5
+        prompt: |
+          # Security Audit Task
+
+          Perform a security review of PR #{event.pr_number} in {event.repo}.
+
+          **PR**: {event.pr_url}
+          **Branch**: {event.branch}
+
+          ## Instructions
+
+          1. Fetch the PR diff: `gh pr diff {event.pr_number} --repo {event.repo}`
+          2. Check for OWASP Top 10 issues (injection, XSS, CSRF, insecure direct object refs, etc.).
+          3. Search for hardcoded secrets, API keys, or passwords in changed files.
+          4. Verify input validation at system boundaries (API endpoints, user input handlers).
+          5. Review any new dependencies for known CVEs.
+          6. Document all findings with severity (CRITICAL / HIGH / MEDIUM / LOW).
+
+          Report findings with file:line references and suggested fixes.
+          Output verdict: "pass" or "fail" and critical_findings count in your outcome block.
+
+    fan_in: all_must_pass
+
+  - name: qa-test
+    sequential:
+      - name: "QA test run for PR #{event.pr_number}"
+        persona: qa-agent
+        description: |
+          Run the full test suite and verify quality gates for PR #{event.pr_number} ({event.repo}).
+        acceptance_criteria:
+          - All backend tests pass (pytest with zero warnings)
+          - All frontend tests pass (vitest)
+          - Coverage is at or above 85% (codecov/patch is green)
+          - No regressions introduced by the changes
+          - Linting is clean (ruff check + ruff format)
+        declared_files: []
+        estimate_hours: 0.5
+        prompt: |
+          # QA Test Run Task
+
+          Run the test suite for PR #{event.pr_number} in {event.repo}.
+
+          **Branch**: {event.branch}
+
+          ## Instructions
+
+          1. Check out or verify the PR branch is current.
+          2. Run backend tests: `make test` (or `pytest -v`).
+          3. Run frontend tests: `cd web && npm run test:coverage`.
+          4. Run linting: `make verify` (ruff check + ruff format).
+          5. Check CI status: `gh pr checks {event.pr_number} --repo {event.repo}`.
+          6. Verify `codecov/patch` is green (85% coverage gate).
+
+          Report pass/fail for each suite with any failure details.
+          Output verdict: "pass" or "fail" in your outcome block.
+    condition: "stages.parallel-review.verdict == pass"
+
+  - name: human-approval
+    gate: human
+    notify: [slack]
+    condition: "stages.qa-test.verdict == pass"

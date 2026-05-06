@@ -12,6 +12,11 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+try:
+    from sleipnir.domain.catalog import tyr_saga_created as _catalog_saga_created
+except ImportError:
+    _catalog_saga_created = None  # type: ignore[assignment]
 from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
@@ -27,7 +32,9 @@ from tyr.domain.models import (
     SagaStatus,
     TrackerIssue,
     TrackerProject,
+    WorkflowScope,
 )
+from tyr.domain.workflow_snapshot import build_workflow_snapshot, workflow_name_from_snapshot
 from tyr.ports.git import GitPort
 from tyr.ports.llm import LLMPort
 from tyr.ports.saga_repository import SagaRepository
@@ -40,6 +47,12 @@ logger = logging.getLogger(__name__)
 def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _can_use_workflow(workflow, principal: Principal) -> bool:  # noqa: ANN001
+    if workflow.scope == WorkflowScope.SYSTEM:
+        return True
+    return workflow.owner_id == principal.user_id
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +85,11 @@ class PhaseResponse(BaseModel):
     raids: list[RaidResponse] = Field(default_factory=list)
 
 
+class PhaseSummaryResponse(BaseModel):
+    total: int = 0
+    completed: int = 0
+
+
 class SagaListItem(BaseModel):
     id: str
     tracker_id: str
@@ -85,6 +103,13 @@ class SagaListItem(BaseModel):
     milestone_count: int = 0
     issue_count: int = 0
     url: str = ""
+    base_branch: str = "main"
+    confidence: float = 0.0
+    created_at: str = ""
+    phase_summary: PhaseSummaryResponse = Field(default_factory=PhaseSummaryResponse)
+    workflow_id: str | None = None
+    workflow: str | None = None
+    workflow_version: str | None = None
 
 
 class SagaDetailResponse(BaseModel):
@@ -99,7 +124,14 @@ class SagaDetailResponse(BaseModel):
     status: str
     progress: float = 0.0
     url: str = ""
+    base_branch: str = "main"
+    confidence: float = 0.0
+    created_at: str = ""
+    phase_summary: PhaseSummaryResponse = Field(default_factory=PhaseSummaryResponse)
     phases: list[PhaseResponse]
+    workflow_id: str | None = None
+    workflow: str | None = None
+    workflow_version: str | None = None
 
 
 class DecomposeRequest(BaseModel):
@@ -110,6 +142,10 @@ class DecomposeRequest(BaseModel):
 
 class UpdateSagaRequest(BaseModel):
     status: str
+
+
+class SagaWorkflowAssignmentRequest(BaseModel):
+    workflow_id: str | None = None
 
 
 class RaidSpecResponse(BaseModel):
@@ -154,7 +190,7 @@ class PlanRequest(BaseModel):
 
     spec: str = Field(min_length=1)
     repo: str = Field(min_length=1)
-    base_branch: str = Field(description="Base branch for the planning session")
+    base_branch: str = Field(default="main", description="Base branch for the planning session")
     model: str = Field(default="")
 
 
@@ -186,6 +222,7 @@ class CommitRequest(BaseModel):
     base_branch: str
     phases: list[PhaseSpecRequest]
     transcript: str | None = None
+    workflow_id: str | None = None
 
 
 class CommittedRaidResponse(BaseModel):
@@ -215,8 +252,13 @@ class CommittedSagaResponse(BaseModel):
     base_branch: str
     status: str
     confidence: float
+    created_at: str
+    phase_summary: PhaseSummaryResponse
     phases: list[CommittedPhaseResponse]
     warnings: list[str] = Field(default_factory=list)
+    workflow_id: str | None = None
+    workflow: str | None = None
+    workflow_version: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +312,21 @@ async def _find_project(
     return None
 
 
+async def _build_phase_summary(
+    repo: SagaRepository,
+    saga_id: UUID,
+) -> PhaseSummaryResponse:
+    """Summarize persisted phase progress for frontend saga summary routes."""
+    try:
+        phases = await repo.get_phases_by_saga(saga_id)
+    except NotImplementedError:
+        phases = []
+    return PhaseSummaryResponse(
+        total=len(phases),
+        completed=sum(1 for phase in phases if phase.status == PhaseStatus.COMPLETE),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -300,6 +357,7 @@ def create_sagas_router() -> APIRouter:
         items: list[SagaListItem] = []
         for saga in sagas:
             project = all_projects.get(saga.tracker_id)
+            phase_summary = await _build_phase_summary(repo, saga.id)
             items.append(
                 SagaListItem(
                     id=str(saga.id),
@@ -309,11 +367,18 @@ def create_sagas_router() -> APIRouter:
                     name=project.name if project else saga.name,
                     repos=saga.repos,
                     feature_branch=saga.feature_branch,
-                    status=project.status if project else "unknown",
+                    status=saga.status.value.lower(),
                     progress=project.progress if project else 0.0,
                     milestone_count=project.milestone_count if project else 0,
                     issue_count=project.issue_count if project else 0,
                     url=project.url if project else "",
+                    base_branch=saga.base_branch,
+                    confidence=saga.confidence,
+                    created_at=saga.created_at.isoformat(),
+                    phase_summary=phase_summary,
+                    workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
+                    workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
+                    workflow_version=saga.workflow_version,
                 )
             )
         return items
@@ -402,6 +467,8 @@ def create_sagas_router() -> APIRouter:
                 )
             )
 
+        phase_summary = await _build_phase_summary(repo, saga.id)
+
         return SagaDetailResponse(
             id=str(saga.id),
             tracker_id=saga.tracker_id,
@@ -411,10 +478,17 @@ def create_sagas_router() -> APIRouter:
             description=project.description if project else "",
             repos=saga.repos,
             feature_branch=saga.feature_branch,
-            status=project.status if project else "planned",
+            status=saga.status.value.lower(),
             progress=project.progress if project else 0.0,
             url=project.url if project else "",
+            base_branch=saga.base_branch,
+            confidence=saga.confidence,
+            created_at=saga.created_at.isoformat(),
+            phase_summary=phase_summary,
             phases=phase_responses,
+            workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
+            workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
+            workflow_version=saga.workflow_version,
         )
 
     @router.post("/decompose", response_model=SagaStructureResponse)
@@ -583,7 +657,7 @@ def create_sagas_router() -> APIRouter:
             new_status = SagaStatus(body.status.upper())
         except ValueError:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Invalid saga_id or status: {saga_id!r} / {body.status!r}",
             )
 
@@ -605,11 +679,106 @@ def create_sagas_router() -> APIRouter:
             name=project.name if project else saga.name,
             repos=saga.repos,
             feature_branch=saga.feature_branch,
-            status=project.status if project else new_status.value,
+            status=new_status.value.lower(),
             progress=project.progress if project else 0.0,
             milestone_count=project.milestone_count if project else 0,
             issue_count=project.issue_count if project else 0,
             url=project.url if project else "",
+            workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
+            workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
+            workflow_version=saga.workflow_version,
+        )
+
+    @router.put("/{saga_id}/workflow", response_model=SagaListItem)
+    async def assign_workflow(
+        saga_id: str,
+        body: SagaWorkflowAssignmentRequest,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        repo: SagaRepository = Depends(resolve_saga_repo),
+        adapters: list[TrackerPort] = Depends(resolve_trackers),
+    ) -> SagaListItem:
+        try:
+            parsed_id = UUID(saga_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Saga not found: {saga_id}",
+            )
+
+        saga = await repo.get_saga(parsed_id, owner_id=principal.user_id)
+        if saga is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Saga not found: {saga_id}",
+            )
+
+        workflow_id: UUID | None = None
+        workflow_version: str | None = None
+        workflow_snapshot: dict | None = None
+
+        if body.workflow_id is not None:
+            workflow_repo = getattr(request.app.state, "workflow_repo", None)
+            if workflow_repo is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Workflow repository not configured",
+                )
+
+            try:
+                workflow_id = UUID(body.workflow_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Invalid workflow_id: {body.workflow_id!r}",
+                )
+
+            workflow = await workflow_repo.get_workflow(workflow_id)
+            if workflow is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Workflow not found: {body.workflow_id}",
+                )
+            if not _can_use_workflow(workflow, principal):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Workflow not found: {body.workflow_id}",
+                )
+            workflow_version = workflow.version
+            workflow_snapshot = build_workflow_snapshot(workflow)
+
+        await repo.update_saga_workflow(
+            parsed_id,
+            workflow_id=workflow_id,
+            workflow_version=workflow_version,
+            workflow_snapshot=workflow_snapshot,
+            owner_id=principal.user_id,
+        )
+        updated = await repo.get_saga(parsed_id, owner_id=principal.user_id)
+        assert updated is not None
+
+        project = await _find_project(updated.tracker_id, adapters)
+        phase_summary = await _build_phase_summary(repo, updated.id)
+        return SagaListItem(
+            id=str(updated.id),
+            tracker_id=updated.tracker_id,
+            tracker_type=updated.tracker_type,
+            slug=updated.slug,
+            name=project.name if project else updated.name,
+            repos=updated.repos,
+            feature_branch=updated.feature_branch,
+            status=updated.status.value.lower(),
+            progress=project.progress if project else 0.0,
+            milestone_count=project.milestone_count if project else 0,
+            issue_count=project.issue_count if project else 0,
+            url=project.url if project else "",
+            base_branch=updated.base_branch,
+            confidence=updated.confidence,
+            created_at=updated.created_at.isoformat(),
+            phase_summary=phase_summary,
+            workflow_id=str(updated.workflow_id) if updated.workflow_id else None,
+            workflow=workflow_name_from_snapshot(updated.workflow_snapshot),
+            workflow_version=updated.workflow_version,
         )
 
     @router.delete("/{saga_id}", status_code=204)
@@ -684,6 +853,37 @@ def create_sagas_router() -> APIRouter:
         now = datetime.now(UTC)
         saga_id = uuid4()
         feature_branch = f"feat/{body.slug}"
+        workflow_id: UUID | None = None
+        workflow_version: str | None = None
+        workflow_snapshot: dict | None = None
+
+        if body.workflow_id is not None:
+            workflow_repo = getattr(request.app.state, "workflow_repo", None)
+            if workflow_repo is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Workflow repository not configured",
+                )
+            try:
+                workflow_id = UUID(body.workflow_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Invalid workflow_id: {body.workflow_id!r}",
+                )
+            workflow = await workflow_repo.get_workflow(workflow_id)
+            if workflow is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Workflow not found: {body.workflow_id}",
+                )
+            if not _can_use_workflow(workflow, principal):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Workflow not found: {body.workflow_id}",
+                )
+            workflow_version = workflow.version
+            workflow_snapshot = build_workflow_snapshot(workflow)
 
         # Build saga domain object (tracker_id filled after tracker call)
         saga = Saga(
@@ -699,6 +899,9 @@ def create_sagas_router() -> APIRouter:
             confidence=initial_confidence,
             created_at=now,
             owner_id=principal.user_id,
+            workflow_id=workflow_id,
+            workflow_version=workflow_version,
+            workflow_snapshot=workflow_snapshot,
         )
 
         # 1. Create saga in tracker — this MUST succeed or we abort
@@ -839,6 +1042,21 @@ def create_sagas_router() -> APIRouter:
             except Exception:
                 logger.warning("Failed to attach transcript for saga %s", saga.slug, exc_info=True)
 
+        # NIU-582: emit tyr.saga.created (best-effort, non-blocking)
+        publisher = getattr(request.app.state, "sleipnir_publisher", None)
+        if publisher is not None and _catalog_saga_created is not None:
+            try:
+                event = _catalog_saga_created(
+                    saga_id=str(saga.id),
+                    template=body.slug,
+                    trigger_event="api.commit_saga",
+                    source="tyr",
+                    correlation_id=str(saga.id),
+                )
+                await publisher.publish(event)
+            except Exception:
+                logger.warning("Failed to emit tyr.saga.created; continuing.", exc_info=True)
+
         return CommittedSagaResponse(
             id=str(saga.id),
             tracker_id=saga.tracker_id,
@@ -850,8 +1068,16 @@ def create_sagas_router() -> APIRouter:
             base_branch=saga.base_branch,
             status=saga.status.value,
             confidence=saga.confidence,
+            created_at=saga.created_at.isoformat(),
+            phase_summary=PhaseSummaryResponse(
+                total=len(phases),
+                completed=sum(1 for phase in phases if phase.status == PhaseStatus.COMPLETE),
+            ),
             phases=phase_responses,
             warnings=warnings,
+            workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
+            workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
+            workflow_version=saga.workflow_version,
         )
 
     return router

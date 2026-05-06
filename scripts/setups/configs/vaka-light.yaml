@@ -1,0 +1,167 @@
+# ─── vaka-light ───────────────────────────────────────────────────────────────
+#
+# Lightweight Vaka setup for interactive coding sessions.
+# All MF features available but daemon/wakefulness disabled.
+# Good for: "I want to code with Ravn and use the new personas + Mimir"
+#
+# What you get:
+#   - Qwen3-Coder-30B via vLLM (zero cost)
+#   - Composite Mimir: local + shared Valhalla
+#   - Compiled truth + hybrid search + entity detection
+#   - Inline fact detection ("I prefer X" → Mimir page)
+#   - Episode reflection after each turn
+#   - Checkpoint recovery
+#   - Skills extraction
+#   - All personas available (coding, reviewer, qa, security, ship, retro, etc.)
+#
+# What's OFF:
+#   - No daemon / drive loop (interactive only)
+#   - No wakefulness / recap triggers
+#   - No dream cycle (run manually: ravn run --persona mimir-curator)
+#   - No gateway channels (no Telegram, no HTTP server)
+#
+# Prerequisites:
+#   - vLLM on Valaskjalf reachable
+#
+# Launch:
+#   ravn run --config ~/.ravn/config.yaml
+#   ravn run --config ~/.ravn/config.yaml --persona reviewer
+#   ravn run --config ~/.ravn/config.yaml --persona security-auditor
+# ──────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+  max_tokens: 8192
+  timeout: 300.0
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: "https://vllm.valaskjalf.asgard.niuu.world"
+      api_key: ""
+      system_prefix: "You are Ravn, an autonomous agent."
+
+iteration_budget:
+  total: 200
+
+agent:
+  max_iterations: 100
+
+memory:
+  backend: sqlite
+  path: "~/.ravn/memory.db"
+  reflection_model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+  reflection_max_tokens: 512
+
+embedding:
+  enabled: true
+  rrf_k: 60
+
+mimir:
+  enabled: true
+  auto_distill: true
+  categories:
+    - technical
+    - projects
+    - research
+    - learnings
+    - self
+
+  search:
+    backend: vector
+
+  instances:
+    - name: local
+      role: local
+      path: ~/.ravn/mimir
+      read_priority: 20
+    - name: shared
+      role: shared
+      url: "https://volundr.valhalla.asgard.niuu.world"
+      read_priority: 10
+
+  write_routing:
+    rules:
+      - prefix: "self/"
+        mounts: [local]
+      - prefix: "learnings/"
+        mounts: [local, shared]
+    default: [local, shared]
+
+  source_trigger:
+    enabled: false
+
+  staleness_trigger:
+    enabled: false
+
+  ingest:
+    entity_detection: true
+    entity_model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+    entity_max_tokens: 1024
+
+checkpoint:
+  enabled: true
+  backend: local
+  directory: ~/.ravn/checkpoints
+  checkpoint_every_n_tools: 10
+  auto_save_before_destructive: true
+
+cascade:
+  enabled: true
+  stuck_timeout_seconds: 60
+  on_stuck: replan
+
+evolution:
+  enabled: true
+  min_new_outcomes: 5
+
+skill:
+  enabled: true
+  backend: sqlite
+
+budget:
+  daily_cap_usd: 0.0
+  input_token_cost_per_million: 0.0
+  output_token_cost_per_million: 0.0
+
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  pushing_branches: approval
+  pushing_main: never
+
+# Everything below: OFF for light mode
+gateway:
+  enabled: false
+initiative:
+  enabled: false
+thread:
+  enabled: false
+wakefulness:
+  enabled: false
+recap:
+  enabled: false
+dream_cycle:
+  enabled: false
+sleipnir:
+  enabled: false
+mesh:
+  enabled: false
+
+mcp_servers:
+  - name: "linear"
+    url: "https://mcp.linear.app/mcp"
+    transport: "http"
+    auth:
+      auth_type: "api_key"
+      api_key_env: "LINEAR_API_KEY"
+      api_key_header: "Authorization"
+      api_key_prefix: "Bearer"
+
+logging:
+  level: info
+  format: text
+
+permission:
+  mode: workspace_write

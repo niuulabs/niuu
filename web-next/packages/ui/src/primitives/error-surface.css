@@ -1,0 +1,32 @@
+.niuu-error-surface {
+  background: color-mix(in srgb, var(--color-critical) 14%, var(--color-bg-secondary));
+  border: 1px solid color-mix(in srgb, var(--color-critical-fg) 34%, transparent);
+  border-radius: 14px;
+  color: var(--color-critical-fg);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 3%, transparent),
+    0 0 0 1px color-mix(in srgb, black 10%, transparent);
+}
+
+.niuu-error-surface--soft {
+  background: color-mix(in srgb, var(--color-critical) 10%, var(--color-bg-secondary));
+}
+
+.niuu-error-chip {
+  color: var(--color-critical-fg);
+  border-color: color-mix(in srgb, var(--color-critical-fg) 36%, transparent);
+  background: color-mix(in srgb, var(--color-critical) 16%, var(--color-bg-secondary));
+}
+
+.niuu-error-field {
+  border-color: color-mix(in srgb, var(--color-critical-fg) 42%, transparent);
+  background: color-mix(in srgb, var(--color-critical) 8%, var(--color-bg-secondary));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+}
+
+.niuu-error-field:focus {
+  border-color: var(--color-critical-fg);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--color-critical-fg) 22%, transparent);
+}

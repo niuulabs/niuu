@@ -328,6 +328,7 @@ class RabbitMQSubscriber(SleipnirSubscriber):
         self._queue = await self._channel.declare_queue(
             self._service_id or "",
             durable=is_named,
+            exclusive=not is_named,
             auto_delete=not is_named,
             arguments={"x-dead-letter-exchange": self._dead_letter_exchange},
         )

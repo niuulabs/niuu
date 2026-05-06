@@ -1,0 +1,114 @@
+.niuu-chat-mention-menu {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  max-height: 280px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.niuu-chat-mention-section {
+  padding: var(--space-1) 0;
+}
+
+.niuu-chat-mention-section + .niuu-chat-mention-section {
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.niuu-chat-mention-section-header {
+  padding: var(--space-1) var(--space-3);
+  font-size: 10px;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-mention-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.niuu-chat-mention-item:hover,
+.niuu-chat-mention-item--selected {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-mention-agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.niuu-chat-mention-file-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-mention-file-icon--dir {
+  color: var(--color-brand);
+}
+
+.niuu-chat-mention-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.niuu-chat-mention-dir-badge {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-brand) 15%, transparent);
+  color: var(--color-brand);
+  font-family: var(--font-mono);
+}
+
+.niuu-chat-mention-loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-3);
+}
+
+.niuu-chat-mention-spinner {
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-muted);
+  animation: niuu-spin 1s linear infinite;
+}
+
+@keyframes niuu-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.niuu-chat-mention-empty {
+  padding: var(--space-3);
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}

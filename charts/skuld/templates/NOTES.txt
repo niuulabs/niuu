@@ -14,10 +14,6 @@ Endpoints:
 {{- end }}
   WebSocket: {{ $wsScheme }}://{{ .Values.ingress.host }}{{ .Values.ingress.paths.session }}
   Health:    {{ $scheme }}://{{ .Values.ingress.host }}{{ .Values.ingress.paths.session }}/health
-{{- if .Values.reh.enabled }}
-  IDE:       {{ $scheme }}://{{ .Values.ingress.host }}/
-  Terminal:  Open the IDE and press Ctrl+` for integrated terminal
-{{- end }}
 {{- else }}
   kubectl port-forward svc/{{ include "skuld.fullname" . }} 8080:{{ .Values.service.port }}
 {{- end }}

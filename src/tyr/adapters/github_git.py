@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlparse
 
 import httpx
 
@@ -21,14 +22,27 @@ class GitHubGitAdapter(GitPort):
         self._client = httpx.AsyncClient(timeout=self._timeout)
 
     def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._token}",
+        headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        return headers
 
     def _owner_repo(self, repo: str) -> tuple[str, str]:
-        """Split 'owner/repo' into (owner, repo)."""
+        """Split a GitHub repo ref into ``(owner, repo)``.
+
+        Accepts either ``owner/repo`` or ``https://github.com/owner/repo(.git)``.
+        """
+        if repo.startswith("http://") or repo.startswith("https://"):
+            parsed = urlparse(repo)
+            path = parsed.path.strip("/")
+            if path.endswith(".git"):
+                path = path[:-4]
+            owner, name = path.split("/", 1)
+            return owner, name
+
         owner, name = repo.split("/", 1)
         return owner, name
 

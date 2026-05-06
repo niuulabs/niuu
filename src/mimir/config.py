@@ -39,3 +39,18 @@ class MimirServiceConfig(BaseModel):
             "If None, announcement is skipped."
         ),
     )
+    search_db: str | None = Field(
+        default=None,
+        description=(
+            "Path to the SQLite database for the hybrid search index. "
+            "Defaults to <path>/search.db when None."
+        ),
+    )
+    embedding_model: str | None = Field(
+        default=None,
+        description=(
+            "sentence-transformers model name for semantic search "
+            "(e.g. 'all-MiniLM-L6-v2'). "
+            "Set to null for FTS-only mode (no sentence-transformers required)."
+        ),
+    )

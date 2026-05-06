@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .chronicle import ChronicleNotFoundError, ChronicleService
 from .feature import FeatureModule, FeatureService, UserFeaturePreference
+from .forge import ForgeService
 from .git_workflow import ConfidenceScorer, GitWorkflowService
 from .preset import PresetDuplicateNameError, PresetNotFoundError, PresetService
 from .profile import (
@@ -51,6 +52,7 @@ __all__ = [
     "TrackerMappingNotFoundError",
     # Services
     "FeatureService",
+    "ForgeService",
     "ChronicleService",
     "ConfidenceScorer",
     "ForgeProfileService",

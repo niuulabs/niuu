@@ -330,8 +330,7 @@ class TestMdnsDiscoveryAdapter:
 
     def test_evict_stale_peers(self) -> None:
         adapter = self._make_adapter()
-        config = _make_discovery_config(peer_ttl_s=10.0)
-        adapter._config = config
+        adapter._peer_ttl_s = 10.0
         leaves: list[RavnPeer] = []
         adapter._on_leave.append(leaves.append)
 
@@ -663,7 +662,7 @@ class TestSleipnirDiscoveryAdapter:
 
     def test_evict_stale_peers(self) -> None:
         adapter = self._make_adapter()
-        adapter._config = _make_discovery_config(peer_ttl_s=5.0)
+        adapter._peer_ttl_s = 5.0
         leaves: list[RavnPeer] = []
         adapter._on_leave.append(leaves.append)
 

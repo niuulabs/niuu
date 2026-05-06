@@ -281,19 +281,32 @@ async def test_lint_returns_report(adapter: HttpMimirAdapter) -> None:
         return_value=Response(
             200,
             json={
-                "orphans": ["a.md"],
-                "contradictions": [],
-                "stale": [],
-                "gaps": ["concept-x"],
+                "issues": [
+                    {
+                        "id": "L01",
+                        "severity": "warning",
+                        "message": "orphan page",
+                        "page_path": "a.md",
+                        "auto_fixable": False,
+                    },
+                    {
+                        "id": "L04",
+                        "severity": "info",
+                        "message": "concept gap: concept-x",
+                        "page_path": "",
+                        "auto_fixable": False,
+                    },
+                ],
                 "pages_checked": 5,
                 "issues_found": True,
+                "summary": {"error": 0, "warning": 1, "info": 1},
             },
         )
     )
     report = await adapter.lint()
     assert isinstance(report, MimirLintReport)
-    assert report.orphans == ["a.md"]
-    assert report.gaps == ["concept-x"]
+    assert any(i.id == "L01" and i.page_path == "a.md" for i in report.issues)
+    assert any(i.id == "L04" and "concept-x" in i.message for i in report.issues)
     assert report.pages_checked == 5
 
 
@@ -404,11 +417,11 @@ async def test_get_thread_queue_returns_empty_list(adapter: HttpMimirAdapter) ->
 @respx.mock
 async def test_list_threads_returns_pages(adapter: HttpMimirAdapter) -> None:
     respx.get("http://mimir.test/api/threads").mock(
-        return_value=Response(200, json=[_thread_json(state="assigned")])
+        return_value=Response(200, json=[_thread_json(state="pulling")])
     )
     pages = await adapter.list_threads()
     assert len(pages) == 1
-    assert pages[0].meta.thread_state == ThreadState.assigned
+    assert pages[0].meta.thread_state == ThreadState.pulling
     assert pages[0].meta.is_thread is True
 
 
@@ -445,9 +458,9 @@ async def test_list_threads_omits_state_when_none(adapter: HttpMimirAdapter) -> 
 @respx.mock
 async def test_update_thread_state_sends_patch(adapter: HttpMimirAdapter) -> None:
     route = respx.patch("http://mimir.test/api/threads/threads%2Fmy-thread/state").mock(
-        return_value=Response(200, json={"state": "assigned"})
+        return_value=Response(200, json={"state": "pulling"})
     )
-    await adapter.update_thread_state("threads/my-thread", ThreadState.assigned)
+    await adapter.update_thread_state("threads/my-thread", ThreadState.pulling)
     assert route.called
 
 

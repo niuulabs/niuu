@@ -1,7 +1,7 @@
 """Serialisation helpers for SleipnirEvent.
 
 Wire formats:
-- **msgpack** — compact binary format; preferred for nng/Buri transport.
+- **msgpack** — compact binary format; preferred for nng transport.
 - **JSON** — human-readable fallback for debugging and HTTP SSE delivery.
 
 Both formats round-trip through :meth:`SleipnirEvent.to_dict` /

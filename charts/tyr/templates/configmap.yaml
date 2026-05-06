@@ -25,6 +25,17 @@ data:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}
 
+    cors:
+      allowed_origins:
+        {{- range .Values.config.cors.allowedOrigins }}
+        - {{ . | quote }}
+        {{- end }}
+      allow_credentials: {{ .Values.config.cors.allowCredentials | default true }}
+      allow_methods:
+        - "*"
+      allow_headers:
+        - "*"
+
     database:
       min_pool_size: {{ .Values.database.minPoolSize | default 2 }}
       max_pool_size: {{ .Values.database.maxPoolSize | default 10 }}
@@ -37,6 +48,10 @@ data:
       default_model: {{ .Values.dispatch.defaultModel | quote }}
       {{- if .Values.dispatch.dispatchPromptTemplate }}
       dispatch_prompt_template: {{ .Values.dispatch.dispatchPromptTemplate | quote }}
+      {{- end }}
+      {{- if and .Values.dispatch.inProcess .Values.dispatch.inProcess.llmConfig }}
+      in_process:
+        llm_config: {{ .Values.dispatch.inProcess.llmConfig | toJson }}
       {{- end }}
 
     {{- if and .Values.planner (or .Values.planner.plannerSystemPrompt .Values.planner.finalizePrompt) }}
@@ -75,6 +90,7 @@ data:
       {{- range $models }}
       - id: {{ .id | quote }}
         name: {{ .name | quote }}
+        provider: {{ .provider | default "" | quote }}
       {{- end }}
 
     cerbos:

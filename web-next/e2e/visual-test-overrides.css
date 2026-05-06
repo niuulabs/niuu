@@ -1,0 +1,12 @@
+/*
+ * CSS overrides injected into screenshots during visual regression tests.
+ * Hides non-deterministic or dev-only UI elements that cause spurious diffs.
+ */
+
+/* React Query devtools floating button — present in web-next dev mode,
+   absent in web2 prototypes. */
+.tsqd-parent-container,
+[class*='ReactQueryDevtools'],
+button[aria-label='Open Tanstack query devtools'] {
+  display: none !important;
+}

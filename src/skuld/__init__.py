@@ -1,5 +1,6 @@
 """Skuld - Claude Code CLI broker service."""
 
+from niuu.ports.cli import CLITransport
 from skuld.broker import Broker, app
 from skuld.channels import (
     ChannelRegistry,
@@ -8,7 +9,7 @@ from skuld.channels import (
     WebSocketChannel,
 )
 from skuld.config import SkuldSettings, TelegramConfig
-from skuld.transport import CLITransport, SdkWebSocketTransport, SubprocessTransport
+from skuld.transport import SdkWebSocketTransport, SubprocessTransport
 
 __all__ = [
     "Broker",

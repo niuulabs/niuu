@@ -1,0 +1,70 @@
+/*
+ * @niuulabs/ui entrypoint stylesheet.
+ * Primitive CSS first (co-located with components), then Tailwind utilities layered on top.
+ * Build: tsup onSuccess → postcss-cli reads postcss.config.cjs → dist/styles.css.
+ */
+
+@import './primitives/Chip/Chip.css';
+@import './primitives/ConfidenceBar/ConfidenceBar.css';
+@import './primitives/ConfidenceBadge/ConfidenceBadge.css';
+@import './primitives/Dialog/Dialog.css';
+@import './primitives/Drawer/Drawer.css';
+@import './primitives/Kbd/Kbd.css';
+@import './primitives/LiveBadge/LiveBadge.css';
+@import './primitives/Pipe/Pipe.css';
+@import './primitives/Popover/Popover.css';
+@import './primitives/Rune/Rune.css';
+@import './primitives/StateDot/StateDot.css';
+@import './primitives/StatusBadge/StatusBadge.css';
+@import './primitives/Toast/Toast.css';
+@import './primitives/Tooltip/Tooltip.css';
+@import './primitives/BudgetBar/BudgetBar.css';
+@import './primitives/BudgetRunwayBar/BudgetRunwayBar.css';
+@import './primitives/CommandPalette/CommandPalette.css';
+@import './primitives/error-surface.css';
+@import './primitives/form-control.css';
+@import './primitives/Field/Field.css';
+@import './primitives/Input/Input.css';
+@import './primitives/Textarea/Textarea.css';
+@import './primitives/Select/Select.css';
+@import './primitives/Combobox/Combobox.css';
+@import './primitives/ValidationSummary/ValidationSummary.css';
+@import './primitives/EventPicker/EventPicker.css';
+@import './primitives/ToolPicker/ToolPicker.css';
+@import './primitives/SchemaEditor/SchemaEditor.css';
+
+/* ── Composites ───────────────────────────────────────────────────────────── */
+@import './composites/DeployBadge/DeployBadge.css';
+@import './composites/LifecycleBadge/LifecycleBadge.css';
+@import './composites/MountChip/MountChip.css';
+@import './composites/PersonaAvatar/PersonaAvatar.css';
+@import './composites/RavnAvatar/RavnAvatar.css';
+
+/* ── Data display ─────────────────────────────────────────────────────────── */
+@import './data/FilterBar/FilterBar.css';
+@import './data/KpiStrip/KpiStrip.css';
+@import './data/Table/Table.css';
+@import './data/states/states.css';
+
+/* ── Chat / Mesh ──────────────────────────────────────────────────────────── */
+@import './chat/components/AgentDetailPanel/AgentDetailPanel.css';
+@import './chat/components/ChatEmptyStates/ChatEmptyStates.css';
+@import './chat/components/ChatInput/ChatInput.css';
+@import './chat/components/ChatMessages/ChatMessages.css';
+@import './chat/components/MarkdownContent/MarkdownContent.css';
+@import './chat/components/MentionMenu/MentionMenu.css';
+@import './chat/components/MentionPill/MentionPill.css';
+@import './chat/components/MeshCascadePanel/MeshCascadePanel.css';
+@import './chat/components/MeshEventCard/MeshEventCard.css';
+@import './chat/components/MeshSidebar/MeshSidebar.css';
+@import './chat/components/OutcomeCard/OutcomeCard.css';
+@import './chat/components/ParticipantFilter/ParticipantFilter.css';
+@import './chat/components/RenderedContent/RenderedContent.css';
+@import './chat/components/RoomMessage/RoomMessage.css';
+@import './chat/components/SessionChat/SessionChat.css';
+@import './chat/components/SlashCommandMenu/SlashCommandMenu.css';
+@import './chat/components/ThreadGroup/ThreadGroup.css';
+@import './chat/components/ToolBlock/ToolBlock.css';
+
+@tailwind components;
+@tailwind utilities;

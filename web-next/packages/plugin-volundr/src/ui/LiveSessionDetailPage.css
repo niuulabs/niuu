@@ -1,0 +1,116 @@
+.niuu-live-chronicles-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2.15fr) 320px;
+  height: 100%;
+  min-height: 0;
+}
+
+.niuu-live-chronicles-timeline {
+  position: relative;
+}
+
+.niuu-live-chronicles-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 58px;
+  width: 1px;
+  background: var(--color-border-subtle);
+}
+
+.niuu-live-chronicles-row {
+  display: grid;
+  grid-template-columns: 44px 28px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.niuu-live-diffs-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+}
+
+.niuu-live-delete-dialog {
+  width: min(520px, calc(100vw - var(--space-8)));
+}
+
+.niuu-live-delete-dialog__cleanup {
+  margin-top: var(--space-1);
+}
+
+.niuu-live-delete-dialog__cleanup-label {
+  margin-bottom: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--color-text-faint);
+}
+
+.niuu-live-delete-dialog__cleanup-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.niuu-live-delete-dialog__cleanup-option {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-primary);
+  cursor: pointer;
+}
+
+.niuu-live-delete-dialog__cleanup-option--disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.niuu-live-delete-dialog__checkbox {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-secondary);
+  color: transparent;
+}
+
+.niuu-live-delete-dialog__checkbox--checked {
+  border-color: color-mix(in srgb, var(--color-brand) 50%, var(--color-border));
+  background: color-mix(in srgb, var(--color-brand) 18%, var(--color-bg-secondary));
+  color: var(--color-brand);
+}
+
+.niuu-live-delete-dialog__checkbox--disabled {
+  color: var(--color-text-faint);
+}
+
+.niuu-live-delete-dialog__actions {
+  margin-top: var(--space-5);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.niuu-live-delete-dialog__action-button {
+  min-width: 88px;
+  white-space: nowrap;
+}
+
+.niuu-live-delete-dialog__action-button--critical {
+  border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-elevated));
+  color: var(--color-danger-text);
+}
+
+.niuu-live-delete-dialog__action-button--critical:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 20%, var(--color-bg-elevated));
+}

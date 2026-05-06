@@ -62,13 +62,6 @@ def _config_paths() -> tuple[Path, ...]:
 # ---------------------------------------------------------------------------
 
 
-class AnthropicConfig(BaseModel):
-    """Anthropic API configuration."""
-
-    api_key: str = Field(default="", description="Anthropic API key (or set ANTHROPIC_API_KEY).")
-    base_url: str = Field(default="https://api.anthropic.com")
-
-
 class LLMProviderConfig(BaseModel):
     """A single LLM provider entry in the fallback chain."""
 
@@ -401,10 +394,10 @@ class SkillConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """Conversation memory / persistence backend configuration."""
 
-    backend: Literal["sqlite", "postgres", "buri"] | str = Field(
+    backend: Literal["sqlite", "postgres"] | str = Field(
         default="sqlite",
         description=(
-            "Backend to use: 'sqlite', 'postgres', 'buri', or a fully-qualified class path "
+            "Backend to use: 'sqlite', 'postgres', or a fully-qualified class path "
             "for a custom backend adapter."
         ),
     )
@@ -476,6 +469,13 @@ class MemoryConfig(BaseModel):
     output_token_cost_per_million: float = Field(
         default=15.0,
         description="Output token cost in USD per million tokens (used to estimate cost_usd).",
+    )
+    rolling_summary_max_chars: int = Field(
+        default=2_000,
+        description=(
+            "Maximum characters kept in the in-memory rolling session summary "
+            "maintained by MemoryPort.on_turn_complete()."
+        ),
     )
 
 
@@ -904,12 +904,22 @@ class HttpChannelConfig(BaseModel):
 
 
 class SkuldChannelConfig(BaseModel):
-    """Skuld WebSocket channel configuration for gateway mode."""
+    """Skuld WebSocket channel configuration for browser delivery.
+
+    Used by both gateway mode and daemon/mesh mode to deliver events
+    to the Skuld broker for browser visualization.
+    """
 
     enabled: bool = Field(default=False)
     broker_url: str = Field(
-        default="ws://localhost:9000/ws/ravn",
-        description="WebSocket URL of the Skuld broker endpoint.",
+        default="ws://localhost:8081/ws/ravn",
+        description="WebSocket URL of the Skuld broker endpoint. "
+        "The peer_id is appended automatically (e.g. ws://localhost:8081/ws/ravn/{peer_id}).",
+    )
+    display_name: str = Field(
+        default="",
+        description="Human-friendly name shown in the mesh UI (e.g. 'Kvasir'). "
+        "Falls back to the persona name when empty.",
     )
 
 
@@ -1424,6 +1434,23 @@ class MimirStalenessTriggerConfig(BaseModel):
     )
 
 
+class MimirIngestConfig(BaseModel):
+    """Configuration for the Mímir ingest entity detection step (NIU-578)."""
+
+    entity_detection: bool = Field(
+        default=True,
+        description="Enable LLM-based entity extraction during ingest.",
+    )
+    entity_model: str = Field(
+        default="claude-haiku-4-5-20251001",
+        description="LLM model alias used for entity extraction (prefer cheap/fast).",
+    )
+    entity_max_tokens: int = Field(
+        default=1024,
+        description="Maximum output tokens for the entity extraction LLM call.",
+    )
+
+
 class MimirConfig(BaseModel):
     """Mímir persistent compounding knowledge base configuration (NIU-540).
 
@@ -1495,6 +1522,10 @@ class MimirConfig(BaseModel):
     staleness_trigger: MimirStalenessTriggerConfig = Field(
         default_factory=MimirStalenessTriggerConfig,
         description="Scheduled staleness refresh for frequently-used pages.",
+    )
+    ingest: MimirIngestConfig = Field(
+        default_factory=MimirIngestConfig,
+        description="Entity detection settings for ingest.",
     )
 
 
@@ -1584,25 +1615,34 @@ class DiscoveryK8sConfig(BaseModel):
 class DiscoveryConfig(BaseModel):
     """Flock peer detection configuration (NIU-538).
 
-    ``adapter`` selects the discovery backend:
-    - ``mdns``      — Pi mode, mDNS + HMAC handshake (zeroconf)
-    - ``sleipnir``  — infra mode, pub/sub + SPIFFE JWT validation
-    - ``k8s``       — infra mode, K8s pod label selector
-    - ``composite`` — combines multiple backends
+    Uses dynamic adapter loading. All adapters in the ``adapters`` list run
+    simultaneously — peers are merged from all backends (union semantics).
+
+    Example::
+
+        discovery:
+          enabled: true
+          adapters:
+            - adapter: ravn.adapters.discovery.mdns.MdnsDiscoveryAdapter
+              handshake_port: 7482
+            - adapter: ravn.adapters.discovery.k8s.K8sDiscoveryAdapter
+              namespace: ravn
+              label_selector: "ravn.niuu.world/role=agent"
     """
 
     enabled: bool = Field(
         default=False,
         description="Enable flock peer discovery.",
     )
-    adapter: str = Field(
-        default="mdns",
-        description="Discovery backend: 'mdns', 'sleipnir', 'k8s', or 'composite'.",
+    adapters: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "List of discovery adapters to run simultaneously. Each entry has "
+            "'adapter' (fully-qualified class path) plus adapter-specific kwargs. "
+            "All adapters run in parallel; peer tables are merged."
+        ),
     )
-    realm_id_env: str = Field(
-        default="RAVN_REALM_ID",
-        description="Env var carrying the realm_id for infra mode (OpenBao / K8s label).",
-    )
+    # Common settings passed to all adapters
     heartbeat_interval_s: float = Field(
         default=30.0,
         description="Seconds between liveness heartbeats.",
@@ -1610,6 +1650,15 @@ class DiscoveryConfig(BaseModel):
     peer_ttl_s: float = Field(
         default=90.0,
         description="Seconds of missed heartbeats before a peer is evicted (≈ 3 heartbeats).",
+    )
+    realm_id_env: str = Field(
+        default="RAVN_REALM_ID",
+        description="Env var carrying the realm_id for infra mode (OpenBao / K8s label).",
+    )
+    # Legacy fields — deprecated, use adapters list instead
+    adapter: str = Field(
+        default="",
+        description="DEPRECATED: Use 'adapters' list instead. Legacy single-adapter mode.",
     )
     mdns: DiscoveryMdnsConfig = Field(default_factory=DiscoveryMdnsConfig)
     sleipnir: DiscoverySleipnirConfig = Field(default_factory=DiscoverySleipnirConfig)
@@ -1619,20 +1668,33 @@ class DiscoveryConfig(BaseModel):
 class MeshConfig(BaseModel):
     """Ravn-to-Ravn mesh transport configuration (NIU-517).
 
-    When enabled, Ravn instances communicate directly with each other for
-    cascade delegation (``send``) and broadcast (``publish``/``subscribe``).
+    Uses dynamic adapter loading. All adapters in the ``adapters`` list run
+    simultaneously — publish fans out to all transports, subscribe receives
+    from any transport.
 
-    ``adapter`` selects the transport backend:
-    - ``nng``       — Pi mode, no broker required (uses ``nng:`` sub-section)
-    - ``sleipnir``  — infra mode, RabbitMQ (re-uses ``sleipnir:`` config block)
-    - ``composite`` — tries Sleipnir first, falls back to nng
+    Example::
+
+        mesh:
+          enabled: true
+          adapters:
+            - adapter: ravn.adapters.mesh.nng.NngMeshAdapter
+              pub_sub_address: "ipc:///tmp/ravn-mesh/node.ipc"
+              req_rep_address: "ipc:///tmp/ravn-mesh/node-rep.ipc"
+            - adapter: ravn.adapters.mesh.webhook.WebhookMeshAdapter
+              listen_port: 7483
+              hmac_secret_env: RAVN_WEBHOOK_SECRET
     """
 
     enabled: bool = Field(default=False)
-    adapter: str = Field(
-        default="nng",
-        description="Mesh transport backend: 'nng', 'sleipnir', or 'composite'.",
+    adapters: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "List of mesh transport adapters to run simultaneously. Each entry has "
+            "'adapter' (fully-qualified class path) plus adapter-specific kwargs. "
+            "All transports are active: publish fans out to all, subscribe receives from any."
+        ),
     )
+    # Common settings passed to all adapters
     rpc_timeout_s: float = Field(
         default=10.0,
         description="Default RPC reply timeout in seconds.",
@@ -1640,6 +1702,11 @@ class MeshConfig(BaseModel):
     own_peer_id: str = Field(
         default="",
         description="This Ravn's unique mesh peer identifier (auto: hostname when empty).",
+    )
+    # Legacy fields — deprecated, use adapters list instead
+    adapter: str = Field(
+        default="",
+        description="DEPRECATED: Use 'adapters' list instead. Legacy single-adapter mode.",
     )
     nng: NngMeshConfig = Field(default_factory=NngMeshConfig)
     sleipnir: MeshSleipnirConfig = Field(default_factory=MeshSleipnirConfig)
@@ -1929,6 +1996,44 @@ class WakefulnessConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class PostSessionReflectionConfig(BaseModel):
+    """Post-session reflection configuration (NIU-588).
+
+    Controls the service that writes operational learnings to Mímir after
+    each ``ravn.session.ended`` event.
+
+    Disabled by default — enable via ``reflection.enabled: true`` in the
+    deployment YAML.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable post-session reflection.  Off until explicitly activated; "
+            "flip to true in the deployment ravn.yaml."
+        ),
+    )
+    llm_alias: str = Field(
+        default="fast",
+        description=(
+            "LLM alias for the reflection call.  Should resolve to a cheap/fast "
+            "model in the LLM aliases map."
+        ),
+    )
+    max_tokens: int = Field(
+        default=1024,
+        description="Maximum tokens the reflection LLM call may produce.",
+    )
+    learning_token_budget: int = Field(
+        default=500,
+        description=("Maximum tokens of injected learnings in the session-start system prompt."),
+    )
+    max_learnings_injected: int = Field(
+        default=5,
+        description="Maximum number of learning pages injected at session start.",
+    )
+
+
 class RecapConfig(BaseModel):
     """Recap trigger configuration (NIU-569).
 
@@ -1977,6 +2082,66 @@ class RecapConfig(BaseModel):
     poll_interval_seconds: int = Field(
         default=60,
         description="How often (seconds) the trigger checks for operator return.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# NIU-587: Dream cycle trigger — nightly Mímir enrichment, lint, cross-reference
+# ---------------------------------------------------------------------------
+
+
+class DreamCycleTriggerConfig(BaseModel):
+    """Dream cycle trigger configuration (NIU-587).
+
+    Fires the ``mimir-curator`` persona on a cron schedule to run a nightly
+    enrichment pass over the Mímir knowledge base:
+
+    1. Query Mímir log entries since the last dream cycle.
+    2. Detect entities in new/modified raw sources.
+    3. Update compiled truth pages where evidence has changed.
+    4. Run ``mimir_lint --fix`` to auto-fix safe issues.
+    5. Cross-reference pages that mention the same entities without links.
+    6. Emit a ``mimir.dream.completed`` Sleipnir event with summary counts.
+
+    Disabled by default — enable via ``dream_cycle.enabled: true`` in ravn.yaml.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable the dream cycle trigger.  Off until explicitly activated; "
+            "flip to true in the deployment ravn.yaml."
+        ),
+    )
+    cron_expression: str = Field(
+        default="0 3 * * *",
+        description=(
+            "Cron expression controlling when the dream cycle fires "
+            "(default: 3 am daily).  Supports standard 5-field cron syntax."
+        ),
+    )
+    persona: str = Field(
+        default="mimir-curator",
+        description="Persona used when running the dream cycle agent task.",
+    )
+    task_description: str = Field(
+        default="Nightly dream cycle: enrich, lint, cross-reference",
+        description="Human-readable title for the enqueued agent task.",
+    )
+    token_budget_usd: float = Field(
+        default=0.50,
+        description=(
+            "Approximate USD token budget for the dream cycle run.  "
+            "The agent is instructed to stay within this budget."
+        ),
+    )
+    poll_interval_seconds: int = Field(
+        default=60,
+        description="How often (seconds) the trigger polls the cron schedule.",
+    )
+    state_dir: str = Field(
+        default="~/.ravn/daemon",
+        description="Directory where dream cycle state (last_run timestamp) is persisted.",
     )
 
 
@@ -2179,18 +2344,19 @@ class PersonaSourceConfig(BaseModel):
     :class:`~ravn.ports.persona.PersonaPort` to use a different source
     (database, remote API, generated at runtime, etc.).
 
+    Constructor kwargs are forwarded directly to the adapter class, so the
+    ``kwargs`` dict must match the adapter's ``__init__`` signature.
+
     Example ``ravn.yaml``::
 
         persona_source:
-          adapter: mycompany.ravn.DbPersonaAdapter
+          adapter: ravn.adapters.personas.loader.FilesystemPersonaAdapter
           kwargs:
-            table: ravn_personas
-          secret_kwargs_env:
-            dsn: PERSONA_DB_DSN
+            persona_dirs: [".ravn/personas", "~/.ravn/personas"]
     """
 
     adapter: str = Field(
-        default="ravn.adapters.personas.loader.PersonaLoader",
+        default="ravn.adapters.personas.loader.FilesystemPersonaAdapter",
         description="Fully-qualified class path for the PersonaPort implementation.",
     )
     kwargs: dict[str, Any] = Field(
@@ -2233,6 +2399,51 @@ class ProfileSourceConfig(BaseModel):
     )
 
 
+class PersonaOverridesConfig(BaseModel):
+    """Per-sidecar persona overrides injected by Volundr at flock dispatch time.
+
+    Volundr embeds this block into each sidecar's ``/etc/ravn/config.yaml``
+    when the flock workload has per-persona ``system_prompt_extra`` or
+    ``iteration_budget`` settings.  Ravn reads them here and applies them to
+    the loaded PersonaConfig via
+    :func:`ravn.adapters.personas.overrides.apply_config_overrides`.
+
+    Example sidecar YAML snippet::
+
+        persona_overrides:
+          system_prompt_extra: |
+            Pay special attention to security vulnerabilities.
+          iteration_budget: 40
+    """
+
+    system_prompt_extra: str = Field(
+        default="",
+        description=(
+            "Extra system prompt text appended to the persona's system_prompt_template at runtime."
+        ),
+    )
+    iteration_budget: int = Field(
+        default=0,
+        description=("Override the persona's iteration budget (0 = use persona default)."),
+    )
+
+
+class WorkflowRuntimeConfig(BaseModel):
+    """Workflow graph metadata injected into flocked Ravn daemons.
+
+    This is a passive runtime contract for now: Tyr/Volundr pass the workflow
+    graph into the flock session so mesh-aware runtime code can consume it
+    without depending on Tyr's pipeline compiler.
+    """
+
+    workflow_id: str = ""
+    name: str = ""
+    version: str = ""
+    scope: str = ""
+    initial_context: str = ""
+    graph: dict[str, Any] = Field(default_factory=dict)
+
+
 class Settings(BaseSettings):
     """Ravn application settings.
 
@@ -2248,7 +2459,6 @@ class Settings(BaseSettings):
     )
 
     # Core sections
-    anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
 
     # New NIU-427 sections
@@ -2279,6 +2489,9 @@ class Settings(BaseSettings):
     # NIU-516: Pi-mode gateway
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
 
+    # Skuld broker channel — delivers mesh events to browser UI
+    skuld: SkuldChannelConfig = Field(default_factory=SkuldChannelConfig)
+
     # NIU-438: Sleipnir event backbone
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
 
@@ -2296,6 +2509,12 @@ class Settings(BaseSettings):
 
     # NIU-569: recap trigger
     recap: RecapConfig = Field(default_factory=RecapConfig)
+
+    # NIU-587: dream cycle trigger — nightly Mímir enrichment
+    dream_cycle: DreamCycleTriggerConfig = Field(default_factory=DreamCycleTriggerConfig)
+
+    # NIU-588: post-session reflection → Mímir learnings
+    reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)
 
     # NIU-571: trust gradient — constrains wakefulness tool availability
     trust: TrustGradientConfig = Field(default_factory=TrustGradientConfig)
@@ -2335,6 +2554,16 @@ class Settings(BaseSettings):
         description="Deployment profile source adapter.",
     )
 
+    # NIU-638: per-sidecar overrides injected by Volundr at flock dispatch
+    persona_overrides: PersonaOverridesConfig = Field(
+        default_factory=PersonaOverridesConfig,
+        description="Per-sidecar persona overrides injected by Volundr at flock dispatch.",
+    )
+    workflow: WorkflowRuntimeConfig = Field(
+        default_factory=WorkflowRuntimeConfig,
+        description="Workflow graph payload injected for flock-backed sessions.",
+    )
+
     # Legacy — kept so existing CLI wiring (NIU-426) continues to work
     llm_adapter: LLMAdapterConfig = Field(default_factory=LLMAdapterConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
@@ -2354,10 +2583,6 @@ class Settings(BaseSettings):
             YamlConfigSettingsSource(settings_cls, yaml_file=_config_paths()),
             file_secret_settings,
         )
-
-    def effective_api_key(self) -> str:
-        """Return the API key, preferring ANTHROPIC_API_KEY env var."""
-        return os.environ.get("ANTHROPIC_API_KEY", "") or self.anthropic.api_key
 
     def effective_model(self) -> str:
         """Return the resolved model name.

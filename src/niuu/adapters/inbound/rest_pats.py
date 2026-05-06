@@ -11,11 +11,12 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from niuu.domain.models import Principal
 from niuu.domain.services.pat import PATService
+from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 
 logger = logging.getLogger(__name__)
 
@@ -39,19 +40,36 @@ class CreatePATRequest(BaseModel):
 class PATResponse(BaseModel):
     """Response model for a personal access token (no raw token)."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str
     name: str
     created_at: datetime
     last_used_at: datetime | None
 
+    @model_serializer(mode="wrap")
+    def serialize_with_aliases(self, handler):
+        payload = handler(self)
+        payload["createdAt"] = payload.get("created_at")
+        payload["lastUsedAt"] = payload.get("last_used_at")
+        return payload
+
 
 class CreatePATResponse(BaseModel):
     """Response model returned once on creation (includes raw token)."""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     id: str
     name: str
     token: str
     created_at: datetime
+
+    @model_serializer(mode="wrap")
+    def serialize_with_aliases(self, handler):
+        payload = handler(self)
+        payload["createdAt"] = payload.get("created_at")
+        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +80,9 @@ class CreatePATResponse(BaseModel):
 def create_pats_router(
     extract_principal: Callable[..., Awaitable[Principal]],
     prefix: str = "/api/v1/users/tokens",
+    *,
+    deprecated: bool = False,
+    canonical_prefix: str | None = None,
 ) -> APIRouter:
     """Create the personal access tokens router.
 
@@ -84,10 +105,20 @@ def create_pats_router(
     )
     async def create_token(
         request: Request,
+        response: Response,
         body: CreatePATRequest,
         principal: Principal = Depends(extract_principal),
     ) -> CreatePATResponse:
         """Create a new personal access token. The raw token is shown once."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=prefix,
+                    canonical_path=canonical_prefix,
+                ),
+            )
         service: PATService = request.app.state.pat_service
         # Extract the user's current access token for IDP token exchange
         auth_header = request.headers.get("authorization", "")
@@ -108,9 +139,19 @@ def create_pats_router(
     )
     async def list_tokens(
         request: Request,
+        response: Response,
         principal: Principal = Depends(extract_principal),
     ) -> list[PATResponse]:
         """List all personal access tokens for the authenticated user."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=prefix,
+                    canonical_path=canonical_prefix,
+                ),
+            )
         service: PATService = request.app.state.pat_service
         pats = await service.list(principal.user_id)
         return [
@@ -129,10 +170,20 @@ def create_pats_router(
     )
     async def revoke_token(
         request: Request,
+        response: Response,
         pat_id: str,
         principal: Principal = Depends(extract_principal),
     ) -> None:
         """Revoke a personal access token by ID."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=f"{prefix}/{pat_id}",
+                    canonical_path=f"{canonical_prefix}/{pat_id}",
+                ),
+            )
         service: PATService = request.app.state.pat_service
         try:
             parsed_id = UUID(pat_id)

@@ -28,6 +28,41 @@ dispatch:
   default_model: claude-sonnet-4-6
   default_system_prompt: ""
 
+  # ---------------------------------------------------------------------------
+  # Flock — multi-agent ravn_flock sessions
+  # ---------------------------------------------------------------------------
+  # When enabled, raids are dispatched as multi-agent flock sessions instead of
+  # solo coding sessions.  default_personas accepts either bare names (legacy)
+  # or per-persona override objects with llm/iteration_budget overrides.
+  #
+  # Legacy (all personas share global llm_config):
+  #   flock:
+  #     enabled: true
+  #     default_personas:
+  #       - coordinator
+  #       - reviewer
+  #
+  # Per-persona overrides (each persona can specify its own LLM alias):
+  #   flock:
+  #     enabled: true
+  #     default_personas:
+  #       - name: coordinator          # inherits global llm_config
+  #       - name: reviewer
+  #         llm:
+  #           primary_alias: powerful  # use the powerful alias for review
+  #           thinking_enabled: true
+  #         iteration_budget: 40
+  #       - name: security-auditor
+  #         llm:
+  #           primary_alias: balanced
+  #     llm_config:                    # global fallback for all personas
+  #       primary_alias: balanced
+  flock:
+    enabled: false
+    default_personas:
+      - coordinator
+      - reviewer
+
   # Template for the initial prompt sent to coding sessions.
   # Placeholders: {identifier}, {title}, {description}, {repo},
   #               {feature_branch}, {raid_branch}

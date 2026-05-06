@@ -6,12 +6,13 @@ provider registry) and by Volundr (which embeds them in its Settings).
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -129,6 +130,52 @@ class GitConfig(BaseModel):
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
 
 
+def _env_csv_list(name: str, default: list[str]) -> list[str]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default)
+    value = raw.strip()
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+class CorsConfig(BaseModel):
+    """Shared CORS configuration for Niuu HTTP services."""
+
+    allowed_origins: list[str] = Field(default_factory=lambda: _env_csv_list("CORS_ORIGINS", ["*"]))
+    allow_credentials: bool = Field(
+        default_factory=lambda: _env_bool("CORS_ALLOW_CREDENTIALS", True)
+    )
+    allow_methods: list[str] = Field(
+        default_factory=lambda: _env_csv_list("CORS_ALLOW_METHODS", ["*"])
+    )
+    allow_headers: list[str] = Field(
+        default_factory=lambda: _env_csv_list("CORS_ALLOW_HEADERS", ["*"])
+    )
+
+    @field_validator("allowed_origins", "allow_methods", "allow_headers", mode="before")
+    @classmethod
+    def _normalize_list(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return value
+
+
 def _config_paths() -> list[Path]:
     """Config file search paths (same locations as Volundr)."""
     env = os.environ.get("NIUU_CONFIG")
@@ -156,6 +203,7 @@ class NiuuSettings(BaseSettings):
     )
 
     git: GitConfig = Field(default_factory=GitConfig)
+    cors: CorsConfig = Field(default_factory=CorsConfig)
 
     @classmethod
     def settings_customise_sources(

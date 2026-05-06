@@ -1,0 +1,71 @@
+.niuu-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-10) var(--space-6);
+  text-align: center;
+}
+
+.niuu-state__icon {
+  font-size: var(--text-4xl);
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.niuu-state__title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.niuu-state__desc {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  max-width: 36ch;
+}
+
+.niuu-state__action {
+  margin-top: var(--space-2);
+}
+
+/* ── LoadingState spinner ─────────────────────────────── */
+.niuu-state__spinner {
+  display: block;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-brand);
+  border-radius: var(--radius-full);
+  animation: niuu-spin 0.7s linear infinite;
+}
+
+@keyframes niuu-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── ErrorState tint ──────────────────────────────────── */
+.niuu-state--error .niuu-state__title {
+  color: var(--color-critical-fg);
+}
+
+.niuu-state--error .niuu-state__icon {
+  color: var(--color-critical-fg);
+  opacity: 0.8;
+}
+
+.niuu-state--error {
+  background: color-mix(in srgb, var(--color-critical) 14%, var(--color-bg-secondary));
+  border: 1px solid color-mix(in srgb, var(--color-critical-fg) 34%, transparent);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 3%, transparent),
+    0 0 0 1px color-mix(in srgb, black 10%, transparent);
+}

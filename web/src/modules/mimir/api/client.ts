@@ -8,6 +8,7 @@
 
 import { createApiClient } from '@/modules/shared/api/client';
 import type {
+  LintIssue,
   MimirStats,
   MimirPageMeta,
   MimirPage,
@@ -46,13 +47,19 @@ interface RawStats {
   healthy: boolean;
 }
 
+interface RawLintIssue {
+  id: string;
+  severity: string;
+  message: string;
+  page_path: string;
+  auto_fixable: boolean;
+}
+
 interface RawLintReport {
-  orphans: string[];
-  contradictions: string[];
-  stale: string[];
-  gaps: string[];
+  issues: RawLintIssue[];
   pages_checked: number;
   issues_found: boolean;
+  summary: { error: number; warning: number; info: number };
 }
 
 interface RawLogEntry {
@@ -107,14 +114,22 @@ function toStats(raw: RawStats): MimirStats {
   };
 }
 
+function toLintIssue(raw: RawLintIssue): LintIssue {
+  return {
+    id: raw.id,
+    severity: raw.severity as LintIssue['severity'],
+    message: raw.message,
+    pagePath: raw.page_path,
+    autoFixable: raw.auto_fixable,
+  };
+}
+
 function toLintReport(raw: RawLintReport): MimirLintReport {
   return {
-    orphans: raw.orphans,
-    contradictions: raw.contradictions,
-    stale: raw.stale,
-    gaps: raw.gaps,
+    issues: raw.issues.map(toLintIssue),
     pagesChecked: raw.pages_checked,
     issuesFound: raw.issues_found,
+    summary: raw.summary,
   };
 }
 
@@ -201,6 +216,12 @@ export async function getLog(n = 50): Promise<MimirLogEntry> {
 /** GET /lint */
 export async function getLint(): Promise<MimirLintReport> {
   const raw = await api.get<RawLintReport>('/lint');
+  return toLintReport(raw);
+}
+
+/** POST /lint/fix — run lint and apply auto-fixes */
+export async function lintFix(): Promise<MimirLintReport> {
+  const raw = await api.post<RawLintReport>('/lint/fix', {});
   return toLintReport(raw);
 }
 

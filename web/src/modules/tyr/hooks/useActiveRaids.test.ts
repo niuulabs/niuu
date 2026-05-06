@@ -64,4 +64,37 @@ describe('useActiveRaids', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.raids).toHaveLength(1);
   });
+
+  it('should not change unrelated raids when patching', async () => {
+    const multiRaids = [
+      ...mockRaids,
+      {
+        tracker_id: 'tr-2',
+        identifier: 'NIU-101',
+        title: 'Second raid',
+        url: 'https://linear.app/NIU-101',
+        status: 'REVIEW',
+        session_id: 's-2',
+        confidence: 0.5,
+        pr_url: 'https://github.com/org/repo/pull/1',
+        last_updated: '2026-03-28T00:00:00Z',
+      },
+    ];
+    vi.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => multiRaids,
+    } as Response);
+
+    const { result } = renderHook(() => useActiveRaids());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.raids).toHaveLength(2);
+
+    act(() => {
+      result.current.patchRaid('tr-1', { confidence: 0.99 });
+    });
+
+    expect(result.current.raids[0].confidence).toBe(0.99);
+    expect(result.current.raids[1].confidence).toBe(0.5); // unchanged
+  });
 });

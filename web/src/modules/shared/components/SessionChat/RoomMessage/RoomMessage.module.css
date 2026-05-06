@@ -1,0 +1,88 @@
+.roomMessageWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* ── Participant label row ───────────────────────────────────── */
+
+.participantRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.participantLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.participantLabelClickable {
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.participantLabelClickable:hover {
+  color: var(--participant-color, var(--color-text-secondary));
+}
+
+.participantLabelClickable[data-selected] {
+  color: var(--participant-color, var(--color-text-secondary));
+}
+
+.participantDot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background-color: var(--participant-color, var(--color-text-muted));
+  flex-shrink: 0;
+}
+
+.participantName {
+  font-weight: 500;
+}
+
+/* ── View detail button ─────────────────────────────────────── */
+
+.detailBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  border: none;
+  background: none;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition:
+    opacity var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.participantRow:hover .detailBtn {
+  opacity: 1;
+}
+
+.detailBtn:hover {
+  color: var(--color-text-secondary);
+  background-color: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
+}
+
+.detailBtnActive {
+  opacity: 1;
+  color: var(--color-accent-cyan);
+}
+
+.detailIcon {
+  width: 12px;
+  height: 12px;
+}

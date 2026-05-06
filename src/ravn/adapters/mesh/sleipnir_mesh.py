@@ -1,245 +1,299 @@
-"""SleipnirMeshAdapter — infra-mode Ravn-to-Ravn mesh via RabbitMQ (NIU-517).
+"""SleipnirMeshAdapter — transport-agnostic mesh via Sleipnir event bus.
 
-Shares the AMQP connection from ``SleipnirConfig`` — no second connection.
+Uses Sleipnir's publisher/subscriber ports, so the underlying transport
+(nng, RabbitMQ, NATS, Redis) is determined by Sleipnir config, not here.
 
-**Pub/sub topology**
+**Pub/sub** — uses SleipnirPublisher/SleipnirSubscriber directly.
 
-- ``publish()`` publishes to the ``ravn.mesh`` topic exchange with routing
-  key ``ravn.mesh.<topic>.<source_peer_id>``.
-- ``subscribe()`` binds an anonymous, exclusive queue to the exchange with
-  the routing-key pattern ``ravn.mesh.<topic>.#``.
+**RPC (send)** — implemented as a pattern on top of pub/sub:
+1. Publishes request to ``ravn.mesh.rpc.<target_peer_id>``
+2. Subscribes to ``ravn.mesh.rpc.reply.<own_peer_id>.<nonce>``
+3. Awaits reply with matching correlation_id
+4. Unsubscribes from reply topic
 
-**Direct send — RabbitMQ RPC pattern**
-
-- ``send()`` declares a temporary exclusive reply queue named
-  ``ravn.rpc.reply.<own_peer_id>.<nonce>``.
-- Publishes the request to ``ravn.mesh.rpc.<target_peer_id>`` with
-  ``reply_to`` set to the reply queue name.
-- Awaits a response on the reply queue within *timeout_s*.
-- On response: deletes the reply queue and returns the decoded dict.
-
-The target Ravn consumes from ``ravn.mesh.rpc.<own_peer_id>`` — this
-consumer is started in ``start()``.
+This works regardless of underlying transport.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import Any
 
-from ravn.adapters.mesh._serialization import decode_event as _decode_event
-from ravn.adapters.mesh._serialization import encode_event as _encode_event
-from ravn.domain.events import RavnEvent
+from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.ports.mesh import PeerNotFoundError
-
-if TYPE_CHECKING:
-    from ravn.config import MeshSleipnirConfig, SleipnirConfig
-
-try:
-    import aio_pika  # type: ignore[import-untyped]
-except ImportError:  # pragma: no cover
-    aio_pika = None  # type: ignore[assignment]
+from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
 
 logger = logging.getLogger(__name__)
 
-_RPC_ROUTING_PREFIX = "ravn.mesh.rpc"
+# Event type prefixes for mesh communication
+_MESH_EVENT_PREFIX = "ravn.mesh"
+_RPC_REQUEST_PREFIX = "ravn.mesh.rpc"
+_RPC_REPLY_PREFIX = "ravn.mesh.rpc.reply"
+
+
+def _sanitize_for_event_type(s: str) -> str:
+    """Sanitize a string for use in Sleipnir event types.
+
+    Sleipnir event type segments require lowercase alphanumeric + underscores only.
+    Converts hyphens to underscores inside a segment.
+    """
+    return s.lower().replace("-", "_")
+
+
+def _sanitize_topic(topic: str) -> str:
+    """Sanitize a dotted topic while preserving segment boundaries."""
+    return ".".join(_sanitize_for_event_type(segment) for segment in topic.split("."))
+
+
+def _ravn_to_sleipnir(event: RavnEvent, topic: str, source_peer_id: str) -> dict:
+    """Convert RavnEvent to SleipnirEvent dict for publishing."""
+    from sleipnir.domain.events import SleipnirEvent
+
+    # Use topic as part of the event type
+    event_type = f"{_MESH_EVENT_PREFIX}.{_sanitize_topic(topic)}"
+
+    return SleipnirEvent(
+        event_type=event_type,
+        source=f"ravn:{source_peer_id}",
+        payload={
+            "ravn_event": event.payload,
+            "ravn_type": str(event.type),
+            "ravn_source": event.source,
+            "ravn_urgency": event.urgency,
+            "ravn_session_id": event.session_id,
+            "ravn_task_id": event.task_id,
+            "ravn_root_correlation_id": event.root_correlation_id,
+        },
+        summary=f"Mesh event: {topic}",
+        urgency=event.urgency,
+        domain="code",
+        timestamp=event.timestamp,
+        correlation_id=event.correlation_id,
+    )
+
+
+def _sleipnir_to_ravn(sleipnir_event: Any) -> RavnEvent:
+    """Convert SleipnirEvent back to RavnEvent."""
+    payload = sleipnir_event.payload
+    ravn_type_str = payload.get("ravn_type", "response")
+
+    # Map string back to RavnEventType
+    try:
+        ravn_type = RavnEventType(ravn_type_str)
+    except ValueError:
+        ravn_type = RavnEventType.RESPONSE
+
+    return RavnEvent(
+        type=ravn_type,
+        source=payload.get("ravn_source", sleipnir_event.source),
+        payload=payload.get("ravn_event", {}),
+        timestamp=sleipnir_event.timestamp,
+        urgency=payload.get("ravn_urgency", sleipnir_event.urgency),
+        correlation_id=sleipnir_event.correlation_id or "",
+        session_id=payload.get("ravn_session_id", ""),
+        task_id=payload.get("ravn_task_id"),
+        root_correlation_id=payload.get("ravn_root_correlation_id", ""),
+    )
 
 
 class SleipnirMeshAdapter:
-    """RabbitMQ-based mesh transport for infra mode.
+    """Transport-agnostic mesh adapter using Sleipnir event bus.
+
+    The underlying transport (nng, RabbitMQ, NATS, Redis) is determined
+    by how the SleipnirPublisher/SleipnirSubscriber are configured.
 
     Parameters
     ----------
-    sleipnir_config:
-        Main Sleipnir config block (carries the AMQP URL env var and
-        reconnect timing).
-    mesh_sleipnir_config:
-        Mesh-specific Sleipnir settings (exchange name, rpc_timeout_s).
+    publisher:
+        Sleipnir publisher port for sending events.
+    subscriber:
+        Sleipnir subscriber port for receiving events.
     own_peer_id:
         This Ravn's unique peer identifier.
     discovery:
-        Injected DiscoveryPort — used to verify that a target peer is
-        trusted before routing an RPC request to it.
+        Injected DiscoveryPort for peer verification.
+    rpc_timeout_s:
+        Default timeout for RPC calls.
     """
 
     def __init__(
         self,
-        sleipnir_config: SleipnirConfig,
-        mesh_sleipnir_config: MeshSleipnirConfig,
+        publisher: SleipnirPublisher,
+        subscriber: SleipnirSubscriber,
         own_peer_id: str,
-        discovery: object,
+        discovery: object | None = None,
+        rpc_timeout_s: float = 10.0,
     ) -> None:
-        self._sleipnir_config = sleipnir_config
-        self._mesh_config = mesh_sleipnir_config
+        self._publisher = publisher
+        self._subscriber = subscriber
         self._own_peer_id = own_peer_id
         self._discovery = discovery
+        self._rpc_timeout_s = rpc_timeout_s
 
-        self._connection: object | None = None
-        self._channel: object | None = None
-        self._exchange: object | None = None
-        self._connect_lock = asyncio.Lock()
-        self._last_connect_attempt: float = 0.0
-
-        self._handlers: dict[str, Callable[[RavnEvent], Awaitable[None]]] = {}
+        self._subscriptions: dict[str, Subscription] = {}
         self._rpc_handler: Callable[[dict], Awaitable[dict]] | None = None
 
-        self._rpc_consumer_task: asyncio.Task | None = None
+        # Pending RPC responses: correlation_id -> (event, response_dict)
+        self._pending_rpc: dict[str, asyncio.Future[dict]] = {}
+        self._rpc_subscription: Subscription | None = None
 
     # ------------------------------------------------------------------
-    # Public API — MeshPort interface
+    # MeshPort interface
     # ------------------------------------------------------------------
 
     async def publish(self, event: RavnEvent, topic: str) -> None:
-        """Broadcast *event* to the mesh exchange under *topic*."""
-        exchange = await self._ensure_exchange()
-        if exchange is None:
-            logger.debug("sleipnir_mesh: exchange unavailable, dropping publish")
-            return
-
-        routing_key = f"{self._mesh_config.exchange}.{topic}.{self._own_peer_id}"
-        body = _encode_event(event)
+        """Broadcast *event* to all subscribers of *topic*."""
+        sleipnir_event = _ravn_to_sleipnir(event, topic, self._own_peer_id)
         try:
-            msg = aio_pika.Message(body=body, content_type="application/json")  # type: ignore[union-attr]
-            await asyncio.wait_for(
-                exchange.publish(msg, routing_key=routing_key),
-                timeout=self._sleipnir_config.publish_timeout_s,
-            )
+            await self._publisher.publish(sleipnir_event)
         except Exception as exc:
-            logger.debug("sleipnir_mesh: publish failed (%s)", exc)
-            await self._invalidate()
+            logger.debug("sleipnir_mesh: publish failed: %s", exc)
 
     async def subscribe(
         self,
         topic: str,
         handler: Callable[[RavnEvent], Awaitable[None]],
     ) -> None:
-        """Bind an anonymous queue to the mesh exchange for *topic*."""
-        self._handlers[topic] = handler
-        channel = await self._ensure_channel()
-        if channel is None:
-            return
-        exchange = await self._ensure_exchange()
-        if exchange is None:
-            return
-        await self._bind_topic_queue(channel, exchange, topic, handler)
+        """Register *handler* for events on *topic*."""
+        event_type_pattern = f"{_MESH_EVENT_PREFIX}.{_sanitize_topic(topic)}"
+
+        async def _wrapped_handler(sleipnir_event: Any) -> None:
+            try:
+                ravn_event = _sleipnir_to_ravn(sleipnir_event)
+                await handler(ravn_event)
+            except Exception as exc:
+                logger.warning("sleipnir_mesh: handler for %r raised: %s", topic, exc)
+
+        subscription = await self._subscriber.subscribe([event_type_pattern], _wrapped_handler)
+        self._subscriptions[topic] = subscription
 
     async def unsubscribe(self, topic: str) -> None:
-        """Remove handler for *topic* (best-effort)."""
-        self._handlers.pop(topic, None)
+        """Remove subscription for *topic*."""
+        subscription = self._subscriptions.pop(topic, None)
+        if subscription is not None:
+            await subscription.unsubscribe()
 
     async def send(
         self,
         target_peer_id: str,
         message: dict,
         *,
-        timeout_s: float = 10.0,
+        timeout_s: float | None = None,
     ) -> dict:
-        """Send *message* directly to *target_peer_id* and await its reply.
+        """Send *message* to *target_peer_id* and await reply.
 
-        Raises
-        ------
-        PeerNotFoundError
-            If the peer is not in the verified DiscoveryPort peer table.
-        TimeoutError
-            If no reply arrives within *timeout_s*.
+        Implements RPC as a pattern on top of pub/sub:
+        1. Subscribe to reply topic with unique nonce
+        2. Publish request with correlation_id
+        3. Wait for reply
+        4. Unsubscribe and return
         """
         self._assert_peer_trusted(target_peer_id)
+        timeout = timeout_s if timeout_s is not None else self._rpc_timeout_s
 
-        channel = await self._ensure_channel()
-        if channel is None:
-            raise RuntimeError("sleipnir_mesh: AMQP channel unavailable for send()")
+        # Sleipnir requires event type segments to start with a letter
+        nonce = "n" + uuid.uuid4().hex[:8]
+        safe_own_id = _sanitize_for_event_type(self._own_peer_id)
+        safe_target_id = _sanitize_for_event_type(target_peer_id)
+        correlation_id = f"{self._own_peer_id}.{nonce}"
+        reply_topic = f"{_RPC_REPLY_PREFIX}.{safe_own_id}.{nonce}"
 
-        exchange = await self._ensure_exchange()
-        if exchange is None:
-            raise RuntimeError("sleipnir_mesh: AMQP exchange unavailable for send()")
+        # Create future for the response
+        response_future: asyncio.Future[dict] = asyncio.get_event_loop().create_future()
+        self._pending_rpc[correlation_id] = response_future
 
-        nonce = uuid.uuid4().hex
-        reply_queue_name = f"ravn.rpc.reply.{self._own_peer_id}.{nonce}"
-        reply_queue = await channel.declare_queue(
-            reply_queue_name,
-            exclusive=True,
-            auto_delete=True,
-        )
+        # Subscribe to reply topic
+        async def _reply_handler(sleipnir_event: Any) -> None:
+            if sleipnir_event.correlation_id == correlation_id:
+                reply_data = sleipnir_event.payload.get("rpc_response", {})
+                if not response_future.done():
+                    response_future.set_result(reply_data)
+
+        reply_subscription = await self._subscriber.subscribe([reply_topic], _reply_handler)
 
         try:
-            body = json.dumps(message).encode()
-            routing_key = f"{_RPC_ROUTING_PREFIX}.{target_peer_id}"
-            msg = aio_pika.Message(  # type: ignore[union-attr]
-                body=body,
-                reply_to=reply_queue_name,
-                correlation_id=nonce,
-                content_type="application/json",
-            )
-            await asyncio.wait_for(
-                exchange.publish(msg, routing_key=routing_key),
-                timeout=self._sleipnir_config.publish_timeout_s,
-            )
+            # Publish request
+            from sleipnir.domain.events import SleipnirEvent
 
-            # Await reply
+            request_event = SleipnirEvent(
+                event_type=f"{_RPC_REQUEST_PREFIX}.{safe_target_id}",
+                source=f"ravn:{self._own_peer_id}",
+                payload={
+                    "rpc_request": message,
+                    "reply_topic": reply_topic,
+                },
+                summary=f"RPC request to {target_peer_id}",
+                urgency=0.5,
+                domain="code",
+                timestamp=datetime.now(UTC),
+                correlation_id=correlation_id,
+            )
+            await self._publisher.publish(request_event)
+
+            # Wait for response
             try:
-                async with asyncio.timeout(timeout_s):
-                    async with reply_queue.iterator() as q_iter:
-                        async for incoming in q_iter:
-                            async with incoming.process():
-                                return json.loads(incoming.body)
-                    # Iterator exhausted without delivering a reply.
-                    raise TimeoutError(f"No reply from peer {target_peer_id!r} within {timeout_s}s")
+                return await asyncio.wait_for(response_future, timeout=timeout)
             except TimeoutError as exc:
                 raise TimeoutError(
-                    f"No reply from peer {target_peer_id!r} within {timeout_s}s"
+                    f"No reply from peer {target_peer_id!r} within {timeout}s"
                 ) from exc
         finally:
-            try:
-                await reply_queue.delete()
-            except Exception:
-                pass
+            # Cleanup
+            self._pending_rpc.pop(correlation_id, None)
+            await reply_subscription.unsubscribe()
 
     async def start(self) -> None:
-        """Connect to RabbitMQ and start the RPC consumer."""
-        if aio_pika is None:  # pragma: no cover
-            logger.warning("sleipnir_mesh: aio_pika not installed — mesh disabled")
-            return
+        """Start listening for incoming RPC requests."""
+        # Start the transport if it has a start method (nng, rabbitmq, etc.)
+        if hasattr(self._publisher, "start"):
+            await self._publisher.start()
+        # If subscriber is different from publisher, start it too
+        if self._subscriber is not self._publisher and hasattr(self._subscriber, "start"):
+            await self._subscriber.start()
 
-        exchange = await self._ensure_exchange()
-        if exchange is None:
-            logger.warning("sleipnir_mesh: could not connect at startup — will retry lazily")
-            return
-
-        # Re-bind any already-registered topic handlers
-        channel = await self._ensure_channel()
-        if channel is not None:
-            for topic, handler in self._handlers.items():
-                await self._bind_topic_queue(channel, exchange, topic, handler)
-
-        self._rpc_consumer_task = asyncio.create_task(
-            self._rpc_consumer_loop(), name="sleipnir_mesh_rpc_consumer"
+        # Subscribe to RPC requests for this peer
+        safe_own_id = _sanitize_for_event_type(self._own_peer_id)
+        rpc_pattern = f"{_RPC_REQUEST_PREFIX}.{safe_own_id}"
+        self._rpc_subscription = await self._subscriber.subscribe(
+            [rpc_pattern], self._handle_rpc_request
         )
-        logger.info(
-            "sleipnir_mesh: started peer=%s exchange=%s",
-            self._own_peer_id,
-            self._mesh_config.exchange,
-        )
+        logger.info("sleipnir_mesh: started peer=%s", self._own_peer_id)
 
     async def stop(self) -> None:
         """Graceful shutdown."""
-        if self._rpc_consumer_task is not None:
-            self._rpc_consumer_task.cancel()
-            try:
-                await self._rpc_consumer_task
-            except asyncio.CancelledError:
-                pass
-            self._rpc_consumer_task = None
+        if self._rpc_subscription is not None:
+            await self._rpc_subscription.unsubscribe()
+            self._rpc_subscription = None
 
-        await self._invalidate()
+        for subscription in self._subscriptions.values():
+            await subscription.unsubscribe()
+        self._subscriptions.clear()
+
+        # Cancel pending RPCs
+        for future in self._pending_rpc.values():
+            if not future.done():
+                future.cancel()
+        self._pending_rpc.clear()
+
+        # Stop the transport if it has a stop method
+        if hasattr(self._publisher, "stop"):
+            await self._publisher.stop()
+        if self._subscriber is not self._publisher and hasattr(self._subscriber, "stop"):
+            await self._subscriber.stop()
+
         logger.info("sleipnir_mesh: stopped peer=%s", self._own_peer_id)
 
+    @property
+    def subscriber(self) -> SleipnirSubscriber:
+        """Expose the underlying Sleipnir subscriber port."""
+        return self._subscriber
+
     def set_rpc_handler(self, handler: Callable[[dict], Awaitable[dict]]) -> None:
-        """Register the handler called for every incoming RPC request."""
+        """Register handler for incoming RPC requests."""
         self._rpc_handler = handler
 
     # ------------------------------------------------------------------
@@ -247,7 +301,9 @@ class SleipnirMeshAdapter:
     # ------------------------------------------------------------------
 
     def _assert_peer_trusted(self, peer_id: str) -> None:
-        """Raise ``PeerNotFoundError`` if *peer_id* is not in the peer table."""
+        """Raise PeerNotFoundError if peer is not in discovery table."""
+        if self._discovery is None:
+            return  # No discovery = trust all
         try:
             peers = self._discovery.peers()  # type: ignore[attr-defined]
         except Exception:
@@ -255,165 +311,40 @@ class SleipnirMeshAdapter:
         if peer_id not in peers:
             raise PeerNotFoundError(peer_id)
 
-    async def _ensure_exchange(self) -> object | None:
-        if self._exchange is not None:
-            return self._exchange
+    async def _handle_rpc_request(self, sleipnir_event: Any) -> None:
+        """Handle incoming RPC request and send reply."""
+        payload = sleipnir_event.payload
+        request = payload.get("rpc_request", {})
+        reply_topic = payload.get("reply_topic")
+        correlation_id = sleipnir_event.correlation_id
 
-        async with self._connect_lock:
-            if self._exchange is not None:
-                return self._exchange
-
-            now = asyncio.get_running_loop().time()
-            if now - self._last_connect_attempt < self._sleipnir_config.reconnect_delay_s:
-                return None
-
-            self._last_connect_attempt = now
-            return await self._connect()
-
-    async def _ensure_channel(self) -> object | None:
-        await self._ensure_exchange()
-        return self._channel
-
-    async def _connect(self) -> object | None:
-        if aio_pika is None:
-            return None
-
-        amqp_url = os.environ.get(self._sleipnir_config.amqp_url_env, "")
-        if not amqp_url:
-            logger.debug(
-                "sleipnir_mesh: %s not set, mesh disabled",
-                self._sleipnir_config.amqp_url_env,
-            )
-            return None
-
-        try:
-            connection = await aio_pika.connect_robust(amqp_url)
-            channel = await connection.channel()
-            exchange = await channel.declare_exchange(
-                self._mesh_config.exchange,
-                aio_pika.ExchangeType.TOPIC,
-                durable=True,
-            )
-            self._connection = connection
-            self._channel = channel
-            self._exchange = exchange
-            logger.debug("sleipnir_mesh: connected exchange=%s", self._mesh_config.exchange)
-            return exchange
-        except Exception as exc:
-            logger.debug("sleipnir_mesh: connection failed (%s), will retry", exc)
-            return None
-
-    async def _invalidate(self) -> None:
-        self._exchange = None
-        self._channel = None
-        if self._connection is not None:
-            try:
-                await self._connection.close()  # type: ignore[union-attr]
-            except Exception:
-                pass
-        self._connection = None
-
-    async def _bind_topic_queue(
-        self,
-        channel: object,
-        exchange: object,
-        topic: str,
-        handler: Callable[[RavnEvent], Awaitable[None]],
-    ) -> None:
-        """Declare an exclusive queue and bind it to *topic* on the exchange."""
-        try:
-            queue = await channel.declare_queue("", exclusive=True)  # type: ignore[union-attr]
-            pattern = f"{self._mesh_config.exchange}.{topic}.#"
-            await queue.bind(exchange, routing_key=pattern)
-
-            async def _consume(message: object) -> None:  # type: ignore[type-arg]
-                async with message.process():  # type: ignore[attr-defined]
-                    try:
-                        event = _decode_event(message.body)  # type: ignore[attr-defined]
-                        await handler(event)
-                    except Exception as exc:
-                        logger.warning("sleipnir_mesh: handler for %r raised: %s", topic, exc)
-
-            await queue.consume(_consume)  # type: ignore[union-attr]
-        except Exception as exc:
-            logger.debug("sleipnir_mesh: bind_topic_queue %r failed: %s", topic, exc)
-
-    async def _rpc_consumer_loop(self) -> None:
-        """Consume from the own-peer RPC queue and dispatch requests."""
-        if aio_pika is None:  # pragma: no cover
+        if not reply_topic:
+            logger.warning("sleipnir_mesh: RPC request missing reply_topic")
             return
 
-        while True:
+        # Process request
+        if self._rpc_handler is not None:
             try:
-                await self._run_rpc_consumer()
-            except asyncio.CancelledError:
-                return
+                response = await self._rpc_handler(request)
             except Exception as exc:
-                logger.debug(
-                    "sleipnir_mesh: rpc_consumer error (%s) — retrying in %.0fs",
-                    exc,
-                    self._sleipnir_config.reconnect_delay_s,
-                )
-                await asyncio.sleep(self._sleipnir_config.reconnect_delay_s)
+                response = {"error": str(exc)}
+        else:
+            response = {"error": "no rpc handler registered"}
 
-    async def _run_rpc_consumer(self) -> None:
-        channel = await self._ensure_channel()
-        if channel is None:
-            await asyncio.sleep(self._sleipnir_config.reconnect_delay_s)
-            return
+        # Send reply
+        from sleipnir.domain.events import SleipnirEvent
 
-        exchange = await self._ensure_exchange()
-        if exchange is None:
-            await asyncio.sleep(self._sleipnir_config.reconnect_delay_s)
-            return
-
-        rpc_routing_key = f"{_RPC_ROUTING_PREFIX}.{self._own_peer_id}"
-        queue = await channel.declare_queue(  # type: ignore[union-attr]
-            rpc_routing_key, durable=False, auto_delete=True
+        reply_event = SleipnirEvent(
+            event_type=reply_topic,
+            source=f"ravn:{self._own_peer_id}",
+            payload={"rpc_response": response},
+            summary="RPC reply",
+            urgency=0.5,
+            domain="code",
+            timestamp=datetime.now(UTC),
+            correlation_id=correlation_id,
         )
-        await queue.bind(exchange, routing_key=rpc_routing_key)
-
-        logger.debug("sleipnir_mesh: RPC consumer listening on %s", rpc_routing_key)
-
-        async with queue.iterator() as q_iter:
-            async for message in q_iter:
-                async with message.process():
-                    await self._handle_rpc_message(message)
-
-    async def _handle_rpc_message(self, message: object) -> None:
-        """Decode *message*, call RPC handler, publish reply."""
         try:
-            request = json.loads(message.body)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.warning("sleipnir_mesh: could not decode RPC request: %s", exc)
-            return
-
-        reply_to = getattr(message, "reply_to", None)
-        correlation_id = getattr(message, "correlation_id", None)
-
-        try:
-            if self._rpc_handler is not None:
-                reply = await self._rpc_handler(request)
-            else:
-                reply = {"error": "no rpc handler registered"}
-        except Exception as exc:
-            reply = {"error": str(exc)}
-
-        if not reply_to:
-            return
-
-        channel = await self._ensure_channel()
-        if channel is None:
-            return
-
-        try:
-            reply_msg = aio_pika.Message(  # type: ignore[union-attr]
-                body=json.dumps(reply).encode(),
-                correlation_id=correlation_id,
-                content_type="application/json",
-            )
-            # Publish directly to the reply queue (default exchange, routing_key=queue_name)
-            default_exchange = await channel.get_exchange("")  # type: ignore[union-attr]
-            await default_exchange.publish(reply_msg, routing_key=reply_to)
+            await self._publisher.publish(reply_event)
         except Exception as exc:
             logger.debug("sleipnir_mesh: failed to send RPC reply: %s", exc)

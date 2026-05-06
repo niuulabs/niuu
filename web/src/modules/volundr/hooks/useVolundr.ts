@@ -37,6 +37,7 @@ interface UseVolundrResult {
     source: SessionSource;
     model: string;
     templateName?: string;
+    definition?: string;
     taskType?: string;
     trackerIssue?: TrackerIssue;
     terminalRestricted?: boolean;
@@ -366,6 +367,14 @@ export function useVolundr(): UseVolundrResult {
     try {
       const data = await volundrService.getLogs(sessionId);
       setLogs(data);
+    } catch (err) {
+      // The session may have ended or the proxy may not have a target yet —
+      // both surface as 4xx/5xx here. Surface an empty log list and keep
+      // going; throwing would become an unhandled rejection (the caller in
+      // VolundrIndex fires this fire-and-forget in an effect) and crash
+      // React's reconciler.
+      setLogs([]);
+      console.warn(`getLogs failed for session ${sessionId}:`, err);
     } finally {
       setLogLoading(false);
     }

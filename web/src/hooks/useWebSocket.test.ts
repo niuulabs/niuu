@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useWebSocket } from './useWebSocket';
 
+const mockGetAccessToken = vi.fn<() => string | null>(() => null);
+vi.mock('@/modules/volundr/adapters/api/client', () => ({
+  getAccessToken: () => mockGetAccessToken(),
+}));
+
 // ---------------------------------------------------------------------------
 // MockWebSocket
 // ---------------------------------------------------------------------------
@@ -554,5 +559,79 @@ describe('useWebSocket', () => {
       vi.advanceTimersByTime(1);
     });
     expect(MockWebSocket.instances).toHaveLength(5);
+  });
+
+  // ---- Token appending -------------------------------------------------
+
+  it('should append access_token query param when token is available', () => {
+    mockGetAccessToken.mockReturnValue('test-jwt-token');
+
+    renderHook(() => useWebSocket('ws://localhost:8080'));
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(latestSocket().url).toContain('access_token=test-jwt-token');
+  });
+
+  it('should append access_token with & when URL already has query params', () => {
+    mockGetAccessToken.mockReturnValue('tok');
+
+    renderHook(() => useWebSocket('ws://localhost:8080?foo=bar'));
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(latestSocket().url).toContain('foo=bar&access_token=tok');
+  });
+
+  it('should not append access_token when getAccessToken returns null', () => {
+    mockGetAccessToken.mockReturnValue(null);
+
+    renderHook(() => useWebSocket('ws://localhost:8080'));
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(latestSocket().url).toBe('ws://localhost:8080');
+  });
+
+  // ---- URL validation ---------------------------------------------------
+
+  it('should reject non-ws protocol and call onError', () => {
+    mockGetAccessToken.mockReturnValue(null);
+    const onError = vi.fn();
+
+    renderHook(() => useWebSocket('http://localhost:8080', { onError }));
+
+    // WebSocket should NOT be created for http:// URLs
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  // ---- Stale WebSocket close handling -----------------------------------
+
+  it('should not reconnect when stale WS fires onclose after URL change', () => {
+    const { rerender } = renderHook(({ url }) => useWebSocket(url, { reconnect: true }), {
+      initialProps: { url: 'ws://localhost:8080' as string | null },
+    });
+
+    const firstSocket = latestSocket();
+
+    act(() => {
+      firstSocket.simulateOpen();
+    });
+
+    // Change URL — should close old socket and create new one
+    rerender({ url: 'ws://localhost:9090' });
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    // Now the OLD socket fires onclose (as would happen in real life)
+    // This should NOT trigger a reconnect because wsRef.current !== firstSocket
+    act(() => {
+      firstSocket.simulateClose(1006, 'abnormal');
+    });
+
+    // Should NOT have created a third socket (no reconnect for stale WS)
+    act(() => {
+      vi.advanceTimersByTime(60000);
+    });
+
+    expect(MockWebSocket.instances).toHaveLength(2);
   });
 });

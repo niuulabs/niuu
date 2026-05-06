@@ -62,6 +62,10 @@
   background-color: #76b900;
 }
 
+.swatch[data-theme-id='frost'] {
+  background-color: rgb(186, 220, 255);
+}
+
 .label {
   font-size: var(--text-sm);
   font-weight: 500;

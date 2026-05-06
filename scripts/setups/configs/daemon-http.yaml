@@ -1,0 +1,115 @@
+# ─── daemon-http ─────────────────────────────────────────────────────────────
+#
+# Ravn daemon with HTTP gateway for local development and testing.
+#
+# What you get:
+#   - HTTP API at localhost:7477 for sending messages programmatically
+#   - Drive loop for autonomous task execution
+#   - Local Mimir knowledge base
+#
+# Great for:
+#   - Testing daemon behaviour without needing a Telegram bot
+#   - Integrating with custom frontends or scripts
+#   - CI/CD pipelines that need an AI agent
+#
+# Prerequisites:
+#   - An LLM provider (configure below)
+#
+# Launch:
+#   ravn daemon --config ~/.ravn/config.yaml
+#
+# Send a message:
+#   curl -X POST http://localhost:7477/v1/message \
+#     -H "Content-Type: application/json" \
+#     -d '{"content": "Hello ravn"}'
+#
+# Send a task:
+#   curl -X POST http://localhost:7477/v1/task \
+#     -H "Content-Type: application/json" \
+#     -d '{"title": "Review PR #42", "description": "Check for security issues"}'
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# ── Mimir ───────────────────────────────────────────────────────────────────
+mimir:
+  enabled: true
+  path: ~/.ravn/mimir
+  auto_distill: true
+  categories:
+    - technical
+    - projects
+
+# ── Gateway: HTTP only ─────────────────────────────────────────────────────
+gateway:
+  enabled: true
+  channels:
+    telegram:
+      enabled: false
+    http:
+      enabled: true
+      host: 127.0.0.1
+      port: 7477
+
+# ── Drive loop ─────────────────────────────────────────────────────────────
+initiative:
+  enabled: true
+  max_concurrent_tasks: 3
+  task_queue_max: 50
+  queue_journal_path: ~/.ravn/daemon/queue.json
+  default_output_mode: surface           # show task output (useful for dev)
+  heartbeat_interval_seconds: 60
+  cron_tick_seconds: 30.0
+
+# ── Thread + wakefulness (lightweight for dev) ─────────────────────────────
+thread:
+  enabled: true
+  max_queue_size: 100
+  enricher_poll_interval_seconds: 600    # every 10 min (less aggressive for dev)
+  enricher_llm_alias: fast
+
+wakefulness:
+  enabled: false                         # off for local dev — enable if you want it
+
+recap:
+  enabled: false                         # off for local dev
+
+# ── Budget: generous for dev ───────────────────────────────────────────────
+budget:
+  daily_cap_usd: 5.0
+  warn_at_percent: 80
+
+# ── Trust: more permissive for local dev ───────────────────────────────────
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  drafting_tickets: free
+  producing_recaps: free
+  opening_tickets: free
+  closing_tickets: free
+  pushing_branches: approval
+  pushing_main: never
+  external_messages: approval
+  spending_beyond_cap: approval
+
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+logging:
+  level: info

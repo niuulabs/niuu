@@ -20,6 +20,11 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+try:
+    from sleipnir.domain.catalog import tyr_raid_needs_approval as _catalog_raid_needs_approval
+except ImportError:
+    _catalog_raid_needs_approval = None  # type: ignore[assignment]
+
 from tyr.config import WatcherConfig
 from tyr.domain.models import Raid, RaidStatus
 from tyr.ports.dispatcher_repository import DispatcherRepository
@@ -60,6 +65,7 @@ class SessionActivitySubscriber:
         event_bus: EventBusPort,
         config: WatcherConfig,
         review_engine: ReviewEngine | None = None,
+        sleipnir_publisher: object | None = None,
     ) -> None:
         self._factory = volundr_factory
         self._tracker_factory = tracker_factory
@@ -67,6 +73,7 @@ class SessionActivitySubscriber:
         self._event_bus = event_bus
         self._config = config
         self._review_engine = review_engine
+        self._sleipnir_publisher = sleipnir_publisher
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._owner_tasks: dict[str, list[asyncio.Task[None]]] = {}
@@ -294,6 +301,13 @@ class SessionActivitySubscriber:
             await self._handle_failure(raid, tracker, owner_id, reason=f"Session {session.status}")
             return
 
+        if session.workload_type == "ravn_flock":
+            logger.info(
+                "Skipping idle completion evaluation for flock session %s; awaiting ravn outcome",
+                event.session_id[:8],
+            )
+            return
+
         if not await self._is_owner_active(owner_id):
             return
 
@@ -430,6 +444,22 @@ class SessionActivitySubscriber:
             )
 
         await self._emit_state_changed(raid, owner_id, "REVIEW", pr_id=pr_id, pr_url=pr_url)
+
+        # NIU-582: emit tyr.raid.needs_approval to Sleipnir catalog (best-effort)
+        if self._sleipnir_publisher is not None and _catalog_raid_needs_approval is not None:
+            try:
+                description = f"PR {pr_url or pr_id or 'ready'} — {raid.tracker_id}"
+                _event = _catalog_raid_needs_approval(
+                    raid_id=raid.tracker_id,
+                    saga_id=str(raid.phase_id),
+                    description=description,
+                    source="tyr:activity_subscriber",
+                    correlation_id=raid.session_id or raid.tracker_id,
+                )
+                await self._sleipnir_publisher.publish(_event)
+            except Exception:
+                logger.warning("Failed to emit tyr.raid.needs_approval; continuing.", exc_info=True)
+
         logger.info(
             "Session %s completed (tracker=%s, pr=%s, chronicle=%s)",
             raid.session_id,
@@ -448,11 +478,32 @@ class SessionActivitySubscriber:
 
         raid, tracker = await self._find_raid_for_session(event.session_id, owner_id)
         if raid is None or tracker is None:
+            # Not a working-session failure. The session may still be a
+            # tracked reviewer that died early (e.g. provisioning hit the
+            # max-concurrent cap before the reviewer could start). Without
+            # this hop the raid would sit in REVIEW indefinitely with a
+            # phantom reviewer_session_id.
+            await self._try_handle_reviewer_failure(
+                event.session_id, event.session_status or "failed"
+            )
             return
 
         await self._handle_failure(
             raid, tracker, owner_id, reason=f"Session {event.session_status}"
         )
+
+    async def _try_handle_reviewer_failure(self, session_id: str, reason: str) -> None:
+        """If the failed session is a tracked reviewer, hand off to review_engine."""
+        if self._review_engine is None:
+            return
+        try:
+            await self._review_engine.handle_reviewer_failure(session_id, reason)
+        except Exception:
+            logger.warning(
+                "Failed to handle reviewer failure for session %s",
+                session_id,
+                exc_info=True,
+            )
 
     async def _handle_failure(
         self,
@@ -523,6 +574,7 @@ class SessionActivitySubscriber:
                     "session_id": raid.session_id,
                     "owner_id": owner_id,
                     "tracker_id": raid.tracker_id,
+                    "url": raid.url,
                     "status": status,
                     "pr_id": pr_id,
                     "pr_url": pr_url,

@@ -41,9 +41,21 @@ class TestConstructor:
         assert headers["Authorization"] == "Bearer tok"
         assert "application/vnd.github+json" in headers["Accept"]
 
+    def test_headers_omit_authorization_when_token_missing(self):
+        adapter = GitHubGitAdapter(token="")
+        headers = adapter._headers()
+        assert "Authorization" not in headers
+        assert "application/vnd.github+json" in headers["Accept"]
+
     def test_owner_repo_split(self):
         adapter = GitHubGitAdapter(token="tok")
         owner, name = adapter._owner_repo("myorg/myrepo")
+        assert owner == "myorg"
+        assert name == "myrepo"
+
+    def test_owner_repo_split_from_https_url(self):
+        adapter = GitHubGitAdapter(token="tok")
+        owner, name = adapter._owner_repo("https://github.com/myorg/myrepo.git")
         assert owner == "myorg"
         assert name == "myrepo"
 

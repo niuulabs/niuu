@@ -111,24 +111,17 @@ def test_mimir_query_result_empty_answer() -> None:
 
 
 def test_mimir_lint_report_issues_found() -> None:
+    from niuu.domain.mimir import LintIssue
+
     report = MimirLintReport(
-        orphans=["a.md"],
-        contradictions=[],
-        stale=[],
-        gaps=[],
+        issues=[LintIssue(id="L01", severity="warning", message="Orphan", page_path="a.md")],
         pages_checked=5,
     )
     assert report.issues_found is True
 
 
 def test_mimir_lint_report_no_issues() -> None:
-    report = MimirLintReport(
-        orphans=[],
-        contradictions=[],
-        stale=[],
-        gaps=[],
-        pages_checked=3,
-    )
+    report = MimirLintReport(issues=[], pages_checked=3)
     assert report.issues_found is False
 
 
@@ -364,7 +357,8 @@ async def test_lint_finds_orphan_pages(tmp_path: Path) -> None:
         "# Orphan\n\nNot in index.", encoding="utf-8"
     )
     report = await adapter.lint()
-    assert "research/orphan.md" in report.orphans
+    orphan_paths = [i.page_path for i in report.issues if i.id == "L01"]
+    assert "research/orphan.md" in orphan_paths
 
 
 @pytest.mark.asyncio
@@ -373,7 +367,8 @@ async def test_lint_finds_contradictions(tmp_path: Path) -> None:
     content = "# Auth\n\n[CONTRADICTION] This conflicts with the session model."
     await adapter.upsert_page("technical/auth.md", content)
     report = await adapter.lint()
-    assert "technical/auth.md" in report.contradictions
+    contradiction_paths = [i.page_path for i in report.issues if i.id == "L02"]
+    assert "technical/auth.md" in contradiction_paths
 
 
 @pytest.mark.asyncio
@@ -397,10 +392,14 @@ async def test_lint_appends_to_log(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_lint_no_issues(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
-    await adapter.upsert_page("technical/page.md", "# Page\n\nClean content.")
+    await adapter.upsert_page(
+        "technical/page.md",
+        "---\ntype: topic\n---\n# Page\n\nClean content.",
+    )
     report = await adapter.lint()
-    # page was indexed by upsert_page, so no orphans
-    assert "technical/page.md" not in report.orphans
+    # page was indexed by upsert_page, so no L01 orphan
+    orphan_paths = [i.page_path for i in report.issues if i.id == "L01"]
+    assert "technical/page.md" not in orphan_paths
     assert report.pages_checked == 1
 
 
@@ -439,7 +438,7 @@ def test_is_source_stale_returns_false_for_unknown_source(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_lint_stale_always_empty(tmp_path: Path) -> None:
-    """Lint never populates the stale field.
+    """Lint never populates L03 (stale sources).
 
     Staleness requires re-fetching source URLs, which the lint pass does not do.
     Use is_source_stale() before re-ingesting a source to detect changes.
@@ -451,14 +450,15 @@ async def test_lint_stale_always_empty(tmp_path: Path) -> None:
     page_content = f"# Stale\n\nDerived from source.\n<!-- sources: {src.source_id} -->"
     await adapter.upsert_page("research/stale.md", page_content)
 
-    # Even if the raw JSON hash is tampered with, lint always returns stale=[]
+    # Even if the raw JSON hash is tampered with, lint never emits L03
     raw_path = tmp_path / "mimir" / "raw" / f"{src.source_id}.json"
     data = json.loads(raw_path.read_text())
     data["content_hash"] = "badhash"
     raw_path.write_text(json.dumps(data))
 
     report = await adapter.lint()
-    assert report.stale == []
+    l03_issues = [i for i in report.issues if i.id == "L03"]
+    assert l03_issues == []
 
 
 # ---------------------------------------------------------------------------
@@ -573,13 +573,91 @@ async def test_mimir_read_tool_missing_path() -> None:
 async def test_mimir_write_tool_success(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     tool = MimirWriteTool(adapter)
-    result = await tool.execute({"path": "research/new.md", "content": "# New Page\n\nBody."})
+    source = _make_source(
+        title="Reference",
+        content="Original source material.",
+        source_type="research",
+    )
+    await adapter.ingest(source)
+    result = await tool.execute(
+        {
+            "path": "research/new.md",
+            "content": (
+                "---\n"
+                "type: research\n"
+                "confidence: high\n"
+                "produced_by_thread: true\n"
+                f"source_ids: [{source.source_id}]\n"
+                "---\n\n"
+                "# New Page\n\n"
+                "## Compiled Truth\n\n"
+                "Body."
+            ),
+        }
+    )
     assert not result.is_error
     assert "research/new.md" in result.content
 
     # Verify the page was written
     page_path = tmp_path / "mimir" / "wiki" / "research" / "new.md"
     assert page_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_mimir_write_tool_research_page_requires_source_ids(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    tool = MimirWriteTool(adapter)
+    result = await tool.execute(
+        {
+            "path": "research/new.md",
+            "content": (
+                "---\n"
+                "type: research\n"
+                "confidence: high\n"
+                "produced_by_thread: true\n"
+                "source_ids: []\n"
+                "---\n\n"
+                "# New Page\n\n"
+                "## Compiled Truth\n\n"
+                "Body."
+            ),
+        }
+    )
+    assert result.is_error
+    assert "source_ids" in result.content
+
+
+@pytest.mark.asyncio
+async def test_mimir_write_tool_research_page_rejects_self_ingested_content(
+    tmp_path: Path,
+) -> None:
+    adapter = _make_adapter(tmp_path)
+    tool = MimirWriteTool(adapter)
+    content = (
+        "---\n"
+        "type: research\n"
+        "confidence: high\n"
+        "produced_by_thread: true\n"
+        "source_ids: [src_self]\n"
+        "---\n\n"
+        "# New Page\n\n"
+        "## Compiled Truth\n\n"
+        "Body."
+    )
+    await adapter.ingest(
+        MimirSource(
+            source_id="src_self",
+            title="New Page",
+            content=content,
+            source_type="document",
+            content_hash=_sha256(content),
+            ingested_at=datetime.now(UTC),
+        )
+    )
+
+    result = await tool.execute({"path": "research/new.md", "content": content})
+    assert result.is_error
+    assert "research page provenance only points to the page content itself" in result.content
 
 
 @pytest.mark.asyncio

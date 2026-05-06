@@ -247,6 +247,144 @@ psql -h localhost -U volundr -d volundr
 
 ---
 
+## Persona edit didn't reach sidecar
+
+**Symptoms:**
+
+- You updated a persona via the REST API or UI but the sidecar still uses the old definition.
+- `/etc/ravn/config.yaml` on the sidecar shows stale values.
+
+### ConfigMap sync delay (MountedVolume mode)
+
+The kubelet syncs projected ConfigMaps within **~60 s** by default. Edits made through the Volundr REST API are written to the `ravn-personas` ConfigMap; the sidecar will see them within one sync cycle.
+
+**Fix:** Wait 60–90 s after saving, then re-check:
+
+```bash
+kubectl exec <pod-name> -c ravn-sidecar -n volundr -- cat /etc/ravn/config.yaml
+```
+
+If the value is still stale after 90 s, check the next sections.
+
+### Adapter mismatch
+
+Verify that the Volundr deployment and the sidecar are using the same persona source backend. If Volundr writes to the ConfigMap but the sidecar is configured for HTTP mode (or vice versa), edits will never reach the sidecar.
+
+**Fix:** Check the `personaSource.mode` in your Helm values:
+
+```bash
+helm get values volundr -n volundr | grep -A5 personaSource
+```
+
+Both the Volundr write path and the sidecar read path must agree on the backend.
+
+### RBAC denied
+
+If the Volundr ServiceAccount lacks permission to patch the `ravn-personas` ConfigMap, edits are silently dropped.
+
+**Fix:** Check the logs:
+
+```bash
+kubectl logs deploy/volundr -n volundr | grep -i "forbidden\|rbac\|configmap"
+```
+
+If you see `403 Forbidden`, apply the missing RBAC:
+
+```bash
+kubectl apply -f charts/volundr/templates/rbac-personas.yaml
+```
+
+### PAT expiry (HTTP mode)
+
+If sidecars pull personas via HTTP and the PAT has expired, they will return stale cached values (or `None` if nothing is cached).
+
+**Fix:** Rotate the PAT and update the secret:
+
+```bash
+# Issue a new PAT via the Volundr API
+curl -X POST http://volundr:8080/api/v1/pats \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '{"name": "ravn-sidecar"}'
+
+# Update the secret
+kubectl create secret generic ravn-volundr-token \
+  --from-literal=token=<new-pat> \
+  -n volundr --dry-run=client -o yaml | kubectl apply -f -
+
+# Restart sidecars to pick up the new token
+kubectl rollout restart deployment/ravn-sidecar -n volundr
+```
+
+---
+
+## Sidecar using wrong model
+
+**Symptoms:**
+
+- The sidecar is running a cheaper or weaker model than expected.
+- The ravn startup log shows a different model than what you configured in the flow or persona.
+
+### Check the startup log
+
+The ravn sidecar logs the effective config at startup. Look for:
+
+```
+INFO ravn.startup: loaded persona='reviewer' model='claude-opus-4-6' thinking=True budget=25
+```
+
+```bash
+kubectl logs <pod-name> -c ravn-sidecar -n volundr | grep -E "loaded persona|effective|model="
+```
+
+### Merge precedence diagram
+
+Three layers determine the effective model (last wins per field):
+
+```
+Base persona defaults   (src/ravn/personas/<name>.yaml)
+        ↓
+Flow-level override     (FlockFlowConfig.personas[i].llm)
+        ↓
+Stage-level override    (pipeline.stage.persona_overrides.llm)
+        ↓
+Effective config        (written to /etc/ravn/config.yaml)
+```
+
+If a layer is empty (`""` / `0` / `null`), it inherits from the layer below. An empty `model` in the flow config will fall through to the persona default.
+
+**Fix:** Explicitly set `model` in your flow definition:
+
+```yaml
+# flock-flows ConfigMap entry
+personas:
+  - name: reviewer
+    llm:
+      model: claude-opus-4-6    # always explicit — never rely on inheritance
+      thinking_enabled: false
+```
+
+### Verify the ConfigMap content
+
+```bash
+kubectl get configmap flock-flows -n tyr \
+  -o jsonpath='{.data.flows\.yaml}' | grep -A5 "name: reviewer"
+```
+
+### In-process dispatch path
+
+If you are using the `RavnDispatcher` in-process path (used by `ReviewEngine`), it applies the same merge logic. If you see the sidecar using the right model but in-process tasks using a different one, check that:
+
+1. The flow is correctly wired into `DispatchService` via `flow_provider`.
+2. The `persona_overrides` on the template stage are being applied.
+
+Run the in-process parity test to reproduce and validate:
+
+```bash
+pytest tests/integration/test_flock_composition_e2e.py::TestInProcessParity -v
+```
+
+---
+
 ## Getting more help
 
 If your issue isn't listed here:

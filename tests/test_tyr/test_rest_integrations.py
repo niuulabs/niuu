@@ -126,12 +126,28 @@ class TestListIntegrations:
         assert len(data) == 1
         assert data[0]["id"] == conn.id
         assert data[0]["integration_type"] == "code_forge"
+        assert data[0]["integrationType"] == "code_forge"
         assert data[0]["adapter"] == conn.adapter
 
     def test_scoped_by_user_id(self, client: TestClient, mock_repo: AsyncMock):
         client.get("/api/v1/tyr/integrations", headers=_auth_headers("user-42"))
 
         mock_repo.list_connections.assert_called_once_with("user-42")
+
+    def test_returns_boolean_config_values(self, client: TestClient, mock_repo: AsyncMock):
+        conn = _make_connection(
+            integration_type=IntegrationType.MESSAGING,
+            adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+            credential_name="telegram-main",
+            config={"notify_only": True},
+        )
+        mock_repo.list_connections.return_value = [conn]
+
+        resp = client.get("/api/v1/tyr/integrations", headers=_auth_headers())
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["config"]["notify_only"] is True
 
 
 # -------------------------------------------------------------------
@@ -157,6 +173,10 @@ class TestCreateIntegration:
         data = resp.json()
         assert data["integration_type"] == "code_forge"
         assert data["credential_name"] == "volundr-pat"
+        assert data["integrationType"] == "code_forge"
+        assert data["credentialName"] == "volundr-pat"
+        assert data["createdAt"] == data["created_at"]
+        assert data["updatedAt"] == data["updated_at"]
         assert data["enabled"] is True
 
     def test_stores_credential(
@@ -313,6 +333,14 @@ class TestTelegramSetup:
 
         data = resp.json()
         assert data["token"].startswith("user-42:")
+
+    def test_integrations_alias_returns_same_payload(self, client: TestClient):
+        legacy = client.get("/api/v1/tyr/telegram/setup", headers=_auth_headers())
+        canonical = client.get("/api/v1/tyr/integrations/telegram/setup", headers=_auth_headers())
+
+        assert legacy.status_code == 200
+        assert canonical.status_code == 200
+        assert canonical.json() == legacy.json()
 
 
 # -------------------------------------------------------------------

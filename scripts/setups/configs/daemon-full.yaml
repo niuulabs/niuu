@@ -1,0 +1,194 @@
+# ─── daemon-full ─────────────────────────────────────────────────────────────
+#
+# Full daemon setup with multiple gateway channels and all triggers enabled.
+#
+# What you get:
+#   - Telegram + HTTP gateway channels (add Discord/Slack by uncommenting)
+#   - Drive loop with autonomous task execution
+#   - Thread enrichment scoring active Mimir pages
+#   - Wakefulness: shallow + deep reflection during operator silence
+#   - Recap: automatic summary when operator returns after absence
+#   - Daily budget gates with cost tracking
+#   - Trust gradient for safe autonomous operation
+#   - Composite Mimir (local + optional remote)
+#   - Checkpoint manager for task recovery
+#
+# Prerequisites:
+#   - An LLM provider (configure below)
+#   - TELEGRAM_BOT_TOKEN environment variable
+#
+# Launch:
+#   ravn daemon --config ~/.ravn/config.yaml --persona autonomous-agent
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+# ── Mimir: local with optional remote ──────────────────────────────────────
+mimir:
+  enabled: true
+  auto_distill: true
+  distill_min_session_minutes: 5
+  idle_lint_threshold_minutes: 60
+  continuation_threshold_minutes: 30
+  categories:
+    - technical
+    - projects
+    - research
+    - household
+    - self
+
+  instances:
+    - name: local
+      role: local
+      path: ~/.ravn/mimir
+      read_priority: 20
+
+    # Uncomment to add a shared remote Mimir:
+    # - name: shared
+    #   role: shared
+    #   url: http://mimir.internal:7477
+    #   auth:
+    #     type: bearer
+    #     token_env: MIMIR_BEARER_TOKEN
+    #   read_priority: 10
+
+  write_routing:
+    default: ["local"]
+
+  source_trigger:
+    enabled: true
+    poll_interval_seconds: 300
+    persona: research-and-distill
+    max_tokens: 4096
+
+  staleness_trigger:
+    enabled: true
+    schedule_hours: 168
+    top_n: 20
+    persona: mimir-curator
+    max_tokens: 4096
+
+# ── Gateway: Telegram + HTTP ──────────────────────────────────────────────
+gateway:
+  enabled: true
+  channels:
+    telegram:
+      enabled: true
+      token_env: TELEGRAM_BOT_TOKEN
+      allowed_chat_ids: []
+      poll_timeout: 30
+      retry_delay: 5.0
+      message_max_chars: 4096
+    http:
+      enabled: true
+      host: 127.0.0.1
+      port: 7477
+    # discord:
+    #   enabled: true
+    #   token_env: DISCORD_BOT_TOKEN
+    #   guild_id: ""
+    #   command_prefix: "/"
+    # slack:
+    #   enabled: true
+    #   bot_token_env: SLACK_BOT_TOKEN
+    #   app_token_env: SLACK_APP_TOKEN
+
+# ── Drive loop ─────────────────────────────────────────────────────────────
+initiative:
+  enabled: true
+  max_concurrent_tasks: 3
+  task_queue_max: 50
+  queue_journal_path: ~/.ravn/daemon/queue.json
+  default_output_mode: ambient
+  heartbeat_interval_seconds: 60
+  cron_tick_seconds: 30.0
+
+# ── Thread enrichment ──────────────────────────────────────────────────────
+thread:
+  enabled: true
+  max_queue_size: 200
+  enricher_poll_interval_seconds: 300
+  enricher_llm_alias: fast
+  decay_rate_per_day: 0.05
+  recency_weight: 1.0
+  mention_weight: 0.3
+  engagement_weight: 0.5
+  peer_weight: 0.2
+  sub_thread_weight: 0.4
+
+# ── Wakefulness ────────────────────────────────────────────────────────────
+wakefulness:
+  enabled: true
+  silence_threshold_seconds: 1800
+  reflection_cooldown_seconds: 3600
+  deep_reflection_threshold_seconds: 7200
+  deep_reflection_cooldown_seconds: 14400
+  llm_alias: fast
+  max_intents_per_reflection: 5
+  initial_thread_weight: 5.0
+  poll_interval_seconds: 60
+
+# ── Recap ──────────────────────────────────────────────────────────────────
+recap:
+  enabled: true
+  absence_threshold_seconds: 3600
+  return_detection_window_seconds: 300
+  scheduled_recap_cron: "0 7 * * *"      # daily 07:00 recap
+  max_threads_in_recap: 10
+  persona: produce-recap
+  poll_interval_seconds: 60
+
+# ── Checkpoint ─────────────────────────────────────────────────────────────
+checkpoint:
+  enabled: true
+  backend: local
+  directory: ~/.ravn/checkpoints
+  checkpoint_every_n_tools: 10
+  max_checkpoints_per_task: 5
+  auto_save_before_destructive: true
+  budget_milestone_fractions:
+    - 0.5
+    - 0.75
+    - 0.9
+
+# ── Budget ─────────────────────────────────────────────────────────────────
+budget:
+  daily_cap_usd: 3.0
+  input_token_cost_per_million: 3.0
+  output_token_cost_per_million: 15.0
+  warn_at_percent: 80
+
+# ── Trust gradient ─────────────────────────────────────────────────────────
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  drafting_tickets: free
+  producing_recaps: free
+  opening_tickets: approval
+  closing_tickets: approval
+  pushing_branches: approval
+  pushing_main: never
+  external_messages: approval
+  spending_beyond_cap: never
+
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+logging:
+  level: info

@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { LoadingIndicator } from '@/modules/shared';
 import { useTyrSessions } from '../../hooks';
+import { useFlockConfig } from '../../hooks/useFlockConfig';
 import type { VolundrSession, TimelineResponse, TimelineEvent } from '../../hooks/useTyrSessions';
 import { BranchTag } from '../../components/BranchTag';
+import { FlockBadge } from '../../components/FlockBadge';
 import styles from './SessionsView.module.css';
 
 function statusColor(status: string): string {
@@ -102,13 +104,18 @@ function SessionRow({
   expanded,
   timeline,
   timelineLoading,
+  flockEnabled,
 }: {
   session: VolundrSession;
   onExpand: () => void;
   expanded: boolean;
   timeline: TimelineResponse | null;
   timelineLoading: boolean;
+  flockEnabled: boolean;
 }) {
+  const isFlock = session.workload_type === 'ravn_flock';
+  const participantCount = session.mesh_participants?.length;
+
   return (
     <div className={styles.sessionCard}>
       <button type="button" className={styles.sessionHeader} onClick={onExpand}>
@@ -121,6 +128,7 @@ function SessionRow({
         {session.tracker_issue_id && (
           <span className={styles.issueTag}>{session.tracker_issue_id}</span>
         )}
+        {flockEnabled && isFlock && <FlockBadge participantCount={participantCount} />}
         <span className={styles.sessionTokens}>{session.tokens_used.toLocaleString()} tokens</span>
         <span className={styles.chevron} data-expanded={expanded}>
           {'\u25B6'}
@@ -168,6 +176,7 @@ function SessionRow({
 
 export function SessionsView() {
   const { sessions, loading, error, getTimeline } = useTyrSessions();
+  const { config: flockConfig } = useFlockConfig();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [timelines, setTimelines] = useState<Record<string, TimelineResponse | null>>({});
   const [loadingTimelines, setLoadingTimelines] = useState<Set<string>>(new Set());
@@ -216,6 +225,11 @@ export function SessionsView() {
     return (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
   });
 
+  const flockEnabled = flockConfig?.flock_enabled ?? false;
+  const flockCount = flockEnabled
+    ? sessions.filter(s => s.workload_type === 'ravn_flock').length
+    : 0;
+
   return (
     <div className={styles.container}>
       <div className={styles.stats}>
@@ -223,6 +237,9 @@ export function SessionsView() {
           {sessions.filter(s => s.status === 'running').length} running
         </span>
         <span className={styles.statItem}>{sessions.length} total</span>
+        {flockEnabled && flockCount > 0 && (
+          <span className={styles.statItem}>{flockCount} flock</span>
+        )}
       </div>
       <div className={styles.list}>
         {sorted.map(session => (
@@ -233,6 +250,7 @@ export function SessionsView() {
             onExpand={() => handleExpand(session.id)}
             timeline={timelines[session.id] ?? null}
             timelineLoading={loadingTimelines.has(session.id)}
+            flockEnabled={flockEnabled}
           />
         ))}
       </div>

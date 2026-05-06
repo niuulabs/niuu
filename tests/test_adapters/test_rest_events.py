@@ -1,6 +1,6 @@
 """Tests for the event pipeline REST endpoints."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -102,7 +102,7 @@ class TestIngestEvent:
             json={
                 "session_id": session_id,
                 "event_type": "message_assistant",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "data": {"content_preview": "hello"},
                 "sequence": 0,
                 "tokens_in": 100,
@@ -122,7 +122,7 @@ class TestIngestEvent:
             json={
                 "session_id": str(uuid4()),
                 "event_type": "invalid_type",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "data": {},
                 "sequence": 0,
             },
@@ -136,7 +136,7 @@ class TestIngestEvent:
                 json={
                     "session_id": str(uuid4()),
                     "event_type": et.value,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                     "data": {},
                     "sequence": 0,
                 },
@@ -149,7 +149,7 @@ class TestIngestEvent:
             json={
                 "session_id": str(uuid4()),
                 "event_type": "token_usage",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "data": {"provider": "cloud", "tokens_in": 200},
                 "sequence": 1,
                 "cost": 0.005,
@@ -173,7 +173,7 @@ class TestIngestBatch:
                     {
                         "session_id": session_id,
                         "event_type": "file_modified",
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "data": {"path": "/src/main.py"},
                         "sequence": i,
                     }
@@ -193,7 +193,7 @@ class TestIngestBatch:
                     {
                         "session_id": str(uuid4()),
                         "event_type": "bogus",
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "data": {},
                         "sequence": 0,
                     }
@@ -222,7 +222,7 @@ class TestQueryEvents:
                     id=uuid4(),
                     session_id=session_id,
                     event_type=SessionEventType.FILE_MODIFIED,
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(UTC),
                     data={"path": f"/file{i}.py"},
                     sequence=i,
                 )
@@ -238,7 +238,7 @@ class TestQueryEvents:
                 id=uuid4(),
                 session_id=session_id,
                 event_type=SessionEventType.FILE_MODIFIED,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
                 data={},
                 sequence=0,
             )
@@ -248,7 +248,7 @@ class TestQueryEvents:
                 id=uuid4(),
                 session_id=session_id,
                 event_type=SessionEventType.GIT_COMMIT,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
                 data={},
                 sequence=1,
             )
@@ -280,7 +280,7 @@ class TestQueryEvents:
                     id=uuid4(),
                     session_id=session_id,
                     event_type=et,
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(UTC),
                     data={},
                     sequence=0,
                 )

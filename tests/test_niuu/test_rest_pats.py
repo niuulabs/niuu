@@ -17,6 +17,7 @@ from niuu.adapters.inbound.rest_pats import (
     create_pats_router,
 )
 from niuu.domain.models import Principal
+from tests.helpers.http_contracts import RouteCallSpec, assert_route_equivalence
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -45,6 +46,34 @@ def _make_app(pat_service: AsyncMock) -> tuple[FastAPI, TestClient]:
     return app, TestClient(app)
 
 
+def _make_dual_router_app(pat_service: AsyncMock) -> TestClient:
+    """Build an app with both canonical and legacy PAT routes mounted."""
+    app = FastAPI()
+    app.state.pat_service = pat_service
+
+    async def extract_principal() -> Principal:
+        return _make_principal()
+
+    app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
+    app.include_router(
+        create_pats_router(
+            extract_principal,
+            prefix="/api/v1/users/tokens",
+            deprecated=True,
+            canonical_prefix="/api/v1/tokens",
+        )
+    )
+    app.include_router(
+        create_pats_router(
+            extract_principal,
+            prefix="/api/v1/volundr/tokens",
+            deprecated=True,
+            canonical_prefix="/api/v1/tokens",
+        )
+    )
+    return TestClient(app)
+
+
 # ---------------------------------------------------------------------------
 # Model validation
 # ---------------------------------------------------------------------------
@@ -70,6 +99,9 @@ class TestPATResponse:
         resp = PATResponse(id="abc", name="tok", created_at=now, last_used_at=None)
         assert resp.name == "tok"
         assert resp.last_used_at is None
+        dumped = resp.model_dump(mode="json")
+        assert dumped["createdAt"] == dumped["created_at"]
+        assert dumped["lastUsedAt"] == dumped["last_used_at"]
 
 
 class TestCreatePATResponse:
@@ -77,6 +109,8 @@ class TestCreatePATResponse:
         now = datetime.now(UTC)
         resp = CreatePATResponse(id="abc", name="tok", token="raw.jwt.here", created_at=now)
         assert resp.token == "raw.jwt.here"
+        dumped = resp.model_dump(mode="json")
+        assert dumped["createdAt"] == dumped["created_at"]
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +162,7 @@ class TestCreateToken:
         data = resp.json()
         assert data["name"] == "my-pat"
         assert data["token"] == "raw.jwt.token"
+        assert data["createdAt"] == data["created_at"]
 
     def test_create_passes_subject_token(self) -> None:
         pat_id = uuid4()
@@ -189,6 +224,8 @@ class TestListTokens:
         data = resp.json()
         assert len(data) == 1
         assert data[0]["name"] == "my-pat"
+        assert data[0]["createdAt"] == data[0]["created_at"]
+        assert data[0]["lastUsedAt"] == data[0]["last_used_at"]
 
     def test_list_empty_returns_empty_list(self) -> None:
         service = AsyncMock()
@@ -224,3 +261,90 @@ class TestRevokeToken:
         _, client = _make_app(service)
         resp = client.delete("/api/v1/users/tokens/not-a-uuid")
         assert resp.status_code == 404
+
+
+class TestCanonicalTokenRoutes:
+    def test_canonical_list_matches_legacy_route(self) -> None:
+        now = datetime.now(UTC)
+
+        mock_pat = AsyncMock()
+        mock_pat.id = uuid4()
+        mock_pat.name = "my-pat"
+        mock_pat.created_at = now
+        mock_pat.last_used_at = None
+
+        service = AsyncMock()
+        service.list = AsyncMock(return_value=[mock_pat])
+
+        client = _make_dual_router_app(service)
+        legacy = client.get("/api/v1/users/tokens")
+        assert legacy.headers["Deprecation"] == "true"
+        assert legacy.headers["Link"] == '</api/v1/tokens>; rel="successor-version"'
+
+        assert_route_equivalence(
+            client,
+            legacy=RouteCallSpec(path="/api/v1/users/tokens"),
+            canonical=RouteCallSpec(path="/api/v1/tokens"),
+        )
+
+    def test_canonical_create_matches_legacy_route(self) -> None:
+        pat_id = uuid4()
+        now = datetime.now(UTC)
+
+        mock_pat = AsyncMock()
+        mock_pat.id = pat_id
+        mock_pat.name = "my-pat"
+        mock_pat.created_at = now
+
+        service = AsyncMock()
+        service.create = AsyncMock(return_value=(mock_pat, "raw.jwt.token"))
+
+        client = _make_dual_router_app(service)
+        legacy = client.post(
+            "/api/v1/users/tokens",
+            json={"name": "my-pat"},
+            headers={"Authorization": "Bearer user-access-token"},
+        )
+        assert legacy.headers["Deprecation"] == "true"
+
+        service.create.reset_mock()
+        service.create.return_value = (mock_pat, "raw.jwt.token")
+        assert_route_equivalence(
+            client,
+            legacy=RouteCallSpec(
+                path="/api/v1/users/tokens",
+                method="POST",
+                json_body={"name": "my-pat"},
+                headers={"Authorization": "Bearer user-access-token"},
+            ),
+            canonical=RouteCallSpec(
+                path="/api/v1/tokens",
+                method="POST",
+                json_body={"name": "my-pat"},
+                headers={"Authorization": "Bearer user-access-token"},
+            ),
+            expected_status=201,
+        )
+
+    def test_volundr_scoped_list_matches_canonical_route(self) -> None:
+        now = datetime.now(UTC)
+
+        mock_pat = AsyncMock()
+        mock_pat.id = uuid4()
+        mock_pat.name = "my-pat"
+        mock_pat.created_at = now
+        mock_pat.last_used_at = None
+
+        service = AsyncMock()
+        service.list = AsyncMock(return_value=[mock_pat])
+
+        client = _make_dual_router_app(service)
+        legacy = client.get("/api/v1/volundr/tokens")
+        assert legacy.headers["Deprecation"] == "true"
+        assert legacy.headers["Link"] == '</api/v1/tokens>; rel="successor-version"'
+
+        assert_route_equivalence(
+            client,
+            legacy=RouteCallSpec(path="/api/v1/volundr/tokens"),
+            canonical=RouteCallSpec(path="/api/v1/tokens"),
+        )

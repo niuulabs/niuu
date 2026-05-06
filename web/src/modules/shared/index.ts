@@ -29,6 +29,9 @@ export type { CollapsibleSectionProps, AccentColor } from './components/Collapsi
 export { LoadingIndicator } from './components/LoadingIndicator';
 export type { LoadingIndicatorProps } from './components/LoadingIndicator';
 
+export { Toggle } from './components/Toggle';
+export type { ToggleProps } from './components/Toggle';
+
 export { AppShell } from './components/AppShell';
 export type { AppShellProps } from './components/AppShell';
 export { Sidebar } from './components/AppShell';

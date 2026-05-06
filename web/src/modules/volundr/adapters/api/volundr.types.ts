@@ -97,6 +97,7 @@ export interface ApiSessionCreate {
   source: ApiSessionSource;
   template_name?: string | null;
   task_type?: string | null;
+  definition?: string | null;
   terminal_restricted?: boolean;
   workspace_id?: string | null;
   credential_names?: string[];
@@ -106,6 +107,17 @@ export interface ApiSessionCreate {
   initial_prompt?: string;
   issue_id?: string | null;
   issue_url?: string | null;
+}
+
+/**
+ * Session definition response from API
+ */
+export interface ApiSessionDefinitionResponse {
+  key: string;
+  display_name: string;
+  description: string;
+  labels: string[];
+  default_model: string;
 }
 
 /**

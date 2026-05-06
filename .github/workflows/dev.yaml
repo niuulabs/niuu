@@ -13,7 +13,10 @@ on:
   push:
     branches: [dev]
 
-permissions: read-all
+permissions:
+  contents: write     # Required by tag job (git push)
+  packages: write     # Required by containers + build-charts jobs
+  security-events: write  # Required by scan job
 
 env:
   REGISTRY: ghcr.io
@@ -25,114 +28,13 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Python — lint + unit tests
+  # Python — lint + unit tests. Delegated to reusable workflow.
+  # Includes volundr, tyr, AND ravn — previously ravn was missing here.
   # ---------------------------------------------------------------------------
-  python-lint:
-    name: "Python: Lint"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          version: "0.11.2"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Run ruff linting
-        run: uv run ruff check src/ tests/
-
-      - name: Check ruff formatting
-        run: uv run ruff format --check src/ tests/ || echo "::warning::Formatting issues found - consider running 'ruff format src/ tests/'"
-        continue-on-error: true
-
-  python-test-volundr:
-    name: "Python: Test Volundr"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          version: "0.11.2"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Run tests with coverage
-        run: |
-          uv run pytest tests/ --ignore=tests/test_tyr --ignore=tests/integration -v --tb=short \
-            --override-ini="addopts=" \
-            --cov=src/volundr --cov=src/cli --cov=src/niuu --cov=src/skuld \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-fail-under=85
-
-      - name: Upload coverage to Codecov
-        if: always() && hashFiles('coverage.xml') != ''
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5.5.4
-        with:
-          files: coverage.xml
-          flags: backend-volundr
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-  python-test-tyr:
-    name: "Python: Test Tyr"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          version: "0.11.2"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Run tests with coverage
-        run: |
-          uv run pytest tests/test_tyr -v --tb=short \
-            --override-ini="addopts=" \
-            --cov=src/tyr \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-fail-under=85
-
-      - name: Upload coverage to Codecov
-        if: always() && hashFiles('coverage.xml') != ''
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5.5.4
-        with:
-          files: coverage.xml
-          flags: backend-tyr
-          token: ${{ secrets.CODECOV_TOKEN }}
+  python:
+    name: Python
+    uses: ./.github/workflows/reusable-python-lint-test.yaml
+    secrets: inherit
 
   # ---------------------------------------------------------------------------
   # Python integration tests (real PostgreSQL)
@@ -155,22 +57,14 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
         with:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          version: "0.11.2"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
 
       - name: Run integration tests
         env:
@@ -201,22 +95,14 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
         with:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          version: "0.11.2"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
 
       - name: Run integration tests
         env:
@@ -251,25 +137,17 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
         with:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          version: "0.11.2"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install Python dependencies
-        run: uv sync --all-extras --dev
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
 
       - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
@@ -325,247 +203,57 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------
-  # Web — lint + unit tests
+  # Web — lint + unit tests. Delegated to reusable workflow.
   # ---------------------------------------------------------------------------
-  web-lint:
-    name: "Web: Lint"
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run ESLint
-        run: npm run lint
-
-      - name: Check formatting
-        run: npm run format:check
-
-      - name: TypeScript check
-        run: npm run typecheck
-
-  web-test:
-    name: "Web: Test"
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests with coverage
-        run: npm run test:coverage
-
-      - name: Upload coverage to Codecov
-        if: always() && hashFiles('web/coverage/lcov.info') != ''
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5.5.4
-        with:
-          files: web/coverage/lcov.info
-          flags: web
-          token: ${{ secrets.CODECOV_TOKEN }}
-          working-directory: web
+  web:
+    name: Web
+    uses: ./.github/workflows/reusable-web-lint-test.yaml
+    secrets: inherit
 
   # ---------------------------------------------------------------------------
-  # Helm — lint
+  # Helm lint. Delegated to reusable workflow.
   # ---------------------------------------------------------------------------
   helm-lint:
-    name: "Helm: Lint"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install Helm
-        run: |
-          HELM_VERSION="3.14.0"
-          curl -sSfL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" -o /tmp/helm.tar.gz
-          echo "f43e1c3387de24547506ab05d24e5309c0ce0b228c23bd8aa64e9ec4b8206651  /tmp/helm.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/helm.tar.gz -C /tmp
-          mv /tmp/linux-amd64/helm /usr/local/bin/helm
-          helm version
-
-      - name: Lint skuld chart
-        run: helm lint charts/skuld/
-
-      - name: Lint volundr chart
-        run: helm lint charts/volundr/
-
-      - name: Lint tyr chart
-        run: helm lint charts/tyr/
-
-      - name: Lint skuld-planner chart
-        run: helm lint charts/skuld-planner/
-
-      - name: Lint niuu-shared chart
-        run: helm lint charts/niuu-shared/
-
-      - name: Lint niuu umbrella chart
-        run: |
-          helm dependency build charts/niuu
-          helm lint charts/niuu/
+    name: Helm Lint
+    uses: ./.github/workflows/reusable-helm-lint.yaml
 
   # ---------------------------------------------------------------------------
-  # Containers — build per platform natively, then merge manifests
+  # Containers — build multi-arch (amd64 + arm64) for the published containers.
+  # Delegated to reusable workflow.
   # ---------------------------------------------------------------------------
-  build-container-image:
-    name: "Build ${{ matrix.container }} (${{ matrix.platform }})"
-    runs-on: ${{ matrix.platform == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+  containers:
+    name: Containers
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        platform: [amd64, arm64]
-        container: [volundr, skuld, devrunner, volundr-web, vscode-reh, tyr, niuu, mimir, bifrost]
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
-        with:
-          context: .
-          file: ./containers/${{ matrix.container }}/Dockerfile
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ github.sha }}-${{ matrix.platform }}
-          build-args: |
-            APP_VERSION=dev-${{ github.sha }}
-          labels: |
-            org.opencontainers.image.title=${{ matrix.container }}
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.vendor=Niuu Labs
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          cache-from: type=gha,scope=${{ matrix.container }}-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.container }}-${{ matrix.platform }}
-          platforms: linux/${{ matrix.platform }}
-          provenance: false
-
-  merge-container-manifests:
-    name: "Manifest ${{ matrix.container }}"
-    needs: build-container-image
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    strategy:
-      matrix:
-        container: [volundr, skuld, devrunner, volundr-web, vscode-reh, tyr, niuu, mimir, bifrost]
-    steps:
-      - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create and push manifests
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}"
-          SHA="${{ github.sha }}"
-          SHORT_SHA="${SHA:0:7}"
-
-          # dev tag (mutable, always points to latest dev build)
-          docker manifest create "${IMAGE}:dev" \
-            "${IMAGE}:${SHA}-amd64" \
-            "${IMAGE}:${SHA}-arm64"
-          docker manifest push "${IMAGE}:dev"
-
-          # dev + short sha (immutable, for pinning)
-          docker manifest create "${IMAGE}:dev-${SHORT_SHA}" \
-            "${IMAGE}:${SHA}-amd64" \
-            "${IMAGE}:${SHA}-arm64"
-          docker manifest push "${IMAGE}:dev-${SHORT_SHA}"
+    uses: ./.github/workflows/reusable-container-build.yaml
+    with:
+      containers: '["volundr","skuld","devrunner","volundr-web","niuu-web","tyr","niuu","mimir","bifrost"]'
+      platforms: '["amd64","arm64"]'
+      tag-prefix: ${{ github.sha }}
+      manifest-tags: "dev dev-${{ github.sha }}"
+      build-args: |
+        APP_VERSION=dev-${{ github.sha }}
+      labels: |
+        org.opencontainers.image.title=niuu
+        org.opencontainers.image.licenses=Apache-2.0
+        org.opencontainers.image.vendor=Niuu Labs
+        org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
   # ---------------------------------------------------------------------------
-  # Security — container vulnerability scanning
+  # Security — container vulnerability scanning. Delegated to reusable workflow.
   # ---------------------------------------------------------------------------
-  scan-containers:
-    name: "Scan: ${{ matrix.container }}"
-    needs: merge-container-manifests
-    runs-on: ubuntu-latest
+  scan:
+    name: Scan
+    needs: containers
     permissions:
-      security-events: write
+      contents: read
       packages: read
-    strategy:
-      matrix:
-        container: [volundr, skuld, devrunner, volundr-web, vscode-reh, tyr, niuu, mimir, bifrost]
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install Grype
-        run: |
-          GRYPE_VERSION="0.87.0"
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/247f5d72abf2131aa37f3164a98495c121b29029/install.sh | sh -s -- -b /usr/local/bin "v${GRYPE_VERSION}"
-          grype version
-
-      - name: Scan container with Grype
-        run: |
-          grype "${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}:dev" \
-            --only-fixed \
-            --fail-on critical \
-            -o sarif > "grype-${{ matrix.container }}.sarif"
-
-      - name: Upload Grype results
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
-        if: always()
-        with:
-          sarif_file: grype-${{ matrix.container }}.sarif
-          category: grype-${{ matrix.container }}
+      security-events: write
+    uses: ./.github/workflows/reusable-container-scan.yaml
+    with:
+      containers: '["volundr","skuld","devrunner","volundr-web","niuu-web","tyr","niuu","mimir","bifrost"]'
+      tag: dev
 
   # ---------------------------------------------------------------------------
   # Version tagging — prerelease dev tags
@@ -581,7 +269,7 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -745,28 +433,22 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Cache PostgreSQL build
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v4
         with:
           path: build/pginstall
           key: pginstall-${{ runner.os }}-${{ runner.arch }}-pg17.9-vec0.8.2
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
         with:
-          version: "latest"
-
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+          extras: "--python 3.12 --extra cli --extra dev"
 
       - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: uv sync --python 3.12 --extra cli --extra dev
 
       - name: Build
         run: make build

@@ -12,7 +12,7 @@ import typer
 
 from niuu.cli_api_client import CLIAPIClient
 from niuu.cli_output import print_json, print_success, print_table
-from niuu.ports.plugin import Service, ServiceDefinition, ServicePlugin, TUIPageSpec
+from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin, TUIPageSpec
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -62,6 +62,71 @@ class TyrPlugin(ServicePlugin):
         from tyr.main import create_app
 
         return create_app()
+
+    def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
+        return (
+            APIRouteDomain(
+                name="tracker-api",
+                prefixes=(
+                    "/api/v1/tracker/projects",
+                    "/api/v1/tracker/import",
+                ),
+                description="Canonical tracker project browsing and import routes.",
+            ),
+            APIRouteDomain(
+                name="saga-api",
+                prefixes=("/api/v1/tyr/sagas",),
+                description="Saga planning and saga lifecycle routes.",
+            ),
+            APIRouteDomain(
+                name="review-api",
+                prefixes=(
+                    "/api/v1/tyr/raids",
+                    "/api/v1/tyr/sessions",
+                ),
+                description="Raid review, raid messaging, and approval-session routes.",
+            ),
+            APIRouteDomain(
+                name="dispatch-api",
+                prefixes=(
+                    "/api/v1/tyr/dispatch",
+                    "/api/v1/tyr/dispatcher",
+                ),
+                description="Dispatch queue, approvals, dispatcher state, and activity log routes.",
+            ),
+            APIRouteDomain(
+                name="workflow-api",
+                prefixes=(
+                    "/api/v1/tyr/flock",
+                    "/api/v1/tyr/flock_flows",
+                    "/api/v1/tyr/pipelines",
+                ),
+                description="Flock configuration, flow library, and pipeline execution routes.",
+            ),
+            APIRouteDomain(
+                name="settings-api",
+                prefixes=("/api/v1/tyr/settings",),
+                description="Tyr settings for flock, dispatch defaults, and notifications.",
+            ),
+            APIRouteDomain(
+                name="integrations-api",
+                prefixes=(
+                    "/api/v1/tyr/integrations",
+                    "/api/v1/tyr/telegram",
+                ),
+                description="Tyr integration management and Telegram setup routes.",
+            ),
+            APIRouteDomain(
+                name="event-api",
+                prefixes=("/api/v1/tyr/events",),
+                description="Tyr SSE event stream routes.",
+            ),
+            APIRouteDomain(
+                name="tyr-api",
+                prefixes=("/api/v1/tyr",),
+                description="Tyr coordination and raid routes.",
+            ),
+        )
 
     def create_api_client(self) -> Any:
         return CLIAPIClient(base_url="http://localhost:8080", service_name="Tyr")

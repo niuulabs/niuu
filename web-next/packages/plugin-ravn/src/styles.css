@@ -1,0 +1,7 @@
+/*
+ * @niuulabs/plugin-ravn stylesheet.
+ * Tailwind utilities, driven by @niuulabs/design-tokens preset.
+ */
+
+@tailwind components;
+@tailwind utilities;

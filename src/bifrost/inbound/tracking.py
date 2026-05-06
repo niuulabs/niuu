@@ -13,6 +13,11 @@ import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
+try:
+    from sleipnir.domain.catalog import bifrost_budget_degraded as _catalog_budget_degraded
+except ImportError:
+    _catalog_budget_degraded = None  # type: ignore[assignment]
+
 import bifrost.metrics as _metrics
 from bifrost.auth import AgentIdentity
 from bifrost.domain.models import RequestLog, TokenUsage
@@ -86,6 +91,7 @@ async def emit_cost_events(
     model: str,
     agent_budget_limit: float,
     budget_warning_threshold_pct: float,
+    sleipnir_publisher: object | None = None,
 ) -> None:
     """Emit request_completed (always) and budget_warning (when threshold crossed).
 
@@ -116,6 +122,20 @@ async def emit_cost_events(
                 spent_usd=cost_today,
             )
         )
+        # NIU-582: emit bifrost.budget.degraded to Sleipnir catalog (best-effort)
+        if sleipnir_publisher is not None and _catalog_budget_degraded is not None:
+            try:
+                _event = _catalog_budget_degraded(
+                    tenant_id=identity.tenant_id,
+                    current_spend=cost_today,
+                    cap=agent_budget_limit,
+                    downgraded_to=model,
+                    source=f"bifrost:{identity.agent_id}",
+                    correlation_id=identity.session_id or identity.tenant_id,
+                )
+                await sleipnir_publisher.publish(_event)
+            except Exception:
+                logger.warning("Failed to emit bifrost.budget.degraded; continuing.", exc_info=True)
 
 
 async def _stream_with_tracking(
@@ -130,6 +150,7 @@ async def _stream_with_tracking(
     provider: str = "",
     agent_budget_limit: float = 0.0,
     budget_warning_threshold_pct: float = 20.0,
+    sleipnir_publisher: object | None = None,
 ) -> AsyncIterator[str]:
     """Yield SSE lines from *source* while tracking token usage."""
     usage = TokenUsage()
@@ -191,4 +212,5 @@ async def _stream_with_tracking(
         model=model,
         agent_budget_limit=agent_budget_limit,
         budget_warning_threshold_pct=budget_warning_threshold_pct,
+        sleipnir_publisher=sleipnir_publisher,
     )

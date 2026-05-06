@@ -44,15 +44,44 @@ revisionHistoryLimit: 10
 # Available AI models — used by the wizard, profiles, and pricing
 # Override via global.models from the niuu umbrella chart
 aiModels:
+  # Anthropic Claude
+  - id: "claude-opus-4-7"
+    name: "Claude Opus 4.7"
+    provider: "anthropic"
+    costPerMillionTokens: 15.00
   - id: "claude-opus-4-6"
-    name: "Opus 4.6"
+    name: "Claude Opus 4.6"
+    provider: "anthropic"
+    costPerMillionTokens: 15.00
+  - id: "claude-opus-4-5-20251101"
+    name: "Claude Opus 4.5"
+    provider: "anthropic"
     costPerMillionTokens: 15.00
   - id: "claude-sonnet-4-6"
-    name: "Sonnet 4.6"
+    name: "Claude Sonnet 4.6"
+    provider: "anthropic"
     costPerMillionTokens: 3.00
   - id: "claude-haiku-4-5-20251001"
-    name: "Haiku 4.5"
+    name: "Claude Haiku 4.5"
+    provider: "anthropic"
     costPerMillionTokens: 1.00
+  # OpenAI GPT
+  - id: "gpt-5.5"
+    name: "GPT-5.5"
+    provider: "openai"
+    costPerMillionTokens: 10.00
+  - id: "gpt-5.4"
+    name: "GPT-5.4"
+    provider: "openai"
+    costPerMillionTokens: 5.00
+  - id: "o4-mini"
+    name: "o4-mini"
+    provider: "openai"
+    costPerMillionTokens: 1.10
+  - id: "o3"
+    name: "o3"
+    provider: "openai"
+    costPerMillionTokens: 10.00
 
 # Image configuration
 image:
@@ -774,10 +803,12 @@ config:
   sessionTimeout: "3600"
   # -- Maximum sessions per user
   maxSessionsPerUser: "5"
-  # -- CORS allowed origins
-  corsOrigins: "*"
-  # -- CORS allow credentials
-  corsAllowCredentials: "true"
+  cors:
+    # -- Allowed browser origins for cross-origin API requests
+    allowedOrigins:
+      - "*"
+    # -- Whether credentialed CORS requests are allowed
+    allowCredentials: true
   # -- Extra configuration values
   extra: {}
 
@@ -788,6 +819,9 @@ existingSecrets:
   # Expected keys: ANTHROPIC_API_KEY, optionally ANTHROPIC_BASE_URL
   anthropic: volundr-anthropic-api
 
+# -- Fallback session definition when none is specified in the request
+defaultDefinition: "skuldClaude"
+
 # Session definition templates
 # These define session types for workload instantiation
 sessionDefinitions:
@@ -795,9 +829,18 @@ sessionDefinitions:
   skuldClaude:
     # -- Enable skuld-claude session definition
     enabled: true
+    # -- Human-readable name shown in the UI
+    displayName: "Claude Code"
+    # -- Short description for the session picker
+    description: "Anthropic Claude — full IDE with terminal, tools, and MCP"
+    # -- Default model for this definition (empty = use server default)
+    defaultModel: "claude-sonnet-4-6"
     # -- Labels for agent routing - only agents with matching labels will load this
     labels:
       - session
+    # -- Model providers this runtime accepts (empty = provider-neutral)
+    compatibleProviders:
+      - anthropic
     # -- Whether this session definition is active
     active: true
 
@@ -822,8 +865,14 @@ sessionDefinitions:
       broker:
         # -- AI CLI backend: "claude" (Claude Code)
         cliType: claude
-        # -- CLI transport mode: "sdk" (WebSocket) or "subprocess" (legacy)
-        transport: sdk
+        # -- CLI transport mode for Claude Code sessions.
+        # "persistent_subprocess" keeps one Claude process across all
+        # turns (multi-turn over a held-open stdin pipe) — no per-turn
+        # spawn cost, no --resume reload between turns. The legacy
+        # "subprocess" mode (spawn-per-turn) still works as a fallback.
+        transport: persistent_subprocess
+        # -- Fully-qualified transport adapter class path
+        transportAdapter: "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
         skipPermissions: true
         # -- Enable Claude Code experimental Agent Teams
@@ -917,9 +966,18 @@ sessionDefinitions:
   skuldCodex:
     # -- Enable skuld-codex session definition (disabled by default)
     enabled: false
+    # -- Human-readable name shown in the UI
+    displayName: "OpenAI Codex"
+    # -- Short description for the session picker
+    description: "OpenAI Codex — WebSocket protocol with streaming and tools"
+    # -- Default model for this definition (empty = use Codex default based on subscription)
+    defaultModel: ""
     # -- Labels for agent routing
     labels:
       - session
+    # -- Model providers this runtime accepts (empty = provider-neutral)
+    compatibleProviders:
+      - openai
     # -- Whether this session definition is active
     active: true
 
@@ -932,16 +990,16 @@ sessionDefinitions:
 
     defaults:
       session:
-        # -- Default Codex model
-        model: "o4-mini"
+        # -- Default Codex model (empty = let Codex pick based on subscription)
+        model: ""
 
       broker:
-        # -- AI CLI backend: "codex" (OpenAI Codex)
-        cliType: codex
-        # -- Codex always uses subprocess transport
-        transport: subprocess
+        # -- AI CLI backend: "codex-ws" uses the app-server WebSocket protocol
+        # -- which supports session resume, interrupt, streaming, and approvals.
+        # -- Use "codex" for the legacy one-subprocess-per-message transport.
+        cliType: codex-ws
         # -- Fully-qualified transport adapter class path
-        transportAdapter: "skuld.transports.codex.CodexSubprocessTransport"
+        transportAdapter: "skuld.transports.codex_ws.CodexWebSocketTransport"
         # -- Skip tool permission prompts (--full-auto for Codex)
         skipPermissions: true
         agentTeams: false
@@ -997,6 +1055,85 @@ sessionDefinitions:
 
       # Plain env vars injected into the skuld broker container.
       envVars: []
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      runtimeClassName: ""
+
+      volundr:
+        apiUrl: ""
+
+  # Skuld-OpenCode session definition (OpenCode — model-neutral)
+  # Supports Claude, OpenAI, Gemini, Ollama, and other providers.
+  skuldOpenCode:
+    # -- Enable skuld-opencode session definition (disabled by default)
+    enabled: false
+    # -- Human-readable name shown in the UI
+    displayName: "OpenCode"
+    # -- Short description for the session picker
+    description: "Model-neutral AI coding agent — supports Claude, OpenAI, Gemini, local models"
+    # -- Default model for this definition (empty = use OpenCode default)
+    defaultModel: ""
+    # -- Labels for agent routing
+    labels:
+      - session
+    # -- Model providers this runtime accepts ([] = provider-neutral, accepts any)
+    compatibleProviders: []
+    # -- Whether this session definition is active
+    active: true
+
+    # Helm chart configuration (same chart as skuld-claude)
+    helm:
+      chart: skuld
+      repo: "oci://ghcr.io/niuulabs/charts"
+      repoName: ""
+      version: "0.1.0"
+
+    defaults:
+      session:
+        # -- Default OpenCode model (empty = let OpenCode pick)
+        model: ""
+
+      broker:
+        # -- AI CLI backend: "opencode" uses HTTP REST + SSE protocol
+        cliType: opencode
+        # -- Fully-qualified transport adapter class path
+        transportAdapter: "skuld.transports.opencode.OpenCodeHttpTransport"
+        # -- Skip tool permission prompts
+        skipPermissions: true
+        agentTeams: false
+
+      image:
+        repository: ghcr.io/niuulabs/skuld
+        tag: "latest"
+
+      resources:
+        requests:
+          memory: "256Mi"
+          cpu: "100m"
+        limits:
+          memory: "1Gi"
+          cpu: "500m"
+
+      imagePullSecrets:
+        - ghcr-pull-secret
+
+      ingress:
+        className: ""
+        annotations: {}
+        tls:
+          enabled: false
+          secretName: "skuld-wildcard-tls"
+
+      persistence:
+        mountPath: "/volundr/sessions"
+
+      homeVolume:
+        enabled: true
+        mountPath: "/volundr/home"
 
       securityContext:
         runAsNonRoot: true
@@ -1096,6 +1233,80 @@ web:
       postLogoutRedirectUri: ""
       # -- OIDC scopes
       scope: "openid profile email"
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# Next-generation web UI (optional standalone frontend)
+webNext:
+  # -- Enable the composable Niuu web UI component
+  enabled: false
+
+  # -- Number of web-next replicas
+  replicaCount: 1
+
+  image:
+    # -- Web UI image registry
+    registry: ghcr.io
+    # -- Web UI image repository
+    repository: niuulabs/niuu-web
+    # -- Web UI image tag (defaults to Chart.appVersion)
+    tag: ""
+    # -- Web UI image pull policy
+    pullPolicy: Always
+
+  service:
+    # -- Web UI service type
+    type: ClusterIP
+    # -- Web UI service port
+    port: 80
+
+  ingress:
+    # -- Enable web-next ingress
+    enabled: false
+    # -- Ingress class name
+    className: ""
+    # -- Ingress annotations
+    annotations: {}
+    # -- Ingress hosts
+    hosts:
+      - host: niuu.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    # -- Ingress TLS
+    tls: []
+
+  config:
+    # -- Public origin used to render absolute same-origin service URLs
+    publicOrigin: "https://niuu.example.com"
+    # -- Public session gateway origin used for /s/{sessionId}/... traffic
+    sessionOrigin: ""
+    theme: "ice"
+    plugins:
+      login:
+        enabled: true
+        order: 0
+      volundr:
+        enabled: true
+        order: 1
+      tyr:
+        enabled: true
+        order: 2
+      mimir:
+        enabled: true
+        order: 3
+      settings:
+        enabled: true
+        order: 4
+    auth:
+      issuer: ""
+      clientId: ""
 
   resources:
     requests:
@@ -1364,3 +1575,36 @@ initContainers: []
 
 # -- Container lifecycle hooks
 lifecycle: {}
+
+# Ravn persona distribution — controls how persona YAML is delivered to ravn sidecars.
+#
+# Three modes:
+#
+#   mountedVolume (default for cluster deployments)
+#     Volundr writes personas to a Kubernetes ConfigMap ("ravn-personas").
+#     Flock pods receive the ConfigMap as a read-only volume mount at mountPath.
+#     The RBAC Role in rbac-personas.yaml grants volundr write access.
+#
+#   http
+#     Ravn sidecars fetch personas at runtime via the volundr REST API.
+#     No ConfigMap volume is needed.  A Secret holding the PAT is mounted
+#     and the RAVN_VOLUNDR_TOKEN env var is injected into each sidecar.
+#
+#   filesystem (dev / single-node)
+#     Sidecars use only the bundled built-in personas shipped in the ravn image.
+#     No volumes, secrets, or RBAC additions required.
+#
+personaSource:
+  # -- Distribution mode: mountedVolume | http | filesystem
+  mode: mountedVolume
+  # -- ConfigMap name for mountedVolume mode
+  configmapName: ravn-personas
+  # -- Mount path inside ravn sidecar containers (mountedVolume mode)
+  mountPath: /etc/ravn/personas
+  # -- Volundr base URL that sidecars call to fetch personas (http mode)
+  httpBaseUrl: http://volundr:8080
+  # -- PAT value written into the ravn-token Secret (http mode, leave empty to skip)
+  ravnToken: ""
+  # -- Name of the existing Secret holding the PAT (http mode).
+  # Defaults to "<fullname>-ravn-token" if ravnToken is set above.
+  existingTokenSecret: ""

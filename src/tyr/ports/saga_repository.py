@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
-from tyr.domain.models import Phase, Raid, Saga, SagaStatus
+from tyr.domain.models import Phase, Raid, RaidStatus, Saga, SagaStatus
 
 
 class SagaRepository(ABC):
@@ -26,7 +26,7 @@ class SagaRepository(ABC):
 
     @abstractmethod
     async def save_phase(self, phase: Phase, *, conn: Any | None = None) -> None:
-        """Persist a phase. Uses *conn* when inside a transaction."""
+        """Persist a phase (insert-or-update). Uses *conn* when inside a transaction."""
         ...
 
     @abstractmethod
@@ -59,6 +59,18 @@ class SagaRepository(ABC):
         """Update the status of a saga."""
         ...
 
+    async def update_saga_workflow(
+        self,
+        saga_id: UUID,
+        *,
+        workflow_id: UUID | None,
+        workflow_version: str | None,
+        workflow_snapshot: dict[str, Any] | None,
+        owner_id: str | None = None,
+    ) -> None:
+        """Update the workflow assignment and snapshot for a saga."""
+        raise NotImplementedError(f"{type(self).__name__}.update_saga_workflow not implemented")
+
     @abstractmethod
     async def count_by_status(self) -> dict[str, int]:
         """Return a count of raids grouped by status.
@@ -67,6 +79,49 @@ class SagaRepository(ABC):
         for statuses that have no raids.
         """
         ...
+
+    async def get_phase(self, phase_id: UUID) -> Phase | None:
+        """Get a single phase by ID. Returns None if not found.
+
+        Subclasses should override this method.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.get_phase not implemented")
+
+    async def get_raid(self, raid_id: UUID) -> Raid | None:
+        """Get a single raid by ID. Returns None if not found.
+
+        Subclasses should override this method.  The default raises
+        ``NotImplementedError`` so that callers fail clearly when the method
+        is missing in test stubs that don't need it.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.get_raid not implemented")
+
+    async def get_raids_by_phase(self, phase_id: UUID) -> list[Raid]:
+        """Return all raids belonging to *phase_id*, ordered by creation time.
+
+        Subclasses should override this method.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.get_raids_by_phase not implemented")
+
+    async def get_phases_by_saga(self, saga_id: UUID) -> list[Phase]:
+        """Return all phases belonging to *saga_id*, ordered by phase number.
+
+        Subclasses should override this method.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.get_phases_by_saga not implemented")
+
+    async def update_raid_outcome(
+        self,
+        raid_id: UUID,
+        outcome: dict[str, Any],
+        event_type: str,
+        status: RaidStatus,
+    ) -> None:
+        """Store a structured outcome on *raid_id* and transition its status.
+
+        Subclasses should override this method.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.update_raid_outcome not implemented")
 
     @asynccontextmanager
     async def begin(self) -> AsyncIterator[Any]:

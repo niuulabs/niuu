@@ -1,0 +1,71 @@
+# Reusable: run Grype against container images and upload SARIF.
+# Called by ci.yaml and dev.yaml after container manifests are published.
+name: Reusable — Container Scan
+
+on:
+  workflow_call:
+    inputs:
+      containers:
+        description: JSON array of container names to scan.
+        type: string
+        required: true
+      tag:
+        description: Tag to scan (same across all containers).
+        type: string
+        required: true
+      registry:
+        description: Container registry.
+        type: string
+        default: ghcr.io
+      grype-version:
+        type: string
+        default: "0.87.0"
+
+permissions:
+  packages: read
+  security-events: write  # Required to upload Grype results to GitHub Security
+
+jobs:
+  scan:
+    name: "Scan: ${{ matrix.container }}"
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(inputs.containers) }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/247f5d72abf2131aa37f3164a98495c121b29029/install.sh | sh -s -- -b /usr/local/bin "v${{ inputs.grype-version }}"
+          grype version
+
+      - name: Scan container with Grype
+        run: |
+          grype "${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ inputs.tag }}" \
+            --only-fixed \
+            --fail-on critical \
+            -o sarif > "grype-${{ matrix.container }}.sarif"
+
+      - name: Upload Grype results
+        uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7 # v4
+        if: always()
+        with:
+          sarif_file: grype-${{ matrix.container }}.sarif
+          category: grype-${{ matrix.container }}

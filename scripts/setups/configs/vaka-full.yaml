@@ -1,0 +1,310 @@
+# ─── vaka-full ────────────────────────────────────────────────────────────────
+#
+# Full Vaka setup using Qwen3-Coder on Valaskjalf vLLM.
+# All MF1-MF4 features enabled. Zero Anthropic spend.
+#
+# What you get:
+#   - Qwen3-Coder-30B via vLLM (main reasoning + reflection + extraction)
+#   - Composite Mimir: local + shared Valhalla remote
+#   - Compiled truth format with entity detection on ingest
+#   - Hybrid semantic search (embedding-backed)
+#   - Dream cycle curator on nightly cron
+#   - Thread enrichment + wakefulness + recap
+#   - Inline fact detection ("remember that" → Mimir pages)
+#   - Drive loop with autonomous task execution
+#   - Cascade multi-agent delegation
+#   - Checkpoint recovery
+#   - Daily budget + trust gradient
+#   - HTTP gateway for local interaction
+#   - Sleipnir events (in-process, no broker needed)
+#
+# Prerequisites:
+#   - vLLM running on Valaskjalf: https://vllm.valaskjalf.asgard.niuu.world
+#   - Valhalla Mimir reachable: https://volundr.valhalla.asgard.niuu.world
+#   - uv sync done in volundr repo
+#
+# Launch:
+#   ravn daemon --config ~/.ravn/config.yaml --persona coding-agent
+#
+# Or interactive:
+#   ravn run --config ~/.ravn/config.yaml
+#
+# With a specialist persona:
+#   ravn run --config ~/.ravn/config.yaml --persona reviewer
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── LLM: Qwen3-Coder-30B via vLLM ──────────────────────────────────────────
+
+llm:
+  model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+  max_tokens: 8192
+  timeout: 300.0
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: "https://vllm.valaskjalf.asgard.niuu.world"
+      api_key: ""
+      system_prefix: "You are Ravn, an autonomous agent."
+
+iteration_budget:
+  total: 500
+
+agent:
+  max_iterations: 200
+
+# ── Memory: consolidated episodic store (NIU-574) ───────────────────────────
+
+memory:
+  backend: sqlite
+  path: "~/.ravn/memory.db"
+  # Use Qwen for cheap reflection on each episode
+  reflection_model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+  reflection_max_tokens: 512
+  task_summary_max_chars: 200
+  rolling_summary_max_chars: 800
+
+# ── Embedding: semantic search in memory + Mimir (NIU-575, NIU-577) ─────────
+
+embedding:
+  enabled: true
+  rrf_k: 60
+  candidate_limit: 200
+
+# ── Mimir: compiled truth + hybrid search + entity detection ────────────────
+
+mimir:
+  enabled: true
+  auto_distill: true
+  distill_min_session_minutes: 5
+  idle_lint_threshold_minutes: 60
+  continuation_threshold_minutes: 30
+  categories:
+    - technical
+    - projects
+    - research
+    - learnings
+    - retrospectives
+    - self
+
+  search:
+    backend: vector
+
+  instances:
+    - name: local
+      role: local
+      path: ~/.ravn/mimir
+      read_priority: 20
+
+    - name: shared
+      role: shared
+      url: "https://volundr.valhalla.asgard.niuu.world"
+      read_priority: 10
+
+  write_routing:
+    rules:
+      - prefix: "self/"
+        mounts: [local]
+      - prefix: "learnings/"
+        mounts: [local, shared]
+      - prefix: "retrospectives/"
+        mounts: [local, shared]
+    default: [local, shared]
+
+  source_trigger:
+    enabled: true
+    poll_interval_seconds: 300
+    persona: research-and-distill
+    max_tokens: 4096
+
+  staleness_trigger:
+    enabled: true
+    schedule_hours: 168
+    top_n: 20
+    persona: mimir-curator
+    max_tokens: 4096
+
+  # Entity detection on ingest (NIU-578)
+  ingest:
+    entity_detection: true
+    entity_model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+    entity_max_tokens: 1024
+
+# ── Gateway: HTTP for local interaction ─────────────────────────────────────
+
+gateway:
+  enabled: true
+  channels:
+    http:
+      enabled: true
+      host: "127.0.0.1"
+      port: 7477
+
+# ── Drive loop: autonomous task execution ───────────────────────────────────
+
+initiative:
+  enabled: true
+  max_concurrent_tasks: 3
+  task_queue_max: 50
+  queue_journal_path: ~/.ravn/daemon/queue.json
+  default_output_mode: ambient
+  heartbeat_interval_seconds: 60
+  cron_tick_seconds: 30.0
+
+# ── Thread enrichment (Vaka M1) ────────────────────────────────────────────
+
+thread:
+  enabled: true
+  max_queue_size: 200
+  enricher_poll_interval_seconds: 300
+  enricher_llm_alias: fast
+  decay_rate_per_day: 0.05
+  recency_weight: 1.0
+  mention_weight: 0.3
+  engagement_weight: 0.5
+  peer_weight: 0.2
+  sub_thread_weight: 0.4
+
+# ── Wakefulness (Vaka M2) ──────────────────────────────────────────────────
+
+wakefulness:
+  enabled: true
+  silence_threshold_seconds: 1800
+  reflection_cooldown_seconds: 3600
+  deep_reflection_threshold_seconds: 7200
+  deep_reflection_cooldown_seconds: 14400
+  llm_alias: fast
+  max_intents_per_reflection: 5
+  initial_thread_weight: 5.0
+  poll_interval_seconds: 60
+
+# ── Recap (Vaka M3) ────────────────────────────────────────────────────────
+
+recap:
+  enabled: true
+  absence_threshold_seconds: 3600
+  return_detection_window_seconds: 300
+  scheduled_recap_cron: "0 7 * * *"
+  max_threads_in_recap: 10
+  persona: produce-recap
+  poll_interval_seconds: 60
+
+# ── Dream cycle: nightly Mimir enrichment (NIU-587) ────────────────────────
+
+dream_cycle:
+  enabled: true
+  cron_expression: "0 3 * * *"
+  persona: mimir-curator
+  task_description: "Nightly dream cycle: enrich, lint, cross-reference"
+  token_budget_usd: 0.50
+  poll_interval_seconds: 60
+  state_dir: ~/.ravn/daemon
+
+# ── Checkpoint ──────────────────────────────────────────────────────────────
+
+checkpoint:
+  enabled: true
+  backend: local
+  directory: ~/.ravn/checkpoints
+  checkpoint_every_n_tools: 10
+  max_checkpoints_per_task: 5
+  auto_save_before_destructive: true
+  budget_milestone_fractions:
+    - 0.5
+    - 0.75
+    - 0.9
+
+# ── Cascade: multi-agent delegation ────────────────────────────────────────
+
+cascade:
+  enabled: true
+  stuck_timeout_seconds: 60
+  on_stuck: replan
+
+# ── Mesh: nng for local multi-process ──────────────────────────────────────
+
+mesh:
+  enabled: false
+  adapter: nng
+  own_peer_id: ""
+  nng:
+    pub_sub_address: "tcp://*:7480"
+    req_rep_address: "tcp://*:7481"
+
+# ── Sleipnir: in-process events (no broker needed) ────────────────────────
+
+sleipnir:
+  enabled: false                     # enable when you want cross-service events
+
+# ── Browser automation ──────────────────────────────────────────────────────
+
+browser:
+  backend: local
+  headless: true
+  timeout: 30
+  allowed_origins:
+    - "*.github.com"
+    - "*.niuu.world"
+    - "*.stackoverflow.com"
+
+# ── Evolution / self-improvement ────────────────────────────────────────────
+
+evolution:
+  enabled: true
+  min_new_outcomes: 5
+  max_episodes: 50
+  skill_suggestion_threshold: 0.7
+
+# ── Skills extraction ───────────────────────────────────────────────────────
+
+skill:
+  enabled: true
+  backend: sqlite
+  suggestion_threshold: 0.6
+  cache_size: 100
+
+# ── Budget ──────────────────────────────────────────────────────────────────
+
+budget:
+  daily_cap_usd: 0.0                  # 0 = no cap (local models are free)
+  input_token_cost_per_million: 0.0
+  output_token_cost_per_million: 0.0
+  warn_at_percent: 80
+
+# ── Trust gradient ──────────────────────────────────────────────────────────
+
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  drafting_tickets: free
+  producing_recaps: free
+  opening_tickets: approval
+  closing_tickets: approval
+  pushing_branches: approval
+  pushing_main: never
+  external_messages: approval
+  spending_beyond_cap: free           # local models = free
+
+# ── MCP servers ─────────────────────────────────────────────────────────────
+
+mcp_servers:
+  - name: "linear"
+    url: "https://mcp.linear.app/mcp"
+    transport: "http"
+    auth:
+      auth_type: "api_key"
+      api_key_env: "LINEAR_API_KEY"
+      api_key_header: "Authorization"
+      api_key_prefix: "Bearer"
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+
+logging:
+  level: info
+  format: text
+
+# ── Permissions ─────────────────────────────────────────────────────────────
+
+permission:
+  mode: workspace_write

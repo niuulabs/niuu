@@ -46,30 +46,40 @@ vi.mock('./MentionMenu', () => ({
     onSelect,
     onExpand,
   }: {
-    items: { entry: { name: string; path: string; type: string }; depth: number }[];
+    items: Array<
+      | { kind: 'file'; entry: { name: string; path: string; type: string }; depth: number }
+      | { kind: 'agent'; participant: { peerId: string; persona: string } }
+    >;
     selectedIndex: number;
     loading: boolean;
-    onSelect: (item: {
-      entry: { name: string; path: string; type: string };
-      depth: number;
-    }) => void;
-    onExpand: (item: {
-      entry: { name: string; path: string; type: string };
-      depth: number;
-    }) => void;
+    onSelect: (item: unknown) => void;
+    onExpand: (item: unknown) => void;
   }) => (
     <div data-testid="mention-menu" data-selected={selectedIndex} data-loading={loading}>
-      {items.map((item, i) => (
-        <button
-          key={item.entry.path}
-          onClick={() => onSelect(item)}
-          data-testid={`mention-item-${i}`}
-        >
-          {item.entry.name}
-        </button>
-      ))}
+      {items.map((item, i) => {
+        if (item.kind === 'agent') {
+          return (
+            <button
+              key={item.participant.peerId}
+              onClick={() => onSelect(item)}
+              data-testid={`mention-item-${i}`}
+            >
+              {item.participant.persona}
+            </button>
+          );
+        }
+        return (
+          <button
+            key={item.entry.path}
+            onClick={() => onSelect(item)}
+            data-testid={`mention-item-${i}`}
+          >
+            {item.entry.name}
+          </button>
+        );
+      })}
       {items.map((item, i) =>
-        item.entry.type === 'directory' ? (
+        item.kind === 'file' && item.entry.type === 'directory' ? (
           <button
             key={`expand-${item.entry.path}`}
             onClick={() => onExpand(item)}
@@ -85,19 +95,39 @@ vi.mock('./MentionMenu', () => ({
 
 vi.mock('./MentionPill', () => ({
   MentionPill: ({
-    entry,
+    mention,
     onRemove,
   }: {
-    entry: { name: string; path: string; type: string };
-    onRemove: (path: string) => void;
-  }) => (
-    <span data-testid="mention-pill">
-      <span>{entry.path}</span>
-      <button onClick={() => onRemove(entry.path)} aria-label={`Remove ${entry.path}`}>
-        x
-      </button>
-    </span>
-  ),
+    mention:
+      | { kind: 'file'; entry: { path: string } }
+      | { kind: 'agent'; participant: { peerId: string; persona: string } };
+    onRemove: (id: string) => void;
+  }) => {
+    if (mention.kind === 'agent') {
+      return (
+        <span data-testid="mention-pill">
+          <span>{mention.participant.persona}</span>
+          <button
+            onClick={() => onRemove(mention.participant.peerId)}
+            aria-label={`Remove @${mention.participant.persona}`}
+          >
+            x
+          </button>
+        </span>
+      );
+    }
+    return (
+      <span data-testid="mention-pill">
+        <span>{mention.entry.path}</span>
+        <button
+          onClick={() => onRemove(mention.entry.path)}
+          aria-label={`Remove ${mention.entry.path}`}
+        >
+          x
+        </button>
+      </span>
+    );
+  },
 }));
 
 describe('ChatInput', () => {
@@ -119,12 +149,39 @@ describe('ChatInput', () => {
     isOpen: false,
     filter: '',
     selectedIndex: 0,
-    items: [] as {
-      entry: { name: string; path: string; type: 'file' | 'directory' };
-      depth: number;
-    }[],
+    items: [] as Array<
+      | {
+          kind: 'file';
+          entry: { name: string; path: string; type: 'file' | 'directory' };
+          depth: number;
+        }
+      | {
+          kind: 'agent';
+          participant: {
+            peerId: string;
+            persona: string;
+            color: string;
+            participantType: string;
+            status: string;
+            joinedAt: Date;
+          };
+        }
+    >,
     loading: false,
-    mentions: [] as { name: string; path: string; type: 'file' | 'directory' }[],
+    mentions: [] as Array<
+      | { kind: 'file'; entry: { name: string; path: string; type: 'file' | 'directory' } }
+      | {
+          kind: 'agent';
+          participant: {
+            peerId: string;
+            persona: string;
+            color: string;
+            participantType: string;
+            status: string;
+            joinedAt: Date;
+          };
+        }
+    >,
     handleKeyDown: vi.fn(() => false),
     handleChange: vi.fn(),
     selectItem: vi.fn(() => ''),
@@ -814,7 +871,13 @@ describe('ChatInput', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         isOpen: true,
-        items: [{ entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' }, depth: 0 }],
+        items: [
+          {
+            kind: 'file',
+            entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' },
+            depth: 0,
+          },
+        ],
         selectedIndex: 0,
         handleKeyDown,
         selectItem,
@@ -832,6 +895,7 @@ describe('ChatInput', () => {
 
       expect(handleKeyDown).toHaveBeenCalled();
       expect(selectItem).toHaveBeenCalledWith({
+        kind: 'file',
         entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' },
         depth: 0,
       });
@@ -852,7 +916,7 @@ describe('ChatInput', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         isOpen: true,
-        items: [], // no items
+        items: [] as typeof defaultMentionMenu.items,
         selectedIndex: 0,
         handleKeyDown,
         selectItem,
@@ -880,7 +944,7 @@ describe('ChatInput', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         isOpen: true,
-        items: [{ entry: { name: 'src', path: 'src', type: 'directory' }, depth: 0 }],
+        items: [{ kind: 'file', entry: { name: 'src', path: 'src', type: 'directory' }, depth: 0 }],
         selectedIndex: 0,
         handleKeyDown,
       });
@@ -909,7 +973,13 @@ describe('ChatInput', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         isOpen: true,
-        items: [{ entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' }, depth: 0 }],
+        items: [
+          {
+            kind: 'file',
+            entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' },
+            depth: 0,
+          },
+        ],
         selectedIndex: 0,
         handleKeyDown,
         selectItem,
@@ -1118,10 +1188,12 @@ describe('ChatInput', () => {
   // ---------------------------------------------------------------------------
 
   describe('mention pills', () => {
-    it('renders mention pills when mentions exist', () => {
+    it('renders mention pills when file mentions exist', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
-        mentions: [{ name: 'utils.ts', path: 'src/utils.ts', type: 'file' }],
+        mentions: [
+          { kind: 'file', entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' } },
+        ],
       });
 
       renderInput();
@@ -1130,13 +1202,13 @@ describe('ChatInput', () => {
       expect(screen.getByText('src/utils.ts')).toBeInTheDocument();
     });
 
-    it('prepends mention paths to sent message', () => {
+    it('prepends file mention paths to sent message', () => {
       const removeMention = vi.fn();
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         mentions: [
-          { name: 'utils.ts', path: 'src/utils.ts', type: 'file' },
-          { name: 'index.ts', path: 'src/index.ts', type: 'file' },
+          { kind: 'file', entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' } },
+          { kind: 'file', entry: { name: 'index.ts', path: 'src/index.ts', type: 'file' } },
         ],
         removeMention,
       });
@@ -1150,11 +1222,13 @@ describe('ChatInput', () => {
       expect(onSend).toHaveBeenCalledWith('@src/utils.ts @src/index.ts fix this', []);
     });
 
-    it('removes mentions after sending', () => {
+    it('removes file mentions after sending', () => {
       const removeMention = vi.fn();
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
-        mentions: [{ name: 'utils.ts', path: 'src/utils.ts', type: 'file' }],
+        mentions: [
+          { kind: 'file', entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' } },
+        ],
         removeMention,
       });
 
@@ -1171,7 +1245,9 @@ describe('ChatInput', () => {
       const removeMention = vi.fn();
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
-        mentions: [{ name: 'utils.ts', path: 'src/utils.ts', type: 'file' }],
+        mentions: [
+          { kind: 'file', entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' } },
+        ],
         removeMention,
       });
 
@@ -1179,6 +1255,110 @@ describe('ChatInput', () => {
 
       fireEvent.click(screen.getByLabelText('Remove src/utils.ts'));
       expect(removeMention).toHaveBeenCalledWith('src/utils.ts');
+    });
+
+    it('renders agent mention pills', () => {
+      vi.mocked(useMentionMenu).mockReturnValue({
+        ...defaultMentionMenu,
+        mentions: [
+          {
+            kind: 'agent',
+            participant: {
+              peerId: 'peer-alpha',
+              persona: 'Ravn-Alpha',
+              color: '#a855f7',
+              participantType: 'ravn',
+              status: 'idle',
+              joinedAt: new Date(),
+            },
+          },
+        ],
+      });
+
+      renderInput();
+
+      expect(screen.getByTestId('mention-pill')).toBeInTheDocument();
+      expect(screen.getByText('Ravn-Alpha')).toBeInTheDocument();
+    });
+
+    it('calls onSendDirected with agent mentions instead of onSend', () => {
+      const onSendDirected = vi.fn();
+      const removeMention = vi.fn();
+      const agentParticipant = {
+        peerId: 'peer-alpha',
+        persona: 'Ravn-Alpha',
+        color: '#a855f7',
+        participantType: 'ravn',
+        status: 'idle',
+        joinedAt: new Date(),
+      };
+
+      vi.mocked(useMentionMenu).mockReturnValue({
+        ...defaultMentionMenu,
+        mentions: [{ kind: 'agent', participant: agentParticipant }],
+        removeMention,
+      });
+
+      renderInput({ onSendDirected });
+
+      const textarea = screen.getByPlaceholderText('Message...');
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+
+      expect(onSendDirected).toHaveBeenCalledWith([agentParticipant], '@Ravn-Alpha hello', []);
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it('falls back to onSend when agent mention but no onSendDirected provided', () => {
+      const agentParticipant = {
+        peerId: 'peer-alpha',
+        persona: 'Ravn-Alpha',
+        color: '#a855f7',
+        participantType: 'ravn',
+        status: 'idle',
+        joinedAt: new Date(),
+      };
+
+      vi.mocked(useMentionMenu).mockReturnValue({
+        ...defaultMentionMenu,
+        mentions: [{ kind: 'agent', participant: agentParticipant }],
+        removeMention: vi.fn(),
+      });
+
+      // No onSendDirected prop — should fall back to onSend
+      renderInput();
+
+      const textarea = screen.getByPlaceholderText('Message...');
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+
+      expect(onSend).toHaveBeenCalledWith('@Ravn-Alpha hello', []);
+    });
+
+    it('removes agent mentions by peerId after sending', () => {
+      const removeMention = vi.fn();
+      const agentParticipant = {
+        peerId: 'peer-alpha',
+        persona: 'Ravn-Alpha',
+        color: '#a855f7',
+        participantType: 'ravn',
+        status: 'idle',
+        joinedAt: new Date(),
+      };
+
+      vi.mocked(useMentionMenu).mockReturnValue({
+        ...defaultMentionMenu,
+        mentions: [{ kind: 'agent', participant: agentParticipant }],
+        removeMention,
+      });
+
+      renderInput({ onSendDirected: vi.fn() });
+
+      const textarea = screen.getByPlaceholderText('Message...');
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+
+      expect(removeMention).toHaveBeenCalledWith('peer-alpha');
     });
   });
 
@@ -1191,7 +1371,13 @@ describe('ChatInput', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         isOpen: true,
-        items: [{ entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' }, depth: 0 }],
+        items: [
+          {
+            kind: 'file',
+            entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' },
+            depth: 0,
+          },
+        ],
       });
 
       renderInput();
@@ -1204,7 +1390,13 @@ describe('ChatInput', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         isOpen: true,
-        items: [{ entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' }, depth: 0 }],
+        items: [
+          {
+            kind: 'file',
+            entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' },
+            depth: 0,
+          },
+        ],
         selectItem,
       });
 
@@ -1219,6 +1411,7 @@ describe('ChatInput', () => {
       fireEvent.click(screen.getByTestId('mention-item-0'));
 
       expect(selectItem).toHaveBeenCalledWith({
+        kind: 'file',
         entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' },
         depth: 0,
       });
@@ -1229,7 +1422,13 @@ describe('ChatInput', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         isOpen: true,
-        items: [{ entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' }, depth: 0 }],
+        items: [
+          {
+            kind: 'file',
+            entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' },
+            depth: 0,
+          },
+        ],
         selectItem,
       });
 
@@ -1250,7 +1449,7 @@ describe('ChatInput', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         isOpen: true,
-        items: [{ entry: { name: 'src', path: 'src', type: 'directory' }, depth: 0 }],
+        items: [{ kind: 'file', entry: { name: 'src', path: 'src', type: 'directory' }, depth: 0 }],
         expandDirectory,
       });
 
@@ -1258,6 +1457,7 @@ describe('ChatInput', () => {
 
       fireEvent.click(screen.getByTestId('mention-expand-0'));
       expect(expandDirectory).toHaveBeenCalledWith({
+        kind: 'file',
         entry: { name: 'src', path: 'src', type: 'directory' },
         depth: 0,
       });
@@ -1272,7 +1472,13 @@ describe('ChatInput', () => {
       vi.mocked(useMentionMenu).mockReturnValue({
         ...defaultMentionMenu,
         isOpen: true,
-        items: [{ entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' }, depth: 0 }],
+        items: [
+          {
+            kind: 'file',
+            entry: { name: 'utils.ts', path: 'src/utils.ts', type: 'file' },
+            depth: 0,
+          },
+        ],
       });
 
       renderInput();
