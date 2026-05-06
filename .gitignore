@@ -227,8 +227,6 @@ package-lock.json
 # Mac
 .DS_Store
 
-uv.lock
-
 .old
 docs/site/openapi.json
 
