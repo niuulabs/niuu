@@ -2,6 +2,7 @@ import * as RadixToast from '@radix-ui/react-toast';
 import { createContext, useCallback, useContext, useState } from 'react';
 import type { ReactNode } from 'react';
 import { cn } from '../../utils/cn';
+import { randomId } from '../../utils/randomId';
 import './Toast.css';
 
 export type ToastTone = 'default' | 'success' | 'critical' | 'warning';
@@ -36,7 +37,7 @@ export function ToastProvider({ children, swipeDirection = 'right' }: ToastProvi
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const toast = useCallback((opts: ToastOptions) => {
-    const id = crypto.randomUUID();
+    const id = randomId();
     setToasts((prev) => [
       ...prev,
       {

@@ -1,19 +1,67 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { LoadingIndicator } from '@/modules/shared';
 import { useDispatchQueue } from '../../hooks/useDispatchQueue';
-import type { QueueItem } from '../../hooks/useDispatchQueue';
+import type { ModelOption, QueueItem, SessionDefinitionOption } from '../../hooks/useDispatchQueue';
 import { FlockToggle } from '../../components/FlockToggle';
 import styles from './DispatcherView.module.css';
+
+function selectedDefinition(
+  defs: SessionDefinitionOption[],
+  key: string
+): SessionDefinitionOption | undefined {
+  return key ? defs.find(d => d.key === key) : undefined;
+}
+
+function filterModelsByDefinition(
+  models: ModelOption[],
+  def: SessionDefinitionOption | undefined
+): ModelOption[] {
+  if (!def || def.compatible_providers.length === 0) {
+    return models;
+  }
+  const allowed = new Set(def.compatible_providers);
+  return models.filter(m => m.provider && allowed.has(m.provider));
+}
 
 export function DispatcherView() {
   const { queue, defaults, clusters, loading, error, dispatching, dispatch } = useDispatchQueue();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [modelOverride, setModelOverride] = useState<string | null>(null);
+  const [sessionDefinitionOverride, setSessionDefinitionOverride] = useState<string>('');
   const [promptOverride, setPromptOverride] = useState<string | null>(null);
   const [selectedCluster, setSelectedCluster] = useState<string>('');
   const [flockEnabled, setFlockEnabled] = useState(false);
   const [selectedPersonas, setSelectedPersonas] = useState<string[]>([]);
   const [submittingItems, setSubmittingItems] = useState<QueueItem[]>([]);
+
+  const activeDefinition = selectedDefinition(
+    defaults.session_definitions,
+    sessionDefinitionOverride
+  );
+  const visibleModels = useMemo(
+    () => filterModelsByDefinition(defaults.models, activeDefinition),
+    [defaults.models, activeDefinition]
+  );
+
+  // Pick the effective model: prefer the user's override if it's still
+  // compatible, otherwise the runtime's default, otherwise the first
+  // compatible model, otherwise the server default.
+  const effectiveModel: string = (() => {
+    const override = modelOverride;
+    if (override && visibleModels.some(m => m.id === override)) {
+      return override;
+    }
+    if (
+      activeDefinition?.default_model &&
+      visibleModels.some(m => m.id === activeDefinition.default_model)
+    ) {
+      return activeDefinition.default_model;
+    }
+    if (visibleModels.length > 0) {
+      return visibleModels[0].id;
+    }
+    return defaults.default_model;
+  })();
   const [lastResults, setLastResults] = useState<
     { issue_id: string; session_name: string; status: string; cluster_name: string }[] | null
   >(null);
@@ -78,11 +126,12 @@ export function DispatcherView() {
     try {
       const results = await dispatch(
         items,
-        modelOverride ?? defaults.default_model,
+        effectiveModel,
         promptOverride ?? defaults.default_system_prompt,
         selectedCluster || undefined,
         workloadType,
-        workloadConfig
+        workloadConfig,
+        sessionDefinitionOverride || undefined
       );
       setLastResults(results);
       setSelected(new Set());
@@ -202,13 +251,35 @@ export function DispatcherView() {
                 ))}
               </select>
             )}
+            {defaults.session_definitions.length > 0 && (
+              <select
+                className={styles.modelSelect}
+                value={sessionDefinitionOverride}
+                onChange={e => {
+                  setSessionDefinitionOverride(e.target.value);
+                  // Clear the manual model override; effectiveModel will fall
+                  // back to the new runtime's default (or first compatible).
+                  setModelOverride(null);
+                }}
+                disabled={isSubmitting}
+                title="Session runtime"
+              >
+                <option value="">Default runtime</option>
+                {defaults.session_definitions.map(d => (
+                  <option key={d.key} value={d.key}>
+                    {d.display_name}
+                  </option>
+                ))}
+              </select>
+            )}
             <select
               className={styles.modelSelect}
-              value={modelOverride ?? defaults.default_model}
+              value={effectiveModel}
               onChange={e => setModelOverride(e.target.value)}
-              disabled={isSubmitting}
+              disabled={isSubmitting || visibleModels.length === 0}
             >
-              {defaults.models.map(m => (
+              {visibleModels.length === 0 && <option value="">No models for this runtime</option>}
+              {visibleModels.map(m => (
                 <option key={m.id} value={m.id}>
                   {m.name}
                 </option>

@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from niuu.domain.mimir import MimirPage, MimirPageMeta, MimirSource, compute_content_hash
+from niuu.domain.outcome import OutcomeField
 from ravn.adapters.personas.loader import (
     PersonaConfig,
     PersonaProduces,
@@ -39,7 +40,6 @@ from ravn.domain.models import (
     TurnResult,
 )
 from ravn.ports.llm import LLMPort
-from niuu.domain.outcome import OutcomeField
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 from tests.ravn.fixtures.fakes import InMemoryChannel
@@ -96,7 +96,12 @@ def _research_persona() -> PersonaConfig:
 
 
 class _FakeMimir:
-    def __init__(self, *, page: MimirPage | None = None, sources: dict[str, MimirSource] | None = None):
+    def __init__(
+        self,
+        *,
+        page: MimirPage | None = None,
+        sources: dict[str, MimirSource] | None = None,
+    ):
         self._page = page
         self._sources = sources or {}
 

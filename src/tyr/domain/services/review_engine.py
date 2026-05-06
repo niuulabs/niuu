@@ -165,6 +165,73 @@ class ReviewEngine:
         """
         return self._reviewer_sessions.get(session_id)
 
+    async def handle_reviewer_failure(self, session_id: str, reason: str) -> None:
+        """Handle a reviewer session lifecycle failure.
+
+        Triggered when the reviewer session never produces output because
+        provisioning failed (e.g. ``Max concurrent sessions reached``) or
+        the session crashed early. Without this hook the raid sits in
+        REVIEW indefinitely with a phantom reviewer that will never
+        complete. Marks the raid as REVIEW-pending no longer (transitions
+        it back to a state that the autonomous flow can act on) and
+        records a confidence event so the failure is visible in the audit
+        trail.
+        """
+        mapping = self._reviewer_sessions.pop(session_id, None)
+        if mapping is None:
+            logger.debug(
+                "Reviewer session %s not tracked — ignoring failure", session_id
+            )
+            return
+
+        tracker_id, owner_id = mapping
+        logger.warning(
+            "Reviewer session %s failed for raid %s (reason=%s) — "
+            "marking raid for retry",
+            session_id,
+            tracker_id,
+            reason,
+        )
+        adapters = await self._tracker_factory.for_owner(owner_id)
+        if not adapters:
+            logger.warning(
+                "No tracker adapter for owner %s — cannot recover reviewer failure",
+                owner_id[:8],
+            )
+            return
+        tracker = adapters[0]
+        try:
+            raid = await tracker.get_raid(tracker_id)
+        except Exception:
+            logger.warning(
+                "Could not fetch raid %s while handling reviewer failure",
+                tracker_id,
+                exc_info=True,
+            )
+            return
+        # Drop the dangling reviewer_session_id so a future review attempt
+        # gets a fresh slot, then push the raid into FAILED so the user can
+        # /retry it (or the autonomous path can pick it up). FAILED is the
+        # safer default than auto-respawning here, which could thrash if
+        # the cap is genuinely full.
+        updated = await tracker.update_raid_progress(
+            tracker_id,
+            status=RaidStatus.FAILED,
+            reviewer_session_id="",
+            reason=f"Reviewer session failed: {reason}",
+        )
+        try:
+            await tracker.update_raid_state(tracker_id, RaidStatus.FAILED)
+        except Exception:
+            logger.warning(
+                "Failed to set tracker issue %s to FAILED after reviewer failure",
+                tracker_id,
+                exc_info=True,
+            )
+        await self._emit_state_changed(
+            updated or raid, owner_id=owner_id, action="reviewer_failed"
+        )
+
     async def handle_reviewer_completion(self, session_id: str, reviewer_output: str) -> None:
         """Handle a reviewer session idle event (called by ActivitySubscriber).
 
@@ -344,13 +411,22 @@ class ReviewEngine:
                 )
                 if event.event != "raid.state_changed":
                     continue
-                if event.data.get("status") != RaidStatus.REVIEW.value:
+                status = event.data.get("status")
+                tracker_id = event.data.get("tracker_id")
+                # Any non-REVIEW transition means a previous review cycle
+                # is over (raid was MERGED, FAILED, or re-dispatched into
+                # RUNNING). Forget the tracker_id so a future REVIEW
+                # transition for the same raid (e.g. after auto-continue
+                # re-dispatches it) is treated as a fresh cycle, not
+                # silently skipped as "already processed".
+                if status != RaidStatus.REVIEW.value:
+                    if isinstance(tracker_id, str) and tracker_id:
+                        self._processed.discard(tracker_id)
                     logger.debug(
                         "Skipping — status=%s (not REVIEW)",
-                        event.data.get("status"),
+                        status,
                     )
                     continue
-                tracker_id = event.data.get("tracker_id")
                 owner_id = event.owner_id
                 if not tracker_id or not owner_id:
                     logger.warning(

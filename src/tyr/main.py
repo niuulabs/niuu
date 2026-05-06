@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import uuid
 from collections.abc import AsyncGenerator
@@ -10,9 +11,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
 
-from niuu.cors import apply_cors_middleware
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
+from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
 from niuu.domain.services.pat_validator import PATValidator
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -123,6 +124,146 @@ def _configure_logging(settings: Settings) -> None:
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+async def _ensure_telegram_subscription_from_integration(
+    pool: object,
+    integration_repo: PostgresIntegrationRepository,
+    credential_store: object,
+) -> None:
+    """Idempotently bind the seeded Telegram chat for inbound auth.
+
+    The webhook router authenticates incoming messages against
+    ``notification_subscriptions`` (Tyr-side table, ``chat_id → owner_id``),
+    while the seeded MESSAGING integration stores the chat_id in
+    ``integration_connections`` (niuu-shared table, used only for outbound
+    credentials). They don't talk to each other. This helper copies the
+    chat_id from the integration credential into a subscription row so
+    /status, /approve, etc. work out of the box without manual SQL.
+
+    Runs once per Tyr boot; the INSERT is gated by an existence check so it
+    is safe to call repeatedly.
+    """
+    import json as _json
+
+    from niuu.domain.models import IntegrationType
+
+    connections = await integration_repo.list_connections(
+        owner_id="dev-user",
+        integration_type=IntegrationType.MESSAGING,
+    )
+    for conn in connections:
+        if not conn.enabled or conn.slug != "telegram":
+            continue
+        cred = await credential_store.get_value(  # type: ignore[attr-defined]
+            "user", "dev-user", conn.credential_name
+        )
+        if not isinstance(cred, dict):
+            continue
+        chat_id = cred.get("chat_id", "")
+        if not chat_id:
+            continue
+        existing = await pool.fetchrow(  # type: ignore[attr-defined]
+            """
+            SELECT 1 FROM notification_subscriptions
+            WHERE channel = 'telegram'
+              AND config->>'chat_id' = $1
+              AND owner_id = $2
+            LIMIT 1
+            """,
+            str(chat_id),
+            conn.owner_id,
+        )
+        if existing is not None:
+            return
+        await pool.execute(  # type: ignore[attr-defined]
+            """
+            INSERT INTO notification_subscriptions (owner_id, channel, config, enabled)
+            VALUES ($1, 'telegram', $2::jsonb, true)
+            """,
+            conn.owner_id,
+            _json.dumps({"chat_id": str(chat_id)}),
+        )
+        logger.info(
+            "Telegram subscription auto-bound from integration: chat=%s owner=%s",
+            chat_id,
+            conn.owner_id,
+        )
+        return
+
+
+async def _resolve_dev_telegram_bot_token(
+    integration_repo: PostgresIntegrationRepository,
+    credential_store: object,
+) -> str:
+    """Look up the dev-user's Telegram bot_token from integration_connections.
+
+    Returns "" if no enabled MESSAGING connection with slug "telegram" exists,
+    or if the credential record is missing/empty. The seeded value lives in
+    Volundr's ``integrations.seed_connections`` block in ~/.niuu/config.yaml
+    and gets persisted on Volundr boot — Tyr reads from the same shared
+    ``integration_connections`` table.
+    """
+    from niuu.domain.models import IntegrationType
+
+    connections = await integration_repo.list_connections(
+        owner_id="dev-user",
+        integration_type=IntegrationType.MESSAGING,
+    )
+    for conn in connections:
+        if not conn.enabled or conn.slug != "telegram":
+            continue
+        cred = await credential_store.get_value(  # type: ignore[attr-defined]
+            "user", "dev-user", conn.credential_name
+        )
+        if isinstance(cred, dict):
+            token = cred.get("bot_token", "")
+            if token:
+                return str(token)
+    return ""
+
+
+async def _seed_webhook_integration(
+    integration_repo: PostgresIntegrationRepository,
+    credential_store: object,
+    url: str,
+    secret: str = "",
+    min_urgency: str = "low",
+) -> None:
+    """Seed the outbound webhook channel as a MESSAGING IntegrationConnection.
+
+    Idempotent — uses a fixed ID so repeated calls update the same row.
+    The NotificationService picks the channel up via NotificationChannelFactory
+    alongside Telegram and any other MESSAGING integrations.
+    """
+    from datetime import UTC, datetime
+
+    from niuu.domain.models import IntegrationConnection, IntegrationType, SecretType
+
+    owner_id = "dev-user"
+    cred_name = "webhook-config"
+
+    await credential_store.store(
+        owner_type="user",
+        owner_id=owner_id,
+        name=cred_name,
+        secret_type=SecretType.API_KEY,
+        data={"secret": secret} if secret else {},
+    )
+
+    connection = IntegrationConnection(
+        id="0e1b3a82-7c4f-5d62-9e8b-1e4cf5ab21d3",
+        owner_id=owner_id,
+        integration_type=IntegrationType.MESSAGING,
+        adapter="tyr.adapters.webhook_notification.WebhookNotificationAdapter",
+        credential_name=cred_name,
+        config={"url": url, "min_urgency": min_urgency},
+        enabled=True,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        slug="webhook",
+    )
+    await integration_repo.save_connection(connection)
+
 
 async def _seed_linear_integration(
     integration_repo: PostgresIntegrationRepository,
@@ -247,6 +388,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.volundr_factory = VolundrAdapterFactory(
                     integration_repo, credential_store
                 )
+            # Default Volundr adapter for code paths that don't have a per-owner
+            # context (e.g. the Telegram webhook router's _get_volundr). In
+            # mini/anonymous-dev mode the factory always returns the same
+            # singleton; in multi-owner production the per-owner factory
+            # lookup is the right path and this default is a fallback.
+            app.state.volundr = await app.state.volundr_factory.primary_for_owner("dev-user")
             app.state.tracker_factory = TrackerAdapterFactory(
                 integration_repo, credential_store, pool=pool
             )
@@ -262,6 +409,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     adapter_class="tyr.adapters.linear.LinearTrackerAdapter",
                 )
                 logger.info("Linear integration seeded from config")
+
+            if settings.webhook.url:
+                await _seed_webhook_integration(
+                    integration_repo,
+                    credential_store,
+                    url=settings.webhook.url,
+                    secret=settings.webhook.secret,
+                    min_urgency=settings.webhook.min_urgency,
+                )
+                logger.info("Webhook integration seeded from config")
 
             # Override the tracker resolver dependency with factory delegation
             from tyr.adapters.inbound.auth import extract_principal
@@ -288,8 +445,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             notification_sub_repo = PostgresNotificationSubscriptionRepository(pool)
             app.state.notification_sub_repo = notification_sub_repo
 
-            # Wire dispatcher repository
-            dispatcher_repo = PostgresDispatcherRepository(pool)
+            # Wire dispatcher repository — seed auto_continue from config so
+            # solo-dev setups don't have to flip the flag via the API on every
+            # fresh DB. Once a row exists, the API/UI is the source of truth.
+            dispatcher_repo = PostgresDispatcherRepository(
+                pool,
+                auto_continue_default=settings.dispatch.auto_continue,
+            )
             app.state.dispatcher_repo = dispatcher_repo
 
             async def _resolve_dispatcher_repo() -> DispatcherRepository:
@@ -339,6 +501,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 config=DispatchServiceConfig(
                     default_system_prompt=settings.dispatch.default_system_prompt,
                     default_model=settings.dispatch.default_model,
+                    default_session_definition=settings.dispatch.default_session_definition,
                     dispatch_prompt_template=settings.dispatch.dispatch_prompt_template,
                     live_flock=settings.dispatch.flock,
                 ),
@@ -437,6 +600,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
             event_bus: EventBusPort = eb_cls(**eb_kwargs)
             app.state.event_bus = event_bus
+            # DispatchService was constructed before the event bus existed
+            # (it has no hard dependency on it), so back-fill the bus now
+            # so events like raid.state_changed (RUNNING) actually emit.
+            dispatch_svc._event_bus = event_bus
             logger.info("Event bus: %s", eb_cfg.adapter.rsplit(".", 1)[-1])
 
             async def _resolve_event_bus() -> EventBusPort:
@@ -467,11 +634,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 TelegramReplyClient,
             )
 
+            # Bot token resolution: prefer the explicit settings.telegram.bot_token,
+            # fall back to the value stored on the dev-user's MESSAGING integration
+            # (slug "telegram") so the seeded credential in
+            # integrations.seed_connections doesn't have to be duplicated.
+            bot_token = settings.telegram.bot_token
+            if not bot_token:
+                bot_token = await _resolve_dev_telegram_bot_token(
+                    integration_repo, credential_store
+                )
+                if bot_token:
+                    logger.info(
+                        "Telegram bot_token resolved from MESSAGING integration"
+                    )
+
+            # Bridge the seeded chat_id into notification_subscriptions so the
+            # webhook router's inbound auth check passes without any manual
+            # SQL or deeplink dance.
+            await _ensure_telegram_subscription_from_integration(
+                pool, integration_repo, credential_store
+            )
+
             telegram_reply_client = TelegramReplyClient(
-                bot_token=settings.telegram.bot_token,
+                bot_token=bot_token,
                 timeout=settings.telegram.reply_timeout,
             )
             app.state.telegram_reply_client = telegram_reply_client
+
+            from tyr.adapters.telegram_polling import (  # noqa: PLC0415
+                TelegramPollingService,
+            )
+
+            telegram_polling: TelegramPollingService | None = None
+            if settings.telegram.polling:
+                self_url = settings.telegram.polling_self_url
+                if not self_url:
+                    # Match the platform's bound interface so the in-process
+                    # forward succeeds. uvicorn typically binds to a single
+                    # NIC, so 127.0.0.1 is unreachable when start-dev pinned
+                    # the host to a LAN IP.
+                    host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1")
+                    port = os.environ.get("NIUU_SERVER_PORT", "8080")
+                    self_url = f"http://{host}:{port}"
+                telegram_polling = TelegramPollingService(
+                    bot_token=bot_token,
+                    webhook_secret=settings.telegram.webhook_secret,
+                    self_url=self_url,
+                    timeout=settings.telegram.reply_timeout,
+                )
+                await telegram_polling.start()
+            app.state.telegram_polling = telegram_polling
 
             # Wire LLM adapter (dynamic adapter pattern)
             from tyr.ports.llm import LLMPort as _LLMPort
@@ -668,6 +880,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if ravn_dispatcher is not None:
                 await ravn_dispatcher.close()
             await notification_service.stop()
+            if telegram_polling is not None:
+                await telegram_polling.stop()
             await telegram_reply_client.close()
             if hasattr(llm_adapter, "close"):
                 await llm_adapter.close()

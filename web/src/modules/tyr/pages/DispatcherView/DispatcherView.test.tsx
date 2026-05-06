@@ -22,6 +22,7 @@ const mockDefaults = {
     { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6' },
     { id: 'claude-opus-4-6', name: 'Opus 4.6' },
   ],
+  session_definitions: [],
 };
 
 const mockQueueItem = {
@@ -323,6 +324,7 @@ describe('DispatcherView', () => {
         'claude-sonnet-4-6',
         'test prompt',
         'c2',
+        undefined,
         undefined,
         undefined
       );

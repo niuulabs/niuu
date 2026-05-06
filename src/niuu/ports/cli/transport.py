@@ -60,6 +60,10 @@ class CLITransport(ABC):
     async def send_message(self, content: str) -> None:
         """Send a user message to the CLI."""
 
+    async def interrupt(self) -> None:
+        """Cancel the in-flight turn, if any. Default no-op."""
+        return None
+
     async def send_control_response(self, request_id: str, response: dict) -> None:
         """Respond to a CLI-initiated control request."""
 
