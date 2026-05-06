@@ -10,7 +10,9 @@ source_ids: [src_niu775_composite_adapter, src_niu775_domain_models, src_niu775_
 
 > **TL;DR** — Expose one composite Mimir MCP server, let reads fan out across all mounts, default writes to `local`, and use an explicit `mimir="shared"` override only when promoting vetted output. Do not make agents choose by MCP server name.
 
-## Recommended Routing Model
+## Compiled Truth
+
+### Recommended Routing Model
 
 | Mount | Use it for | Agent write behavior |
 |---|---|---|
@@ -40,7 +42,7 @@ WriteRouting(
 
 For `research/`, keep the default `local` write path and promote only the final distilled page to `shared`. This is a better fit than the older docs example that routes `research/` to `["shared", "domain"]`, because it avoids auto-writing into read-mostly corpora and keeps promotion intentional.
 
-## Naming and Description Scheme
+### Naming and Description Scheme
 
 Mount names should encode role first, corpus second.
 
@@ -58,7 +60,7 @@ Guidelines:
 - Make `domain-*` descriptions explicitly say `read-only`.
 - Keep the `mimir_write` tool description aligned with the same language so the model sees one consistent routing story.
 
-## Implicit vs Explicit vs Server-Name-Based
+### Implicit vs Explicit vs Server-Name-Based
 
 | Choice | Recommendation | Why |
 |---|---|---|
@@ -74,7 +76,7 @@ Best contract for agents:
 
 That gives the model one normal path and one explicit escape hatch, instead of forcing it to reason about infrastructure topology on every write.
 
-## One Composite Server vs Multiple MCP Servers
+### One Composite Server vs Multiple MCP Servers
 
 | Option | Benefits | Costs |
 |---|---|---|
@@ -83,7 +85,7 @@ That gives the model one normal path and one explicit escape hatch, instead of f
 
 Use multiple MCP servers only when mounts truly cannot share one trust boundary or one routing layer. Otherwise, a composite server is better for both agent accuracy and operator control.
 
-## Risks and Edge Cases
+### Risks and Edge Cases
 
 - Unknown mount names are only logged today. A bad routing config can silently skip writes.
 - A stale `local` page shadows a fresher `shared` page because lower `read_priority` wins.
@@ -91,7 +93,7 @@ Use multiple MCP servers only when mounts truly cannot share one trust boundary 
 - An explicit `mimir="domain-*"` override can bypass policy unless the domain adapter is actually read-only.
 - If mount descriptions drift away from routing behavior, the model will make the wrong choice even when the code is correct.
 
-## Recommendation for Niuu
+### Recommendation for Niuu
 
 1. Keep one composite Mimir MCP server per persona or runtime, not one server per mount.
 2. Standardize on `local`, `shared`, and optional `domain-*` mounts.
