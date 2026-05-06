@@ -490,8 +490,9 @@ jobs:
   helm-lint:
     name: Helm Lint
     needs: changes
-    if: needs.changes.outputs.tier == 'full' && needs.changes.outputs.helm == 'true'
     uses: ./.github/workflows/reusable-helm-lint.yaml
+    with:
+      run_lint: ${{ needs.changes.outputs.tier == 'full' && needs.changes.outputs.helm == 'true' }}
 
   # ---------------------------------------------------------------------------
   # Helm — smoke test (kind cluster) — full tier only
