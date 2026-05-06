@@ -287,9 +287,11 @@ def build_flock_prompt(
 
     parts += [
         "",
-        "Decompose this raid into coding tasks, delegate to the coder peer, collect"
-        " results, delegate review to the reviewer peer, iterate until acceptance"
-        " criteria are met, then publish your final outcome.",
+        (
+            "Decompose this raid into coding tasks, delegate to the coder peer, collect"
+            + " results, delegate review to the reviewer peer, iterate until acceptance"
+            + " criteria are met, then publish your final outcome."
+        ),
     ]
     return "\n".join(parts)
 

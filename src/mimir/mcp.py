@@ -339,11 +339,12 @@ class MimirMcpServer:
         try:
             result = await self._dispatch(method, req.get("params") or {})
             return {"jsonrpc": "2.0", "id": req_id, "result": result}
-        except _MethodNotFoundError as exc:
+        except _MethodNotFoundError:
+            logger.info("Unknown MCP method requested: %s", _sanitize_log(method))
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "error": {"code": -32601, "message": str(exc)},
+                "error": {"code": -32601, "message": "Method not found"},
             }
         except Exception:
             logger.exception("MCP tool error for method %s", _sanitize_log(method))

@@ -24,7 +24,6 @@ State files
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import signal
@@ -35,7 +34,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO
 
 import typer
 
@@ -846,32 +844,37 @@ def _find_tail() -> str | None:
 
 def _python_tail(paths: list[str], *, lines: int, follow: bool) -> None:
     """Minimal pure-Python tail — prints last *lines* then optionally follows."""
-    with contextlib.ExitStack() as stack:
-        handles: list[tuple[str, IO[str]]] = []
-        for p in paths:
+    last_content: dict[str, str] = {}
+
+    try:
+        for path in paths:
             try:
-                fh = stack.enter_context(open(p))
+                content = Path(path).read_text()
             except OSError:
-                pass
-            else:
-                handles.append((p, fh))
+                continue
 
-        try:
-            for path, fh in handles:
-                content = fh.read().splitlines()
-                header = f"==> {path} <=="
-                typer.echo(header)
-                for line in content[-lines:]:
-                    typer.echo(line)
+            last_content[path] = content
+            typer.echo(f"==> {path} <==")
+            for line in content.splitlines()[-lines:]:
+                typer.echo(line)
 
-            if not follow:
-                return
+        if not follow:
+            return
 
-            while True:
-                for path, fh in handles:
-                    chunk = fh.read()
-                    if chunk:
-                        typer.echo(chunk, nl=False)
-                time.sleep(0.25)
-        except KeyboardInterrupt:
-            pass
+        while True:
+            for path in paths:
+                try:
+                    content = Path(path).read_text()
+                except OSError:
+                    continue
+
+                previous = last_content.get(path, "")
+                if len(content) > len(previous):
+                    typer.echo(content[len(previous) :], nl=False)
+                elif len(content) < len(previous):
+                    typer.echo(f"\n==> {path} <==")
+                    typer.echo(content, nl=False)
+                last_content[path] = content
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        pass

@@ -425,8 +425,10 @@ def _build_page_content(
         f"Session `{session_id}` ({date.strftime('%Y-%m-%d')}): {evidence}",
         "",
         "## Confidence Rationale",
-        "Low confidence — observed once. Upgraded to medium after 2 sessions, "
-        "high after 3 or more.",
+        (
+            "Low confidence — observed once. Upgraded to medium after 2 sessions, "
+            "high after 3 or more."
+        ),
     ]
 
     return "\n".join(frontmatter_lines) + "\n\n" + "\n".join(body_lines) + "\n"
