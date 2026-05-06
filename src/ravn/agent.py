@@ -50,9 +50,7 @@ if TYPE_CHECKING:
 
 try:
     from sleipnir.domain.catalog import ravn_session_ended, ravn_session_started
-    from sleipnir.ports.events import SleipnirPublisher as _SleipnirPublisher
 except ImportError:  # sleipnir not available in all environments
-    _SleipnirPublisher = None  # type: ignore[assignment,misc]
     ravn_session_started = None  # type: ignore[assignment]
     ravn_session_ended = None  # type: ignore[assignment]
 
