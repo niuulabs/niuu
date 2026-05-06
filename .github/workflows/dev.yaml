@@ -460,3 +460,41 @@ jobs:
           name: niuu-dev-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
           retention-days: 14
+
+  build-ravn:
+    name: "Build Ravn (${{ matrix.os }}/${{ matrix.arch }})"
+    needs: [tag]
+    if: needs.tag.outputs.should_release == 'true'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: darwin
+            arch: arm64
+            runner: macos-15
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
+        with:
+          extras: "--python 3.12 --extra cli --extra dev"
+
+      - name: Build
+        run: make build-ravn
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ravn-dev-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/ravn-${{ matrix.os }}-${{ matrix.arch }}
+          retention-days: 14

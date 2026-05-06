@@ -40,8 +40,6 @@ INCLUDE_PACKAGES = [
     # Serialisation
     "pydantic",
     "pydantic_core",
-    # Anthropic SDK
-    "anthropic",
 ]
 
 INCLUDE_PACKAGE_DATA = [
