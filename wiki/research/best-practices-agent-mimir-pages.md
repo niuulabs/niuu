@@ -10,6 +10,8 @@ source_ids: [src_4f708cf8a2eee67a, src_niu776_format_md]
 
 > **TL;DR** — Agent personas should follow a consistent template, cite sources without copying text, search before writing to avoid duplicates, and pass a short lint checklist before committing a page.
 
+> **See also:** [Mimir Mount Selection](mimir-mount-selection.md) — which Mimir volumes are mounted per persona. [Research Persona Evaluation Rubric](research-persona-evaluation-rubric.md) — scoring criteria for research page quality.
+
 ## Compiled Truth
 
 ### Page Template

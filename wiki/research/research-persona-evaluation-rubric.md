@@ -2,13 +2,15 @@
 type: research
 confidence: high
 produced_by_thread: true
-related_entities: []
+related_entities: [best-practices-agent-mimir-pages, thread-based-human-interface-patterns]
 source_ids: [src_niu778_internal_mimir, src_niu778_mt_bench, src_niu778_position_bias, src_niu778_alpacaeval_length, src_niu778_benchmark_contamination]
 ---
 
 # Evaluation Rubric for Claude vs Codex Research Personas
 
 > **TL;DR** — Compare research personas with blinded pairwise review on the same prompt, score mostly for factual grounding and usefulness, track cost and process hygiene separately, and rerun a small 6-task benchmark each week with a larger hidden set monthly.
+
+> **See also:** [Best Practices for Agent-Written Mimir Pages](best-practices-agent-mimir-pages.md) — conventions this rubric assumes (front matter, structure, lint checklist). [Thread-Based Human Interface Patterns](thread-based-human-interface-patterns.md) — how research sessions are surfaced to human reviewers during evaluation runs.
 
 ## Compiled Truth
 
