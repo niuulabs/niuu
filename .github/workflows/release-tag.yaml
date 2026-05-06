@@ -107,7 +107,7 @@ jobs:
     name: Determine Version & Tag
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Generate GitHub App token
         id: app-token
@@ -180,6 +180,8 @@ jobs:
 
       - name: Create and push tag
         if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           VERSION="${{ steps.version.outputs.new_version }}"
           git config user.name "github-actions[bot]"

@@ -341,7 +341,8 @@ if items:
             log_info "  Monitoring session for 30s..."
             for i in $(seq 1 6); do
                 sleep 5
-                session_status=$(curl -sf "${PLATFORM_URL}/api/v1/volundr/sessions/${session_id}" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "?")
+                session_json="$(curl -sf "${PLATFORM_URL}/api/v1/volundr/sessions/${session_id}" 2>/dev/null || true)"
+                session_status="$(printf '%s' "${session_json}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo '?')"
                 log_info "    [${i}/6] Session status: ${session_status}"
                 if [[ "${session_status}" == "completed" ]] || [[ "${session_status}" == "stopped" ]]; then
                     break

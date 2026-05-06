@@ -41,9 +41,7 @@ on:
         type: string
         default: ghcr.io
 
-permissions:
-  contents: read
-  packages: write     # Required to push container images to ghcr.io
+permissions: read-all
 
 jobs:
   build:

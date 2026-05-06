@@ -3,18 +3,7 @@ name: CI
 on:
   pull_request:
 
-permissions:
-  actions: read
-  checks: read
-  contents: read
-  deployments: read
-  issues: read
-  packages: write     # Required by containers + build-charts + reusable-container-build jobs
-  pages: read
-  pull-requests: read
-  repository-projects: read
-  security-events: write  # Required by scan + reusable-container-scan jobs
-  statuses: read
+permissions: read-all
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -471,13 +460,13 @@ jobs:
           ls -1 "$PACK_DIR"
 
       - name: Install consumer app from local tarballs
-        # Install ALL niuulabs tarballs in one npm install so inter-package deps
+        # Install ALL niuulabs tarballs in one pnpm add so inter-package deps
         # (plugin-tyr → plugin-sdk, etc.) resolve from the local tarballs rather
         # than the registry (where 0.0.1 does not yet exist).
         working-directory: web-next/consumer-app
         run: |
           PACK_DIR="$GITHUB_WORKSPACE/web-next/.packed"
-          npm install $(ls "$PACK_DIR"/*.tgz | tr '\n' ' ')
+          pnpm add $(ls "$PACK_DIR"/*.tgz | tr '\n' ' ')
 
       - name: Install Playwright browsers
         working-directory: web-next/consumer-app

@@ -1,5 +1,7 @@
 FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c AS builder
 
+ARG TARGETARCH
+
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -10,26 +12,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     python3.12 \
     python3.12-venv \
-    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up Python virtual environment and upgrade pip immediately
-ENV VIRTUAL_ENV=/opt/venv
-RUN python3.12 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-
-# Upgrade pip to latest to avoid GHSA-4xh5-x5gv-qwph / GHSA-6vgw-5pg2-w6jp,
-# then install build backend
-RUN pip install --no-cache-dir --upgrade pip==25.0.1 \
-    && pip install --no-cache-dir hatchling==1.29.0
+# Install uv from a pinned release archive and resolve from the committed lockfile.
+RUN set -eux; \
+    UV_VERSION="0.11.10"; \
+    case "${TARGETARCH}" in \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="077e1a0777bcf516e02f4ef245e269c8d1baa780438e4c50e09c5c997f85538a" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="91d5f4583539640765662ef86edcf3bf4db07439b622c7bed50c961240162046" ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
+    echo "${UV_SHA256}  /tmp/${UV_ARCHIVE}" | sha256sum -c -; \
+    tar -xzf "/tmp/${UV_ARCHIVE}" -C /tmp; \
+    install -m 0755 "/tmp/${UV_ARCHIVE%.tar.gz}/uv" /usr/local/bin/uv; \
+    rm -rf "/tmp/${UV_ARCHIVE}" "/tmp/${UV_ARCHIVE%.tar.gz}"
 
 # Copy package and install
-COPY pyproject.toml README.md /app/
+WORKDIR /app
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN pip install --no-cache-dir '/app[k8s]'
-
-# Remove pip from the venv so it is absent from the runtime image
-RUN pip uninstall -y pip
+RUN uv sync --frozen --no-dev --no-editable --extra k8s
 
 # ---------------------------------------------------------------------------
 # Runtime — minimal image with no build tools or pip
@@ -57,7 +61,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create app user
 RUN useradd -m -s /bin/bash bifrost
 
-# Copy the pre-built venv from builder (no pip, no hatchling)
+# Copy the pre-built venv from builder.
 ENV VIRTUAL_ENV=/opt/venv
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
