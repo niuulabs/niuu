@@ -64,7 +64,7 @@ infra = [
 cli = [
     "typer>=0.25.1",
     "textual>=0.79",
-    "nuitka>=2.1",
+    "nuitka>=4.0.8",
     "ordered-set>=4.1",
     "patchelf>=0.14; sys_platform == 'linux'",
 ]
