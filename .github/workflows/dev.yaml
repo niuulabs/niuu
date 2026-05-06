@@ -13,7 +13,10 @@ on:
   push:
     branches: [dev]
 
-permissions: read-all
+permissions:
+  contents: write     # Required by tag job (git push)
+  packages: write     # Required by containers + build-charts jobs
+  security-events: write  # Required by scan job
 
 env:
   REGISTRY: ghcr.io
