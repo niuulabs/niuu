@@ -153,6 +153,13 @@ export interface SessionChatProps {
   ) => void;
   onStop?: () => void;
   onClear?: () => void;
+  /**
+   * Notify the backend whenever the user toggles internal-message visibility
+   * so the server can stop streaming tool_use / tool_result blocks over the
+   * wire (saves bandwidth and chronicle pollution). Optional — when omitted
+   * the toggle still works as a client-side filter.
+   */
+  onSetInternalVisibility?: (visible: boolean) => void;
   onSetModel?: (model: string) => void;
   onSetThinkingTokens?: (tokens: number) => void;
   onRewindFiles?: () => void;
@@ -196,6 +203,7 @@ export function SessionChat({
   onSendDirected,
   onStop,
   onClear,
+  onSetInternalVisibility,
   onSetModel,
   onSetThinkingTokens,
   onRewindFiles,
@@ -212,11 +220,18 @@ export function SessionChat({
     activeFilter,
     setActiveFilter,
     showInternal,
-    toggleInternal,
+    toggleInternal: toggleInternalLocal,
     visibleMessages,
     collapsedThreads,
     toggleThread,
   } = useRoomState(messages, participants);
+
+  const toggleInternal = useCallback(() => {
+    toggleInternalLocal();
+    if (onSetInternalVisibility) {
+      onSetInternalVisibility(!showInternal);
+    }
+  }, [toggleInternalLocal, onSetInternalVisibility, showInternal]);
 
   const [modelInput, setModelInput] = useState('');
   const [showModelInput, setShowModelInput] = useState(false);
@@ -568,6 +583,23 @@ export function SessionChat({
                 <Trash2Icon className="niuu-chat-control-icon" />
               </button>
             )}
+            <button
+              type="button"
+              className={cn(
+                'niuu-chat-control-btn',
+                showInternal && 'niuu-chat-control-btn--active',
+              )}
+              onClick={toggleInternal}
+              title={showInternal ? 'Hide tool calls and results' : 'Show tool calls and results'}
+              aria-pressed={showInternal}
+              data-testid="internal-toggle"
+            >
+              {showInternal ? (
+                <Eye className="niuu-chat-control-icon" />
+              ) : (
+                <EyeOff className="niuu-chat-control-icon" />
+              )}
+            </button>
           </div>
 
           {connected && (
@@ -626,26 +658,6 @@ export function SessionChat({
                   </button>
                 )}
 
-                {isRoomMode && (
-                  <button
-                    type="button"
-                    className={cn(
-                      'niuu-chat-control-btn',
-                      showInternal && 'niuu-chat-control-btn--active',
-                    )}
-                    onClick={toggleInternal}
-                    title={showInternal ? 'Hide internal messages' : 'Show internal messages'}
-                    aria-pressed={showInternal}
-                    data-testid="internal-toggle"
-                  >
-                    {showInternal ? (
-                      <Eye className="niuu-chat-control-icon" />
-                    ) : (
-                      <EyeOff className="niuu-chat-control-icon" />
-                    )}
-                    <span className="niuu-chat-control-label">Internal</span>
-                  </button>
-                )}
               </div>
             </div>
           )}

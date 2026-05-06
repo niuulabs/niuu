@@ -76,6 +76,7 @@ export function SessionChat({
     sendSetModel,
     sendSetMaxThinkingTokens,
     sendRewindFiles,
+    sendSetInternalVisibility,
     clearMessages,
     availableCommands,
     capabilities,
@@ -86,11 +87,16 @@ export function SessionChat({
     activeFilter,
     setActiveFilter,
     showInternal,
-    toggleInternal,
+    toggleInternal: toggleInternalLocal,
     visibleMessages,
     collapsedThreads,
     toggleThread,
   } = useRoomState(messages, participants);
+
+  const toggleInternal = useCallback(() => {
+    toggleInternalLocal();
+    sendSetInternalVisibility(!showInternal);
+  }, [toggleInternalLocal, sendSetInternalVisibility, showInternal]);
 
   const [modelInput, setModelInput] = useState('');
   const [showModelInput, setShowModelInput] = useState(false);
@@ -462,6 +468,20 @@ export function SessionChat({
                 <Trash2Icon className={styles.controlIcon} />
               </button>
             )}
+            <button
+              type="button"
+              className={cn(styles.controlBtn, showInternal && styles.controlBtnActive)}
+              onClick={toggleInternal}
+              title={showInternal ? 'Hide tool calls and results' : 'Show tool calls and results'}
+              aria-pressed={showInternal}
+              data-testid="internal-toggle"
+            >
+              {showInternal ? (
+                <Eye className={styles.controlIcon} />
+              ) : (
+                <EyeOff className={styles.controlIcon} />
+              )}
+            </button>
           </div>
 
           {connected && (
@@ -520,23 +540,6 @@ export function SessionChat({
                   </button>
                 )}
 
-                {isRoomMode && (
-                  <button
-                    type="button"
-                    className={cn(styles.controlBtn, showInternal && styles.controlBtnActive)}
-                    onClick={toggleInternal}
-                    title={showInternal ? 'Hide internal messages' : 'Show internal messages'}
-                    aria-pressed={showInternal}
-                    data-testid="internal-toggle"
-                  >
-                    {showInternal ? (
-                      <Eye className={styles.controlIcon} />
-                    ) : (
-                      <EyeOff className={styles.controlIcon} />
-                    )}
-                    <span className={styles.controlLabel}>Internal</span>
-                  </button>
-                )}
               </div>
             </div>
           )}

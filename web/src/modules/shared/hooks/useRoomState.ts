@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import type { SkuldChatMessage } from './useSkuldChat';
+import type { SkuldChatMessage, SkuldChatMessagePart } from './useSkuldChat';
 import type { RoomParticipant } from './useSkuldChat';
 
 export interface ThreadGroupData {
@@ -16,6 +16,7 @@ export interface UseRoomStateReturn {
   activeFilter: string;
   setActiveFilter: (f: string) => void;
   showInternal: boolean;
+  setShowInternal: (visible: boolean) => void;
   toggleInternal: () => void;
   filteredMessages: readonly SkuldChatMessage[];
   visibleMessages: readonly SkuldChatMessage[];
@@ -25,11 +26,23 @@ export interface UseRoomStateReturn {
 }
 
 const FILTER_ALL = 'all';
+const INTERNAL_PART_TYPES: ReadonlySet<SkuldChatMessagePart['type']> = new Set([
+  'tool_use',
+  'tool_result',
+]);
 
 function isVisibleMessage(msg: SkuldChatMessage): boolean {
   if (msg.role === 'system') return false;
   if (msg.role === 'assistant' && msg.status === 'complete' && !msg.content.trim()) return false;
   return true;
+}
+
+function stripInternalParts(msg: SkuldChatMessage): SkuldChatMessage | null {
+  if (!msg.parts || msg.parts.length === 0) return msg;
+  const kept = msg.parts.filter(p => !INTERNAL_PART_TYPES.has(p.type));
+  if (kept.length === msg.parts.length) return msg;
+  if (kept.length === 0 && !msg.content.trim()) return null;
+  return { ...msg, parts: kept };
 }
 
 export function useRoomState(
@@ -58,14 +71,23 @@ export function useRoomState(
     });
   }, []);
 
-  const filteredMessages = useMemo(() => {
-    if (!isRoomMode) return messages;
-
-    return messages.filter(msg => {
-      if (!showInternal && msg.visibility === 'internal') return false;
-      if (activeFilter !== FILTER_ALL && msg.participantId !== activeFilter) return false;
-      return true;
-    });
+  const filteredMessages = useMemo<readonly SkuldChatMessage[]>(() => {
+    const out: SkuldChatMessage[] = [];
+    for (const msg of messages) {
+      if (isRoomMode && !showInternal && msg.visibility === 'internal') continue;
+      if (isRoomMode && activeFilter !== FILTER_ALL && msg.participantId !== activeFilter) {
+        continue;
+      }
+      if (showInternal) {
+        out.push(msg);
+        continue;
+      }
+      const stripped = stripInternalParts(msg);
+      if (stripped) {
+        out.push(stripped);
+      }
+    }
+    return out;
   }, [messages, isRoomMode, activeFilter, showInternal]);
 
   // Remove system messages and empty assistant messages — same filter SessionChat
@@ -132,6 +154,7 @@ export function useRoomState(
     activeFilter,
     setActiveFilter,
     showInternal,
+    setShowInternal,
     toggleInternal,
     filteredMessages,
     visibleMessages,
