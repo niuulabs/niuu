@@ -758,12 +758,15 @@ describe('SettingsPage — Credential Form', { timeout: 30_000 }, () => {
     fireEvent.click(screen.getByText('Add Credential'));
     await waitFor(
       () => {
-        expect(screen.getByText('Select Type')).toBeDefined();
+        const overlay = document.querySelector('[class*="formOverlay"]');
+        expect(overlay).not.toBeNull();
       },
       { timeout: 20_000 }
     );
     // scope subsequent queries to the form overlay
-    const overlay = screen.getByText('Select Type').closest('[class*="formOverlay"]')!;
+    const overlay = document.querySelector('[class*="formOverlay"]') as HTMLElement | null;
+    expect(overlay).not.toBeNull();
+    expect(within(overlay as HTMLElement).getByText('API Key')).toBeDefined();
     return within(overlay as HTMLElement);
   }
 
@@ -855,11 +858,13 @@ describe('SettingsPage — Credential Form', { timeout: 30_000 }, () => {
     fireEvent.click(screen.getByText('Add Credential'));
     await waitFor(
       () => {
-        expect(screen.getByText('Select Type')).toBeDefined();
+        const overlay = document.querySelector('[class*="formOverlay"]');
+        expect(overlay).not.toBeNull();
       },
       { timeout: 20_000 }
     );
-    const overlay = screen.getByText('Select Type').closest('[class*="formOverlay"]')!;
+    const overlay = document.querySelector('[class*="formOverlay"]') as HTMLElement | null;
+    expect(overlay).not.toBeNull();
     const form = within(overlay as HTMLElement);
 
     fireEvent.click(form.getByText('API Key'));
@@ -897,11 +902,13 @@ describe('SettingsPage — Credential Form', { timeout: 30_000 }, () => {
     fireEvent.click(screen.getByText('Add Credential'));
     await waitFor(
       () => {
-        expect(screen.getByText('Select Type')).toBeDefined();
+        const overlay = document.querySelector('[class*="formOverlay"]');
+        expect(overlay).not.toBeNull();
       },
       { timeout: 20_000 }
     );
-    const overlay = screen.getByText('Select Type').closest('[class*="formOverlay"]')!;
+    const overlay = document.querySelector('[class*="formOverlay"]') as HTMLElement | null;
+    expect(overlay).not.toBeNull();
     const form = within(overlay as HTMLElement);
 
     fireEvent.click(form.getByText('API Key'));
