@@ -310,7 +310,11 @@ class MimirWriteTool(ToolPort):
             return None
 
         page = parse_compiled_truth_page(content)
-        source_ids = [str(source_id).strip() for source_id in page.source_ids if str(source_id).strip()]
+        source_ids = [
+            stripped_id
+            for source_id in page.source_ids
+            if (stripped_id := str(source_id).strip())
+        ]
         if not source_ids:
             return (
                 "research pages must include non-empty frontmatter 'source_ids' that point to "
@@ -334,7 +338,9 @@ class MimirWriteTool(ToolPort):
             )
 
         stripped_content = content.strip()
-        if resolved_sources and all(source.content.strip() == stripped_content for source in resolved_sources):
+        if resolved_sources and all(
+            source.content.strip() == stripped_content for source in resolved_sources
+        ):
             return (
                 "research page provenance only points to the page content itself; ingest the "
                 "actual source material you relied on, not the final synthesized page"

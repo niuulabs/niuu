@@ -259,10 +259,21 @@ class MimirMcpServer:
                     },
                     status_code=400,
                 )
-            response = await server.handle(body)
-            if response is None:
-                return JSONResponse(None, status_code=204)
-            return JSONResponse(response)
+            try:
+                response = await server.handle(body)
+                if response is None:
+                    return JSONResponse(None, status_code=204)
+                return JSONResponse(response)
+            except Exception:
+                logger.exception("MCP HTTP handler failed")
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32603, "message": "Internal error"},
+                    },
+                    status_code=500,
+                )
 
         return api_router
 

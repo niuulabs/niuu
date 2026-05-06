@@ -40,7 +40,10 @@ function makeDecorator(ravn: Ravn, allSectionsOpen = false) {
   }
   return function Decorator({ children }: { children: React.ReactNode }) {
     return (
-      <div style={{ width: 360, height: '100vh', background: 'var(--color-bg-primary)' }}>
+      <div
+        key={ravn.id}
+        style={{ width: 360, height: '100vh', background: 'var(--color-bg-primary)' }}
+      >
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
@@ -55,7 +58,6 @@ function makeDecorator(ravn: Ravn, allSectionsOpen = false) {
       </div>
     );
   };
-  void ravn;
 }
 
 const meta: Meta<typeof RavnDetail> = {

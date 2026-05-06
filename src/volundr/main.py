@@ -14,7 +14,6 @@ from uuid import NAMESPACE_URL, uuid5
 from fastapi import FastAPI
 
 from niuu.cors import apply_cors_middleware
-
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
 from volundr.adapters.inbound.rest_audit import create_audit_router, create_canonical_audit_router

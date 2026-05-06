@@ -1,11 +1,7 @@
 import { useMemo, useState } from 'react';
 import { LoadingIndicator } from '@/modules/shared';
 import { useDispatchQueue } from '../../hooks/useDispatchQueue';
-import type {
-  ModelOption,
-  QueueItem,
-  SessionDefinitionOption,
-} from '../../hooks/useDispatchQueue';
+import type { ModelOption, QueueItem, SessionDefinitionOption } from '../../hooks/useDispatchQueue';
 import { FlockToggle } from '../../components/FlockToggle';
 import styles from './DispatcherView.module.css';
 
@@ -282,9 +278,7 @@ export function DispatcherView() {
               onChange={e => setModelOverride(e.target.value)}
               disabled={isSubmitting || visibleModels.length === 0}
             >
-              {visibleModels.length === 0 && (
-                <option value="">No models for this runtime</option>
-              )}
+              {visibleModels.length === 0 && <option value="">No models for this runtime</option>}
               {visibleModels.map(m => (
                 <option key={m.id} value={m.id}>
                   {m.name}

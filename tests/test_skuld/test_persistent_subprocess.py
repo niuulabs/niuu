@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -84,7 +83,10 @@ def _assistant_line(text: str) -> bytes:
 
 
 def _system_line(session_id: str) -> bytes:
-    return json.dumps({"type": "system", "subtype": "init", "session_id": session_id}).encode() + b"\n"
+    return (
+        json.dumps({"type": "system", "subtype": "init", "session_id": session_id}).encode()
+        + b"\n"
+    )
 
 
 @pytest.mark.asyncio

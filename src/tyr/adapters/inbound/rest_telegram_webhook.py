@@ -15,7 +15,6 @@ import httpx
 from fastapi import APIRouter, Request, Response, status
 
 from tyr.config import ReviewConfig, TelegramConfig
-from tyr.domain.models import RaidStatus
 from tyr.domain.services.dispatch_service import DispatchItem, DispatchService
 from tyr.domain.services.raid_review import (
     InvalidRaidStateError,

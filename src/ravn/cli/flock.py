@@ -35,6 +35,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 import typer
 
@@ -846,12 +847,14 @@ def _find_tail() -> str | None:
 def _python_tail(paths: list[str], *, lines: int, follow: bool) -> None:
     """Minimal pure-Python tail — prints last *lines* then optionally follows."""
     with contextlib.ExitStack() as stack:
-        handles = []
+        handles: list[tuple[str, IO[str]]] = []
         for p in paths:
             try:
-                handles.append((p, stack.enter_context(open(p))))
+                fh = stack.enter_context(open(p))
             except OSError:
                 pass
+            else:
+                handles.append((p, fh))
 
         try:
             for path, fh in handles:

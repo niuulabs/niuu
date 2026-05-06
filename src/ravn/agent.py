@@ -1353,7 +1353,11 @@ async def _validate_mimir_outcome_for_persona(
                     f"research page {page_path} must include produced_by_thread: true"
                 )
 
-            source_ids = [str(source_id).strip() for source_id in page.meta.source_ids if str(source_id).strip()]
+            source_ids = [
+                stripped_id
+                for source_id in page.meta.source_ids
+                if (stripped_id := str(source_id).strip())
+            ]
             if not source_ids:
                 errors.append(
                     f"research page {page_path} has no source_ids provenance; ingest the "
