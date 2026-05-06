@@ -53,7 +53,14 @@ type CliStreamEvent = {
     usage?: { input_tokens?: number; output_tokens?: number };
     content?: Array<{ type: string; text?: string }>;
   };
-  content_block?: { type?: string; text?: string; id?: string; name?: string };
+  content_block?: {
+    type?: string;
+    text?: string;
+    id?: string;
+    name?: string;
+    tool_use_id?: string;
+    content?: string;
+  };
   delta?: {
     type?: string;
     text?: string;
@@ -134,6 +141,7 @@ interface UseSkuldChatResult {
   sendSetModel: (model: string) => void;
   sendSetThinkingTokens: (tokens: number) => void;
   sendRewindFiles: () => void;
+  sendSetInternalVisibility: (visible: boolean) => void;
   clearMessages: () => void;
 }
 
@@ -772,6 +780,20 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
               ];
               setStreamingParts([...streamingPartsRef.current]);
               syncStreamingMessage();
+            } else if (blockType === 'tool_result') {
+              const toolUseId = event.content_block?.tool_use_id ?? '';
+              if (toolUseId) {
+                streamingPartsRef.current = [
+                  ...streamingPartsRef.current,
+                  {
+                    type: 'tool_result',
+                    tool_use_id: toolUseId,
+                    content: event.content_block?.content ?? '',
+                  },
+                ];
+                setStreamingParts([...streamingPartsRef.current]);
+                syncStreamingMessage();
+              }
             }
             break;
           }
@@ -1313,6 +1335,8 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
     sendSetThinkingTokens: (tokens: number) =>
       sendJson({ type: 'set_max_thinking_tokens', max_thinking_tokens: tokens }),
     sendRewindFiles: () => sendJson({ type: 'rewind_files' }),
+    sendSetInternalVisibility: (visible: boolean) =>
+      sendJson({ type: 'set_internal_visibility', visible }),
     clearMessages,
   };
 }

@@ -23,7 +23,14 @@ interface CliStreamEvent {
 
   // 'content_block_start' event
   index?: number;
-  content_block?: { type: string; text?: string; id?: string; name?: string };
+  content_block?: {
+    type: string;
+    text?: string;
+    id?: string;
+    name?: string;
+    tool_use_id?: string;
+    content?: string;
+  };
 
   // 'content_block_delta' event
   delta?: {
@@ -358,6 +365,7 @@ interface UseSkuldChatReturn {
   sendSetModel: (model: string) => void;
   sendSetMaxThinkingTokens: (tokens: number) => void;
   sendRewindFiles: () => void;
+  sendSetInternalVisibility: (visible: boolean) => void;
   sendDirectedMessages: (peerIds: string[], text: string) => void;
   clearMessages: () => void;
 }
@@ -681,6 +689,25 @@ export function useSkuldChat(
               const id = streamingIdRef.current;
               const currentParts = [...streamingPartsRef.current];
               setMessages(prev => prev.map(m => (m.id === id ? { ...m, parts: currentParts } : m)));
+            }
+          } else if (blockType === 'tool_result') {
+            const toolUseId = event.content_block?.tool_use_id ?? '';
+            if (toolUseId) {
+              streamingPartsRef.current = [
+                ...streamingPartsRef.current,
+                {
+                  type: 'tool_result',
+                  tool_use_id: toolUseId,
+                  content: event.content_block?.content ?? '',
+                },
+              ];
+              if (streamingIdRef.current) {
+                const id = streamingIdRef.current;
+                const currentParts = [...streamingPartsRef.current];
+                setMessages(prev =>
+                  prev.map(m => (m.id === id ? { ...m, parts: currentParts } : m))
+                );
+              }
             }
           }
           continue;
@@ -1471,6 +1498,13 @@ export function useSkuldChat(
     sendJson({ type: 'rewind_files' });
   }, [sendJson]);
 
+  const sendSetInternalVisibility = useCallback(
+    (visible: boolean) => {
+      sendJson({ type: 'set_internal_visibility', visible });
+    },
+    [sendJson]
+  );
+
   const sendDirectedMessages = useCallback(
     (peerIds: string[], text: string) => {
       const trimmed = text.trim();
@@ -1536,6 +1570,7 @@ export function useSkuldChat(
     sendSetModel,
     sendSetMaxThinkingTokens,
     sendRewindFiles,
+    sendSetInternalVisibility,
     sendDirectedMessages,
     clearMessages,
   };

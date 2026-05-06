@@ -625,8 +625,11 @@ class TestItemLifecycle:
         assert assistant_events[0]["message"]["content"][0]["name"] == "Edit"
 
     @pytest.mark.asyncio
-    async def test_command_execution_completed_emits_stop_and_output(self, tmp_path):
-        """Command completion should close the tool block and show output as text."""
+    async def test_command_execution_completed_emits_tool_result(self, tmp_path):
+        """Command completion should close the tool_use block and emit a
+        tool_result content block paired by id, so the UI groups it under
+        the call instead of leaking output into the chat as plain text.
+        """
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
@@ -641,19 +644,21 @@ class TestItemLifecycle:
 
         events = _emitted_events(emit)
 
-        # content_block_stop for the tool_use block
+        # First stop closes the tool_use input block; second closes the result.
         stops = [e for e in events if e.get("type") == "content_block_stop"]
-        assert len(stops) >= 1
+        assert len(stops) == 2
 
-        # Output shown as text block
-        text_deltas = [
-            e
-            for e in events
-            if e.get("type") == "content_block_delta"
-            and e.get("delta", {}).get("type") == "text_delta"
-        ]
-        assert len(text_deltas) == 1
-        assert "file1.py" in text_deltas[0]["delta"]["text"]
+        starts = [e for e in events if e.get("type") == "content_block_start"]
+        assert len(starts) == 1
+        result_block = starts[0]["content_block"]
+        assert result_block["type"] == "tool_result"
+        assert result_block["tool_use_id"] == "cmd-1"
+        assert "file1.py" in result_block["content"]
+        assert "is_error" not in result_block
+
+        # No fresh text content_block — that was the bug.
+        text_starts = [s for s in starts if s["content_block"].get("type") == "text"]
+        assert text_starts == []
 
     @pytest.mark.asyncio
     async def test_command_execution_failed_shows_exit_code(self, tmp_path):
@@ -669,14 +674,14 @@ class TestItemLifecycle:
             }
         )
 
-        text_deltas = [
-            e
-            for e in _emitted_events(emit)
-            if e.get("type") == "content_block_delta"
-            and e.get("delta", {}).get("type") == "text_delta"
-        ]
-        assert len(text_deltas) == 1
-        assert "[exit code 1]" in text_deltas[0]["delta"]["text"]
+        events = _emitted_events(emit)
+        starts = [e for e in events if e.get("type") == "content_block_start"]
+        assert len(starts) == 1
+        result_block = starts[0]["content_block"]
+        assert result_block["type"] == "tool_result"
+        assert result_block["tool_use_id"] == "cmd-1"
+        assert "[exit code 1]" in result_block["content"]
+        assert result_block["is_error"] is True
 
     @pytest.mark.asyncio
     async def test_agent_message_started_emits_text_block(self, tmp_path):

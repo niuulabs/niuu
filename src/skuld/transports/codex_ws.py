@@ -546,6 +546,29 @@ class CodexWebSocketTransport(CLITransport):
         """Emit a content_block_stop event."""
         await self._emit({"type": "content_block_stop"})
 
+    async def _emit_tool_result(
+        self, tool_use_id: str, content: str, *, is_error: bool = False
+    ) -> None:
+        """Emit a tool_result content block paired to a previous tool_use by id.
+
+        The browser groups tool_use + tool_result with the same id into a
+        single collapsible block (see ``groupContentBlocks`` in the UI).
+        Emitting the result as a tool_result — rather than a fresh text
+        block — keeps the output attached to the call instead of leaking
+        into the surrounding chat stream.
+        """
+        if not tool_use_id:
+            return
+        block: dict = {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content,
+        }
+        if is_error:
+            block["is_error"] = True
+        await self._emit_content_block_start(block)
+        await self._emit_content_block_stop()
+
     async def _emit_tool_use(self, item_id: str, name: str, tool_input: dict) -> None:
         """Emit an assistant event (for broker tracking) + content_block lifecycle (for browser).
 
@@ -616,18 +639,19 @@ class CodexWebSocketTransport(CLITransport):
     async def _handle_item_completed(self, item: dict) -> None:
         """Emit content_block_stop and any final content when an item completes."""
         item_type = item.get("type", "")
+        item_id = item.get("id", "")
 
         if item_type == "commandExecution":
-            # Close the tool_use block
+            # Close the tool_use block, then emit the output as a tool_result
+            # paired by id so the UI groups it under the call.
             await self._emit_content_block_stop()
-            # Emit the output as a text block so the user sees the result
             output = item.get("aggregatedOutput", "")
-            if output:
-                await self._emit_content_block_start({"type": "text"})
-                exit_code = item.get("exitCode", 0)
+            exit_code = item.get("exitCode", 0)
+            if output or exit_code != 0:
                 prefix = "" if exit_code == 0 else f"[exit code {exit_code}] "
-                await self._emit_text_delta(prefix + output)
-                await self._emit_content_block_stop()
+                await self._emit_tool_result(
+                    item_id, prefix + output, is_error=exit_code != 0
+                )
             return
 
         if item_type == "agentMessage":
@@ -642,7 +666,28 @@ class CodexWebSocketTransport(CLITransport):
 
         if item_type in ("fileChange", "mcpToolCall", "webSearch"):
             await self._emit_content_block_stop()
+            result_text = self._extract_item_result_text(item)
+            if result_text:
+                is_error = bool(item.get("isError") or item.get("is_error"))
+                await self._emit_tool_result(item_id, result_text, is_error=is_error)
             return
+
+    @staticmethod
+    def _extract_item_result_text(item: dict) -> str:
+        """Best-effort textual extraction of a completed item's result payload."""
+        for key in ("result", "output", "response", "text", "summary"):
+            val = item.get(key)
+            if val is None:
+                continue
+            if isinstance(val, str):
+                if val:
+                    return val
+                continue
+            try:
+                return json.dumps(val)
+            except (TypeError, ValueError):
+                return str(val)
+        return ""
 
     # ------------------------------------------------------------------
     # Helpers
