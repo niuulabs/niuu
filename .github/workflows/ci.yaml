@@ -752,3 +752,8 @@ jobs:
 
       - name: Dependency review
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          # npm 11.13.0 is the current pinned bootstrap version and still bundles
+          # this advisory through its internal socks -> ip-address dependency chain.
+          # Keep dependency review strict elsewhere while allowing this upstream-only case.
+          allow-ghsas: GHSA-v2v4-37r5-5v8g
