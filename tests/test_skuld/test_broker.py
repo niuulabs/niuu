@@ -23,6 +23,7 @@ from skuld.broker import (
 from skuld.config import SkuldSettings
 from skuld.transports import (
     CodexSubprocessTransport,
+    SDKTransport,
     SdkWebSocketTransport,
     SubprocessTransport,
     TransportCapabilities,
@@ -136,6 +137,15 @@ class TestBroker:
 
         mock_import.assert_called_once_with("skuld.transports.subprocess.SubprocessTransport")
         assert isinstance(transport, SubprocessTransport)
+
+    def test_create_transport_sdk_adapter_path(self, tmp_path):
+        settings = SkuldSettings(
+            transport_adapter="skuld.transports.sdk.SDKTransport",
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+        )
+        b = Broker(settings=settings)
+        transport = b._create_transport()
+        assert isinstance(transport, SDKTransport)
 
     def test_create_transport_invalid_adapter_path(self, tmp_path):
         """Invalid adapter path (no dot) raises ValueError."""
