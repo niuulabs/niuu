@@ -110,6 +110,9 @@ class RaidReviewService:
                     "confidence": raid.confidence,
                     "action": action,
                     "tracker_id": raid.tracker_id,
+                    "url": raid.url,
+                    "pr_id": raid.pr_id,
+                    "pr_url": raid.pr_url,
                 },
             )
         )

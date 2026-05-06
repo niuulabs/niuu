@@ -351,6 +351,7 @@ class DispatchConfig:
 
     default_system_prompt: str = ""
     default_model: str = "claude-sonnet-4-6"
+    default_session_definition: str = ""
     dispatch_prompt_template: str = ""
     max_cached_issues: int = 10_000
     templates_dir: Path = BUNDLED_TEMPLATES_DIR
@@ -498,6 +499,12 @@ class DispatchService:
 
         effective_model = model or self._config.default_model
         effective_prompt = system_prompt or self._config.default_system_prompt
+        # session_definition fallback chain: explicit per-item → request-level
+        # → config default → None (lets volundr fall through to its own
+        # defaultDefinition).
+        effective_session_definition = (
+            session_definition or self._config.default_session_definition or None
+        )
 
         adapters = await self._tracker_factory.for_owner(owner_id)
         volundr = await self._volundr_factory.primary_for_owner(owner_id)
@@ -572,7 +579,7 @@ class DispatchService:
                 effective_model=effective_model,
                 effective_prompt=effective_prompt,
                 integration_ids=integration_ids,
-                session_definition=item.session_definition or session_definition,
+                session_definition=item.session_definition or effective_session_definition,
                 auth_token=auth_token,
                 owner_id=owner_id,
                 persona_overrides=persona_overrides,
@@ -1220,6 +1227,22 @@ class DispatchService:
                     )
 
             logger.info("Dispatched %s → session %s", issue.identifier, session.id)
+            if self._event_bus is not None:
+                await self._event_bus.emit(
+                    TyrEvent(
+                        event="raid.state_changed",
+                        owner_id=owner_id,
+                        data={
+                            "session_id": session.id,
+                            "owner_id": owner_id,
+                            "tracker_id": issue.identifier,
+                            "url": issue.url,
+                            "status": "RUNNING",
+                            "pr_id": None,
+                            "pr_url": None,
+                        },
+                    )
+                )
             return DispatchResult(
                 issue_id=item.issue_id,
                 session_id=session.id,

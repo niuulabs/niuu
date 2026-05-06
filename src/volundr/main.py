@@ -1209,7 +1209,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             background_task = asyncio.create_task(
                 _broadcast_periodic_updates(broadcaster, stats_service)
             )
-            await telegram_ingress.start()
+            if settings.telegram_ingress.enabled:
+                await telegram_ingress.start()
+            else:
+                logger.info(
+                    "Volundr Telegram ingress disabled via config "
+                    "(telegram_ingress.enabled=false)"
+                )
 
             # Reconcile sessions stuck in PROVISIONING after a restart
             await session_service.reconcile_provisioning_sessions()

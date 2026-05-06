@@ -183,6 +183,14 @@ class SessionDefinitionConfig(BaseModel):
     description: str = ""
     labels: list[str] = Field(default_factory=list)
     default_model: str = ""
+    compatible_providers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Model providers this runtime accepts (e.g. ['anthropic'], "
+            "['openai']). An empty list means the runtime is provider-neutral "
+            "and accepts any model."
+        ),
+    )
     defaults: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -199,11 +207,15 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             description="Anthropic Claude — full IDE with terminal, tools, and MCP",
             labels=["session", "claude"],
             default_model="claude-sonnet-4-6",
+            compatible_providers=["anthropic"],
             defaults={
                 "broker": {
                     "cliType": "claude",
-                    "transport": "subprocess",
-                    "transportAdapter": "skuld.transports.subprocess.SubprocessTransport",
+                    "transport": "persistent_subprocess",
+                    "transportAdapter": (
+                        "skuld.transports.persistent_subprocess."
+                        "PersistentSubprocessTransport"
+                    ),
                     "skipPermissions": True,
                     "agentTeams": False,
                 },
@@ -215,6 +227,7 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             description="OpenAI Codex — WebSocket protocol with streaming and tools",
             labels=["session", "codex"],
             default_model="",
+            compatible_providers=["openai"],
             defaults={
                 "broker": {
                     "cliType": "codex-ws",
@@ -230,6 +243,7 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             description="Model-neutral AI coding agent — Claude, OpenAI, Gemini, local",
             labels=["session", "opencode"],
             default_model="",
+            compatible_providers=[],
             defaults={
                 "broker": {
                     "cliType": "opencode",
@@ -1167,6 +1181,13 @@ class AIModelConfig(BaseModel):
 
     id: str
     name: str
+    provider: str = Field(
+        default="",
+        description=(
+            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google'). "
+            "Used to filter the model dropdown by the chosen session runtime."
+        ),
+    )
     cost_per_million_tokens: float = 0.0
 
 
@@ -1174,19 +1195,50 @@ def _default_models() -> list[AIModelConfig]:
     """Built-in model catalog so the wizard works without Helm config."""
     return [
         AIModelConfig(
-            id="claude-opus-4-6", name="Claude Opus 4.6", cost_per_million_tokens=15.0,
+            id="claude-opus-4-7", name="Claude Opus 4.7",
+            provider="anthropic", cost_per_million_tokens=15.0,
         ),
         AIModelConfig(
-            id="claude-sonnet-4-6", name="Claude Sonnet 4.6", cost_per_million_tokens=3.0,
+            id="claude-opus-4-6", name="Claude Opus 4.6",
+            provider="anthropic", cost_per_million_tokens=15.0,
         ),
         AIModelConfig(
-            id="claude-haiku-4-5-20251001", name="Claude Haiku 4.5", cost_per_million_tokens=1.0,
+            id="claude-sonnet-4-6", name="Claude Sonnet 4.6",
+            provider="anthropic", cost_per_million_tokens=3.0,
         ),
-        AIModelConfig(id="gpt-5.5", name="GPT-5.5", cost_per_million_tokens=10.0),
-        AIModelConfig(id="gpt-5.4", name="GPT-5.4", cost_per_million_tokens=5.0),
-        AIModelConfig(id="o4-mini", name="o4-mini", cost_per_million_tokens=1.1),
-        AIModelConfig(id="o3", name="o3", cost_per_million_tokens=10.0),
+        AIModelConfig(
+            id="claude-haiku-4-5-20251001", name="Claude Haiku 4.5",
+            provider="anthropic", cost_per_million_tokens=1.0,
+        ),
+        AIModelConfig(
+            id="gpt-5.5", name="GPT-5.5", provider="openai", cost_per_million_tokens=10.0,
+        ),
+        AIModelConfig(
+            id="gpt-5.4", name="GPT-5.4", provider="openai", cost_per_million_tokens=5.0,
+        ),
+        AIModelConfig(
+            id="o4-mini", name="o4-mini", provider="openai", cost_per_million_tokens=1.1,
+        ),
+        AIModelConfig(
+            id="o3", name="o3", provider="openai", cost_per_million_tokens=10.0,
+        ),
     ]
+
+
+class TelegramIngressConfig(BaseModel):
+    """Toggle for the Volundr-side Telegram update poller.
+
+    Volundr's TelegramIngressService runs ``getUpdates`` long-polling on every
+    enabled MESSAGING integration to route inbound Telegram messages into
+    Skuld session rooms. Telegram allows only one active poller per bot
+    token, so this conflicts with Tyr's polling shim (``telegram.polling``)
+    when both target the same bot. Disable here when Tyr's shim is the
+    intended consumer (``./start-dev`` solo dev). Defaults to True for
+    backwards compatibility with deployed environments that rely on the
+    in-session reply feature.
+    """
+
+    enabled: bool = Field(default=True)
 
 
 class Settings(BaseSettings):
@@ -1233,6 +1285,7 @@ class Settings(BaseSettings):
     provisioning: ProvisioningConfig = Field(default_factory=ProvisioningConfig)
     local_git: LocalGitConfig = Field(default_factory=LocalGitConfig)
     local_mounts: LocalMountsConfig = Field(default_factory=LocalMountsConfig)
+    telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=_default_session_definitions,

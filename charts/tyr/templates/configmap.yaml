@@ -90,6 +90,7 @@ data:
       {{- range $models }}
       - id: {{ .id | quote }}
         name: {{ .name | quote }}
+        provider: {{ .provider | default "" | quote }}
       {{- end }}
 
     cerbos:

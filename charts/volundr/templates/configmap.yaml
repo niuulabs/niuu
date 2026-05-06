@@ -66,6 +66,7 @@ data:
       {{- range $models }}
       - id: {{ .id | quote }}
         name: {{ .name | quote }}
+        provider: {{ .provider | default "" | quote }}
         cost_per_million_tokens: {{ .costPerMillionTokens | default 0 }}
       {{- end }}
 
@@ -88,6 +89,9 @@ data:
         default_model: {{ $def.defaultModel | default "" | quote }}
         {{- if $def.labels }}
         labels: {{ $def.labels | toJson }}
+        {{- end }}
+        {{- if $def.compatibleProviders }}
+        compatible_providers: {{ $def.compatibleProviders | toJson }}
         {{- end }}
         {{- if $def.defaults }}
         defaults: {{ $def.defaults | toJson }}

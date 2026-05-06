@@ -65,6 +65,32 @@ class StubSagaRepo(SagaRepository):
     def __init__(self, sagas: list[Saga] | None = None) -> None:
         self._sagas = sagas or []
 
+    def add_saga(self, *, slug: str = "alpha", owner_id: str = "user-1") -> Saga:
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+        from uuid import uuid4 as _uuid4
+
+        # Replace any existing saga with the same slug to keep test setup
+        # explicit — the fixture seeds a default saga, but tests that call
+        # add_saga(slug=...) want their own version of that saga.
+        self._sagas = [s for s in self._sagas if s.slug != slug]
+        saga = Saga(
+            id=_uuid4(),
+            tracker_id=f"proj-{slug}",
+            tracker_type="mock",
+            slug=slug,
+            name=slug.title(),
+            repos=["org/repo"],
+            feature_branch=f"feat/{slug}",
+            status=SagaStatus.ACTIVE,
+            confidence=0.0,
+            created_at=_datetime.now(_UTC),
+            base_branch="dev",
+            owner_id=owner_id,
+        )
+        self._sagas.append(saga)
+        return saga
+
     async def save_saga(self, saga: Saga, *, conn=None) -> None:  # noqa: ANN001
         pass
 
@@ -369,6 +395,42 @@ class StubReplyClient(TelegramReplyClient):
         pass
 
 
+class StubDispatchService:
+    """Minimal stub for /dispatch and /list tests.
+
+    Stores a fake ready queue and returns scripted DispatchResults — does not
+    actually call Volundr/tracker. Tests inspect ``dispatched`` to verify
+    the right items were forwarded.
+    """
+
+    def __init__(self) -> None:
+        self.queue: list[Any] = []
+        self.dispatched: list[tuple[list[Any], dict[str, Any]]] = []
+        self.next_results: list[Any] = []
+
+    async def find_ready_issues(
+        self,
+        owner_id: str,
+        *,
+        auth_token: str | None = None,
+        saga_tracker_id: str | None = None,
+    ) -> list[Any]:
+        del owner_id, auth_token
+        if saga_tracker_id is None:
+            return list(self.queue)
+        return [q for q in self.queue if q.saga_id == saga_tracker_id]
+
+    async def dispatch_issues(
+        self,
+        owner_id: str,
+        items: list[Any],
+        **kwargs: Any,
+    ) -> list[Any]:
+        del owner_id
+        self.dispatched.append((list(items), dict(kwargs)))
+        return list(self.next_results)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -477,6 +539,11 @@ def reply_client() -> StubReplyClient:
 
 
 @pytest.fixture
+def dispatch_service() -> StubDispatchService:
+    return StubDispatchService()
+
+
+@pytest.fixture
 def client(
     sub_repo: StubNotificationSubRepo,
     tracker: StubTracker,
@@ -484,6 +551,7 @@ def client(
     dispatcher_repo: StubDispatcherRepo,
     volundr: StubVolundr,
     reply_client: StubReplyClient,
+    dispatch_service: StubDispatchService,
 ) -> TestClient:
     app = FastAPI()
     app.include_router(create_telegram_webhook_router())
@@ -494,6 +562,7 @@ def client(
     app.state.dispatcher_repo = dispatcher_repo
     app.state.volundr = volundr
     app.state.telegram_reply_client = reply_client
+    app.state.dispatch_service = dispatch_service
     app.state.settings = SimpleNamespace(
         telegram=TelegramConfig(
             bot_token=BOT_TOKEN,
@@ -601,6 +670,7 @@ class TestWebhookSecretValidation:
         dispatcher_repo: StubDispatcherRepo,
         volundr: StubVolundr,
         reply_client: StubReplyClient,
+        dispatch_service: StubDispatchService,
     ):
         """When webhook_secret is empty in config, no validation occurs."""
         app = FastAPI()
@@ -612,6 +682,7 @@ class TestWebhookSecretValidation:
         app.state.dispatcher_repo = dispatcher_repo
         app.state.volundr = volundr
         app.state.telegram_reply_client = reply_client
+        app.state.dispatch_service = dispatch_service
         app.state.settings = SimpleNamespace(
             telegram=TelegramConfig(bot_token=BOT_TOKEN, webhook_secret=""),
             review=ReviewConfig(),
@@ -697,10 +768,10 @@ class TestStatusCommand:
         resp = _post_webhook(client, "/status")
         assert resp.status_code == 200
         reply = reply_client.replies[0][1]
-        assert "Dispatcher: running" in reply
-        assert "Active sagas: 1" in reply
+        assert "*Dispatcher:* _running_" in reply
+        assert "*Active sagas:* 1" in reply
         assert "Alpha" in reply
-        assert "Running sessions: 1" in reply
+        assert "*Running sessions:* 1" in reply
 
 
 # ---------------------------------------------------------------------------
@@ -920,7 +991,7 @@ class TestPauseResumeCommands:
         )
         resp = _post_webhook(client, "/pause")
         assert resp.status_code == 200
-        assert "already paused" in reply_client.replies[0][1].lower()
+        assert "already _paused_" in reply_client.replies[0][1].lower()
 
     def test_resume_paused_dispatcher(
         self,
@@ -944,7 +1015,7 @@ class TestPauseResumeCommands:
     def test_resume_already_running(self, client: TestClient, reply_client: StubReplyClient):
         resp = _post_webhook(client, "/resume")
         assert resp.status_code == 200
-        assert "already running" in reply_client.replies[0][1].lower()
+        assert "already _running_" in reply_client.replies[0][1].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -952,40 +1023,286 @@ class TestPauseResumeCommands:
 # ---------------------------------------------------------------------------
 
 
+def _make_queue_item(
+    *,
+    identifier: str = "NIU-221",
+    saga_id: str = "saga-1",
+    saga_slug: str = "alpha",
+    repos: list[str] | None = None,
+    title: str = "Test issue",
+    phase_name: str = "Phase 1",
+    url: str = "",
+) -> Any:
+    from tyr.domain.services.dispatch_service import QueueItem
+
+    return QueueItem(
+        saga_id=saga_id,
+        saga_name="Alpha",
+        saga_slug=saga_slug,
+        repos=repos or ["org/repo"],
+        feature_branch="feat/alpha",
+        phase_name=phase_name,
+        issue_id=f"issue-{identifier}",
+        identifier=identifier,
+        title=title,
+        description="",
+        status="Todo",
+        priority=1,
+        priority_label="Urgent",
+        estimate=2,
+        url=url,
+    )
+
+
+def _make_dispatch_result(
+    *,
+    issue_id: str,
+    session_id: str = "sess-abc",
+    status: str = "spawned",
+) -> Any:
+    from tyr.domain.services.dispatch_service import DispatchResult
+
+    return DispatchResult(
+        issue_id=issue_id,
+        session_id=session_id,
+        session_name="alpha-niu-221",
+        status=status,
+    )
+
+
 class TestDispatchCommand:
-    def test_dispatch_pending_raid(
+    def test_dispatch_spawns_session(
         self,
         client: TestClient,
-        tracker: StubTracker,
+        saga_repo: StubSagaRepo,
+        dispatch_service: StubDispatchService,
         reply_client: StubReplyClient,
     ):
-        raid = _make_raid(status=RaidStatus.PENDING)
-        tracker.add_raid(raid)
+        saga = saga_repo.add_saga(slug="alpha")
+        item = _make_queue_item(identifier="NIU-221", saga_id=str(saga.id))
+        dispatch_service.queue = [item]
+        dispatch_service.next_results = [_make_dispatch_result(issue_id=item.issue_id)]
 
         resp = _post_webhook(client, "/dispatch NIU-221")
         assert resp.status_code == 200
         reply = reply_client.replies[0][1]
-        assert "queued" in reply.lower()
-        assert "QUEUED" in reply
-        assert tracker.raids[raid.id].status == RaidStatus.QUEUED
+        assert "Dispatched" in reply
+        assert "NIU-221" in reply
+        assert "sess-abc" in reply
+        assert dispatch_service.dispatched, "dispatch_issues should have been called"
+        called_items, _ = dispatch_service.dispatched[0]
+        assert called_items[0].saga_id == str(saga.id)
 
-    def test_dispatch_wrong_state(
+    def test_dispatch_case_insensitive_identifier(
         self,
         client: TestClient,
-        tracker: StubTracker,
+        saga_repo: StubSagaRepo,
+        dispatch_service: StubDispatchService,
         reply_client: StubReplyClient,
     ):
-        raid = _make_raid(status=RaidStatus.RUNNING)
-        tracker.add_raid(raid)
+        saga = saga_repo.add_saga(slug="alpha")
+        item = _make_queue_item(identifier="NIU-777", saga_id=str(saga.id))
+        dispatch_service.queue = [item]
+        dispatch_service.next_results = [_make_dispatch_result(issue_id=item.issue_id)]
+
+        resp = _post_webhook(client, "/dispatch niu-777")
+        assert resp.status_code == 200
+        assert dispatch_service.dispatched, "lowercase identifier should still match"
+
+    def test_dispatch_with_model_and_runtime(
+        self,
+        client: TestClient,
+        saga_repo: StubSagaRepo,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        saga = saga_repo.add_saga(slug="alpha")
+        item = _make_queue_item(identifier="NIU-221", saga_id=str(saga.id))
+        dispatch_service.queue = [item]
+        dispatch_service.next_results = [_make_dispatch_result(issue_id=item.issue_id)]
+
+        resp = _post_webhook(client, "/dispatch NIU-221 gpt-5.5 skuldCodex")
+        assert resp.status_code == 200
+        reply = reply_client.replies[0][1]
+        assert "model=" in reply and "gpt-5.5" in reply
+        assert "runtime=" in reply and "skuldCodex" in reply
+
+        called_items, called_kwargs = dispatch_service.dispatched[0]
+        assert called_items[0].session_definition == "skuldCodex"
+        assert called_kwargs.get("model") == "gpt-5.5"
+        assert called_kwargs.get("session_definition") == "skuldCodex"
+
+    def test_dispatch_not_ready(
+        self,
+        client: TestClient,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        dispatch_service.queue = []  # nothing ready
 
         resp = _post_webhook(client, "/dispatch NIU-221")
         assert resp.status_code == 200
-        assert "RUNNING" in reply_client.replies[0][1]
+        assert "not ready" in reply_client.replies[0][1].lower()
+        assert not dispatch_service.dispatched
+
+    def test_dispatch_failed_result(
+        self,
+        client: TestClient,
+        saga_repo: StubSagaRepo,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        saga = saga_repo.add_saga(slug="alpha")
+        item = _make_queue_item(identifier="NIU-221", saga_id=str(saga.id))
+        dispatch_service.queue = [item]
+        dispatch_service.next_results = [
+            _make_dispatch_result(issue_id=item.issue_id, status="failed")
+        ]
+
+        resp = _post_webhook(client, "/dispatch NIU-221")
+        assert resp.status_code == 200
+        assert "failed" in reply_client.replies[0][1].lower()
 
     def test_dispatch_no_args(self, client: TestClient, reply_client: StubReplyClient):
         resp = _post_webhook(client, "/dispatch")
         assert resp.status_code == 200
         assert "Usage" in reply_client.replies[0][1]
+
+    def test_dispatch_reply_uses_clickable_link(
+        self,
+        client: TestClient,
+        saga_repo: StubSagaRepo,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        saga = saga_repo.add_saga(slug="alpha")
+        item = _make_queue_item(
+            identifier="NIU-221",
+            saga_id=str(saga.id),
+            url="https://linear.app/team/issue/NIU-221",
+        )
+        dispatch_service.queue = [item]
+        dispatch_service.next_results = [_make_dispatch_result(issue_id=item.issue_id)]
+
+        resp = _post_webhook(client, "/dispatch NIU-221")
+        assert resp.status_code == 200
+        reply = reply_client.replies[0][1]
+        assert "[NIU-221](https://linear.app/team/issue/NIU-221)" in reply
+
+
+# ---------------------------------------------------------------------------
+# /list command
+# ---------------------------------------------------------------------------
+
+
+class TestListCommand:
+    def test_list_empty(
+        self,
+        client: TestClient,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        dispatch_service.queue = []
+        resp = _post_webhook(client, "/list")
+        assert resp.status_code == 200
+        assert "No ready raids" in reply_client.replies[0][1]
+
+    def test_list_default_limit(
+        self,
+        client: TestClient,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        dispatch_service.queue = [
+            _make_queue_item(identifier=f"NIU-{i}", title=f"Issue {i}") for i in range(15)
+        ]
+        resp = _post_webhook(client, "/list")
+        assert resp.status_code == 200
+        reply = reply_client.replies[0][1]
+        # Default limit is 10
+        assert "showing 10 of 15" in reply
+        assert "NIU-0" in reply
+        assert "NIU-9" in reply
+        assert "NIU-10" not in reply
+
+    def test_list_with_limit(
+        self,
+        client: TestClient,
+        saga_repo: StubSagaRepo,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        saga = saga_repo.add_saga(slug="alpha")
+        dispatch_service.queue = [
+            _make_queue_item(identifier=f"NIU-{i}", saga_id=saga.tracker_id) for i in range(15)
+        ]
+        resp = _post_webhook(client, "/list alpha 3")
+        assert resp.status_code == 200
+        reply = reply_client.replies[0][1]
+        assert "showing 3 of 15" in reply
+
+    def test_list_scoped_to_saga(
+        self,
+        client: TestClient,
+        saga_repo: StubSagaRepo,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        saga_alpha = saga_repo.add_saga(slug="alpha")
+        saga_beta = saga_repo.add_saga(slug="beta")
+        dispatch_service.queue = [
+            _make_queue_item(identifier="NIU-1", saga_id=saga_alpha.tracker_id, saga_slug="alpha"),
+            _make_queue_item(identifier="NIU-2", saga_id=saga_beta.tracker_id, saga_slug="beta"),
+        ]
+        resp = _post_webhook(client, "/list alpha")
+        assert resp.status_code == 200
+        reply = reply_client.replies[0][1]
+        assert "NIU-1" in reply
+        assert "NIU-2" not in reply
+
+    def test_list_unknown_saga(
+        self,
+        client: TestClient,
+        reply_client: StubReplyClient,
+    ):
+        resp = _post_webhook(client, "/list does-not-exist")
+        assert resp.status_code == 200
+        assert "Saga not found" in reply_client.replies[0][1]
+
+    def test_list_invalid_limit(
+        self,
+        client: TestClient,
+        reply_client: StubReplyClient,
+    ):
+        resp = _post_webhook(client, "/list alpha not-a-number")
+        assert resp.status_code == 200
+        assert "Invalid limit" in reply_client.replies[0][1]
+
+    def test_list_renders_url_as_clickable_link(
+        self,
+        client: TestClient,
+        dispatch_service: StubDispatchService,
+        reply_client: StubReplyClient,
+    ):
+        dispatch_service.queue = [
+            _make_queue_item(
+                identifier="NIU-100",
+                title="Fix auth",
+                url="https://linear.app/team/issue/NIU-100",
+            ),
+            _make_queue_item(
+                identifier="NIU-101",
+                title="No url",
+                url="",
+            ),
+        ]
+        resp = _post_webhook(client, "/list")
+        assert resp.status_code == 200
+        reply = reply_client.replies[0][1]
+        # Markdown link for the one with a URL
+        assert "[NIU-100](https://linear.app/team/issue/NIU-100)" in reply
+        # Backticks fallback for the one without
+        assert "`NIU-101`" in reply
 
 
 # ---------------------------------------------------------------------------
@@ -1142,6 +1459,7 @@ class TestDispatchCommandFunction:
             saga_repo=StubSagaRepo(),
             volundr=StubVolundr(),
             dispatcher_repo=StubDispatcherRepo(),
+            dispatch_service=StubDispatchService(),
             review_service=RaidReviewService(stub_tracker, OWNER_ID, ReviewConfig()),
         )
         assert "Unknown command" in result

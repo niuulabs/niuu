@@ -539,6 +539,9 @@ class TestDispatchBrowserMessage:
     @pytest.mark.asyncio
     async def test_dispatch_user_message(self, test_broker):
         await test_broker._dispatch_browser_message({"content": "hello"})
+        # send_message now runs in a background task so the WS handler
+        # doesn't block on the per-turn lock; pump the loop so the task runs.
+        await asyncio.sleep(0)
         test_broker._transport.send_message.assert_called_once_with("hello")
 
     @pytest.mark.asyncio
@@ -1711,6 +1714,8 @@ class TestHandleWebSocket:
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
 
         await test_broker.handle_websocket(mock_ws)
+        # send_message runs in a background task; pump the loop so it runs.
+        await asyncio.sleep(0)
 
         mock_ws.accept.assert_called_once()
         # Welcome message + no error
@@ -1796,8 +1801,18 @@ class TestHandleWebSocket:
         mock_transport.start.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_handle_websocket_dispatch_error(self, test_broker):
-        """Errors during dispatch are sent as error events to the browser."""
+    async def test_handle_websocket_dispatch_error(
+        self, test_broker, caplog: pytest.LogCaptureFixture
+    ):
+        """Errors raised by transport.send_message are caught + logged.
+
+        send_message now runs in a background task so the WS receive loop
+        doesn't stall for the duration of a turn. The error is surfaced via
+        ``_safe_transport_send``: log the exception and broadcast an error
+        event to any still-open channels. Tests check the log; broadcasting
+        is best-effort because by the time the background task runs, the WS
+        the user typed from may already have disconnected.
+        """
         mock_transport = AsyncMock()
         mock_transport.is_alive = True
         mock_transport.capabilities = TransportCapabilities()
@@ -1807,14 +1822,13 @@ class TestHandleWebSocket:
         mock_ws = AsyncMock()
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
 
-        await test_broker.handle_websocket(mock_ws)
+        with caplog.at_level("ERROR"):
+            await test_broker.handle_websocket(mock_ws)
+            # Let the background send_message task run.
+            await asyncio.sleep(0)
 
-        # Should have sent an error message
-        error_calls = [
-            c for c in mock_ws.send_json.call_args_list if c[0][0].get("type") == "error"
-        ]
-        assert len(error_calls) == 1
-        assert "CLI error" in error_calls[0][0][0]["content"]
+        assert mock_transport.send_message.await_count == 1
+        assert "Transport send_message failed" in caplog.text
 
     @pytest.mark.asyncio
     async def test_handle_websocket_unexpected_exception(self, test_broker):

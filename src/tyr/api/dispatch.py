@@ -65,6 +65,7 @@ class QueueItemResponse(BaseModel):
 class ModelOption(BaseModel):
     id: str
     name: str
+    provider: str = ""
 
 
 class DispatchConfigResponse(BaseModel):
@@ -304,7 +305,10 @@ def create_dispatch_router() -> APIRouter:
         return DispatchConfigResponse(
             default_system_prompt=settings.dispatch.default_system_prompt,
             default_model=settings.dispatch.default_model,
-            models=[ModelOption(id=m.id, name=m.name) for m in settings.ai_models],
+            models=[
+                ModelOption(id=m.id, name=m.name, provider=m.provider)
+                for m in settings.ai_models
+            ],
             flock_enabled=flock.enabled,
             flock_default_personas=[
                 FlockPersonaResponse(name=p.name, llm=dict(p.llm)) for p in flock.default_personas

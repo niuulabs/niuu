@@ -478,11 +478,32 @@ class SessionActivitySubscriber:
 
         raid, tracker = await self._find_raid_for_session(event.session_id, owner_id)
         if raid is None or tracker is None:
+            # Not a working-session failure. The session may still be a
+            # tracked reviewer that died early (e.g. provisioning hit the
+            # max-concurrent cap before the reviewer could start). Without
+            # this hop the raid would sit in REVIEW indefinitely with a
+            # phantom reviewer_session_id.
+            await self._try_handle_reviewer_failure(
+                event.session_id, event.session_status or "failed"
+            )
             return
 
         await self._handle_failure(
             raid, tracker, owner_id, reason=f"Session {event.session_status}"
         )
+
+    async def _try_handle_reviewer_failure(self, session_id: str, reason: str) -> None:
+        """If the failed session is a tracked reviewer, hand off to review_engine."""
+        if self._review_engine is None:
+            return
+        try:
+            await self._review_engine.handle_reviewer_failure(session_id, reason)
+        except Exception:
+            logger.warning(
+                "Failed to handle reviewer failure for session %s",
+                session_id,
+                exc_info=True,
+            )
 
     async def _handle_failure(
         self,
@@ -553,6 +574,7 @@ class SessionActivitySubscriber:
                     "session_id": raid.session_id,
                     "owner_id": owner_id,
                     "tracker_id": raid.tracker_id,
+                    "url": raid.url,
                     "status": status,
                     "pr_id": pr_id,
                     "pr_url": pr_url,

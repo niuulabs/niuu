@@ -43,6 +43,7 @@ export * from './primitives/ToolPicker';
 export * from './primitives/SchemaEditor';
 export { cn } from './utils/cn';
 export { relTime } from './utils/relTime';
+export { randomId } from './utils/randomId';
 
 /* Chat */
 export * from './chat';

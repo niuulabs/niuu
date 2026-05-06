@@ -5,6 +5,7 @@ import type { PersonaConfig } from './useFlockConfig';
 export type { PersonaConfig };
 
 const api = createApiClient('/api/v1/tyr/dispatch');
+const volundrApi = createApiClient('/api/v1/volundr');
 
 export interface QueueItem {
   saga_id: string;
@@ -27,12 +28,23 @@ export interface QueueItem {
 export interface ModelOption {
   id: string;
   name: string;
+  provider?: string;
+}
+
+export interface SessionDefinitionOption {
+  key: string;
+  display_name: string;
+  description: string;
+  labels: string[];
+  default_model: string;
+  compatible_providers: string[];
 }
 
 export interface DispatchDefaults {
   default_system_prompt: string;
   default_model: string;
   models: ModelOption[];
+  session_definitions: SessionDefinitionOption[];
   flock_enabled: boolean;
   flock_default_personas: PersonaConfig[];
   flock_llm_config: Record<string, unknown>;
@@ -75,7 +87,8 @@ interface UseDispatchQueueResult {
     systemPrompt: string,
     connectionId?: string,
     workloadType?: string,
-    workloadConfig?: Record<string, unknown>
+    workloadConfig?: Record<string, unknown>,
+    sessionDefinition?: string
   ) => Promise<DispatchResult[]>;
 }
 
@@ -85,6 +98,7 @@ export function useDispatchQueue(): UseDispatchQueueResult {
     default_system_prompt: '',
     default_model: 'claude-sonnet-4-6',
     models: [],
+    session_definitions: [],
     flock_enabled: false,
     flock_default_personas: [],
     flock_llm_config: {},
@@ -99,13 +113,16 @@ export function useDispatchQueue(): UseDispatchQueueResult {
     setLoading(true);
     setError(null);
     try {
-      const [queueData, configData, clusterData] = await Promise.all([
+      const [queueData, configData, clusterData, sessionDefinitions] = await Promise.all([
         api.get<QueueItem[]>('/queue'),
-        api.get<DispatchDefaults>('/config'),
+        api.get<Omit<DispatchDefaults, 'session_definitions'>>('/config'),
         api.get<ClusterInfo[]>('/clusters'),
+        volundrApi
+          .get<SessionDefinitionOption[]>('/session-definitions')
+          .catch(() => [] as SessionDefinitionOption[]),
       ]);
       setQueue(queueData);
-      setDefaults(configData);
+      setDefaults({ ...configData, session_definitions: sessionDefinitions });
       setClusters(clusterData);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -125,7 +142,8 @@ export function useDispatchQueue(): UseDispatchQueueResult {
       systemPrompt: string,
       connectionId?: string,
       workloadType?: string,
-      workloadConfig?: Record<string, unknown>
+      workloadConfig?: Record<string, unknown>,
+      sessionDefinition?: string
     ): Promise<DispatchResult[]> => {
       setDispatching(true);
       try {
@@ -136,6 +154,7 @@ export function useDispatchQueue(): UseDispatchQueueResult {
           ...(connectionId ? { connection_id: connectionId } : {}),
           ...(workloadType ? { workload_type: workloadType } : {}),
           ...(workloadConfig ? { workload_config: workloadConfig } : {}),
+          ...(sessionDefinition ? { session_definition: sessionDefinition } : {}),
         });
         // Remove dispatched items from queue locally
         const dispatched = new Set(

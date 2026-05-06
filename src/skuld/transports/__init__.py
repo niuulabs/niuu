@@ -19,6 +19,9 @@ from skuld.transports.codex import (  # noqa: E402
 )
 from skuld.transports.codex_ws import CodexWebSocketTransport  # noqa: E402
 from skuld.transports.opencode import OpenCodeHttpTransport  # noqa: E402
+from skuld.transports.persistent_subprocess import (  # noqa: E402
+    PersistentSubprocessTransport,
+)
 from skuld.transports.sdk_websocket import SdkWebSocketTransport  # noqa: E402
 from skuld.transports.subprocess import SubprocessTransport  # noqa: E402
 
@@ -28,6 +31,7 @@ __all__ = [
     "CodexWebSocketTransport",
     "EventCallback",
     "OpenCodeHttpTransport",
+    "PersistentSubprocessTransport",
     "SdkWebSocketTransport",
     "SubprocessTransport",
     "TransportCapabilities",

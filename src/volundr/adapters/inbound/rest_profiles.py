@@ -226,6 +226,11 @@ class SessionDefinitionResponse(BaseModel):
     description: str = Field(description="Short description")
     labels: list[str] = Field(description="Routing labels")
     default_model: str = Field(description="Default model for this definition")
+    compatible_providers: list[str] = Field(
+        description=(
+            "Model providers this runtime accepts (empty list = provider-neutral)."
+        ),
+    )
 
     @classmethod
     def from_config(cls, key: str, defn: SessionDefinitionConfig) -> SessionDefinitionResponse:
@@ -235,6 +240,7 @@ class SessionDefinitionResponse(BaseModel):
             description=defn.description,
             labels=defn.labels,
             default_model=defn.default_model,
+            compatible_providers=defn.compatible_providers,
         )
 
 
