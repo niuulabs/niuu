@@ -2,13 +2,15 @@
 type: research
 confidence: high
 produced_by_thread: true
-related_entities: [best-practices-agent-mimir-pages, research-persona-evaluation-rubric]
+related_entities: [best-practices-agent-mimir-pages, research-persona-evaluation-rubric, mimir-mount-selection]
 source_ids: [src_niu777_telegram_bot_api, src_niu777_slack_api, src_niu777_discord_api, src_niu777_whatsapp_cloud_api, src_niu777_teams_bot_fw, src_niu777_matrix_spec]
 ---
 
 # Thread-Based Human Interface Patterns for Active Sessions
 
 > **TL;DR** — Map each agent session to exactly one platform thread using a generic `CommunicationRoute` envelope that carries platform, conversation ID, thread ID, and direction metadata. Mirror public-facing agent output and human-approval prompts; keep internal tool calls, thinking blocks, and inter-agent mesh traffic internal.
+
+> **See also:** [Best Practices for Agent-Written Mimir Pages](best-practices-agent-mimir-pages.md) — formatting and lint rules for this page type. [Mimir Mount Selection for Agents](mimir-mount-selection.md) — how research pages like this one are routed to `local` vs. `shared` mounts.
 
 ## Compiled Truth
 
@@ -43,7 +45,14 @@ CommunicationRoute {
 
 Extends the `CommunicationRoute` domain model (`src/volundr/domain/models.py`) and `TelegramChannel.communication_route()` (`src/skuld/channels.py`). The domain model already carries `owner_id`, `active`, `default_target`, and timestamps. Current `CommunicationPlatform` values: telegram, slack, discord, whatsapp. Teams and matrix are proposed additions.
 
-**Inbound routing:** Extract `(platform, conversation_id, thread_id)` → look up route → validate sender against session ACL → inject as `user_confirmed` with `metadata.source_platform` set (prevents echo loops). No match → queue briefly or drop.
+**Inbound routing sequence:**
+
+1. **Extract key** — adapter parses inbound event and extracts `(platform, conversation_id, thread_id)`.
+2. **Look up route** — broker queries the route store with that triple. No match: hold in a grace-period queue (~5 s, for race at session start), then drop.
+3. **Validate sender** — check inbound `user_id` against the route's session ACL (owner + operator list). Unauthorized: drop silently and optionally log.
+4. **Stamp source** — set `metadata.source_platform` on the event to the originating platform value.
+5. **Inject** — emit as a `user_confirmed` event into the session input stream. The `source_platform` stamp prevents the mirrored output from being re-ingested (echo-loop guard).
+6. **Check `notify_only`** — if `route.metadata.notify_only` is true, skip steps 3–5; the route receives outbound only.
 
 ### Platform Thread Identifier Reference
 
@@ -160,6 +169,7 @@ Minimum metadata for reliable routing:
 
 ## Timeline
 
+- 2026-05-05: Expanded inbound routing from a one-liner to a numbered 6-step sequence; added `mimir-mount-selection` cross-link in related_entities and See-also callout. [Source: NIU-777 review, 2026-05-05]
 - 2026-05-05: Initial research compiled covering Telegram, Slack, Discord, WhatsApp, Teams, and Matrix threading patterns. [Source: platform API docs, retrieved 2026-05-05]
 - 2026-05-05: Updated with Telegram Bot API 9.4+ private-chat forum topics, WhatsApp contextual reply-to support, Slack March 2026 rate-limit changes for non-Marketplace apps, Matrix `is_falling_back` guidance, and Teams ConversationReference field additions. [Source: platform API docs, retrieved 2026-05-05]
 - 2026-05-05: Added `tenant_id` to required route metadata table; cross-linked related Mimir pages. [Source: NIU-777 review, 2026-05-05]
