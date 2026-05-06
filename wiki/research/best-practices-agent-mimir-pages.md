@@ -139,7 +139,7 @@ Run this checklist before committing any agent-written page:
 
 ## Timeline
 
-- 2026-05-05: Cross-referenced page against FORMAT.md spec; added append-only rule for timeline zone, clarified that [[slug]] wikilinks resolve to entity pages (not research pages), added case-sensitivity note for zone headings, expanded lint checklist with two new items. [Source: src/mimir/FORMAT.md, niuulabs/volundr, 2026-05-05]
+- 2026-05-05: Cross-referenced page against FORMAT.md spec; added append-only rule for timeline zone, clarified that `[[slug]]` wikilinks resolve to entity pages (not research pages), added case-sensitivity note for zone headings, expanded lint checklist with two new items. [Source: src/mimir/FORMAT.md, niuulabs/volundr, 2026-05-05]
 - 2026-05-05: Audited page against `src/mimir/FORMAT.md`; found timeline entries lacked required `[Source: ...]` attribution and `related_entities` was unpopulated. Updated front matter table, added source-ID naming convention, added wikilink guidance, expanded lint checklist, fixed timeline entries. [Source: src/mimir/FORMAT.md, niuulabs/volundr, 2026-05-05]
 - 2026-05-05: Added concrete copy-paste page template skeleton to make guidance immediately actionable for new agents. [Source: NIU-776, internal, 2026-05-05]
 - 2026-05-04: Consolidated four duplicate pages into canonical page; replaced duplicates with redirect notices; updated index. [Source: NIU-776 synthesis pass, internal, 2026-05-04]
