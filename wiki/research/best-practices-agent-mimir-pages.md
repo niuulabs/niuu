@@ -84,10 +84,14 @@ Agent pages should follow this body ordering:
 
 Target **under 1 500 words**. If a topic expands beyond that, split into focused child pages and cross-link rather than writing a single sprawling article.
 
+**Zone heading case-sensitivity** — `## Compiled Truth` and `## Timeline` are parsed by the Mímir validator as canonical zone markers. The heading text is case-sensitive; variations like `## compiled truth` or `## TIMELINE` are not recognised.
+
 **Timeline entry format** (required by FORMAT.md — entries without `[Source: ...]` fail validation):
 ```
 - YYYY-MM-DD: Description of event or observation. [Source: name, channel/URL, date]
 ```
+
+**Timeline entries are append-only.** Never edit, delete, or reorder existing timeline entries. The timeline zone is an immutable evidence log; only the Compiled Truth zone is rewritten as understanding evolves.
 
 ### Source Attribution
 
@@ -101,7 +105,7 @@ Target **under 1 500 words**. If a topic expands beyond that, split into focused
 
 1. **Search first.** Call `mimir_search` with the core topic before writing. If a relevant page already exists, extend it rather than creating a new one — unless the new angle is materially distinct in scope or audience.
 2. **Use narrow slugs.** Prefer specific paths like `research/openai-rate-limit-strategies.md` over broad ones like `research/apis.md`. Narrower scope reduces collisions.
-3. **Cross-link, don't repeat.** When an adjacent page already covers a sub-topic, link to it and omit the repeated content. Use `[[slug]]` wikilink syntax in the body; list the same slugs in `related_entities` in front matter.
+3. **Cross-link, don't repeat.** When an adjacent page already covers a sub-topic, link to it and omit the repeated content. Use standard markdown links (`[Title](slug.md)`) for other research pages. Use `[[slug]]` wikilink syntax only for entity pages (`wiki/entities/<slug>.md`); list the same slugs in `related_entities` in front matter.
 4. **Declare overlap explicitly.** If a new page partially overlaps an existing one, add a `> **See also:**` callout near the top naming the related page and what distinguishes this one.
 
 ### Lint and Review Checklist
@@ -119,6 +123,8 @@ Run this checklist before committing any agent-written page:
 - [ ] Related pages are cross-linked in body and listed in `related_entities`
 - [ ] `## Timeline` section included only when dated evidence is materially useful
 - [ ] All timeline entries include `[Source: ...]` attribution per FORMAT.md
+- [ ] No existing timeline entries were edited, deleted, or reordered (append-only)
+- [ ] `[[slug]]` wikilinks are used only for entity pages; research page cross-links use markdown links
 - [ ] Source IDs follow the naming convention (`src_<ticket>_<component>` preferred)
 
 ### Preferred Content Formats
@@ -133,6 +139,7 @@ Run this checklist before committing any agent-written page:
 
 ## Timeline
 
+- 2026-05-05: Cross-referenced page against FORMAT.md spec; added append-only rule for timeline zone, clarified that [[slug]] wikilinks resolve to entity pages (not research pages), added case-sensitivity note for zone headings, expanded lint checklist with two new items. [Source: src/mimir/FORMAT.md, niuulabs/volundr, 2026-05-05]
 - 2026-05-05: Audited page against `src/mimir/FORMAT.md`; found timeline entries lacked required `[Source: ...]` attribution and `related_entities` was unpopulated. Updated front matter table, added source-ID naming convention, added wikilink guidance, expanded lint checklist, fixed timeline entries. [Source: src/mimir/FORMAT.md, niuulabs/volundr, 2026-05-05]
 - 2026-05-05: Added concrete copy-paste page template skeleton to make guidance immediately actionable for new agents. [Source: NIU-776, internal, 2026-05-05]
 - 2026-05-04: Consolidated four duplicate pages into canonical page; replaced duplicates with redirect notices; updated index. [Source: NIU-776 synthesis pass, internal, 2026-05-04]
