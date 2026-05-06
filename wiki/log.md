@@ -16,3 +16,4 @@ Append-only log of ingest, write, and dream-cycle operations.
 | 2026-05-04T01:12:00Z | Synthesis (idempotent) | 0 | 0 | `src_4f708cf8a2eee67a` already fully synthesised; canonical page, redirects, and index all up to date |
 | 2026-05-04T01:13:00Z | Idempotent synthesis pass | 0 | 0 | Canonical page `best-practices-agent-mimir-pages.md` fully synthesises src_4f708cf8a2eee67a; redirects in place; index current — no changes needed |
 | 2026-05-04T01:15:00Z | Idempotent synthesis pass | 0 | 0 | Canonical page `best-practices-agent-mimir-pages.md` already contains full synthesis of src_4f708cf8a2eee67a; redirects and index verified — no changes needed |
+| 2026-05-05T00:30:00Z | Lint + update (NIU-776) | 1 | 0 | Audited canonical page against `src/mimir/FORMAT.md`: added FORMAT.md source, populated `related_entities`, fixed timeline `[Source:]` format, added source-ID naming convention, added wikilink guidance to duplicate-avoidance, expanded lint checklist |
