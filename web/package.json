@@ -83,7 +83,7 @@
     "@codingame/monaco-vscode-environment-service-override": "^28.4.1",
     "@codingame/monaco-vscode-explorer-service-override": "^28.4.1",
     "@codingame/monaco-vscode-extension-api": "^28.4.1",
-    "@codingame/monaco-vscode-extension-gallery-service-override": "^28.4.1",
+    "@codingame/monaco-vscode-extension-gallery-service-override": "^31.0.0",
     "@codingame/monaco-vscode-extensions-service-override": "^28.4.1",
     "@codingame/monaco-vscode-files-service-override": "^28.4.1",
     "@codingame/monaco-vscode-git-base-default-extension": "^30.0.0",
