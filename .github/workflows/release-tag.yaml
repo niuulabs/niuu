@@ -1,6 +1,7 @@
-# Runs on every push to main:
+# Runs on every push to main, and can also be triggered manually:
 # 1. Builds all container images with "latest" + SHA tags (always)
 # 2. Determines version from conventional commits and creates a v* tag (conditional)
+# 3. On manual runs, lets maintainers force a semver bump or an exact version tag
 #
 # The v* tag triggers release.yaml which builds versioned artifacts.
 # Uses a GitHub App (Volundr Release Bot) to push tags to protected branches.
@@ -10,6 +11,22 @@ name: Main
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: "Bump to apply when creating a tag manually"
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - major
+          - minor
+          - patch
+      version_override:
+        description: "Optional exact version to tag (e.g. 0.74.0). Overrides version_bump."
+        required: false
+        type: string
 
 permissions: read-all
 
@@ -26,6 +43,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-container-image:
     name: "Build ${{ matrix.container }} (${{ matrix.platform }})"
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.platform == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -67,6 +85,7 @@ jobs:
 
   merge-container-manifests:
     name: "Manifest ${{ matrix.container }}"
+    if: github.event_name == 'push'
     needs: build-container-image
     runs-on: ubuntu-latest
     permissions:
@@ -107,7 +126,7 @@ jobs:
     name: Determine Version & Tag
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Generate GitHub App token
         id: app-token
@@ -124,9 +143,38 @@ jobs:
       - name: Determine version bump
         id: version
         run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.ref_name }}" != "main" ]; then
+            echo "Manual tag creation must run from the main branch." >&2
+            exit 1
+          fi
+
           # Get the last release tag or use 0.0.0 if none exists
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           LAST_VERSION=${LAST_TAG#v}
+          INPUT_BUMP="${{ inputs.version_bump || 'auto' }}"
+          INPUT_VERSION="${{ inputs.version_override || '' }}"
+
+          if [ -n "$INPUT_VERSION" ]; then
+            INPUT_VERSION="${INPUT_VERSION#v}"
+            if ! echo "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "version_override must be a semver like 0.74.0 or v0.74.0" >&2
+              exit 1
+            fi
+            if git rev-parse "v${INPUT_VERSION}" >/dev/null 2>&1; then
+              echo "Tag v${INPUT_VERSION} already exists." >&2
+              exit 1
+            fi
+
+            echo "Last version: $LAST_VERSION"
+            echo "Manual version override: $INPUT_VERSION"
+            echo "Version bump type: manual"
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "new_version=$INPUT_VERSION" >> $GITHUB_OUTPUT
+            echo "version_type=manual" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
           # Collect commit subjects since last tag, skipping merge commits.
           # This ensures version detection works regardless of merge strategy
@@ -145,12 +193,16 @@ jobs:
 
           # Determine version bump type from conventional commit subjects
           VERSION_TYPE="none"
-          if echo "$COMMIT_SUBJECTS" | grep -qiE "^feat(\(.+\))?!:|^BREAKING CHANGE:"; then
-            VERSION_TYPE="major"
-          elif echo "$COMMIT_SUBJECTS" | grep -qiE "^(feat|refactor)(\(.+\))?:"; then
-            VERSION_TYPE="minor"
-          elif echo "$COMMIT_SUBJECTS" | grep -qiE "^(fix|style)(\(.+\))?:"; then
-            VERSION_TYPE="patch"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$INPUT_BUMP" != "auto" ]; then
+            VERSION_TYPE="$INPUT_BUMP"
+          else
+            if echo "$COMMIT_SUBJECTS" | grep -qiE "^feat(\(.+\))?!:|^BREAKING CHANGE:"; then
+              VERSION_TYPE="major"
+            elif echo "$COMMIT_SUBJECTS" | grep -qiE "^(feat|refactor)(\(.+\))?:"; then
+              VERSION_TYPE="minor"
+            elif echo "$COMMIT_SUBJECTS" | grep -qiE "^(fix|style)(\(.+\))?:"; then
+              VERSION_TYPE="patch"
+            fi
           fi
 
           echo "Version bump type: $VERSION_TYPE"
@@ -177,12 +229,33 @@ jobs:
           echo "New version: $NEW_VERSION"
           echo "should_release=true" >> $GITHUB_OUTPUT
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "version_type=$VERSION_TYPE" >> $GITHUB_OUTPUT
 
       - name: Create and push tag
         if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          set -euo pipefail
           VERSION="${{ steps.version.outputs.new_version }}"
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists." >&2
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "v${VERSION}" -m "Release v${VERSION}"
           git push origin "v${VERSION}"
+
+      - name: Summarize tag decision
+        if: always()
+        run: |
+          {
+            echo "## Release Tag"
+            echo ""
+            echo "- Event: ${{ github.event_name }}"
+            echo "- Ref: ${{ github.ref_name }}"
+            echo "- Should release: ${{ steps.version.outputs.should_release || 'false' }}"
+            echo "- Version type: ${{ steps.version.outputs.version_type || 'none' }}"
+            echo "- Version: ${{ steps.version.outputs.new_version || 'n/a' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

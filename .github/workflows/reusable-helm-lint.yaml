@@ -3,7 +3,13 @@
 name: Reusable — Helm Lint
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      run_lint:
+        description: "Whether this invocation should run chart linting or no-op successfully."
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -21,11 +27,17 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Helm
+        if: inputs.run_lint
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
           version: v3.14.0
 
+      - name: Skip lint when charts are unchanged
+        if: ${{ !inputs.run_lint }}
+        run: echo "No chart changes detected for this workflow run; reporting success for the required Helm check."
+
       - name: Lint leaf charts
+        if: inputs.run_lint
         run: |
           for chart in skuld volundr tyr skuld-planner niuu-shared; do
             echo "::group::helm lint $chart"
@@ -34,6 +46,7 @@ jobs:
           done
 
       - name: Lint niuu umbrella chart
+        if: inputs.run_lint
         run: |
           helm dependency build charts/niuu
           helm lint charts/niuu/

@@ -1,5 +1,7 @@
 FROM python:3.14-slim-bookworm@sha256:2e256d0381371566ed96980584957ed31297f437569b79b0e5f7e17f2720e53a
 
+ARG TARGETARCH
+
 
 LABEL org.opencontainers.image.title="devrunner"
 LABEL org.opencontainers.image.description="Devrunner — sandboxed development runtime"
@@ -39,17 +41,35 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && apt-get update && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade bundled npm to fix GHSA-qffp-2rhf-9h96 (tar) and GHSA-*-minimatch CVEs
-RUN npm install -g npm@11.13.0
+# Install uv from a pinned release archive.
+RUN set -eux; \
+    UV_VERSION="0.11.10"; \
+    case "${TARGETARCH}" in \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="077e1a0777bcf516e02f4ef245e269c8d1baa780438e4c50e09c5c997f85538a" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="91d5f4583539640765662ef86edcf3bf4db07439b622c7bed50c961240162046" ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
+    echo "${UV_SHA256}  /tmp/${UV_ARCHIVE}" | sha256sum -c -; \
+    tar -xzf "/tmp/${UV_ARCHIVE}" -C /tmp; \
+    install -m 0755 "/tmp/${UV_ARCHIVE%.tar.gz}/uv" /usr/local/bin/uv; \
+    install -m 0755 "/tmp/${UV_ARCHIVE%.tar.gz}/uvx" /usr/local/bin/uvx; \
+    rm -rf "/tmp/${UV_ARCHIVE}" "/tmp/${UV_ARCHIVE%.tar.gz}"
 
-# Install Claude Code CLI globally via npm
-RUN npm install -g @anthropic-ai/claude-code@2.1.121
-
-# Install OpenAI Codex CLI globally via npm
-RUN npm install -g @openai/codex@0.125.0
-
-# Install OpenCode (opencode.ai) globally via npm
-RUN npm install -g opencode-ai@1.14.29
+# Upgrade npm and install the CLI tools from checked-in lockfiles.
+COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json /opt/npm-bootstrap/
+COPY containers/devrunner/npm-tools/package.json containers/devrunner/npm-tools/package-lock.json /opt/devrunner-tools/
+RUN cd /opt/npm-bootstrap \
+    && npm ci --omit=dev \
+    && rm -rf /usr/lib/node_modules/npm \
+    && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
+    && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf /usr/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && cd /opt/devrunner-tools \
+    && npm ci --omit=dev \
+    && ln -sf /opt/devrunner-tools/node_modules/.bin/claude /usr/local/bin/claude \
+    && ln -sf /opt/devrunner-tools/node_modules/.bin/codex /usr/local/bin/codex \
+    && ln -sf /opt/devrunner-tools/node_modules/.bin/opencode /usr/local/bin/opencode
 
 # Install PostgreSQL 16
 RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
@@ -61,10 +81,10 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg ma
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip to fix GHSA-4xh5-x5gv-qwph / GHSA-6vgw-5pg2-w6jp
-RUN pip install --no-cache-dir --upgrade pip==26.1.1
+RUN uv pip install --system --break-system-packages --upgrade pip==26.1.1
 
 # Common Python packages for web dev
-RUN pip install --no-cache-dir \
+RUN uv pip install --system --break-system-packages \
     uvicorn==0.41.0 \
     fastapi==0.135.1 \
     flask==3.1.3 \

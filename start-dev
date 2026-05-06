@@ -93,14 +93,61 @@ require_system_tool() {
   return 1
 }
 
+verify_sha256() {
+  local expected="$1"
+  local file="$2"
+  if command -v sha256sum >/dev/null 2>&1; then
+    echo "${expected}  ${file}" | sha256sum -c -
+  else
+    echo "${expected}  ${file}" | shasum -a 256 -c -
+  fi
+}
+
 ensure_uv() {
   # Standard install location — add to PATH first so an existing install is detected.
   export PATH="${HOME}/.local/bin:${PATH}"
   if command -v uv >/dev/null 2>&1; then
     return 0
   fi
+
+  local uv_version="0.11.10"
+  local archive=""
+  local expected_sha256=""
+
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64)
+      archive="uv-aarch64-apple-darwin.tar.gz"
+      expected_sha256="e93d6af7dfff7071edd16342ba9eeccfc28d8a7deaa5707efeecf63a63a74453"
+      ;;
+    Darwin-x86_64)
+      archive="uv-x86_64-apple-darwin.tar.gz"
+      expected_sha256="8fd091211089973f528e147166e3af683ab4ecebd4312a55d0d17d87adbde67a"
+      ;;
+    Linux-aarch64)
+      archive="uv-aarch64-unknown-linux-gnu.tar.gz"
+      expected_sha256="91d5f4583539640765662ef86edcf3bf4db07439b622c7bed50c961240162046"
+      ;;
+    Linux-x86_64)
+      archive="uv-x86_64-unknown-linux-gnu.tar.gz"
+      expected_sha256="077e1a0777bcf516e02f4ef245e269c8d1baa780438e4c50e09c5c997f85538a"
+      ;;
+    *)
+      echo "Unsupported platform for uv install: $(uname -s)-$(uname -m)" >&2
+      return 1
+      ;;
+  esac
+
   echo "Installing uv..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "${tmpdir}"' RETURN
+  curl -fsSL "https://github.com/astral-sh/uv/releases/download/${uv_version}/${archive}" -o "${tmpdir}/${archive}"
+  verify_sha256 "${expected_sha256}" "${tmpdir}/${archive}"
+  tar -xzf "${tmpdir}/${archive}" -C "${tmpdir}"
+  install -d "${HOME}/.local/bin"
+  install -m 0755 "${tmpdir}/uv-${archive%.tar.gz}/uv" "${HOME}/.local/bin/uv"
+  if [[ -f "${tmpdir}/uv-${archive%.tar.gz}/uvx" ]]; then
+    install -m 0755 "${tmpdir}/uv-${archive%.tar.gz}/uvx" "${HOME}/.local/bin/uvx"
+  fi
   if ! command -v uv >/dev/null 2>&1; then
     echo "uv install completed but 'uv' is not on PATH (expected ${HOME}/.local/bin/uv)." >&2
     return 1

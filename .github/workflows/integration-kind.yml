@@ -76,17 +76,15 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
         with:
           python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+          extras: "--extra dev"
 
       - name: Run in-process parity tests
         run: |
-          pytest tests/integration/test_flock_composition_e2e.py::TestInProcessParity \
+          uv run pytest tests/integration/test_flock_composition_e2e.py::TestInProcessParity \
             -v --tb=short
 
   # ---------------------------------------------------------------------------
@@ -109,13 +107,11 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
         with:
           python-version: "3.12"
-
-      - name: Install Python dependencies
-        run: pip install -e ".[dev]"
+          extras: "--extra dev"
 
       - name: Install kind
         run: |
@@ -140,7 +136,7 @@ jobs:
           KIND_INTEGRATION: "1"
           KIND_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'niuu-mv-integ' }}
         run: |
-          pytest tests/integration/test_flock_composition_e2e.py::TestMountedVolumeScenario \
+          uv run pytest tests/integration/test_flock_composition_e2e.py::TestMountedVolumeScenario \
             -v --tb=short -m kind_integration
 
       - name: Delete kind cluster (always)
@@ -170,13 +166,11 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
         with:
           python-version: "3.12"
-
-      - name: Install Python dependencies
-        run: pip install -e ".[dev]"
+          extras: "--extra dev"
 
       - name: Install kind
         run: |
@@ -201,7 +195,7 @@ jobs:
           KIND_INTEGRATION: "1"
           KIND_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'niuu-http-integ' }}
         run: |
-          pytest tests/integration/test_flock_composition_e2e.py::TestHTTPScenario \
+          uv run pytest tests/integration/test_flock_composition_e2e.py::TestHTTPScenario \
             -v --tb=short -m kind_integration
 
       - name: Delete kind cluster (always)

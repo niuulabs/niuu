@@ -1,0 +1,9 @@
+{
+  "name": "devrunner-cli-tools",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.131",
+    "@openai/codex": "0.125.0",
+    "opencode-ai": "1.14.29"
+  }
+}

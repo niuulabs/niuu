@@ -57,6 +57,15 @@ jobs:
             *)     NEW_VERSION="${LAST_VERSION} (no bump)" ;;
           esac
 
+          # Keep the PR title as a conventional commit so squash merges to main
+          # still produce a commit subject that release-tag.yaml can classify.
+          case $VERSION_TYPE in
+            major) TITLE_PREFIX="feat(release)!:" ;;
+            minor) TITLE_PREFIX="feat(release):" ;;
+            patch) TITLE_PREFIX="fix(release):" ;;
+            *)     TITLE_PREFIX="chore(release):" ;;
+          esac
+
           # ---------------------------------------------------------------------------
           # Categorize commits
           # ---------------------------------------------------------------------------
@@ -148,5 +157,5 @@ jobs:
           PR_BODY=$(echo "$PR_BODY" | sed 's/^          //')
 
           gh pr edit "${{ github.event.pull_request.number }}" \
-            --title "Release v${NEW_VERSION}" \
+            --title "${TITLE_PREFIX} release v${NEW_VERSION}" \
             --body "$PR_BODY"

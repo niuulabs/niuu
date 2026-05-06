@@ -1,0 +1,7 @@
+{
+  "name": "npm-bootstrap",
+  "private": true,
+  "dependencies": {
+    "npm": "11.13.0"
+  }
+}

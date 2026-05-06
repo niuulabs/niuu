@@ -221,7 +221,9 @@ cmd_check() {
       if curl -sf http://localhost:11434/api/tags &>/dev/null; then
         _ok "ollama server running"
         local models
-        models=$(curl -sf http://localhost:11434/api/tags | python3 -c "import sys,json; [print(m['name']) for m in json.load(sys.stdin).get('models',[])]" 2>/dev/null || true)
+        local ollama_tags_json
+        ollama_tags_json="$(curl -sf http://localhost:11434/api/tags)" || ollama_tags_json=""
+        models=$(printf '%s' "$ollama_tags_json" | python3 -c "import sys,json; [print(m['name']) for m in json.load(sys.stdin).get('models',[])]" 2>/dev/null || true)
         if [[ -n "$models" ]]; then
           echo "$models" | while read -r m; do _ok "  model: $m"; done
         else
