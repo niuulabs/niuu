@@ -150,8 +150,10 @@ jobs:
             exit 1
           fi
 
-          # Get the last release tag or use 0.0.0 if none exists
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          # Get the last stable release tag or use 0.0.0 if none exists
+          LAST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+            | grep -v -- '-' | head -1 || true)
+          LAST_TAG=${LAST_TAG:-v0.0.0}
           LAST_VERSION=${LAST_TAG#v}
           INPUT_BUMP="${{ inputs.version_bump || 'auto' }}"
           INPUT_VERSION="${{ inputs.version_override || '' }}"
