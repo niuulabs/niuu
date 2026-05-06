@@ -75,9 +75,11 @@ def _build_initiative_context(item: dict) -> str:
             "",
             "## Instructions",
             "",
-            "Execute this raid to completion. Decompose into coding tasks, "
-            "delegate to the coding peer via task_create, collect results, "
-            "run review, and publish your final outcome event.",
+                (
+                    "Execute this raid to completion. Decompose into coding tasks, "
+                    + "delegate to the coding peer via task_create, collect results, "
+                    + "run review, and publish your final outcome event."
+                ),
         ]
     )
 
