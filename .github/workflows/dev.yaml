@@ -281,7 +281,8 @@ jobs:
         run: |
           # Get the last production (non-prerelease) tag
           LAST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
-            | grep -v '-' | head -1 || echo "v0.0.0")
+            | grep -v -- '-' | head -1 || true)
+          LAST_TAG=${LAST_TAG:-v0.0.0}
           LAST_VERSION=${LAST_TAG#v}
 
           # Get all commit messages since last production tag

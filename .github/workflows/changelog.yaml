@@ -30,7 +30,9 @@ jobs:
           # ---------------------------------------------------------------------------
           # Determine version
           # ---------------------------------------------------------------------------
-          LAST_TAG=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=0 origin/main 2>/dev/null || echo "v0.0.0")
+          LAST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+            | grep -v -- '-' | head -1 || true)
+          LAST_TAG=${LAST_TAG:-v0.0.0}
           LAST_VERSION=${LAST_TAG#v}
 
           # Get merge base between main and dev
