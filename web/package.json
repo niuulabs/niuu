@@ -107,7 +107,7 @@
     "@codingame/monaco-vscode-markdown-basics-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-markers-service-override": "^28.4.1",
     "@codingame/monaco-vscode-merge-conflict-default-extension": "^28.4.1",
-    "@codingame/monaco-vscode-model-service-override": "^28.4.1",
+    "@codingame/monaco-vscode-model-service-override": "^31.0.0",
     "@codingame/monaco-vscode-multi-diff-editor-service-override": "^28.4.1",
     "@codingame/monaco-vscode-notebook-service-override": "^28.4.1",
     "@codingame/monaco-vscode-notifications-service-override": "^28.4.1",
