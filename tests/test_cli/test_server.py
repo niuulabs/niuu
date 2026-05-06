@@ -699,7 +699,8 @@ class TestRootServerBuildApp:
 
         client = TestClient(app)
         assert client.get("/api/v1/niuu/compat/legacy-routes").status_code == 404
-        assert client.delete("/api/v1/niuu/compat/legacy-routes").status_code == 404
+        delete_response = client.delete("/api/v1/niuu/compat/legacy-routes")
+        assert delete_response.status_code == 404
 
     def test_build_root_app_mounts_shared_tracker_domain_across_plugins(self) -> None:
         volundr_app = FastAPI()

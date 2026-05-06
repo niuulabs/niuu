@@ -47,6 +47,11 @@ from niuu.ports.mimir import MimirPort
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
 # MCP protocol version negotiated during initialize
 _PROTOCOL_VERSION = "2024-11-05"
 
@@ -329,12 +334,12 @@ class MimirMcpServer:
                 "id": req_id,
                 "error": {"code": -32601, "message": str(exc)},
             }
-        except Exception as exc:
-            logger.exception("MCP tool error for method %s", method)
+        except Exception:
+            logger.exception("MCP tool error for method %s", _sanitize_log(method))
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "error": {"code": -32603, "message": str(exc)},
+                "error": {"code": -32603, "message": "Internal error"},
             }
 
     async def _dispatch(self, method: str, params: dict[str, Any]) -> Any:

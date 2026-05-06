@@ -28,21 +28,6 @@ export default meta;
 
 type Story = StoryObj<typeof RegistryEditor>;
 
-/** Default state — full seed registry, Types tab, first type pre-selected. */
-export const Default: Story = {
-  args: { registry: FULL_REGISTRY },
-};
-
-/** Minimal registry — 3 types — useful for verifying layout at small scale. */
-export const Minimal: Story = {
-  args: { registry: MINIMAL_REGISTRY },
-};
-
-/** Registry containing an orphaned type (parentType references a missing id). */
-export const WithOrphan: Story = {
-  args: { registry: ORPHAN_REGISTRY },
-};
-
 // ── Seed data ─────────────────────────────────────────────────────────────────
 
 const MINIMAL_REGISTRY: Registry = {
@@ -292,4 +277,19 @@ const FULL_REGISTRY: Registry = {
       fields: [{ key: 'role', label: 'Role', type: 'select', options: ['coord', 'reviewer'] }],
     },
   ],
+};
+
+/** Default state — full seed registry, Types tab, first type pre-selected. */
+export const Default: Story = {
+  args: { registry: FULL_REGISTRY },
+};
+
+/** Minimal registry — 3 types — useful for verifying layout at small scale. */
+export const Minimal: Story = {
+  args: { registry: MINIMAL_REGISTRY },
+};
+
+/** Registry containing an orphaned type (parentType references a missing id). */
+export const WithOrphan: Story = {
+  args: { registry: ORPHAN_REGISTRY },
 };

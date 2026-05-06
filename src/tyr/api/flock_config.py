@@ -20,6 +20,11 @@ from tyr.adapters.inbound.auth import extract_principal
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 # ---------------------------------------------------------------------------
 # Request / Response models
 # ---------------------------------------------------------------------------
@@ -82,7 +87,7 @@ def create_flock_config_router() -> APIRouter:
 
         if body.flock_enabled is not None:
             flock.enabled = body.flock_enabled
-            logger.info("Flock enabled set to %s", flock.enabled)
+            logger.info("Flock enabled set to %s", _sanitize_log(flock.enabled))
 
         if body.flock_llm_config is not None:
             flock.llm_config = body.flock_llm_config
@@ -99,7 +104,10 @@ def create_flock_config_router() -> APIRouter:
             flock.default_personas = [
                 PersonaOverride(name=name) for name in body.flock_default_personas
             ]
-            logger.info("Flock default_personas updated: %s", body.flock_default_personas)
+            logger.info(
+                "Flock default_personas updated: %s",
+                _sanitize_log(body.flock_default_personas),
+            )
 
         return FlockConfigResponse(
             flock_enabled=flock.enabled,

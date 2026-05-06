@@ -2498,13 +2498,13 @@ class Broker:
         if self._room_bridge is None:
             logger.warning(
                 "handle_ravn_websocket: room mode disabled, rejecting peer_id=%s",
-                peer_id,
+                _sanitize_log(peer_id),
             )
             await websocket.close(code=1008, reason="Room mode is not enabled")
             return
 
         await websocket.accept()
-        logger.info("handle_ravn_websocket: Ravn connected peer_id=%s", peer_id)
+        logger.info("handle_ravn_websocket: Ravn connected peer_id=%s", _sanitize_log(peer_id))
 
         # Register with peer_id as initial persona; enriched on first frame
         await self._room_bridge.register(
@@ -2525,7 +2525,8 @@ class Broker:
                         frame = json.loads(line)
                     except json.JSONDecodeError:
                         logger.warning(
-                            "handle_ravn_websocket: invalid JSON from peer_id=%s", peer_id
+                            "handle_ravn_websocket: invalid JSON from peer_id=%s",
+                            _sanitize_log(peer_id),
                         )
                         continue
 
@@ -2547,9 +2548,15 @@ class Broker:
                     await self._room_bridge.handle_ravn_frame(peer_id, frame)
 
         except WebSocketDisconnect:
-            logger.info("handle_ravn_websocket: Ravn disconnected peer_id=%s", peer_id)
+            logger.info(
+                "handle_ravn_websocket: Ravn disconnected peer_id=%s",
+                _sanitize_log(peer_id),
+            )
         except Exception:
-            logger.exception("handle_ravn_websocket: error from peer_id=%s", peer_id)
+            logger.exception(
+                "handle_ravn_websocket: error from peer_id=%s",
+                _sanitize_log(peer_id),
+            )
         finally:
             await self._room_bridge.unregister(peer_id)
 

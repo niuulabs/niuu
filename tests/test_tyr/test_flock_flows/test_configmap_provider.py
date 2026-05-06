@@ -103,7 +103,8 @@ class TestKubernetesConfigMapFlockFlowProviderSpecific:
         flow_data = [make_flow("to-delete").to_dict()]
         provider, client = _make_provider(flows=flow_data)
 
-        assert provider.delete("to-delete") is True
+        deleted = provider.delete("to-delete")
+        assert deleted is True
         client.patch_namespaced_config_map.assert_called_once()
         call_body = client.patch_namespaced_config_map.call_args.kwargs["body"]
         saved_data = yaml.safe_load(call_body["data"]["flows.yaml"])
@@ -121,7 +122,8 @@ class TestKubernetesConfigMapFlockFlowProviderSpecific:
 
     def test_no_client_delete_returns_false(self) -> None:
         provider = KubernetesConfigMapFlockFlowProvider(kube_client=None)
-        assert provider.delete("anything") is False
+        deleted = provider.delete("anything")
+        assert deleted is False
 
     def test_write_failure_propagates(self) -> None:
         provider, client = _make_provider(flows=[])

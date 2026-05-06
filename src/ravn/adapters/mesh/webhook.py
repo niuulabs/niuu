@@ -43,6 +43,11 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
 _SIGNATURE_HEADER = "X-Ravn-Signature"
 _TIMESTAMP_HEADER = "X-Ravn-Timestamp"
 _PEER_ID_HEADER = "X-Ravn-Peer-Id"
@@ -277,7 +282,11 @@ class WebhookMeshAdapter:
             try:
                 await handler(event)
             except Exception as exc:
-                logger.warning("webhook_mesh: handler for %r raised: %s", topic, exc)
+                logger.warning(
+                    "webhook_mesh: handler for %r raised: %s",
+                    _sanitize_log(topic),
+                    _sanitize_log(exc),
+                )
 
     async def _handle_rpc(self, payload: dict) -> dict:
         """Handle incoming RPC request."""
@@ -288,8 +297,12 @@ class WebhookMeshAdapter:
 
         try:
             return await self._rpc_handler(message)
-        except Exception as exc:
-            return {"error": str(exc)}
+        except Exception:
+            logger.exception(
+                "webhook_mesh: rpc handler failed for source_peer_id=%s",
+                _sanitize_log(payload.get("source_peer_id", "")),
+            )
+            return {"error": "internal error"}
 
     def _validate_signature(self, request: web.Request) -> bool:
         """Validate HMAC signature on request."""
