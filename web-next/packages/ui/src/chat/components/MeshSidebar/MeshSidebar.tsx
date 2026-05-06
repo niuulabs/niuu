@@ -37,8 +37,7 @@ function formatParticipantLabel(participant: RoomParticipant): string {
   return baseName;
 }
 
-function latencyClass(ms: number | undefined): string {
-  if (ms === undefined) return '';
+function latencyClass(ms: number): string {
   if (ms < 100) return 'niuu-chat-peer-gw-latency--ok';
   if (ms < 500) return 'niuu-chat-peer-gw-latency--warn';
   return 'niuu-chat-peer-gw-latency--err';

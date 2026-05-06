@@ -74,8 +74,10 @@ class FlockFlowProviderContract:
     def test_delete_existing(self, provider: FlockFlowProvider) -> None:
         provider.save(make_flow())
 
-        assert provider.delete("test-flow") is True
+        deleted = provider.delete("test-flow")
+        assert deleted is True
         assert provider.get("test-flow") is None
 
     def test_delete_nonexistent(self, provider: FlockFlowProvider) -> None:
-        assert provider.delete("nonexistent") is False
+        deleted = provider.delete("nonexistent")
+        assert deleted is False

@@ -26,6 +26,11 @@ _DEFAULT_PERMISSION_MODE = "bypassPermissions"
 _MAX_RETRIES = 5
 _RETRY_BASE_DELAY_MS = 1000
 _TRANSPORT_ERROR_DELAY_MS = 2000
+# asyncio.StreamReader defaults to a 64 KB line buffer; a single Claude JSON
+# event (especially tool results or file reads) routinely exceeds that, which
+# raises LimitOverrunError on readline() and kills the transport. 10 MB covers
+# realistic worst-case payloads without unbounded memory.
+_STDOUT_LINE_LIMIT_BYTES = 10 * 1024 * 1024
 _RETRYABLE_ERROR_MARKERS = (
     "processtransport",
     "not ready for writing",
@@ -161,6 +166,7 @@ class SubprocessTransport(CLITransport):
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.PIPE,
             env=env,
+            limit=_STDOUT_LINE_LIMIT_BYTES,
         )
         self._process = process
 

@@ -50,9 +50,7 @@ if TYPE_CHECKING:
 
 try:
     from sleipnir.domain.catalog import ravn_session_ended, ravn_session_started
-    from sleipnir.ports.events import SleipnirPublisher as _SleipnirPublisher
 except ImportError:  # sleipnir not available in all environments
-    _SleipnirPublisher = None  # type: ignore[assignment,misc]
     ravn_session_started = None  # type: ignore[assignment]
     ravn_session_ended = None  # type: ignore[assignment]
 
@@ -1353,7 +1351,11 @@ async def _validate_mimir_outcome_for_persona(
                     f"research page {page_path} must include produced_by_thread: true"
                 )
 
-            source_ids = [str(source_id).strip() for source_id in page.meta.source_ids if str(source_id).strip()]
+            source_ids = [
+                stripped_id
+                for source_id in page.meta.source_ids
+                if (stripped_id := str(source_id).strip())
+            ]
             if not source_ids:
                 errors.append(
                     f"research page {page_path} has no source_ids provenance; ingest the "

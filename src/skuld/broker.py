@@ -844,6 +844,41 @@ class Broker:
         logger.info("Using %s (adapter: %s)", cls.__name__, adapter_path)
         return cls(**filtered)
 
+    async def _auto_start_transport(self) -> None:
+        """Background-task wrapper around ``self._transport.start()``.
+
+        SubprocessTransport (the default for skuldClaude) sends the initial
+        prompt to a fresh Claude process and streams back assistant events,
+        but never echoes the user's own prompt back as an event. Without an
+        explicit synthesis the chat UI sees the assistant's reply with no
+        user turn before it. We append a user turn to conversation history
+        (so late-joining browsers see it via replay) and broadcast
+        ``user_confirmed`` so any already-connected channel renders it
+        immediately.
+        """
+        prompt = self._settings.session.initial_prompt
+        if prompt and not any(
+            t.role == "user" and t.content == prompt for t in self._conversation_turns
+        ):
+            turn_id = str(uuid.uuid4())
+            self._append_turn(
+                ConversationTurn(id=turn_id, role="user", content=prompt)
+            )
+            try:
+                await self._channels.broadcast(
+                    {"type": "user_confirmed", "id": turn_id, "content": prompt}
+                )
+            except Exception:
+                logger.debug(
+                    "Initial-prompt user_confirmed broadcast failed", exc_info=True
+                )
+
+        try:
+            await self._transport.start()
+            logger.info("Transport auto-started successfully")
+        except Exception:
+            logger.error("Transport auto-start failed", exc_info=True)
+
     async def startup(self) -> None:
         """Initialize the broker on startup."""
         logger.info("Broker starting for session %s", self.session_id)
@@ -888,7 +923,10 @@ class Broker:
 
         # Auto-start transport when an initial prompt is configured
         # (dispatched sessions should begin work immediately, not wait
-        # for a browser to connect).
+        # for a browser to connect). Run as a background task so the
+        # lifespan returns promptly and uvicorn binds — otherwise the
+        # transport's first turn (which can take seconds to minutes)
+        # blocks the HTTP listener and the chat UI gets 502s.
         if self._settings.session.initial_prompt:
             if self._has_workflow_trigger():
                 logger.info(
@@ -896,12 +934,8 @@ class Broker:
                 )
                 await self._ensure_workflow_prompt_turn()
             else:
-                logger.info("Initial prompt configured — auto-starting transport")
-                try:
-                    await self._transport.start()
-                    logger.info("Transport auto-started successfully")
-                except Exception as e:
-                    logger.error("Transport auto-start failed: %r", e, exc_info=True)
+                logger.info("Initial prompt configured — auto-starting transport in background")
+                asyncio.create_task(self._auto_start_transport())
 
         # Start mesh adapter if enabled (after transport is ready)
         if self._settings.mesh.enabled:
@@ -1498,6 +1532,8 @@ class Broker:
                 )
 
                 # Echo back to all browsers so the message is confirmed
+                # immediately (rendering as a user turn) — the actual transport
+                # delivery happens asynchronously below.
                 await self._channels.broadcast(
                     {
                         "type": "user_confirmed",
@@ -1506,7 +1542,40 @@ class Broker:
                     }
                 )
 
-                await self._transport.send_message(message)
+                # send_message holds a per-instance lock for the entire
+                # turn. Awaiting inline blocks the WS receive loop, so the
+                # user can't queue a follow-up while Claude is running.
+                # Fire-and-forget: the transport's lock still serialises
+                # invocations, so ordering is preserved; we just don't pin
+                # the WS handler waiting for a turn that may take minutes.
+                asyncio.create_task(
+                    self._safe_transport_send(self._transport, message),
+                    name=f"transport-send-{msg_id}",
+                )
+
+    async def _safe_transport_send(
+        self, transport: object, message: str
+    ) -> None:
+        """Wrap transport.send_message so background-task failures are surfaced.
+
+        Used by the fire-and-forget path in ``_dispatch_browser_message`` —
+        without this wrapper, a transport error would only show up as an
+        ``asyncio.create_task`` exception. Any error here is logged AND
+        broadcast to all currently connected channels so the user sees
+        something in the chat UI rather than a silent stall.
+        """
+        try:
+            await transport.send_message(message)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.exception("Transport send_message failed in background task")
+            try:
+                await self._channels.broadcast(
+                    {"type": "error", "content": str(exc)}
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to broadcast transport error to channels", exc_info=True
+                )
 
     async def handle_human_room_message(
         self,
@@ -2429,13 +2498,13 @@ class Broker:
         if self._room_bridge is None:
             logger.warning(
                 "handle_ravn_websocket: room mode disabled, rejecting peer_id=%s",
-                peer_id,
+                _sanitize_log(peer_id),
             )
             await websocket.close(code=1008, reason="Room mode is not enabled")
             return
 
         await websocket.accept()
-        logger.info("handle_ravn_websocket: Ravn connected peer_id=%s", peer_id)
+        logger.info("handle_ravn_websocket: Ravn connected peer_id=%s", _sanitize_log(peer_id))
 
         # Register with peer_id as initial persona; enriched on first frame
         await self._room_bridge.register(
@@ -2456,7 +2525,8 @@ class Broker:
                         frame = json.loads(line)
                     except json.JSONDecodeError:
                         logger.warning(
-                            "handle_ravn_websocket: invalid JSON from peer_id=%s", peer_id
+                            "handle_ravn_websocket: invalid JSON from peer_id=%s",
+                            _sanitize_log(peer_id),
                         )
                         continue
 
@@ -2478,9 +2548,15 @@ class Broker:
                     await self._room_bridge.handle_ravn_frame(peer_id, frame)
 
         except WebSocketDisconnect:
-            logger.info("handle_ravn_websocket: Ravn disconnected peer_id=%s", peer_id)
+            logger.info(
+                "handle_ravn_websocket: Ravn disconnected peer_id=%s",
+                _sanitize_log(peer_id),
+            )
         except Exception:
-            logger.exception("handle_ravn_websocket: error from peer_id=%s", peer_id)
+            logger.exception(
+                "handle_ravn_websocket: error from peer_id=%s",
+                _sanitize_log(peer_id),
+            )
         finally:
             await self._room_bridge.unregister(peer_id)
 

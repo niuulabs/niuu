@@ -8,8 +8,29 @@ PLATFORM_PID_FILE="${RUN_DIR}/platform.pid"
 PG_CTL="${ROOT_DIR}/build/pginstall/bin/pg_ctl"
 PG_DATA="${HOME}/.niuu/pgdata"
 PLATFORM_LOG="${LOG_DIR}/platform.log"
-PLATFORM_URL="http://127.0.0.1:8080/health"
-UI_VARIANT="${NIUU_WEB_UI:-new}"
+UI_VARIANT="${NIUU_WEB_UI:-old}"
+
+# Auto-detect a LAN-routable IP so the platform binds to (and bakes into URLs)
+# an address that browsers on this machine *and* on the LAN can reach. Override
+# by exporting NIUU_SERVER__HOST before invoking this script.
+detect_lan_ip() {
+  python3 - <<'PY' 2>/dev/null
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.connect(("8.8.8.8", 80))
+    print(s.getsockname()[0])
+finally:
+    s.close()
+PY
+}
+
+if [[ -z "${NIUU_SERVER__HOST:-}" ]]; then
+  detected_ip="$(detect_lan_ip || true)"
+  NIUU_SERVER__HOST="${detected_ip:-127.0.0.1}"
+fi
+export NIUU_SERVER__HOST
+PLATFORM_URL="http://${NIUU_SERVER__HOST}:8080/health"
 
 mkdir -p "${LOG_DIR}"
 
@@ -62,6 +83,68 @@ cleanup_on_error() {
   "${ROOT_DIR}/stop-dev" >/dev/null 2>&1 || true
 }
 
+require_system_tool() {
+  local tool="$1"
+  if command -v "${tool}" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Required system tool '${tool}' not found on PATH." >&2
+  echo "Install it via your OS package manager (apt/dnf/brew) and re-run start-dev." >&2
+  return 1
+}
+
+ensure_uv() {
+  # Standard install location — add to PATH first so an existing install is detected.
+  export PATH="${HOME}/.local/bin:${PATH}"
+  if command -v uv >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "uv install completed but 'uv' is not on PATH (expected ${HOME}/.local/bin/uv)." >&2
+    return 1
+  fi
+}
+
+ensure_pnpm() {
+  # Standard install location — add to PATH first so an existing install is detected.
+  export PNPM_HOME="${PNPM_HOME:-${HOME}/.local/share/pnpm}"
+  export PATH="${PNPM_HOME}:${PATH}"
+  if command -v pnpm >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Installing pnpm..."
+  curl -fsSL https://get.pnpm.io/install.sh | env SHELL="${SHELL:-/bin/bash}" sh -
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "pnpm install completed but 'pnpm' is not on PATH (expected ${PNPM_HOME}/pnpm)." >&2
+    return 1
+  fi
+}
+
+ensure_node() {
+  if command -v node >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Installing Node.js (LTS) via pnpm..."
+  pnpm env use --global lts
+  if ! command -v node >/dev/null 2>&1; then
+    echo "Node install completed but 'node' is not on PATH." >&2
+    return 1
+  fi
+}
+
+bootstrap_dependencies() {
+  echo "Checking dependencies..."
+  require_system_tool curl
+  require_system_tool make
+  require_system_tool gcc
+  require_system_tool pkg-config
+  ensure_uv
+  ensure_pnpm
+  ensure_node
+}
+
 wait_for_url() {
   local url="$1"
   local label="$2"
@@ -111,6 +194,8 @@ wait_for_platform() {
 
 trap cleanup_on_error ERR
 
+bootstrap_dependencies
+
 "${ROOT_DIR}/stop-dev" >/dev/null 2>&1 || true
 
 echo "Preparing workspace..."
@@ -131,8 +216,19 @@ if [[ -x "${PG_CTL}" ]]; then
   "${PG_CTL}" -D "${PG_DATA}" stop -m fast >/dev/null 2>&1 || true
 fi
 
-echo "Starting platform..."
-nohup env PYTHONUNBUFFERED=1 NIUU_WEB_UI="${UI_VARIANT}" uv run niuu platform up --skip-preflight \
+# Old UI uses the legacy /api/v1/volundr/* routes (e.g. /api/v1/volundr/models),
+# which only get mounted under the full-compat host profile. New UI uses the
+# split canonical routes that ship in the default 'full' profile.
+if [[ "${UI_VARIANT}" == "old" ]]; then
+  HOST_PROFILE="full-compat"
+else
+  HOST_PROFILE="full"
+fi
+
+echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (host-profile=${HOST_PROFILE})..."
+nohup env PYTHONUNBUFFERED=1 \
+  NIUU_WEB_UI="${UI_VARIANT}" \
+  uv run niuu platform up --skip-preflight --host-profile "${HOST_PROFILE}" \
   >"${PLATFORM_LOG}" 2>&1 &
 echo $! > "${PLATFORM_PID_FILE}"
 wait_for_platform "$(cat "${PLATFORM_PID_FILE}")" "${PLATFORM_URL}"
@@ -144,11 +240,11 @@ Ready.
 
 UI:
   variant: ${UI_VARIANT}
-  http://localhost:8080/?config=/config.live.json
-  http://localhost:8080/volundr?config=/config.live.json
+  http://${NIUU_SERVER__HOST}:8080/?config=/config.live.json
+  http://${NIUU_SERVER__HOST}:8080/volundr?config=/config.live.json
 
 API:
-  http://127.0.0.1:8080/health
+  http://${NIUU_SERVER__HOST}:8080/health
 
 Logs:
   ${PLATFORM_LOG}

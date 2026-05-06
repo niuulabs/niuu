@@ -175,6 +175,7 @@ class StubTracker(TrackerPort):
         phase_tracker_id: str | None = None,
         saga_tracker_id: str | None = None,
         chronicle_summary: str | None = None,
+        reviewer_session_id: str | None = None,
     ) -> Raid:
         raid = self.raids.get(tracker_id)
         if raid is None:
@@ -200,6 +201,11 @@ class StubTracker(TrackerPort):
             retry_count=retry_count if retry_count is not None else raid.retry_count,
             created_at=raid.created_at,
             updated_at=datetime.now(UTC),
+            reviewer_session_id=(
+                reviewer_session_id
+                if reviewer_session_id is not None
+                else raid.reviewer_session_id
+            ),
         )
         self.raids[tracker_id] = updated
         return updated
@@ -356,6 +362,7 @@ def _make_raid(
     branch: str | None = "raid/test-branch",
     declared_files: list[str] | None = None,
     retry_count: int = 0,
+    reviewer_session_id: str | None = None,
 ) -> Raid:
     return Raid(
         id=raid_id or uuid4(),
@@ -376,6 +383,7 @@ def _make_raid(
         retry_count=retry_count,
         created_at=NOW,
         updated_at=NOW,
+        reviewer_session_id=reviewer_session_id,
     )
 
 
@@ -1624,3 +1632,36 @@ class TestReviewEngineLLMConfigRegression:
         assert model_a == "claude-opus-4-6"
         assert model_b == "claude-haiku-4-5-20251001"
         assert model_a != model_b
+
+
+# ---------------------------------------------------------------------------
+# Reviewer-failure handler — recovery from spawn failures (e.g. cap reached)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerFailure:
+    @pytest.mark.asyncio
+    async def test_reviewer_failure_marks_raid_failed(self) -> None:
+        """When a tracked reviewer dies, the raid transitions to FAILED."""
+        engine, tracker, _git, _ev, _vol = _make_engine()
+        reviewer_id = "reviewer-session-xyz"
+        raid = _make_raid(
+            tracker_id="NIU-777",
+            status=RaidStatus.REVIEW,
+            reviewer_session_id=reviewer_id,
+        )
+        tracker.raids[raid.tracker_id] = raid
+        engine._reviewer_sessions[reviewer_id] = (raid.tracker_id, "dev-user")
+
+        await engine.handle_reviewer_failure(reviewer_id, reason="Max concurrent")
+
+        updated = tracker.raids[raid.tracker_id]
+        assert updated.status == RaidStatus.FAILED
+        assert reviewer_id not in engine._reviewer_sessions
+
+    @pytest.mark.asyncio
+    async def test_reviewer_failure_for_untracked_session_is_noop(self) -> None:
+        """Failures for unknown sessions are silently ignored."""
+        engine, _t, _g, _e, _v = _make_engine()
+        # Should not raise even though no mapping exists.
+        await engine.handle_reviewer_failure("nope", reason="something")

@@ -14,7 +14,6 @@ from uuid import NAMESPACE_URL, uuid5
 from fastapi import FastAPI
 
 from niuu.cors import apply_cors_middleware
-
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
 from volundr.adapters.inbound.rest_audit import create_audit_router, create_canonical_audit_router
@@ -1209,7 +1208,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             background_task = asyncio.create_task(
                 _broadcast_periodic_updates(broadcaster, stats_service)
             )
-            await telegram_ingress.start()
+            if settings.telegram_ingress.enabled:
+                await telegram_ingress.start()
+            else:
+                logger.info(
+                    "Volundr Telegram ingress disabled via config "
+                    "(telegram_ingress.enabled=false)"
+                )
 
             # Reconcile sessions stuck in PROVISIONING after a restart
             await session_service.reconcile_provisioning_sessions()

@@ -181,7 +181,7 @@ function PersonaDetailPane({
               type="button"
               className="rv-pr-action-btn"
               onClick={() => void handleFork()}
-              disabled={!persona || isForking}
+              disabled={isForking}
             >
               {isForking ? 'cloning…' : 'clone as…'}
             </button>

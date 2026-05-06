@@ -58,6 +58,34 @@ def build_claude_mcp_config(raw_servers: object) -> str | None:
     return json.dumps(payload)
 
 
+def build_sdk_mcp_servers(raw_servers: object) -> dict[str, dict[str, Any]]:
+    """Translate MCP servers into ``ClaudeAgentOptions.mcp_servers`` format."""
+    servers = normalize_mcp_servers(raw_servers)
+    if not servers:
+        return {}
+
+    payload: dict[str, dict[str, Any]] = {}
+    for server in servers:
+        name = server["name"]
+        if server.get("url"):
+            server_type = str(server.get("type") or "sse")
+            if server_type == "http":
+                payload[name] = {"type": "http", "url": server["url"]}
+                continue
+            payload[name] = {"type": "sse", "url": server["url"]}
+            continue
+
+        entry: dict[str, Any] = {"command": server.get("command") or ""}
+        if server.get("type") == "stdio":
+            entry["type"] = "stdio"
+        if server.get("args"):
+            entry["args"] = list(server["args"])
+        if server.get("env"):
+            entry["env"] = dict(server["env"])
+        payload[name] = entry
+    return payload
+
+
 def build_codex_mcp_overrides(raw_servers: object) -> list[tuple[str, str]]:
     """Translate MCP servers into ``codex -c key=value`` override pairs."""
     servers = normalize_mcp_servers(raw_servers)

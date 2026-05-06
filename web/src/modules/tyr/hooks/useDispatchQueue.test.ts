@@ -45,6 +45,9 @@ describe('useDispatchQueue', () => {
       if (url.includes('/clusters')) {
         return { ok: true, status: 200, json: async () => mockClusters } as Response;
       }
+      if (url.includes('/session-definitions')) {
+        return { ok: true, status: 200, json: async () => [] } as Response;
+      }
       if (url.includes('/approve')) {
         return {
           ok: true,

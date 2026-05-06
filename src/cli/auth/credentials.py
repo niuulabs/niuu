@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,5 +98,8 @@ class CredentialStore:
     def clear(self) -> None:
         """Remove stored credentials."""
         if self._path.exists():
-            self._path.unlink()
+            if self._path.is_dir():
+                shutil.rmtree(self._path)
+            else:
+                self._path.unlink()
             logger.debug("credentials cleared at %s", self._path)

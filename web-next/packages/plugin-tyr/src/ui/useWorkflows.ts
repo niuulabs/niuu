@@ -6,6 +6,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
+import { randomId } from '@niuulabs/ui';
 import type { IWorkflowService } from '../ports';
 import type { Workflow } from '../domain/workflow';
 
@@ -32,7 +33,7 @@ export function useCreateWorkflow() {
   return useMutation<Workflow, Error, void>({
     mutationFn: (): Promise<Workflow> => {
       const newWf: Workflow = {
-        id: crypto.randomUUID(),
+        id: randomId(),
         name: 'New Workflow',
         nodes: [],
         edges: [],

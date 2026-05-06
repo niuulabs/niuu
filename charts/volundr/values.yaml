@@ -45,30 +45,42 @@ revisionHistoryLimit: 10
 # Override via global.models from the niuu umbrella chart
 aiModels:
   # Anthropic Claude
+  - id: "claude-opus-4-7"
+    name: "Claude Opus 4.7"
+    provider: "anthropic"
+    costPerMillionTokens: 15.00
   - id: "claude-opus-4-6"
     name: "Claude Opus 4.6"
+    provider: "anthropic"
     costPerMillionTokens: 15.00
   - id: "claude-opus-4-5-20251101"
     name: "Claude Opus 4.5"
+    provider: "anthropic"
     costPerMillionTokens: 15.00
   - id: "claude-sonnet-4-6"
     name: "Claude Sonnet 4.6"
+    provider: "anthropic"
     costPerMillionTokens: 3.00
   - id: "claude-haiku-4-5-20251001"
     name: "Claude Haiku 4.5"
+    provider: "anthropic"
     costPerMillionTokens: 1.00
   # OpenAI GPT
   - id: "gpt-5.5"
     name: "GPT-5.5"
+    provider: "openai"
     costPerMillionTokens: 10.00
   - id: "gpt-5.4"
     name: "GPT-5.4"
+    provider: "openai"
     costPerMillionTokens: 5.00
   - id: "o4-mini"
     name: "o4-mini"
+    provider: "openai"
     costPerMillionTokens: 1.10
   - id: "o3"
     name: "o3"
+    provider: "openai"
     costPerMillionTokens: 10.00
 
 # Image configuration
@@ -826,6 +838,9 @@ sessionDefinitions:
     # -- Labels for agent routing - only agents with matching labels will load this
     labels:
       - session
+    # -- Model providers this runtime accepts (empty = provider-neutral)
+    compatibleProviders:
+      - anthropic
     # -- Whether this session definition is active
     active: true
 
@@ -851,9 +866,13 @@ sessionDefinitions:
         # -- AI CLI backend: "claude" (Claude Code)
         cliType: claude
         # -- CLI transport mode for Claude Code sessions.
-        transport: subprocess
+        # "persistent_subprocess" keeps one Claude process across all
+        # turns (multi-turn over a held-open stdin pipe) — no per-turn
+        # spawn cost, no --resume reload between turns. The legacy
+        # "subprocess" mode (spawn-per-turn) still works as a fallback.
+        transport: persistent_subprocess
         # -- Fully-qualified transport adapter class path
-        transportAdapter: "skuld.transports.subprocess.SubprocessTransport"
+        transportAdapter: "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
         skipPermissions: true
         # -- Enable Claude Code experimental Agent Teams
@@ -956,6 +975,9 @@ sessionDefinitions:
     # -- Labels for agent routing
     labels:
       - session
+    # -- Model providers this runtime accepts (empty = provider-neutral)
+    compatibleProviders:
+      - openai
     # -- Whether this session definition is active
     active: true
 
@@ -1058,6 +1080,8 @@ sessionDefinitions:
     # -- Labels for agent routing
     labels:
       - session
+    # -- Model providers this runtime accepts ([] = provider-neutral, accepts any)
+    compatibleProviders: []
     # -- Whether this session definition is active
     active: true
 

@@ -657,7 +657,7 @@ async def test_mimir_write_tool_research_page_rejects_self_ingested_content(
 
     result = await tool.execute({"path": "research/new.md", "content": content})
     assert result.is_error
-    assert "self-ingested page content" in result.content
+    assert "research page provenance only points to the page content itself" in result.content
 
 
 @pytest.mark.asyncio

@@ -214,7 +214,8 @@ class TestDelete:
     def test_returns_false_when_configmap_missing(self) -> None:
         registry, mock_api = _make_registry()
         mock_api.read_namespaced_config_map.side_effect = _make_404_exception()
-        assert registry.delete("reviewer") is False
+        result = registry.delete("reviewer")
+        assert result is False
 
     def test_propagates_non_404_read_errors(self) -> None:
         registry, mock_api = _make_registry()

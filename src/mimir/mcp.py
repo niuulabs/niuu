@@ -47,6 +47,11 @@ from niuu.ports.mimir import MimirPort
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
 # MCP protocol version negotiated during initialize
 _PROTOCOL_VERSION = "2024-11-05"
 
@@ -254,10 +259,21 @@ class MimirMcpServer:
                     },
                     status_code=400,
                 )
-            response = await server.handle(body)
-            if response is None:
-                return JSONResponse(None, status_code=204)
-            return JSONResponse(response)
+            try:
+                response = await server.handle(body)
+                if response is None:
+                    return JSONResponse(None, status_code=204)
+                return JSONResponse(response)
+            except Exception:
+                logger.exception("MCP HTTP handler failed")
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32603, "message": "Internal error"},
+                    },
+                    status_code=500,
+                )
 
         return api_router
 
@@ -323,18 +339,19 @@ class MimirMcpServer:
         try:
             result = await self._dispatch(method, req.get("params") or {})
             return {"jsonrpc": "2.0", "id": req_id, "result": result}
-        except _MethodNotFoundError as exc:
+        except _MethodNotFoundError:
+            logger.info("Unknown MCP method requested: %s", _sanitize_log(method))
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "error": {"code": -32601, "message": str(exc)},
+                "error": {"code": -32601, "message": "Method not found"},
             }
-        except Exception as exc:
-            logger.exception("MCP tool error for method %s", method)
+        except Exception:
+            logger.exception("MCP tool error for method %s", _sanitize_log(method))
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "error": {"code": -32603, "message": str(exc)},
+                "error": {"code": -32603, "message": "Internal error"},
             }
 
     async def _dispatch(self, method: str, params: dict[str, Any]) -> Any:

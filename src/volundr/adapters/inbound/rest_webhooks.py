@@ -36,6 +36,11 @@ _GITHUB_SOURCE = "volundr:github-webhook"
 _background_tasks: set[asyncio.Task] = set()
 
 
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 # ---------------------------------------------------------------------------
 # Rate limiter
 # ---------------------------------------------------------------------------
@@ -249,8 +254,8 @@ def create_webhooks_router(
         if event is None:
             logger.debug(
                 "GitHub webhook: no event published for type=%r delivery=%s",
-                event_type,
-                delivery_id,
+                _sanitize_log(event_type),
+                _sanitize_log(delivery_id),
             )
             return {"status": "ignored", "event_type": event_type}
 
@@ -268,8 +273,8 @@ def create_webhooks_router(
 
         logger.info(
             "GitHub webhook: queued %s delivery=%s",
-            event.event_type,
-            delivery_id,
+            _sanitize_log(event.event_type),
+            _sanitize_log(delivery_id),
         )
         return {"status": "accepted", "event_type": event.event_type}
 
@@ -287,6 +292,6 @@ async def _publish(
     except Exception:
         logger.exception(
             "Failed to publish GitHub webhook event %s (delivery=%s)",
-            event.event_type,
-            delivery_id,
+            _sanitize_log(event.event_type),
+            _sanitize_log(delivery_id),
         )

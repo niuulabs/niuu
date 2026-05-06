@@ -20,10 +20,14 @@ def process_review_event():
             "and command injection found in code changes"
         ),
         "comments": [
-            "/tmp/hello.py:6: SQL injection vulnerability - user input is "
-            "directly interpolated into SQL query without sanitization",
-            "/tmp/hello.py:10: Command injection vulnerability - "
-            "shell=True allows arbitrary command execution",
+            (
+                "/tmp/hello.py:6: SQL injection vulnerability - user input is "
+                + "directly interpolated into SQL query without sanitization"
+            ),
+            (
+                "/tmp/hello.py:10: Command injection vulnerability - "
+                + "shell=True allows arbitrary command execution"
+            ),
             "/tmp/hello.py:12: Hardcoded API key - security risk for credential exposure",
             "/tmp/hello.py:17: Bare except clause - catches all exceptions without proper handling",
         ],

@@ -91,6 +91,13 @@ class AIModelConfig(BaseModel):
 
     id: str
     name: str
+    provider: str = Field(
+        default="",
+        description=(
+            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google'). "
+            "Used to filter the model dropdown by the chosen session runtime."
+        ),
+    )
 
 
 class ReviewConfig(BaseModel):
@@ -522,6 +529,25 @@ class DispatchConfig(BaseModel):
 
     default_system_prompt: str = Field(default="")
     default_model: str = Field(default="claude-sonnet-4-6")
+    default_session_definition: str = Field(
+        default="",
+        description=(
+            "Default session_definition (runtime) key when a dispatch request "
+            "doesn't specify one — e.g. 'skuldClaude', 'skuldCodex', "
+            "'skuldOpenCode'. Empty falls through to volundr's "
+            "defaultDefinition (typically skuldClaude)."
+        ),
+    )
+    auto_continue: bool = Field(
+        default=False,
+        description=(
+            "Seed value for the per-owner DispatcherState.auto_continue flag "
+            "the first time it's created. Once a row exists in dispatcher_state "
+            "this config is not consulted — the API/UI is the source of truth. "
+            "Set this to true in solo-dev setups so newly-spawned owners "
+            "auto-pick the next ready issue after a phase gate unlocks."
+        ),
+    )
     flock: FlockConfig = Field(default_factory=FlockConfig)
     in_process: InProcessDispatchConfig = Field(default_factory=InProcessDispatchConfig)
     dispatch_prompt_template: str = Field(
@@ -616,6 +642,32 @@ class AuthConfig(BaseModel):
     )
 
 
+class WebhookConfig(BaseModel):
+    """Outbound webhook integration for raid/saga lifecycle notifications.
+
+    Fires whenever the NotificationService dispatches an event for the
+    seeded owner — REVIEW (raid ready for review), MERGED (raid merged),
+    FAILED (raid failed). The same set of events Telegram receives.
+    """
+
+    url: str = Field(
+        default="",
+        description="POST target URL. Empty disables webhook seeding.",
+    )
+    secret: str = Field(
+        default="",
+        description=(
+            "Optional HMAC-SHA256 secret. When set, the body is signed and "
+            "the digest is sent in the X-Niuu-Signature header as "
+            "'sha256=<hex>'. Receivers should verify."
+        ),
+    )
+    min_urgency: str = Field(
+        default="low",
+        description="Minimum urgency: 'low' | 'medium' | 'high'.",
+    )
+
+
 class TelegramConfig(BaseModel):
     """Telegram bot configuration for deeplink setup and webhook commands."""
 
@@ -635,6 +687,26 @@ class TelegramConfig(BaseModel):
     reply_timeout: float = Field(
         default=10.0,
         description="Timeout in seconds for Telegram Bot API reply calls.",
+    )
+    polling: bool = Field(
+        default=False,
+        description=(
+            "Enable long-polling (getUpdates) instead of relying on Telegram "
+            "calling our public webhook URL. Useful for local dev where the "
+            "platform isn't reachable from the internet. When enabled, "
+            "incoming updates are re-POSTed to /api/v1/tyr/telegram/webhook "
+            "in-process so command handlers stay shared with the webhook path."
+        ),
+    )
+    polling_self_url: str = Field(
+        default="",
+        description=(
+            "Base URL the polling shim re-POSTs updates to. When empty, "
+            "resolved at startup from NIUU_SERVER_HOST and NIUU_SERVER_PORT "
+            "(set by start-dev) so the URL matches the platform's bound "
+            "interface — sending to 127.0.0.1 fails when uvicorn binds to a "
+            "specific NIC."
+        ),
     )
     hmac_key: str = Field(default="")
     hmac_signature_length: int = Field(
@@ -949,10 +1021,17 @@ class Settings(BaseSettings):
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
     ai_models: list[AIModelConfig] = Field(
         default_factory=lambda: [
-            AIModelConfig(id="claude-opus-4-6", name="Opus 4.6"),
-            AIModelConfig(id="claude-opus-4-5-20251101", name="Opus 4.5"),
-            AIModelConfig(id="claude-sonnet-4-6", name="Sonnet 4.6"),
-            AIModelConfig(id="claude-haiku-4-5-20251001", name="Haiku 4.5"),
+            AIModelConfig(id="claude-opus-4-7", name="Opus 4.7", provider="anthropic"),
+            AIModelConfig(id="claude-opus-4-6", name="Opus 4.6", provider="anthropic"),
+            AIModelConfig(
+                id="claude-opus-4-5-20251101", name="Opus 4.5", provider="anthropic",
+            ),
+            AIModelConfig(id="claude-sonnet-4-6", name="Sonnet 4.6", provider="anthropic"),
+            AIModelConfig(
+                id="claude-haiku-4-5-20251001", name="Haiku 4.5", provider="anthropic",
+            ),
+            AIModelConfig(id="gpt-5.5", name="GPT-5.5", provider="openai"),
+            AIModelConfig(id="gpt-5.4", name="GPT-5.4", provider="openai"),
         ]
     )
     git: GitConfig = Field(default_factory=GitConfig)
@@ -970,6 +1049,7 @@ class Settings(BaseSettings):
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     event_triggers: EventTriggerConfig = Field(default_factory=EventTriggerConfig)
