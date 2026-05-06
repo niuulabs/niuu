@@ -13,9 +13,7 @@ on:
   push:
     branches: ['feat/**']
 
-permissions:
-  contents: read
-  packages: write     # Required by containers + build-charts jobs
+permissions: read-all
 
 env:
   REGISTRY: ghcr.io
