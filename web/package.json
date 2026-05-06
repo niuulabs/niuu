@@ -78,7 +78,7 @@
     "@codingame/monaco-vscode-docker-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-dotenv-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-edit-sessions-service-override": "^28.4.1",
-    "@codingame/monaco-vscode-editor-service-override": "^28.4.1",
+    "@codingame/monaco-vscode-editor-service-override": "^31.0.0",
     "@codingame/monaco-vscode-emmet-service-override": "^28.4.1",
     "@codingame/monaco-vscode-environment-service-override": "^28.4.1",
     "@codingame/monaco-vscode-explorer-service-override": "^28.4.1",
