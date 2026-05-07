@@ -133,7 +133,7 @@ def test_custom_persona_dirs_accepted(tmp_path: Path) -> None:
 
 
 def test_spa_fallback_serves_index_for_unknown_route(tmp_path: Path) -> None:
-    """When web/dist exists, unknown routes return index.html."""
+    """When the built UI dist exists, unknown routes return index.html."""
     dist = tmp_path / "dist"
     assets = dist / "assets"
     assets.mkdir(parents=True)

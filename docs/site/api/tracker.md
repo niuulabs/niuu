@@ -2,7 +2,7 @@
 
 Connects sessions to external issue trackers (Linear, Jira). Sessions can be linked to issues, and issue status can be updated from Volundr.
 
-All endpoints are prefixed with `/api/v1/volundr/tracker`.
+All endpoints are prefixed with `/api/v1/tracker`.
 
 ## Endpoints
 

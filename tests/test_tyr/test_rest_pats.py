@@ -1,6 +1,6 @@
 """Tests for the PAT REST API endpoints.
 
-Tests POST/GET/DELETE /api/v1/users/tokens by mocking app.state.pat_service.
+Tests POST/GET/DELETE /api/v1/tokens by mocking app.state.pat_service.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def _auth_headers(user_id: str = "user-1") -> dict[str, str]:
 
 
 # -------------------------------------------------------------------
-# POST /api/v1/users/tokens
+# POST /api/v1/tokens
 # -------------------------------------------------------------------
 
 
@@ -77,7 +77,7 @@ class TestCreateToken:
         mock_service.create.return_value = (pat, "raw-jwt-token")
 
         resp = client.post(
-            "/api/v1/users/tokens",
+            "/api/v1/tokens",
             json={"name": "ci-token"},
             headers=_auth_headers(),
         )
@@ -96,7 +96,7 @@ class TestCreateToken:
         mock_service.create.return_value = (pat, "tok")
 
         client.post(
-            "/api/v1/users/tokens",
+            "/api/v1/tokens",
             json={"name": "test"},
             headers=_auth_headers("user-42"),
         )
@@ -105,7 +105,7 @@ class TestCreateToken:
 
     def test_rejects_empty_name(self, client: TestClient):
         resp = client.post(
-            "/api/v1/users/tokens",
+            "/api/v1/tokens",
             json={"name": ""},
             headers=_auth_headers(),
         )
@@ -113,7 +113,7 @@ class TestCreateToken:
 
     def test_rejects_name_too_long(self, client: TestClient):
         resp = client.post(
-            "/api/v1/users/tokens",
+            "/api/v1/tokens",
             json={"name": "x" * 101},
             headers=_auth_headers(),
         )
@@ -121,7 +121,7 @@ class TestCreateToken:
 
 
 # -------------------------------------------------------------------
-# GET /api/v1/users/tokens
+# GET /api/v1/tokens
 # -------------------------------------------------------------------
 
 
@@ -129,7 +129,7 @@ class TestListTokens:
     def test_returns_empty_list(self, client: TestClient, mock_service: AsyncMock):
         mock_service.list.return_value = []
 
-        resp = client.get("/api/v1/users/tokens", headers=_auth_headers())
+        resp = client.get("/api/v1/tokens", headers=_auth_headers())
 
         assert resp.status_code == 200
         assert resp.json() == []
@@ -139,7 +139,7 @@ class TestListTokens:
         pat2 = _make_pat(name="tok-b")
         mock_service.list.return_value = [pat1, pat2]
 
-        resp = client.get("/api/v1/users/tokens", headers=_auth_headers())
+        resp = client.get("/api/v1/tokens", headers=_auth_headers())
 
         assert resp.status_code == 200
         data = resp.json()
@@ -160,7 +160,7 @@ class TestListTokens:
         )
         mock_service.list.return_value = [pat]
 
-        resp = client.get("/api/v1/users/tokens", headers=_auth_headers())
+        resp = client.get("/api/v1/tokens", headers=_auth_headers())
 
         data = resp.json()
         assert data[0]["last_used_at"] is not None
@@ -168,13 +168,13 @@ class TestListTokens:
     def test_calls_service_with_principal_user_id(
         self, client: TestClient, mock_service: AsyncMock
     ):
-        client.get("/api/v1/users/tokens", headers=_auth_headers("user-99"))
+        client.get("/api/v1/tokens", headers=_auth_headers("user-99"))
 
         mock_service.list.assert_called_once_with("user-99")
 
 
 # -------------------------------------------------------------------
-# DELETE /api/v1/users/tokens/{pat_id}
+# DELETE /api/v1/tokens/{pat_id}
 # -------------------------------------------------------------------
 
 
@@ -184,7 +184,7 @@ class TestRevokeToken:
         mock_service.revoke.return_value = True
 
         resp = client.delete(
-            f"/api/v1/users/tokens/{pat_id}",
+            f"/api/v1/tokens/{pat_id}",
             headers=_auth_headers(),
         )
 
@@ -194,7 +194,7 @@ class TestRevokeToken:
         mock_service.revoke.return_value = False
 
         resp = client.delete(
-            f"/api/v1/users/tokens/{uuid4()}",
+            f"/api/v1/tokens/{uuid4()}",
             headers=_auth_headers(),
         )
 
@@ -202,7 +202,7 @@ class TestRevokeToken:
 
     def test_returns_404_for_invalid_uuid(self, client: TestClient):
         resp = client.delete(
-            "/api/v1/users/tokens/not-a-uuid",
+            "/api/v1/tokens/not-a-uuid",
             headers=_auth_headers(),
         )
 
@@ -215,7 +215,7 @@ class TestRevokeToken:
         mock_service.revoke.return_value = True
 
         client.delete(
-            f"/api/v1/users/tokens/{pat_id}",
+            f"/api/v1/tokens/{pat_id}",
             headers=_auth_headers("user-7"),
         )
 
@@ -230,6 +230,6 @@ class TestRevokeToken:
 class TestAuthRequired:
     def test_no_auth_headers_returns_401(self, client: TestClient, mock_service: AsyncMock):
         """Without Envoy headers and no allow_anonymous_dev, returns 401."""
-        resp = client.get("/api/v1/users/tokens")
+        resp = client.get("/api/v1/tokens")
         assert resp.status_code == 401
         mock_service.list.assert_not_called()

@@ -1,6 +1,6 @@
 # Web UI
 
-The web UI is a React single-page application built with Vite.
+The web UI now lives entirely in the `web-next/` workspace. It is a composable React/Vite application with the main shell in `web-next/apps/niuu` and shared capabilities split across `web-next/packages/*`.
 
 ## Session views
 
@@ -83,62 +83,35 @@ Sessions are created through a guided wizard: pick a template, configure resourc
 ## Development
 
 ```bash
-cd web
-npm install
-npm run dev        # Dev server at http://localhost:5173
-npm run build      # Production build
-npm run lint       # ESLint
-npm run format:check  # Prettier check
-npm run typecheck  # TypeScript check
-npm run test:coverage # Tests with 85% coverage threshold
+cd web-next
+pnpm install --frozen-lockfile
+pnpm dev              # Dev server at http://localhost:5173
+pnpm build            # Production build
+pnpm lint             # ESLint
+pnpm format:check     # Prettier check
+pnpm typecheck        # TypeScript check
+pnpm test             # Unit tests with coverage
 ```
 
 ## Architecture
 
-The UI follows the same hexagonal pattern as the backend:
+The current frontend is organised as a workspace:
 
 ```
-web/src/
-├── ports/           # Interfaces for API communication
-├── adapters/        # HTTP/WebSocket implementations
-├── models/          # TypeScript domain models
-├── store/           # State management
-├── pages/           # Route-level components
-├── components/      # Reusable UI components
-├── hooks/           # Custom React hooks
-├── contexts/        # React contexts
-├── styles/          # Design tokens and global styles
-├── auth/            # Authentication
-└── utils/           # Utilities
+web-next/
+├── apps/
+│   └── niuu/        # Primary browser app and route shell
+├── packages/
+│   ├── shell/       # Shell layout and chrome
+│   ├── ui/          # Shared UI primitives
+│   ├── auth/        # Authentication/runtime config
+│   └── plugin-*/    # Domain plugins (Volundr, Tyr, Ravn, Mimir, ...)
+└── e2e/             # Playwright coverage for the integrated app
 ```
 
 ## Styling
 
-All styles use CSS Modules with design tokens. Inline styles, Tailwind classes, and CSS-in-JS are not used.
-
-```tsx
-import styles from './StatusBadge.module.css';
-
-export function StatusBadge({ status }: Props) {
-  return <span className={styles.badge} data-status={status}>{status}</span>;
-}
-```
-
-```css
-/* StatusBadge.module.css */
-.badge {
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-}
-
-.badge[data-status="healthy"] {
-  background-color: color-mix(in srgb, var(--color-accent-emerald) 20%, transparent);
-  color: var(--color-accent-emerald);
-}
-```
-
-Design tokens are defined in `src/styles/tokens.css` and cover colors, spacing, typography, and border radius.
+Design tokens live in the shared workspace packages and are consumed across the `niuu` app and domain plugins. Styling is no longer tied to the old `web/src` layout.
 
 ## Key components
 

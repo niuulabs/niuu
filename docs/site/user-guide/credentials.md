@@ -22,7 +22,7 @@ Volundr supports six credential types. Each has a default injection strategy (en
 **Create a credential:**
 
 ```bash
-curl -X POST /api/v1/volundr/credentials \
+curl -X POST /api/v1/credentials \
   -H "Content-Type: application/json" \
   -d '{
     "name": "my-github-token",
@@ -37,20 +37,20 @@ The `name` field must be lowercase alphanumeric with hyphens and underscores onl
 **List your credentials (metadata only, never values):**
 
 ```bash
-curl /api/v1/volundr/credentials
-curl /api/v1/volundr/credentials?secret_type=api_key
+curl /api/v1/credentials
+curl /api/v1/credentials?secret_type=api_key
 ```
 
 **Get a single credential:**
 
 ```bash
-curl /api/v1/volundr/credentials/my-github-token
+curl /api/v1/credentials/my-github-token
 ```
 
 **Delete a credential:**
 
 ```bash
-curl -X DELETE /api/v1/volundr/credentials/my-github-token
+curl -X DELETE /api/v1/credentials/my-github-token
 ```
 
 ### Tenant (Shared) Credentials
@@ -59,14 +59,14 @@ Admins can manage organization-wide credentials that are shared across all users
 
 ```bash
 # List tenant credentials (admin only)
-curl /api/v1/volundr/credentials/tenant/list
+curl /api/v1/credentials/tenant/list
 
 # Create a tenant credential (admin only)
-curl -X POST /api/v1/volundr/credentials/tenant \
+curl -X POST /api/v1/credentials/tenant \
   -d '{"name": "shared-openai", "secret_type": "api_key", "data": {"api_key": "sk-..."}}'
 
 # Delete a tenant credential (admin only)
-curl -X DELETE /api/v1/volundr/credentials/tenant/shared-openai
+curl -X DELETE /api/v1/credentials/tenant/shared-openai
 ```
 
 ### Via the Web UI
@@ -76,7 +76,7 @@ Navigate to **Settings > Credentials** to create, view, and delete credentials t
 ### Discovering Available Types
 
 ```bash
-curl /api/v1/volundr/credentials/types
+curl /api/v1/credentials/types
 ```
 
 Returns field definitions, labels, and default mount types for each credential type.
@@ -100,7 +100,7 @@ Integrations connect credentials to specific services. Volundr ships with built-
 **Step 1: Store the credential.**
 
 ```bash
-curl -X POST /api/v1/volundr/credentials \
+curl -X POST /api/v1/credentials \
   -d '{
     "name": "my-linear-key",
     "secret_type": "api_key",
@@ -111,7 +111,7 @@ curl -X POST /api/v1/volundr/credentials \
 **Step 2: Create the integration connection.**
 
 ```bash
-curl -X POST /api/v1/volundr/integrations \
+curl -X POST /api/v1/integrations \
   -d '{
     "slug": "linear",
     "integration_type": "issue_tracker",

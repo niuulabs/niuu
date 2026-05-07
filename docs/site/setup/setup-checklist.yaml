@@ -149,7 +149,7 @@ volundr_setup:
         - command: "kubectl logs -n volundr deployment/volundr -c migrate"
           description: "Verify database migrations"
           expect: "no errors"
-        - command: "curl -s -X POST http://${domain}/api/v1/volundr/sessions -H 'Content-Type: application/json' -d '{\"name\": \"test-session\", \"model\": \"claude-sonnet-4-20250514\"}'"
+        - command: "curl -s -X POST http://${domain}/api/v1/forge/sessions -H 'Content-Type: application/json' -d '{\"name\": \"test-session\", \"model\": \"claude-sonnet-4-20250514\"}'"
           description: "Create a test session"
           expect: "JSON with session ID and status created"
         - command: "curl -s -o /dev/null -w '%{http_code}' http://${domain}/"

@@ -1,7 +1,7 @@
 # Niuu single-binary build pipeline
 #
 # Targets:
-#   make build-web      — build React SPA, copy into src/cli/web/dist/
+#   make build-web      — build web-next SPA, copy into src/cli/web/dist/
 #   make build-postgres — compile PostgreSQL + pgvector from source
 #   make build-cli      — Nuitka --onefile compilation → dist/niuu
 #   make build          — all of the above
@@ -13,7 +13,8 @@
 BINARY_NAME  ?= niuu
 ENTRY_POINT  ?= src/cli/__main__.py
 OUTPUT_DIR   ?= dist
-WEB_DIR      := web
+WEB_DIR      := web-next
+WEB_APP_DIST := $(WEB_DIR)/apps/niuu/dist
 WEB_DEST     := src/cli/web/dist
 MIG_DIR      := migrations
 MIG_DEST     := src/cli/migrations/volundr
@@ -35,12 +36,12 @@ PGINSTALL_DIR    := build/pginstall
 build: build-web copy-migrations build-postgres build-cli
 
 # --------------------------------------------------------------------------
-# Web UI: npm build + copy dist/ into the cli package data directory
+# Web UI: pnpm build + copy dist/ into the cli package data directory
 # --------------------------------------------------------------------------
 build-web:
-	cd $(WEB_DIR) && npm ci --ignore-scripts && npm run build
+	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm build
 	rm -rf $(WEB_DEST)
-	cp -r $(WEB_DIR)/dist $(WEB_DEST)
+	cp -r $(WEB_APP_DIST) $(WEB_DEST)
 
 # --------------------------------------------------------------------------
 # PostgreSQL + pgvector: compile from source into build/pginstall/
@@ -104,10 +105,10 @@ test-integration-sleipnir:
 	uv run pytest tests/integration/sleipnir/ -v --tb=short -m broker --override-ini="addopts="
 
 test-e2e:
-	cd $(WEB_DIR) && npm run test:e2e
+	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm test:e2e
 
 test-e2e-ui:
-	cd $(WEB_DIR) && npm run test:e2e -- --ui
+	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm exec playwright test --ui
 
 test-all: test test-integration test-e2e
 

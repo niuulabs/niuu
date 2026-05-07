@@ -97,7 +97,7 @@ class TestReportTokenUsageEndpoint:
         asyncio.run(session_repository.create(running_session))
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{running_session.id}/usage",
+            f"/api/v1/forge/sessions/{running_session.id}/usage",
             json={
                 "tokens": 1000,
                 "provider": "cloud",
@@ -124,7 +124,7 @@ class TestReportTokenUsageEndpoint:
         asyncio.run(session_repository.create(running_session))
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{running_session.id}/usage",
+            f"/api/v1/forge/sessions/{running_session.id}/usage",
             json={
                 "tokens": 500,
                 "provider": "local",
@@ -144,7 +144,7 @@ class TestReportTokenUsageEndpoint:
         """Test reporting usage for non-existent session."""
         session_id = uuid4()
         response = client.post(
-            f"/api/v1/volundr/sessions/{session_id}/usage",
+            f"/api/v1/forge/sessions/{session_id}/usage",
             json={
                 "tokens": 1000,
                 "provider": "cloud",
@@ -171,7 +171,7 @@ class TestReportTokenUsageEndpoint:
         asyncio.run(session_repository.create(stopped_session))
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{stopped_session.id}/usage",
+            f"/api/v1/forge/sessions/{stopped_session.id}/usage",
             json={
                 "tokens": 1000,
                 "provider": "cloud",
@@ -193,7 +193,7 @@ class TestReportTokenUsageEndpoint:
         asyncio.run(session_repository.create(running_session))
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{running_session.id}/usage",
+            f"/api/v1/forge/sessions/{running_session.id}/usage",
             json={
                 "tokens": 1000,
                 "provider": "invalid",
@@ -215,7 +215,7 @@ class TestReportTokenUsageEndpoint:
         asyncio.run(session_repository.create(running_session))
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{running_session.id}/usage",
+            f"/api/v1/forge/sessions/{running_session.id}/usage",
             json={
                 "tokens": 0,
                 "provider": "cloud",
@@ -237,7 +237,7 @@ class TestReportTokenUsageEndpoint:
         asyncio.run(session_repository.create(running_session))
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{running_session.id}/usage",
+            f"/api/v1/forge/sessions/{running_session.id}/usage",
             json={
                 "tokens": -100,
                 "provider": "cloud",
@@ -285,7 +285,7 @@ class TestReportUsageWithPricing:
         asyncio.run(session_repository.create(running_session))
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{running_session.id}/usage",
+            f"/api/v1/forge/sessions/{running_session.id}/usage",
             json={
                 "tokens": 1_000_000,  # 1M tokens
                 "provider": "cloud",
@@ -313,7 +313,7 @@ class TestTokenServiceUnavailable:
         client = TestClient(app)
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{uuid4()}/usage",
+            f"/api/v1/forge/sessions/{uuid4()}/usage",
             json={
                 "tokens": 1000,
                 "provider": "cloud",

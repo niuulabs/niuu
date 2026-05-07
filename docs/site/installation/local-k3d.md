@@ -82,7 +82,7 @@ helm install volundr oci://ghcr.io/niuulabs/charts/volundr \
   --set database.existingSecret=volundr-db \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=localhost \
-  --set ingress.hosts[0].paths[0].path=/api/v1/volundr \
+  --set ingress.hosts[0].paths[0].path=/api/v1 \
   --set ingress.hosts[0].paths[0].pathType=Prefix
 ```
 

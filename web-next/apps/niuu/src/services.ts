@@ -150,11 +150,11 @@ function resolveDirectServiceStatus(
 }
 
 export function toSharedApiBase(baseUrl: string): string {
-  return baseUrl.replace(/\/(?:tyr|forge|volundr)\/?$/, '');
+  return baseUrl.replace(/\/(?:tyr|forge)\/?$/, '');
 }
 
 export function toHostBase(baseUrl: string): string {
-  return baseUrl.replace(/\/api\/v1\/(?:forge|volundr)\/?$/, '');
+  return baseUrl.replace(/\/api\/v1\/forge\/?$/, '');
 }
 
 export function toHostPtyWsUrl(baseUrl: string): string {

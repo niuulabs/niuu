@@ -211,7 +211,7 @@ describe('buildVolundrHttpAdapter', () => {
   });
 
   it('getRepos uses the shared niuu repo catalog and normalizes grouped provider payloads', async () => {
-    const client = makeClientWithBase('http://localhost:8080/api/v1/volundr');
+    const client = makeClientWithBase('http://localhost:8080/api/v1/forge');
     const svc = buildVolundrHttpAdapter(client);
     const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu')!;
     expect(niuuClient).toBeDefined();
@@ -255,8 +255,8 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.post).toHaveBeenCalledWith('/sessions', config);
   });
 
-  it('derives a canonical forge client for session launch when the main base is legacy volundr', async () => {
-    const client = makeClientWithBase('http://localhost:8080/api/v1/volundr');
+  it('uses the configured forge client directly for session launch when the base is canonical', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/forge');
     const config = {
       name: 'test',
       source: { type: 'git' as const, repo: 'r', branch: 'main' },
@@ -265,19 +265,17 @@ describe('buildVolundrHttpAdapter', () => {
 
     await buildVolundrHttpAdapter(client).startSession(config);
 
-    const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
-    expect(forgeClient.post).toHaveBeenCalledWith('/sessions', config);
-    expect(client.post).not.toHaveBeenCalledWith('/sessions', config);
+    expect(getDerivedClient('http://localhost:8080/api/v1/forge')).toBeUndefined();
+    expect(client.post).toHaveBeenCalledWith('/sessions', config);
   });
 
-  it('derives a canonical forge client for session reads when the main base is legacy volundr', async () => {
-    const client = makeClientWithBase('http://localhost:8080/api/v1/volundr');
+  it('uses the configured forge client directly for session reads when the base is canonical', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/forge');
 
     await buildVolundrHttpAdapter(client).getSessions();
 
-    const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
-    expect(forgeClient.get).toHaveBeenCalledWith('/sessions');
-    expect(client.get).not.toHaveBeenCalledWith('/sessions');
+    expect(getDerivedClient('http://localhost:8080/api/v1/forge')).toBeUndefined();
+    expect(client.get).toHaveBeenCalledWith('/sessions');
   });
 
   it('stopSession calls POST /sessions/:id/stop', async () => {

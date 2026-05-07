@@ -8,24 +8,20 @@ cd volundr
 uv sync --all-extras --dev
 
 # Web UI
-cd web && npm install
+cd web-next
+pnpm install --frozen-lockfile
 ```
 
 ## Project structure
 
 ```
 volundr/
-├── src/volundr/        # Python backend
-│   ├── domain/         # Models, ports, services
-│   ├── adapters/       # Inbound (REST) and outbound (infra)
-│   ├── infrastructure/ # Database setup
-│   ├── skuld/          # WebSocket broker
-│   └── config.py       # Settings
-├── web/                # React frontend
+├── src/                # Python services, runtime, and CLI
+├── web-next/           # Plugin-based frontend workspace
+│   ├── apps/niuu/      # Main Niuu app
+│   └── packages/       # Shared UI/auth/plugin packages
 ├── tests/              # Backend tests
 ├── charts/             # Helm charts
-│   ├── volundr/        # API server chart
-│   └── skuld/          # Broker chart
 ├── migrations/         # SQL migrations
 └── docs/               # Documentation site
 ```
@@ -42,7 +38,7 @@ docker run -d --name volundr-pg \
 uv run uvicorn volundr.main:app --reload --port 8080
 
 # Start the UI (separate terminal)
-cd web && npm run dev
+cd web-next && pnpm dev
 ```
 
 ## Entry points

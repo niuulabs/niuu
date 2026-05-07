@@ -16,40 +16,31 @@ from fastapi import FastAPI
 from niuu.cors import apply_cors_middleware
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
-from volundr.adapters.inbound.rest_audit import create_audit_router, create_canonical_audit_router
+from volundr.adapters.inbound.rest_audit import create_canonical_audit_router
 from volundr.adapters.inbound.rest_credentials import (
     create_canonical_credentials_router,
-    create_credentials_router,
-    create_legacy_secret_store_router,
 )
 from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.adapters.inbound.rest_features import (
     create_feature_catalog_router,
-    create_features_router,
 )
 from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_integrations import (
     create_canonical_integrations_router,
-    create_integrations_router,
 )
 from volundr.adapters.inbound.rest_issues import (
     create_canonical_issues_router,
-    create_issues_router,
 )
-from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router, create_oauth_router
+from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_presets import create_presets_router
 from volundr.adapters.inbound.rest_profiles import create_profiles_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import (
     create_canonical_secrets_router,
-    create_secrets_router,
 )
 from volundr.adapters.inbound.rest_tenants import create_identity_router, create_tenants_router
-from volundr.adapters.inbound.rest_tracker import (
-    create_canonical_tracker_router,
-    create_tracker_router,
-)
+from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.config_profiles import ConfigProfileProvider
@@ -817,16 +808,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
             # Create and include routers
-            router = create_router(
-                session_service,
-                stats_service,
-                token_service,
-                pricing_provider,
-                broadcaster=broadcaster,
-                repo_service=repo_service,
-                chronicle_service=chronicle_service,
-            )
-            app.include_router(router)
             forge_router = create_router(
                 session_service,
                 stats_service,
@@ -840,12 +821,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.include_router(forge_router)
 
             profiles_router = create_profiles_router(
-                profile_service, template_service, settings.session_definitions
+                profile_service,
+                template_service,
+                settings.session_definitions,
+                prefix="/api/v1/forge",
             )
             app.include_router(profiles_router)
 
             # Resource discovery endpoint
-            resources_router = create_resources_router(resource_provider)
+            resources_router = create_resources_router(
+                resource_provider,
+                prefix="/api/v1/forge",
+            )
             app.include_router(resources_router)
             app.state.resource_provider = resource_provider
 
@@ -854,19 +841,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             secret_manager = InMemorySecretManager()
             canonical_secrets_router = create_canonical_secrets_router(mcp_provider, secret_manager)
             app.include_router(canonical_secrets_router)
-            secrets_router = create_secrets_router(mcp_provider, secret_manager)
-            app.include_router(secrets_router)
 
             # Saved prompts
             prompt_repository = PostgresPromptRepository(pool)
             prompt_service = PromptService(prompt_repository)
-            prompts_router = create_prompts_router(prompt_service)
+            prompts_router = create_prompts_router(
+                prompt_service,
+                prefix="/api/v1/forge",
+            )
             app.include_router(prompts_router)
 
             # Presets (DB-stored runtime config)
             preset_repository = PostgresPresetRepository(pool)
             preset_service = PresetService(preset_repository)
-            presets_router = create_presets_router(preset_service)
+            presets_router = create_presets_router(
+                preset_service,
+                prefix="/api/v1/forge",
+            )
             app.include_router(presets_router)
 
             # Personal access tokens
@@ -901,22 +892,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             tokens_router = create_pats_router(_extract_principal, prefix="/api/v1/tokens")
             app.include_router(tokens_router)
-            pats_router = create_pats_router(
-                _extract_principal,
-                prefix="/api/v1/users/tokens",
-                deprecated=True,
-                canonical_prefix="/api/v1/tokens",
-            )
-            app.include_router(pats_router)
-            volundr_tokens_router = create_pats_router(
-                _extract_principal,
-                prefix="/api/v1/volundr/tokens",
-                deprecated=True,
-                canonical_prefix="/api/v1/tokens",
-            )
-            app.include_router(volundr_tokens_router)
 
-            git_router = create_git_router(git_workflow_service)
+            git_router = create_git_router(
+                git_workflow_service,
+                prefix="/api/v1/forge",
+            )
             app.include_router(git_router)
 
             # Local git workspace endpoints (mini/local mode)
@@ -929,6 +909,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             local_git_router = create_local_git_router(
                 local_git_service,
                 session_repository=repository,
+                prefix="/api/v1/forge",
             )
             app.include_router(local_git_router)
             app.state.local_git_service = local_git_service
@@ -954,8 +935,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             feature_service = FeatureService(pool, feature_configs)
             feature_catalog_router = create_feature_catalog_router(feature_service)
             app.include_router(feature_catalog_router)
-            features_router = create_features_router(feature_service)
-            app.include_router(features_router)
             app.state.feature_service = feature_service
 
             # Credential management (reuses credential_store created above)
@@ -967,14 +946,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 credential_service,
             )
             app.include_router(canonical_credentials_router)
-            credentials_router = create_credentials_router(
-                credential_service,
-            )
-            app.include_router(credentials_router)
-            legacy_secret_store_router = create_legacy_secret_store_router(
-                credential_service,
-            )
-            app.include_router(legacy_secret_store_router)
 
             # Workspace management — PVCs are the source of truth
             workspace_service = WorkspaceService(storage_adapter)
@@ -1029,14 +1000,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             app.include_router(canonical_integrations_router)
 
-            integrations_router = create_integrations_router(
-                integration_repo,
-                tracker_factory,
-                registry=integration_registry,
-                credential_store=credential_store,
-            )
-            app.include_router(integrations_router)
-
             # OAuth integration endpoints
             canonical_oauth_router = create_canonical_oauth_router(
                 oauth_config=settings.oauth,
@@ -1046,31 +1009,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             app.include_router(canonical_oauth_router)
 
-            oauth_router = create_oauth_router(
-                oauth_config=settings.oauth,
-                integration_registry=integration_registry,
-                credential_store=credential_store,
-                integration_repo=integration_repo,
-            )
-            app.include_router(oauth_router)
-
             # Generic issue endpoints
             canonical_issues_router = create_canonical_issues_router(
                 integration_repo,
                 tracker_factory,
             )
             app.include_router(canonical_issues_router)
-
-            issues_router = create_issues_router(
-                integration_repo,
-                tracker_factory,
-            )
-            app.include_router(issues_router)
-
-            tracker_router = create_tracker_router(
-                tracker_service=tracker_service,
-            )
-            app.include_router(tracker_router)
 
             canonical_tracker_router = create_canonical_tracker_router(
                 tracker_service=tracker_service,
@@ -1164,13 +1108,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 canonical_audit_router = create_canonical_audit_router(audit_repository)
                 app.include_router(canonical_audit_router)
-                audit_router = create_audit_router(audit_repository)
-                app.include_router(audit_router)
                 logger.info("Audit log subscriber started")
 
             event_ingestion = EventIngestionService(sinks=event_sinks)
             events_router = create_events_router(
-                event_ingestion, pg_event_sink, session_service=session_service
+                event_ingestion,
+                pg_event_sink,
+                session_service=session_service,
+                prefix="/api/v1/forge",
             )
             app.include_router(events_router)
 

@@ -2,7 +2,7 @@
 
 Profiles and templates are configuration-driven session blueprints. Profiles define runtime settings (model, resources, MCP servers). Templates define workspace layouts (repos, setup scripts) and include runtime settings.
 
-All endpoints are prefixed with `/api/v1/volundr`.
+All endpoints are prefixed with `/api/v1/forge`.
 
 ## Profile endpoints
 

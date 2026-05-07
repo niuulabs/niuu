@@ -113,7 +113,7 @@ describe('toSharedApiBase', () => {
   });
 
   it('strips a trailing Volundr service suffix', () => {
-    expect(toSharedApiBase('http://localhost:8080/api/v1/volundr')).toBe(
+    expect(toSharedApiBase('http://localhost:8080/api/v1/forge')).toBe(
       'http://localhost:8080/api/v1',
     );
   });
@@ -131,7 +131,7 @@ describe('toHostBase', () => {
   });
 
   it('strips a trailing legacy Volundr service suffix', () => {
-    expect(toHostBase('http://localhost:8080/api/v1/volundr')).toBe('http://localhost:8080');
+    expect(toHostBase('http://localhost:8080/api/v1/forge')).toBe('http://localhost:8080');
   });
 });
 
@@ -149,7 +149,7 @@ describe('resolveSharedApiBase', () => {
       resolveSharedApiBase({
         services: {
           tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
-          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
         },
       } as any),
     ).toBe('http://localhost:8080/api/v1');
@@ -169,7 +169,7 @@ describe('resolveSharedApiBase', () => {
     expect(
       resolveSharedApiBase({
         services: {
-          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
         },
       } as any),
     ).toBe('http://localhost:8080/api/v1');
@@ -207,7 +207,7 @@ describe('resolveCanonicalServiceBase', () => {
       resolveCanonicalServiceBase(
         {
           services: {
-            volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+            volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
           },
         } as any,
         'identity',
@@ -277,7 +277,7 @@ describe('resolveForgeServiceBase', () => {
       resolveForgeServiceBase({
         services: {
           forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
-          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
         },
       } as any),
     ).toBe('http://localhost:8080/api/v1/forge');
@@ -287,10 +287,10 @@ describe('resolveForgeServiceBase', () => {
     expect(
       resolveForgeServiceBase({
         services: {
-          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
         },
       } as any),
-    ).toBe('http://localhost:8080/api/v1/volundr');
+    ).toBe('http://localhost:8080/api/v1/forge');
   });
 
   it('returns null when neither forge nor volundr is live', () => {
@@ -314,13 +314,13 @@ describe('buildServices live base selection', () => {
     buildServices({
       services: {
         forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
     expect(volundrMocks.buildVolundrHttpAdapter).toHaveBeenCalledWith(
       expect.objectContaining({
-        basePath: 'http://localhost:8080/api/v1/volundr',
+        basePath: 'http://localhost:8080/api/v1/forge',
       }),
     );
   });
@@ -696,7 +696,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -860,7 +860,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -953,7 +953,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -1081,7 +1081,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -1138,7 +1138,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -1194,7 +1194,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
         mimir: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/mimir' },
       },
     } as any);
@@ -1323,7 +1323,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -1448,7 +1448,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
     const sessionStore = services.sessionStore as any;
@@ -1514,10 +1514,10 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        'volundr.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/volundr/pty/{sessionId}' },
+        'volundr.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}' },
         'volundr.metrics': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/volundr/metrics',
+          baseUrl: 'http://localhost:8080/api/v1/forge/metrics',
         },
         'observatory.registry': {
           mode: 'http',
@@ -1535,10 +1535,10 @@ describe('buildServices', () => {
     } as any);
 
     expect(volundrMocks.buildVolundrPtyWsAdapter).toHaveBeenCalledWith({
-      urlTemplate: 'ws://localhost:8080/api/v1/volundr/pty/{sessionId}',
+      urlTemplate: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}',
     });
     expect(volundrMocks.buildVolundrMetricsSseAdapter).toHaveBeenCalledWith({
-      urlTemplate: 'http://localhost:8080/api/v1/volundr/metrics',
+      urlTemplate: 'http://localhost:8080/api/v1/forge/metrics',
     });
     expect(queryMocks.createApiClient).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/observatory',
@@ -1578,10 +1578,10 @@ describe('buildServices', () => {
           mode: 'http',
           baseUrl: 'http://localhost:8080/api/v1/forge/metrics',
         },
-        'volundr.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/volundr/pty/{sessionId}' },
+        'volundr.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}' },
         'volundr.metrics': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/volundr/metrics',
+          baseUrl: 'http://localhost:8080/api/v1/forge/metrics',
         },
       },
     } as any);

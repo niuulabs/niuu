@@ -28,7 +28,7 @@ def _make_app(session_service: SessionService, settings: Settings) -> FastAPI:
 
 
 class TestAuthConfigEndpoint:
-    """Tests for GET /api/v1/volundr/auth/config."""
+    """Tests for GET /api/v1/forge/auth/config."""
 
     def test_returns_auth_config_when_issuer_set(self, session_service: SessionService):
         """Returns OIDC config when auth_discovery.issuer is configured."""
@@ -42,7 +42,7 @@ class TestAuthConfigEndpoint:
         app = _make_app(session_service, settings)
         client = TestClient(app, raise_server_exceptions=False)
 
-        response = client.get("/api/v1/volundr/auth/config")
+        response = client.get("/api/v1/forge/auth/config")
 
         assert response.status_code == 200
         data = response.json()
@@ -62,7 +62,7 @@ class TestAuthConfigEndpoint:
         app = _make_app(session_service, settings)
         client = TestClient(app, raise_server_exceptions=False)
 
-        response = client.get("/api/v1/volundr/auth/config")
+        response = client.get("/api/v1/forge/auth/config")
 
         assert response.status_code == 200
         assert response.json()["issuer"] == "https://idp.example.com/realms/v"
@@ -76,7 +76,7 @@ class TestAuthConfigEndpoint:
         app = _make_app(session_service, settings)
         client = TestClient(app, raise_server_exceptions=False)
 
-        response = client.get("/api/v1/volundr/auth/config")
+        response = client.get("/api/v1/forge/auth/config")
 
         assert response.status_code == 404
 
@@ -90,7 +90,7 @@ class TestAuthConfigEndpoint:
         app = _make_app(session_service, settings)
         client = TestClient(app, raise_server_exceptions=False)
 
-        response = client.get("/api/v1/volundr/auth/config")
+        response = client.get("/api/v1/forge/auth/config")
 
         assert response.status_code == 200
         data = response.json()
@@ -108,6 +108,6 @@ class TestAuthConfigEndpoint:
         # Deliberately do NOT set app.state.identity
         client = TestClient(app, raise_server_exceptions=False)
 
-        response = client.get("/api/v1/volundr/auth/config")
+        response = client.get("/api/v1/forge/auth/config")
 
         assert response.status_code == 200

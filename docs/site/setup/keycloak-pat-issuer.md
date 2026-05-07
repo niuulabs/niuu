@@ -191,7 +191,7 @@ kubectl patch deployment niuu-volundr -n volundr --type=json -p='[
 User authenticates via Keycloak (browser/CLI)
     ↓ JWT with aud: [volundr-api, volundr-pat-issuer]
 User clicks "Create Token" in Volundr UI
-    ↓ POST /api/v1/users/tokens (Authorization: Bearer <user-jwt>)
+    ↓ POST /api/v1/tokens (Authorization: Bearer <user-jwt>)
 Volundr extracts user's JWT from request
     ↓ PATService.create(subject_token=<user-jwt>)
 KeycloakTokenIssuer calls Keycloak Token Exchange

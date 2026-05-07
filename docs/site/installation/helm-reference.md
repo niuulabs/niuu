@@ -52,7 +52,7 @@ Default host:
 hosts:
   - host: api.example.com
     paths:
-      - path: /api/v1/volundr
+      - path: /api/v1
         pathType: Prefix
 ```
 
@@ -279,7 +279,7 @@ JWT-validating reverse proxy. Extracts claims into trusted headers for the ident
 | `envoy.jwt.keycloakHost` | `""` | IDP upstream host for JWKS |
 | `envoy.jwt.keycloakPort` | `8080` | IDP upstream port |
 | `envoy.jwt.keycloakTls` | `false` | TLS for IDP upstream |
-| `envoy.jwt.bypassPrefixes` | `/api/v1/volundr/auth/config`, `/health` | Paths that skip JWT validation |
+| `envoy.jwt.bypassPrefixes` | `/api/v1/auth/config`, `/health` | Paths that skip JWT validation |
 | `envoy.jwt.extraClaimHeaders` | `[]` | Additional claim-to-header mappings |
 
 ### Header Names

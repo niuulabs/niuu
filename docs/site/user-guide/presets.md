@@ -33,7 +33,7 @@ Unlike profiles and templates (which are operator-managed and loaded from YAML c
 
 ## Creating presets
 
-**API** — `POST /api/v1/volundr/presets` with a JSON body.
+**API** — `POST /api/v1/forge/presets` with a JSON body.
 
 **Web UI** — Save your current session configuration as a preset from the session settings panel.
 

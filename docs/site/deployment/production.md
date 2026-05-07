@@ -37,8 +37,8 @@ For the full prerequisites checklist, see the
 Volundr exposes:
 
 - `/health` — liveness/readiness probe
-- SSE stream at `/api/v1/volundr/sessions/stream` — real-time state
-- Event pipeline health at `/api/v1/volundr/events/health` — sink status
+- SSE stream at `/api/v1/forge/sessions/stream` — real-time state
+- Event pipeline health at `/api/v1/forge/events/health` — sink status
 - OpenTelemetry traces and metrics (when enabled)
 
 ## Scaling

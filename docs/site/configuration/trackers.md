@@ -52,7 +52,7 @@ Users provide their Jira credentials through the Volundr UI. The credentials are
 Map git repositories to tracker projects so Volundr knows which project to associate with a session:
 
 ```
-POST /api/v1/volundr/tracker/mappings
+POST /api/v1/tracker/repo-mappings
 {
   "repo_url": "https://github.com/org/repo",
   "project_id": "PROJ-123"

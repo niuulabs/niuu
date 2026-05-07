@@ -355,7 +355,7 @@ function deriveCanonicalCredentialsBasePath(basePath?: string): string | null {
   if (normalized.endsWith('/api/v1/credentials')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/credentials`;
 
-  const derived = normalized.replace(/\/api\/v1\/(?:forge|volundr)$/, '/api/v1/credentials');
+  const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1/credentials');
   return derived === normalized ? null : derived;
 }
 
@@ -365,7 +365,7 @@ function deriveSharedApiBasePath(basePath?: string): string | null {
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1')) return normalized;
 
-  const derived = normalized.replace(/\/api\/v1\/(?:forge|volundr)$/, '/api/v1');
+  const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1');
   return derived === normalized ? null : derived;
 }
 
@@ -375,9 +375,7 @@ function deriveCanonicalForgeBasePath(basePath?: string): string | null {
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/forge')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/forge`;
-
-  const derived = normalized.replace(/\/api\/v1\/volundr$/, '/api/v1/forge');
-  return derived === normalized ? null : derived;
+  return null;
 }
 
 function deriveNiuuBasePath(basePath?: string): string | null {

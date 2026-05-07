@@ -276,7 +276,7 @@ class TestUsageEndpointAuth:
         app = _build_rest_app(session_repo, owner_identity, allow_authz)
         with TestClient(app) as client:
             resp = client.post(
-                f"/api/v1/volundr/sessions/{session.id}/usage",
+                f"/api/v1/forge/sessions/{session.id}/usage",
                 json={"tokens": 100, "provider": "cloud", "model": "sonnet", "message_count": 1},
             )
         assert resp.status_code == 201
@@ -288,7 +288,7 @@ class TestUsageEndpointAuth:
         app = _build_rest_app(session_repo, other_identity, deny_authz)
         with TestClient(app) as client:
             resp = client.post(
-                f"/api/v1/volundr/sessions/{session.id}/usage",
+                f"/api/v1/forge/sessions/{session.id}/usage",
                 json={"tokens": 100, "provider": "cloud", "model": "sonnet", "message_count": 1},
             )
         assert resp.status_code == 403
@@ -310,7 +310,7 @@ class TestChronicleEndpointAuth:
         app = _build_rest_app(session_repo, owner_identity, allow_authz)
         with TestClient(app) as client:
             resp = client.post(
-                f"/api/v1/volundr/sessions/{session.id}/chronicle",
+                f"/api/v1/forge/sessions/{session.id}/chronicle",
                 json={"duration_seconds": 120, "key_changes": ["file.py: added tests"]},
             )
         assert resp.status_code == 201
@@ -322,7 +322,7 @@ class TestChronicleEndpointAuth:
         app = _build_rest_app(session_repo, other_identity, deny_authz)
         with TestClient(app) as client:
             resp = client.post(
-                f"/api/v1/volundr/sessions/{session.id}/chronicle",
+                f"/api/v1/forge/sessions/{session.id}/chronicle",
                 json={"duration_seconds": 120, "key_changes": ["file.py: added tests"]},
             )
         assert resp.status_code == 403
@@ -343,7 +343,7 @@ class TestTimelineEndpointAuth:
         app = _build_rest_app(session_repo, owner_identity, allow_authz)
         with TestClient(app) as client:
             resp = client.post(
-                f"/api/v1/volundr/chronicles/{session.id}/timeline",
+                f"/api/v1/forge/chronicles/{session.id}/timeline",
                 json={"t": 10, "type": "file", "label": "main.py", "action": "modified"},
             )
         assert resp.status_code == 201
@@ -355,7 +355,7 @@ class TestTimelineEndpointAuth:
         app = _build_rest_app(session_repo, other_identity, deny_authz)
         with TestClient(app) as client:
             resp = client.post(
-                f"/api/v1/volundr/chronicles/{session.id}/timeline",
+                f"/api/v1/forge/chronicles/{session.id}/timeline",
                 json={"t": 10, "type": "file", "label": "main.py", "action": "modified"},
             )
         assert resp.status_code == 403
@@ -376,7 +376,7 @@ class TestEventsEndpointAuth:
         app, _ = _build_events_app(owner_identity, allow_authz, session_repo)
         with TestClient(app) as client:
             resp = client.post(
-                "/api/v1/volundr/events",
+                "/api/v1/forge/events",
                 json={
                     "session_id": str(session.id),
                     "event_type": "session_start",
@@ -394,7 +394,7 @@ class TestEventsEndpointAuth:
         app, _ = _build_events_app(other_identity, deny_authz, session_repo)
         with TestClient(app) as client:
             resp = client.post(
-                "/api/v1/volundr/events",
+                "/api/v1/forge/events",
                 json={
                     "session_id": str(session.id),
                     "event_type": "session_start",
@@ -412,7 +412,7 @@ class TestEventsEndpointAuth:
         app, _ = _build_events_app(other_identity, deny_authz, session_repo)
         with TestClient(app) as client:
             resp = client.post(
-                "/api/v1/volundr/events/batch",
+                "/api/v1/forge/events/batch",
                 json={
                     "events": [
                         {
@@ -432,7 +432,7 @@ class TestEventsEndpointAuth:
         app, _ = _build_events_app(owner_identity, allow_authz, session_repo)
         with TestClient(app) as client:
             resp = client.post(
-                "/api/v1/volundr/events",
+                "/api/v1/forge/events",
                 json={
                     "session_id": str(uuid4()),
                     "event_type": "session_start",
@@ -466,7 +466,7 @@ class TestNoIdentityDevMode:
 
         with TestClient(app) as client:
             resp = client.post(
-                f"/api/v1/volundr/sessions/{session.id}/usage",
+                f"/api/v1/forge/sessions/{session.id}/usage",
                 json={"tokens": 50, "provider": "cloud", "model": "test", "message_count": 1},
             )
         assert resp.status_code == 201
@@ -481,7 +481,7 @@ class TestNoIdentityDevMode:
         app.include_router(router)
         with TestClient(app) as client:
             resp = client.post(
-                "/api/v1/volundr/events",
+                "/api/v1/forge/events",
                 json={
                     "session_id": str(uuid4()),
                     "event_type": "session_start",

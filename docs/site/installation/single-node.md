@@ -87,7 +87,7 @@ helm install volundr oci://ghcr.io/niuulabs/charts/volundr \
   --set ingress.enabled=true \
   --set ingress.className=traefik \
   --set ingress.hosts[0].host=volundr.local \
-  --set ingress.hosts[0].paths[0].path=/api/v1/volundr \
+  --set ingress.hosts[0].paths[0].path=/api/v1 \
   --set ingress.hosts[0].paths[0].pathType=Prefix \
   --set storage.sessions.storageClass=local-path \
   --set storage.home.storageClass=local-path

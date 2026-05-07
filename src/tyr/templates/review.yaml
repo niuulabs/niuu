@@ -106,7 +106,7 @@ stages:
 
           1. Check out or verify the PR branch is current.
           2. Run backend tests: `make test` (or `pytest -v`).
-          3. Run frontend tests: `cd web && npm run test:coverage`.
+          3. Run frontend tests: `cd web-next && pnpm test`.
           4. Run linting: `make verify` (ruff check + ruff format).
           5. Check CI status: `gh pr checks {event.pr_number} --repo {event.repo}`.
           6. Verify `codecov/patch` is green (85% coverage gate).

@@ -48,7 +48,7 @@ ingress:
   annotations: {}
   routeSets:
     api:
-      - path: /api/v1/volundr
+      - path: /api/v1
         service: volundr
       - path: /api/v1/forge
         service: volundr
@@ -121,7 +121,7 @@ volundr:
     ingress:
       enabled: false
     config:
-      apiBaseUrl: "/api/v1/volundr"
+      apiBaseUrl: "/api/v1/forge"
   webNext:
     ingress:
       enabled: false

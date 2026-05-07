@@ -1,6 +1,6 @@
 """Integration tests for Volundr SSE event streaming.
 
-Verifies that ``GET /api/v1/volundr/sessions/stream`` delivers real-time
+Verifies that ``GET /api/v1/forge/sessions/stream`` delivers real-time
 Server-Sent Events when sessions are created or stats are broadcast.
 
 Uses a real HTTP server (uvicorn) because httpx's ``ASGITransport``
@@ -24,7 +24,7 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-API = "/api/v1/volundr"
+API = "/api/v1/forge"
 SSE_URL = f"{API}/sessions/stream"
 
 

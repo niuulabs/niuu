@@ -2,7 +2,7 @@
  * HTTP Client Factory
  *
  * Creates API clients scoped to a specific backend base path.
- * Each service has its own client: /api/v1/volundr, /api/v1/tyr, etc.
+ * Each service has its own client: /api/v1/forge, /api/v1/tyr, etc.
  */
 
 export interface ApiError {
@@ -53,7 +53,7 @@ export function getAccessToken(): string | null {
 
 /**
  * Create an API client for a specific service base path.
- * @param basePath - e.g. '/api/v1/volundr'
+ * @param basePath - e.g. '/api/v1/forge'
  */
 export function createApiClient(basePath: string): ApiClient {
   async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {

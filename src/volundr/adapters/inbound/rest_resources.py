@@ -61,10 +61,12 @@ class ClusterResourceInfoResponse(BaseModel):
 
 def create_resources_router(
     resource_provider: ResourceProvider,
+    *,
+    prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create the resources REST router."""
 
-    router = APIRouter(prefix="/api/v1/volundr", tags=["Resources"])
+    router = APIRouter(prefix=prefix, tags=["Resources"])
 
     @router.get(
         "/resources",

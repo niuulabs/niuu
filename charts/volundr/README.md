@@ -157,7 +157,7 @@ The following subsystems use this pattern:
 | `ingress.enabled` | bool | `false` | Enable ingress |
 | `ingress.className` | string | `""` | Ingress class name (`nginx`, `traefik`, `haproxy`, etc.) |
 | `ingress.annotations` | object | `{}` | Ingress annotations (controller-specific). See values.yaml for examples per controller |
-| `ingress.hosts` | list | See below | Ingress hosts. Default: `api.example.com` at `/api/v1/volundr` |
+| `ingress.hosts` | list | See below | Ingress hosts. Default: `api.example.com` at `/api/v1` |
 | `ingress.tls` | list | `[]` | Ingress TLS configuration |
 
 ### Storage (Shared PVCs)
@@ -946,7 +946,7 @@ ingress:
   hosts:
     - host: volundr.example.com
       paths:
-        - path: /api/v1/volundr
+        - path: /api/v1
           pathType: Prefix
   tls:
     - secretName: volundr-tls

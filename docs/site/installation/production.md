@@ -49,8 +49,8 @@ Volundr exposes the following endpoints:
 | Endpoint | Purpose |
 |----------|---------|
 | `/health` | Liveness and readiness probes |
-| `/api/v1/volundr/sessions/stream` | SSE stream for real-time session state |
-| `/api/v1/volundr/events/health` | Event pipeline and sink status |
+| `/api/v1/forge/sessions/stream` | SSE stream for real-time session state |
+| `/api/v1/forge/events/health` | Event pipeline and sink status |
 
 OpenTelemetry traces and metrics are available when an OTel collector is configured.
 

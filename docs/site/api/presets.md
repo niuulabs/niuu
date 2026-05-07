@@ -2,7 +2,7 @@
 
 Presets are portable, database-stored runtime configurations. Unlike profiles (config-driven, read-only), presets can be created and managed by users through the API.
 
-All endpoints are prefixed with `/api/v1/volundr`.
+All endpoints are prefixed with `/api/v1/forge`.
 
 ## Endpoints
 

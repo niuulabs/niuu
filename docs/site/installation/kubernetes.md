@@ -153,7 +153,7 @@ ingress:
   hosts:
     - host: volundr.example.com
       paths:
-        - path: /api/v1/volundr
+        - path: /api/v1
           pathType: Prefix
   tls:
     - secretName: volundr-tls
@@ -205,7 +205,7 @@ web:
       clientId: "volundr-web"
 ```
 
-The web UI and API share the same domain. The API is served at `/api/v1/volundr`, the UI at `/`.
+The web UI and API share the same domain. The API is served at `/api/v1/*`, the UI at `/`.
 
 ---
 

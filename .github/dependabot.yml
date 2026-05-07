@@ -17,7 +17,7 @@ updates:
       interval: weekly
 
   - package-ecosystem: npm
-    directory: /web
+    directory: /web-next
     target-branch: dev
     schedule:
       interval: weekly

@@ -2,7 +2,7 @@
 
 The event pipeline ingests session events and fans them out to configured sinks.
 
-All endpoints are prefixed with `/api/v1/volundr/events`.
+All endpoints are prefixed with `/api/v1/forge/events`.
 
 ## Endpoints
 

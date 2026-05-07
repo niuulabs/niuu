@@ -38,7 +38,7 @@ Each chronicle in the chain knows its parent. You can walk the chain to see the 
 
 **Web UI** — Open the Chronicles tab to browse, search, and filter chronicles.
 
-**API** — `GET /api/v1/volundr/chronicles` returns chronicles with filtering support. Filter by project, repo, model, or tags.
+**API** — `GET /api/v1/forge/chronicles` returns chronicles with filtering support. Filter by project, repo, model, or tags.
 
 **TUI** — The chronicles page shows a timeline view with a token burn graph — a cumulative chart of token usage over the session's lifetime.
 

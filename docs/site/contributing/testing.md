@@ -54,13 +54,14 @@ branch = true
 ## Web UI
 
 ```bash
-cd web
-
-# Watch mode
-npm test
+cd web-next
+pnpm install --frozen-lockfile
 
 # Single run with coverage
-npm run test:coverage
+pnpm test
+
+# Playwright end-to-end coverage
+pnpm test:e2e
 ```
 
 ### Rules
@@ -72,10 +73,10 @@ npm run test:coverage
 
 ## CI
 
-The CI pipeline runs four jobs:
+The CI pipeline runs frontend checks against `web-next/`:
 
 1. **Lint** — ruff check + format check
 2. **Test** — pytest with coverage, uploaded to Codecov
-3. **Web Lint** — ESLint + Prettier + TypeScript check
-4. **Web Test** — vitest with coverage, uploaded to Codecov
+3. **web-next Lint** — ESLint + Prettier + TypeScript check
+4. **web-next Test** — vitest with coverage, uploaded to Codecov
 5. **Helm Lint** — lint both Helm charts

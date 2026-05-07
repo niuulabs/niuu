@@ -2,7 +2,7 @@
 
 Credentials are stored in a pluggable backend (Vault, Infisical, or in-memory). The API only exposes metadata — secret values are never returned.
 
-All endpoints are prefixed with `/api/v1/volundr/credentials`.
+All endpoints are prefixed with `/api/v1/credentials`.
 
 ## User credentials
 

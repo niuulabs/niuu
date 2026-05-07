@@ -918,7 +918,7 @@ def create_router(
     repo_service: RepoService | None = None,
     chronicle_service: ChronicleService | None = None,
     *,
-    prefix: str = "/api/v1/volundr",
+    prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)

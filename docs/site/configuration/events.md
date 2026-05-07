@@ -52,7 +52,7 @@ Follows OTel GenAI semantic conventions (v1.39+).
 Real-time session state updates are available via Server-Sent Events:
 
 ```
-GET /api/v1/volundr/sessions/stream
+GET /api/v1/forge/sessions/stream
 ```
 
 These use an in-memory broadcaster. Events are not persisted through this channel.
@@ -62,7 +62,7 @@ These use an in-memory broadcaster. Events are not persisted through this channe
 Check sink status:
 
 ```
-GET /api/v1/volundr/events/health
+GET /api/v1/forge/events/health
 ```
 
 Returns the connection state of each configured sink.

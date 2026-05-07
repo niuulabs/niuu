@@ -285,7 +285,7 @@ ingress:
   hosts:
     - host: ${DOMAIN}
       paths:
-        - path: /api/v1/volundr
+        - path: /api/v1
           pathType: Prefix
 
 storage:
@@ -391,7 +391,7 @@ Expected: no errors. Output shows `no change` or lists applied migrations.
 ### 4. Create a test session
 
 ```bash
-curl -s -X POST http://${DOMAIN}/api/v1/volundr/sessions \
+curl -s -X POST http://${DOMAIN}/api/v1/sessions \
   -H "Content-Type: application/json" \
   -d '{"name": "test-session", "model": "claude-sonnet-4-20250514"}' | jq .
 ```

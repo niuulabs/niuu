@@ -90,66 +90,36 @@ class TestVolundrPlugin:
             "audit-api",
             "admin-api",
             "features-api",
-            "features-legacy-api",
             "credentials-api",
-            "credentials-legacy-api",
             "forge-api",
-            "forge-legacy-api",
             "session-api",
-            "session-legacy-api",
             "workspace-api",
-            "workspace-legacy-api",
             "catalog-api",
-            "catalog-legacy-api",
             "git-api",
-            "git-legacy-api",
-            "volundr-api",
             "identity-api",
-            "identity-legacy-api",
             "integrations-api",
-            "integrations-legacy-api",
             "tenancy-api",
             "tracker-api",
             "tokens-api",
-            "tokens-legacy-api",
         ]
         domains = {route_domain.name: route_domain.prefixes for route_domain in route_domains}
         assert domains["audit-api"] == ("/api/v1/audit", "/audit")
         assert domains["features-api"] == ("/api/v1/features",)
-        assert domains["features-legacy-api"] == ("/api/v1/volundr/features",)
         assert domains["credentials-api"] == ("/api/v1/credentials",)
-        assert domains["credentials-legacy-api"] == (
-            "/api/v1/volundr/credentials",
-            "/api/v1/volundr/secrets",
-        )
         assert domains["forge-api"][:3] == (
             "/api/v1/forge/sessions",
             "/api/v1/forge/chronicles",
             "/api/v1/forge/events",
-        )
-        assert domains["forge-legacy-api"][:3] == (
-            "/api/v1/volundr/sessions",
-            "/api/v1/volundr/chronicles",
-            "/api/v1/volundr/events",
         )
         assert domains["session-api"] == (
             "/api/v1/forge/sessions",
             "/api/v1/forge/chronicles",
             "/api/v1/forge/events",
         )
-        assert domains["session-legacy-api"] == (
-            "/api/v1/volundr/sessions",
-            "/api/v1/volundr/chronicles",
-            "/api/v1/volundr/events",
-        )
         assert domains["workspace-api"] == ("/api/v1/forge/workspaces",)
-        assert domains["workspace-legacy-api"] == ("/api/v1/volundr/workspaces",)
         assert domains["identity-api"] == ("/api/v1/identity",)
-        assert domains["identity-legacy-api"] == ("/api/v1/volundr/me", "/api/v1/volundr/identity")
         assert domains["integrations-api"] == ("/api/v1/integrations",)
-        assert domains["integrations-legacy-api"] == ("/api/v1/volundr/integrations",)
         assert domains["tokens-api"] == ("/api/v1/tokens",)
-        assert domains["tokens-legacy-api"] == ("/api/v1/users/tokens", "/api/v1/volundr/tokens")
 
     def test_registers_sessions_group(self) -> None:
         plugin = VolundrPlugin()

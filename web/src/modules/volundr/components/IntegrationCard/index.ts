@@ -1,1 +1,0 @@
-export { IntegrationCard } from './IntegrationCard';

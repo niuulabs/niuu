@@ -71,12 +71,12 @@ def _make_client(
 
 
 class TestGetPRStatus:
-    """Tests for GET /api/v1/volundr/sessions/{id}/pr."""
+    """Tests for GET /api/v1/forge/sessions/{id}/pr."""
 
     def test_session_not_found(self, mock_git_workspace, mock_session_repo, sessions_dir):
         mock_session_repo.get.return_value = None
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{uuid4()}/pr")
+        resp = client.get(f"/api/v1/forge/sessions/{uuid4()}/pr")
         assert resp.status_code == 404
         assert "Session not found" in resp.json()["detail"]
 
@@ -84,7 +84,7 @@ class TestGetPRStatus:
         session = _make_session()
         mock_session_repo.get.return_value = session
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{session.id}/pr")
+        resp = client.get(f"/api/v1/forge/sessions/{session.id}/pr")
         assert resp.status_code == 404
         assert "Workspace not found" in resp.json()["detail"]
 
@@ -94,7 +94,7 @@ class TestGetPRStatus:
         mock_session_repo.get.return_value = session
         mock_git_workspace.pr_status.return_value = None
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{session.id}/pr")
+        resp = client.get(f"/api/v1/forge/sessions/{session.id}/pr")
         assert resp.status_code == 200
         assert resp.json() is None
 
@@ -110,7 +110,7 @@ class TestGetPRStatus:
             "checks": [{"name": "tests", "status": "SUCCESS"}],
         }
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{session.id}/pr")
+        resp = client.get(f"/api/v1/forge/sessions/{session.id}/pr")
         assert resp.status_code == 200
         data = resp.json()
         assert data["number"] == 42
@@ -119,12 +119,12 @@ class TestGetPRStatus:
 
 
 class TestGetDiffFiles:
-    """Tests for GET /api/v1/volundr/sessions/{id}/diff/files."""
+    """Tests for GET /api/v1/forge/sessions/{id}/diff/files."""
 
     def test_session_not_found(self, mock_git_workspace, mock_session_repo, sessions_dir):
         mock_session_repo.get.return_value = None
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{uuid4()}/diff/files")
+        resp = client.get(f"/api/v1/forge/sessions/{uuid4()}/diff/files")
         assert resp.status_code == 404
 
     def test_returns_changed_files(self, mock_git_workspace, mock_session_repo, sessions_dir):
@@ -136,7 +136,7 @@ class TestGetDiffFiles:
             {"path": "README.md", "additions": 3, "deletions": 0},
         ]
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{session.id}/diff/files")
+        resp = client.get(f"/api/v1/forge/sessions/{session.id}/diff/files")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["files"]) == 2
@@ -149,19 +149,19 @@ class TestGetDiffFiles:
         mock_session_repo.get.return_value = session
         mock_git_workspace.diff_files.return_value = []
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{session.id}/diff/files")
+        resp = client.get(f"/api/v1/forge/sessions/{session.id}/diff/files")
         assert resp.status_code == 200
         assert resp.json()["files"] == []
 
 
 class TestGetFileDiff:
-    """Tests for GET /api/v1/volundr/sessions/{id}/diff."""
+    """Tests for GET /api/v1/forge/sessions/{id}/diff."""
 
     def test_session_not_found(self, mock_git_workspace, mock_session_repo, sessions_dir):
         mock_session_repo.get.return_value = None
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
         resp = client.get(
-            f"/api/v1/volundr/sessions/{uuid4()}/diff",
+            f"/api/v1/forge/sessions/{uuid4()}/diff",
             params={"path": "file.py"},
         )
         assert resp.status_code == 404
@@ -174,7 +174,7 @@ class TestGetFileDiff:
         mock_git_workspace.file_diff.return_value = diff_text
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
         resp = client.get(
-            f"/api/v1/volundr/sessions/{session.id}/diff",
+            f"/api/v1/forge/sessions/{session.id}/diff",
             params={"path": "f.py", "base_branch": "develop"},
         )
         assert resp.status_code == 200
@@ -189,7 +189,7 @@ class TestGetFileDiff:
         mock_git_workspace.file_diff.return_value = None
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
         resp = client.get(
-            f"/api/v1/volundr/sessions/{session.id}/diff",
+            f"/api/v1/forge/sessions/{session.id}/diff",
             params={"path": "f.py"},
         )
         assert resp.status_code == 200
@@ -200,7 +200,7 @@ class TestGetFileDiff:
         _create_workspace(sessions_dir, session.id)
         mock_session_repo.get.return_value = session
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{session.id}/diff")
+        resp = client.get(f"/api/v1/forge/sessions/{session.id}/diff")
         assert resp.status_code == 422  # missing required query param
 
     def test_rejects_path_traversal(self, mock_git_workspace, mock_session_repo, sessions_dir):
@@ -209,7 +209,7 @@ class TestGetFileDiff:
         mock_session_repo.get.return_value = session
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
         resp = client.get(
-            f"/api/v1/volundr/sessions/{session.id}/diff",
+            f"/api/v1/forge/sessions/{session.id}/diff",
             params={"path": "../../etc/passwd"},
         )
         assert resp.status_code == 400
@@ -221,7 +221,7 @@ class TestGetFileDiff:
         mock_session_repo.get.return_value = session
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
         resp = client.get(
-            f"/api/v1/volundr/sessions/{session.id}/diff",
+            f"/api/v1/forge/sessions/{session.id}/diff",
             params={"path": "file.py", "base_branch": "--exec=malicious"},
         )
         assert resp.status_code == 400
@@ -229,12 +229,12 @@ class TestGetFileDiff:
 
 
 class TestGetCommits:
-    """Tests for GET /api/v1/volundr/sessions/{id}/commits."""
+    """Tests for GET /api/v1/forge/sessions/{id}/commits."""
 
     def test_session_not_found(self, mock_git_workspace, mock_session_repo, sessions_dir):
         mock_session_repo.get.return_value = None
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{uuid4()}/commits")
+        resp = client.get(f"/api/v1/forge/sessions/{uuid4()}/commits")
         assert resp.status_code == 404
 
     def test_returns_commits(self, mock_git_workspace, mock_session_repo, sessions_dir):
@@ -246,7 +246,7 @@ class TestGetCommits:
             {"hash": "def456full", "short_hash": "def456", "message": "fix: bug"},
         ]
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{session.id}/commits")
+        resp = client.get(f"/api/v1/forge/sessions/{session.id}/commits")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["commits"]) == 2
@@ -259,7 +259,7 @@ class TestGetCommits:
         mock_git_workspace.commit_log.return_value = []
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
         resp = client.get(
-            f"/api/v1/volundr/sessions/{session.id}/commits",
+            f"/api/v1/forge/sessions/{session.id}/commits",
             params={"since": "2025-01-01"},
         )
         assert resp.status_code == 200
@@ -273,7 +273,7 @@ class TestGetCommits:
         mock_session_repo.get.return_value = session
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
         resp = client.get(
-            f"/api/v1/volundr/sessions/{session.id}/commits",
+            f"/api/v1/forge/sessions/{session.id}/commits",
             params={"since": "--exec=bad"},
         )
         assert resp.status_code == 400
@@ -285,6 +285,6 @@ class TestGetCommits:
         mock_session_repo.get.return_value = session
         mock_git_workspace.commit_log.return_value = []
         client = _make_client(mock_git_workspace, mock_session_repo, str(sessions_dir))
-        resp = client.get(f"/api/v1/volundr/sessions/{session.id}/commits")
+        resp = client.get(f"/api/v1/forge/sessions/{session.id}/commits")
         assert resp.status_code == 200
         assert resp.json()["commits"] == []

@@ -2,7 +2,7 @@
 
 Chronicles capture session history — what happened, what changed, and what was left unfinished. They support reforging (relaunching from a previous session's state) and form chains when sessions build on each other.
 
-All endpoints are prefixed with `/api/v1/volundr`.
+All endpoints are prefixed with `/api/v1/forge`.
 
 ## Endpoints
 

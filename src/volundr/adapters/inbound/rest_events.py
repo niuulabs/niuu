@@ -166,9 +166,11 @@ def create_events_router(
     ingestion_service: EventIngestionService,
     event_repository: SessionEventRepository,
     session_service: SessionService | None = None,
+    *,
+    prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router for event pipeline endpoints."""
-    router = APIRouter(prefix="/api/v1/volundr")
+    router = APIRouter(prefix=prefix)
 
     async def _check_event_access(
         request: Request, session_id: UUID, action: str = "emit_event"

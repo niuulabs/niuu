@@ -2,7 +2,7 @@
 
 Git workflow endpoints manage branches, pull requests, CI status, and merge confidence across GitHub and GitLab.
 
-All endpoints are prefixed with `/api/v1/volundr/repos`.
+All endpoints are prefixed with `/api/v1/forge/repos`.
 
 ## Endpoints
 

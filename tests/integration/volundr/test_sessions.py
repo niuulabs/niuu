@@ -13,7 +13,7 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-API = "/api/v1/volundr"
+API = "/api/v1/forge"
 
 
 async def _create_session(client, headers, name="test-session"):

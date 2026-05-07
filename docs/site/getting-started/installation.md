@@ -116,9 +116,9 @@ uv run volundr
 ### Web UI (optional)
 
 ```bash
-cd web
-npm install
-npm run dev
+cd web-next
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
 ---

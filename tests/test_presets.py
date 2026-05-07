@@ -195,7 +195,7 @@ class TestPresetEndpoints:
 
     def test_create_preset(self, preset_client: TestClient):
         resp = preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Test Preset", "cli_tool": "claude-code"},
         )
         assert resp.status_code == 201
@@ -205,63 +205,63 @@ class TestPresetEndpoints:
 
     def test_create_preset_duplicate_name(self, preset_client: TestClient):
         preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Unique"},
         )
         resp = preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Unique"},
         )
         assert resp.status_code == 409
 
     def test_list_presets(self, preset_client: TestClient):
         preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "A"},
         )
         preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "B"},
         )
-        resp = preset_client.get("/api/v1/volundr/presets")
+        resp = preset_client.get("/api/v1/forge/presets")
         assert resp.status_code == 200
         assert len(resp.json()) == 2
 
     def test_list_presets_with_filter(self, preset_client: TestClient):
         preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Claude", "cli_tool": "claude-code"},
         )
         preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Aider", "cli_tool": "aider"},
         )
-        resp = preset_client.get("/api/v1/volundr/presets?cli_tool=claude-code")
+        resp = preset_client.get("/api/v1/forge/presets?cli_tool=claude-code")
         assert resp.status_code == 200
         assert len(resp.json()) == 1
 
     def test_get_preset(self, preset_client: TestClient):
         create_resp = preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Test"},
         )
         preset_id = create_resp.json()["id"]
-        resp = preset_client.get(f"/api/v1/volundr/presets/{preset_id}")
+        resp = preset_client.get(f"/api/v1/forge/presets/{preset_id}")
         assert resp.status_code == 200
         assert resp.json()["name"] == "Test"
 
     def test_get_preset_not_found(self, preset_client: TestClient):
-        resp = preset_client.get(f"/api/v1/volundr/presets/{uuid4()}")
+        resp = preset_client.get(f"/api/v1/forge/presets/{uuid4()}")
         assert resp.status_code == 404
 
     def test_update_preset(self, preset_client: TestClient):
         create_resp = preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Old"},
         )
         preset_id = create_resp.json()["id"]
         resp = preset_client.put(
-            f"/api/v1/volundr/presets/{preset_id}",
+            f"/api/v1/forge/presets/{preset_id}",
             json={"name": "New", "description": "Updated"},
         )
         assert resp.status_code == 200
@@ -270,43 +270,43 @@ class TestPresetEndpoints:
 
     def test_update_preset_not_found(self, preset_client: TestClient):
         resp = preset_client.put(
-            f"/api/v1/volundr/presets/{uuid4()}",
+            f"/api/v1/forge/presets/{uuid4()}",
             json={"name": "X"},
         )
         assert resp.status_code == 404
 
     def test_update_preset_duplicate_name(self, preset_client: TestClient):
         preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Existing"},
         )
         create_resp = preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Other"},
         )
         preset_id = create_resp.json()["id"]
         resp = preset_client.put(
-            f"/api/v1/volundr/presets/{preset_id}",
+            f"/api/v1/forge/presets/{preset_id}",
             json={"name": "Existing"},
         )
         assert resp.status_code == 409
 
     def test_delete_preset(self, preset_client: TestClient):
         create_resp = preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={"name": "Del"},
         )
         preset_id = create_resp.json()["id"]
-        resp = preset_client.delete(f"/api/v1/volundr/presets/{preset_id}")
+        resp = preset_client.delete(f"/api/v1/forge/presets/{preset_id}")
         assert resp.status_code == 204
 
     def test_delete_preset_not_found(self, preset_client: TestClient):
-        resp = preset_client.delete(f"/api/v1/volundr/presets/{uuid4()}")
+        resp = preset_client.delete(f"/api/v1/forge/presets/{uuid4()}")
         assert resp.status_code == 404
 
     def test_create_with_full_config(self, preset_client: TestClient):
         resp = preset_client.post(
-            "/api/v1/volundr/presets",
+            "/api/v1/forge/presets",
             json={
                 "name": "Full",
                 "cli_tool": "claude-code",

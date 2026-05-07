@@ -49,7 +49,7 @@ The ingress controller routes by path prefix:
 
 | Path | Service | Chart |
 |---|---|---|
-| `/api/v1/volundr/*` | Volundr API | `charts/volundr` |
+| `/api/v1/*` | Volundr API | `charts/volundr` |
 | `/api/v1/users/*` | Volundr API | `charts/volundr` |
 | `/api/v1/niuu/*` | Volundr API | `charts/volundr` |
 | `/api/v1/tyr/*` | Tyr API | `charts/tyr` |
@@ -69,7 +69,7 @@ volundr:
     hosts:
       - host: niuu.example.com
         paths:
-          - path: /api/v1/volundr
+          - path: /api/v1
             pathType: Prefix
           - path: /api/v1/users
             pathType: Prefix
@@ -179,7 +179,7 @@ envoy:
     rolesClaim: "resource_access.volundr.roles"
     tenantClaim: "tenant_id"
     bypassPrefixes:
-      - /api/v1/volundr/auth/config
+      - /api/v1/auth/config
       - /health
 ```
 

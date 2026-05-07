@@ -91,7 +91,7 @@ def client_no_chronicles(app_no_chronicles: FastAPI) -> TestClient:
 
 
 class TestGetTimeline:
-    """Tests for GET /api/v1/volundr/chronicles/{session_id}/timeline."""
+    """Tests for GET /api/v1/forge/chronicles/{session_id}/timeline."""
 
     async def test_get_timeline_success(
         self,
@@ -162,7 +162,7 @@ class TestGetTimeline:
             )
         )
 
-        response = client.get(f"/api/v1/volundr/chronicles/{session.id}/timeline")
+        response = client.get(f"/api/v1/forge/chronicles/{session.id}/timeline")
 
         assert response.status_code == 200
         data = response.json()
@@ -209,7 +209,7 @@ class TestGetTimeline:
         )
         await chronicle_svc.create_chronicle(session.id)
 
-        response = client.get(f"/api/v1/volundr/chronicles/{session.id}/timeline")
+        response = client.get(f"/api/v1/forge/chronicles/{session.id}/timeline")
 
         assert response.status_code == 200
         data = response.json()
@@ -221,26 +221,26 @@ class TestGetTimeline:
     def test_get_timeline_no_chronicle(self, client: TestClient):
         """Returns 404 when no chronicle data exists for session."""
         fake_id = uuid4()
-        response = client.get(f"/api/v1/volundr/chronicles/{fake_id}/timeline")
+        response = client.get(f"/api/v1/forge/chronicles/{fake_id}/timeline")
         assert response.status_code == 404
         assert "no chronicle data" in response.json()["detail"].lower()
 
     def test_get_timeline_no_timeline_repo(self, client_no_timeline: TestClient):
         """Returns 404 when timeline repo not configured (no data)."""
         fake_id = uuid4()
-        response = client_no_timeline.get(f"/api/v1/volundr/chronicles/{fake_id}/timeline")
+        response = client_no_timeline.get(f"/api/v1/forge/chronicles/{fake_id}/timeline")
         assert response.status_code == 404
 
     def test_get_timeline_service_unavailable(self, client_no_chronicles: TestClient):
         """Returns 503 when chronicle service is not configured."""
         fake_id = uuid4()
-        response = client_no_chronicles.get(f"/api/v1/volundr/chronicles/{fake_id}/timeline")
+        response = client_no_chronicles.get(f"/api/v1/forge/chronicles/{fake_id}/timeline")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
 
 class TestAddTimelineEvent:
-    """Tests for POST /api/v1/volundr/chronicles/{session_id}/timeline."""
+    """Tests for POST /api/v1/forge/chronicles/{session_id}/timeline."""
 
     async def test_add_event_success(
         self,
@@ -260,7 +260,7 @@ class TestAddTimelineEvent:
         await chronicle_svc.create_chronicle(session.id)
 
         response = client.post(
-            f"/api/v1/volundr/chronicles/{session.id}/timeline",
+            f"/api/v1/forge/chronicles/{session.id}/timeline",
             json={
                 "t": 10,
                 "type": "message",
@@ -294,7 +294,7 @@ class TestAddTimelineEvent:
         await chronicle_svc.create_chronicle(session.id)
 
         response = client.post(
-            f"/api/v1/volundr/chronicles/{session.id}/timeline",
+            f"/api/v1/forge/chronicles/{session.id}/timeline",
             json={
                 "t": 20,
                 "type": "file",
@@ -329,7 +329,7 @@ class TestAddTimelineEvent:
         await chronicle_svc.create_chronicle(session.id)
 
         response = client.post(
-            f"/api/v1/volundr/chronicles/{session.id}/timeline",
+            f"/api/v1/forge/chronicles/{session.id}/timeline",
             json={
                 "t": 60,
                 "type": "git",
@@ -360,7 +360,7 @@ class TestAddTimelineEvent:
         await chronicle_svc.create_chronicle(session.id)
 
         response = client.post(
-            f"/api/v1/volundr/chronicles/{session.id}/timeline",
+            f"/api/v1/forge/chronicles/{session.id}/timeline",
             json={
                 "t": 40,
                 "type": "terminal",
@@ -377,7 +377,7 @@ class TestAddTimelineEvent:
         """Returns 404 when no chronicle exists for session."""
         fake_id = uuid4()
         response = client.post(
-            f"/api/v1/volundr/chronicles/{fake_id}/timeline",
+            f"/api/v1/forge/chronicles/{fake_id}/timeline",
             json={"t": 0, "type": "session", "label": "start"},
         )
         assert response.status_code == 404
@@ -386,7 +386,7 @@ class TestAddTimelineEvent:
         """Returns 422 for invalid event type."""
         fake_id = uuid4()
         response = client.post(
-            f"/api/v1/volundr/chronicles/{fake_id}/timeline",
+            f"/api/v1/forge/chronicles/{fake_id}/timeline",
             json={"t": 0, "type": "invalid_type", "label": "test"},
         )
         assert response.status_code == 422
@@ -395,7 +395,7 @@ class TestAddTimelineEvent:
         """Returns 503 when chronicle service is not configured."""
         fake_id = uuid4()
         response = client_no_chronicles.post(
-            f"/api/v1/volundr/chronicles/{fake_id}/timeline",
+            f"/api/v1/forge/chronicles/{fake_id}/timeline",
             json={"t": 0, "type": "session", "label": "start"},
         )
         assert response.status_code == 503
@@ -435,11 +435,11 @@ class TestTimelineRoundTrip:
             },
             {"t": 30, "type": "git", "label": "feat: add file", "hash": "abc1234"},
         ]:
-            resp = client.post(f"/api/v1/volundr/chronicles/{session.id}/timeline", json=ev)
+            resp = client.post(f"/api/v1/forge/chronicles/{session.id}/timeline", json=ev)
             assert resp.status_code == 201
 
         # Get timeline
-        response = client.get(f"/api/v1/volundr/chronicles/{session.id}/timeline")
+        response = client.get(f"/api/v1/forge/chronicles/{session.id}/timeline")
         assert response.status_code == 200
         data = response.json()
 

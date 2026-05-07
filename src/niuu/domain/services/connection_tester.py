@@ -55,7 +55,7 @@ async def test_code_forge(url: str, token: str) -> ConnectionTestResult:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{safe_url}/api/v1/volundr/me",
+                f"{safe_url}/api/v1/identity/me",
                 headers={"Authorization": f"Bearer {token}"},
             )
             if resp.status_code == 200:

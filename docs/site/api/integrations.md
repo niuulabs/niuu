@@ -2,7 +2,7 @@
 
 The integration system provides a catalog of available integrations and per-user connection management.
 
-All endpoints are prefixed with `/api/v1/volundr/integrations`.
+All endpoints are prefixed with `/api/v1/integrations`.
 
 ## Endpoints
 

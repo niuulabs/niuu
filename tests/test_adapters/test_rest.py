@@ -190,11 +190,11 @@ class TestSessionResponse:
 
 
 class TestListSessions:
-    """Tests for GET /api/v1/volundr/sessions."""
+    """Tests for GET /api/v1/forge/sessions."""
 
     def test_list_sessions_empty(self, client: TestClient):
         """Returns empty list when no sessions exist."""
-        response = client.get("/api/v1/volundr/sessions")
+        response = client.get("/api/v1/forge/sessions")
         assert response.status_code == 200
         assert response.json() == []
 
@@ -217,7 +217,7 @@ class TestListSessions:
             ),
         )
 
-        response = client.get("/api/v1/volundr/sessions")
+        response = client.get("/api/v1/forge/sessions")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
@@ -240,7 +240,7 @@ class TestListSessions:
 
 
 class TestCreateSession:
-    """Tests for POST /api/v1/volundr/sessions.
+    """Tests for POST /api/v1/forge/sessions.
 
     POST creates AND starts the session in one call.
     """
@@ -248,7 +248,7 @@ class TestCreateSession:
     def test_create_session_success(self, client: TestClient):
         """Creates and starts session, returns 201 with running status."""
         response = client.post(
-            "/api/v1/volundr/sessions",
+            "/api/v1/forge/sessions",
             json={
                 "name": "my-session",
                 "model": "claude-sonnet-4",
@@ -267,7 +267,7 @@ class TestCreateSession:
     def test_create_session_validation_error(self, client: TestClient):
         """Returns 422 for invalid data."""
         response = client.post(
-            "/api/v1/volundr/sessions",
+            "/api/v1/forge/sessions",
             json={
                 "name": "",
                 "model": "claude-sonnet-4",
@@ -279,7 +279,7 @@ class TestCreateSession:
     def test_create_session_missing_field(self, client: TestClient):
         """Returns 422 for missing required field (name)."""
         response = client.post(
-            "/api/v1/volundr/sessions",
+            "/api/v1/forge/sessions",
             json={
                 "model": "claude-sonnet-4",
                 "source": {"type": "git", "repo": "https://github.com/org/repo"},
@@ -289,7 +289,7 @@ class TestCreateSession:
 
 
 class TestGetSession:
-    """Tests for GET /api/v1/volundr/sessions/{id}."""
+    """Tests for GET /api/v1/forge/sessions/{id}."""
 
     async def test_get_session_success(self, client: TestClient, service: SessionService):
         """Returns session by ID."""
@@ -302,7 +302,7 @@ class TestGetSession:
             ),
         )
 
-        response = client.get(f"/api/v1/volundr/sessions/{session.id}")
+        response = client.get(f"/api/v1/forge/sessions/{session.id}")
         assert response.status_code == 200
         data = response.json()
         assert data["id"] == str(session.id)
@@ -313,18 +313,18 @@ class TestGetSession:
     def test_get_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
-        response = client.get(f"/api/v1/volundr/sessions/{fake_id}")
+        response = client.get(f"/api/v1/forge/sessions/{fake_id}")
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
     def test_get_session_invalid_uuid(self, client: TestClient):
         """Returns 422 for invalid UUID."""
-        response = client.get("/api/v1/volundr/sessions/not-a-uuid")
+        response = client.get("/api/v1/forge/sessions/not-a-uuid")
         assert response.status_code == 422
 
 
 class TestUpdateSession:
-    """Tests for PUT /api/v1/volundr/sessions/{id}."""
+    """Tests for PUT /api/v1/forge/sessions/{id}."""
 
     async def test_update_session_name(self, client: TestClient, service: SessionService):
         """Updates session name."""
@@ -338,7 +338,7 @@ class TestUpdateSession:
         )
 
         response = client.put(
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"name": "new-name"},
         )
         assert response.status_code == 200
@@ -358,7 +358,7 @@ class TestUpdateSession:
         )
 
         response = client.put(
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"model": "claude-opus-4"},
         )
         assert response.status_code == 200
@@ -377,7 +377,7 @@ class TestUpdateSession:
         )
 
         response = client.put(
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"branch": "feature/new"},
         )
         assert response.status_code == 200
@@ -396,7 +396,7 @@ class TestUpdateSession:
         )
 
         response = client.put(
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"name": "new", "model": "claude-opus-4", "branch": "dev"},
         )
         assert response.status_code == 200
@@ -409,14 +409,14 @@ class TestUpdateSession:
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
         response = client.put(
-            f"/api/v1/volundr/sessions/{fake_id}",
+            f"/api/v1/forge/sessions/{fake_id}",
             json={"name": "new-name"},
         )
         assert response.status_code == 404
 
 
 class TestDeleteSession:
-    """Tests for DELETE /api/v1/volundr/sessions/{id}."""
+    """Tests for DELETE /api/v1/forge/sessions/{id}."""
 
     async def test_delete_session_success(self, client: TestClient, service: SessionService):
         """Deletes session and returns 204."""
@@ -429,17 +429,17 @@ class TestDeleteSession:
             ),
         )
 
-        response = client.delete(f"/api/v1/volundr/sessions/{session.id}")
+        response = client.delete(f"/api/v1/forge/sessions/{session.id}")
         assert response.status_code == 204
 
         # Verify deleted
-        get_response = client.get(f"/api/v1/volundr/sessions/{session.id}")
+        get_response = client.get(f"/api/v1/forge/sessions/{session.id}")
         assert get_response.status_code == 404
 
     def test_delete_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
-        response = client.delete(f"/api/v1/volundr/sessions/{fake_id}")
+        response = client.delete(f"/api/v1/forge/sessions/{fake_id}")
         assert response.status_code == 404
 
     async def test_delete_session_with_cleanup_targets(
@@ -457,7 +457,7 @@ class TestDeleteSession:
 
         response = client.request(
             "DELETE",
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"cleanup": ["workspace_storage", "chronicles"]},
         )
         assert response.status_code == 204
@@ -475,12 +475,12 @@ class TestDeleteSession:
             ),
         )
 
-        response = client.delete(f"/api/v1/volundr/sessions/{session.id}")
+        response = client.delete(f"/api/v1/forge/sessions/{session.id}")
         assert response.status_code == 204
 
 
 class TestStartSession:
-    """Tests for POST /api/v1/volundr/sessions/{id}/start."""
+    """Tests for POST /api/v1/forge/sessions/{id}/start."""
 
     async def test_start_session_success(self, client: TestClient, service: SessionService):
         """Starts session and returns endpoints."""
@@ -493,7 +493,7 @@ class TestStartSession:
             ),
         )
 
-        response = client.post(f"/api/v1/volundr/sessions/{session.id}/start")
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "starting"
@@ -504,7 +504,7 @@ class TestStartSession:
     def test_start_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
-        response = client.post(f"/api/v1/volundr/sessions/{fake_id}/start")
+        response = client.post(f"/api/v1/forge/sessions/{fake_id}/start")
         assert response.status_code == 404
 
     async def test_start_session_invalid_state(self, client: TestClient, service: SessionService):
@@ -520,13 +520,13 @@ class TestStartSession:
         await service.start_session(session.id)
 
         # Try to start again (already running)
-        response = client.post(f"/api/v1/volundr/sessions/{session.id}/start")
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
         assert response.status_code == 409
         assert "cannot start" in response.json()["detail"].lower()
 
 
 class TestStopSession:
-    """Tests for POST /api/v1/volundr/sessions/{id}/stop."""
+    """Tests for POST /api/v1/forge/sessions/{id}/stop."""
 
     async def test_stop_session_success(self, client: TestClient, service: SessionService):
         """Stops session and clears endpoints."""
@@ -540,7 +540,7 @@ class TestStopSession:
         )
         await service.start_session(session.id)
 
-        response = client.post(f"/api/v1/volundr/sessions/{session.id}/stop")
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/stop")
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "stopped"
@@ -550,7 +550,7 @@ class TestStopSession:
     def test_stop_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
-        response = client.post(f"/api/v1/volundr/sessions/{fake_id}/stop")
+        response = client.post(f"/api/v1/forge/sessions/{fake_id}/stop")
         assert response.status_code == 404
 
     async def test_stop_session_invalid_state(self, client: TestClient, service: SessionService):
@@ -565,7 +565,7 @@ class TestStopSession:
         )
 
         # Try to stop a created (not running) session
-        response = client.post(f"/api/v1/volundr/sessions/{session.id}/stop")
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/stop")
         assert response.status_code == 409
         assert "cannot stop" in response.json()["detail"].lower()
 
@@ -617,7 +617,7 @@ class TestSessionLogAggregationProxy:
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
             response = client.get(
-                f"/api/v1/volundr/sessions/{session.id}/logs/aggregate?lines=50&level=WARNING&participants=coder&query=mesh"
+                f"/api/v1/forge/sessions/{session.id}/logs/aggregate?lines=50&level=WARNING&participants=coder&query=mesh"
             )
 
         assert response.status_code == 200
@@ -678,7 +678,7 @@ class TestSessionLogAggregationProxy:
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
             response = client.get(
-                f"/api/v1/volundr/sessions/{session.id}/logs/aggregate?lines=10&level=DEBUG"
+                f"/api/v1/forge/sessions/{session.id}/logs/aggregate?lines=10&level=DEBUG"
             )
 
         assert response.status_code == 200
@@ -692,11 +692,11 @@ class TestSessionLogAggregationProxy:
 
 
 class TestFeatureFlags:
-    """Tests for GET /api/v1/volundr/feature-flags."""
+    """Tests for GET /api/v1/forge/feature-flags."""
 
     def test_feature_flags_returns_local_mounts_flag(self, client: TestClient):
         """Returns feature flags including local_mounts_enabled."""
-        response = client.get("/api/v1/volundr/feature-flags")
+        response = client.get("/api/v1/forge/feature-flags")
         assert response.status_code == 200
         data = response.json()
         assert "local_mounts_enabled" in data
@@ -704,11 +704,11 @@ class TestFeatureFlags:
 
 
 class TestListModels:
-    """Tests for GET /api/v1/volundr/models."""
+    """Tests for GET /api/v1/forge/models."""
 
     def test_list_models_success(self, client: TestClient, pricing: InMemoryPricingProvider):
         """Returns list of available models."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == len(pricing.list_models())
@@ -718,7 +718,7 @@ class TestListModels:
 
     def test_list_models_contains_expected(self, client: TestClient):
         """Models list contains expected models."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         data = response.json()
         model_ids = [m["id"] for m in data]
         assert "claude-sonnet-4-20250514" in model_ids
@@ -726,7 +726,7 @@ class TestListModels:
 
     def test_list_models_has_extended_fields(self, client: TestClient):
         """Models include provider, tier, color, and pricing."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         assert response.status_code == 200
         data = response.json()
 
@@ -739,7 +739,7 @@ class TestListModels:
 
     def test_list_models_cloud_has_pricing(self, client: TestClient):
         """Cloud models have pricing information."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         data = response.json()
 
         cloud_models = [m for m in data if m["provider"] == "cloud"]
@@ -751,7 +751,7 @@ class TestListModels:
 
     def test_list_models_local_has_vram(self, client: TestClient):
         """Local models have VRAM requirements."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         data = response.json()
 
         local_models = [m for m in data if m["provider"] == "local"]
@@ -769,7 +769,7 @@ class TestListModels:
         router = create_router(service, stats_service, pricing_provider=None)
         app.include_router(router)
         with TestClient(app) as client:
-            response = client.get("/api/v1/volundr/models")
+            response = client.get("/api/v1/forge/models")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
@@ -796,11 +796,11 @@ class TestStatsResponse:
 
 
 class TestGetStats:
-    """Tests for GET /api/v1/volundr/stats."""
+    """Tests for GET /api/v1/forge/stats."""
 
     def test_get_stats_success(self, client: TestClient):
         """Returns aggregate statistics."""
-        response = client.get("/api/v1/volundr/stats")
+        response = client.get("/api/v1/forge/stats")
         assert response.status_code == 200
         data = response.json()
         assert data["active_sessions"] == 3
@@ -812,7 +812,7 @@ class TestGetStats:
 
     def test_get_stats_has_all_fields(self, client: TestClient):
         """Stats response contains all expected fields."""
-        response = client.get("/api/v1/volundr/stats")
+        response = client.get("/api/v1/forge/stats")
         assert response.status_code == 200
         data = response.json()
         assert "active_sessions" in data
@@ -828,7 +828,7 @@ class TestGetStats:
         router = create_router(service, stats_service=None)
         app.include_router(router)
         with TestClient(app) as client:
-            response = client.get("/api/v1/volundr/stats")
+            response = client.get("/api/v1/forge/stats")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
@@ -840,7 +840,7 @@ class TestGetStats:
         router = create_router(service, stats_svc)
         app.include_router(router)
         with TestClient(app) as client:
-            response = client.get("/api/v1/volundr/stats")
+            response = client.get("/api/v1/forge/stats")
         assert response.status_code == 200
         data = response.json()
         assert data["active_sessions"] == 0

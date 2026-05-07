@@ -31,11 +31,12 @@ Skuld configuration uses its own settings class (`SkuldSettings`) and is typical
 ## Web UI
 
 ```bash
-cd web
-npm run dev
+cd web-next
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
-Serves at `http://localhost:5173` with hot reload. The UI expects the Volundr API at the URL configured in `web/src/config.ts`.
+Serves at `http://localhost:5173` with hot reload. The app entrypoint lives in `web-next/apps/niuu`, and runtime service wiring is configured from the `web-next` workspace.
 
 ## Docker
 

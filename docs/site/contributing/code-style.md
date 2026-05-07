@@ -50,12 +50,13 @@ uv run ruff format src/ tests/   # Format
 
 - **Linter**: ESLint
 - **Formatter**: Prettier
-- **Styles**: CSS Modules only (no inline styles, no Tailwind, no CSS-in-JS)
-- **Design tokens**: CSS custom properties from `styles/tokens.css`
+- **Workspace**: `web-next/`
+- **App shell**: `web-next/apps/niuu`
+- **Shared packages**: `web-next/packages/*`
 
 ```bash
-cd web
-npm run lint
-npm run format:check
-npm run typecheck
+cd web-next
+pnpm lint
+pnpm format:check
+pnpm typecheck
 ```

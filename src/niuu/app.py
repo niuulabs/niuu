@@ -21,7 +21,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from niuu.config import CorsConfig
 from niuu.cors import apply_cors_middleware
-from niuu.http_compat import collect_legacy_route_hits, reset_legacy_route_hits
 from niuu.ports.plugin import APIRouteDomain, Service
 
 if TYPE_CHECKING:
@@ -116,19 +115,12 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "audit-api": "volundr",
     "bifrost-api": "bifrost",
     "bifrost-observability-api": "bifrost",
-    "catalog-legacy-api": "volundr",
     "credentials-api": "volundr",
-    "credentials-legacy-api": "volundr",
     "features-api": "volundr",
-    "features-legacy-api": "volundr",
     "forge-api": "volundr",
-    "forge-legacy-api": "volundr",
     "git-api": "volundr",
-    "git-legacy-api": "volundr",
     "identity-api": "volundr",
-    "identity-legacy-api": "volundr",
     "integrations-api": "volundr",
-    "integrations-legacy-api": "volundr",
     "mimir-api": "mimir",
     "niuu-api": "niuu",
     "observatory-api": "observatory",
@@ -147,50 +139,27 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "event-api": "tyr",
     "review-api": "tyr",
     "session-api": "volundr",
-    "session-legacy-api": "volundr",
     "saga-api": "tyr",
     "settings-api": "tyr",
     "tenancy-api": "volundr",
     "tracker-api": "volundr",
     "tokens-api": "volundr",
-    "tokens-legacy-api": "volundr",
-    "volundr-api": "volundr",
     "workflow-api": "tyr",
     "workspace-api": "volundr",
-    "workspace-legacy-api": "volundr",
     "tyr-api": "tyr",
 }
 _LEGACY_PLUGIN_DOMAIN_NAMES: dict[str, str] = {
-    "volundr": "volundr-api",
     "tyr": "tyr-api",
     "niuu": "niuu-api",
 }
 
 _STATIC_ROUTE_DOMAINS = frozenset({"skuld-proxy", "runtime-config", "web-ui"})
 _FULL_ROUTE_DOMAINS = frozenset({*_PLUGIN_ROUTE_DOMAINS.keys(), *_STATIC_ROUTE_DOMAINS})
-_LEGACY_COMPAT_ROUTE_DOMAINS = frozenset(
-    {
-        "catalog-legacy-api",
-        "credentials-legacy-api",
-        "features-legacy-api",
-        "forge-legacy-api",
-        "git-legacy-api",
-        "identity-legacy-api",
-        "integrations-legacy-api",
-        "session-legacy-api",
-        "tokens-legacy-api",
-        "volundr-api",
-        "workspace-legacy-api",
-    }
-)
-_CANONICAL_ROUTE_DOMAINS = frozenset(_FULL_ROUTE_DOMAINS - _LEGACY_COMPAT_ROUTE_DOMAINS)
 
 DEFAULT_HOST_PROFILE = "full"
 HOST_PROFILES: dict[str, frozenset[str]] = {
-    "full": _CANONICAL_ROUTE_DOMAINS,
-    "api": frozenset(domain for domain in _CANONICAL_ROUTE_DOMAINS if domain != "web-ui"),
-    "full-compat": _FULL_ROUTE_DOMAINS,
-    "api-compat": frozenset(domain for domain in _FULL_ROUTE_DOMAINS if domain != "web-ui"),
+    "full": _FULL_ROUTE_DOMAINS,
+    "api": frozenset(domain for domain in _FULL_ROUTE_DOMAINS if domain != "web-ui"),
 }
 _STATIC_ROUTE_PREFIXES: dict[str, tuple[str, ...]] = {
     "skuld-proxy": (
@@ -320,8 +289,6 @@ def _backend_prefix_for_mount(plugin_name: str, public_prefix: str) -> str:
     """Map public mount prefixes to the backend route prefix a plugin actually serves."""
     if plugin_name == "bifrost" and public_prefix.startswith("/api/v1/bifrost"):
         return public_prefix.replace("/api/v1/bifrost", "", 1)
-    if plugin_name == "volundr" and public_prefix.startswith("/api/v1/forge"):
-        return public_prefix.replace("/api/v1/forge", "/api/v1/volundr", 1)
     if plugin_name == "mimir" and public_prefix.startswith("/api/v1/mimir/mcp"):
         return public_prefix.replace("/api/v1/mimir/mcp", "/mcp", 1)
     if plugin_name == "mimir" and public_prefix.startswith("/api/v1/mimir"):
@@ -569,41 +536,6 @@ def build_root_app(
     @root.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
-
-    if "niuu-api" in active_mounts:
-
-        @root.get("/api/v1/niuu/compat/legacy-routes")
-        async def legacy_route_hits() -> dict[str, object]:
-            hits = collect_legacy_route_hits(root)
-            return {
-                "items": [
-                    {
-                        "legacyPath": item.legacy_path,
-                        "canonicalPath": item.canonical_path,
-                        "method": item.method,
-                        "hits": item.hits,
-                    }
-                    for item in hits
-                ],
-                "totalHits": sum(item.hits for item in hits),
-            }
-
-        @root.delete("/api/v1/niuu/compat/legacy-routes")
-        async def reset_legacy_hits() -> dict[str, object]:
-            hits = reset_legacy_route_hits(root)
-            return {
-                "items": [
-                    {
-                        "legacyPath": item.legacy_path,
-                        "canonicalPath": item.canonical_path,
-                        "method": item.method,
-                        "hits": item.hits,
-                    }
-                    for item in hits
-                ],
-                "totalHits": sum(item.hits for item in hits),
-                "cleared": True,
-            }
 
     prefix_apps: list[tuple[str, ASGIApp]] = []
     for name, sub_app in sub_apps:

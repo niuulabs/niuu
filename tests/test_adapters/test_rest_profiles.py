@@ -224,11 +224,11 @@ class TestTemplateResponse:
 
 
 class TestListProfiles:
-    """Tests for GET /api/v1/volundr/profiles."""
+    """Tests for GET /api/v1/forge/profiles."""
 
     def test_list_profiles(self, client: TestClient):
         """Returns all profiles from config."""
-        response = client.get("/api/v1/volundr/profiles")
+        response = client.get("/api/v1/forge/profiles")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
@@ -237,7 +237,7 @@ class TestListProfiles:
 
     def test_list_profiles_filter_by_workload_type(self, client: TestClient):
         """Returns profiles filtered by workload_type."""
-        response = client.get("/api/v1/volundr/profiles?workload_type=session")
+        response = client.get("/api/v1/forge/profiles?workload_type=session")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
@@ -245,17 +245,17 @@ class TestListProfiles:
 
     def test_list_profiles_filter_no_match(self, client: TestClient):
         """Returns empty when workload_type filter doesn't match."""
-        response = client.get("/api/v1/volundr/profiles?workload_type=nonexistent")
+        response = client.get("/api/v1/forge/profiles?workload_type=nonexistent")
         assert response.status_code == 200
         assert response.json() == []
 
 
 class TestGetProfile:
-    """Tests for GET /api/v1/volundr/profiles/{profile_name}."""
+    """Tests for GET /api/v1/forge/profiles/{profile_name}."""
 
     def test_get_profile_success(self, client: TestClient):
         """Returns profile by name."""
-        response = client.get("/api/v1/volundr/profiles/standard")
+        response = client.get("/api/v1/forge/profiles/standard")
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == "standard"
@@ -266,7 +266,7 @@ class TestGetProfile:
 
     def test_get_profile_not_found(self, client: TestClient):
         """Returns 404 for non-existent profile."""
-        response = client.get("/api/v1/volundr/profiles/nonexistent")
+        response = client.get("/api/v1/forge/profiles/nonexistent")
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
@@ -275,11 +275,11 @@ class TestGetProfile:
 
 
 class TestListTemplates:
-    """Tests for GET /api/v1/volundr/templates."""
+    """Tests for GET /api/v1/forge/templates."""
 
     def test_list_templates(self, client: TestClient):
         """Returns all templates from config."""
-        response = client.get("/api/v1/volundr/templates")
+        response = client.get("/api/v1/forge/templates")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
@@ -288,7 +288,7 @@ class TestListTemplates:
 
     def test_list_templates_filter_by_workload_type(self, client: TestClient):
         """Returns templates filtered by workload_type."""
-        response = client.get("/api/v1/volundr/templates?workload_type=session")
+        response = client.get("/api/v1/forge/templates?workload_type=session")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
@@ -296,13 +296,13 @@ class TestListTemplates:
 
     def test_list_templates_filter_no_match(self, client: TestClient):
         """Returns empty when workload_type filter doesn't match."""
-        response = client.get("/api/v1/volundr/templates?workload_type=nonexistent")
+        response = client.get("/api/v1/forge/templates?workload_type=nonexistent")
         assert response.status_code == 200
         assert response.json() == []
 
     def test_template_response_includes_runtime_fields(self, client: TestClient):
         """Template response includes merged runtime config fields."""
-        response = client.get("/api/v1/volundr/templates/default-session")
+        response = client.get("/api/v1/forge/templates/default-session")
         assert response.status_code == 200
         data = response.json()
         assert data["workload_type"] == "session"
@@ -315,11 +315,11 @@ class TestListTemplates:
 
 
 class TestGetTemplate:
-    """Tests for GET /api/v1/volundr/templates/{template_name}."""
+    """Tests for GET /api/v1/forge/templates/{template_name}."""
 
     def test_get_template_success(self, client: TestClient):
         """Returns template by name."""
-        response = client.get("/api/v1/volundr/templates/default-session")
+        response = client.get("/api/v1/forge/templates/default-session")
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == "default-session"
@@ -328,7 +328,7 @@ class TestGetTemplate:
 
     def test_get_template_not_found(self, client: TestClient):
         """Returns 404 for non-existent template."""
-        response = client.get("/api/v1/volundr/templates/nonexistent")
+        response = client.get("/api/v1/forge/templates/nonexistent")
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
@@ -377,7 +377,7 @@ class TestSessionDefinitions:
 
     def test_list_session_definitions(self, definitions_client: TestClient):
         """Returns enabled session definitions."""
-        resp = definitions_client.get("/api/v1/volundr/session-definitions")
+        resp = definitions_client.get("/api/v1/forge/session-definitions")
         assert resp.status_code == 200
         data = resp.json()
         keys = [d["key"] for d in data]
@@ -387,7 +387,7 @@ class TestSessionDefinitions:
 
     def test_session_definition_fields(self, definitions_client: TestClient):
         """Response has correct fields."""
-        resp = definitions_client.get("/api/v1/volundr/session-definitions")
+        resp = definitions_client.get("/api/v1/forge/session-definitions")
         claude = next(d for d in resp.json() if d["key"] == "skuldClaude")
         assert claude["display_name"] == "Claude Code"
         assert claude["description"] == "Anthropic Claude"
@@ -404,6 +404,6 @@ class TestSessionDefinitions:
         router = create_profiles_router(profile_service, template_service)
         app.include_router(router)
         client = TestClient(app)
-        resp = client.get("/api/v1/volundr/session-definitions")
+        resp = client.get("/api/v1/forge/session-definitions")
         assert resp.status_code == 200
         assert resp.json() == []

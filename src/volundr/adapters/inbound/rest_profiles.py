@@ -257,9 +257,11 @@ def create_profiles_router(
     profile_service: ForgeProfileService,
     template_service: WorkspaceTemplateService,
     session_definitions: dict[str, SessionDefinitionConfig] | None = None,
+    *,
+    prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router for profile and template endpoints."""
-    router = APIRouter(prefix="/api/v1/volundr")
+    router = APIRouter(prefix=prefix)
 
     # --- Profile endpoints ---
 

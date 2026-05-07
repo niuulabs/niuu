@@ -33,7 +33,7 @@ stages:
           ## Instructions
 
           1. Run backend tests: `make test` (or `pytest -v --tb=short`).
-          2. Run frontend tests: `cd web && npm run test:coverage`.
+          2. Run frontend tests: `cd web-next && pnpm test`.
           3. Run linting: `make verify`.
           4. Check CI status: `gh run list --repo {event.repo} --branch {event.branch} --limit 3`.
           5. Fix any failures before proceeding.

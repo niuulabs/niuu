@@ -164,12 +164,12 @@ ingress:
   #   haproxy.org/timeout-server: "3600s"
   annotations: {}
   # -- Ingress hosts
-  # Note: The API is served at /api/v1/volundr/* for path-based routing
+  # Note: The API is served at /api/v1/* for path-based routing
   # with multiple services on the same domain
   hosts:
     - host: api.example.com
       paths:
-        - path: /api/v1/volundr
+        - path: /api/v1
           pathType: Prefix
         - path: /api/v1/users
           pathType: Prefix
@@ -511,7 +511,7 @@ envoy:
     # -- Path prefixes that bypass JWT validation (no auth required)
     # Rules are evaluated in order; matching prefixes skip the JWT check.
     bypassPrefixes:
-      - /api/v1/volundr/auth/config
+      - /api/v1/forge/auth/config
       - /health
   # -- Extra HTTP filters (inserted before the router filter)
   extraHttpFilters: []

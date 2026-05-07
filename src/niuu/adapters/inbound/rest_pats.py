@@ -79,7 +79,7 @@ class CreatePATResponse(BaseModel):
 
 def create_pats_router(
     extract_principal: Callable[..., Awaitable[Principal]],
-    prefix: str = "/api/v1/users/tokens",
+    prefix: str = "/api/v1/tokens",
     *,
     deprecated: bool = False,
     canonical_prefix: str | None = None,
@@ -91,7 +91,7 @@ def create_pats_router(
     extract_principal:
         FastAPI-compatible dependency that returns a ``Principal``.
     prefix:
-        URL prefix for the router (default ``/api/v1/users/tokens``).
+        URL prefix for the router (default ``/api/v1/tokens``).
     """
     router = APIRouter(
         prefix=prefix,

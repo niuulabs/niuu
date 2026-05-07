@@ -1,1 +1,0 @@
-export { AdminGuard } from './AdminGuard';

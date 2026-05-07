@@ -417,11 +417,6 @@ def _route_inventory_payload(inventory: list[Any] | tuple[Any, ...]) -> list[dic
     ]
 
 
-def _legacy_route_hits_url(server: str) -> str:
-    """Build the host endpoint used for legacy-route usage snapshots."""
-    return f"{server.rstrip('/')}/api/v1/niuu/compat/legacy-routes"
-
-
 def create_platform_commands(
     registry: PluginRegistry,
     settings: CLISettings,
@@ -526,61 +521,6 @@ def create_platform_commands(
             prefixes = ", ".join(item["prefixes"]) or "(none)"
             plugin = item["plugin"] or "internal"
             typer.echo(f"  {item['name']}: {prefixes} [{item['source']}/{plugin}]")
-
-    @platform_app.command(name="legacy-routes")
-    def legacy_routes(
-        server: str = typer.Option(
-            "",
-            "--server",
-            help="Base URL for the running niuu host. Defaults to the configured local server.",
-        ),
-        json_output: bool = typer.Option(
-            False,
-            "--json",
-            help="Print the legacy-route usage snapshot as JSON.",
-        ),
-        clear: bool = typer.Option(
-            False,
-            "--clear",
-            help="Clear the legacy-route counters after returning the current snapshot.",
-        ),
-        out: str = typer.Option(
-            "",
-            "--out",
-            help="Optional file path to write the JSON legacy-route usage report.",
-        ),
-    ) -> None:
-        """Show the current legacy-route usage snapshot from a running niuu host."""
-        base_url = server or f"http://{settings.server.host}:{settings.server.port}"
-        url = _legacy_route_hits_url(base_url)
-
-        try:
-            response = httpx.delete(url, timeout=5.0) if clear else httpx.get(url, timeout=5.0)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            action = "clear" if clear else "fetch"
-            typer.echo(f"Failed to {action} legacy-route usage from {url}: {exc}")
-            raise typer.Exit(1) from None
-
-        payload = response.json()
-
-        if out:
-            output_path = Path(out)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(f"{json.dumps(payload, indent=2)}\n")
-            typer.echo(f"Wrote legacy-route usage to {output_path}")
-
-        if json_output:
-            typer.echo(json.dumps(payload, indent=2))
-            return
-
-        summary_label = "Cleared legacy route hits" if clear else "Legacy route hits"
-        typer.echo(f"{summary_label}: {payload.get('totalHits', 0)}")
-        for item in payload.get("items", []):
-            typer.echo(
-                f"  {item['method']} {item['legacyPath']} -> "
-                f"{item['canonicalPath']} ({item['hits']})"
-            )
 
     @platform_app.command()
     def init() -> None:

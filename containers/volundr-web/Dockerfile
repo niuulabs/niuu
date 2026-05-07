@@ -2,17 +2,24 @@
 FROM node:24-alpine@sha256:7fddd9ddeae8196abf4a3ef2de34e11f7b1a722119f91f28ddf1e99dcafdf114 AS build
 
 WORKDIR /app
+RUN corepack enable
 
-# Copy package files for dependency caching
-COPY web/package.json web/package-lock.json ./
-RUN npm ci --ignore-scripts
+# Copy workspace manifests for dependency caching
+COPY web-next/package.json ./
+COPY web-next/pnpm-lock.yaml ./
+COPY web-next/pnpm-workspace.yaml ./
+COPY web-next/tsconfig.base.json ./
+COPY web-next/tsconfig.json ./
+COPY web-next/build ./build
 
-# Copy source and build
-COPY web/ .
+# Copy the app and workspace packages
+COPY web-next/apps ./apps
+COPY web-next/packages ./packages
 ARG APP_VERSION=dev
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 ENV VITE_APP_VERSION=${APP_VERSION}
-RUN npm run build
+RUN pnpm install --frozen-lockfile
+RUN pnpm build
 
 # Stage 2: Serve with nginx
 FROM nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
@@ -38,7 +45,7 @@ RUN addgroup -g 1001 -S volundr && \
 COPY containers/volundr-web/nginx.conf /etc/nginx/conf.d/default.conf
 
 # Copy built app
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /app/apps/niuu/dist /usr/share/nginx/html
 
 # Health check endpoint
 RUN echo "OK" > /usr/share/nginx/html/health

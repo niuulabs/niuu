@@ -2,7 +2,7 @@
 
 Saved prompts are reusable prompt templates scoped globally or to a specific project.
 
-All endpoints are prefixed with `/api/v1/volundr`.
+All endpoints are prefixed with `/api/v1/forge`.
 
 ## Endpoints
 
