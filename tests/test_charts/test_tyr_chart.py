@@ -1,7 +1,7 @@
 """Tests for Tyr Helm chart templates."""
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import pytest
 import yaml
@@ -77,17 +77,22 @@ class TestMigrationConfigMap:
         pattern = re.compile(r"^  (\d+_[^:]+\.(?:up|down)\.sql): \|\n", re.MULTILINE)
         blocks: dict[str, str] = {}
         matches = list(pattern.finditer(template_yaml))
+        template_end = template_yaml.index("{{- end }}")
 
         for index, match in enumerate(matches):
             name = match.group(1)
             start = match.end()
-            end = matches[index + 1].start() if index + 1 < len(matches) else template_yaml.index("{{- end }}")
+            end = matches[index + 1].start() if index + 1 < len(matches) else template_end
             lines = template_yaml[start:end].splitlines()
-            content = "\n".join(line[4:] if line.startswith("    ") else "" for line in lines).rstrip() + "\n"
+            content = (
+                "\n".join(line[4:] if line.startswith("    ") else "" for line in lines).rstrip()
+                + "\n"
+            )
             blocks[name] = content
 
         source_files = sorted(path.name for path in TYR_MIGRATIONS_DIR.glob("*.sql"))
         assert sorted(blocks) == source_files
 
         for filename in source_files:
-            assert blocks[filename] == (TYR_MIGRATIONS_DIR / filename).read_text().rstrip() + "\n"
+            expected = (TYR_MIGRATIONS_DIR / filename).read_text().rstrip() + "\n"
+            assert blocks[filename] == expected
