@@ -1,11 +1,13 @@
 """Tests for Tyr Helm chart templates."""
 
 from pathlib import Path
+import re
 
 import pytest
 import yaml
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "tyr"
+TYR_MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations" / "tyr"
 
 
 class TestChartMetadata:
@@ -62,3 +64,30 @@ class TestConfigMapTemplate:
         assert "config.yaml: |" in template_yaml
         assert "database:" in template_yaml
         assert "volundr:" in template_yaml
+
+
+class TestMigrationConfigMap:
+    """Tests for embedded Tyr SQL migrations."""
+
+    @pytest.fixture
+    def template_yaml(self) -> str:
+        return (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
+
+    def test_embedded_migrations_match_source_files(self, template_yaml: str) -> None:
+        pattern = re.compile(r"^  (\d+_[^:]+\.(?:up|down)\.sql): \|\n", re.MULTILINE)
+        blocks: dict[str, str] = {}
+        matches = list(pattern.finditer(template_yaml))
+
+        for index, match in enumerate(matches):
+            name = match.group(1)
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else template_yaml.index("{{- end }}")
+            lines = template_yaml[start:end].splitlines()
+            content = "\n".join(line[4:] if line.startswith("    ") else "" for line in lines).rstrip() + "\n"
+            blocks[name] = content
+
+        source_files = sorted(path.name for path in TYR_MIGRATIONS_DIR.glob("*.sql"))
+        assert sorted(blocks) == source_files
+
+        for filename in source_files:
+            assert blocks[filename] == (TYR_MIGRATIONS_DIR / filename).read_text().rstrip() + "\n"
