@@ -14,11 +14,11 @@ jobs:
   # Change detection + pipeline tier
   #
   # Self-rolled path filter: we diff the PR head against its base and derive
-  # per-area flags. No third-party action — we avoid the supply-chain surface
-  # of marketplace filters and the logic is auditable in this file.
+  # per-area flags. Full-tier PRs (anything targeting dev/main rather than
+  # feat/*) deliberately run the full surface regardless of the fine-grained
+  # diff so that heavyweight validation cannot be skipped by a bad classifier.
   #
-  # Container list is derived from the same diff: a container is rebuilt only
-  # when its Dockerfile or a source path it bakes in has changed.
+  # Light-tier PRs still use the diff to keep inner-loop checks fast.
   # ---------------------------------------------------------------------------
   changes:
     name: Detect Changes
@@ -45,49 +45,74 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
 
-          CHANGED=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
-          echo "Changed files:"
-          echo "${CHANGED}" | sed 's/^/  /'
+          base_sha = os.environ["BASE_SHA"]
+          head_sha = os.environ["HEAD_SHA"]
+          base_ref = os.environ.get("BASE_REF", "")
+          full_tier = not base_ref.startswith("feat/")
 
-          match() { echo "${CHANGED}" | grep -qE "$1"; }
-          flag()  { if match "$2"; then echo "$1=true"; else echo "$1=false"; fi; }
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only", base_sha, head_sha],
+              text=True,
+          ).splitlines()
 
-          # Areas
-          flag python   '^(src|tests)/|^pyproject\.toml$|^uv\.lock$' >> "$GITHUB_OUTPUT"
-          flag web_next '^web-next/'                                 >> "$GITHUB_OUTPUT"
-          flag helm     '^charts/'                                   >> "$GITHUB_OUTPUT"
+          print("Changed files:")
+          for path in changed:
+              print(f"  {path}")
 
-          # Per-container triggers: dockerfile in containers/<name>/ OR the
-          # source tree the image bakes in. Python containers depend on src/
-          # and the lockfiles; the frontend images depend on their app trees.
-          PY_SRC='^(src/|pyproject\.toml$|uv\.lock$)'
-          declare -A TRIGGER=(
-            [skuld]="^containers/skuld/|${PY_SRC}"
-            [niuu]="^containers/niuu/|${PY_SRC}"
-            [volundr-web]='^containers/volundr-web/|^web-next/'
-            [niuu-web]='^containers/niuu-web/|^web-next/'
-            [devrunner]='^containers/devrunner/'
-          )
+          def matches(pattern: str) -> bool:
+              regex = re.compile(pattern)
+              return any(regex.search(path) for path in changed)
 
-          NAMES=()
-          for NAME in skuld devrunner volundr-web niuu-web niuu; do
-            if match "${TRIGGER[$NAME]}"; then
-              NAMES+=("\"${NAME}\"")
-            fi
-          done
+          all_containers = ["skuld", "devrunner", "volundr-web", "niuu-web", "niuu"]
 
-          if [ ${#NAMES[@]} -eq 0 ]; then
-            echo "names=[]" >> "$GITHUB_OUTPUT"
-            echo "any=false" >> "$GITHUB_OUTPUT"
-          else
-            # Join with commas
-            IFS=,
-            echo "names=[${NAMES[*]}]" >> "$GITHUB_OUTPUT"
-            echo "any=true" >> "$GITHUB_OUTPUT"
-          fi
+          if full_tier:
+              outputs = {
+                  "python": "true",
+                  "web_next": "true",
+                  "helm": "true",
+                  "names": json.dumps(all_containers),
+                  "any": "true",
+              }
+              print("Full-tier PR detected; enabling Python, web-next, Helm, and container jobs.")
+          else:
+              python_changed = matches(r"^(src|tests)/|^pyproject\.toml$|^uv\.lock$")
+              web_changed = matches(r"^web-next/")
+              helm_changed = matches(r"^charts/")
+              container_triggers = {
+                  "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
+                  "devrunner": r"^containers/devrunner/",
+                  "volundr-web": r"^containers/volundr-web/|^web-next/",
+                  "niuu-web": r"^containers/niuu-web/|^web-next/",
+                  "niuu": r"^containers/niuu/|^(src/|pyproject\.toml$|uv\.lock$)",
+              }
+              container_names = [
+                  name for name, pattern in container_triggers.items() if matches(pattern)
+              ]
+              outputs = {
+                  "python": "true" if python_changed else "false",
+                  "web_next": "true" if web_changed else "false",
+                  "helm": "true" if helm_changed else "false",
+                  "names": json.dumps(container_names),
+                  "any": "true" if container_names else "false",
+              }
+
+          print("Computed outputs:")
+          for key, value in outputs.items():
+              print(f"  {key}={value}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              for key, value in outputs.items():
+                  fh.write(f"{key}={value}\n")
+          PY
 
       - name: Determine pipeline tier
         id: tier
