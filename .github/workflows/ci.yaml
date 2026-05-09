@@ -465,21 +465,56 @@ jobs:
           echo "Packed tarballs:"
           ls -1 "$PACK_DIR"
 
+      - name: Copy consumer app into isolated temp directory
+        run: |
+          rm -rf "$RUNNER_TEMP/consumer-app"
+          cp -R "$GITHUB_WORKSPACE/web-next/consumer-app" "$RUNNER_TEMP/consumer-app"
+
       - name: Install consumer app from local tarballs
-        # Install ALL niuulabs tarballs in one pnpm add so inter-package deps
-        # (plugin-tyr → plugin-sdk, etc.) resolve from the local tarballs rather
-        # than the registry (where 0.0.1 does not yet exist).
-        working-directory: web-next/consumer-app
+        # Rewrite the consumer app's @niuulabs/* dependencies to explicit file:
+        # tarballs before installation so pnpm never tries to resolve the
+        # GitHub Packages publishConfig registry during the external-consumer
+        # proof.
+        working-directory: ${{ runner.temp }}/consumer-app
         run: |
           PACK_DIR="$GITHUB_WORKSPACE/web-next/.packed"
-          pnpm add $(ls "$PACK_DIR"/*.tgz | tr '\n' ' ')
+          PACK_DIR="$PACK_DIR" node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const packDir = process.env.PACK_DIR;
+          const packageJsonPath = path.join(process.cwd(), "package.json");
+          const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+          const packagesDir = path.join(process.env.GITHUB_WORKSPACE, "web-next", "packages");
+          pkg.pnpm ??= {};
+          pkg.pnpm.overrides ??= {};
+
+          for (const packageDir of fs.readdirSync(packagesDir)) {
+            const sourcePackageJson = path.join(packagesDir, packageDir, "package.json");
+            const sourcePkg = JSON.parse(fs.readFileSync(sourcePackageJson, "utf8"));
+            const tarball = fs
+              .readdirSync(packDir)
+              .find((file) => file.startsWith(`niuulabs-${packageDir}-`) && file.endsWith(".tgz"));
+            if (!tarball) {
+              throw new Error(`Missing packed tarball for ${sourcePkg.name}`);
+            }
+            const tarballPath = path.join(packDir, tarball).split(path.sep).join(path.posix.sep);
+            pkg.pnpm.overrides[sourcePkg.name] = `file:${tarballPath}`;
+            if (pkg.dependencies?.[sourcePkg.name]) {
+              pkg.dependencies[sourcePkg.name] = `file:${tarballPath}`;
+            }
+          }
+
+          fs.writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`);
+          NODE
+          pnpm install --no-frozen-lockfile
 
       - name: Install Playwright browsers
-        working-directory: web-next/consumer-app
+        working-directory: ${{ runner.temp }}/consumer-app
         run: npx playwright install --with-deps chromium
 
       - name: Run consumer Playwright tests
-        working-directory: web-next/consumer-app
+        working-directory: ${{ runner.temp }}/consumer-app
         run: npx playwright test
 
       - name: Upload consumer Playwright report
@@ -487,7 +522,7 @@ jobs:
         if: failure()
         with:
           name: consumer-playwright-report
-          path: web-next/consumer-app/playwright-report/
+          path: ${{ runner.temp }}/consumer-app/playwright-report/
           retention-days: 7
 
   # ---------------------------------------------------------------------------
