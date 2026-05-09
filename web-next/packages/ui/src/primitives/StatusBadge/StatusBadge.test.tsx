@@ -50,4 +50,10 @@ describe('StatusBadge', () => {
     const { container } = render(<StatusBadge status="running" />);
     expect(container.querySelector('.niuu-status-badge__dot')).toBeTruthy();
   });
+
+  it('falls back to the mute tone for unexpected runtime status values', () => {
+    render(<StatusBadge status={'mystery' as BadgeStatus} />);
+    expect(screen.getByRole('status')).toHaveClass('niuu-status-badge--mute');
+    expect(screen.getByRole('status')).toHaveTextContent('mystery');
+  });
 });

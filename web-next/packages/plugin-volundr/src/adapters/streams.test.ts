@@ -158,17 +158,74 @@ describe('buildVolundrPtyWsAdapter', () => {
     adapter.subscribe('s', () => {});
     expect(count).toBe(1);
   });
+
+  it('keeps the socket open until the last subscriber unsubscribes', () => {
+    let captured: FakeWebSocket | null = null;
+    const closeSpy = vi.spyOn(FakeWebSocket.prototype, 'close');
+    const adapter = buildVolundrPtyWsAdapter({
+      urlTemplate: 'wss://h/{sessionId}',
+      wsFactory: (url) => {
+        captured = new FakeWebSocket(url);
+        return captured as unknown as WebSocket;
+      },
+    });
+
+    const unsubA = adapter.subscribe('s', () => {});
+    const unsubB = adapter.subscribe('s', () => {});
+
+    unsubA();
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    unsubB();
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(captured).not.toBeNull();
+  });
+
+  it('opens a fresh socket after the previous one closes', () => {
+    const built: FakeWebSocket[] = [];
+    const adapter = buildVolundrPtyWsAdapter({
+      urlTemplate: 'wss://h/{sessionId}',
+      wsFactory: (url) => {
+        const ws = new FakeWebSocket(url);
+        built.push(ws);
+        return ws as unknown as WebSocket;
+      },
+    });
+
+    const unsub = adapter.subscribe('s', () => {});
+    built[0]?.close();
+    unsub();
+
+    adapter.subscribe('s', () => {});
+
+    expect(built).toHaveLength(2);
+  });
 });
 
 describe('buildVolundrMetricsSseAdapter', () => {
   const originalFetch = global.fetch;
 
-  function mockSseResponse(chunks: string[]): Response {
+function mockSseResponse(chunks: string[]): Response {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
         controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }
+
+  function mockOpenSseResponse(onAbort?: () => void): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      start() {
+        // Keep the stream open until the adapter aborts it.
+      },
+      cancel() {
+        onAbort?.();
       },
     });
     return new Response(stream, {
@@ -218,5 +275,50 @@ describe('buildVolundrMetricsSseAdapter', () => {
     await new Promise((r) => setTimeout(r, 20));
 
     expect(seen).toEqual([]);
+  });
+
+  it('reuses one metrics stream per session and closes it after the last subscriber leaves', async () => {
+    let aborted = false;
+    const fetchSpy = vi.fn(async (_url: string, init?: RequestInit) => {
+      init?.signal?.addEventListener('abort', () => {
+        aborted = true;
+      });
+      return mockOpenSseResponse();
+    });
+    global.fetch = fetchSpy as typeof fetch;
+
+    const adapter = buildVolundrMetricsSseAdapter({ urlTemplate: '/m/{sessionId}' });
+
+    const unsubA = adapter.subscribe('sess-1', () => {});
+    const unsubB = adapter.subscribe('sess-1', () => {});
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    unsubA();
+    expect(aborted).toBe(false);
+
+    unsubB();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(aborted).toBe(true);
+  });
+
+  it('opens a fresh metrics stream after the previous one is fully closed', async () => {
+    let fetchCount = 0;
+    global.fetch = vi.fn(async (_url: string) => {
+      fetchCount += 1;
+      return mockOpenSseResponse();
+    }) as typeof fetch;
+
+    const adapter = buildVolundrMetricsSseAdapter({ urlTemplate: '/m/{sessionId}' });
+    const unsub = adapter.subscribe('sess-1', () => {});
+    await new Promise((r) => setTimeout(r, 20));
+    unsub();
+    await new Promise((r) => setTimeout(r, 0));
+
+    adapter.subscribe('sess-1', () => {});
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(fetchCount).toBe(2);
   });
 });
