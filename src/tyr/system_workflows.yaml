@@ -8,27 +8,64 @@
         label: Dispatch raid
         source: tyr dispatch
         dispatchEvent: raid.requested
-      - id: raid-flock
+        position:
+          x: 96
+          y: 144
+      - id: raid-coordinator
         kind: stage
-        label: Raid flock
-        executionMode: parallel
+        label: Coordinate raid
+        executionMode: sequential
         joinMode: all
         stageMembers:
           - personaId: coordinator
             budget: 40
+        position:
+          x: 336
+          y: 144
+      - id: raid-coder
+        kind: stage
+        label: Implement code
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
           - personaId: coder
             budget: 40
+        position:
+          x: 576
+          y: 144
+      - id: raid-reviewer
+        kind: stage
+        label: Review changes
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
           - personaId: reviewer
             budget: 25
             consumesEventTypes:
               - review.requested
+        position:
+          x: 816
+          y: 144
       - id: raid-complete
         kind: end
         label: Raid complete
+        position:
+          x: 1056
+          y: 152
     edges:
-      - id: edge-dispatch-to-flock
+      - id: edge-dispatch-to-coordinator
         source: dispatch-root
-        target: raid-flock
-      - id: edge-flock-to-end
-        source: raid-flock
+        target: raid-coordinator
+        label: raid.requested -> raid.requested
+      - id: edge-coordinator-to-coder
+        source: raid-coordinator
+        target: raid-coder
+        label: code.requested -> code.requested
+      - id: edge-coder-to-reviewer
+        source: raid-coder
+        target: raid-reviewer
+        label: code.changed -> code.changed
+      - id: edge-reviewer-to-end
+        source: raid-reviewer
         target: raid-complete
+        label: review.completed -> complete

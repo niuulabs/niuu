@@ -45,6 +45,15 @@ def test_load_system_workflows_includes_tyr_raid_flow() -> None:
     assert raid_flow.scope == WorkflowScope.SYSTEM
     assert raid_flow.owner_id is None
     assert raid_flow.graph["nodes"][0]["kind"] == "trigger"
+    stage_labels = [
+        node["label"]
+        for node in raid_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+    ]
+    assert stage_labels == ["Coordinate raid", "Implement code", "Review changes"]
+    assert "name: coordinate-raid" in str(raid_flow.definition_yaml)
+    assert "name: implement-code" in str(raid_flow.definition_yaml)
+    assert "name: review-changes" in str(raid_flow.definition_yaml)
 
 
 @pytest.mark.asyncio
