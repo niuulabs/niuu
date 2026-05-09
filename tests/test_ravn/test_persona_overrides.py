@@ -12,7 +12,7 @@ import logging
 
 import pytest
 
-from ravn.adapters.personas.loader import PersonaConfig, PersonaLLMConfig
+from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes, PersonaLLMConfig
 from ravn.adapters.personas.overrides import apply_config_overrides
 
 # ---------------------------------------------------------------------------
@@ -28,6 +28,7 @@ def base_persona() -> PersonaConfig:
         system_prompt_template="You are a code reviewer.",
         llm=PersonaLLMConfig(primary_alias="balanced"),
         iteration_budget=20,
+        consumes=PersonaConsumes(event_types=["code.changed", "review.requested"]),
     )
 
 
@@ -141,6 +142,20 @@ class TestIterationBudget:
         assert base_persona.iteration_budget == 20
 
 
+class TestConsumesEventTypes:
+    def test_consumes_event_types_override_replaces_subscriptions(self, base_persona):
+        result = apply_config_overrides(
+            base_persona,
+            {"consumes_event_types": ["review.requested"]},
+        )
+        assert result.consumes.event_types == ["review.requested"]
+        assert base_persona.consumes.event_types == ["code.changed", "review.requested"]
+
+    def test_empty_consumes_event_types_is_no_op(self, base_persona):
+        result = apply_config_overrides(base_persona, {"consumes_event_types": []})
+        assert result.consumes.event_types == ["code.changed", "review.requested"]
+
+
 # ---------------------------------------------------------------------------
 # Security key dropping
 # ---------------------------------------------------------------------------
@@ -189,11 +204,13 @@ class TestCombinedOverrides:
             {
                 "system_prompt_extra": "Be thorough.",
                 "iteration_budget": 60,
+                "consumes_event_types": ["review.requested"],
             },
         )
         assert "You are a code reviewer." in result.system_prompt_template
         assert "Be thorough." in result.system_prompt_template
         assert result.iteration_budget == 60
+        assert result.consumes.event_types == ["review.requested"]
 
     def test_name_preserved(self, base_persona):
         result = apply_config_overrides(base_persona, {"iteration_budget": 10})
@@ -225,9 +242,21 @@ class TestStartupLog:
             apply_config_overrides(base_persona, {"iteration_budget": 42})
         assert any("iteration_budget" in r.message for r in caplog.records)
 
+    def test_log_emitted_when_consumes_event_types_applied(self, base_persona, caplog):
+        with caplog.at_level(logging.INFO, logger="ravn.adapters.personas.overrides"):
+            apply_config_overrides(base_persona, {"consumes_event_types": ["review.requested"]})
+        assert any("consumes.event_types" in r.message for r in caplog.records)
+
     def test_no_log_when_no_effective_overrides(self, base_persona, caplog):
         """No INFO log emitted when overrides are all empty/default."""
         with caplog.at_level(logging.INFO, logger="ravn.adapters.personas.overrides"):
-            apply_config_overrides(base_persona, {"system_prompt_extra": "", "iteration_budget": 0})
+            apply_config_overrides(
+                base_persona,
+                {
+                    "system_prompt_extra": "",
+                    "iteration_budget": 0,
+                    "consumes_event_types": [],
+                },
+            )
         info_records = [r for r in caplog.records if r.levelno == logging.INFO]
         assert len(info_records) == 0

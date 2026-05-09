@@ -20,7 +20,7 @@ import dataclasses
 import logging
 
 from niuu.domain.llm_merge import _SECURITY_KEYS, concat_prompt_extras
-from ravn.adapters.personas.loader import PersonaConfig
+from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes
 
 logger = logging.getLogger(__name__)
 
@@ -71,5 +71,21 @@ def apply_config_overrides(persona: PersonaConfig, overrides: dict) -> PersonaCo
             persona.name,
         )
         persona = dataclasses.replace(persona, iteration_budget=int(budget))
+
+    consumes_event_types = overrides.get("consumes_event_types") or []
+    if consumes_event_types:
+        logger.info(
+            "persona_overrides: replacing consumes.event_types for persona %r -> %s",
+            persona.name,
+            consumes_event_types,
+        )
+        persona = dataclasses.replace(
+            persona,
+            consumes=PersonaConsumes(
+                event_types=list(consumes_event_types),
+                injects=list(persona.consumes.injects),
+                schema=dict(persona.consumes.schema),
+            ),
+        )
 
     return persona

@@ -231,6 +231,15 @@ _BUILTIN_PERSONAS: dict[str, PersonaConfig] = {
         allowed_tools=["mimir_query", "file", "git", "terminal", "web", "todo", "ravn"],
         forbidden_tools=["cascade", "volundr"],
         permission_mode="workspace-write",
+        executor=PersonaExecutorConfig(
+            adapter="ravn.adapters.executors.cli.CliTransportExecutor",
+            kwargs={
+                "transport_adapter": (
+                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+                ),
+                "transport_kwargs": {"model": "claude-sonnet-4-6"},
+            },
+        ),
         llm=PersonaLLMConfig(primary_alias="balanced", thinking_enabled=True),
         iteration_budget=40,
     ),
@@ -468,6 +477,15 @@ _BUILTIN_PERSONAS: dict[str, PersonaConfig] = {
         allowed_tools=["file", "git", "terminal", "introspection"],
         forbidden_tools=["cascade", "volundr", "edit_file", "write_file"],
         permission_mode="read-only",
+        executor=PersonaExecutorConfig(
+            adapter="ravn.adapters.executors.cli.CliTransportExecutor",
+            kwargs={
+                "transport_adapter": (
+                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+                ),
+                "transport_kwargs": {"model": "claude-sonnet-4-6"},
+            },
+        ),
         llm=PersonaLLMConfig(primary_alias="powerful", thinking_enabled=True),
         iteration_budget=30,
     ),

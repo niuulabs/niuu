@@ -1108,6 +1108,8 @@ class LocalProcessPodManager(PodManager):
         if not isinstance(workflow_cfg, dict):
             workflow_cfg = None
         mcp_servers = _localize_mcp_servers(spec.values.get("mcpServers"), workspace)
+        repo_workspace = workspace / "repo"
+        workspace_root = repo_workspace if (repo_workspace / ".git").exists() else workspace
 
         try:
             from ravn.adapters.personas.loader import FilesystemPersonaAdapter
@@ -1138,6 +1140,9 @@ class LocalProcessPodManager(PodManager):
                 persona_override.get("max_concurrent_tasks") or global_max_tasks
             )
 
+            permission_cfg = node_config.setdefault("permission", {})
+            permission_cfg["workspace_root"] = str(workspace_root)
+
             skuld_cfg = node_config.setdefault("skuld", {})
             skuld_cfg["enabled"] = True
             skuld_cfg["broker_url"] = f"ws://127.0.0.1:{skuld_port}/ws/ravn"
@@ -1151,6 +1156,12 @@ class LocalProcessPodManager(PodManager):
             if iteration_budget:
                 initiative_cfg["iteration_budget"] = int(iteration_budget)
                 persona_runtime_overrides["iteration_budget"] = int(iteration_budget)
+
+            consumes_event_types = persona_override.get("consumes_event_types")
+            if isinstance(consumes_event_types, list) and consumes_event_types:
+                persona_runtime_overrides["consumes_event_types"] = [
+                    str(event_type) for event_type in consumes_event_types
+                ]
 
             if persona_runtime_overrides:
                 node_config["persona_overrides"] = persona_runtime_overrides

@@ -358,6 +358,30 @@ class TestTaskCreateTool:
         assert data["location"] == "local"
         mesh.send.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_persona_preference_selects_matching_idle_peer(self):
+        """task_create prefers an idle peer whose persona matches the request."""
+        dl = _make_drive_loop()
+        reviewer = _FakePeer("peer-reviewer", status="idle", capabilities=["git"])
+        reviewer.persona = "reviewer"
+        coder = _FakePeer("peer-coder", status="idle", capabilities=["terminal"])
+        coder.persona = "coder"
+        discovery = _FakeDiscovery({"peer-reviewer": reviewer, "peer-coder": coder})
+        mesh = AsyncMock()
+        mesh.send = AsyncMock(return_value={"status": "accepted", "task_id": "t3"})
+
+        tool = TaskCreateTool(drive_loop=dl, mesh=mesh, discovery=discovery)
+        result = await tool.execute(
+            {
+                "prompt": "implement the change",
+                "title": "coding task",
+                "persona": "coder",
+            }
+        )
+        data = json.loads(result.content)
+        assert data["location"] == "peer-coder"
+        mesh.send.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # task_status tests

@@ -425,6 +425,13 @@ class PersonaOverride(BaseModel):
         default=None,
         description="Max iterations for this persona; overrides the persona's own default.",
     )
+    consumes_event_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional replacement event subscription list for this persona within a flock. "
+            "Use this to narrow auto-triggered personas to a single canonical path."
+        ),
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the wire dict format consumed by workload_config.personas."""
@@ -435,6 +442,8 @@ class PersonaOverride(BaseModel):
             d["system_prompt_extra"] = self.system_prompt_extra
         if self.iteration_budget is not None:
             d["iteration_budget"] = self.iteration_budget
+        if self.consumes_event_types:
+            d["consumes_event_types"] = list(self.consumes_event_types)
         return d
 
 
@@ -447,8 +456,9 @@ class FlockConfig(BaseModel):
     )
     default_personas: list[PersonaOverride] = Field(
         default_factory=lambda: [
-            PersonaOverride(name="coordinator"),
-            PersonaOverride(name="reviewer"),
+            PersonaOverride(name="raid-executor"),
+            PersonaOverride(name="coding-agent"),
+            PersonaOverride(name="reviewer", consumes_event_types=["review.requested"]),
         ],
         description=(
             "Ravn persona names included in every flock session. "

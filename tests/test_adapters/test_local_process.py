@@ -1192,6 +1192,8 @@ class TestProcessSpawning:
     ) -> None:
         workspace = tmp_workspaces / "session-with-overrides"
         workspace.mkdir(parents=True)
+        repo_dir = workspace / "repo"
+        (repo_dir / ".git").mkdir(parents=True)
         flock_dir = workspace / ".flock"
         flock_dir.mkdir()
         (flock_dir / "cluster.yaml").write_text("peers: []\n", encoding="utf-8")
@@ -1209,6 +1211,7 @@ class TestProcessSpawning:
                             "llm": {"model": "Qwen/Qwen3.6-35B-A3B-FP8"},
                             "system_prompt_extra": "Be extra careful.",
                             "iteration_budget": 40,
+                            "consumes_event_types": ["review.requested"],
                             "max_concurrent_tasks": 1,
                         }
                     ],
@@ -1253,8 +1256,11 @@ class TestProcessSpawning:
         assert "max_concurrent_tasks: 1" in node_config
         assert "system_prompt_extra: Be extra careful." in node_config
         assert "iteration_budget: 40" in node_config
+        assert "consumes_event_types:" in node_config
+        assert "- review.requested" in node_config
         assert "enabled: true" in node_config
         assert "broker_url: ws://127.0.0.1:9101/ws/ravn" in node_config
+        assert f"workspace_root: {repo_dir}" in node_config
 
     async def test_start_flock_materializes_mimir_runtime_and_local_paths(
         self,

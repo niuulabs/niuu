@@ -968,26 +968,30 @@ class TestBuildSpawnRequestPersonaOverrides:
         assert req.workload_config["personas"] == [{"name": "raid-executor"}, {"name": "reviewer"}]
 
     def test_per_persona_overrides_forwarded(self):
-        """Per-persona llm dict and iteration_budget are included in workload_config."""
+        """Per-persona overrides are forwarded into workload_config."""
         personas = [
-            {"name": "coordinator"},
+            {"name": "raid-executor"},
+            {"name": "coding-agent"},
             {
                 "name": "reviewer",
                 "llm": {"primary_alias": "powerful", "thinking_enabled": True},
                 "iteration_budget": 40,
+                "consumes_event_types": ["review.requested"],
             },
             {"name": "security-auditor", "llm": {"primary_alias": "balanced"}},
         ]
         config = DispatchConfig(flock_enabled=True, flock_default_personas=personas)
         req = self._call(config, self._make_saga(), self._make_issue())
         emitted = req.workload_config["personas"]
-        assert emitted[0] == {"name": "coordinator"}
-        assert emitted[1] == {
+        assert emitted[0] == {"name": "raid-executor"}
+        assert emitted[1] == {"name": "coding-agent"}
+        assert emitted[2] == {
             "name": "reviewer",
             "llm": {"primary_alias": "powerful", "thinking_enabled": True},
             "iteration_budget": 40,
+            "consumes_event_types": ["review.requested"],
         }
-        assert emitted[2] == {"name": "security-auditor", "llm": {"primary_alias": "balanced"}}
+        assert emitted[3] == {"name": "security-auditor", "llm": {"primary_alias": "balanced"}}
 
     def test_global_llm_config_still_present(self):
         """Global llm_config key is still included alongside per-persona personas."""

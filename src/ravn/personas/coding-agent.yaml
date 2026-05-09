@@ -115,6 +115,12 @@ system_prompt_template: |
 allowed_tools: [mimir_query, file, git, terminal, web, todo, ravn]
 forbidden_tools: [cascade, volundr]
 permission_mode: workspace-write
+executor:
+  adapter: ravn.adapters.executors.cli.CliTransportExecutor
+  kwargs:
+    transport_adapter: skuld.transports.persistent_subprocess.PersistentSubprocessTransport
+    transport_kwargs:
+      model: claude-sonnet-4-6
 
 llm:
   primary_alias: balanced

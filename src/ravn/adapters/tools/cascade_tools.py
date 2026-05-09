@@ -148,7 +148,7 @@ class TaskCreateTool(ToolPort):
 
         # Try to delegate to an idle peer first
         if self._mesh is not None and self._discovery is not None:
-            peer_id = self._pick_idle_peer(required_caps)
+            peer_id = self._pick_idle_peer(required_caps, preferred_persona=persona)
             if peer_id is not None:
                 return await self._delegate_to_peer(
                     peer_id, task_id, title, prompt, persona, output_mode, priority
@@ -190,11 +190,18 @@ class TaskCreateTool(ToolPort):
             content=json.dumps({"task_id": task_id, "location": "local"}),
         )
 
-    def _pick_idle_peer(self, required_caps: list[str]) -> str | None:
-        """Return the first idle capable peer_id, or None."""
+    def _pick_idle_peer(
+        self,
+        required_caps: list[str],
+        *,
+        preferred_persona: str | None = None,
+    ) -> str | None:
+        """Return an idle capable peer_id, preferring persona-specific matches."""
         if self._discovery is None:
             return None
         peers: dict = self._discovery.peers()
+        preferred = (preferred_persona or "").strip()
+        fallback: str | None = None
         for peer_id, peer in peers.items():
             if getattr(peer, "status", "") != "idle":
                 continue
@@ -202,8 +209,11 @@ class TaskCreateTool(ToolPort):
                 peer_caps = set(getattr(peer, "capabilities", []))
                 if not all(c in peer_caps for c in required_caps):
                     continue
-            return peer_id
-        return None
+            if preferred and str(getattr(peer, "persona", "")).strip() == preferred:
+                return peer_id
+            if fallback is None:
+                fallback = peer_id
+        return fallback
 
     async def _delegate_to_peer(
         self,

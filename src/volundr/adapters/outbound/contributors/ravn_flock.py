@@ -410,6 +410,9 @@ def _build_ravn_config(
     if budget:
         po["iteration_budget"] = int(budget)
         config["initiative"]["iteration_budget"] = int(budget)
+    consumes_event_types = persona_override.get("consumes_event_types") or []
+    if consumes_event_types:
+        po["consumes_event_types"] = [str(event_type) for event_type in consumes_event_types]
     if po:
         config["persona_overrides"] = po
 
@@ -502,6 +505,32 @@ def _workflow_trigger_config(workflow: dict[str, Any] | None) -> dict[str, str] 
     }
 
 
+def _default_flock_trigger_config(
+    *,
+    initiative_context: str,
+    persona_dicts: list[dict[str, Any]],
+) -> dict[str, str] | None:
+    """Return the generic startup trigger for plain raid-executor flocks."""
+    if not initiative_context.strip():
+        return None
+
+    persona_names = {
+        str(persona.get("name") or "").strip()
+        for persona in persona_dicts
+        if isinstance(persona, dict)
+    }
+    if "raid-executor" not in persona_names:
+        return None
+
+    return {
+        "enabled": "true",
+        "node_id": "dispatch-root",
+        "label": "Dispatch raid",
+        "source": "tyr dispatch",
+        "event_type": "raid.requested",
+    }
+
+
 class RavnFlockContributor(SessionContributor):
     """Contributes flock pod spec when workload_type == 'ravn_flock'.
 
@@ -587,9 +616,10 @@ class RavnFlockContributor(SessionContributor):
             "max_concurrent_tasks", _DEFAULT_MAX_CONCURRENT_TASKS
         )
         global_llm: dict | None = wc.get("llm_config") or None
+        initiative_context = str(wc.get("initiative_context") or "")
         workflow_cfg = _normalize_workflow_config(
             wc.get("workflow"),
-            str(wc.get("initiative_context") or ""),
+            initiative_context,
         )
 
         values, pod_spec = self._build_flock_spec(
@@ -600,6 +630,7 @@ class RavnFlockContributor(SessionContributor):
             sleipnir_publish_urls=sleipnir_publish_urls,
             global_max_concurrent_tasks=global_max_concurrent_tasks,
             global_llm=global_llm,
+            initiative_context=initiative_context,
             persona_source_mode=self._persona_source_mode,
             persona_source_configmap_name=self._persona_source_configmap_name,
             persona_source_mount_path=self._persona_source_mount_path,
@@ -636,6 +667,7 @@ class RavnFlockContributor(SessionContributor):
         sleipnir_publish_urls: list[str],
         global_max_concurrent_tasks: int,
         global_llm: dict | None = None,
+        initiative_context: str = "",
         persona_source_mode: str = _PERSONA_SOURCE_FILESYSTEM,
         persona_source_configmap_name: str = _PERSONA_CM_DEFAULT_NAME,
         persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
@@ -662,6 +694,11 @@ class RavnFlockContributor(SessionContributor):
             {"name": "MESH_HANDSHAKE_PORT", "value": str(skuld_hs)},
         ]
         workflow_trigger = _workflow_trigger_config(workflow)
+        if workflow_trigger is None:
+            workflow_trigger = _default_flock_trigger_config(
+                initiative_context=initiative_context,
+                persona_dicts=persona_dicts,
+            )
         if workflow_trigger is not None:
             skuld_env.extend(
                 [

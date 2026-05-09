@@ -512,7 +512,8 @@ class TestBuildFlockPrompt:
         issue = _make_issue()
         prompt = build_flock_prompt(issue, "org/repo", "feat/x")
         assert "reviewer" in prompt.lower()
-        assert "coder" in prompt.lower()
+        assert "developer" in prompt.lower()
+        assert "coding-agent" in prompt.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -688,3 +689,11 @@ class TestRaidExecutorPersona:
     def test_iteration_budget(self) -> None:
         data = self._load()
         assert data["iteration_budget"] == 40
+
+    def test_consumes_raid_requested(self) -> None:
+        data = self._load()
+        assert data["consumes"]["event_types"] == ["raid.requested"]
+
+    def test_stop_on_outcome_enabled(self) -> None:
+        data = self._load()
+        assert data["stop_on_outcome"] is True

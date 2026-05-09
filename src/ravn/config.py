@@ -2426,6 +2426,13 @@ class PersonaOverridesConfig(BaseModel):
         default=0,
         description=("Override the persona's iteration budget (0 = use persona default)."),
     )
+    consumes_event_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional replacement event subscription list for the resolved persona. "
+            "Empty keeps the persona's built-in consumes.event_types."
+        ),
+    )
 
 
 class WorkflowRuntimeConfig(BaseModel):

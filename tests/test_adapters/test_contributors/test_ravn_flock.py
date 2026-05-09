@@ -284,6 +284,28 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "code.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "trigger-1"
 
+    async def test_skuld_generic_trigger_env_present_for_plain_raid_executor_flock(
+        self, session
+    ):
+        template = WorkspaceTemplate(
+            name="plain-flock",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["raid-executor", "coder", "reviewer"],
+                "initiative_context": "Implement NIU-805",
+            },
+        )
+        provider = MagicMock()
+        provider.get.return_value = template
+        c = RavnFlockContributor(template_provider=provider)
+        result = await c.contribute(session, SessionContext(template_name="plain-flock"))
+
+        env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
+        assert env_names["SKULD__MESH__CONSUMES_EVENT_TYPES"] == "[]"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__ENABLED"] == "true"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "raid.requested"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "dispatch-root"
+
     async def test_mimir_volume_not_added_without_explicit_local(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
@@ -1453,6 +1475,26 @@ class TestPerPersonaLLMOverrides:
         reviewer_parsed = yaml.safe_load(reviewer_cfg)
         assert reviewer_parsed["persona_overrides"]["iteration_budget"] == 40
         assert "iteration_budget" not in coordinator_cfg
+
+    async def test_consumes_event_types_embedded_in_persona_overrides(self, session):
+        """consumes_event_types is written to persona_overrides for sidecar startup."""
+        c = RavnFlockContributor()
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [
+                    {"name": "reviewer", "consumes_event_types": ["review.requested"]},
+                    {"name": "raid-executor"},
+                ],
+            },
+        )
+        result = await c.contribute(session, ctx)
+
+        reviewer_cfg = _extract_mounted_config(result.pod_spec, "reviewer")
+        reviewer_parsed = yaml.safe_load(reviewer_cfg)
+        assert reviewer_parsed["persona_overrides"]["consumes_event_types"] == [
+            "review.requested"
+        ]
 
     async def test_per_persona_max_concurrent_tasks(self, session):
         """max_concurrent_tasks from persona override replaces global value in initiative."""

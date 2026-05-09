@@ -3,9 +3,17 @@ dispatch:
   flock:
     enabled: true
     default_personas:
-      - coordinator
-      - reviewer
+      - raid-executor
+      - name: coding-agent
+      - name: reviewer
+        consumes_event_types:
+          - review.requested
+        system_prompt_extra: |
+          For delegated flock reviews, inspect the concrete declared file paths and acceptance
+          criteria directly. If git diff is empty because the change is untracked, use file
+          inspection and git status instead of blocking on a missing diff.
     sleipnir_publish_urls: []
+  default_session_definition: skuldClaude
 
 review:
   auto_approve_threshold: 0.70
