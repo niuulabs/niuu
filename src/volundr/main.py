@@ -815,6 +815,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # Reconcile sessions stuck in PROVISIONING after a restart
             await session_service.reconcile_provisioning_sessions()
+            await session_service.reconcile_active_sessions()
 
             try:
                 yield

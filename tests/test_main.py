@@ -102,6 +102,10 @@ class TestLifespan:
                 "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
                 new=AsyncMock(),
             ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
         ):
             app = create_app()
             with TestClient(app) as client:

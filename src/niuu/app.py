@@ -724,8 +724,17 @@ def build_root_app(
 
     def render_live_config(origin: str) -> str:
         assert live_config_template is not None
+        ws_origin = (
+            origin.replace("https://", "wss://", 1)
+            if origin.startswith("https://")
+            else origin.replace("http://", "ws://", 1)
+        )
         payload = live_config_template.replace("http://localhost:8080", origin)
         payload = payload.replace("http://127.0.0.1:8080", origin)
+        payload = payload.replace("ws://localhost:8080", ws_origin)
+        payload = payload.replace("ws://127.0.0.1:8080", ws_origin)
+        payload = payload.replace("wss://localhost:8080", ws_origin)
+        payload = payload.replace("wss://127.0.0.1:8080", ws_origin)
         return payload
 
     if "web-ui" not in active_mounts:

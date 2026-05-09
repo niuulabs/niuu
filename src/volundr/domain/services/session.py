@@ -1071,6 +1071,45 @@ class SessionService:
                 lambda t, sid=session.id: self._provisioning_tasks.pop(sid, None)
             )
 
+    async def reconcile_active_sessions(self) -> None:
+        """Reconcile stored STARTING/RUNNING sessions against the pod manager.
+
+        Local-process sessions can outlive the in-memory Skuld registry after a restart.
+        If the pod manager reports that a supposedly active session is actually stopped
+        or failed, update the persisted session record so browser clients stop trying to
+        attach to dead chat endpoints.
+        """
+        active_sessions = [
+            *await self._repository.list(status=SessionStatus.STARTING),
+            *await self._repository.list(status=SessionStatus.RUNNING),
+        ]
+        for session in active_sessions:
+            actual_status = await self._pod_manager.status(session)
+            if actual_status == session.status:
+                continue
+
+            logger.info(
+                "Reconciling active session %s from %s to %s",
+                session.id,
+                session.status.value,
+                actual_status.value,
+            )
+
+            if actual_status == SessionStatus.STOPPED:
+                updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
+            elif actual_status == SessionStatus.FAILED:
+                updated = (
+                    session.with_status(SessionStatus.FAILED)
+                    .with_cleared_endpoints()
+                    .with_error("Session runtime is no longer available")
+                )
+            else:
+                updated = session.with_status(actual_status)
+
+            final = await self._repository.update(updated)
+            if self._broadcaster is not None:
+                await self._broadcaster.publish_session_updated(final)
+
 
 def _communication_route_id(
     *,

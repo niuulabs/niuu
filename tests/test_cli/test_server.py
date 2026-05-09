@@ -488,7 +488,8 @@ class TestRootServerBuildApp:
         (assets / "main.js").write_text("// js")
         (dist / "index.html").write_text("<html>SPA</html>")
         (dist / "config.live.json").write_text(
-            '{"services":{"forge":{"mode":"http","baseUrl":"http://localhost:8080/api/v1/forge"}}}'
+            '{"services":{"forge":{"mode":"http","baseUrl":"http://localhost:8080/api/v1/forge"},'
+            '"forge.pty":{"mode":"ws","wsUrl":"ws://localhost:8080/s/{sessionId}/session"}}}'
         )
         favicon = dist / "favicon.svg"
         favicon.write_text("<svg/>")
@@ -515,6 +516,10 @@ class TestRootServerBuildApp:
         assert config_resp.headers["content-type"].startswith("application/json")
         assert config_resp.json()["services"]["forge"]["mode"] == "http"
         assert config_resp.json()["services"]["forge"]["baseUrl"] == "http://testserver/api/v1/forge"
+        assert (
+            config_resp.json()["services"]["forge.pty"]["wsUrl"]
+            == "ws://testserver/s/{sessionId}/session"
+        )
 
         default_config_resp = client.get("/config.json")
         assert default_config_resp.status_code == 200
@@ -523,6 +528,10 @@ class TestRootServerBuildApp:
         assert (
             default_config_resp.json()["services"]["forge"]["baseUrl"]
             == "http://testserver/api/v1/forge"
+        )
+        assert (
+            default_config_resp.json()["services"]["forge.pty"]["wsUrl"]
+            == "ws://testserver/s/{sessionId}/session"
         )
 
     def test_web_ui_filenotfound_gracefully_handled(self) -> None:
