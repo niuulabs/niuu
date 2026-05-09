@@ -70,6 +70,13 @@ class VolundrConfig(BaseModel):
     """Volundr API connection configuration."""
 
     url: str = Field(default="http://localhost:8080")
+    trusted_connection_test_urls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional trusted Volundr API base URLs that Tyr may contact for "
+            "server-side credentialed code_forge connection tests."
+        ),
+    )
 
 
 class CredentialStoreConfig(BaseModel):

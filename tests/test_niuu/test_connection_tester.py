@@ -18,7 +18,11 @@ async def test_code_forge_success():
     respx.get("http://my-server/api/v1/identity/me").mock(
         return_value=httpx.Response(200, json={"email": "dev@example.com"})
     )
-    result = await _ct.test_code_forge(url="http://my-server", token="tok")
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="tok",
+        trusted_base_urls=("http://my-server",),
+    )
     assert result.success is True
     assert "dev@example.com" in result.message
     assert result.provider == "volundr"
@@ -31,7 +35,11 @@ async def test_code_forge_uses_user_id_fallback():
     respx.get("http://my-server/api/v1/identity/me").mock(
         return_value=httpx.Response(200, json={"user_id": "uid-123"})
     )
-    result = await _ct.test_code_forge(url="http://my-server", token="tok")
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="tok",
+        trusted_base_urls=("http://my-server",),
+    )
     assert result.success is True
     assert result.user == "uid-123"
 
@@ -42,7 +50,11 @@ async def test_code_forge_uses_authenticated_fallback():
     respx.get("http://my-server/api/v1/identity/me").mock(
         return_value=httpx.Response(200, json={})
     )
-    result = await _ct.test_code_forge(url="http://my-server", token="tok")
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="tok",
+        trusted_base_urls=("http://my-server",),
+    )
     assert result.success is True
     assert result.user == "authenticated"
 
@@ -53,7 +65,11 @@ async def test_code_forge_auth_failure():
     respx.get("http://my-server/api/v1/identity/me").mock(
         return_value=httpx.Response(401, text="unauthorized")
     )
-    result = await _ct.test_code_forge(url="http://my-server", token="bad")
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="bad",
+        trusted_base_urls=("http://my-server",),
+    )
     assert result.success is False
     assert "401" in result.message
 
@@ -71,9 +87,35 @@ async def test_code_forge_connection_error():
     respx.get("http://unreachable/api/v1/identity/me").mock(
         side_effect=httpx.ConnectError("refused")
     )
-    result = await _ct.test_code_forge(url="http://unreachable", token="tok")
+    result = await _ct.test_code_forge(
+        url="http://unreachable",
+        token="tok",
+        trusted_base_urls=("http://unreachable",),
+    )
     assert result.success is False
     assert "unreachable" in result.message
+
+
+@pytest.mark.asyncio
+async def test_code_forge_rejects_untrusted_url():
+    result = await _ct.test_code_forge(
+        url="http://unknown-host",
+        token="tok",
+        trusted_base_urls=("http://trusted-host",),
+    )
+    assert result.success is False
+    assert "Untrusted code forge URL" in result.message
+
+
+@pytest.mark.asyncio
+async def test_code_forge_rejects_userinfo_in_url():
+    result = await _ct.test_code_forge(
+        url="http://user:pass@trusted-host",
+        token="tok",
+        trusted_base_urls=("http://trusted-host",),
+    )
+    assert result.success is False
+    assert "userinfo" in result.message
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +171,12 @@ async def test_connection_code_forge():
     respx.get("http://forge/api/v1/identity/me").mock(
         return_value=httpx.Response(200, json={"email": "x@y.com"})
     )
-    result = await _ct.test_connection("code_forge", {"url": "http://forge"}, {"token": "tok"})
+    result = await _ct.test_connection(
+        "code_forge",
+        {"url": "http://forge"},
+        {"token": "tok"},
+        trusted_code_forge_base_urls=("http://forge",),
+    )
     assert result.success is True
 
 

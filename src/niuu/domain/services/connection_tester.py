@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -24,6 +24,63 @@ def _is_valid_telegram_bot_token(bot_token: str) -> bool:
     return bool(_TELEGRAM_BOT_TOKEN_RE.fullmatch(bot_token))
 
 
+def _normalise_base_url(url: str) -> str:
+    """Return a canonical base URL for trusted-server comparisons.
+
+    Only http/https base URLs are allowed. Userinfo, query strings, and fragments
+    are rejected because they should never participate in server-side credentialed
+    health checks.
+    """
+
+    base_url = url.strip().rstrip("/")
+    parsed = urlparse(base_url)
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ValueError("Invalid URL: no hostname")
+    if parsed.username or parsed.password:
+        raise ValueError("Invalid URL: userinfo is not allowed")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Invalid URL: query strings and fragments are not allowed")
+
+    hostname = parsed.hostname.lower()
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+
+    netloc = hostname
+    if parsed.port is not None:
+        netloc = f"{hostname}:{parsed.port}"
+
+    path = parsed.path.rstrip("/")
+    return urlunparse((parsed.scheme.lower(), netloc, path, "", "", ""))
+
+
+def _resolve_trusted_code_forge_base_url(
+    requested_url: str,
+    trusted_base_urls: tuple[str, ...],
+) -> str:
+    """Return the matched trusted base URL, or raise when the target is untrusted.
+
+    The outbound request must use the trusted configured base URL rather than the
+    raw user-provided URL so credentials cannot be exfiltrated to arbitrary hosts.
+    """
+
+    requested_base = _normalise_base_url(requested_url)
+    for trusted_url in trusted_base_urls:
+        try:
+            trusted_base = _normalise_base_url(trusted_url)
+        except ValueError:
+            logger.warning("Ignoring invalid trusted code forge base URL %r", trusted_url)
+            continue
+        if requested_base == trusted_base:
+            return trusted_base
+
+    raise ValueError(
+        "Untrusted code forge URL: server-side credential tests only run against "
+        "configured trusted base URLs"
+    )
+
+
 @dataclass(frozen=True)
 class ConnectionTestResult:
     """Result of testing an integration connection."""
@@ -34,28 +91,34 @@ class ConnectionTestResult:
     user: str = ""
 
 
-async def test_code_forge(url: str, token: str) -> ConnectionTestResult:
+async def test_code_forge(
+    url: str,
+    token: str,
+    *,
+    trusted_base_urls: tuple[str, ...] = (),
+) -> ConnectionTestResult:
     """Test a Volundr/code forge connection via /me endpoint."""
     test_url = url.rstrip("/")
     if not test_url:
         return ConnectionTestResult(success=False, message="No URL configured")
-    parsed = urlparse(test_url)
-    if parsed.scheme not in _ALLOWED_SCHEMES:
+
+    try:
+        trusted_url = _resolve_trusted_code_forge_base_url(test_url, trusted_base_urls)
+    except ValueError as exc:
         return ConnectionTestResult(
             success=False,
-            message=f"Unsupported URL scheme: {parsed.scheme!r}",
+            message=str(exc),
             provider="volundr",
         )
-    if not parsed.hostname:
-        return ConnectionTestResult(
-            success=False, message="Invalid URL: no hostname", provider="volundr"
-        )
-    # Reconstruct from validated components to satisfy SSRF analysis
-    safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
             resp = await client.get(
-                f"{safe_url}/api/v1/identity/me",
+                f"{trusted_url}/api/v1/identity/me",
                 headers={"Authorization": f"Bearer {token}"},
             )
             if resp.status_code == 200:
@@ -116,6 +179,8 @@ async def test_connection(
     integration_type: str,
     config: dict,
     credentials: dict[str, str],
+    *,
+    trusted_code_forge_base_urls: tuple[str, ...] = (),
 ) -> ConnectionTestResult:
     """Test a connection based on its integration type.
 
@@ -128,6 +193,7 @@ async def test_connection(
         return await test_code_forge(
             url=config.get("url", ""),
             token=credentials.get("token", ""),
+            trusted_base_urls=trusted_code_forge_base_urls,
         )
 
     if integration_type == "messaging":

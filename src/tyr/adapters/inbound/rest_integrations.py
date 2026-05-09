@@ -39,6 +39,22 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
+def _trusted_code_forge_base_urls(request: Request) -> tuple[str, ...]:
+    """Return trusted base URLs for server-side code_forge connection tests."""
+    settings = getattr(request.app.state, "settings", None)
+    if settings is None:
+        return ()
+    candidates = [settings.volundr.url, *settings.volundr.trusted_connection_test_urls]
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        ordered.append(candidate)
+    return tuple(ordered)
+
+
 # --- Request / Response models ---
 
 
@@ -150,6 +166,7 @@ def create_integrations_router() -> APIRouter:
             data.integration_type,
             data.config,
             {"token": data.credential_value},
+            trusted_code_forge_base_urls=_trusted_code_forge_base_urls(request),
         )
         if not test_result.success:
             raise HTTPException(
@@ -255,6 +272,7 @@ def create_integrations_router() -> APIRouter:
             str(existing.integration_type),
             existing.config,
             cred or {},
+            trusted_code_forge_base_urls=_trusted_code_forge_base_urls(request),
         )
 
     return router
