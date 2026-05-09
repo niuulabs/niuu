@@ -180,7 +180,7 @@ test('/mimir/graph renders the graph workspace', async ({ page }) => {
   await expect(page.getByRole('img', { name: /knowledge graph/i })).toBeVisible({
     timeout: 5000,
   });
-  await expect(page.locator('[aria-label=\"Graph legend\"]')).toBeVisible();
+  await expect(page.locator('[aria-label="Graph legend"]')).toBeVisible();
 });
 
 test('/mimir/graph shows the graph SVG after load', async ({ page }) => {
@@ -198,7 +198,7 @@ test('/mimir/graph shows node and edge counts', async ({ page }) => {
 
 test('/mimir/graph shows category and edge legend labels', async ({ page }) => {
   await page.goto('/mimir/graph');
-  const legend = page.locator('[aria-label=\"Graph legend\"]');
+  const legend = page.locator('[aria-label="Graph legend"]');
   await expect(legend.getByText('Category', { exact: true })).toBeVisible({ timeout: 5000 });
   await expect(legend.getByText('Edges', { exact: true })).toBeVisible();
 });
@@ -220,13 +220,13 @@ test('/mimir/entities shows entity items after load', async ({ page }) => {
 test('/mimir/entities shows entity type filter buttons', async ({ page }) => {
   await page.goto('/mimir/entities');
   await expect(page.getByRole('button', { name: 'All', exact: true })).toBeVisible();
-  await expect(page.locator('button[data-kind=\"org\"]')).toBeVisible();
-  await expect(page.locator('button[data-kind=\"concept\"]')).toBeVisible();
+  await expect(page.locator('button[data-kind="org"]')).toBeVisible();
+  await expect(page.locator('button[data-kind="concept"]')).toBeVisible();
 });
 
 test('/mimir/entities — clicking a kind filter updates active state', async ({ page }) => {
   await page.goto('/mimir/entities');
-  const orgBtn = page.locator('button[data-kind=\"org\"]');
+  const orgBtn = page.locator('button[data-kind="org"]');
   await orgBtn.click();
   await expect(orgBtn).toHaveAttribute('aria-pressed', 'true');
 });
