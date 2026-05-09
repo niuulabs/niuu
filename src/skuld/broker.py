@@ -478,6 +478,7 @@ class Broker:
             saga_id=self._settings.session.saga_id,
             raid_id=self._settings.session.raid_id,
         )
+        self._flock_completion_reported = False
         self._session_start_reported = False
         self._event_sequence = 0
         self._activity_state: str = "idle"
@@ -1032,6 +1033,8 @@ class Broker:
             return
 
         if watch is None:
+            if event_type == "outcome":
+                await self._maybe_report_flock_completion(peer_id, frame)
             return
 
         watch.last_progress_at = now
@@ -1047,6 +1050,63 @@ class Broker:
             self._peer_watches.pop(peer_id, None)
         elif event_type in {"response", "outcome", "help_needed"}:
             self._peer_watches.pop(peer_id, None)
+
+        if event_type == "outcome":
+            await self._maybe_report_flock_completion(peer_id, frame)
+
+    async def _maybe_report_flock_completion(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        """Report authoritative flock completion through Volundr activity metadata.
+
+        Local multi-peer workflows already flow through Skuld -> Volundr SSE -> Tyr.
+        Use that existing path for ravn_flock completion instead of relying on an
+        out-of-process Sleipnir transport during co-hosted development runs.
+        """
+        if self._flock_completion_reported or not self._is_room_only_workflow_session():
+            return
+        if self._room_bridge is None:
+            return
+
+        participant = self._room_bridge.participants.get(peer_id)
+        persona = (participant.persona if participant is not None else "").strip()
+        if persona not in {"raid-executor", "coordinator"}:
+            return
+
+        metadata = frame.get("metadata", {})
+        outcome_event_type = str(metadata.get("event_type") or "")
+        if outcome_event_type != "ravn.task.completed":
+            return
+
+        data = frame.get("data", {})
+        if isinstance(data, str):
+            return
+
+        fields = data.get("fields", data)
+        if not isinstance(fields, dict) or not fields:
+            return
+        structured_outcome = (
+            fields.get("outcome") if isinstance(fields.get("outcome"), dict) else fields
+        )
+        if not isinstance(structured_outcome, dict) or not structured_outcome:
+            return
+
+        extra_metadata: dict[str, Any] = {
+            "completion_source": "ravn_flock",
+            "completion_event_type": outcome_event_type,
+            "completion_persona": persona,
+            "completion_peer_id": peer_id,
+            "structured_outcome": structured_outcome,
+            "outcome_valid": bool(data.get("valid", True)),
+        }
+        files_changed = structured_outcome.get("files_changed") or fields.get("files_changed")
+        if isinstance(files_changed, list) and files_changed:
+            extra_metadata["files_changed"] = files_changed
+
+        self._flock_completion_reported = True
+        await self._report_activity_state("idle", extra_metadata=extra_metadata)
 
     async def _peer_watchdog_loop(self) -> None:
         """Warn in chat when a flock peer accepted work but goes quiet."""
@@ -1944,13 +2004,15 @@ class Broker:
             model=self.model,
         )
 
-    async def _report_activity_state(self, state: str) -> None:
+    async def _report_activity_state(
+        self, state: str, *, extra_metadata: dict[str, Any] | None = None
+    ) -> None:
         """Report activity state change to Volundr.
 
         States: active, idle, tool_executing.
         Debounces rapid transitions — only reports when state actually changes.
         """
-        if state == self._activity_state:
+        if state == self._activity_state and not extra_metadata:
             return
 
         self._activity_state = state
@@ -1964,6 +2026,8 @@ class Broker:
             "turn_count": self._artifacts.turn_count,
             "duration_seconds": self._artifacts.duration_seconds,
         }
+        if extra_metadata:
+            metadata.update(extra_metadata)
 
         try:
             client = await self._get_http_client()

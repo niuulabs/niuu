@@ -238,6 +238,7 @@ def _make_subscriber(
     config: WatcherConfig | None = None,
     tracker: MockTracker | None = None,
     raid: Raid | None = None,
+    review_engine: object | None = None,
 ) -> tuple[SessionActivitySubscriber, StubVolundr, MockTracker, InMemoryEventBus]:
     v = volundr or StubVolundr()
     if SESSION_ID not in v.sessions:
@@ -257,6 +258,7 @@ def _make_subscriber(
         dispatcher_repo=d,
         event_bus=e,
         config=c,
+        review_engine=review_engine,  # type: ignore[arg-type]
     )
     return sub, v, t, e
 
@@ -347,8 +349,8 @@ class TestActivityEventHandling:
         assert bus_event.data["status"] == "REVIEW"
 
     @pytest.mark.asyncio
-    async def test_idle_event_skips_flock_sessions_until_ravn_outcome(self) -> None:
-        """Flock sessions should not enter idle-based REVIEW evaluation."""
+    async def test_idle_event_skips_flock_sessions_without_completion_metadata(self) -> None:
+        """Flock sessions should not enter idle-based REVIEW evaluation on plain idle."""
         sub, volundr, tracker, _ = _make_subscriber()
         volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
 
@@ -363,6 +365,49 @@ class TestActivityEventHandling:
         await asyncio.sleep(0.1)
 
         tracker.update_raid_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_idle_event_routes_flock_completion_metadata_to_review_engine(self) -> None:
+        """Authoritative flock completion should route through ReviewEngine."""
+        review_engine = type("ReviewEngineStub", (), {})()
+        review_engine.handle_ravn_outcome = AsyncMock()
+        review_engine.get_reviewer_raid = lambda session_id: None
+        sub, volundr, tracker, _ = _make_subscriber(review_engine=review_engine)
+        volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
+
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="idle",
+            metadata={
+                "turn_count": 5,
+                "duration_seconds": 60,
+                "completion_source": "ravn_flock",
+                "structured_outcome": {
+                    "event_type": "ravn.task.completed",
+                    "persona": "raid-executor",
+                    "success": True,
+                    "outcome": {
+                        "verdict": "approve",
+                        "tests_passing": True,
+                        "scope_adherence": 1.0,
+                        "summary": "done",
+                        "files_changed": ["tmp/e2e/proof.txt"],
+                    },
+                },
+            },
+            owner_id=OWNER_ID,
+        )
+
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+        await asyncio.sleep(0.1)
+
+        tracker.update_raid_progress.assert_not_called()
+        review_engine.handle_ravn_outcome.assert_awaited_once()
+        call = review_engine.handle_ravn_outcome.await_args
+        assert call.args[0] == TRACKER_ISSUE_ID
+        assert call.args[1] == OWNER_ID
+        assert call.args[2].verdict == "approve"
+        assert call.kwargs["scope_adherence_threshold"] == pytest.approx(0.7)
 
     @pytest.mark.asyncio
     async def test_idle_with_no_turns_does_not_complete(self) -> None:

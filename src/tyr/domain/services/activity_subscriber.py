@@ -26,7 +26,7 @@ except ImportError:
     _catalog_raid_needs_approval = None  # type: ignore[assignment]
 
 from tyr.config import WatcherConfig
-from tyr.domain.models import Raid, RaidStatus
+from tyr.domain.models import Raid, RaidStatus, RavnOutcome
 from tyr.ports.dispatcher_repository import DispatcherRepository
 from tyr.ports.event_bus import EventBusPort, TyrEvent
 from tyr.ports.tracker import TrackerFactory, TrackerPort  # noqa: F401 — re-exported for consumers
@@ -66,6 +66,7 @@ class SessionActivitySubscriber:
         config: WatcherConfig,
         review_engine: ReviewEngine | None = None,
         sleipnir_publisher: object | None = None,
+        ravn_scope_adherence_threshold: float = 0.7,
     ) -> None:
         self._factory = volundr_factory
         self._tracker_factory = tracker_factory
@@ -74,6 +75,7 @@ class SessionActivitySubscriber:
         self._config = config
         self._review_engine = review_engine
         self._sleipnir_publisher = sleipnir_publisher
+        self._ravn_scope_adherence_threshold = ravn_scope_adherence_threshold
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._owner_tasks: dict[str, list[asyncio.Task[None]]] = {}
@@ -302,6 +304,8 @@ class SessionActivitySubscriber:
             return
 
         if session.workload_type == "ravn_flock":
+            if await self._try_handle_flock_completion(event, raid, owner_id):
+                return
             logger.info(
                 "Skipping idle completion evaluation for flock session %s; awaiting ravn outcome",
                 event.session_id[:8],
@@ -400,6 +404,66 @@ class SessionActivitySubscriber:
             pr_url=pr_url,
         )
 
+    async def _try_handle_flock_completion(
+        self,
+        event: ActivityEvent,
+        raid: Raid,
+        owner_id: str,
+    ) -> bool:
+        """Route authoritative local flock completion through ReviewEngine.
+
+        In co-hosted development runs the canonical local path is:
+        Skuld room outcome -> Volundr session activity SSE -> Tyr.
+        """
+        if self._review_engine is None:
+            return False
+
+        metadata = event.metadata
+        if metadata.get("completion_source") != "ravn_flock":
+            return False
+
+        structured = metadata.get("structured_outcome")
+        if not isinstance(structured, dict) or not structured:
+            logger.warning(
+                "Flock completion metadata missing structured_outcome for session %s",
+                event.session_id[:8],
+            )
+            return False
+        structured_payload = (
+            structured.get("outcome") if isinstance(structured.get("outcome"), dict) else structured
+        )
+        if not isinstance(structured_payload, dict) or not structured_payload:
+            logger.warning(
+                "Flock completion metadata missing nested outcome payload for session %s",
+                event.session_id[:8],
+            )
+            return False
+
+        outcome = RavnOutcome(
+            verdict=str(structured_payload.get("verdict") or "escalate"),
+            tests_passing=_coerce_bool(structured_payload.get("tests_passing")),
+            scope_adherence=_coerce_float(structured_payload.get("scope_adherence")),
+            pr_url=_coerce_str(structured_payload.get("pr_url")),
+            files_changed=_coerce_str_list(
+                structured_payload.get("files_changed") or metadata.get("files_changed")
+            ),
+            summary=_coerce_str(structured_payload.get("summary")) or "",
+        )
+
+        logger.info(
+            "Handling local flock completion for session %s raid=%s verdict=%s",
+            event.session_id[:8],
+            raid.tracker_id,
+            outcome.verdict,
+        )
+        await self._review_engine.handle_ravn_outcome(
+            raid.tracker_id,
+            owner_id,
+            outcome,
+            scope_adherence_threshold=self._ravn_scope_adherence_threshold,
+        )
+        return True
+
     async def _handle_completion(
         self,
         raid: Raid,
@@ -467,7 +531,6 @@ class SessionActivitySubscriber:
             pr_id or "none",
             "yes" if chronicle_summary else "no",
         )
-
     async def _on_session_failed(
         self, event: ActivityEvent, volundr: VolundrPort, owner_id: str
     ) -> None:
@@ -581,3 +644,42 @@ class SessionActivitySubscriber:
                 },
             )
         )
+
+
+def _coerce_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    return None
+
+
+def _coerce_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _coerce_str_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
