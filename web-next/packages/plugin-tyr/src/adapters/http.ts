@@ -399,6 +399,29 @@ function toCommitRequestBody(req: CommitSagaRequest): Record<string, unknown> {
 }
 
 function toWorkflow(raw: RawWorkflow): Workflow {
+  const nodes = raw.nodes.map((node, index) => ({
+    ...node,
+    position: node.position ?? { x: 96 + index * 240, y: 144 },
+  }));
+
+  const positions = new Map(nodes.map((node) => [node.id, node.position]));
+  const edges = raw.edges.map((edge) => {
+    if (edge.cp1 && edge.cp2) {
+      return edge;
+    }
+
+    const source = positions.get(edge.source);
+    const target = positions.get(edge.target);
+    const isMostlyHorizontal =
+      source && target ? Math.abs(target.x - source.x) >= Math.abs(target.y - source.y) : true;
+
+    return {
+      ...edge,
+      cp1: edge.cp1 ?? (isMostlyHorizontal ? { x: 92, y: 0 } : { x: 0, y: 92 }),
+      cp2: edge.cp2 ?? (isMostlyHorizontal ? { x: -92, y: 0 } : { x: 0, y: -92 }),
+    };
+  });
+
   return {
     id: raw.id,
     name: raw.name,
@@ -408,8 +431,8 @@ function toWorkflow(raw: RawWorkflow): Workflow {
     ownerId: raw.owner_id,
     definitionYaml: raw.definition_yaml,
     compileErrors: raw.compile_errors ?? [],
-    nodes: raw.nodes,
-    edges: raw.edges,
+    nodes,
+    edges,
     resourceBindings: raw.resourceBindings ?? raw.resource_bindings ?? [],
   };
 }

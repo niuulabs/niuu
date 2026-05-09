@@ -410,6 +410,55 @@ describe('buildWorkflowHttpAdapter', () => {
       }),
     );
   });
+
+  it('fills default geometry for workflows that omit editor layout fields', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        ...rawWorkflow,
+        nodes: [
+          { id: 'trigger-1', kind: 'trigger', label: 'Dispatch raid', source: 'tyr dispatch' },
+          {
+            id: 'stage-1',
+            kind: 'stage',
+            label: 'Raid flock',
+            joinMode: 'all',
+            stageMembers: [{ personaId: 'coordinator', budget: 40 }],
+            executionMode: 'parallel',
+          },
+          { id: 'end-1', kind: 'end', label: 'Done' },
+        ],
+        edges: [
+          { id: 'edge-1', source: 'trigger-1', target: 'stage-1' },
+          { id: 'edge-2', source: 'stage-1', target: 'end-1' },
+        ],
+      },
+    ]);
+
+    const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
+
+    expect(workflow.nodes.map((node) => node.position)).toEqual([
+      { x: 96, y: 144 },
+      { x: 336, y: 144 },
+      { x: 576, y: 144 },
+    ]);
+    expect(workflow.edges).toEqual([
+      {
+        id: 'edge-1',
+        source: 'trigger-1',
+        target: 'stage-1',
+        cp1: { x: 92, y: 0 },
+        cp2: { x: -92, y: 0 },
+      },
+      {
+        id: 'edge-2',
+        source: 'stage-1',
+        target: 'end-1',
+        cp1: { x: 92, y: 0 },
+        cp2: { x: -92, y: 0 },
+      },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
