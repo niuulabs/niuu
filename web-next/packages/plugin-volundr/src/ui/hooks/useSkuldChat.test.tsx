@@ -380,6 +380,81 @@ describe('useSkuldChat', () => {
     ]);
   });
 
+  it('appends a tool_result part paired with its tool_use by id', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'assistant',
+          message: { model: 'claude-sonnet-4-6', content: [] },
+        }),
+      );
+    });
+
+    // Open + close a tool_use block
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'cmd-1', name: 'Bash' },
+        }),
+      );
+    });
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: '{"command":"ls"}' },
+        }),
+      );
+    });
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'content_block_stop' }));
+    });
+
+    // Then the matching tool_result block carrying the output
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_start',
+          content_block: {
+            type: 'tool_result',
+            tool_use_id: 'cmd-1',
+            content: 'README.md',
+          },
+        }),
+      );
+    });
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'content_block_stop' }));
+    });
+
+    const parts = result.current.messages.at(-1)?.parts ?? [];
+    expect(parts).toEqual([
+      { type: 'tool_use', id: 'cmd-1', name: 'Bash', input: { command: 'ls' } },
+      { type: 'tool_result', tool_use_id: 'cmd-1', content: 'README.md' },
+    ]);
+  });
+
+  it('sendSetInternalVisibility forwards the toggle to the backend', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      result.current.sendSetInternalVisibility(true);
+    });
+    act(() => {
+      result.current.sendSetInternalVisibility(false);
+    });
+
+    expect(sendJson).toHaveBeenCalledWith({ type: 'set_internal_visibility', visible: true });
+    expect(sendJson).toHaveBeenCalledWith({ type: 'set_internal_visibility', visible: false });
+  });
+
   it('replaces a stale empty streaming assistant when a second assistant event arrives', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 

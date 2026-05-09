@@ -714,11 +714,11 @@ describe('SessionChat', () => {
     expect(screen.getByTestId('internal-toggle')).toBeInTheDocument();
   });
 
-  it('does not show internal toggle in single-participant mode', () => {
+  it('shows internal toggle in single-participant mode too', () => {
     render(
       <SessionChat {...defaultProps} messages={[userMessage]} connected participants={new Map()} />,
     );
-    expect(screen.queryByTestId('internal-toggle')).not.toBeInTheDocument();
+    expect(screen.getByTestId('internal-toggle')).toBeInTheDocument();
   });
 
   it('toggles internal visibility', () => {
@@ -735,13 +735,30 @@ describe('SessionChat', () => {
       />,
     );
     const toggle = screen.getByTestId('internal-toggle');
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
-
-    fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('notifies the backend when internal visibility is toggled', () => {
+    const onSetInternalVisibility = vi.fn();
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[userMessage]}
+        connected
+        participants={new Map()}
+        onSetInternalVisibility={onSetInternalVisibility}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('internal-toggle'));
+    expect(onSetInternalVisibility).toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByTestId('internal-toggle'));
+    expect(onSetInternalVisibility).toHaveBeenCalledWith(false);
   });
 
   /* ── MeshCascadePanel ── */
@@ -1029,7 +1046,9 @@ describe('SessionChat', () => {
     // External message should always be visible
     expect(screen.getByText('External message')).toBeInTheDocument();
 
-    // Internal messages are visible by default in room mode
+    // Internal messages are hidden by default; clicking the toggle reveals them.
+    expect(screen.queryByText('Internal msg 1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('internal-toggle'));
     expect(screen.getByText('Internal msg 1')).toBeInTheDocument();
   });
 

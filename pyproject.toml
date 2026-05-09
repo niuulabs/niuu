@@ -10,7 +10,7 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "pyyaml>=6.0",
-    "claude-agent-sdk==0.1.74",
+    "claude-agent-sdk==0.1.75",
     "asyncpg>=0.31.0",
     "httpx>=0.28.1",
     "fastapi>=0.109",
@@ -39,7 +39,7 @@ test = [
     "respx>=0.22.0",
 ]
 rabbitmq = [
-    "aio-pika>=9.0",
+    "aio-pika>=9.6.2",
 ]
 redis = [
     "redis[hiredis]>=5.0",
@@ -64,7 +64,7 @@ infra = [
 cli = [
     "typer>=0.25.1",
     "textual>=0.79",
-    "nuitka>=2.1",
+    "nuitka>=4.0.8",
     "ordered-set>=4.1",
     "patchelf>=0.14; sys_platform == 'linux'",
 ]

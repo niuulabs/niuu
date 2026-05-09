@@ -1723,6 +1723,7 @@ export function LiveSessionDetailPage({
                 onSendDirected={chat.sendDirectedMessages}
                 onStop={chat.sendInterrupt}
                 onClear={chat.clearMessages}
+                onSetInternalVisibility={chat.sendSetInternalVisibility}
                 onSetModel={chat.sendSetModel}
                 onSetThinkingTokens={chat.sendSetThinkingTokens}
                 onRewindFiles={chat.sendRewindFiles}

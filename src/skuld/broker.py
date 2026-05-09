@@ -1468,6 +1468,18 @@ class Broker:
                     max_thinking_tokens=tokens,
                 )
 
+            # Per-channel filter: hide/show tool_use + tool_result blocks
+            case "set_internal_visibility":
+                visible = bool(data.get("visible", False))
+                if sender_ws is not None:
+                    for ch in self._channels.channels:
+                        if (
+                            isinstance(ch, WebSocketChannel)
+                            and getattr(ch, "ws", None) is sender_ws
+                        ):
+                            ch.set_show_internal(visible)
+                            break
+
             # Phase 3: change permission mode at runtime
             case "set_permission_mode":
                 mode = data.get("mode", "")
