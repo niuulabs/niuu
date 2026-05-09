@@ -190,7 +190,9 @@ describe('SessionTerminalLive', () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            sessions: [{ terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' }],
+            sessions: [
+              { terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' },
+            ],
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
@@ -216,7 +218,9 @@ describe('SessionTerminalLive', () => {
     vi.mocked(global.fetch).mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          sessions: [{ terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' }],
+          sessions: [
+            { terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' },
+          ],
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),

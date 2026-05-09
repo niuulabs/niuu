@@ -657,7 +657,6 @@ export function SessionChat({
                     <RotateCcwIcon className="niuu-chat-control-icon" />
                   </button>
                 )}
-
               </div>
             </div>
           )}

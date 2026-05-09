@@ -84,11 +84,7 @@ export function useRoomState(
     const out: ChatMessage[] = [];
     for (const msg of messages) {
       if (isRoomMode && !showInternal && msg.visibility === 'internal') continue;
-      if (
-        isRoomMode &&
-        activeFilter !== FILTER_ALL &&
-        msg.participant?.peerId !== activeFilter
-      ) {
+      if (isRoomMode && activeFilter !== FILTER_ALL && msg.participant?.peerId !== activeFilter) {
         continue;
       }
       if (showInternal) {

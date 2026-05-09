@@ -521,7 +521,9 @@ function ResourceInspector({
   onUpdateResourceBinding: WorkflowBuilderActions['updateResourceBinding'];
   onRemoveResourceBinding: WorkflowBuilderActions['removeResourceBinding'];
 }) {
-  const bindings = (workflow.resourceBindings ?? []).filter((binding) => binding.resourceNodeId === node.id);
+  const bindings = (workflow.resourceBindings ?? []).filter(
+    (binding) => binding.resourceNodeId === node.id,
+  );
   const stages = workflow.nodes.filter((candidate) => candidate.kind === 'stage');
   const personaIds = uniquePersonaIds(workflow);
   const selectedMount = registryMounts.find((mount) => mount.id === node.registryEntryId) ?? null;
@@ -579,7 +581,7 @@ function ResourceInspector({
               role: mode === 'ephemeral_local' ? 'local' : node.role,
               seedFromRegistryId:
                 mode === 'ephemeral_local'
-                  ? node.seedFromRegistryId ?? node.registryEntryId
+                  ? (node.seedFromRegistryId ?? node.registryEntryId)
                   : node.seedFromRegistryId,
             })
           }
@@ -606,7 +608,9 @@ function ResourceInspector({
             <select
               className={cn(INPUT, 'niuu-mt-0.5')}
               value={node.seedFromRegistryId ?? ''}
-              onChange={(e) => onUpdateNode(node.id, { seedFromRegistryId: e.target.value || null })}
+              onChange={(e) =>
+                onUpdateNode(node.id, { seedFromRegistryId: e.target.value || null })
+              }
             >
               <option value="">No seed mount</option>
               {registryMounts.map((mount) => (
@@ -719,7 +723,8 @@ function ResourceInspector({
 
         {bindings.length === 0 ? (
           <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-text-xs niuu-text-text-muted">
-            No workflow bindings yet. The resource exists in the graph, but nothing is attached to it.
+            No workflow bindings yet. The resource exists in the graph, but nothing is attached to
+            it.
           </div>
         ) : (
           bindings.map((binding) => (
@@ -785,7 +790,9 @@ function ResourceInspector({
                   <select
                     className={cn(INPUT, 'niuu-mt-0.5')}
                     value={binding.targetId}
-                    onChange={(e) => onUpdateResourceBinding(binding.id, { targetId: e.target.value })}
+                    onChange={(e) =>
+                      onUpdateResourceBinding(binding.id, { targetId: e.target.value })
+                    }
                   >
                     {stages.map((stage) => (
                       <option key={stage.id} value={stage.id}>
@@ -797,7 +804,9 @@ function ResourceInspector({
                   <select
                     className={cn(INPUT, 'niuu-mt-0.5')}
                     value={binding.targetId}
-                    onChange={(e) => onUpdateResourceBinding(binding.id, { targetId: e.target.value })}
+                    onChange={(e) =>
+                      onUpdateResourceBinding(binding.id, { targetId: e.target.value })
+                    }
                   >
                     {personaIds.map((personaId) => (
                       <option key={personaId} value={personaId}>

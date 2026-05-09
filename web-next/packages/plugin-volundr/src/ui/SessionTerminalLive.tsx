@@ -219,9 +219,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
         setUnavailable(true);
         return;
       }
-      setTabs([
-        { id: created.terminalId, label: created.label || 'Terminal 1', cliType: 'shell' },
-      ]);
+      setTabs([{ id: created.terminalId, label: created.label || 'Terminal 1', cliType: 'shell' }]);
       setActiveTabId(created.terminalId);
     })();
   }, [httpBase]);

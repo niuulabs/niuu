@@ -170,7 +170,10 @@ describe('WorkflowBuilder', () => {
 
   it('shows the resource inspector when a Mimir resource node is selected', () => {
     render(
-      <WorkflowBuilder initialWorkflow={makeResourceWorkflow()} registryMounts={[REGISTRY_MOUNT]} />,
+      <WorkflowBuilder
+        initialWorkflow={makeResourceWorkflow()}
+        registryMounts={[REGISTRY_MOUNT]}
+      />,
     );
     fireEvent.mouseDown(screen.getByTestId('workflow-node-resource-1'));
     expect(screen.getByText('Registry mount')).toBeInTheDocument();

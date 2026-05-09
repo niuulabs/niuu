@@ -19,10 +19,7 @@ import type {
 } from '../../domain/workflow';
 import type { PersonaEntry } from './LibraryPanel';
 import { makeNodeId, makeEdgeId, defaultBezierCPs } from './graphUtils';
-import {
-  EPHEMERAL_LOCAL_MOUNT_ID,
-  type WorkflowRegistryMount,
-} from './mimirRegistry';
+import { EPHEMERAL_LOCAL_MOUNT_ID, type WorkflowRegistryMount } from './mimirRegistry';
 
 export type WorkflowView = 'graph' | 'pipeline' | 'yaml';
 

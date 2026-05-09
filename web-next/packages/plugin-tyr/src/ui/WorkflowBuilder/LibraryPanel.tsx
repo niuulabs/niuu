@@ -232,10 +232,7 @@ export function LibraryPanel({ personas, registryMounts = [] }: LibraryPanelProp
                   data-testid={`mimir-mount-${mount.id}`}
                   draggable
                   onDragStart={(e) => {
-                    e.dataTransfer.setData(
-                      MIMIR_MOUNT_MIME,
-                      serializeWorkflowRegistryMount(mount),
-                    );
+                    e.dataTransfer.setData(MIMIR_MOUNT_MIME, serializeWorkflowRegistryMount(mount));
                     e.dataTransfer.effectAllowed = 'copy';
                   }}
                   className={cn(

@@ -278,7 +278,8 @@ function StageNode({
         fontFamily="var(--font-mono)"
         className="niuu-pointer-events-none niuu-select-none"
       >
-        ACTOR STAGE · {(node.executionMode ?? 'parallel').toUpperCase()} · {stageMembers.length} RAVN
+        ACTOR STAGE · {(node.executionMode ?? 'parallel').toUpperCase()} · {stageMembers.length}{' '}
+        RAVN
         {stageMembers.length !== 1 ? 'S' : ''}
       </text>
       {stageMembers.map((member, index) => (

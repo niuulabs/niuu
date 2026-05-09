@@ -55,7 +55,9 @@ function wrap(service: Record<string, unknown>) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={{ 'ravn.personas': personaService, mimir: mimirService, ...service }}>
+        <ServicesProvider
+          services={{ 'ravn.personas': personaService, mimir: mimirService, ...service }}
+        >
           {children}
         </ServicesProvider>
       </QueryClientProvider>
