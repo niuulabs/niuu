@@ -66,6 +66,12 @@ spec:
               containerPort: {{ .Values.service.targetPort | default 8080 }}
               protocol: TCP
           env:
+            - name: HOST
+              value: {{ .Values.config.host | default "0.0.0.0" | quote }}
+            - name: PORT
+              value: {{ .Values.service.targetPort | default 8080 | quote }}
+            - name: WORKERS
+              value: {{ .Values.config.workers | default 4 | quote }}
             # Database secrets (override YAML config)
             - name: DATABASE__HOST
               value: {{ include "volundr.databaseHost" . | quote }}

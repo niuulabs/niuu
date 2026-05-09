@@ -902,29 +902,19 @@ class TestCliPersonaFlag:
         assert "--persona" in plain
 
     def test_persona_flag_accepted(self) -> None:
-        from collections.abc import AsyncIterator
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock
 
         from typer.testing import CliRunner
 
         from ravn.cli.commands import app
-        from ravn.domain.models import StreamEvent, StreamEventType, TokenUsage
-
-        async def _stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
-            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="done")
-            yield StreamEvent(
-                type=StreamEventType.MESSAGE_DONE,
-                usage=TokenUsage(input_tokens=5, output_tokens=3),
-            )
 
         runner = CliRunner()
-        with (
-            patch("ravn.adapters.llm.anthropic.AnthropicAdapter") as mock_cls,
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
-        ):
-            mock_adapter = MagicMock()
-            mock_adapter.stream = _stream
-            mock_cls.return_value = mock_adapter
-
+        mock_run = AsyncMock(return_value=None)
+        with patch("ravn.cli.commands._run_with_signals", mock_run):
             result = runner.invoke(app, ["run", "--persona", "coding-agent", "hello"])
+
         assert result.exit_code == 0
+        assert mock_run.await_count == 1
+        persona = mock_run.await_args.kwargs["persona_config"]
+        assert persona is not None
+        assert persona.name == "coding-agent"
