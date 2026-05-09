@@ -1279,7 +1279,7 @@ export function buildVolundrHttpAdapter(
     updateTrackerIssueStatus: (issueId, status) =>
       trackerClient.patch<TrackerIssue>(`/tracker/issues/${issueId}`, { status }),
 
-    getIdentity: () => sharedClient.get<VolundrIdentity>('/identity'),
+    getIdentity: () => sharedClient.get<VolundrIdentity>('/identity/me'),
     listUsers: () => client.get<VolundrUser[]>('/admin/users'),
 
     getTenants: () => client.get<VolundrTenant[]>('/tenants'),
@@ -1360,9 +1360,9 @@ export function buildVolundrHttpAdapter(
         { sessionIds },
       ),
 
-    getAdminSettings: () => client.get<AdminSettings>('/admin/settings'),
+    getAdminSettings: () => forgeClient.get<AdminSettings>('/admin/settings'),
     updateAdminSettings: (data: { storage?: AdminStorageSettings }) =>
-      client.patch<AdminSettings>('/admin/settings', data),
+      forgeClient.patch<AdminSettings>('/admin/settings', data),
 
     getFeatureModules: (scope?: FeatureScope) =>
       sharedClient.get<FeatureModule[]>(`/features/modules${scope ? `?scope=${scope}` : ''}`),

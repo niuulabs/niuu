@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.domain.models import Principal
 from volundr.domain.services.feature import FeatureModule, FeatureService, UserFeaturePreference
@@ -168,108 +167,6 @@ async def _update_preferences_response(
 
 
 def create_features_router(feature_service: FeatureService) -> APIRouter:
-    """Create the feature modules router."""
-    router = APIRouter(prefix="/api/v1/volundr", tags=["Features"])
-
-    @router.get("/features", response_model=list[FeatureModuleResponse])
-    @router.get("/features/modules", response_model=list[FeatureModuleResponse])
-    async def get_features(
-        request: Request,
-        response: Response,
-        scope: str | None = None,
-        principal: Principal = Depends(extract_principal),
-    ):
-        """Get the legacy feature catalog route."""
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path=request.url.path,
-                canonical_path="/api/v1/features/modules",
-            ),
-        )
-        return await _get_catalog_response(
-            feature_service=feature_service,
-            principal=principal,
-            scope=scope,
-        )
-
-    @router.put("/features/{key}/toggle", response_model=FeatureModuleResponse)
-    @router.post("/features/modules/{key}/toggle", response_model=FeatureModuleResponse)
-    async def toggle_feature(
-        request: Request,
-        response: Response,
-        key: str,
-        body: FeatureToggleRequest,
-        _: Principal = Depends(require_role("volundr:admin")),
-    ):
-        """Admin: enable or disable a feature globally via the legacy route."""
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path=request.url.path,
-                canonical_path=f"/api/v1/features/modules/{key}/toggle",
-            ),
-        )
-        return await _toggle_feature_response(
-            feature_service=feature_service,
-            key=key,
-            enabled=body.enabled,
-        )
-
-    @router.get(
-        "/features/preferences",
-        response_model=list[UserFeaturePreferenceResponse],
-    )
-    async def get_user_preferences(
-        request: Request,
-        response: Response,
-        principal: Principal = Depends(extract_principal),
-    ):
-        """Get the current user's preferences via the legacy route."""
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path="/api/v1/volundr/features/preferences",
-                canonical_path="/api/v1/features/preferences",
-            ),
-        )
-        return await _get_preferences_response(
-            feature_service=feature_service,
-            principal=principal,
-        )
-
-    @router.put(
-        "/features/preferences",
-        response_model=list[UserFeaturePreferenceResponse],
-    )
-    async def update_user_preferences(
-        request: Request,
-        response: Response,
-        body: FeaturePreferencesPayload,
-        principal: Principal = Depends(extract_principal),
-    ):
-        """Update the current user's preferences via the legacy route."""
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path="/api/v1/volundr/features/preferences",
-                canonical_path="/api/v1/features/preferences",
-            ),
-        )
-        return await _update_preferences_response(
-            feature_service=feature_service,
-            principal=principal,
-            body=body,
-        )
-
-    return router
-
-
-def create_feature_catalog_router(feature_service: FeatureService) -> APIRouter:
     """Create the canonical feature catalog router."""
     router = APIRouter(prefix="/api/v1/features", tags=["Features"])
 
@@ -330,3 +227,8 @@ def create_feature_catalog_router(feature_service: FeatureService) -> APIRouter:
         )
 
     return router
+
+
+def create_feature_catalog_router(feature_service: FeatureService) -> APIRouter:
+    """Backward-compatible alias for the canonical feature catalog router."""
+    return create_features_router(feature_service)

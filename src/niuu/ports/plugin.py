@@ -128,6 +128,15 @@ class ServicePlugin(ABC):
         """
         return None
 
+    def shared_api_app_key(self) -> str | None:
+        """Return a cache key for API apps intentionally shared across plugins.
+
+        Plugins that expose separate route domains from the same underlying
+        FastAPI app can return the same key so the host builds that app once
+        and reuses it for each plugin's mount prefixes.
+        """
+        return None
+
     def api_route_domains(self) -> Sequence[APIRouteDomain]:
         """Return declarative route-domain definitions for the API app."""
         return []

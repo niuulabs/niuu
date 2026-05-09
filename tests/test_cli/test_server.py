@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -90,15 +91,15 @@ class TestPrefixRestoreApp:
         async def fake_app(scope, receive, send):
             received_scope.update(scope)
 
-        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/volundr")
+        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/forge")
         scope = {
             "type": "http",
             "path": "/sessions",
             "raw_path": b"/sessions",
         }
         await wrapper(scope, AsyncMock(), AsyncMock())
-        assert received_scope["path"] == "/api/v1/volundr/sessions"
-        assert received_scope["raw_path"] == b"/api/v1/volundr/sessions"
+        assert received_scope["path"] == "/api/v1/forge/sessions"
+        assert received_scope["raw_path"] == b"/api/v1/forge/sessions"
 
     @pytest.mark.asyncio
     async def test_restores_websocket_path_prefix(self) -> None:
@@ -123,7 +124,7 @@ class TestPrefixRestoreApp:
         async def fake_app(scope, receive, send):
             received_scope.update(scope)
 
-        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/volundr")
+        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/forge")
         scope = {"type": "lifespan", "path": "/something"}
         await wrapper(scope, AsyncMock(), AsyncMock())
         # lifespan should not be modified
@@ -136,10 +137,10 @@ class TestPrefixRestoreApp:
         async def fake_app(scope, receive, send):
             received_scope.update(scope)
 
-        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/volundr")
+        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/forge")
         scope = {"type": "http", "path": "/sessions"}
         await wrapper(scope, AsyncMock(), AsyncMock())
-        assert received_scope["path"] == "/api/v1/volundr/sessions"
+        assert received_scope["path"] == "/api/v1/forge/sessions"
         assert "raw_path" not in received_scope or received_scope.get("raw_path") is None
 
 
@@ -209,7 +210,9 @@ class TestRouteDomainSelection:
             "settings-api",
             "tenancy-api",
             "tracker-api",
+            "tracker-project-api",
             "tokens-api",
+            "tyr-integrations-api",
             "workflow-api",
             "workspace-api",
             "tyr-api",
@@ -568,6 +571,76 @@ class TestRootServerBuildApp:
         assert resp.status_code == 200
         assert resp.json() == {"pong": True}
 
+    def test_reuses_shared_api_app_across_plugins(self) -> None:
+        """Plugins with the same shared_api_app_key reuse one hosted app instance."""
+        build_calls = 0
+        started = 0
+        stopped = 0
+
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            nonlocal started, stopped
+            started += 1
+            yield
+            stopped += 1
+
+        sub_app = FastAPI(lifespan=lifespan)
+
+        @sub_app.get("/api/v1/forge/ping")
+        async def forge_ping():
+            return {"pong": "forge"}
+
+        @sub_app.get("/api/v1/features/ping")
+        async def features_ping():
+            return {"pong": "features"}
+
+        class SharedVolundrPlugin(FakePlugin):
+            def create_api_app(self):
+                nonlocal build_calls
+                build_calls += 1
+                return sub_app
+
+            def shared_api_app_key(self):
+                return "volundr"
+
+        class VolundrPlugin(SharedVolundrPlugin):
+            def api_route_domains(self):
+                return (
+                    APIRouteDomain(
+                        name="forge-api",
+                        prefixes=("/api/v1/forge",),
+                    ),
+                )
+
+        class FeaturesPlugin(SharedVolundrPlugin):
+            def api_route_domains(self):
+                return (
+                    APIRouteDomain(
+                        name="features-api",
+                        prefixes=("/api/v1/features",),
+                    ),
+                )
+
+        registry = PluginRegistry()
+        registry.register(VolundrPlugin(name="volundr"))
+        registry.register(FeaturesPlugin(name="features"))
+
+        app = build_root_app(
+            registry=registry,
+            host="127.0.0.1",
+            port=8080,
+            enabled_mounts={"forge-api", "features-api"},
+        )
+
+        assert build_calls == 1
+
+        with TestClient(app) as client:
+            assert client.get("/api/v1/forge/ping").status_code == 200
+            assert client.get("/api/v1/features/ping").status_code == 200
+
+        assert started == 1
+        assert stopped == 1
+
     def test_build_root_app_with_explicit_mounts_only_exposes_selected_routes(self) -> None:
         niuu_app = FastAPI()
 
@@ -577,7 +650,7 @@ class TestRootServerBuildApp:
 
         volundr_app = FastAPI()
 
-        @volundr_app.get("/api/v1/volundr/ping")
+        @volundr_app.get("/api/v1/forge/ping")
         async def volundr_ping():
             return {"pong": "volundr"}
 
@@ -616,7 +689,7 @@ class TestRootServerBuildApp:
             ),
         )
         assert client.get("/api/v1/niuu/ping").status_code == 200
-        assert client.get("/api/v1/volundr/ping").status_code == 404
+        assert client.get("/api/v1/forge/ping").status_code == 404
 
     def test_build_root_app_hides_legacy_route_usage_even_when_niuu_api_is_mounted(self) -> None:
         registry = PluginRegistry()
@@ -627,8 +700,8 @@ class TestRootServerBuildApp:
             enabled_mounts={"niuu-api"},
         )
         app.state.legacy_route_hits = {
-            ("/api/v1/volundr/me", "/api/v1/identity/me", "GET"): 3,
-            ("/api/v1/volundr/users", "/api/v1/volundr/admin/users", "GET"): 1,
+            ("/api/v1/legacy/me", "/api/v1/identity/me", "GET"): 3,
+            ("/api/v1/legacy/users", "/api/v1/identity/users", "GET"): 1,
         }
 
         client = TestClient(app)
@@ -644,7 +717,7 @@ class TestRootServerBuildApp:
             enabled_mounts={"niuu-api"},
         )
         app.state.legacy_route_hits = {
-            ("/api/v1/volundr/me", "/api/v1/identity/me", "GET"): 2,
+            ("/api/v1/legacy/me", "/api/v1/identity/me", "GET"): 2,
         }
 
         client = TestClient(app)
@@ -652,7 +725,7 @@ class TestRootServerBuildApp:
 
         assert response.status_code == 404
         assert app.state.legacy_route_hits == {
-            ("/api/v1/volundr/me", "/api/v1/identity/me", "GET"): 2,
+            ("/api/v1/legacy/me", "/api/v1/identity/me", "GET"): 2,
         }
 
     def test_build_root_app_hides_legacy_route_usage_when_niuu_api_not_mounted(self) -> None:
@@ -676,7 +749,7 @@ class TestRootServerBuildApp:
         async def tracker_issues():
             return [{"id": "issue-1"}]
 
-        @volundr_app.get("/api/v1/volundr/ping")
+        @volundr_app.get("/api/v1/forge/ping")
         async def volundr_ping():
             return {"pong": "volundr"}
 
@@ -728,7 +801,7 @@ class TestRootServerBuildApp:
         client = TestClient(app)
         assert client.get("/api/v1/tracker/issues").status_code == 200
         assert client.get("/api/v1/tracker/projects").status_code == 200
-        assert client.get("/api/v1/volundr/ping").status_code == 404
+        assert client.get("/api/v1/forge/ping").status_code == 404
         assert client.get("/api/v1/tyr/ping").status_code == 404
         assert client.get("/config.json").status_code == 404
         assert client.get("/s/example/health").status_code == 404
@@ -798,11 +871,11 @@ class TestRootServerBuildApp:
     def test_build_root_app_can_mount_admin_slice_without_tenancy(self) -> None:
         volundr_app = FastAPI()
 
-        @volundr_app.get("/api/v1/volundr/admin/ping")
+        @volundr_app.get("/api/v1/forge/admin/ping")
         async def admin_ping():
             return {"pong": "admin"}
 
-        @volundr_app.get("/api/v1/volundr/tenants/ping")
+        @volundr_app.get("/api/v1/identity/tenants/ping")
         async def tenant_ping():
             return {"pong": "tenant"}
 
@@ -814,11 +887,11 @@ class TestRootServerBuildApp:
                 return (
                     APIRouteDomain(
                         name="admin-api",
-                        prefixes=("/api/v1/volundr/admin",),
+                        prefixes=("/api/v1/forge/admin",),
                     ),
                     APIRouteDomain(
                         name="tenancy-api",
-                        prefixes=("/api/v1/volundr/tenants",),
+                        prefixes=("/api/v1/identity/tenants",),
                     ),
                 )
 
@@ -833,8 +906,8 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/volundr/admin/ping").status_code == 200
-        assert client.get("/api/v1/volundr/tenants/ping").status_code == 404
+        assert client.get("/api/v1/forge/admin/ping").status_code == 200
+        assert client.get("/api/v1/identity/tenants/ping").status_code == 404
 
     def test_build_root_app_can_mount_session_slice_without_workspace_slice(self) -> None:
         volundr_app = FastAPI()
@@ -889,10 +962,6 @@ class TestRootServerBuildApp:
         assert client.get("/api/v1/forge/sessions/ping").status_code == 200
         assert client.get("/api/v1/forge/chronicles/ping").status_code == 200
         assert client.get("/api/v1/forge/events/ping").status_code == 200
-        assert client.get("/api/v1/volundr/sessions/ping").status_code == 404
-        assert client.get("/api/v1/volundr/chronicles/ping").status_code == 404
-        assert client.get("/api/v1/volundr/events/ping").status_code == 404
-        assert client.get("/api/v1/volundr/workspaces/ping").status_code == 404
         assert client.get("/api/v1/forge/workspaces/ping").status_code == 404
 
     def test_build_root_app_can_mount_forge_slice_with_canonical_aliases(self) -> None:
@@ -940,7 +1009,7 @@ class TestRootServerBuildApp:
         assert client.get("/api/v1/forge/templates/ping").status_code == 200
         assert client.get("/api/v1/forge/stats").json() == {"sessions": 3}
         assert client.get("/api/v1/forge/models").status_code == 200
-        assert client.get("/api/v1/volundr/templates/ping").status_code == 404
+        assert client.get("/api/v1/forge/sessions/ping").status_code == 404
 
     def test_build_root_app_can_mount_saga_slice_without_dispatch_slice(self) -> None:
         tyr_app = FastAPI()
@@ -1024,30 +1093,26 @@ class TestRootServerBuildApp:
         assert client.get("/api/v1/tyr/raids/ping").status_code == 200
         assert client.get("/api/v1/tyr/sagas/ping").status_code == 404
 
-    def test_build_root_app_can_mount_credentials_slice_with_legacy_shims(self) -> None:
+    def test_build_root_app_can_mount_credentials_slice(self) -> None:
         volundr_app = FastAPI()
 
         @volundr_app.get("/api/v1/credentials/user")
         async def canonical_credentials():
             return {"route": "canonical-credentials"}
 
-        @volundr_app.get("/api/v1/volundr/credentials")
-        async def legacy_credentials():
-            return {"route": "legacy-credentials"}
+        @volundr_app.get("/api/v1/credentials/secrets")
+        async def secrets():
+            return {"route": "secrets"}
 
-        @volundr_app.get("/api/v1/volundr/secrets")
-        async def legacy_secrets():
-            return {"route": "legacy-secrets"}
-
-        @volundr_app.get("/api/v1/volundr/secrets/store")
+        @volundr_app.get("/api/v1/credentials/secrets/store")
         async def legacy_secret_store():
             return {"route": "legacy-secret-store"}
 
-        @volundr_app.get("/api/v1/volundr/secrets/types")
+        @volundr_app.get("/api/v1/credentials/secrets/types")
         async def legacy_secret_types():
             return {"route": "legacy-secret-types"}
 
-        @volundr_app.get("/api/v1/volundr/sessions")
+        @volundr_app.get("/api/v1/forge/sessions")
         async def unrelated_sessions():
             return {"route": "sessions"}
 
@@ -1059,15 +1124,11 @@ class TestRootServerBuildApp:
                 return (
                     APIRouteDomain(
                         name="credentials-api",
-                        prefixes=(
-                            "/api/v1/credentials",
-                            "/api/v1/volundr/credentials",
-                            "/api/v1/volundr/secrets",
-                        ),
+                        prefixes=("/api/v1/credentials",),
                     ),
                     APIRouteDomain(
                         name="session-api",
-                        prefixes=("/api/v1/volundr/sessions",),
+                        prefixes=("/api/v1/forge/sessions",),
                     ),
                 )
 
@@ -1083,28 +1144,23 @@ class TestRootServerBuildApp:
 
         client = TestClient(app)
         assert client.get("/api/v1/credentials/user").status_code == 200
-        assert client.get("/api/v1/volundr/credentials").status_code == 200
-        assert client.get("/api/v1/volundr/secrets").status_code == 200
-        assert client.get("/api/v1/volundr/secrets/store").status_code == 200
-        assert client.get("/api/v1/volundr/secrets/types").status_code == 200
-        assert client.get("/api/v1/volundr/sessions").status_code == 404
+        assert client.get("/api/v1/credentials/secrets").status_code == 200
+        assert client.get("/api/v1/credentials/secrets/store").status_code == 200
+        assert client.get("/api/v1/credentials/secrets/types").status_code == 200
+        assert client.get("/api/v1/forge/sessions").status_code == 404
 
-    def test_build_root_app_can_mount_integrations_slice_with_legacy_shims(self) -> None:
+    def test_build_root_app_can_mount_integrations_slice(self) -> None:
         volundr_app = FastAPI()
 
         @volundr_app.get("/api/v1/integrations")
         async def canonical_integrations():
             return {"route": "canonical-integrations"}
 
-        @volundr_app.get("/api/v1/volundr/integrations")
-        async def legacy_integrations():
-            return {"route": "legacy-integrations"}
-
-        @volundr_app.get("/api/v1/volundr/integrations/oauth/linear/start")
+        @volundr_app.get("/api/v1/integrations/oauth/linear/start")
         async def legacy_oauth_start():
             return {"route": "legacy-oauth-start"}
 
-        @volundr_app.get("/api/v1/volundr/repos")
+        @volundr_app.get("/api/v1/forge/repos")
         async def unrelated_repos():
             return {"route": "repos"}
 
@@ -1116,10 +1172,7 @@ class TestRootServerBuildApp:
                 return (
                     APIRouteDomain(
                         name="integrations-api",
-                        prefixes=(
-                            "/api/v1/integrations",
-                            "/api/v1/volundr/integrations",
-                        ),
+                        prefixes=("/api/v1/integrations",),
                     ),
                 )
 
@@ -1135,9 +1188,8 @@ class TestRootServerBuildApp:
 
         client = TestClient(app)
         assert client.get("/api/v1/integrations").status_code == 200
-        assert client.get("/api/v1/volundr/integrations").status_code == 200
-        assert client.get("/api/v1/volundr/integrations/oauth/linear/start").status_code == 200
-        assert client.get("/api/v1/volundr/repos").status_code == 404
+        assert client.get("/api/v1/integrations/oauth/linear/start").status_code == 200
+        assert client.get("/api/v1/forge/repos").status_code == 404
 
     def test_build_root_app_can_mount_tyr_settings_without_workflow_routes(self) -> None:
         tyr_app = FastAPI()
@@ -1340,7 +1392,6 @@ class TestRootServerBuildApp:
         paths = response.json()["paths"]
         assert "/health" in paths
         assert "/api/v1/forge/sessions" in paths
-        assert "/api/v1/volundr/sessions" not in paths
         assert "/api/v1/mimir/stats" in paths
 
     def test_plugin_create_api_app_returns_none(self) -> None:
@@ -1658,7 +1709,7 @@ class TestRootServerLifespan:
 
         sub_app = FastAPI(lifespan=broken_lifespan)
 
-        @sub_app.get("/api/v1/volundr/ping")
+        @sub_app.get("/api/v1/forge/ping")
         async def ping():
             return {"pong": True}
 

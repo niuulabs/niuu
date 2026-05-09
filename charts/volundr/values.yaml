@@ -88,11 +88,17 @@ image:
   # -- Container registry
   registry: ghcr.io
   # -- Image repository
-  repository: niuulabs/volundr
+  repository: niuulabs/niuu
   # -- Image tag (defaults to Chart.appVersion)
   tag: ""
   # -- Image pull policy
   pullPolicy: Always
+
+# -- Override container command. Defaults to the unified niuu image running the Volundr API.
+command:
+  - volundr
+# -- Additional container args.
+args: []
 
 # Service Account
 serviceAccount:
@@ -511,7 +517,7 @@ envoy:
     # -- Path prefixes that bypass JWT validation (no auth required)
     # Rules are evaluated in order; matching prefixes skip the JWT check.
     bypassPrefixes:
-      - /api/v1/forge/auth/config
+      - /api/v1/identity/auth/config
       - /health
   # -- Extra HTTP filters (inserted before the router filter)
   extraHttpFilters: []

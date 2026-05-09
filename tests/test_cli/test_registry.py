@@ -141,6 +141,10 @@ class TestServicePlugin:
         plugin = FakePlugin()
         assert plugin.api_route_domains() == []
 
+    def test_default_shared_api_app_key(self) -> None:
+        plugin = FakePlugin()
+        assert plugin.shared_api_app_key() is None
+
     def test_custom_deps(self) -> None:
         plugin = FakePlugin(deps=["a", "b"])
         assert list(plugin.depends_on()) == ["a", "b"]

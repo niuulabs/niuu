@@ -671,7 +671,7 @@ class TestSpawnPlanSession:
         mock_volundr.list_integration_ids.return_value = []
         mock_volundr.spawn_session.return_value = MagicMock(
             id="plan-1",
-            chat_endpoint="/api/v1/volundr/sessions/plan-1/messages",
+            chat_endpoint="/api/v1/forge/sessions/plan-1/messages",
         )
         app.dependency_overrides[resolve_volundr] = lambda: mock_volundr
         settings = _dev_settings()
@@ -689,7 +689,7 @@ class TestSpawnPlanSession:
         assert resp.status_code == 201
         assert resp.json() == {
             "session_id": "plan-1",
-            "chat_endpoint": "/api/v1/volundr/sessions/plan-1/messages",
+            "chat_endpoint": "/api/v1/forge/sessions/plan-1/messages",
         }
         spawn_request = mock_volundr.spawn_session.await_args.args[0]
         assert spawn_request.base_branch == "main"

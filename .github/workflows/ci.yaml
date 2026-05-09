@@ -65,19 +65,15 @@ jobs:
           # and the lockfiles; the frontend images depend on their app trees.
           PY_SRC='^(src/|pyproject\.toml$|uv\.lock$)'
           declare -A TRIGGER=(
-            [volundr]="^containers/volundr/|${PY_SRC}"
             [skuld]="^containers/skuld/|${PY_SRC}"
-            [tyr]="^containers/tyr/|${PY_SRC}"
             [niuu]="^containers/niuu/|${PY_SRC}"
-            [bifrost]="^containers/bifrost/|${PY_SRC}"
-            [mimir]="^containers/mimir/|${PY_SRC}"
             [volundr-web]='^containers/volundr-web/|^web-next/'
             [niuu-web]='^containers/niuu-web/|^web-next/'
             [devrunner]='^containers/devrunner/'
           )
 
           NAMES=()
-          for NAME in volundr skuld devrunner volundr-web niuu-web tyr niuu mimir bifrost; do
+          for NAME in skuld devrunner volundr-web niuu-web niuu; do
             if match "${TRIGGER[$NAME]}"; then
               NAMES+=("\"${NAME}\"")
             fi
@@ -530,7 +526,7 @@ jobs:
       - name: Load PR container images into kind
         run: |
           PR_TAG="pr-${{ github.event.number }}"
-          for CONTAINER in volundr tyr skuld; do
+          for CONTAINER in niuu skuld; do
             IMAGE="ghcr.io/${{ github.repository_owner }}/${CONTAINER}:${PR_TAG}"
             if docker pull "${IMAGE}"; then
               kind load docker-image "${IMAGE}" --name ci-test

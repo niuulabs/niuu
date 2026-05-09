@@ -3,51 +3,45 @@
 import asyncio
 import logging
 import os
-import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from importlib.metadata import metadata
-from typing import Any
-from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import FastAPI
 
 from niuu.cors import apply_cors_middleware
+from niuu.service_database import database_pool
+from niuu.service_integrations import (
+    has_seeded_linear_integration as _has_seeded_linear_integration,
+)
+from niuu.service_integrations import (
+    seed_configured_integrations as _seed_configured_integrations,
+)
+from niuu.service_integrations import seed_linear_integration as _seed_linear_integration
+from niuu.service_runtime import (
+    configure_logging,
+)
+from niuu.service_runtime import (
+    create_credential_store as _create_credential_store,
+)
+from niuu.service_runtime import create_identity_adapter as _create_identity_adapter
+from niuu.service_runtime import create_pat_validator as _create_pat_validator
+from niuu.service_runtime import create_storage_adapter as _create_storage_adapter
+from niuu.service_runtime import release_credential_store as _release_credential_store
+from niuu.service_settings import Settings
+from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
-from volundr.adapters.inbound.rest_audit import create_canonical_audit_router
-from volundr.adapters.inbound.rest_credentials import (
-    create_canonical_credentials_router,
-)
 from volundr.adapters.inbound.rest_events import create_events_router
-from volundr.adapters.inbound.rest_features import (
-    create_feature_catalog_router,
-)
 from volundr.adapters.inbound.rest_git import create_git_router
-from volundr.adapters.inbound.rest_integrations import (
-    create_canonical_integrations_router,
-)
-from volundr.adapters.inbound.rest_issues import (
-    create_canonical_issues_router,
-)
-from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_presets import create_presets_router
 from volundr.adapters.inbound.rest_profiles import create_profiles_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
-from volundr.adapters.inbound.rest_secrets import (
-    create_canonical_secrets_router,
-)
-from volundr.adapters.inbound.rest_tenants import create_identity_router, create_tenants_router
-from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
-from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.config_profiles import ConfigProfileProvider
 from volundr.adapters.outbound.config_templates import ConfigTemplateProvider
 from volundr.adapters.outbound.git_registry import create_git_registry
-from volundr.adapters.outbound.linear import LinearAdapter
-from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
 from volundr.adapters.outbound.postgres_chronicles import PostgresChronicleRepository
@@ -58,7 +52,6 @@ from volundr.adapters.outbound.postgres_communication_routes import (
     PostgresCommunicationRouteRepository,
 )
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
-from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_presets import PostgresPresetRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
@@ -68,7 +61,6 @@ from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
-from volundr.config import LoggingConfig, Settings
 from volundr.domain.ports import SessionContributor
 from volundr.domain.services import (
     ChronicleService,
@@ -80,17 +72,13 @@ from volundr.domain.services import (
     StatsService,
     TenantService,
     TokenService,
-    TrackerService,
 )
 from volundr.domain.services.communication_ingress import CommunicationIngressService
 from volundr.domain.services.event_ingestion import EventIngestionService
-from volundr.domain.services.feature import FeatureService
 from volundr.domain.services.profile import ForgeProfileService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.template import WorkspaceTemplateService
 from volundr.domain.services.workspace import WorkspaceService
-from volundr.infrastructure.database import database_pool
-from volundr.utils import import_class
 
 # Interval for periodic stats and heartbeat broadcasts (seconds)
 BROADCAST_INTERVAL = 30
@@ -98,94 +86,13 @@ BROADCAST_INTERVAL = 30
 logger = logging.getLogger(__name__)
 
 
-def configure_logging(config: LoggingConfig | None = None) -> None:
-    """Configure logging from settings.
-
-    Args:
-        config: Logging configuration. If None, uses defaults from
-            LoggingConfig which reads from LOG_LEVEL and LOG_FORMAT
-            environment variables.
-    """
-    if config is None:
-        config = LoggingConfig()
-
-    level_name = config.level.upper()
-    log_format = config.format.lower()
-
-    # Map level name to logging constant
-    level = getattr(logging, level_name, logging.INFO)
-
-    # Choose format based on config
-    if log_format == "json":
-        # Simple JSON-ish format for structured logging
-        fmt = (
-            '{"time":"%(asctime)s","level":"%(levelname)s",'
-            '"logger":"%(name)s","message":"%(message)s"}'
-        )
-    else:
-        fmt = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-    # Configure root logger — set level directly to avoid uvicorn overriding
-    logging.basicConfig(
-        level=level,
-        format=fmt,
-        stream=sys.stderr,
-        force=True,
-    )
-    logging.getLogger().setLevel(level)
-
-    logging.getLogger(__name__).info(
-        "Logging configured: level=%s, format=%s",
-        level_name,
-        log_format,
-    )
-
-
-def _resolve_secret_kwargs(
-    kwargs: dict[str, Any],
-    secret_kwargs_env: dict[str, str],
-) -> dict[str, Any]:
-    """Merge secret kwargs from environment variables into adapter kwargs.
-
-    secret_kwargs_env maps kwarg names to env var names. Values from env
-    vars override any same-named keys already in kwargs.
-    """
-    if not secret_kwargs_env:
-        return kwargs
-    resolved = dict(kwargs)
-    for kwarg_name, env_var in secret_kwargs_env.items():
-        value = os.environ.get(env_var)
-        if value is not None:
-            resolved[kwarg_name] = value
-    return resolved
-
-
 def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
     """Create the PodManager adapter from dynamic config."""
     pm_cfg = settings.pod_manager
     cls = import_class(pm_cfg.adapter)
-    kwargs = _resolve_secret_kwargs(pm_cfg.kwargs, pm_cfg.secret_kwargs_env)
+    kwargs = resolve_secret_kwargs(pm_cfg.kwargs, pm_cfg.secret_kwargs_env)
     instance = cls(**kwargs)
     logger.info("Pod manager: %s", pm_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
-
-
-def _create_identity_adapter(
-    settings: Settings,
-    user_repository,
-    storage=None,
-) -> "IdentityPort":  # noqa: F821
-    """Create the IdentityPort adapter from dynamic config."""
-    id_cfg = settings.identity
-    kwargs = _resolve_secret_kwargs(id_cfg.kwargs, id_cfg.secret_kwargs_env)
-    kwargs = dict(kwargs)
-    kwargs["user_repository"] = user_repository
-    kwargs["role_mapping"] = settings.identity.role_mapping
-    if storage is not None:
-        kwargs["storage"] = storage
-    cls = import_class(id_cfg.adapter)
-    instance = cls(**kwargs)
-    logger.info("Identity adapter: %s", id_cfg.adapter.rsplit(".", 1)[-1])
     return instance
 
 
@@ -193,19 +100,9 @@ def _create_authorization_adapter(settings: Settings) -> "AuthorizationPort":  #
     """Create the AuthorizationPort adapter from dynamic config."""
     az_cfg = settings.authorization
     cls = import_class(az_cfg.adapter)
-    kwargs = _resolve_secret_kwargs(az_cfg.kwargs, az_cfg.secret_kwargs_env)
+    kwargs = resolve_secret_kwargs(az_cfg.kwargs, az_cfg.secret_kwargs_env)
     instance = cls(**kwargs)
     logger.info("Authorization adapter: %s", az_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
-
-
-def _create_credential_store(settings: Settings) -> "CredentialStorePort":  # noqa: F821
-    """Create the CredentialStorePort adapter from dynamic config."""
-    cs_cfg = settings.credential_store
-    cls = import_class(cs_cfg.adapter)
-    kwargs = _resolve_secret_kwargs(cs_cfg.kwargs, cs_cfg.secret_kwargs_env)
-    instance = cls(**kwargs)
-    logger.info("Credential store: %s", cs_cfg.adapter.rsplit(".", 1)[-1])
     return instance
 
 
@@ -213,7 +110,7 @@ def _create_gateway_adapter(settings: Settings) -> "GatewayPort":  # noqa: F821
     """Create the GatewayPort adapter from dynamic config."""
     gw_cfg = settings.gateway
     cls = import_class(gw_cfg.adapter)
-    kwargs = _resolve_secret_kwargs(gw_cfg.kwargs, gw_cfg.secret_kwargs_env)
+    kwargs = resolve_secret_kwargs(gw_cfg.kwargs, gw_cfg.secret_kwargs_env)
     instance = cls(**kwargs)
     logger.info("Gateway adapter: %s", gw_cfg.adapter.rsplit(".", 1)[-1])
     return instance
@@ -223,7 +120,7 @@ def _create_secret_injection_adapter(settings: Settings) -> "SecretInjectionPort
     """Create the SecretInjectionPort adapter from dynamic config."""
     si_cfg = settings.secret_injection
     cls = import_class(si_cfg.adapter)
-    kwargs = _resolve_secret_kwargs(si_cfg.kwargs, si_cfg.secret_kwargs_env)
+    kwargs = resolve_secret_kwargs(si_cfg.kwargs, si_cfg.secret_kwargs_env)
     instance = cls(**kwargs)
     logger.info("Secret injection: %s", si_cfg.adapter.rsplit(".", 1)[-1])
     return instance
@@ -233,19 +130,9 @@ def _create_resource_provider(settings: Settings) -> "ResourceProvider":  # noqa
     """Create the ResourceProvider adapter from dynamic config."""
     rp_cfg = settings.resource_provider
     cls = import_class(rp_cfg.adapter)
-    kwargs = _resolve_secret_kwargs(rp_cfg.kwargs, rp_cfg.secret_kwargs_env)
+    kwargs = resolve_secret_kwargs(rp_cfg.kwargs, rp_cfg.secret_kwargs_env)
     instance = cls(**kwargs)
     logger.info("Resource provider: %s", rp_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
-
-
-def _create_storage_adapter(settings: Settings) -> "StoragePort":  # noqa: F821
-    """Create the StoragePort adapter from dynamic config."""
-    st_cfg = settings.storage
-    cls = import_class(st_cfg.adapter)
-    kwargs = _resolve_secret_kwargs(st_cfg.kwargs, st_cfg.secret_kwargs_env)
-    instance = cls(**kwargs)
-    logger.info("Storage adapter: %s", st_cfg.adapter.rsplit(".", 1)[-1])
     return instance
 
 
@@ -285,7 +172,7 @@ def _create_contributors(
 
     for cfg in settings.session_contributors:
         cls = import_class(cfg.adapter)
-        resolved_kwargs = _resolve_secret_kwargs(cfg.kwargs, cfg.secret_kwargs_env)
+        resolved_kwargs = resolve_secret_kwargs(cfg.kwargs, cfg.secret_kwargs_env)
         kwargs = {**resolved_kwargs, **ports}
         instance = cls(**kwargs)
         contributors.append(instance)
@@ -418,119 +305,6 @@ def _create_otel_providers(otel_cfg):  # pragma: no cover
     )
 
     return tracer_provider, meter_provider
-
-
-async def _seed_linear_integration(
-    integration_repo: object,
-    credential_store: object,
-    api_key: str,
-) -> None:
-    """Seed Linear integration from config into the DB.
-
-    Idempotent — uses a fixed ID so repeated calls update the same row.
-    This lets the integration-based /issues/search endpoint find Linear
-    without manual UI setup.
-    """
-    from niuu.domain.models import IntegrationConnection, IntegrationType, SecretType
-
-    owner_id = "dev-user"
-    cred_name = "linear-config"
-
-    await credential_store.store(
-        owner_type="user",
-        owner_id=owner_id,
-        name=cred_name,
-        secret_type=SecretType.API_KEY,
-        data={"api_key": api_key},
-    )
-
-    connection = IntegrationConnection(
-        id="f976d725-2a19-558a-a2d0-99258577f615",
-        owner_id=owner_id,
-        integration_type=IntegrationType.ISSUE_TRACKER,
-        adapter="volundr.adapters.outbound.linear.LinearAdapter",
-        credential_name=cred_name,
-        config={},
-        enabled=True,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
-        slug="linear",
-    )
-    await integration_repo.save_connection(connection)
-
-
-def _seeded_integration_connection_id(
-    *,
-    owner_type: str,
-    owner_id: str,
-    integration_type: str,
-    adapter: str,
-    credential_name: str,
-    slug: str,
-) -> str:
-    """Return a stable UUID for a config-seeded integration connection."""
-    value = (
-        f"volundr:integration-seed:{owner_type}:{owner_id}:{integration_type}:"
-        f"{adapter}:{credential_name}:{slug}"
-    )
-    return str(uuid5(NAMESPACE_URL, value))
-
-
-async def _seed_configured_integrations(
-    integration_repo: object,
-    credential_store: object,
-    settings: Settings,
-) -> None:
-    """Seed configured integration connections into storage at startup."""
-    from niuu.domain.models import IntegrationConnection
-
-    for seed in settings.integrations.seed_connections:
-        if seed.credential is not None:
-            await credential_store.store(
-                owner_type=seed.owner_type,
-                owner_id=seed.owner_id,
-                name=seed.credential_name,
-                secret_type=seed.credential.secret_type,
-                data=seed.credential.data,
-                metadata=seed.credential.metadata,
-            )
-
-        connection = IntegrationConnection(
-            id=seed.id
-            or _seeded_integration_connection_id(
-                owner_type=seed.owner_type,
-                owner_id=seed.owner_id,
-                integration_type=str(seed.integration_type),
-                adapter=seed.adapter,
-                credential_name=seed.credential_name,
-                slug=seed.slug,
-            ),
-            owner_id=seed.owner_id,
-            integration_type=seed.integration_type,
-            adapter=seed.adapter,
-            credential_name=seed.credential_name,
-            config=seed.config,
-            enabled=seed.enabled,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-            slug=seed.slug,
-        )
-        await integration_repo.save_connection(connection)
-
-
-def _has_seeded_linear_integration(settings: Settings) -> bool:
-    """Return whether config already seeds a Linear issue-tracker connection."""
-    from niuu.domain.models import IntegrationType
-
-    for seed in settings.integrations.seed_connections:
-        if seed.integration_type != IntegrationType.ISSUE_TRACKER:
-            continue
-        if seed.slug == "linear":
-            return True
-        if seed.adapter == "volundr.adapters.outbound.linear.LinearAdapter":
-            return True
-    return False
-
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create and configure the FastAPI application.
@@ -698,7 +472,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             secret_injection = _create_secret_injection_adapter(settings)
 
             # Credential store (pluggable: memory, Vault, Infisical)
-            from volundr.domain.services.credential import CredentialService
             from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 
             credential_store = _create_credential_store(settings)
@@ -836,12 +609,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.include_router(resources_router)
             app.state.resource_provider = resource_provider
 
-            # MCP servers and secrets
-            mcp_provider = ConfigMCPServerProvider(settings.mcp_servers)
-            secret_manager = InMemorySecretManager()
-            canonical_secrets_router = create_canonical_secrets_router(mcp_provider, secret_manager)
-            app.include_router(canonical_secrets_router)
-
             # Saved prompts
             prompt_repository = PostgresPromptRepository(pool)
             prompt_service = PromptService(prompt_repository)
@@ -860,38 +627,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             app.include_router(presets_router)
 
-            # Personal access tokens
             from volundr.adapters.outbound.postgres_pats import PostgresPATRepository
-            from volundr.domain.services.pat import PATService
 
             pat_repository = PostgresPATRepository(pool)
-
-            from niuu.domain.services.pat_validator import PATValidator
-
-            pat_validator = PATValidator(
-                repo=pat_repository,
-                cache_ttl=settings.pat.revocation_cache_ttl,
-                revoked_cache_ttl=settings.pat.revoked_cache_ttl,
-            )
+            pat_validator = _create_pat_validator(settings, pat_repository)
             app.state.pat_validator = pat_validator
-
-            # Resolve the token issuer (IDP adapter) via dynamic import
-            token_issuer_cls = import_class(settings.pat.token_issuer_adapter)
-            token_issuer = token_issuer_cls(**settings.pat.token_issuer_kwargs)
-
-            pat_service = PATService(
-                repo=pat_repository,
-                token_issuer=token_issuer,
-                ttl_days=settings.pat.ttl_days,
-                validator=pat_validator,
-            )
-            app.state.pat_service = pat_service
-
-            from volundr.adapters.inbound.auth import extract_principal as _extract_principal
-            from volundr.adapters.inbound.rest_pats import create_pats_router
-
-            tokens_router = create_pats_router(_extract_principal, prefix="/api/v1/tokens")
-            app.include_router(tokens_router)
 
             git_router = create_git_router(
                 git_workflow_service,
@@ -914,57 +654,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.include_router(local_git_router)
             app.state.local_git_service = local_git_service
 
-            # Tenant and identity management
-            identity_router = create_identity_router(tenant_service)
-            app.include_router(identity_router)
-            tenants_router = create_tenants_router(tenant_service)
-            app.include_router(tenants_router)
-
             # Admin settings (config-driven, runtime-toggleable)
             admin_settings_router = create_admin_settings_router()
             app.include_router(admin_settings_router)
 
-            # Feature module system (config-driven, DB-persisted toggles)
-            # In mini mode, disable modules that require container infrastructure
-            feature_configs = list(settings.features)
-            if settings.local_mounts.mini_mode:
-                _mini_disabled = {"terminal", "code"}
-                for fc in feature_configs:
-                    if fc.key in _mini_disabled:
-                        fc.default_enabled = False
-            feature_service = FeatureService(pool, feature_configs)
-            feature_catalog_router = create_feature_catalog_router(feature_service)
-            app.include_router(feature_catalog_router)
-            app.state.feature_service = feature_service
-
-            # Credential management (reuses credential_store created above)
-            credential_service = CredentialService(
-                store=credential_store,
-                strategies=SecretMountStrategyRegistry(),
-            )
-            canonical_credentials_router = create_canonical_credentials_router(
-                credential_service,
-            )
-            app.include_router(canonical_credentials_router)
-
             # Workspace management — PVCs are the source of truth
             workspace_service = WorkspaceService(storage_adapter)
             app.state.workspace_service = workspace_service
-
-            # Integration tracker factory (reuses credential_store created above)
-            from volundr.domain.services.tracker_factory import TrackerFactory
-
-            tracker_factory = TrackerFactory(credential_store)
-            mapping_repository = PostgresMappingRepository(pool)
-            default_tracker = None
-            if settings.linear.enabled and settings.linear.api_key:
-                default_tracker = LinearAdapter(api_key=settings.linear.api_key)
-            tracker_service = TrackerService(
-                default_tracker,
-                mapping_repository,
-                integration_repo=integration_repo,
-                tracker_factory=tracker_factory,
-            )
 
             if settings.integrations.seed_connections:
                 await _seed_configured_integrations(
@@ -990,36 +686,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     api_key=settings.linear.api_key,
                 )
                 logger.info("Linear integration seeded from config")
-
-            # Integration management endpoints
-            canonical_integrations_router = create_canonical_integrations_router(
-                integration_repo,
-                tracker_factory,
-                registry=integration_registry,
-                credential_store=credential_store,
-            )
-            app.include_router(canonical_integrations_router)
-
-            # OAuth integration endpoints
-            canonical_oauth_router = create_canonical_oauth_router(
-                oauth_config=settings.oauth,
-                integration_registry=integration_registry,
-                credential_store=credential_store,
-                integration_repo=integration_repo,
-            )
-            app.include_router(canonical_oauth_router)
-
-            # Generic issue endpoints
-            canonical_issues_router = create_canonical_issues_router(
-                integration_repo,
-                tracker_factory,
-            )
-            app.include_router(canonical_issues_router)
-
-            canonical_tracker_router = create_canonical_tracker_router(
-                tracker_service=tracker_service,
-            )
-            app.include_router(canonical_tracker_router)
 
             app.state.user_integration_service = user_integration_service
             app.state.communication_route_repository = communication_route_repository
@@ -1089,7 +755,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     logger.exception("Failed to initialize OTel event sink")
 
             # Register Sleipnir event sink when integration is active
-            audit_subscriber = None
             if sleipnir_bus is not None:
                 from volundr.adapters.outbound.sleipnir_event_sink import (  # noqa: PLC0415
                     SleipnirEventSink,
@@ -1097,18 +762,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 event_sinks.append(SleipnirEventSink(sleipnir_bus))
                 logger.info("Sleipnir event sink registered in pipeline")
-
-                # Audit log subscriber — persistent record of every event
-                from sleipnir.adapters.audit_postgres import PostgresAuditRepository
-                from sleipnir.adapters.audit_subscriber import AuditSubscriber
-
-                audit_repository = PostgresAuditRepository(pool)
-                audit_subscriber = AuditSubscriber(sleipnir_bus, audit_repository)
-                await audit_subscriber.start()
-
-                canonical_audit_router = create_canonical_audit_router(audit_repository)
-                app.include_router(canonical_audit_router)
-                logger.info("Audit log subscriber started")
 
             event_ingestion = EventIngestionService(sinks=event_sinks)
             events_router = create_events_router(
@@ -1141,7 +794,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.template_service = template_service
             app.state.git_workflow_service = git_workflow_service
             app.state.event_ingestion = event_ingestion
-            app.state.tracker_service = None  # Deprecated: use integration-based /issues/
             app.state.tenant_service = tenant_service
             app.state.gateway = gateway_adapter
             app.state.user_repository = user_repository
@@ -1173,14 +825,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await background_task
                 except asyncio.CancelledError:
                     pass  # Expected: task cancellation during shutdown
-                if audit_subscriber is not None:
-                    await audit_subscriber.stop()
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()
                 if hasattr(gateway_adapter, "close"):
                     await gateway_adapter.close()
                 await git_registry.close()
+                _release_credential_store(settings)
 
     app.router.lifespan_context = lifespan
 

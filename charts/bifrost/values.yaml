@@ -8,14 +8,18 @@ replicaCount: 2
 revisionHistoryLimit: 10
 
 image:
-  # -- Container image registry (leave blank to use Docker Hub).
-  registry: ""
+  # -- Container image registry.
+  registry: "ghcr.io/niuulabs"
   # -- Container image repository.
-  repository: bifrost
+  repository: niuu
   # -- Image tag. Defaults to Chart.appVersion.
   tag: ""
   # -- Image pull policy.
   pullPolicy: IfNotPresent
+
+# -- Override container command. Defaults to the unified niuu image running the Bifröst API.
+command:
+  - bifrost
 
 # -- Image pull secrets for private registries.
 imagePullSecrets: []

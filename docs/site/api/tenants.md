@@ -2,13 +2,15 @@
 
 Volundr supports hierarchical multi-tenancy with role-based access control.
 
-All endpoints are prefixed with `/api/v1/volundr`.
+All endpoints are prefixed with `/api/v1/identity`.
 
 ## Identity
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/me` | Get current authenticated user |
+| `GET` | `/auth/config` | Get public auth discovery metadata |
+| `GET` | `/settings` | Get current user settings schema |
 | `GET` | `/users` | List all users (admin) |
 
 ## Tenant management
@@ -18,7 +20,7 @@ All endpoints are prefixed with `/api/v1/volundr`.
 | `GET` | `/tenants` | List tenants (optional parent_id) |
 | `POST` | `/tenants` | Create tenant (admin) |
 | `GET` | `/tenants/{id}` | Get tenant |
-| `PUT` | `/tenants/{id}` | Update tenant (admin) |
+| `PATCH` | `/tenants/{id}` | Update tenant (admin) |
 | `DELETE` | `/tenants/{id}` | Delete tenant (admin) |
 
 ## Membership

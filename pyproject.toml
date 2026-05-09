@@ -86,6 +86,12 @@ dev = [
 [project.scripts]
 niuu = "niuu.__main__:main"
 volundr = "volundr.main:main"
+audit = "audit.main:main"
+identity = "identity.main:main"
+features = "features.main:main"
+credentials = "credentials.main:main"
+integrations = "integrations.main:main"
+tracker = "tracker.main:main"
 skuld = "skuld.broker:main"
 bifrost = "bifrost.__main__:main"
 tyr = "tyr.main:main"
@@ -98,6 +104,12 @@ ravn-mimir = "ravn.cli.commands:mimir_main"
 [project.entry-points."niuu.plugins"]
 niuu = "niuu.plugin:NiuuPlugin"
 volundr = "volundr.plugin:VolundrPlugin"
+audit = "audit.plugin:AuditPlugin"
+identity = "identity.plugin:IdentityPlugin"
+features = "features.plugin:FeaturesPlugin"
+credentials = "credentials.plugin:CredentialsPlugin"
+integrations = "integrations.plugin:IntegrationsPlugin"
+tracker = "tracker.plugin:TrackerPlugin"
 tyr = "tyr.plugin:TyrPlugin"
 mimir = "mimir.plugin:MimirPlugin"
 ravn = "ravn.plugin:RavnPlugin"
@@ -116,7 +128,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cli", "src/niuu", "src/volundr", "src/tyr", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas"]
+packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/identity", "src/integrations", "src/niuu", "src/volundr", "src/tyr", "src/tracker", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -141,7 +153,7 @@ line-length = 100
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.coverage.run]
-source = ["src/volundr", "src/cli", "src/tyr", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir"]
+source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/identity", "src/integrations", "src/tyr", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir"]
 branch = true
 # Textual TUI widgets require a running terminal and cannot be exercised with
 # plain pytest. They are excluded from coverage measurement until Textual

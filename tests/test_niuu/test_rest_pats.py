@@ -58,7 +58,7 @@ def _make_dual_router_app(pat_service: AsyncMock) -> TestClient:
     app.include_router(
         create_pats_router(
             extract_principal,
-            prefix="/api/v1/volundr/tokens",
+            prefix="/api/v1/users/tokens",
             deprecated=True,
             canonical_prefix="/api/v1/tokens",
         )
@@ -277,13 +277,13 @@ class TestCanonicalTokenRoutes:
         service.list = AsyncMock(return_value=[mock_pat])
 
         client = _make_dual_router_app(service)
-        legacy = client.get("/api/v1/volundr/tokens")
+        legacy = client.get("/api/v1/users/tokens")
         assert legacy.headers["Deprecation"] == "true"
         assert legacy.headers["Link"] == '</api/v1/tokens>; rel="successor-version"'
 
         assert_route_equivalence(
             client,
-            legacy=RouteCallSpec(path="/api/v1/volundr/tokens"),
+            legacy=RouteCallSpec(path="/api/v1/users/tokens"),
             canonical=RouteCallSpec(path="/api/v1/tokens"),
         )
 
@@ -301,7 +301,7 @@ class TestCanonicalTokenRoutes:
 
         client = _make_dual_router_app(service)
         legacy = client.post(
-            "/api/v1/volundr/tokens",
+            "/api/v1/users/tokens",
             json={"name": "my-pat"},
             headers={"Authorization": "Bearer user-access-token"},
         )
@@ -312,7 +312,7 @@ class TestCanonicalTokenRoutes:
         assert_route_equivalence(
             client,
             legacy=RouteCallSpec(
-                path="/api/v1/volundr/tokens",
+                path="/api/v1/users/tokens",
                 method="POST",
                 json_body={"name": "my-pat"},
                 headers={"Authorization": "Bearer user-access-token"},

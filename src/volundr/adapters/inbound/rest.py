@@ -1002,33 +1002,6 @@ def create_router(
                 detail=str(e),
             )
 
-    @router.get("/auth/config", tags=["Auth"])
-    async def get_auth_config(request: Request) -> dict:
-        """Public auth discovery endpoint for CLI and external clients.
-
-        Returns OIDC configuration so CLI clients can auto-discover how
-        to authenticate. This endpoint does NOT require authentication.
-        """
-        settings = request.app.state.settings
-
-        issuer = settings.auth_discovery.issuer
-        if not issuer:
-            # Fall back to gateway adapter's issuer_url kwarg
-            issuer = settings.gateway.kwargs.get("issuer_url", "")
-
-        if not issuer:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Auth discovery not configured",
-            )
-
-        return {
-            "issuer": issuer,
-            "client_id": settings.auth_discovery.cli_client_id,
-            "scopes": settings.auth_discovery.scopes,
-            "device_authorization_supported": True,
-        }
-
     async def _optional_user_id(request: Request) -> str | None:
         """Extract user_id from auth principal if available, else None."""
         principal = await _optional_principal(request)

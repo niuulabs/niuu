@@ -66,12 +66,15 @@ class TyrPlugin(ServicePlugin):
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (
             APIRouteDomain(
-                name="tracker-api",
+                name="tracker-project-api",
                 prefixes=(
                     "/api/v1/tracker/projects",
                     "/api/v1/tracker/import",
                 ),
-                description="Canonical tracker project browsing and import routes.",
+                description=(
+                    "Tyr-backed tracker project browsing and "
+                    "tracker-to-saga import routes."
+                ),
             ),
             APIRouteDomain(
                 name="saga-api",
@@ -109,7 +112,7 @@ class TyrPlugin(ServicePlugin):
                 description="Tyr settings for flock, dispatch defaults, and notifications.",
             ),
             APIRouteDomain(
-                name="integrations-api",
+                name="tyr-integrations-api",
                 prefixes=(
                     "/api/v1/tyr/integrations",
                     "/api/v1/tyr/telegram",

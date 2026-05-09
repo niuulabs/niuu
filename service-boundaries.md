@@ -58,7 +58,7 @@ That means each domain should expose something like:
 
 ### What we have now
 
-- `volundr` owns sessions, templates, clusters, secrets, credentials, tenants, users, features, PATs, integrations, tracker mappings, admin settings, git operations, audit, and more
+- `volundr` still hosts the public Forge, identity, credentials, integrations, tracker, features, and tokens surfaces inside one process
 - `tyr` owns saga and dispatch concerns, but `web-next` expects additional settings, session approval, and audit surfaces that are partly missing or overlap with Volundr
 - `ravn` currently exposes personas plus a small stub session surface
 - `mimir` is a smaller real service, but its HTTP surface is behind `web-next`
@@ -80,32 +80,28 @@ These are domain boundaries, not mandatory deployables.
 Owns:
 
 - current user identity
+- auth discovery/runtime config
 - users
-- tenants and membership
-- PATs / access tokens
-- feature catalog and user feature preferences
-- auth-adjacent runtime metadata if any remains
+- tenants and memberships
+- admin-user reprovision
 
 Canonical routes:
 
 - `/api/v1/identity/me`
+- `/api/v1/identity/auth/config`
 - `/api/v1/identity/users`
 - `/api/v1/identity/tenants`
 - `/api/v1/identity/tenants/{tenant_id}/members`
-- `/api/v1/identity/tokens`
-- `/api/v1/identity/features/modules`
-- `/api/v1/identity/features/preferences`
 
 Current overlap to extract:
 
 - `src/volundr/adapters/inbound/rest_tenants.py`
-- `src/volundr/adapters/inbound/rest_features.py`
-- PAT routing currently split between Volundr and `src/niuu/adapters/inbound/rest_pats.py`
+- identity/auth-config slice of `src/volundr/adapters/inbound/rest.py`
 
 Why this should be its own route domain:
 
-- `web-next/packages/plugin-sdk` already wants identity and feature catalog as platform capabilities, not Volundr-only concerns
-- PATs, tenants, and users are not session-forge concerns
+- `web-next/packages/plugin-sdk` already wants identity as a platform capability, not a Forge concern
+- tenants, memberships, and user reprovision are not session-forge concerns
 
 ### 2. `forge`
 
@@ -148,7 +144,7 @@ Current overlap to keep inside forge:
 
 Current overlap to remove from forge:
 
-- identity, tenants, users, feature catalog, tokens
+- identity, tenants, users, auth discovery, credentials, features, integrations, tracker surfaces, and tokens
 - generic audit
 - tracker catalog if we centralize tracker integration later
 
@@ -187,6 +183,7 @@ Owns:
 - user and tenant credential stores
 - pluggable secret store surfaces
 - secret types
+- MCP server metadata and discovery
 - cluster-available secret definitions if they are generic
 
 Canonical routes:
@@ -239,7 +236,31 @@ Why extract:
 - tracker browsing is shared infrastructure
 - it should not be split between Tyr and Forge by accident
 
-### 6. `tyr`
+### 6. `features`
+
+Owns:
+
+- feature catalog
+- user feature preferences
+- feature toggle operations
+
+Canonical routes:
+
+- `/api/v1/features`
+- `/api/v1/features/modules`
+- `/api/v1/features/modules/{key}/toggle`
+- `/api/v1/features/preferences`
+
+Current overlap to extract:
+
+- `src/volundr/adapters/inbound/rest_features.py`
+
+Why extract:
+
+- feature flags are cross-cutting platform capability, not identity or forge state
+- keeping them standalone prevents them from drifting back into the Volundr junk drawer
+
+### 7. `tyr`
 
 Owns:
 
@@ -277,7 +298,7 @@ What Tyr should stop owning:
 - generic audit if moved to `audit`
 - non-Tyr sessions if those are really Forge-owned workspaces
 
-### 7. `ravn`
+### 8. `ravn`
 
 Owns:
 
@@ -304,7 +325,7 @@ Current state:
 - sessions exist only as a small stub
 - ravens, triggers, budget, transcript APIs are not implemented
 
-### 8. `mimir`
+### 9. `mimir`
 
 Owns:
 
@@ -340,7 +361,7 @@ Canonical routes:
 - `/api/v1/mimir/dreams`
 - `/api/v1/mimir/activity`
 
-### 9. `observatory`
+### 10. `observatory`
 
 Owns:
 
@@ -359,7 +380,7 @@ Likely implementation home:
 - route module can live in a new `observatory` package
 - event projection may reuse Skuld or Sleipnir subscribers
 
-### 10. `audit`
+### 11. `audit`
 
 Owns:
 
@@ -392,15 +413,16 @@ Expected by `plugin-sdk`:
 
 Current reality:
 
-- frontend SDK still uses Volundr-backed `/me` and `/features*` adapters
-- backend currently exposes `/api/v1/volundr/me`
-- feature toggles live under Volundr as well
-- PATs are split and not aligned to the frontend model
+- frontend SDK now uses `/api/v1/identity/me` for identity and `/api/v1/features/*` for the feature catalog
+- backend exposes `/api/v1/identity/me`
+- feature toggles live under the standalone features surface
+- PATs are aligned on `/api/v1/tokens`
 
 Required consolidation:
 
-- move identity, tenants, users, features, and tokens under one `identity` route module
-- keep old Volundr routes as temporary compatibility shims
+- keep identity, tenants, users, and auth discovery together under `identity`
+- keep features and tokens as standalone top-level capabilities
+- do not reintroduce Volundr-scoped public routes
 
 ## Völundr / Forge
 

@@ -51,7 +51,7 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [volundr, skuld, devrunner, volundr-web, niuu-web, tyr, niuu, mimir, bifrost]
+        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -92,7 +92,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        container: [volundr, skuld, devrunner, volundr-web, niuu-web, tyr, niuu, mimir, bifrost]
+        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Log in to Container Registry
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4

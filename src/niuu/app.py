@@ -105,22 +105,28 @@ def _local_service_host(host: str) -> str:
 
 
 _PLUGIN_API_PREFIXES: dict[str, list[str]] = {
-    "volundr": ["/api/v1/volundr"],
+    "volundr": ["/api/v1/forge"],
+    "audit": ["/api/v1/audit"],
+    "identity": ["/api/v1/identity"],
+    "features": ["/api/v1/features"],
+    "credentials": ["/api/v1/credentials"],
+    "integrations": ["/api/v1/integrations"],
+    "tracker": ["/api/v1/tracker"],
     "tyr": ["/api/v1/tyr"],
     "niuu": ["/api/v1/niuu"],
 }
 
 _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "admin-api": "volundr",
-    "audit-api": "volundr",
+    "audit-api": "audit",
     "bifrost-api": "bifrost",
     "bifrost-observability-api": "bifrost",
-    "credentials-api": "volundr",
-    "features-api": "volundr",
+    "credentials-api": "credentials",
+    "features-api": "features",
     "forge-api": "volundr",
     "git-api": "volundr",
-    "identity-api": "volundr",
-    "integrations-api": "volundr",
+    "identity-api": "identity",
+    "integrations-api": "integrations",
     "mimir-api": "mimir",
     "niuu-api": "niuu",
     "observatory-api": "observatory",
@@ -141,9 +147,11 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "session-api": "volundr",
     "saga-api": "tyr",
     "settings-api": "tyr",
-    "tenancy-api": "volundr",
-    "tracker-api": "volundr",
-    "tokens-api": "volundr",
+    "tenancy-api": "identity",
+    "tracker-api": "tracker",
+    "tracker-project-api": "tyr",
+    "tokens-api": "identity",
+    "tyr-integrations-api": "tyr",
     "workflow-api": "tyr",
     "workspace-api": "volundr",
     "tyr-api": "tyr",
@@ -476,11 +484,18 @@ def build_root_app(
             plugin_prefixes.setdefault(plugin_name, []).extend(route_domain.prefixes)
 
     sub_apps: list[tuple[str, FastAPI]] = []
+    shared_api_apps: dict[str, FastAPI] = {}
     for name, plugin in sorted(registry.plugins.items()):
         if name not in requested_plugins:
             continue
         try:
-            sub_app = plugin.create_api_app()
+            shared_key = plugin.shared_api_app_key()
+            if shared_key and shared_key in shared_api_apps:
+                sub_app = shared_api_apps[shared_key]
+            else:
+                sub_app = plugin.create_api_app()
+                if shared_key and sub_app is not None:
+                    shared_api_apps[shared_key] = sub_app
             if sub_app is None:
                 continue
             sub_apps.append((name, sub_app))
@@ -490,13 +505,19 @@ def build_root_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         exit_stacks: list[tuple[str, AsyncGenerator]] = []
+        started_app_ids: set[int] = set()
         for name, sub_app in sub_apps:
+            app_id = id(sub_app)
+            if app_id in started_app_ids:
+                logger.info("Reusing %s shared API app", name)
+                continue
             lf = sub_app.router.lifespan_context
             if lf:
                 gen = lf(sub_app)
                 try:
                     await gen.__aenter__()
                     exit_stacks.append((name, gen))
+                    started_app_ids.add(app_id)
                     logger.info("Started %s lifespan", name)
                 except Exception:
                     logger.exception("Failed to start %s lifespan", name)

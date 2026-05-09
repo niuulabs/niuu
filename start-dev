@@ -8,8 +8,6 @@ PLATFORM_PID_FILE="${RUN_DIR}/platform.pid"
 PG_CTL="${ROOT_DIR}/build/pginstall/bin/pg_ctl"
 PG_DATA="${HOME}/.niuu/pgdata"
 PLATFORM_LOG="${LOG_DIR}/platform.log"
-UI_VARIANT="${NIUU_WEB_UI:-old}"
-
 # Auto-detect a LAN-routable IP so the platform binds to (and bakes into URLs)
 # an address that browsers on this machine *and* on the LAN can reach. Override
 # by exporting NIUU_SERVER__HOST before invoking this script.
@@ -36,28 +34,12 @@ mkdir -p "${LOG_DIR}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--ui old|new]
-
-Environment:
-  NIUU_WEB_UI=old|new   Select which web UI bundle to build and serve.
+Usage: $(basename "$0")
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --ui)
-      if [[ $# -lt 2 ]]; then
-        echo "--ui requires a value of 'old' or 'new'" >&2
-        usage >&2
-        exit 1
-      fi
-      UI_VARIANT="$2"
-      shift 2
-      ;;
-    --ui=*)
-      UI_VARIANT="${1#--ui=}"
-      shift
-      ;;
     -h|--help)
       usage
       exit 0
@@ -69,15 +51,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-case "${UI_VARIANT}" in
-  old|new)
-    ;;
-  *)
-    echo "Invalid UI selection: ${UI_VARIANT}. Expected 'old' or 'new'." >&2
-    exit 1
-    ;;
-esac
 
 cleanup_on_error() {
   "${ROOT_DIR}/stop-dev" >/dev/null 2>&1 || true
@@ -248,33 +221,21 @@ bootstrap_dependencies
 echo "Preparing workspace..."
 uv sync --extra dev
 make -C "${ROOT_DIR}" build-postgres
-if [[ "${UI_VARIANT}" == "new" ]]; then
-  pnpm --dir "${ROOT_DIR}/web-next" install
-  pnpm --dir "${ROOT_DIR}/web-next" -r --filter "@niuulabs/*" --filter "!@niuulabs/niuu" build
-  (
-    cd "${ROOT_DIR}/web-next/apps/niuu"
-    pnpm exec vite build
-  )
-else
-  make -C "${ROOT_DIR}" build-web
-fi
+pnpm --dir "${ROOT_DIR}/web-next" install
+pnpm --dir "${ROOT_DIR}/web-next" -r --filter "@niuulabs/*" --filter "!@niuulabs/niuu" build
+(
+  cd "${ROOT_DIR}/web-next/apps/niuu"
+  pnpm exec vite build
+)
 
 if [[ -x "${PG_CTL}" ]]; then
   "${PG_CTL}" -D "${PG_DATA}" stop -m fast >/dev/null 2>&1 || true
 fi
 
-# Old UI uses the legacy /api/v1/volundr/* routes (e.g. /api/v1/volundr/models),
-# which only get mounted under the full-compat host profile. New UI uses the
-# split canonical routes that ship in the default 'full' profile.
-if [[ "${UI_VARIANT}" == "old" ]]; then
-  HOST_PROFILE="full-compat"
-else
-  HOST_PROFILE="full"
-fi
+HOST_PROFILE="full"
 
 echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (host-profile=${HOST_PROFILE})..."
 nohup env PYTHONUNBUFFERED=1 \
-  NIUU_WEB_UI="${UI_VARIANT}" \
   uv run niuu platform up --skip-preflight --host-profile "${HOST_PROFILE}" \
   >"${PLATFORM_LOG}" 2>&1 &
 echo $! > "${PLATFORM_PID_FILE}"
@@ -286,7 +247,7 @@ cat <<EOF
 Ready.
 
 UI:
-  variant: ${UI_VARIANT}
+  variant: web-next
   http://${NIUU_SERVER__HOST}:8080/?config=/config.live.json
   http://${NIUU_SERVER__HOST}:8080/volundr?config=/config.live.json
 

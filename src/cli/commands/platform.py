@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import httpx
 import typer
 
 from cli.services.manager import ServiceState, StartupError

@@ -44,7 +44,7 @@ Both of these should call the same service underneath:
 
 Example:
 
-- `/api/v1/volundr/me`
+- `/api/v1/legacy/identity/me`
 - `/api/v1/identity/me`
 
 ### 4. Compatibility first, cleanup second
@@ -357,7 +357,7 @@ Goal:
 Changes:
 
 - mount canonical Forge router
-- keep `/api/v1/volundr/*` compatibility paths
+- keep temporary compatibility shims only where clients still depend on them
 
 Success criteria:
 

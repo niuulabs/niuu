@@ -35,16 +35,16 @@ def client(app: FastAPI) -> TestClient:
 
 class TestAdminSettings:
     def test_get_mounted_settings_schema(self, client: TestClient) -> None:
-        response = client.get("/api/v1/volundr/settings")
+        response = client.get("/api/v1/forge/admin/settings/schema")
         assert response.status_code == 200
         data = response.json()
-        assert data["title"] == "Volundr"
+        assert data["title"] == "Forge"
         assert data["scope"] == "admin"
         assert data["sections"][0]["path"] == "/admin/settings"
         assert data["sections"][0]["saveLabel"] == "Save storage settings"
 
     def test_get_settings(self, client: TestClient) -> None:
-        response = client.get("/api/v1/volundr/admin/settings")
+        response = client.get("/api/v1/forge/admin/settings")
         assert response.status_code == 200
         data = response.json()
         assert data["storage"]["home_enabled"] is True
@@ -52,34 +52,32 @@ class TestAdminSettings:
 
     def test_patch_update_settings_disable_home(self, client: TestClient) -> None:
         response = client.patch(
-            "/api/v1/volundr/admin/settings",
+            "/api/v1/forge/admin/settings",
             json={"storage": {"homeEnabled": False}},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["storage"]["home_enabled"] is False
         assert data["storage"]["homeEnabled"] is False
-        assert "Deprecation" not in response.headers
 
     def test_update_settings_disable_home(self, client: TestClient) -> None:
         response = client.put(
-            "/api/v1/volundr/admin/settings",
+            "/api/v1/forge/admin/settings",
             json={"storage": {"home_enabled": False}},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["storage"]["home_enabled"] is False
-        assert response.headers["Deprecation"] == "true"
 
         # Verify it persists in subsequent GET
-        response = client.get("/api/v1/volundr/admin/settings")
+        response = client.get("/api/v1/forge/admin/settings")
         assert response.json()["storage"]["home_enabled"] is False
 
     def test_update_settings_enable_home(self, app: FastAPI) -> None:
         app.state.admin_settings = {"storage": {"home_enabled": False}}
         client = TestClient(app)
         response = client.put(
-            "/api/v1/volundr/admin/settings",
+            "/api/v1/forge/admin/settings",
             json={"storage": {"homeEnabled": True}},
         )
         assert response.status_code == 200
@@ -90,7 +88,7 @@ class TestAdminSettings:
         client: TestClient,
     ) -> None:
         response = client.patch(
-            "/api/v1/volundr/admin/settings",
+            "/api/v1/forge/admin/settings",
             json={"storage": {"homeEnabled": True, "fileManagerEnabled": False}},
         )
         assert response.status_code == 200
@@ -100,7 +98,7 @@ class TestAdminSettings:
 
     def test_update_without_storage_is_noop(self, client: TestClient) -> None:
         response = client.put(
-            "/api/v1/volundr/admin/settings",
+            "/api/v1/forge/admin/settings",
             json={},
         )
         assert response.status_code == 200

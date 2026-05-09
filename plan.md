@@ -23,7 +23,7 @@ web-next expects each service mounted at `/api/v1/<service>`:
 | Service | Expected prefix | Current prefix |
 |---|---|---|
 | tyr | `/api/v1/tyr` | `/api/v1/tyr` ✅ |
-| volundr | `/api/v1/volundr` | `/api/v1/volundr` ✅ |
+| forge | `/api/v1/forge` | `/api/v1/forge` ✅ |
 | ravn | `/api/v1/ravn` | `/api/v1/ravn` (only `personas.py`) ⚠️ |
 | mimir | `/api/v1/mimir` | `/mimir` ❌ |
 | observatory | `/api/v1/observatory` | — (no service) ❌ |
@@ -52,7 +52,7 @@ Backend reality:
 - No `GET /identity` endpoint for the SDK's `IIdentityService` contract — web needs `{userId, email, displayName, roles, tenants}`. Volundr has `/me` (`rest_tenants.py:163`) — promote to canonical identity endpoint mounted at a stable path the shell can hit *without* knowing which service owns it.
 - PAT management currently routed via tyr. For Niuu this should be per-service mount OR centralised on whichever service is "the identity service" (likely Volundr).
 
-**Action:** define one canonical `GET /api/v1/identity/me` endpoint (ownership TBD — proposal: Volundr, since it already owns tenants/users), and pull PATs under `/api/v1/identity/tokens`.
+**Action:** define one canonical `GET /api/v1/identity/me` endpoint for identity discovery, keep PATs on `/api/v1/tokens`, and keep feature catalog on `/api/v1/features`.
 
 ### 0.4 Streaming: SSE only
 
@@ -118,24 +118,24 @@ OIDC discovery only. Nothing custom backend-side. Tokens are fetched directly fr
 
 | Method | HTTP |
 |---|---|
-| `getFeatureModules(scope?)` | `GET /api/v1/identity/features/modules?scope={scope}` |
-| `getUserFeaturePreferences()` | `GET /api/v1/identity/features/preferences` |
-| `updateUserFeaturePreferences(prefs)` | `PUT /api/v1/identity/features/preferences` |
-| `toggleFeature(key, enabled)` | `POST /api/v1/identity/features/modules/{key}/toggle` |
+| `getFeatureModules(scope?)` | `GET /api/v1/features/modules?scope={scope}` |
+| `getUserFeaturePreferences()` | `GET /api/v1/features/preferences` |
+| `updateUserFeaturePreferences(prefs)` | `PUT /api/v1/features/preferences` |
+| `toggleFeature(key, enabled)` | `POST /api/v1/features/modules/{key}/toggle` |
 
 ### Current state
 - `/me` exists in volundr (`rest_tenants.py:163`).
-- `/features*` exist in volundr (`rest_features.py:92–152`) but under `/api/v1/volundr/features/...`.
+- `/features*` now live on the standalone features surface (`rest_features.py:92–152`) under `/api/v1/features/...`.
 
 ### Gaps
 | Gap | Fix |
 |---|---|
-| No canonical `/api/v1/identity` prefix | Add identity router (move `/me`, features, PATs under it). |
+| No canonical `/api/v1/identity` prefix for user/tenant surfaces | Add identity router for `/me`, users, tenants, and auth discovery only. |
 | `toggleFeature` uses `PUT` in backend, `POST` in web-next port | Align: standardise on `POST /features/modules/{key}/toggle`. |
 | `preferences` shapes may differ | Verify Pydantic model matches `UserFeaturePreference` fields; add schema contract test. |
 
 ### SDD work items
-- [ ] **NIU-IDP-001** Create `src/volundr/adapters/inbound/rest_identity.py` with `APIRouter(prefix="/api/v1/identity")`. Move `/me`, PATs, feature routes; keep old routes as deprecated shims for one release.
+- [ ] **NIU-IDP-001** Create `src/volundr/adapters/inbound/rest_identity.py` with `APIRouter(prefix="/api/v1/identity")`. Move `/me`, users, tenants, and auth discovery there; keep features on `/api/v1/features` and PATs on `/api/v1/tokens`.
 - [ ] **NIU-IDP-002** Align `toggleFeature` HTTP verb.
 - [ ] **NIU-IDP-003** Pydantic → TS contract test (schemathesis or hand-rolled) to catch snake_case drift.
 
@@ -370,7 +370,7 @@ Has personas CRUD + fork (`GET list`, `GET {name}`, `GET {name}/yaml`, `POST`, `
 - **SSE:** per-resource streams (sessions/stats/messages/logs/chronicle) — currently mocked client-side
 
 ### Current state (`src/volundr/adapters/inbound/rest*.py`)
-**Most extensive backend we have.** The existing `web/` consumes it already. Per-file breakdown (all under `/api/v1/volundr` unless noted):
+**Most extensive backend we have.** The existing surfaces now split across `/api/v1/forge`, `/api/v1/identity`, `/api/v1/features`, `/api/v1/credentials`, `/api/v1/integrations`, and `/api/v1/tracker`.
 
 - `rest.py` — sessions CRUD, messages, models, stats, chronicles, PRs, feature-flags, auth/config.
 - `rest_tenants.py` — `/me`, `/users`, `/tenants*`, member management, reprovision.
@@ -409,7 +409,7 @@ Has personas CRUD + fork (`GET list`, `GET {name}`, `GET {name}/yaml`, `POST`, `
 | `/tenants*` full lifecycle | ✅ | Verify reprovision return type. |
 | `/admin/settings` | ✅ | Verify payload. |
 | `/features/modules` etc. | ⚠️ | Verb alignment; see §2. |
-| `/tokens*` (PATs) | ✅ (via niuu) | Path: plugin expects `/tokens`, backend exposes `/api/v1/pats`. **Gap.** |
+| `/tokens*` (PATs) | ✅ (via niuu) | Path: canonical `/api/v1/tokens`. |
 | SSE per-resource streams | ❌ | Add `GET /sessions/stream`, `/sessions/{id}/messages/stream`, `/sessions/{id}/logs/stream`, `/sessions/{id}/chronicle/stream`, `/stats/stream`. Currently web adapter mocks these. |
 | `GET /repos/prs/{n}/ci?url&branch` | ✅ | Verify response shape `CIStatusValue`. |
 | `POST /repos/prs/{n}/merge` body `{repoUrl, mergeMethod}` | ✅ | Verify body fields snake_case. |
@@ -425,8 +425,8 @@ Has personas CRUD + fork (`GET list`, `GET {name}`, `GET {name}/yaml`, `POST`, `
 - [ ] **NIU-VOL-006** Contract tests: generate OpenAPI, diff vs `plugin-volundr/src/ports/*`.
 
 ### Open questions
-- Do `/api/v1/volundr/tokens` and `/api/v1/pats` co-exist or merge? Decide per §2.
-- Do we keep volundr as the identity/tenants owner long-term, or spin `identity-service` out?
+- Do `/api/v1/tokens` stay standalone or move under `identity` later? Decide per §2.
+- Do we keep Volundr as the host for identity/tenants long-term, or spin an `identity-service` out later?
 
 ---
 
@@ -512,7 +512,7 @@ Has personas CRUD + fork (`GET list`, `GET {name}`, `GET {name}/yaml`, `POST`, `
 | observatory | new `observatory` (or skuld-hosted) | `/api/v1/observatory` |
 | mimir | mimir | `/api/v1/mimir` |
 | ravn | ravn (new HTTP surface) | `/api/v1/ravn` |
-| volundr | volundr | `/api/v1/volundr` |
+| forge | volundr | `/api/v1/forge` |
 | tyr | tyr | `/api/v1/tyr` |
 
 ---

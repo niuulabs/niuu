@@ -27,8 +27,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Packages to include in the binary
 INCLUDE_PACKAGES = [
+    "audit",
     "cli",
+    "credentials",
+    "features",
+    "identity",
+    "integrations",
     "niuu",
+    "tracker",
     "volundr",
     "tyr",
     "skuld",

@@ -68,26 +68,11 @@ class VolundrPlugin(ServicePlugin):
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (
             APIRouteDomain(
-                name="audit-api",
-                prefixes=("/api/v1/audit", "/audit"),
-                description="Canonical audit log query routes.",
-            ),
-            APIRouteDomain(
                 name="admin-api",
-                prefixes=("/api/v1/volundr/admin",),
+                prefixes=("/api/v1/forge/admin",),
                 description=(
-                    "Administrative routes for users, settings, and global workspace management."
+                    "Administrative routes for Forge host settings and global workspace management."
                 ),
-            ),
-            APIRouteDomain(
-                name="features-api",
-                prefixes=("/api/v1/features",),
-                description="Canonical feature catalog and preferences routes.",
-            ),
-            APIRouteDomain(
-                name="credentials-api",
-                prefixes=("/api/v1/credentials",),
-                description="Canonical credential and secret-type routes.",
             ),
             APIRouteDomain(
                 name="forge-api",
@@ -105,7 +90,6 @@ class VolundrPlugin(ServicePlugin):
                     "/api/v1/forge/stats",
                     "/api/v1/forge/prompts",
                     "/api/v1/forge/cluster",
-                    "/api/v1/forge/mcp-servers",
                     "/api/v1/forge/git",
                 ),
                 description="Forge session, workspace, template, repo, and execution routes.",
@@ -136,11 +120,10 @@ class VolundrPlugin(ServicePlugin):
                     "/api/v1/forge/session-definitions",
                     "/api/v1/forge/resources",
                     "/api/v1/forge/prompts",
-                    "/api/v1/forge/mcp-servers",
                 ),
                 description=(
                     "Templates, presets, profiles, session definitions, prompts, "
-                    "resource catalog, and MCP metadata routes."
+                    "and resource catalog routes."
                 ),
             ),
             APIRouteDomain(
@@ -151,35 +134,6 @@ class VolundrPlugin(ServicePlugin):
                     "/api/v1/forge/git",
                 ),
                 description="Git workflow routes without the deprecated repo-catalog surface.",
-            ),
-            APIRouteDomain(
-                name="identity-api",
-                prefixes=("/api/v1/identity",),
-                description="Canonical identity routes currently served by Volundr.",
-            ),
-            APIRouteDomain(
-                name="integrations-api",
-                prefixes=("/api/v1/integrations",),
-                description="Canonical integrations and OAuth routes currently served by Volundr.",
-            ),
-            APIRouteDomain(
-                name="tenancy-api",
-                prefixes=("/api/v1/volundr/tenants",),
-                description="Tenant hierarchy, membership, and tenant reprovisioning routes.",
-            ),
-            APIRouteDomain(
-                name="tracker-api",
-                prefixes=(
-                    "/api/v1/tracker/status",
-                    "/api/v1/tracker/issues",
-                    "/api/v1/tracker/repo-mappings",
-                ),
-                description="Canonical tracker issue, status, and repo mapping routes.",
-            ),
-            APIRouteDomain(
-                name="tokens-api",
-                prefixes=("/api/v1/tokens",),
-                description="Canonical personal access token routes currently served by Volundr.",
             ),
         )
 

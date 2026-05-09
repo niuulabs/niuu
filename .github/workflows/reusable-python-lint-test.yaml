@@ -1,4 +1,4 @@
-# Reusable: Python lint + unit-test matrix (volundr, tyr, ravn).
+# Reusable: Python lint + unit-test matrix (forge + extracted services, tyr, ravn).
 # Called by ci.yaml and dev.yaml. Coverage uploaded to Codecov per package.
 name: Reusable — Python Lint + Test
 
@@ -56,7 +56,7 @@ jobs:
               --ignore=tests/test_bifrost
               --ignore=tests/test_sleipnir
               --ignore=tests/integration
-            cov: "--cov=src/volundr --cov=src/cli --cov=src/niuu --cov=src/skuld"
+            cov: "--cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu --cov=src/tracker --cov=src/skuld"
           - name: Tyr
             flag: backend-tyr
             paths: "tests/test_tyr"

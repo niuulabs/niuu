@@ -82,8 +82,8 @@ wait_for_health() {
         if [[ $elapsed -gt $timeout ]]; then
             return 1
         fi
-        # Check both Volundr and Tyr endpoints to confirm full stack is up
-        if curl -sf "${url}/api/v1/volundr/sessions" > /dev/null 2>&1 && \
+        # Check both Forge and Tyr endpoints to confirm the full stack is up
+        if curl -sf "${url}/api/v1/forge/sessions" > /dev/null 2>&1 && \
            curl -sf "${url}/api/v1/tyr/dispatcher" > /dev/null 2>&1; then
             return 0
         fi
@@ -195,7 +195,7 @@ steps_total=$((steps_total + 1))
 
 if $SKIP_START; then
     log_info "  --skip-start: assuming platform is already running"
-    if ! curl -sf "${PLATFORM_URL}/api/v1/volundr/sessions" > /dev/null 2>&1; then
+    if ! curl -sf "${PLATFORM_URL}/api/v1/forge/sessions" > /dev/null 2>&1; then
         log_error "  Platform not reachable at ${PLATFORM_URL}"
         exit 1
     fi
@@ -341,7 +341,7 @@ if items:
             log_info "  Monitoring session for 30s..."
             for i in $(seq 1 6); do
                 sleep 5
-                session_json="$(curl -sf "${PLATFORM_URL}/api/v1/volundr/sessions/${session_id}" 2>/dev/null || true)"
+                session_json="$(curl -sf "${PLATFORM_URL}/api/v1/forge/sessions/${session_id}" 2>/dev/null || true)"
                 session_status="$(printf '%s' "${session_json}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo '?')"
                 log_info "    [${i}/6] Session status: ${session_status}"
                 if [[ "${session_status}" == "completed" ]] || [[ "${session_status}" == "stopped" ]]; then
@@ -358,13 +358,13 @@ if items:
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7: Verify Volundr sessions
+# Step 7: Verify Forge sessions
 # ---------------------------------------------------------------------------
 
-log_step "7. Verifying Volundr sessions..."
+log_step "7. Verifying Forge sessions..."
 steps_total=$((steps_total + 1))
 
-sessions_response=$(curl -sf "${PLATFORM_URL}/api/v1/volundr/sessions" 2>/dev/null || echo "FAIL")
+sessions_response=$(curl -sf "${PLATFORM_URL}/api/v1/forge/sessions" 2>/dev/null || echo "FAIL")
 if [[ "${sessions_response}" != "FAIL" ]]; then
     steps_passed=$((steps_passed + 1))
     session_count=$(echo "${sessions_response}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d, list) else len(d.get('sessions', [])))" 2>/dev/null || echo "?")

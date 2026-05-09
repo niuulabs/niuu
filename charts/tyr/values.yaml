@@ -6,9 +6,15 @@ revisionHistoryLimit: 10
 
 image:
   registry: ghcr.io/niuulabs
-  repository: tyr
+  repository: niuu
   tag: ""  # defaults to appVersion
   pullPolicy: IfNotPresent
+
+# -- Override container command. Defaults to the unified niuu image running the Tyr API.
+command:
+  - tyr
+# -- Additional container args.
+args: []
 
 nameOverride: ""
 fullnameOverride: ""

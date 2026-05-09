@@ -9,13 +9,19 @@ import respx
 import typer
 from typer.testing import CliRunner
 
+from audit.plugin import AuditPlugin
 from bifrost.plugin import BifrostPlugin
 from cli.registry import PluginRegistry
+from credentials.plugin import CredentialsPlugin
+from features.plugin import FeaturesPlugin
+from identity.plugin import IdentityPlugin
+from integrations.plugin import IntegrationsPlugin
 from mimir.plugin import MimirPlugin
-from niuu.ports.plugin import ServiceDefinition
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition
 from observatory.plugin import ObservatoryPlugin
 from personas.plugin import PersonasPlugin
 from ravn.plugin import RavnPlugin
+from tracker.plugin import TrackerPlugin
 from tyr.plugin import TyrPlugin
 from volundr.plugin import VolundrPlugin
 
@@ -87,25 +93,15 @@ class TestVolundrPlugin:
         route_domains = plugin.api_route_domains()
         assert route_domains
         assert [route_domain.name for route_domain in route_domains] == [
-            "audit-api",
             "admin-api",
-            "features-api",
-            "credentials-api",
             "forge-api",
             "session-api",
             "workspace-api",
             "catalog-api",
             "git-api",
-            "identity-api",
-            "integrations-api",
-            "tenancy-api",
-            "tracker-api",
-            "tokens-api",
         ]
         domains = {route_domain.name: route_domain.prefixes for route_domain in route_domains}
-        assert domains["audit-api"] == ("/api/v1/audit", "/audit")
-        assert domains["features-api"] == ("/api/v1/features",)
-        assert domains["credentials-api"] == ("/api/v1/credentials",)
+        assert domains["admin-api"] == ("/api/v1/forge/admin",)
         assert domains["forge-api"][:3] == (
             "/api/v1/forge/sessions",
             "/api/v1/forge/chronicles",
@@ -117,9 +113,6 @@ class TestVolundrPlugin:
             "/api/v1/forge/events",
         )
         assert domains["workspace-api"] == ("/api/v1/forge/workspaces",)
-        assert domains["identity-api"] == ("/api/v1/identity",)
-        assert domains["integrations-api"] == ("/api/v1/integrations",)
-        assert domains["tokens-api"] == ("/api/v1/tokens",)
 
     def test_registers_sessions_group(self) -> None:
         plugin = VolundrPlugin()
@@ -210,6 +203,79 @@ class TestVolundrPlugin:
         assert "Chat" in names
 
 
+class TestVolundrDomainPlugins:
+    def test_audit_plugin_route_domains(self) -> None:
+        plugin = AuditPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="audit-api",
+                prefixes=("/api/v1/audit", "/audit"),
+                description="Canonical audit log query routes.",
+            ),
+        )
+
+    def test_identity_plugin_route_domains(self) -> None:
+        plugin = IdentityPlugin()
+        route_domains = plugin.api_route_domains()
+        assert [route_domain.name for route_domain in route_domains] == [
+            "identity-api",
+            "tenancy-api",
+            "tokens-api",
+        ]
+        assert route_domains[0].prefixes == (
+            "/api/v1/identity/me",
+            "/api/v1/identity/settings",
+            "/api/v1/identity/auth/config",
+            "/api/v1/identity/users",
+        )
+        assert route_domains[1].prefixes == ("/api/v1/identity/tenants",)
+        assert route_domains[2].prefixes == ("/api/v1/tokens",)
+
+    def test_features_plugin_route_domains(self) -> None:
+        plugin = FeaturesPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="features-api",
+                prefixes=("/api/v1/features",),
+                description="Canonical feature catalog and preferences routes.",
+            ),
+        )
+
+    def test_credentials_plugin_route_domains(self) -> None:
+        plugin = CredentialsPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="credentials-api",
+                prefixes=("/api/v1/credentials",),
+                description="Canonical credential and secret-type routes.",
+            ),
+        )
+
+    def test_integrations_plugin_route_domains(self) -> None:
+        plugin = IntegrationsPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="integrations-api",
+                prefixes=("/api/v1/integrations",),
+                description="Canonical integrations and OAuth routes.",
+            ),
+        )
+
+    def test_tracker_plugin_route_domains(self) -> None:
+        plugin = TrackerPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="tracker-api",
+                prefixes=(
+                    "/api/v1/tracker/status",
+                    "/api/v1/tracker/issues",
+                    "/api/v1/tracker/repo-mappings",
+                ),
+                description="Canonical tracker issue, status, and repo mapping routes.",
+            ),
+        )
+
+
 class TestTyrPlugin:
     def test_name(self) -> None:
         plugin = TyrPlugin()
@@ -247,13 +313,13 @@ class TestTyrPlugin:
         route_domains = plugin.api_route_domains()
         assert route_domains
         assert [route_domain.name for route_domain in route_domains] == [
-            "tracker-api",
+            "tracker-project-api",
             "saga-api",
             "review-api",
             "dispatch-api",
             "workflow-api",
             "settings-api",
-            "integrations-api",
+            "tyr-integrations-api",
             "event-api",
             "tyr-api",
         ]

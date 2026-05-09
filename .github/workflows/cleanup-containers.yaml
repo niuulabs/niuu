@@ -17,12 +17,10 @@ jobs:
     strategy:
       matrix:
         container:
-          - volundr
           - skuld
           - devrunner
           - volundr-web
           - niuu-web
-          - tyr
           - niuu
     steps:
       - name: Delete stale dev container versions

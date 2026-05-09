@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_serializer
 
-from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
@@ -65,8 +64,8 @@ class AdminSettingsUpdate(BaseModel):
 
 
 def create_admin_settings_router() -> APIRouter:
-    """Create the admin settings router."""
-    router = APIRouter(prefix="/api/v1/volundr", tags=["Admin Settings"])
+    """Create the Forge admin settings router."""
+    router = APIRouter(prefix="/api/v1/forge", tags=["Admin Settings"])
 
     @router.get("/admin/settings", response_model=AdminSettingsResponse)
     async def get_admin_settings(
@@ -83,7 +82,7 @@ def create_admin_settings_router() -> APIRouter:
             ),
         )
 
-    @router.get("/settings", response_model=SettingsProviderSchema)
+    @router.get("/admin/settings/schema", response_model=SettingsProviderSchema)
     async def get_mounted_settings_schema(
         request: Request,
         _: Principal = Depends(require_role("volundr:admin")),
@@ -91,7 +90,7 @@ def create_admin_settings_router() -> APIRouter:
         settings = request.app.state.admin_settings
         storage = settings.get("storage", {})
         return SettingsProviderSchema(
-            title="Volundr",
+            title="Forge",
             subtitle="forge platform settings",
             scope="admin",
             sections=[
@@ -128,7 +127,6 @@ def create_admin_settings_router() -> APIRouter:
     async def update_admin_settings(
         body: AdminSettingsUpdate,
         request: Request,
-        response: Response,
         _: Principal = Depends(require_role("volundr:admin")),
     ):
         """Update admin settings (admin only)."""
@@ -141,16 +139,6 @@ def create_admin_settings_router() -> APIRouter:
                 "Admin updated storage settings: home_enabled=%s, file_manager_enabled=%s",
                 _sanitize_log(body.storage.home_enabled),
                 _sanitize_log(body.storage.file_manager_enabled),
-            )
-        if request.method.upper() == "PUT":
-            warn_on_legacy_route(
-                request,
-                response,
-                LegacyRouteNotice(
-                    legacy_path="/api/v1/volundr/admin/settings",
-                    canonical_path="/api/v1/volundr/admin/settings",
-                ),
-                route_logger=logger,
             )
         storage = settings.get("storage", {})
         return AdminSettingsResponse(

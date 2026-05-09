@@ -30,20 +30,6 @@ def create_issues_router(
     integration_repo: IntegrationRepository,
     tracker_factory: TrackerFactory,
 ) -> APIRouter:
-    """Create FastAPI router for generic issue endpoints."""
-    return _build_issues_router(
-        integration_repo,
-        tracker_factory,
-        prefix="/api/v1/volundr/issues",
-        deprecated=True,
-        canonical_prefix="/api/v1/tracker",
-    )
-
-
-def create_canonical_issues_router(
-    integration_repo: IntegrationRepository,
-    tracker_factory: TrackerFactory,
-) -> APIRouter:
     """Create canonical tracker issue endpoints."""
     return _build_issues_router(
         integration_repo,
@@ -52,6 +38,14 @@ def create_canonical_issues_router(
         deprecated=False,
         canonical_prefix="/api/v1/tracker",
     )
+
+
+def create_canonical_issues_router(
+    integration_repo: IntegrationRepository,
+    tracker_factory: TrackerFactory,
+) -> APIRouter:
+    """Backward-compatible alias for canonical tracker issue endpoints."""
+    return create_issues_router(integration_repo, tracker_factory)
 
 
 def _build_issues_router(

@@ -23,7 +23,7 @@ updates:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /containers/volundr
+    directory: /containers/niuu
     target-branch: dev
     schedule:
       interval: weekly

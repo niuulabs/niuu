@@ -477,13 +477,11 @@ def create_integrations_router(
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
 ) -> APIRouter:
-    """Create the legacy Volundr integrations router."""
+    """Create the canonical shared integrations router."""
     return _build_integrations_router(
         integration_repo,
         tracker_factory,
-        prefix="/api/v1/volundr/integrations",
-        deprecated=True,
-        canonical_prefix="/api/v1/integrations",
+        prefix="/api/v1/integrations",
         registry=registry,
         credential_store=credential_store,
     )
@@ -495,11 +493,10 @@ def create_canonical_integrations_router(
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
 ) -> APIRouter:
-    """Create the canonical shared integrations router."""
-    return _build_integrations_router(
+    """Backward-compatible alias for the canonical shared integrations router."""
+    return create_integrations_router(
         integration_repo,
         tracker_factory,
-        prefix="/api/v1/integrations",
         registry=registry,
         credential_store=credential_store,
     )
