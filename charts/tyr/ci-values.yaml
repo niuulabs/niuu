@@ -59,7 +59,7 @@ volundr:
   url: "http://volundr:80"
 
 migrations:
-  enabled: false
+  enabled: true
 
 livenessProbe:
   enabled: true
