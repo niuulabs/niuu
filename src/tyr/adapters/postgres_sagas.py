@@ -160,17 +160,63 @@ class PostgresSagaRepository(SagaRepository):
         return counts
 
     async def delete_saga(self, saga_id: UUID, *, owner_id: str | None = None) -> bool:
+        owner_filter = " AND owner_id = $2" if owner_id is not None else ""
+        query = f"""
+            WITH target_saga AS (
+                SELECT id, tracker_id
+                FROM sagas
+                WHERE id = $1{owner_filter}
+            ),
+            target_phases AS (
+                SELECT id, tracker_id
+                FROM phases
+                WHERE saga_id IN (SELECT id FROM target_saga)
+            ),
+            target_raids AS (
+                SELECT id, tracker_id
+                FROM raids
+                WHERE phase_id IN (SELECT id FROM target_phases)
+            ),
+            del_session_messages AS (
+                DELETE FROM session_messages
+                WHERE raid_id IN (SELECT id FROM target_raids)
+            ),
+            del_confidence_events AS (
+                DELETE FROM confidence_events
+                WHERE raid_id IN (SELECT id FROM target_raids)
+            ),
+            del_raid_session_messages AS (
+                DELETE FROM raid_session_messages
+                WHERE raid_id IN (SELECT id FROM target_raids)
+                   OR tracker_id IN (SELECT tracker_id FROM target_raids)
+            ),
+            del_raid_confidence_events AS (
+                DELETE FROM raid_confidence_events
+                WHERE raid_id IN (SELECT id FROM target_raids)
+                   OR tracker_id IN (SELECT tracker_id FROM target_raids)
+            ),
+            del_raid_progress AS (
+                DELETE FROM raid_progress
+                WHERE saga_tracker_id IN (SELECT tracker_id FROM target_saga)
+                   OR phase_tracker_id IN (SELECT tracker_id FROM target_phases)
+                   OR raid_id IN (SELECT id FROM target_raids)
+                   OR tracker_id IN (SELECT tracker_id FROM target_raids)
+            ),
+            del_raids AS (
+                DELETE FROM raids
+                WHERE id IN (SELECT id FROM target_raids)
+            ),
+            del_phases AS (
+                DELETE FROM phases
+                WHERE id IN (SELECT id FROM target_phases)
+            )
+            DELETE FROM sagas
+            WHERE id IN (SELECT id FROM target_saga)
+        """
         if owner_id is not None:
-            result = await self._pool.execute(
-                "DELETE FROM sagas WHERE id = $1 AND owner_id = $2",
-                saga_id,
-                owner_id,
-            )
+            result = await self._pool.execute(query, saga_id, owner_id)
         else:
-            result = await self._pool.execute(
-                "DELETE FROM sagas WHERE id = $1",
-                saga_id,
-            )
+            result = await self._pool.execute(query, saga_id)
         return result == "DELETE 1"
 
     async def update_saga_status(self, saga_id: UUID, status: SagaStatus) -> None:

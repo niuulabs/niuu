@@ -217,12 +217,32 @@ class TestDeleteSaga:
         mock_pool.execute.return_value = "DELETE 1"
         result = await repo.delete_saga(uuid4())
         assert result is True
+        call_args = mock_pool.execute.call_args
+        query = call_args[0][0]
+        assert "DELETE FROM raid_progress" in query
+        assert "DELETE FROM raid_session_messages" in query
+        assert "DELETE FROM raid_confidence_events" in query
+        assert "DELETE FROM phases" in query
+        assert "DELETE FROM raids" in query
+        assert "DELETE FROM sagas" in query
 
     @pytest.mark.asyncio
     async def test_delete_not_found(self, repo: PostgresSagaRepository, mock_pool: MagicMock):
         mock_pool.execute.return_value = "DELETE 0"
         result = await repo.delete_saga(uuid4())
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_delete_existing_with_owner_id(
+        self, repo: PostgresSagaRepository, mock_pool: MagicMock
+    ):
+        mock_pool.execute.return_value = "DELETE 1"
+        result = await repo.delete_saga(uuid4(), owner_id="dev-user")
+        assert result is True
+        call_args = mock_pool.execute.call_args
+        query = call_args[0][0]
+        assert "owner_id = $2" in query
+        assert call_args[0][2] == "dev-user"
 
 
 class TestUpdateSagaStatus:
