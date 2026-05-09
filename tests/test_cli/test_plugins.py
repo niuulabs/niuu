@@ -313,13 +313,13 @@ class TestTyrPlugin:
         route_domains = plugin.api_route_domains()
         assert route_domains
         assert [route_domain.name for route_domain in route_domains] == [
-            "tracker-project-api",
+            "tracker-intake-api",
             "saga-api",
             "review-api",
             "dispatch-api",
             "workflow-api",
             "settings-api",
-            "tyr-integrations-api",
+            "tyr-channel-api",
             "event-api",
             "tyr-api",
         ]

@@ -325,7 +325,7 @@
     "plugin": "tracker"
   },
   {
-    "name": "tracker-project-api",
+    "name": "tracker-intake-api",
     "prefixes": [
       "/api/v1/tracker/projects",
       "/api/v1/tracker/import"
@@ -342,7 +342,7 @@
     "plugin": "tyr"
   },
   {
-    "name": "tyr-integrations-api",
+    "name": "tyr-channel-api",
     "prefixes": [
       "/api/v1/tyr/integrations",
       "/api/v1/tyr/telegram"
