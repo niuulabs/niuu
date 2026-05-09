@@ -15,8 +15,9 @@ jobs:
   #
   # Self-rolled path filter: we diff the PR head against its base and derive
   # per-area flags. Full-tier PRs (anything targeting dev/main rather than
-  # feat/*) deliberately run the full surface regardless of the fine-grained
-  # diff so that heavyweight validation cannot be skipped by a bad classifier.
+  # feat/*, codex/*, or claude/*) deliberately run the full surface regardless
+  # of the fine-grained diff so that heavyweight validation cannot be skipped
+  # by a bad classifier.
   #
   # Light-tier PRs still use the diff to keep inner-loop checks fast.
   # ---------------------------------------------------------------------------
@@ -57,7 +58,8 @@ jobs:
           base_sha = os.environ["BASE_SHA"]
           head_sha = os.environ["HEAD_SHA"]
           base_ref = os.environ.get("BASE_REF", "")
-          full_tier = not base_ref.startswith("feat/")
+          light_prefixes = ("feat/", "codex/", "claude/")
+          full_tier = not base_ref.startswith(light_prefixes)
 
           changed = subprocess.check_output(
               ["git", "diff", "--name-only", base_sha, head_sha],
@@ -120,7 +122,7 @@ jobs:
           # PRs targeting feat/* branches run a light pipeline (lint + unit tests).
           # PRs targeting dev or main run the full pipeline.
           BASE="${{ github.base_ref }}"
-          if [[ "$BASE" == feat/* ]]; then
+          if [[ "$BASE" == feat/* || "$BASE" == codex/* || "$BASE" == claude/* ]]; then
             echo "level=light" >> $GITHUB_OUTPUT
             echo "Pipeline tier: light (PR targets ${BASE})"
           else
