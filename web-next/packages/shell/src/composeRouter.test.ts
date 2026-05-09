@@ -170,9 +170,8 @@ describe('composeRouter', () => {
       history: createMemoryHistory({ initialEntries: ['/alpha'] }),
     });
 
-    const component = (
-      router.routesById['/alpha'] as { options: { component: ComponentType } }
-    ).options.component;
+    const component = (router.routesById['/alpha'] as { options: { component: ComponentType } })
+      .options.component;
 
     render(createElement(component));
 
@@ -211,9 +210,8 @@ describe('composeRouter', () => {
       history: createMemoryHistory({ initialEntries: ['/beta'] }),
     });
 
-    const component = (
-      router.routesById['/beta'] as { options: { component: ComponentType } }
-    ).options.component;
+    const component = (router.routesById['/beta'] as { options: { component: ComponentType } })
+      .options.component;
 
     const view = render(createElement(component));
 

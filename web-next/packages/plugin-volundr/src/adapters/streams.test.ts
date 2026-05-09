@@ -205,7 +205,7 @@ describe('buildVolundrPtyWsAdapter', () => {
 describe('buildVolundrMetricsSseAdapter', () => {
   const originalFetch = global.fetch;
 
-function mockSseResponse(chunks: string[]): Response {
+  function mockSseResponse(chunks: string[]): Response {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {

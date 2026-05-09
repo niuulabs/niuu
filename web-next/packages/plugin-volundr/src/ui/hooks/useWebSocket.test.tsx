@@ -135,7 +135,9 @@ describe('useWebSocket', () => {
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     getAccessTokenMock.mockReturnValue('secret token');
 
-    renderHook(() => useWebSocket('ws://localhost:8080/s/one/session?tail=1', { reconnect: false }));
+    renderHook(() =>
+      useWebSocket('ws://localhost:8080/s/one/session?tail=1', { reconnect: false }),
+    );
 
     expect(MockWebSocket.instances[0]?.url).toBe(
       'ws://localhost:8080/s/one/session?tail=1&access_token=secret%20token',

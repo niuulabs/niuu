@@ -12,7 +12,12 @@ function createStream() {
   });
 
   const stream: IPtyStream = { send, subscribe };
-  return { stream, send, subscribe, emit: (chunk: string) => subscribers.forEach((fn) => fn(chunk)) };
+  return {
+    stream,
+    send,
+    subscribe,
+    emit: (chunk: string) => subscribers.forEach((fn) => fn(chunk)),
+  };
 }
 
 describe('useExec', () => {

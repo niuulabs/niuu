@@ -102,7 +102,9 @@ describe('ConfigProvider', () => {
       </ConfigProvider>,
     );
 
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('default /config.json'));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('default /config.json'),
+    );
   });
 
   it('normalizes non-Error fetch failures into an Error instance', async () => {
