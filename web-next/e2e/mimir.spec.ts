@@ -6,11 +6,11 @@ test('navigate to /mimir renders the page header', async ({ page }) => {
   await expect(page.getByText('the well of knowledge').first()).toBeVisible();
 });
 
-test('/mimir renders tab navigation', async ({ page }) => {
+test('/mimir overview renders mount focus and quick filters in the subnav', async ({ page }) => {
   await page.goto('/mimir');
-  await expect(page.getByRole('tab', { name: 'Overview' })).toBeVisible();
-  await expect(page.getByRole('tab', { name: 'Pages' })).toBeVisible();
-  await expect(page.getByRole('tab', { name: 'Sources' })).toBeVisible();
+  await expect(page.getByText('Mount focus')).toBeVisible();
+  await expect(page.getByText('Quick filters')).toBeVisible();
+  await expect(page.getByRole('button', { name: /lint errors/i })).toBeVisible();
 });
 
 test('Overview tab shows KPI strip', async ({ page }) => {
@@ -35,18 +35,16 @@ test('Overview tab shows recent-writes feed', async ({ page }) => {
   await expect(page.getByRole('log', { name: /recent writes/ })).toBeVisible({ timeout: 5000 });
 });
 
-test('switching to Pages tab shows the file tree', async ({ page }) => {
-  await page.goto('/mimir');
-  await page.getByRole('tab', { name: 'Pages' }).click();
+test('/mimir/pages shows the file tree', async ({ page }) => {
+  await page.goto('/mimir/pages');
   await expect(page.getByRole('complementary', { name: /page tree/ })).toBeVisible({
     timeout: 5000,
   });
   await expect(page.getByText('arch/').first()).toBeVisible({ timeout: 5000 });
 });
 
-test('can open a page and see its title', async ({ page }) => {
-  await page.goto('/mimir');
-  await page.getByRole('tab', { name: 'Pages' }).click();
+test('/mimir/pages can open a page and see its title', async ({ page }) => {
+  await page.goto('/mimir/pages');
   // Click on the arch/ dir then overview leaf
   const archDir = page.getByText('arch/').first();
   await expect(archDir).toBeVisible({ timeout: 5000 });
@@ -58,9 +56,8 @@ test('can open a page and see its title', async ({ page }) => {
   await expect(page.getByText('Architecture Overview')).toBeVisible({ timeout: 5000 });
 });
 
-test('edit a zone and cancel restores read mode', async ({ page }) => {
-  await page.goto('/mimir');
-  await page.getByRole('tab', { name: 'Pages' }).click();
+test('/mimir/pages edit a zone and cancel restores read mode', async ({ page }) => {
+  await page.goto('/mimir/pages');
   // Open architecture overview
   await page
     .getByRole('button', { name: /overview/ })
@@ -78,9 +75,8 @@ test('edit a zone and cancel restores read mode', async ({ page }) => {
   await expect(page.getByRole('textbox', { name: /zone edit area/ })).not.toBeVisible();
 });
 
-test('save a zone shows destination mount in success banner', async ({ page }) => {
-  await page.goto('/mimir');
-  await page.getByRole('tab', { name: 'Pages' }).click();
+test('/mimir/pages save a zone shows destination mount in success banner', async ({ page }) => {
+  await page.goto('/mimir/pages');
   await page
     .getByRole('button', { name: /overview/ })
     .first()
@@ -94,23 +90,20 @@ test('save a zone shows destination mount in success banner', async ({ page }) =
   await expect(page.getByText(/saved →/).first()).toBeVisible({ timeout: 5000 });
 });
 
-test('switching to Sources tab shows origin filter tabs', async ({ page }) => {
-  await page.goto('/mimir');
-  await page.getByRole('tab', { name: 'Sources' }).click();
+test('/mimir/sources shows origin filter tabs', async ({ page }) => {
+  await page.goto('/mimir/sources');
   await expect(page.getByRole('tab', { name: 'all' })).toBeVisible({ timeout: 5000 });
   await expect(page.getByRole('tab', { name: 'web' })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'file' })).toBeVisible();
 });
 
-test('Sources tab shows source count', async ({ page }) => {
-  await page.goto('/mimir');
-  await page.getByRole('tab', { name: 'Sources' }).click();
+test('/mimir/sources shows source count', async ({ page }) => {
+  await page.goto('/mimir/sources');
   await expect(page.getByText(/sources/)).toBeVisible({ timeout: 5000 });
 });
 
-test('filtering sources by origin updates the count', async ({ page }) => {
-  await page.goto('/mimir');
-  await page.getByRole('tab', { name: 'Sources' }).click();
+test('/mimir/sources filtering by origin updates the count', async ({ page }) => {
+  await page.goto('/mimir/sources');
   await expect(page.getByText('7 sources')).toBeVisible({ timeout: 5000 });
   await page.getByRole('tab', { name: 'web' }).click();
   await expect(page.getByText(/1 source/)).toBeVisible({ timeout: 3000 });
@@ -125,9 +118,10 @@ test('mimir rune is visible in the rail', async ({ page }) => {
 // /mimir/search — Search view
 // ---------------------------------------------------------------------------
 
-test('/mimir/search renders the search page', async ({ page }) => {
+test('/mimir/search renders the search workspace', async ({ page }) => {
   await page.goto('/mimir/search');
-  await expect(page.getByRole('heading', { name: /search/i })).toBeVisible();
+  await expect(page.getByRole('searchbox')).toBeVisible();
+  await expect(page.getByText(/mount-aware ranking/i)).toBeVisible();
 });
 
 test('/mimir/search shows search input', async ({ page }) => {
@@ -137,7 +131,7 @@ test('/mimir/search shows search input', async ({ page }) => {
 
 test('/mimir/search shows mode toggle buttons', async ({ page }) => {
   await page.goto('/mimir/search');
-  await expect(page.getByRole('button', { name: /full-text/i })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^fts$/i })).toBeVisible();
   await expect(page.getByRole('button', { name: /semantic/i })).toBeVisible();
   await expect(page.getByRole('button', { name: /hybrid/i })).toBeVisible();
 });
@@ -150,7 +144,7 @@ test('/mimir/search — typing a query returns results', async ({ page }) => {
 
 test('/mimir/search — toggling mode changes active button', async ({ page }) => {
   await page.goto('/mimir/search');
-  const ftsBtn = page.getByRole('button', { name: /full-text/i });
+  const ftsBtn = page.getByRole('button', { name: /^fts$/i });
   await ftsBtn.click();
   await expect(ftsBtn).toHaveAttribute('aria-pressed', 'true');
 });
@@ -160,14 +154,14 @@ test('/mimir/search — search result shows title and path', async ({ page }) =>
   await page.getByRole('searchbox').fill('architecture');
   const firstResult = page.getByTestId('search-result').first();
   await expect(firstResult).toBeVisible({ timeout: 5000 });
-  await expect(firstResult.locator('.search-page__result-title')).toBeVisible();
-  await expect(firstResult.locator('.search-page__result-path')).toBeVisible();
+  await expect(firstResult).toContainText('Architecture');
+  await expect(firstResult).toContainText('/arch/overview');
 });
 
 test('/mimir/search — searching across mounts (hybrid mode)', async ({ page }) => {
   await page.goto('/mimir/search');
   // Hybrid is default; switch to fts and back to hybrid to verify toggle works
-  await page.getByRole('button', { name: /full-text/i }).click();
+  await page.getByRole('button', { name: /^fts$/i }).click();
   await page.getByRole('button', { name: /hybrid/i }).click();
   await expect(page.getByRole('button', { name: /hybrid/i })).toHaveAttribute(
     'aria-pressed',
@@ -181,9 +175,12 @@ test('/mimir/search — searching across mounts (hybrid mode)', async ({ page })
 // /mimir/graph — Graph view
 // ---------------------------------------------------------------------------
 
-test('/mimir/graph renders the graph page', async ({ page }) => {
+test('/mimir/graph renders the graph workspace', async ({ page }) => {
   await page.goto('/mimir/graph');
-  await expect(page.getByRole('heading', { name: /knowledge graph/i })).toBeVisible();
+  await expect(page.getByRole('img', { name: /knowledge graph/i })).toBeVisible({
+    timeout: 5000,
+  });
+  await expect(page.locator('[aria-label=\"Graph legend\"]')).toBeVisible();
 });
 
 test('/mimir/graph shows the graph SVG after load', async ({ page }) => {
@@ -195,13 +192,15 @@ test('/mimir/graph shows the graph SVG after load', async ({ page }) => {
 
 test('/mimir/graph shows node and edge counts', async ({ page }) => {
   await page.goto('/mimir/graph');
-  await expect(page.getByText(/nodes/)).toBeVisible({ timeout: 5000 });
-  await expect(page.getByText(/edges/)).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('graph-info')).toContainText(/pages/i, { timeout: 5000 });
+  await expect(page.getByTestId('graph-info')).toContainText(/edges/i);
 });
 
-test('/mimir/graph has hop selector', async ({ page }) => {
+test('/mimir/graph shows category and edge legend labels', async ({ page }) => {
   await page.goto('/mimir/graph');
-  await expect(page.getByRole('group', { name: /hop count/i })).toBeVisible();
+  const legend = page.locator('[aria-label=\"Graph legend\"]');
+  await expect(legend.getByText('Category', { exact: true })).toBeVisible({ timeout: 5000 });
+  await expect(legend.getByText('Edges', { exact: true })).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
@@ -220,14 +219,14 @@ test('/mimir/entities shows entity items after load', async ({ page }) => {
 
 test('/mimir/entities shows entity type filter buttons', async ({ page }) => {
   await page.goto('/mimir/entities');
-  await expect(page.getByRole('button', { name: /all/i })).toBeVisible();
-  await expect(page.getByRole('button', { name: /org/i })).toBeVisible();
-  await expect(page.getByRole('button', { name: /concept/i })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'All', exact: true })).toBeVisible();
+  await expect(page.locator('button[data-kind=\"org\"]')).toBeVisible();
+  await expect(page.locator('button[data-kind=\"concept\"]')).toBeVisible();
 });
 
 test('/mimir/entities — clicking a kind filter updates active state', async ({ page }) => {
   await page.goto('/mimir/entities');
-  const orgBtn = page.getByRole('button', { name: /org/i });
+  const orgBtn = page.locator('button[data-kind=\"org\"]');
   await orgBtn.click();
   await expect(orgBtn).toHaveAttribute('aria-pressed', 'true');
 });

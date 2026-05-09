@@ -1,32 +1,30 @@
 import { test, expect } from '@playwright/test';
 
-test('niuu boots and hello plugin renders', async ({ page }) => {
+test('niuu boots into the volundr front door', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByText('hello · smoke test')).toBeVisible();
-  await expect(
-    page.getByText('loading…').or(page.getByText('hello from the mock adapter')),
-  ).toBeVisible();
-  await expect(page.getByText('hello from the mock adapter')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
+  await expect(page).toHaveURL('http://localhost:5173/volundr');
 });
 
-test('deep-link /hello renders hello page directly', async ({ page }) => {
-  await page.goto('/hello');
-  await expect(page.getByText('hello · smoke test')).toBeVisible();
-  await expect(page.getByText('hello from the mock adapter')).toBeVisible({ timeout: 5000 });
+test('deep-link /volundr renders the forge page directly', async ({ page }) => {
+  await page.goto('/volundr');
+  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
 });
 
-test('navigating away from /hello and back preserves the shell', async ({ page }) => {
-  await page.goto('/hello');
-  await expect(page.getByText('hello from the mock adapter')).toBeVisible({ timeout: 5000 });
+test('navigating away from /volundr and back preserves the shell', async ({ page }) => {
+  await page.goto('/volundr');
+  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
 
-  // Navigate to root (which redirects back to /hello, the only plugin)
-  await page.goto('/');
-  await expect(page.getByText('hello · smoke test')).toBeVisible();
-  await expect(page.getByText('hello from the mock adapter')).toBeVisible({ timeout: 5000 });
+  await page.goto('/tyr');
+  await expect(page.getByRole('heading', { name: 'Tyr' })).toBeVisible({ timeout: 5000 });
 
-  // Browser back button goes back to /hello cleanly
   await page.goBack();
-  await expect(page.getByText('hello · smoke test')).toBeVisible();
+  await expect(page).toHaveURL(/\/volundr$/);
+  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
 });
 
 test('unknown route shows not-found page', async ({ page }) => {

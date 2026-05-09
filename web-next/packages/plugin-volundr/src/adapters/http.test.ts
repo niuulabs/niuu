@@ -496,11 +496,11 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.put).toHaveBeenCalledWith('/presets/p1', preset);
   });
 
-  it('getIdentity calls GET /identity', async () => {
+  it('getIdentity calls GET /identity/me', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).getIdentity();
     const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
-    expect(sharedClient.get).toHaveBeenCalledWith('/identity');
+    expect(sharedClient.get).toHaveBeenCalledWith('/identity/me');
   });
 
   it('listArchivedSessions uses the archived status query instead of a synthetic sub-route', async () => {

@@ -118,10 +118,10 @@ export function useWebSocket(
       wsRef.current = ws;
       const handlers = snapshotHandlersPerConnectionRef.current
         ? {
-            onOpen,
-            onMessage,
-            onClose,
-            onError,
+            onOpen: onOpenRef.current,
+            onMessage: onMessageRef.current,
+            onClose: onCloseRef.current,
+            onError: onErrorRef.current,
           }
         : null;
 

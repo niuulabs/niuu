@@ -11,9 +11,8 @@ const STUB_AUTH_CONFIG = {
   theme: 'ice',
   plugins: {
     login: { enabled: true, order: 0 },
-    hello: { enabled: true, order: 1 },
+    volundr: { enabled: true, order: 1 },
   },
-  services: { hello: { mode: 'mock' } },
   auth: {
     issuer: 'http://localhost:9876/realms/test',
     clientId: 'niuu-web',
