@@ -582,29 +582,19 @@ jobs:
             --set primary.initdb.scripts."init\.sql"="CREATE DATABASE tyr;" \
             --wait --timeout 120s
 
-      - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Load PR container images into kind
+      - name: Create registry pull secret in kind
         run: |
-          PR_TAG="pr-${{ github.event.number }}"
-          for CONTAINER in niuu skuld; do
-            IMAGE="ghcr.io/${{ github.repository_owner }}/${CONTAINER}:${PR_TAG}"
-            if docker pull "${IMAGE}"; then
-              kind load docker-image "${IMAGE}" --name ci-test
-            else
-              echo "::warning::Could not pull ${IMAGE} — chart will use image pull from registry"
-            fi
-          done
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --docker-server=ghcr.io \
+            --docker-username='${{ github.actor }}' \
+            --docker-password='${{ secrets.GITHUB_TOKEN }}' \
+            --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Install Volundr chart
         run: |
           helm install volundr charts/volundr/ \
             -f charts/volundr/ci-values.yaml \
+            --set global.imagePullSecrets[0]=ghcr-pull-secret \
             --set image.tag="pr-${{ github.event.number }}" \
             --wait --timeout 120s
 
@@ -612,6 +602,7 @@ jobs:
         run: |
           helm install tyr charts/tyr/ \
             -f charts/tyr/ci-values.yaml \
+            --set global.imagePullSecrets[0]=ghcr-pull-secret \
             --set image.tag="pr-${{ github.event.number }}" \
             --wait --timeout 120s
 
@@ -619,6 +610,7 @@ jobs:
         run: |
           helm install skuld charts/skuld/ \
             -f charts/skuld/ci-values.yaml \
+            --set global.imagePullSecrets[0]=ghcr-pull-secret \
             --set image.tag="pr-${{ github.event.number }}" \
             --wait --timeout 120s
 
