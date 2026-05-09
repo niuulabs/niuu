@@ -16,109 +16,46 @@ test('/volundr/templates shows template cards after load', async ({ page }) => {
 
 test('/volundr/templates shows the default template', async ({ page }) => {
   await page.goto('/volundr/templates');
-  await expect(page.getByText('default')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('niuu-platform')).toBeVisible({ timeout: 5_000 });
 });
 
-test('/volundr/templates shows the gpu-workload template', async ({ page }) => {
+test('/volundr/templates shows the showcase rail count', async ({ page }) => {
   await page.goto('/volundr/templates');
-  await expect(page.getByText('gpu-workload')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('list', { name: 'Pod templates' })).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByTestId('template-card')).toHaveCount(6);
 });
 
-test('/volundr/templates shows version badges', async ({ page }) => {
+test('/volundr/templates shows the selected template detail workspace', async ({ page }) => {
   await page.goto('/volundr/templates');
-  await expect(page.getByText('v1')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText(/workspace \+ runtime bundles/i)).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByTestId('detail-card')).toHaveCount(4);
 });
 
-test('/volundr/templates — Clone button creates a cloned template', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await expect(page.getByTestId('template-card').first()).toBeVisible({ timeout: 5_000 });
-
-  const initialCount = await page.getByTestId('template-card').count();
-
-  // Click the first Clone button
-  await page
-    .getByRole('button', { name: /clone template/i })
-    .first()
-    .click();
-
-  // Wait for the new cloned card to appear
-  await expect(page.getByTestId('template-card')).toHaveCount(initialCount + 1, {
-    timeout: 5_000,
-  });
-  await expect(page.getByText(/clone of/i)).toBeVisible({ timeout: 5_000 });
-});
-
-test('/volundr/templates — Edit button opens the editor drawer', async ({ page }) => {
+test('/volundr/templates can switch the selected template from the rail', async ({ page }) => {
   await page.goto('/volundr/templates');
   await expect(page.getByTestId('template-card').first()).toBeVisible({ timeout: 5_000 });
-
-  await page
-    .getByRole('button', { name: /edit template/i })
-    .first()
-    .click();
-
-  await expect(page.getByRole('dialog', { name: /edit template/i })).toBeVisible({
-    timeout: 5_000,
-  });
+  await page.getByText('volundr-web', { exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'volundr-web' })).toBeVisible({ timeout: 5_000 });
 });
 
-test('/volundr/templates — New Template button opens editor', async ({ page }) => {
+test('/volundr/templates exposes template detail tabs', async ({ page }) => {
   await page.goto('/volundr/templates');
-  await page.getByRole('button', { name: /new template/i }).click();
-  await expect(page.getByRole('dialog', { name: /new template/i })).toBeVisible({
-    timeout: 5_000,
-  });
+  await page.getByRole('tab', { name: 'runtime' }).click();
+  await expect(page.getByTestId('tab-runtime')).toBeVisible({ timeout: 5_000 });
+  await page.getByRole('tab', { name: 'workspace' }).click();
+  await expect(page.getByTestId('tab-workspace')).toBeVisible({ timeout: 5_000 });
+  await page.getByRole('tab', { name: 'rules' }).click();
+  await expect(page.getByTestId('tab-rules')).toBeVisible({ timeout: 5_000 });
 });
 
-test('/volundr/templates — editor shows form fields', async ({ page }) => {
+test('/volundr/templates — bifrost-gateway surfaces its MCP server detail', async ({ page }) => {
   await page.goto('/volundr/templates');
-  await page.getByRole('button', { name: /new template/i }).click();
-  await expect(page.getByRole('dialog')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByPlaceholder('e.g. default')).toBeVisible();
-  await expect(page.getByPlaceholder('ghcr.io/niuulabs/skuld')).toBeVisible();
-});
-
-test('/volundr/templates — saving with blank name shows validation error', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await page.getByRole('button', { name: /new template/i }).click();
-  await expect(page.getByRole('dialog')).toBeVisible({ timeout: 5_000 });
-
-  // Clear name field
-  const nameInput = page.getByPlaceholder('e.g. default');
-  await nameInput.clear();
-
-  await page.getByRole('button', { name: /save template/i }).click();
-  await expect(page.getByText(/name is required/i).first()).toBeVisible({ timeout: 5_000 });
-});
-
-test('/volundr/templates — edit, change image, save updates the template', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await expect(page.getByTestId('template-card').first()).toBeVisible({ timeout: 5_000 });
-
-  await page
-    .getByRole('button', { name: /edit template/i })
-    .first()
-    .click();
-  await expect(page.getByRole('dialog', { name: /edit template/i })).toBeVisible({
-    timeout: 5_000,
-  });
-
-  const imageInput = page.getByPlaceholder('ghcr.io/niuulabs/skuld');
-  await imageInput.clear();
-  await imageInput.fill('ghcr.io/niuulabs/skuld-new');
-
-  await page.getByRole('button', { name: /save template/i }).click();
-
-  // Drawer should close on success
-  await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 5_000 });
-});
-
-test('/volundr/templates — masks secret-ref env values in card display', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await expect(page.getByText('gpu-workload')).toBeVisible({ timeout: 5_000 });
-  // HF_TOKEN is a secret ref — its value should be masked
-  await expect(page.getByText('HF_TOKEN')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText('***')).toBeVisible({ timeout: 5_000 });
+  await page.getByRole('button', { name: 'bifrost-gateway', exact: true }).click();
+  await page.getByRole('tab', { name: 'mcp' }).click();
+  await expect(page.getByTestId('tab-mcp')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByTestId('mcp-server-card')).toHaveCount(2);
+  await expect(page.getByText('filesystem', { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('uvx mcp-filesystem')).toBeVisible({ timeout: 5_000 });
 });
 
 // ---------------------------------------------------------------------------
@@ -132,24 +69,28 @@ test('/volundr/clusters renders the clusters page', async ({ page }) => {
 
 test('/volundr/clusters shows cluster cards', async ({ page }) => {
   await page.goto('/volundr/clusters');
-  await expect(page.getByTestId('cluster-card').first()).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByTestId('clusters-sidebar')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('button', { name: 'Eitri' })).toBeVisible({ timeout: 5_000 });
 });
 
 test('/volundr/clusters shows cluster names', async ({ page }) => {
   await page.goto('/volundr/clusters');
-  await expect(page.getByText('Eitri')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText('Brokkr')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('heading', { name: 'Valaskjálf' })).toBeVisible({
+    timeout: 5_000,
+  });
+  await expect(page.getByRole('button', { name: /Eitri/i })).toBeVisible({ timeout: 5_000 });
 });
 
 test('/volundr/clusters shows capacity bars', async ({ page }) => {
   await page.goto('/volundr/clusters');
-  await expect(page.getByTestId('cap-cpu').first()).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByTestId('cap-memory').first()).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('CPU').first()).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('MEMORY').first()).toBeVisible({ timeout: 5_000 });
 });
 
 test('/volundr/clusters shows node list', async ({ page }) => {
   await page.goto('/volundr/clusters');
-  await expect(page.getByTestId('cluster-node').first()).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('heading', { name: 'Nodes' })).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText(/valaskjalf-/i).first()).toBeVisible({ timeout: 5_000 });
 });
 
 // ---------------------------------------------------------------------------

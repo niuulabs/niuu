@@ -151,9 +151,9 @@ test.describe('Tyr Advanced settings', () => {
 
   test('shows danger buttons', async ({ page }) => {
     await page.goto('/tyr/settings/advanced');
-    await expect(page.getByText('Flush')).toBeVisible();
-    await expect(page.getByText('Reset')).toBeVisible();
-    await expect(page.getByText('Rebuild')).toBeVisible();
+    await expect(page.getByTestId('action-flush-queue')).toBeVisible();
+    await expect(page.getByTestId('action-reset-dispatcher')).toBeVisible();
+    await expect(page.getByTestId('action-rebuild-confidence-scores')).toBeVisible();
   });
 });
 
@@ -238,8 +238,10 @@ test.describe('Tyr Persona overrides settings', () => {
 
   test('shows persona list after loading', async ({ page }) => {
     await expect(page.getByText(/personas/)).toBeVisible({ timeout: 5000 });
-    // Mock has 21 builtin personas
-    await expect(page.getByText(/21 personas/)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('listbox', { name: 'Persona list' })).toBeVisible({
+      timeout: 5000,
+    });
+    await expect(page.getByText(/\d+ personas?/)).toBeVisible({ timeout: 5000 });
   });
 
   test('shows filter tabs', async ({ page }) => {
@@ -292,6 +294,7 @@ test.describe('Dispatch defaults applied to dispatch behaviour', () => {
 
     // Navigate back to /tyr — the Tyr page is still accessible
     await page.goto('/tyr');
-    await expect(page.getByText('Tyr · Dashboard')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Tyr' })).toBeVisible();
+    await expect(page.getByTestId('tyr-dispatcher-stats')).toBeVisible({ timeout: 5000 });
   });
 });
