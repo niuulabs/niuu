@@ -872,10 +872,10 @@ class DriveLoop:
                 await emit_fn(outcome)
             except Exception:
                 logger.warning("emit_session_ended failed; continuing", exc_info=True)
-        await self._emit_sleipnir_task_completed(task, outcome)
+        response_text = capture_channel.response_text if capture_channel else ""
+        await self._emit_sleipnir_task_completed(task, outcome, response_text=response_text)
 
         # Publish outcome event to mesh for other agents to consume
-        response_text = capture_channel.response_text if capture_channel else ""
         await self._emit_mesh_outcome_event(task, response_text, success)
 
         await self._event_publisher.publish(
@@ -922,19 +922,43 @@ class DriveLoop:
             )
         return f"{type(exc).__name__}: {exc}"
 
-    async def _emit_sleipnir_task_completed(self, task: AgentTask, outcome: str) -> None:
+    async def _emit_sleipnir_task_completed(
+        self,
+        task: AgentTask,
+        outcome: str,
+        *,
+        response_text: str = "",
+    ) -> None:
         """Publish ravn.task.completed to Sleipnir (no-op when publisher absent)."""
         if self._sleipnir_publisher is None or _sleipnir_task_completed is None:
             return
         try:
             persona = getattr(task, "persona", "") or ""
+            correlation_id = task.session_id or task.task_id
             event = _sleipnir_task_completed(
                 task_id=task.task_id,
                 persona=persona,
                 outcome=outcome,
                 source=self._source_id,
-                correlation_id=task.task_id,
+                correlation_id=correlation_id,
             )
+            if task.session_id:
+                event.payload["session_id"] = task.session_id
+
+            parsed = parse_outcome_block(response_text) if response_text else None
+            if parsed is not None:
+                event.payload["structured_outcome"] = parsed.fields
+                event.payload["outcome_valid"] = parsed.valid
+                for key in (
+                    "verdict",
+                    "tests_passing",
+                    "scope_adherence",
+                    "pr_url",
+                    "summary",
+                    "files_changed",
+                ):
+                    if key in parsed.fields:
+                        event.payload[key] = parsed.fields[key]
             await self._sleipnir_publisher.publish(event)
         except Exception:
             logger.warning("Failed to emit ravn.task.completed; continuing.", exc_info=True)

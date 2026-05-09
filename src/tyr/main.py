@@ -825,7 +825,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         len(et_cfg.rules),
                     )
 
-            # Wire RavnOutcomeHandler (Sleipnir subscriber for ravn.task.completed)
+            # Wire RavnOutcomeHandler (canonical ravn.session.ended plus compatibility task events)
             ravn_outcome_handler = None
             if (
                 settings.ravn_outcome.enabled

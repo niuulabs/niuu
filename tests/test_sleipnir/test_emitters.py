@@ -167,6 +167,8 @@ class TestDriveLoopEmitter:
         assert _published_event_type(pub) == registry.RAVN_TASK_COMPLETED
         evt = pub.publish.call_args[0][0]
         assert evt.payload["outcome"] == "success"
+        assert evt.payload["session_id"] == task.session_id
+        assert evt.correlation_id == task.session_id
 
     async def test_emit_task_completed_failure(self) -> None:
         pub = _mock_publisher()
@@ -175,6 +177,23 @@ class TestDriveLoopEmitter:
         await loop._emit_sleipnir_task_completed(task, "failure")
         evt = pub.publish.call_args[0][0]
         assert evt.payload["outcome"] == "failure"
+
+    async def test_emit_task_completed_includes_structured_outcome_when_available(self) -> None:
+        pub = _mock_publisher()
+        loop = self._make_drive_loop(pub)
+        task = self._make_task()
+        response_text = """\
+---outcome---
+verdict: approve
+tests_passing: true
+scope_adherence: 0.95
+summary: Ready to merge
+---end---"""
+        await loop._emit_sleipnir_task_completed(task, "success", response_text=response_text)
+        evt = pub.publish.call_args[0][0]
+        assert evt.payload["structured_outcome"]["verdict"] == "approve"
+        assert evt.payload["verdict"] == "approve"
+        assert evt.payload["summary"] == "Ready to merge"
 
     async def test_emit_task_completed_noop_when_no_publisher(self) -> None:
         loop = self._make_drive_loop(None)

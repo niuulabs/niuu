@@ -965,7 +965,7 @@ class TestBuildSpawnRequestPersonaOverrides:
             flock_default_personas=[{"name": "coordinator"}, {"name": "reviewer"}],
         )
         req = self._call(config, self._make_saga(), self._make_issue())
-        assert req.workload_config["personas"] == [{"name": "coordinator"}, {"name": "reviewer"}]
+        assert req.workload_config["personas"] == [{"name": "raid-executor"}, {"name": "reviewer"}]
 
     def test_per_persona_overrides_forwarded(self):
         """Per-persona llm dict and iteration_budget are included in workload_config."""

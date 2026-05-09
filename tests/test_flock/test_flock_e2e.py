@@ -4,7 +4,7 @@ Validates the full loop:
     Tyr dispatches raid
     → SkuldMeshAdapter receives work_request
     → MockCLITransport returns outcome block
-    → ravn.task.completed published on InProcessBus
+    → ravn.session.ended published on InProcessBus
     → RavnOutcomeHandler routes to ReviewEngine
     → Raid state transitions correctly
 
@@ -245,8 +245,8 @@ async def test_mimir_read_merges_both_mounts() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_event_type_ravn_task_completed_consumed() -> None:
-    """RavnOutcomeHandler consumes ravn.task.completed events (not other types)."""
+async def test_outcome_handler_ignores_irrelevant_event_types() -> None:
+    """RavnOutcomeHandler ignores unrelated events and only reacts to completion events."""
     from datetime import UTC, datetime
 
     from sleipnir.domain.events import SleipnirEvent

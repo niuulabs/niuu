@@ -158,7 +158,7 @@ class TestFlowResolution:
 
         personas = request.workload_config["personas"]
         assert len(personas) == 2
-        assert personas[0]["name"] == "coordinator"
+        assert personas[0]["name"] == "raid-executor"
         assert personas[1]["name"] == "reviewer"
 
     def test_build_spawn_request_no_flow_provider(self) -> None:

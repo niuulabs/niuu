@@ -1,21 +1,16 @@
-"""RavnOutcomeHandler — Sleipnir subscriber for ``ravn.task.completed`` events.
+"""RavnOutcomeHandler — Sleipnir subscriber for Ravn completion events.
 
-Consumes structured task outcomes published by the ravn flock coordinator and
-routes them through the :class:`~tyr.domain.services.review_engine.ReviewEngine`
-decision pipeline.
+Consumes canonical ``ravn.session.ended`` events from Volundr-managed flock
+sessions plus compatibility ``ravn.task.completed`` events from direct Ravn
+flows, then routes normalized outcomes through the
+:class:`~tyr.domain.services.review_engine.ReviewEngine` decision pipeline.
 
 Lifecycle::
 
     handler = RavnOutcomeHandler(...)
-    await handler.start()   # subscribe to ravn.task.completed
+    await handler.start()   # subscribe to ravn.session.ended + ravn.task.completed
     # ... application runs ...
     await handler.stop()    # unsubscribe; clean up
-
-**Correlation**
-
-The ``SleipnirEvent.correlation_id`` carries the Volundr session ID.  The
-handler uses this to look up the corresponding raid via
-``TrackerPort.get_raid_by_session``.
 
 **Coexistence with ActivitySubscriber**
 
@@ -30,20 +25,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from uuid import UUID
 
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirSubscriber, Subscription
 from tyr.domain.models import RavnOutcome
 from tyr.domain.services.review_engine import ReviewEngine
-from tyr.ports.tracker import TrackerFactory
+from tyr.ports.tracker import TrackerFactory, TrackerPort
 
 logger = logging.getLogger(__name__)
 
 RAVN_TASK_COMPLETED = "ravn.task.completed"
+RAVN_SESSION_ENDED = "ravn.session.ended"
+_SUBSCRIBED_EVENT_TYPES = [RAVN_SESSION_ENDED, RAVN_TASK_COMPLETED]
 
 
 class RavnOutcomeHandler:
-    """Subscribes to ``ravn.task.completed`` events and routes outcomes through ReviewEngine.
+    """Subscribes to Ravn completion events and routes outcomes through ReviewEngine.
 
     Parameters
     ----------
@@ -83,13 +81,16 @@ class RavnOutcomeHandler:
         return self._subscription is not None
 
     async def start(self) -> None:
-        """Subscribe to ``ravn.task.completed`` on Sleipnir."""
+        """Subscribe to Ravn completion events on Sleipnir."""
         if self._subscription is not None:
             return
         self._subscription = await self._subscriber.subscribe(
-            [RAVN_TASK_COMPLETED], self._handle_event
+            _SUBSCRIBED_EVENT_TYPES, self._handle_event
         )
-        logger.info("RavnOutcomeHandler started: subscribed to %s", RAVN_TASK_COMPLETED)
+        logger.info(
+            "RavnOutcomeHandler started: subscribed to %s",
+            ", ".join(_SUBSCRIBED_EVENT_TYPES),
+        )
 
     async def stop(self) -> None:
         """Unsubscribe and cancel in-flight tasks."""
@@ -118,38 +119,48 @@ class RavnOutcomeHandler:
         task.add_done_callback(self._pending_tasks.discard)
 
     async def _process_event(self, event: SleipnirEvent) -> None:
-        session_id = event.correlation_id
-        if not session_id:
-            logger.warning(
-                "RavnOutcomeHandler: event %s has no correlation_id — dropping",
-                event.event_id,
-            )
+        raid = await self._resolve_raid(event)
+        if raid is None:
+            payload_session_id = str(event.payload.get("session_id") or "").strip()
+            payload_raid_id = str(event.payload.get("raid_id") or "").strip()
+            payload_tracker_id = str(
+                event.payload.get("tracker_issue_id") or event.payload.get("tracker_id") or ""
+            ).strip()
+            if not (
+                payload_raid_id
+                or payload_tracker_id
+                or payload_session_id
+                or event.correlation_id
+            ):
+                logger.warning(
+                    "RavnOutcomeHandler: event %s (%s) has no usable "
+                    "raid/session identifiers — dropping",
+                    event.event_id,
+                    event.event_type,
+                )
+            else:
+                logger.warning(
+                    "RavnOutcomeHandler: no raid for event=%s type=%s "
+                    "(raid_id=%s tracker_issue_id=%s session_id=%s correlation_id=%s) — dropping",
+                    event.event_id,
+                    event.event_type,
+                    payload_raid_id or "-",
+                    payload_tracker_id or "-",
+                    payload_session_id or "-",
+                    event.correlation_id or "-",
+                )
             return
 
         outcome = _extract_outcome(event.payload)
 
-        raid = None
-        trackers = await self._tracker_factory.for_owner(self._owner_id)
-        for tracker in trackers:
-            raid = await tracker.get_raid_by_session(session_id)
-            if raid is not None:
-                break
-
-        if raid is None:
-            logger.warning(
-                "RavnOutcomeHandler: no raid for session_id=%s (event=%s) — dropping",
-                session_id,
-                event.event_id,
-            )
-            return
-
         logger.info(
-            "RavnOutcomeHandler: processing outcome for raid %s "
+            "RavnOutcomeHandler: processing %s for raid %s "
             "(verdict=%s, tests_passing=%s, session=%s)",
+            event.event_type,
             raid.tracker_id,
             outcome.verdict,
             outcome.tests_passing,
-            session_id,
+            raid.session_id or event.correlation_id or event.payload.get("session_id") or "-",
         )
 
         try:
@@ -171,14 +182,106 @@ class RavnOutcomeHandler:
                 raid.tracker_id,
             )
 
+    async def _resolve_raid(self, event: SleipnirEvent):
+        payload = event.payload
+        trackers = await self._tracker_factory.for_owner(self._owner_id)
+        if not trackers:
+            return None
+
+        raid_id = str(payload.get("raid_id") or "").strip()
+        tracker_issue_id = str(
+            payload.get("tracker_issue_id") or payload.get("tracker_id") or ""
+        ).strip()
+        session_candidates = [
+            str(payload.get("session_id") or "").strip(),
+            str(event.correlation_id or "").strip(),
+        ]
+
+        for tracker in trackers:
+            raid = await self._resolve_raid_by_explicit_id(tracker, raid_id)
+            if raid is not None:
+                return raid
+
+            if tracker_issue_id:
+                try:
+                    return await tracker.get_raid(tracker_issue_id)
+                except Exception:
+                    logger.debug(
+                        "RavnOutcomeHandler: tracker_issue_id lookup failed for %s",
+                        tracker_issue_id,
+                        exc_info=True,
+                    )
+
+            for session_id in session_candidates:
+                if not session_id:
+                    continue
+                raid = await tracker.get_raid_by_session(session_id)
+                if raid is not None:
+                    return raid
+
+        return None
+
+    async def _resolve_raid_by_explicit_id(
+        self, tracker: TrackerPort, raid_id: str
+    ):
+        if not raid_id:
+            return None
+
+        try:
+            parsed = UUID(raid_id)
+        except ValueError:
+            parsed = None
+
+        if parsed is not None:
+            raid = await tracker.get_raid_by_id(parsed)
+            if raid is not None:
+                return raid
+
+        try:
+            return await tracker.get_raid(raid_id)
+        except Exception:
+            logger.debug(
+                "RavnOutcomeHandler: tracker raid_id lookup failed for %s",
+                raid_id,
+                exc_info=True,
+            )
+            return None
+
 
 def _extract_outcome(payload: dict) -> RavnOutcome:
-    """Parse a ``ravn.task.completed`` payload into a typed :class:`RavnOutcome`."""
+    """Parse a Ravn completion payload into a typed :class:`RavnOutcome`."""
+    structured = payload.get("structured_outcome")
+    structured_payload = structured if isinstance(structured, dict) else {}
+
+    verdict = structured_payload.get("verdict")
+    if verdict is None:
+        verdict = payload.get("verdict")
+
+    tests_passing = structured_payload.get("tests_passing")
+    if tests_passing is None:
+        tests_passing = payload.get("tests_passing")
+
+    scope_adherence = structured_payload.get("scope_adherence")
+    if scope_adherence is None:
+        scope_adherence = payload.get("scope_adherence")
+
+    pr_url = structured_payload.get("pr_url")
+    if pr_url is None:
+        pr_url = payload.get("pr_url")
+
+    files_changed = structured_payload.get("files_changed")
+    if files_changed is None:
+        files_changed = payload.get("files_changed")
+
+    summary = structured_payload.get("summary")
+    if summary is None:
+        summary = payload.get("summary")
+
     return RavnOutcome(
-        verdict=payload.get("verdict", "escalate"),
-        tests_passing=payload.get("tests_passing"),
-        scope_adherence=payload.get("scope_adherence"),
-        pr_url=payload.get("pr_url"),
-        files_changed=list(payload.get("files_changed") or []),
-        summary=str(payload.get("summary") or ""),
+        verdict=str(verdict or "escalate"),
+        tests_passing=tests_passing,
+        scope_adherence=scope_adherence,
+        pr_url=pr_url,
+        files_changed=list(files_changed or []),
+        summary=str(summary or ""),
     )

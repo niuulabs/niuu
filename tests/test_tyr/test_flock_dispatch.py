@@ -135,7 +135,7 @@ class TestBuildSpawnRequestFlockEnabled:
             integration_ids=[],
         )
 
-        assert req.workload_config["personas"] == [{"name": "coordinator"}, {"name": "reviewer"}]
+        assert req.workload_config["personas"] == [{"name": "raid-executor"}, {"name": "reviewer"}]
 
     def test_workload_config_contains_sleipnir_publish_urls(self) -> None:
         config = _make_flock_config(

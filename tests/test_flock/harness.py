@@ -45,7 +45,7 @@ from skuld.config import MeshConfig
 from skuld.mesh_adapter import SkuldMeshAdapter
 from skuld.transports import CLITransport, TransportCapabilities
 from sleipnir.adapters.in_process import InProcessBus
-from sleipnir.domain.events import SleipnirEvent
+from sleipnir.domain.catalog import ravn_session_ended
 from tests.test_tyr.stubs import (
     StubTracker,
     StubTrackerFactory,
@@ -503,8 +503,8 @@ class FlockTestHarness:
            (simulates coordinator delegating coding work).
         3. Skuld feeds the prompt to MockCLITransport and collects the result.
         4. Extract outcome fields from the work_request response.
-        5. Publish ``ravn.task.completed`` on Sleipnir with the outcome
-           payload and ``correlation_id=raid.session_id``.
+        5. Publish canonical ``ravn.session.ended`` on Sleipnir with the
+           structured outcome payload and raid/session identifiers.
         6. Flush Sleipnir bus so RavnOutcomeHandler processes synchronously.
         """
         if not self._started:
@@ -527,16 +527,18 @@ class FlockTestHarness:
         elif response.get("status") != "complete":
             logger.warning("work_request response status=%s", response.get("status"))
 
-        sleipnir_event = SleipnirEvent(
-            event_type="ravn.task.completed",
-            source="ravn:coordinator",
-            payload=outcome_payload,
-            summary="task completed",
-            urgency=0.8,
-            domain="code",
-            timestamp=datetime.now(UTC),
+        sleipnir_event = ravn_session_ended(
+            session_id=raid.session_id or raid.tracker_id,
+            persona="raid-executor",
+            outcome="success" if outcome_payload.get("verdict") == "approve" else "partial",
+            token_count=0,
+            duration_s=0.0,
+            source="skuld:test",
             correlation_id=raid.session_id,
         )
+        sleipnir_event.payload["raid_id"] = str(raid.id)
+        sleipnir_event.payload["structured_outcome"] = dict(outcome_payload)
+        sleipnir_event.payload["outcome_valid"] = bool(outcome_payload)
         await self.bus.publish(sleipnir_event)
         await self.bus.flush()
 

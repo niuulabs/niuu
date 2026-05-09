@@ -2103,6 +2103,18 @@ class Broker:
             if self._artifacts.structured_outcome is not None:
                 event.payload["structured_outcome"] = self._artifacts.structured_outcome
                 event.payload["outcome_valid"] = self._artifacts.outcome_valid
+                for key in (
+                    "verdict",
+                    "tests_passing",
+                    "scope_adherence",
+                    "pr_url",
+                    "summary",
+                    "files_changed",
+                ):
+                    if key in self._artifacts.structured_outcome:
+                        event.payload[key] = self._artifacts.structured_outcome[key]
+            if self._artifacts.files_changed:
+                event.payload["files_changed"] = list(self._artifacts.files_changed)
             if self._artifacts.raid_id:
                 event.payload["raid_id"] = self._artifacts.raid_id
             if self._artifacts.saga_id:

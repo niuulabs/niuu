@@ -949,7 +949,10 @@ class RavnOutcomeConfig(BaseModel):
 
     enabled: bool = Field(
         default=False,
-        description="Enable the ravn.task.completed outcome subscriber.",
+        description=(
+            "Enable the Ravn completion subscriber for canonical "
+            "ravn.session.ended events plus compatibility ravn.task.completed events."
+        ),
     )
     owner_id: str = Field(
         default="api",

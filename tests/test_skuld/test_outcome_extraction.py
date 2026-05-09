@@ -205,7 +205,12 @@ class TestEmitSessionEndedEvent:
         )
         b = Broker(settings=settings, sleipnir_publisher=bus)
         b._artifacts.total_tokens = 1234
-        b._artifacts.structured_outcome = {"verdict": "pass"}
+        b._artifacts.files_changed = ["src/app.py"]
+        b._artifacts.structured_outcome = {
+            "verdict": "approve",
+            "tests_passing": True,
+            "summary": "Ready to merge",
+        }
         b._artifacts.outcome_valid = True
         b._artifacts.saga_id = "saga-abc"
         b._artifacts.raid_id = "raid-xyz"
@@ -221,8 +226,12 @@ class TestEmitSessionEndedEvent:
         assert evt.payload["persona"] == "ravn-audit"
         assert evt.payload["outcome"] == "SUCCESS"
         assert evt.payload["token_count"] == 1234
-        assert evt.payload["structured_outcome"] == {"verdict": "pass"}
+        assert evt.payload["structured_outcome"]["verdict"] == "approve"
         assert evt.payload["outcome_valid"] is True
+        assert evt.payload["verdict"] == "approve"
+        assert evt.payload["tests_passing"] is True
+        assert evt.payload["summary"] == "Ready to merge"
+        assert evt.payload["files_changed"] == ["src/app.py"]
         assert evt.payload["raid_id"] == "raid-xyz"
         assert evt.payload["saga_id"] == "saga-abc"
         assert evt.correlation_id == "sess-e"
@@ -242,6 +251,7 @@ class TestEmitSessionEndedEvent:
         evt = capture.events[0]
         assert evt.payload["outcome"] == "PARTIAL"
         assert "structured_outcome" not in evt.payload
+        assert "files_changed" not in evt.payload
         assert "raid_id" not in evt.payload
         assert "saga_id" not in evt.payload
 
@@ -342,6 +352,8 @@ class TestSessionCompletionE2E:
         assert evt.payload["raid_id"] == "raid-1"
         assert evt.payload["saga_id"] == "saga-1"
         assert evt.payload["structured_outcome"]["verdict"] == "fail"
+        assert evt.payload["verdict"] == "fail"
+        assert evt.payload["summary"] == "Critical auth bypass in middleware"
         assert evt.payload["outcome"] == "SUCCESS"  # outcome_valid is True when YAML parses cleanly
 
     async def test_transcript_without_outcome_emits_partial_event(self, tmp_path):

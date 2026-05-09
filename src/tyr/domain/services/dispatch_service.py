@@ -322,6 +322,23 @@ def _snapshot_hash(personas: list[dict]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:8]
 
 
+def _promote_default_tyr_raid_personas(personas: list[dict]) -> list[dict]:
+    """Prefer an explicit raid completion authority for Tyr's default flock path.
+
+    Tyr's historical default was ``coordinator`` + ``reviewer``. For raid
+    dispatches we want the completion-authority contract to be intentional, so
+    the legacy default pair is upgraded in-memory to ``raid-executor`` +
+    ``reviewer`` unless the caller explicitly chose another flow/composition.
+    """
+    names = [str(persona.get("name") or "") for persona in personas]
+    if names != ["coordinator", "reviewer"]:
+        return personas
+
+    upgraded = copy.deepcopy(personas)
+    upgraded[0]["name"] = "raid-executor"
+    return upgraded
+
+
 def resolve_target_adapter(
     connection_id: str | None,
     adapter_by_name: dict[str, VolundrPort],
@@ -1084,6 +1101,8 @@ class DispatchService:
                 mesh_transport = flow.mesh_transport or mesh_transport
                 if flow.sleipnir_publish_urls:
                     sleipnir_urls = list(flow.sleipnir_publish_urls)
+            else:
+                personas = _promote_default_tyr_raid_personas(personas)
 
         # Apply per-dispatch persona overrides (precedence: dispatch > flow > defaults)
         if persona_overrides:

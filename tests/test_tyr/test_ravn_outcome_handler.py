@@ -1,9 +1,9 @@
-"""Tests for NIU-614 — Tyr ravn.task.completed outcome ingestion.
+"""Tests for NIU-614 / NIU-803 — Tyr Ravn completion outcome ingestion.
 
 Covers:
-  - _extract_outcome: payload → RavnOutcome mapping
+  - _extract_outcome: task/session payload → RavnOutcome mapping
   - ReviewEngine.handle_ravn_outcome: confidence signals + decision logic
-  - RavnOutcomeHandler._process_event: correlation lookup, missing raid, happy path
+  - RavnOutcomeHandler._process_event: raid resolution, missing raid, happy path
   - Integration: InProcessBus round-trip (publish → state transition)
   - Coexistence: raid already terminal when outcome arrives → skipped
 """
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
@@ -31,6 +33,8 @@ from tyr.domain.models import (
     PRStatus,
     RaidStatus,
     RavnOutcome,
+    Saga,
+    SagaStatus,
 )
 from tyr.domain.services.review_engine import ReviewEngine
 from tyr.ports.git import GitPort
@@ -53,10 +57,11 @@ _TRACKER_ID = "raid-tracker-001"
 def _make_sleipnir_event(
     payload: dict | None = None,
     *,
+    event_type: str = "ravn.task.completed",
     correlation_id: str | None = _SESSION,
 ) -> SleipnirEvent:
     return SleipnirEvent(
-        event_type="ravn.task.completed",
+        event_type=event_type,
         source="ravn:coordinator",
         payload=payload or {},
         summary="task completed",
@@ -64,6 +69,23 @@ def _make_sleipnir_event(
         domain="code",
         timestamp=NOW,
         correlation_id=correlation_id,
+    )
+
+
+def _make_saga(*, tracker_id: str = "saga-tracker-001") -> Saga:
+    return Saga(
+        id=uuid4(),
+        tracker_id=tracker_id,
+        tracker_type="linear",
+        slug="test-saga",
+        name="Test Saga",
+        repos=["niuulabs/volundr"],
+        feature_branch="feature/test-saga",
+        status=SagaStatus.ACTIVE,
+        confidence=0.8,
+        created_at=NOW,
+        base_branch="main",
+        owner_id=_OWNER,
     )
 
 
@@ -146,6 +168,26 @@ class TestExtractOutcome:
     def test_null_files_changed_coerced_to_empty(self):
         outcome = _extract_outcome({"files_changed": None})
         assert outcome.files_changed == []
+
+    def test_structured_outcome_payload_is_supported(self):
+        outcome = _extract_outcome(
+            {
+                "structured_outcome": {
+                    "verdict": "approve",
+                    "tests_passing": True,
+                    "scope_adherence": 0.91,
+                    "pr_url": "https://github.com/pr/2",
+                    "summary": "Canonical session-ended payload",
+                },
+                "files_changed": ["src/app.py"],
+            }
+        )
+        assert outcome.verdict == "approve"
+        assert outcome.tests_passing is True
+        assert outcome.scope_adherence == 0.91
+        assert outcome.pr_url == "https://github.com/pr/2"
+        assert outcome.files_changed == ["src/app.py"]
+        assert outcome.summary == "Canonical session-ended payload"
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +542,7 @@ class TestRavnOutcomeHandlerCorrelation:
         event = _make_sleipnir_event(correlation_id=None)
         await handler._process_event(event)
 
-        assert "no correlation_id" in caplog.text
+        assert "no usable raid/session identifiers" in caplog.text
 
     @pytest.mark.asyncio
     async def test_no_matching_raid_drops_silently(self, caplog):
@@ -510,7 +552,7 @@ class TestRavnOutcomeHandlerCorrelation:
         event = _make_sleipnir_event({"verdict": "approve"}, correlation_id="unknown-session")
         await handler._process_event(event)
 
-        assert "no raid for session_id" in caplog.text
+        assert "no raid for event" in caplog.text
 
     @pytest.mark.asyncio
     async def test_valid_correlation_processes_raid(self):
@@ -520,6 +562,53 @@ class TestRavnOutcomeHandlerCorrelation:
 
         payload = {"verdict": "approve", "tests_passing": True, "scope_adherence": 1.0}
         event = _make_sleipnir_event(payload, correlation_id=_SESSION)
+        await handler._process_event(event)
+
+        updated_raid = tracker._raids_by_id[_TRACKER_ID]
+        assert updated_raid.status == RaidStatus.MERGED
+
+    @pytest.mark.asyncio
+    async def test_session_ended_resolves_raid_by_explicit_raid_id(self):
+        raid = make_raid(status=RaidStatus.RUNNING, confidence=0.6)
+        tracker = StubTracker(raid)
+        handler, _ = self._make_handler(tracker)
+
+        event = _make_sleipnir_event(
+            {
+                "raid_id": str(raid.id),
+                "session_id": "wrong-session",
+                "structured_outcome": {
+                    "verdict": "approve",
+                    "tests_passing": True,
+                    "scope_adherence": 1.0,
+                },
+            },
+            event_type="ravn.session.ended",
+            correlation_id="wrong-correlation",
+        )
+        await handler._process_event(event)
+
+        updated_raid = tracker._raids_by_id[_TRACKER_ID]
+        assert updated_raid.status == RaidStatus.MERGED
+
+    @pytest.mark.asyncio
+    async def test_session_ended_can_fall_back_to_payload_session_id(self):
+        raid = make_raid(status=RaidStatus.REVIEW, confidence=0.6)
+        tracker = StubTracker(raid)
+        handler, _ = self._make_handler(tracker)
+
+        event = _make_sleipnir_event(
+            {
+                "session_id": _SESSION,
+                "structured_outcome": {
+                    "verdict": "approve",
+                    "tests_passing": True,
+                    "scope_adherence": 1.0,
+                },
+            },
+            event_type="ravn.session.ended",
+            correlation_id="daemon_task_123",
+        )
         await handler._process_event(event)
 
         updated_raid = tracker._raids_by_id[_TRACKER_ID]
@@ -619,6 +708,64 @@ class TestRavnOutcomeHandlerIntegration:
             updated = tracker._raids_by_id[_TRACKER_ID]
             assert updated.status == RaidStatus.PENDING
             assert updated.retry_count == 1
+        finally:
+            await handler.stop()
+
+    @pytest.mark.asyncio
+    async def test_session_ended_triggers_auto_continue_for_approved_flock_work(self):
+        raid = make_raid(status=RaidStatus.RUNNING, confidence=0.9)
+        tracker = StubTracker(raid)
+        tracker.saga = _make_saga(tracker_id="saga-continue-001")
+        bus = InProcessBus()
+        factory = StubTrackerFactory(tracker)
+        dispatch_service = AsyncMock()
+        engine = ReviewEngine(
+            tracker_factory=factory,
+            volundr_factory=StubVolundrFactory(),
+            git=StubGit(),
+            review_config=ReviewConfig(reviewer_session_enabled=False),
+            dispatch_service=dispatch_service,
+        )
+        handler = RavnOutcomeHandler(
+            subscriber=bus,
+            tracker_factory=factory,
+            review_engine=engine,
+            owner_id=_OWNER,
+        )
+
+        await handler.start()
+        try:
+            event = SleipnirEvent(
+                event_type="ravn.session.ended",
+                source="skuld:test",
+                payload={
+                    "session_id": _SESSION,
+                    "raid_id": str(raid.id),
+                    "structured_outcome": {
+                        "verdict": "approve",
+                        "tests_passing": True,
+                        "scope_adherence": 0.95,
+                        "summary": "Ready for merge",
+                    },
+                    "outcome_valid": True,
+                    "files_changed": ["src/tyr/domain/services/dispatch_service.py"],
+                },
+                summary="session ended",
+                urgency=0.7,
+                domain="code",
+                timestamp=NOW,
+                correlation_id=_SESSION,
+            )
+            await bus.publish(event)
+
+            for _ in range(10):
+                await asyncio.sleep(0)
+
+            updated = tracker._raids_by_id[_TRACKER_ID]
+            assert updated.status == RaidStatus.MERGED
+            dispatch_service.try_auto_continue.assert_awaited_once_with(
+                _OWNER, "saga-continue-001"
+            )
         finally:
             await handler.stop()
 
