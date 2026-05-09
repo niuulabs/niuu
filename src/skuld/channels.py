@@ -80,7 +80,11 @@ class MessageChannel(ABC):
 _INTERNAL_BLOCK_TYPES = ("tool_use", "tool_result")
 
 
-def filter_internal_blocks(event: dict, *, open_block_type: str | None) -> tuple[dict | None, str | None]:
+def filter_internal_blocks(
+    event: dict,
+    *,
+    open_block_type: str | None,
+) -> tuple[dict | None, str | None]:
     """Drop tool_use/tool_result content from an event for an "hide internal" channel.
 
     Returns ``(event_to_send_or_None, new_open_block_type)``.

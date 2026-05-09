@@ -18,6 +18,7 @@ from niuu.service_integrations import (
     seed_configured_integrations as _seed_configured_integrations,
 )
 from niuu.service_integrations import seed_linear_integration as _seed_linear_integration
+from niuu.service_integrations import seeded_integration_connection_id
 from niuu.service_runtime import (
     configure_logging,
 )
@@ -84,6 +85,10 @@ from volundr.domain.services.workspace import WorkspaceService
 BROADCAST_INTERVAL = 30
 
 logger = logging.getLogger(__name__)
+
+# Backward-compatible aliases used by tests and a few import-time helpers.
+_resolve_secret_kwargs = resolve_secret_kwargs
+_seeded_integration_connection_id = seeded_integration_connection_id
 
 
 def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
