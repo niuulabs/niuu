@@ -1,0 +1,13 @@
+- name: tyr-raid-flow
+  description: Default Tyr raid flock using the legacy Volundr coordinator, coder, and reviewer personas.
+  personas:
+    - name: coordinator
+      iteration_budget: 40
+    - name: coder
+      iteration_budget: 40
+    - name: reviewer
+      iteration_budget: 25
+      consumes_event_types:
+        - review.requested
+  mesh_transport: nng
+  max_concurrent_tasks: 3

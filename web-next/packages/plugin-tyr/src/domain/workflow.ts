@@ -34,6 +34,7 @@ const stageJoinModeSchema = z.enum(['all', 'any', 'merge']);
 const stageMemberSchema = z.object({
   personaId: z.string().min(1),
   budget: z.number().int().nonnegative().default(40),
+  consumesEventTypes: z.array(z.string()).default([]),
 });
 export type StageExecutionMode = z.input<typeof stageExecutionModeSchema>;
 export type StageJoinMode = z.input<typeof stageJoinModeSchema>;

@@ -184,7 +184,11 @@ def test_workflow_snapshot_helpers_fall_back_to_graph_and_dedupe_personas() -> N
                     "id": "stage-1",
                     "kind": "stage",
                     "stageMembers": [
-                        {"personaId": "reviewer", "budget": 12},
+                        {
+                            "personaId": "reviewer",
+                            "budget": 12,
+                            "consumesEventTypes": ["review.requested"],
+                        },
                         {"personaId": "reviewer", "budget": 99},
                         {"personaId": ""},
                         "invalid",
@@ -216,7 +220,11 @@ def test_workflow_snapshot_helpers_fall_back_to_graph_and_dedupe_personas() -> N
 
     assert workflow_name_from_snapshot(snapshot) == "Incident Flow"
     assert workflow_personas_from_snapshot(snapshot) == [
-        {"name": "reviewer", "iteration_budget": 12},
+        {
+            "name": "reviewer",
+            "iteration_budget": 12,
+            "consumes_event_types": ["review.requested"],
+        },
         {"name": "writer"},
     ]
     assert workflow_resource_nodes_from_snapshot(snapshot) == [

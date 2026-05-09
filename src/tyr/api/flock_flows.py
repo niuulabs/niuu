@@ -21,6 +21,7 @@ class PersonaOverrideBody(BaseModel):
     system_prompt_extra: str = ""
     iteration_budget: int = 0
     max_concurrent_tasks: int = 0
+    consumes_event_types: list[str] = Field(default_factory=list)
 
 
 class FlockFlowBody(BaseModel):
@@ -61,6 +62,7 @@ def _to_response(flow: FlockFlowConfig) -> FlockFlowResponse:
                 system_prompt_extra=p.system_prompt_extra,
                 iteration_budget=p.iteration_budget,
                 max_concurrent_tasks=p.max_concurrent_tasks,
+                consumes_event_types=p.consumes_event_types,
             )
             for p in flow.personas
         ],
@@ -83,6 +85,7 @@ def _body_to_domain(body: FlockFlowBody) -> FlockFlowConfig:
                 system_prompt_extra=p.system_prompt_extra,
                 iteration_budget=p.iteration_budget,
                 max_concurrent_tasks=p.max_concurrent_tasks,
+                consumes_event_types=p.consumes_event_types,
             )
             for p in body.personas
         ],

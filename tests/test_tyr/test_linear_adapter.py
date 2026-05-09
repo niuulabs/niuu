@@ -1359,6 +1359,34 @@ class TestAllRaidsMerged:
 
 
 class TestListPhasesForSaga:
+    async def test_uses_persisted_phase_rows_when_pool_available(self):
+        adapter, pool = _make_adapter_with_pool()
+        pool.fetch.return_value = [
+            {
+                "id": uuid4(),
+                "saga_id": uuid4(),
+                "tracker_id": "ms-1",
+                "number": 1,
+                "name": "Phase 1",
+                "status": "ACTIVE",
+                "confidence": 0.4,
+            },
+            {
+                "id": uuid4(),
+                "saga_id": uuid4(),
+                "tracker_id": "ms-2",
+                "number": 2,
+                "name": "Phase 2",
+                "status": "GATED",
+                "confidence": 0.1,
+            },
+        ]
+
+        result = await adapter.list_phases_for_saga("proj-id")
+
+        assert [phase.tracker_id for phase in result] == ["ms-1", "ms-2"]
+        assert [phase.status for phase in result] == [PhaseStatus.ACTIVE, PhaseStatus.GATED]
+
     async def test_returns_phases_from_milestones(self):
         adapter = _make_adapter()
         adapter._gql._client = AsyncMock()
@@ -1395,10 +1423,32 @@ class TestListPhasesForSaga:
 
 
 class TestUpdatePhaseStatus:
-    async def test_always_returns_none(self):
+    async def test_returns_none_without_pool(self):
         adapter = _make_adapter()
         result = await adapter.update_phase_status("phase-tid", PhaseStatus.GATED)
         assert result is None
+
+    async def test_updates_persisted_phase_status_with_pool(self):
+        adapter, pool = _make_adapter_with_pool()
+        phase_id = uuid4()
+        saga_id = uuid4()
+        pool.fetchrow.return_value = {
+            "id": phase_id,
+            "saga_id": saga_id,
+            "tracker_id": "phase-tid",
+            "number": 2,
+            "name": "Phase 2",
+            "status": "ACTIVE",
+            "confidence": 0.25,
+        }
+
+        result = await adapter.update_phase_status("phase-tid", PhaseStatus.ACTIVE)
+
+        assert result is not None
+        assert result.id == phase_id
+        assert result.saga_id == saga_id
+        assert result.tracker_id == "phase-tid"
+        assert result.status == PhaseStatus.ACTIVE
 
 
 # ---------------------------------------------------------------------------

@@ -328,6 +328,67 @@ class TestFindReadyIssues:
         assert "ALPHA-3" in ids
 
     @pytest.mark.asyncio
+    async def test_excludes_gated_phase_issues(
+        self,
+        tracker: MockTracker,
+        service: DispatchService,
+        saga_repo: MockSagaRepo,
+    ):
+        saga = saga_repo.sagas[0]
+        tracker.milestones["proj-1"].append(
+            TrackerMilestone(
+                id="ms-2",
+                project_id="proj-1",
+                name="Phase 2",
+                description="Second phase",
+                sort_order=2,
+                progress=0.0,
+            )
+        )
+        tracker.issues["proj-1"].append(
+            TrackerIssue(
+                id="i-4",
+                identifier="ALPHA-4",
+                title="Phase 2 work",
+                description="Should stay gated",
+                status="Backlog",
+                priority=4,
+                priority_label="Low",
+                url="https://linear.app/i-4",
+                milestone_id="ms-2",
+            )
+        )
+        saga_repo.phases.extend(
+            [
+                Phase(
+                    id=uuid4(),
+                    saga_id=saga.id,
+                    tracker_id="ms-1",
+                    number=1,
+                    name="Phase 1",
+                    status=PhaseStatus.ACTIVE,
+                    confidence=0.0,
+                ),
+                Phase(
+                    id=uuid4(),
+                    saga_id=saga.id,
+                    tracker_id="ms-2",
+                    number=2,
+                    name="Phase 2",
+                    status=PhaseStatus.GATED,
+                    confidence=0.0,
+                ),
+            ]
+        )
+
+        items = await service.find_ready_issues("dev-user")
+        ids = [i.identifier for i in items]
+
+        assert "ALPHA-1" in ids
+        assert "ALPHA-3" in ids
+        assert "ALPHA-4" not in ids
+
+    @pytest.mark.asyncio
     async def test_includes_unstarted_linear_issues(
         self,
         tracker: MockTracker,

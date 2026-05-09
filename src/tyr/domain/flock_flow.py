@@ -19,6 +19,7 @@ class FlockPersonaOverride:
     system_prompt_extra: str = ""
     iteration_budget: int = 0
     max_concurrent_tasks: int = 0
+    consumes_event_types: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Serialize to the wire dict format consumed by workload_config.personas."""
@@ -31,6 +32,8 @@ class FlockPersonaOverride:
             d["iteration_budget"] = self.iteration_budget
         if self.max_concurrent_tasks:
             d["max_concurrent_tasks"] = self.max_concurrent_tasks
+        if self.consumes_event_types:
+            d["consumes_event_types"] = list(self.consumes_event_types)
         return d
 
 
@@ -70,6 +73,7 @@ class FlockFlowConfig:
                 system_prompt_extra=p.get("system_prompt_extra", ""),
                 iteration_budget=p.get("iteration_budget", 0),
                 max_concurrent_tasks=p.get("max_concurrent_tasks", 0),
+                consumes_event_types=list(p.get("consumes_event_types", []) or []),
             )
             for p in data.get("personas", [])
         ]

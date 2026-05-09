@@ -513,7 +513,7 @@ class TestBuildFlockPrompt:
         prompt = build_flock_prompt(issue, "org/repo", "feat/x")
         assert "reviewer" in prompt.lower()
         assert "developer" in prompt.lower()
-        assert "coding-agent" in prompt.lower()
+        assert "coder" in prompt.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,34 @@
+- name: Tyr Raid Flow
+  description: Default Tyr to Volundr ravn_flock workflow using the legacy Volundr personas.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: dispatch-root
+        kind: trigger
+        label: Dispatch raid
+        source: tyr dispatch
+        dispatchEvent: raid.requested
+      - id: raid-flock
+        kind: stage
+        label: Raid flock
+        executionMode: parallel
+        joinMode: all
+        stageMembers:
+          - personaId: coordinator
+            budget: 40
+          - personaId: coder
+            budget: 40
+          - personaId: reviewer
+            budget: 25
+            consumesEventTypes:
+              - review.requested
+      - id: raid-complete
+        kind: end
+        label: Raid complete
+    edges:
+      - id: edge-dispatch-to-flock
+        source: dispatch-root
+        target: raid-flock
+      - id: edge-flock-to-end
+        source: raid-flock
+        target: raid-complete

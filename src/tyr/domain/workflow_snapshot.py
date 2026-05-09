@@ -243,6 +243,17 @@ def _persona_from_member(member: Any) -> dict[str, Any] | None:
     budget = member.get("budget")
     if isinstance(budget, int) and budget > 0:
         persona["iteration_budget"] = budget
+    consumes_event_types = member.get("consumesEventTypes")
+    if not isinstance(consumes_event_types, list):
+        consumes_event_types = member.get("consumes_event_types")
+    if isinstance(consumes_event_types, list):
+        normalized = [
+            str(event_type).strip()
+            for event_type in consumes_event_types
+            if str(event_type).strip()
+        ]
+        if normalized:
+            persona["consumes_event_types"] = normalized
     return persona
 
 

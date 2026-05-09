@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from niuu.domain.models import Principal
@@ -17,6 +17,7 @@ from tyr.api.sagas import (
     _build_phase_summary,
     _can_use_workflow,
     _find_project,
+    _resolve_selected_workflow,
     _sanitize_log,
     create_sagas_router,
     resolve_git,
@@ -99,6 +100,7 @@ def _dev_settings() -> MagicMock:
     """Create mock settings with anonymous dev enabled for test apps."""
     s = MagicMock()
     s.auth = AuthConfig(allow_anonymous_dev=True)
+    s.dispatch.flock.default_workflow_name = "Tyr Raid Flow"
     return s
 
 
@@ -466,6 +468,65 @@ class TestAssignWorkflow:
         )
 
         assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_resolve_selected_workflow_uses_default_system_workflow_when_missing(
+        self,
+    ) -> None:
+        workflow = WorkflowDefinition(
+            id=uuid4(),
+            name="Tyr Raid Flow",
+            description="",
+            version="1.0.0",
+            scope=WorkflowScope.SYSTEM,
+            owner_id=None,
+            definition_yaml="name: Tyr Raid Flow",
+            graph={
+                "nodes": [
+                    {
+                        "id": "stage-1",
+                        "kind": "stage",
+                        "label": "Raid",
+                        "stageMembers": [
+                            {"personaId": "coordinator", "budget": 40},
+                            {"personaId": "coder", "budget": 40},
+                            {
+                                "personaId": "reviewer",
+                                "budget": 25,
+                                "consumesEventTypes": ["review.requested"],
+                            },
+                        ],
+                    }
+                ],
+                "edges": [],
+            },
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        app = FastAPI()
+        app.state.settings = _dev_settings()
+        app.state.workflow_repo = InMemoryWorkflowRepository([workflow])
+
+        request = Request({"type": "http", "app": app, "headers": []})
+        workflow_id, workflow_version, workflow_snapshot = await _resolve_selected_workflow(
+            request=request,
+            principal=_principal(),
+            workflow_id_value=None,
+            use_default_when_missing=True,
+        )
+
+        assert workflow_id == workflow.id
+        assert workflow_version == workflow.version
+        assert workflow_snapshot is not None
+        assert workflow_snapshot["personas"] == [
+            {"name": "coordinator", "iteration_budget": 40},
+            {"name": "coder", "iteration_budget": 40},
+            {
+                "name": "reviewer",
+                "iteration_budget": 25,
+                "consumes_event_types": ["review.requested"],
+            },
+        ]
 
     def test_rejects_invalid_saga_id_for_workflow_assignment(
         self,

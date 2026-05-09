@@ -284,14 +284,14 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "code.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "trigger-1"
 
-    async def test_skuld_generic_trigger_env_present_for_plain_raid_executor_flock(
+    async def test_skuld_generic_trigger_env_present_for_plain_coordinator_flock(
         self, session
     ):
         template = WorkspaceTemplate(
             name="plain-flock",
             workload_type="ravn_flock",
             workload_config={
-                "personas": ["raid-executor", "coder", "reviewer"],
+                "personas": ["coordinator", "coder", "reviewer"],
                 "initiative_context": "Implement NIU-805",
             },
         )

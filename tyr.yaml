@@ -2,9 +2,10 @@
 dispatch:
   flock:
     enabled: true
+    default_workflow_name: Tyr Raid Flow
     default_personas:
-      - raid-executor
-      - name: coding-agent
+      - coordinator
+      - name: coder
       - name: reviewer
         consumes_event_types:
           - review.requested

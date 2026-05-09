@@ -88,6 +88,7 @@ from tyr.ports.saga_repository import SagaRepository
 from tyr.ports.tracker import TrackerPort
 from tyr.ports.volundr import VolundrPort
 from tyr.ports.workflow_repository import WorkflowRepository
+from tyr.system_workflows import seed_system_workflows
 
 logger = logging.getLogger(__name__)
 
@@ -486,6 +487,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             workflow_repo = PostgresWorkflowRepository(pool)
             app.state.workflow_repo = workflow_repo
+            seeded_system_workflows = await seed_system_workflows(workflow_repo)
+            if seeded_system_workflows:
+                logger.info(
+                    "Seeded %d bundled system workflow(s)",
+                    len(seeded_system_workflows),
+                )
 
             async def _resolve_workflow_repo() -> WorkflowRepository:
                 return workflow_repo

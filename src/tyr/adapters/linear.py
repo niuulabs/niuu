@@ -526,6 +526,14 @@ class LinearTrackerAdapter(TrackerPort):
         return self._project_to_saga(project)
 
     async def get_phase(self, tracker_id: str) -> Phase:
+        if self._pool is not None:
+            row = await self._pool.fetchrow(
+                "SELECT * FROM phases WHERE tracker_id = $1",
+                tracker_id,
+            )
+            required_keys = {"id", "saga_id", "tracker_id", "number", "name", "status"}
+            if row is not None and required_keys.issubset(set(row.keys())):
+                return self._row_to_phase(row)
         data = await self._gql.query(_GET_MILESTONE_QUERY, {"id": tracker_id})
         milestone = data.get("projectMilestone")
         if milestone is None:
@@ -852,6 +860,18 @@ class LinearTrackerAdapter(TrackerPort):
         return row is not None and row["remaining"] == 0
 
     async def list_phases_for_saga(self, saga_tracker_id: str) -> list[Phase]:
+        if self._pool is not None:
+            rows = await self._pool.fetch(
+                """
+                SELECT p.* FROM phases p
+                JOIN sagas s ON s.id = p.saga_id
+                WHERE s.tracker_id = $1
+                ORDER BY p.number
+                """,
+                saga_tracker_id,
+            )
+            if rows:
+                return [self._row_to_phase(row) for row in rows]
         milestones = await self.list_milestones(saga_tracker_id)
         return [
             Phase(
@@ -860,15 +880,26 @@ class LinearTrackerAdapter(TrackerPort):
                 tracker_id=m.id,
                 number=m.sort_order,
                 name=m.name,
-                status=PhaseStatus.ACTIVE,
+                status=PhaseStatus.PENDING,
                 confidence=0.0,
             )
             for m in milestones
         ]
 
     async def update_phase_status(self, phase_tracker_id: str, status: PhaseStatus) -> Phase | None:
-        # Linear does not have GATED/ACTIVE phase concepts — no-op
-        return None
+        if self._pool is None:
+            return None
+        row = await self._pool.fetchrow(
+            """
+            UPDATE phases SET status = $2 WHERE tracker_id = $1
+            RETURNING *
+            """,
+            phase_tracker_id,
+            status.value,
+        )
+        if row is None:
+            return None
+        return self._row_to_phase(row)
 
     # -- Cross-entity navigation --
 
@@ -1080,6 +1111,18 @@ class LinearTrackerAdapter(TrackerPort):
             name=node.get("name", ""),
             status=PhaseStatus.PENDING,
             confidence=0.0,
+        )
+
+    @staticmethod
+    def _row_to_phase(row) -> Phase:  # noqa: ANN001
+        return Phase(
+            id=row["id"],
+            saga_id=row["saga_id"],
+            tracker_id=row["tracker_id"],
+            number=row["number"],
+            name=row["name"],
+            status=PhaseStatus(row["status"]),
+            confidence=row["confidence"],
         )
 
     @staticmethod

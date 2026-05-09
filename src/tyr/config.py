@@ -40,6 +40,7 @@ def _config_paths() -> list[Path]:
 
 
 CONFIG_PATHS = _config_paths()
+BUNDLED_FLOCK_FLOWS_PATH = (Path(__file__).parent / "flock_flows.yaml").resolve()
 
 
 class DatabaseConfig(BaseModel):
@@ -456,13 +457,20 @@ class FlockConfig(BaseModel):
     )
     default_personas: list[PersonaOverride] = Field(
         default_factory=lambda: [
-            PersonaOverride(name="raid-executor"),
-            PersonaOverride(name="coding-agent"),
+            PersonaOverride(name="coordinator"),
+            PersonaOverride(name="coder"),
             PersonaOverride(name="reviewer", consumes_event_types=["review.requested"]),
         ],
         description=(
             "Ravn persona names included in every flock session. "
             "Accepts bare strings (legacy) or per-persona override objects."
+        ),
+    )
+    default_workflow_name: str = Field(
+        default="Tyr Raid Flow",
+        description=(
+            "System Tyr workflow automatically assigned to flock-enabled sagas "
+            "when no explicit workflow is selected."
         ),
     )
 
@@ -991,7 +999,9 @@ class FlockFlowsConfig(BaseModel):
         default="tyr.adapters.flows.config.ConfigFlockFlowProvider",
         description="Fully-qualified class path for the flock flow provider.",
     )
-    kwargs: dict[str, Any] = Field(default_factory=dict)
+    kwargs: dict[str, Any] = Field(
+        default_factory=lambda: {"path": str(BUNDLED_FLOCK_FLOWS_PATH)},
+    )
 
 
 class NotificationConfig(BaseModel):

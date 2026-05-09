@@ -289,7 +289,7 @@ def build_flock_prompt(
         "",
         (
             "Decompose this raid into implementation tasks, delegate to the developer peer"
-            + " (coding-agent), collect results, delegate review to the reviewer peer,"
+            + " (coder), collect results, delegate review to the reviewer peer,"
             + " iterate until acceptance criteria are met, then publish your final outcome."
         ),
     ]
@@ -377,8 +377,13 @@ class DispatchConfig:
     initial_confidence: float = 0.5
     flock_enabled: bool = False
     flock_default_personas: list[dict] = field(
-        default_factory=lambda: [{"name": "coordinator"}, {"name": "reviewer"}]
+        default_factory=lambda: [
+            {"name": "coordinator"},
+            {"name": "coder"},
+            {"name": "reviewer", "consumes_event_types": ["review.requested"]},
+        ]
     )
+    flock_default_workflow_name: str = ""
     flock_mimir_hosted_url: str = ""
     flock_mimir_registry_path: str = "~/.ravn/mimir/.mimir-registry.json"
     flock_sleipnir_publish_urls: list[str] = field(default_factory=list)
@@ -393,6 +398,8 @@ class DispatchConfig:
             return live.enabled  # type: ignore[union-attr]
         if name == "flock_default_personas":
             return [p.to_dict() for p in live.default_personas]  # type: ignore[union-attr]
+        if name == "flock_default_workflow_name":
+            return live.default_workflow_name  # type: ignore[union-attr]
         if name == "flock_mimir_hosted_url":
             return live.mimir_hosted_url  # type: ignore[union-attr]
         if name == "flock_mimir_registry_path":
@@ -921,6 +928,12 @@ class DispatchService:
         when the Linear project is completed/cancelled and the saga should be
         auto-archived.
         """
+        phases = await self._saga_repo.get_phases_by_saga(saga.id)
+        active_phase_tracker_ids = {
+            phase.tracker_id for phase in phases if phase.status == PhaseStatus.ACTIVE
+        }
+        has_persisted_phases = bool(phases)
+
         for adapter in adapters:
             try:
                 project, milestones, issues = await self._fetch_saga_data(adapter, saga)
@@ -933,6 +946,8 @@ class DispatchService:
 
                 items: list[QueueItem] = []
                 for issue in issues:
+                    if has_persisted_phases and issue.milestone_id not in active_phase_tracker_ids:
+                        continue
                     if not is_ready(issue, active_issue_ids, blocked_identifiers):
                         continue
                     items.append(
@@ -1286,7 +1301,9 @@ class DispatchService:
         saga: Saga,
     ) -> tuple[dict[str, Any] | None, str | None]:
         if item.workflow_id is None:
-            return saga.workflow_snapshot, None
+            if saga.workflow_snapshot is not None:
+                return saga.workflow_snapshot, None
+            return await self._resolve_default_workflow_snapshot(saga)
 
         if self._workflow_repo is None:
             return None, "workflow repository not configured"
@@ -1304,3 +1321,34 @@ class DispatchService:
         from tyr.domain.workflow_snapshot import build_workflow_snapshot  # noqa: PLC0415
 
         return build_workflow_snapshot(workflow), None
+
+    async def _resolve_default_workflow_snapshot(
+        self,
+        saga: Saga,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        workflow_name = str(self._config.flock_default_workflow_name or "").strip()
+        if not workflow_name or self._workflow_repo is None:
+            return None, None
+
+        workflows = await self._workflow_repo.list_workflows(
+            owner_id=saga.owner_id,
+            scope=WorkflowScope.SYSTEM,
+        )
+        workflow = next(
+            (candidate for candidate in workflows if candidate.name == workflow_name),
+            None,
+        )
+        if workflow is None:
+            return None, None
+
+        from tyr.domain.workflow_snapshot import build_workflow_snapshot  # noqa: PLC0415
+
+        snapshot = build_workflow_snapshot(workflow)
+        await self._saga_repo.update_saga_workflow(
+            saga.id,
+            workflow_id=workflow.id,
+            workflow_version=workflow.version,
+            workflow_snapshot=snapshot,
+            owner_id=saga.owner_id,
+        )
+        return snapshot, None

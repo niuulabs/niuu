@@ -510,7 +510,7 @@ def _default_flock_trigger_config(
     initiative_context: str,
     persona_dicts: list[dict[str, Any]],
 ) -> dict[str, str] | None:
-    """Return the generic startup trigger for plain raid-executor flocks."""
+    """Return the generic startup trigger for plain coordinator-led flocks."""
     if not initiative_context.strip():
         return None
 
@@ -519,7 +519,7 @@ def _default_flock_trigger_config(
         for persona in persona_dicts
         if isinstance(persona, dict)
     }
-    if "raid-executor" not in persona_names:
+    if not {"raid-executor", "coordinator"} & persona_names:
         return None
 
     return {

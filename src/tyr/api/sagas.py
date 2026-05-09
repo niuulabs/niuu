@@ -40,6 +40,7 @@ from tyr.ports.llm import LLMPort
 from tyr.ports.saga_repository import SagaRepository
 from tyr.ports.tracker import TrackerPort
 from tyr.ports.volundr import SpawnRequest, VolundrPort
+from tyr.ports.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,62 @@ def _can_use_workflow(workflow, principal: Principal) -> bool:  # noqa: ANN001
     if workflow.scope == WorkflowScope.SYSTEM:
         return True
     return workflow.owner_id == principal.user_id
+
+
+async def _resolve_selected_workflow(
+    *,
+    request: Request,
+    principal: Principal,
+    workflow_id_value: str | None,
+    use_default_when_missing: bool = False,
+) -> tuple[UUID | None, str | None, dict | None]:
+    workflow_repo: WorkflowRepository | None = getattr(request.app.state, "workflow_repo", None)
+    if workflow_repo is None:
+        if workflow_id_value is None:
+            return None, None, None
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Workflow repository not configured",
+        )
+
+    if workflow_id_value is not None:
+        try:
+            workflow_id = UUID(workflow_id_value)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Invalid workflow_id: {workflow_id_value!r}",
+            )
+
+        workflow = await workflow_repo.get_workflow(workflow_id)
+        if workflow is None or not _can_use_workflow(workflow, principal):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workflow not found: {workflow_id_value}",
+            )
+        return workflow.id, workflow.version, build_workflow_snapshot(workflow)
+
+    if not use_default_when_missing:
+        return None, None, None
+
+    flock_settings = getattr(request.app.state.settings.dispatch, "flock", None)
+    default_workflow_name = str(
+        getattr(flock_settings, "default_workflow_name", ""),
+    ).strip()
+    if not default_workflow_name:
+        return None, None, None
+
+    workflows = await workflow_repo.list_workflows(
+        owner_id=principal.user_id,
+        scope=WorkflowScope.SYSTEM,
+    )
+    workflow = next(
+        (candidate for candidate in workflows if candidate.name == default_workflow_name),
+        None,
+    )
+    if workflow is None:
+        return None, None, None
+    return workflow.id, workflow.version, build_workflow_snapshot(workflow)
 
 
 # ---------------------------------------------------------------------------
@@ -713,39 +770,12 @@ def create_sagas_router() -> APIRouter:
                 detail=f"Saga not found: {saga_id}",
             )
 
-        workflow_id: UUID | None = None
-        workflow_version: str | None = None
-        workflow_snapshot: dict | None = None
-
-        if body.workflow_id is not None:
-            workflow_repo = getattr(request.app.state, "workflow_repo", None)
-            if workflow_repo is None:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Workflow repository not configured",
-                )
-
-            try:
-                workflow_id = UUID(body.workflow_id)
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=f"Invalid workflow_id: {body.workflow_id!r}",
-                )
-
-            workflow = await workflow_repo.get_workflow(workflow_id)
-            if workflow is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Workflow not found: {body.workflow_id}",
-                )
-            if not _can_use_workflow(workflow, principal):
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Workflow not found: {body.workflow_id}",
-                )
-            workflow_version = workflow.version
-            workflow_snapshot = build_workflow_snapshot(workflow)
+        workflow_id, workflow_version, workflow_snapshot = await _resolve_selected_workflow(
+            request=request,
+            principal=principal,
+            workflow_id_value=body.workflow_id,
+            use_default_when_missing=False,
+        )
 
         await repo.update_saga_workflow(
             parsed_id,
@@ -853,37 +883,12 @@ def create_sagas_router() -> APIRouter:
         now = datetime.now(UTC)
         saga_id = uuid4()
         feature_branch = f"feat/{body.slug}"
-        workflow_id: UUID | None = None
-        workflow_version: str | None = None
-        workflow_snapshot: dict | None = None
-
-        if body.workflow_id is not None:
-            workflow_repo = getattr(request.app.state, "workflow_repo", None)
-            if workflow_repo is None:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Workflow repository not configured",
-                )
-            try:
-                workflow_id = UUID(body.workflow_id)
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=f"Invalid workflow_id: {body.workflow_id!r}",
-                )
-            workflow = await workflow_repo.get_workflow(workflow_id)
-            if workflow is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Workflow not found: {body.workflow_id}",
-                )
-            if not _can_use_workflow(workflow, principal):
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Workflow not found: {body.workflow_id}",
-                )
-            workflow_version = workflow.version
-            workflow_snapshot = build_workflow_snapshot(workflow)
+        workflow_id, workflow_version, workflow_snapshot = await _resolve_selected_workflow(
+            request=request,
+            principal=principal,
+            workflow_id_value=body.workflow_id,
+            use_default_when_missing=True,
+        )
 
         # Build saga domain object (tracker_id filled after tracker call)
         saga = Saga(

@@ -159,6 +159,7 @@ dispatch:
     enabled: true
     default_personas:
       - coordinator
+      - coder
       - reviewer
     sleipnir_publish_urls: []
 
