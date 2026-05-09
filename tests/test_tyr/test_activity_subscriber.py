@@ -16,6 +16,10 @@ from tyr.domain.models import DispatcherState, PRStatus, Raid, RaidStatus
 from tyr.domain.services.activity_subscriber import (
     CompletionEvaluation,
     SessionActivitySubscriber,
+    _coerce_bool,
+    _coerce_float,
+    _coerce_str,
+    _coerce_str_list,
 )
 from tyr.ports.dispatcher_repository import DispatcherRepository
 from tyr.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
@@ -408,6 +412,143 @@ class TestActivityEventHandling:
         assert call.args[1] == OWNER_ID
         assert call.args[2].verdict == "approve"
         assert call.kwargs["scope_adherence_threshold"] == pytest.approx(0.7)
+
+    @pytest.mark.asyncio
+    async def test_idle_event_keeps_waiting_when_review_engine_missing(self) -> None:
+        sub, volundr, tracker, _ = _make_subscriber(review_engine=None)
+        volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
+
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="idle",
+            metadata={
+                "turn_count": 5,
+                "duration_seconds": 60,
+                "completion_source": "ravn_flock",
+                "structured_outcome": {"outcome": {"verdict": "approve"}},
+            },
+            owner_id=OWNER_ID,
+        )
+
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+        await asyncio.sleep(0.1)
+
+        tracker.update_raid_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_idle_event_keeps_waiting_when_completion_source_is_not_ravn_flock(self) -> None:
+        review_engine = type("ReviewEngineStub", (), {})()
+        review_engine.handle_ravn_outcome = AsyncMock()
+        review_engine.get_reviewer_raid = lambda session_id: None
+        sub, volundr, tracker, _ = _make_subscriber(review_engine=review_engine)
+        volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
+
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="idle",
+            metadata={
+                "turn_count": 5,
+                "duration_seconds": 60,
+                "completion_source": "manual",
+                "structured_outcome": {"outcome": {"verdict": "approve"}},
+            },
+            owner_id=OWNER_ID,
+        )
+
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+        await asyncio.sleep(0.1)
+
+        tracker.update_raid_progress.assert_not_called()
+        review_engine.handle_ravn_outcome.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_idle_event_keeps_waiting_when_structured_outcome_missing(self) -> None:
+        review_engine = type("ReviewEngineStub", (), {})()
+        review_engine.handle_ravn_outcome = AsyncMock()
+        review_engine.get_reviewer_raid = lambda session_id: None
+        sub, volundr, tracker, _ = _make_subscriber(review_engine=review_engine)
+        volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
+
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="idle",
+            metadata={
+                "turn_count": 5,
+                "duration_seconds": 60,
+                "completion_source": "ravn_flock",
+            },
+            owner_id=OWNER_ID,
+        )
+
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+        await asyncio.sleep(0.1)
+
+        tracker.update_raid_progress.assert_not_called()
+        review_engine.handle_ravn_outcome.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_idle_event_keeps_waiting_when_nested_outcome_payload_is_empty(self) -> None:
+        review_engine = type("ReviewEngineStub", (), {})()
+        review_engine.handle_ravn_outcome = AsyncMock()
+        review_engine.get_reviewer_raid = lambda session_id: None
+        sub, volundr, tracker, _ = _make_subscriber(review_engine=review_engine)
+        volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
+
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="idle",
+            metadata={
+                "turn_count": 5,
+                "duration_seconds": 60,
+                "completion_source": "ravn_flock",
+                "structured_outcome": {"outcome": {}},
+            },
+            owner_id=OWNER_ID,
+        )
+
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+        await asyncio.sleep(0.1)
+
+        tracker.update_raid_progress.assert_not_called()
+        review_engine.handle_ravn_outcome.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_idle_event_accepts_flat_structured_outcome_and_coerces_fields(self) -> None:
+        review_engine = type("ReviewEngineStub", (), {})()
+        review_engine.handle_ravn_outcome = AsyncMock()
+        review_engine.get_reviewer_raid = lambda session_id: None
+        sub, volundr, _, _ = _make_subscriber(review_engine=review_engine)
+        volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
+
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="idle",
+            metadata={
+                "turn_count": 5,
+                "duration_seconds": 60,
+                "completion_source": "ravn_flock",
+                "files_changed": ["  src/one.py  ", "", "src/two.py"],
+                "structured_outcome": {
+                    "verdict": "approve",
+                    "tests_passing": "yes",
+                    "scope_adherence": "0.85",
+                    "pr_url": " https://github.com/niuulabs/volundr/pull/713 ",
+                    "summary": "  all good  ",
+                },
+            },
+            owner_id=OWNER_ID,
+        )
+
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+        await asyncio.sleep(0.1)
+
+        review_engine.handle_ravn_outcome.assert_awaited_once()
+        outcome = review_engine.handle_ravn_outcome.await_args.args[2]
+        assert outcome.tests_passing is True
+        assert outcome.scope_adherence == pytest.approx(0.85)
+        assert outcome.pr_url == "https://github.com/niuulabs/volundr/pull/713"
+        assert outcome.files_changed == ["src/one.py", "src/two.py"]
+        assert outcome.summary == "all good"
 
     @pytest.mark.asyncio
     async def test_idle_with_no_turns_does_not_complete(self) -> None:
@@ -905,3 +1046,26 @@ class TestWatcherConfigNewFields:
         assert cfg.confidence_ci_bonus == 0.15
         assert cfg.confidence_idle_bonus == 0.05
         assert cfg.reconnect_delay == 3.0
+
+
+class TestFlockOutcomeCoercion:
+    def test_coerce_bool(self) -> None:
+        assert _coerce_bool(True) is True
+        assert _coerce_bool("yes") is True
+        assert _coerce_bool("0") is False
+        assert _coerce_bool("maybe") is None
+
+    def test_coerce_float(self) -> None:
+        assert _coerce_float(1) == 1.0
+        assert _coerce_float("0.75") == pytest.approx(0.75)
+        assert _coerce_float(" ") is None
+        assert _coerce_float("abc") is None
+
+    def test_coerce_str(self) -> None:
+        assert _coerce_str("  hello  ") == "hello"
+        assert _coerce_str("") is None
+        assert _coerce_str(None) is None
+
+    def test_coerce_str_list(self) -> None:
+        assert _coerce_str_list([" one ", "", "two", 3]) == ["one", "two", "3"]
+        assert _coerce_str_list("not-a-list") == []

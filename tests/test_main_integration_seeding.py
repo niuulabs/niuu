@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+from niuu.service_integrations import (
+    has_seeded_linear_integration,
+    seed_configured_integrations,
+    seed_linear_integration,
+    seeded_integration_connection_id,
+)
 from volundr.adapters.outbound.memory_integrations import InMemoryIntegrationRepository
 from volundr.config import (
     IntegrationsConfig,
@@ -13,7 +19,6 @@ from volundr.config import (
     SeededIntegrationCredentialConfig,
     Settings,
 )
-from volundr.main import _seed_configured_integrations, _seeded_integration_connection_id
 
 
 async def test_seed_configured_integrations_stores_credential_and_connection() -> None:
@@ -39,7 +44,7 @@ async def test_seed_configured_integrations_stores_credential_and_connection() -
         )
     )
 
-    await _seed_configured_integrations(
+    await seed_configured_integrations(
         integration_repo=integration_repo,
         credential_store=credential_store,
         settings=settings,
@@ -53,7 +58,7 @@ async def test_seed_configured_integrations_stores_credential_and_connection() -
         data={"bot_token": "foobar", "chat_id": "foobar"},
         metadata={},
     )
-    seeded_id = _seeded_integration_connection_id(
+    seeded_id = seeded_integration_connection_id(
         owner_type="user",
         owner_id="dev-user",
         integration_type="messaging",
@@ -72,7 +77,7 @@ async def test_seed_configured_integrations_stores_credential_and_connection() -
 
 
 def test_seeded_integration_connection_id_is_stable() -> None:
-    first = _seeded_integration_connection_id(
+    first = seeded_integration_connection_id(
         owner_type="user",
         owner_id="dev-user",
         integration_type="messaging",
@@ -80,7 +85,7 @@ def test_seeded_integration_connection_id_is_stable() -> None:
         credential_name="telegram-main",
         slug="telegram",
     )
-    second = _seeded_integration_connection_id(
+    second = seeded_integration_connection_id(
         owner_type="user",
         owner_id="dev-user",
         integration_type="messaging",
@@ -115,7 +120,7 @@ async def test_seed_configured_integrations_respects_explicit_id() -> None:
         )
     )
 
-    await _seed_configured_integrations(
+    await seed_configured_integrations(
         integration_repo=integration_repo,
         credential_store=credential_store,
         settings=settings,
@@ -125,3 +130,74 @@ async def test_seed_configured_integrations_respects_explicit_id() -> None:
     assert connection is not None
     assert connection.slug == "linear"
     assert connection.credential_name == "linear-config"
+
+
+async def test_seed_linear_integration_stores_api_key_and_connection() -> None:
+    integration_repo = InMemoryIntegrationRepository()
+    credential_store = AsyncMock()
+
+    await seed_linear_integration(
+        integration_repo=integration_repo,
+        credential_store=credential_store,
+        api_key="linear-api-key",
+    )
+
+    credential_store.store.assert_awaited_once_with(
+        owner_type="user",
+        owner_id="dev-user",
+        name="linear-config",
+        secret_type=SecretType.API_KEY,
+        data={"api_key": "linear-api-key"},
+    )
+    connection = await integration_repo.get_connection("f976d725-2a19-558a-a2d0-99258577f615")
+    assert connection is not None
+    assert connection.slug == "linear"
+    assert connection.adapter == "volundr.adapters.outbound.linear.LinearAdapter"
+    assert connection.integration_type == IntegrationType.ISSUE_TRACKER
+
+
+def test_has_seeded_linear_integration_detects_slug_adapter_and_false_case() -> None:
+    slug_seeded = Settings(
+        integrations=IntegrationsConfig(
+            seed_connections=[
+                SeededIntegrationConnectionConfig(
+                    owner_id="dev-user",
+                    integration_type=IntegrationType.ISSUE_TRACKER,
+                    adapter="other.Adapter",
+                    credential_name="linear-config",
+                    slug="linear",
+                )
+            ]
+        )
+    )
+    assert has_seeded_linear_integration(slug_seeded) is True
+
+    adapter_seeded = Settings(
+        integrations=IntegrationsConfig(
+            seed_connections=[
+                SeededIntegrationConnectionConfig(
+                    owner_id="dev-user",
+                    integration_type=IntegrationType.ISSUE_TRACKER,
+                    adapter="volundr.adapters.outbound.linear.LinearAdapter",
+                    credential_name="linear-config",
+                    slug="not-linear",
+                )
+            ]
+        )
+    )
+    assert has_seeded_linear_integration(adapter_seeded) is True
+
+    not_seeded = Settings(
+        integrations=IntegrationsConfig(
+            seed_connections=[
+                SeededIntegrationConnectionConfig(
+                    owner_id="dev-user",
+                    integration_type=IntegrationType.MESSAGING,
+                    adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+                    credential_name="telegram-main",
+                    slug="telegram",
+                )
+            ]
+        )
+    )
+    assert has_seeded_linear_integration(not_seeded) is False

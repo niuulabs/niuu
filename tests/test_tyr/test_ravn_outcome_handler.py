@@ -614,6 +614,60 @@ class TestRavnOutcomeHandlerCorrelation:
         updated_raid = tracker._raids_by_id[_TRACKER_ID]
         assert updated_raid.status == RaidStatus.MERGED
 
+    @pytest.mark.asyncio
+    async def test_tracker_issue_lookup_falls_back_to_session_lookup(self):
+        raid = make_raid(status=RaidStatus.REVIEW, confidence=0.6)
+        tracker = StubTracker(raid)
+        tracker.get_raid = AsyncMock(side_effect=[RuntimeError("missing tracker raid"), raid])
+        handler, _ = self._make_handler(tracker)
+
+        event = _make_sleipnir_event(
+            {"tracker_issue_id": _TRACKER_ID, "verdict": "approve", "tests_passing": True},
+            correlation_id=_SESSION,
+        )
+        await handler._process_event(event)
+
+        updated_raid = tracker._raids_by_id[_TRACKER_ID]
+        assert updated_raid.status == RaidStatus.MERGED
+
+    @pytest.mark.asyncio
+    async def test_invalid_uuid_raid_id_falls_back_to_tracker_lookup(self):
+        raid = make_raid(status=RaidStatus.REVIEW, confidence=0.6)
+        tracker = StubTracker(raid)
+        tracker.get_raid = AsyncMock(side_effect=[raid, raid])
+        handler, _ = self._make_handler(tracker)
+
+        event = _make_sleipnir_event(
+            {"raid_id": "not-a-uuid", "verdict": "approve", "tests_passing": True},
+            correlation_id="unrelated",
+        )
+        await handler._process_event(event)
+
+        assert tracker.get_raid.await_args_list[0].args == ("not-a-uuid",)
+        updated_raid = tracker._raids_by_id[_TRACKER_ID]
+        assert updated_raid.status == RaidStatus.MERGED
+
+    @pytest.mark.asyncio
+    async def test_no_trackers_returns_without_processing(self):
+        bus = InMemoryEventBus()
+        empty_factory = type("EmptyTrackerFactory", (), {"for_owner": AsyncMock(return_value=[])})()
+        engine = ReviewEngine(
+            tracker_factory=empty_factory,
+            volundr_factory=StubVolundrFactory(),
+            git=StubGit(),
+            review_config=ReviewConfig(reviewer_session_enabled=False),
+            event_bus=bus,
+        )
+        handler = RavnOutcomeHandler(
+            subscriber=InProcessBus(),
+            tracker_factory=empty_factory,
+            review_engine=engine,
+            owner_id=_OWNER,
+        )
+
+        await handler._process_event(_make_sleipnir_event({"verdict": "approve"}))
+        assert True
+
 
 # ---------------------------------------------------------------------------
 # Integration: InProcessBus round-trip
@@ -788,6 +842,89 @@ class TestRavnOutcomeHandlerIntegration:
         assert handler.is_running
         await handler.stop()
         assert not handler.is_running
+
+    @pytest.mark.asyncio
+    async def test_start_is_idempotent(self):
+        subscriber = AsyncMock()
+        subscription = AsyncMock()
+        subscriber.subscribe.return_value = subscription
+        tracker = StubTracker()
+        factory = StubTrackerFactory(tracker)
+        engine = ReviewEngine(
+            tracker_factory=factory,
+            volundr_factory=StubVolundrFactory(),
+            git=StubGit(),
+            review_config=ReviewConfig(reviewer_session_enabled=False),
+        )
+        handler = RavnOutcomeHandler(
+            subscriber=subscriber,
+            tracker_factory=factory,
+            review_engine=engine,
+            owner_id=_OWNER,
+        )
+
+        await handler.start()
+        await handler.start()
+
+        subscriber.subscribe.assert_awaited_once()
+        await handler.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_manual_pending_tasks(self):
+        subscriber = AsyncMock()
+        subscription = AsyncMock()
+        subscriber.subscribe.return_value = subscription
+        tracker = StubTracker()
+        factory = StubTrackerFactory(tracker)
+        engine = ReviewEngine(
+            tracker_factory=factory,
+            volundr_factory=StubVolundrFactory(),
+            git=StubGit(),
+            review_config=ReviewConfig(reviewer_session_enabled=False),
+        )
+        handler = RavnOutcomeHandler(
+            subscriber=subscriber,
+            tracker_factory=factory,
+            review_engine=engine,
+            owner_id=_OWNER,
+        )
+        await handler.start()
+
+        blocker = asyncio.Event()
+
+        async def _wait_forever() -> None:
+            await blocker.wait()
+
+        task = asyncio.create_task(_wait_forever())
+        handler._pending_tasks.add(task)
+
+        await handler.stop()
+
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_process_event_swallows_review_engine_failures(self):
+        raid = make_raid(status=RaidStatus.REVIEW, confidence=0.6)
+        tracker = StubTracker(raid)
+        factory = StubTrackerFactory(tracker)
+        engine = ReviewEngine(
+            tracker_factory=factory,
+            volundr_factory=StubVolundrFactory(),
+            git=StubGit(),
+            review_config=ReviewConfig(reviewer_session_enabled=False),
+        )
+        engine.handle_ravn_outcome = AsyncMock(side_effect=RuntimeError("boom"))
+        handler = RavnOutcomeHandler(
+            subscriber=InProcessBus(),
+            tracker_factory=factory,
+            review_engine=engine,
+            owner_id=_OWNER,
+        )
+
+        await handler._process_event(
+            _make_sleipnir_event({"verdict": "approve", "tests_passing": True})
+        )
+        engine.handle_ravn_outcome.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
