@@ -135,6 +135,53 @@ def client_with_sourced_page(tmp_path: Path) -> TestClient:
 
 
 @pytest.fixture()
+def client_with_compiled_truth_page(tmp_path: Path) -> TestClient:
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    router = MimirRouter(adapter=adapter, name="test", role="local")
+    app = FastAPI()
+    app.include_router(router.router, prefix="/mimir")
+    tc = TestClient(app)
+
+    ingest = tc.post(
+        "/mimir/ingest",
+        json={
+            "title": "Postmortem Source",
+            "content": "Shared postmortem source content.",
+            "source_type": "document",
+        },
+    )
+    source_id = ingest.json()["source_id"]
+    tc.put(
+        "/mimir/page",
+        json={
+            "path": "raids/NIU-912-postmortem.md",
+            "content": (
+                "---\n"
+                "type: topic\n"
+                "confidence: medium\n"
+                "related_entities: [project-volundr]\n"
+                f"source_ids: [{source_id}]\n"
+                "---\n\n"
+                "# NIU-912 Postmortem\n\n"
+                "Curated raid summary.\n\n"
+                "## Compiled Truth\n\n"
+                "### Key Facts\n"
+                "- Step 1 proof artifact was present.\n"
+                "- Step 2 curator proof artifact was created.\n\n"
+                "### Relationships\n"
+                "- [[project-volundr]] — the workflow ran inside the Volundr stack.\n\n"
+                "### Assessment\n"
+                "The staged workflow completed cleanly and produced the expected proof.\n\n"
+                "## Timeline\n\n"
+                "- 2026-05-10: Curated the NIU-912 postmortem. "
+                "[Source: tester, local, 2026-05-10]\n"
+            ),
+        },
+    )
+    return tc
+
+
+@pytest.fixture()
 def composite_client(tmp_path: Path) -> TestClient:
     tc = TestClient(_make_composite_app(tmp_path))
     tc.put(
@@ -332,6 +379,88 @@ def test_read_page_found(client_with_page: TestClient) -> None:
     data = resp.json()
     assert "Test Page" in data["content"]
     assert data["path"] == "technical/test.md"
+
+
+def test_read_page_returns_explicit_zones(client_with_compiled_truth_page: TestClient) -> None:
+    resp = client_with_compiled_truth_page.get(
+        "/mimir/page",
+        params={"path": "raids/NIU-912-postmortem.md"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["related"] == ["project-volundr"]
+    assert data["zones"] == [
+        {
+            "kind": "key-facts",
+            "items": [
+                "Step 1 proof artifact was present.",
+                "Step 2 curator proof artifact was created.",
+            ],
+        },
+        {
+            "kind": "relationships",
+            "items": [
+                {
+                    "slug": "project-volundr",
+                    "note": "the workflow ran inside the Volundr stack.",
+                }
+            ],
+        },
+        {
+            "kind": "assessment",
+            "text": "The staged workflow completed cleanly and produced the expected proof.",
+        },
+        {
+            "kind": "timeline",
+            "items": [
+                {
+                    "date": "2026-05-10",
+                    "note": "Curated the NIU-912 postmortem",
+                    "source": "tester, local, 2026-05-10",
+                }
+            ],
+        },
+    ]
+
+
+def test_read_page_falls_back_to_assessment_for_legacy_compiled_truth(
+    tmp_path: Path,
+) -> None:
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    router = MimirRouter(adapter=adapter, name="test", role="local")
+    app = FastAPI()
+    app.include_router(router.router, prefix="/mimir")
+    tc = TestClient(app)
+
+    tc.put(
+        "/mimir/page",
+        json={
+            "path": "raids/legacy-postmortem.md",
+            "content": (
+                "# Legacy Postmortem\n\n"
+                "## Compiled Truth\n\n"
+                "**Outcome**: Complete.\n\n"
+                "### What was done\n\n"
+                "- Verified the step-1 artifact.\n"
+                "- Created the step-2 artifact.\n"
+            ),
+        },
+    )
+
+    resp = tc.get("/mimir/page", params={"path": "raids/legacy-postmortem.md"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["zones"] == [
+        {
+            "kind": "assessment",
+            "text": (
+                "**Outcome**: Complete.\n\n"
+                "### What was done\n\n"
+                "- Verified the step-1 artifact.\n"
+                "- Created the step-2 artifact."
+            ),
+        }
+    ]
 
 
 def test_read_page_not_found(client: TestClient) -> None:

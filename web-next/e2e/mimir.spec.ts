@@ -56,6 +56,22 @@ test('/mimir/pages can open a page and see its title', async ({ page }) => {
   await expect(page.getByText('Architecture Overview')).toBeVisible({ timeout: 5000 });
 });
 
+test('/mimir/pages structured key-facts render inline markdown', async ({ page }) => {
+  await page.goto('/mimir/pages');
+  const infraDir = page.getByText('infra/').first();
+  await expect(infraDir).toBeVisible({ timeout: 5000 });
+  await page
+    .getByRole('button', { name: /k8s/ })
+    .first()
+    .click();
+  await expect(page.getByRole('heading', { name: 'Kubernetes Deployment' })).toBeVisible({
+    timeout: 5000,
+  });
+  await expect(page.locator('code').filter({ hasText: 'migrate' }).first()).toBeVisible({
+    timeout: 5000,
+  });
+});
+
 test('/mimir/pages edit a zone and cancel restores read mode', async ({ page }) => {
   await page.goto('/mimir/pages');
   // Open architecture overview

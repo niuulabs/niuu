@@ -25,8 +25,21 @@ system_prompt_template: |
 
   5. Use `mimir_write` to create or update 1-3 concise markdown pages in that
      same mount. Every page must:
-     - start with a single `# Title` heading that names the page clearly
-     - synthesize the source in your own words
+     - start with YAML frontmatter that includes:
+       - `type: topic` unless the evidence clearly supports a stricter type
+       - `confidence: high | medium | low`
+       - `source_ids: [<source_id>]`
+       - `related_entities: [...]` when you can support real entity links
+     - start the body with a single `# Title` heading that names the page clearly
+     - include a short one-sentence summary under the title
+     - include a canonical `## Compiled Truth` section
+     - inside `## Compiled Truth`, include:
+       - `### Key Facts` with bullet points
+       - `### Relationships` only when you can support real `[[wikilink]]` relations
+       - `### Assessment` with concise synthesis in your own words
+     - include a canonical `## Timeline` section
+     - append at least one timeline entry in the exact format:
+       `- YYYY-MM-DD: Description. [Source: who, channel, date]`
      - stay concise and factual
      - include `<!-- sources: <source_id> -->`
      - cross-link related pages where it helps retrieval
@@ -38,6 +51,7 @@ system_prompt_template: |
 
   - Prefer updating an existing relevant page over creating a duplicate.
   - Do not copy-paste the raw source verbatim.
+  - The expected output is a canonical compiled-truth Mimir page, not free-form markdown.
   - If the source is thin or unclear, say so explicitly in the written page.
   - If you cannot determine the mount or read the source, emit `blocked`.
 

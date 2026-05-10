@@ -31,13 +31,15 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from posixpath import normpath
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
+from mimir.compiled_truth import CompiledTruthPage
+from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from niuu.domain.mimir import (
     MimirLintReport,
@@ -95,6 +97,43 @@ class PageResponse(BaseModel):
     updated_by: str = "mimir"
     size: int = 0
     related: list[str] = []
+    zones: list[
+        KeyFactsZoneResponse
+        | RelationshipsZoneResponse
+        | AssessmentZoneResponse
+        | TimelineZoneResponse
+    ] | None = None
+
+
+class KeyFactsZoneResponse(BaseModel):
+    kind: Literal["key-facts"] = "key-facts"
+    items: list[str]
+
+
+class RelationshipZoneItemResponse(BaseModel):
+    slug: str
+    note: str
+
+
+class RelationshipsZoneResponse(BaseModel):
+    kind: Literal["relationships"] = "relationships"
+    items: list[RelationshipZoneItemResponse]
+
+
+class AssessmentZoneResponse(BaseModel):
+    kind: Literal["assessment"] = "assessment"
+    text: str
+
+
+class TimelineZoneItemResponse(BaseModel):
+    date: str
+    note: str
+    source: str
+
+
+class TimelineZoneResponse(BaseModel):
+    kind: Literal["timeline"] = "timeline"
+    items: list[TimelineZoneItemResponse]
 
 
 class SearchResult(BaseModel):
@@ -380,6 +419,8 @@ def _require_write_auth(authorization: Annotated[str | None, Header()] = None) -
 
 _LOG_HEADER_RE = re.compile(r"^## \[(?P<date>[^\]]+)\] (?P<prefix>[^|]+)\| (?P<subject>.+)$")
 _KV_TOKEN_RE = re.compile(r"(?P<key>[a-z_]+)=(?P<value>[^\s]+)")
+_COMPILED_SUBHEADING_RE = re.compile(r"^### (?P<heading>[^\n]+)\s*$", re.MULTILINE)
+_RELATIONSHIP_LINE_RE = re.compile(r"^- \[\[(?P<slug>[^\]]+)\]\]\s*(?:—|-)\s*(?P<note>.+)$")
 
 
 def _stable_id(*parts: str) -> str:
@@ -746,12 +787,108 @@ def _decorate_page_meta(meta: MimirPageMeta, mounts: list[str] | None = None) ->
     )
 
 
+def _extract_compiled_subsection(compiled_truth: str, heading: str) -> str:
+    pattern = re.compile(
+        rf"^### {re.escape(heading)}\s*\n(.*?)(?=^### |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(compiled_truth)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def _extract_assessment(compiled_truth: str) -> str:
+    assessment = _extract_compiled_subsection(compiled_truth, "Assessment")
+    if assessment:
+        return assessment
+    return ""
+
+
+def _extract_key_facts(compiled_truth: str) -> list[str]:
+    key_facts = _extract_compiled_subsection(compiled_truth, "Key Facts")
+    if not key_facts:
+        return []
+    return [
+        line[2:].strip()
+        for line in key_facts.splitlines()
+        if line.strip().startswith("- ") and line[2:].strip()
+    ]
+
+
+def _extract_relationships(compiled_truth: str) -> list[RelationshipZoneItemResponse]:
+    relationships = _extract_compiled_subsection(compiled_truth, "Relationships")
+    if not relationships:
+        return []
+
+    items: list[RelationshipZoneItemResponse] = []
+    for line in relationships.splitlines():
+        match = _RELATIONSHIP_LINE_RE.match(line.strip())
+        if match is None:
+            continue
+        items.append(
+            RelationshipZoneItemResponse(
+                slug=match.group("slug").strip(),
+                note=match.group("note").strip(),
+            )
+        )
+    return items
+
+
+def _decorate_page_zones(
+    parsed: CompiledTruthPage,
+) -> list[
+    KeyFactsZoneResponse
+    | RelationshipsZoneResponse
+    | AssessmentZoneResponse
+    | TimelineZoneResponse
+] | None:
+    zones: list[
+        KeyFactsZoneResponse
+        | RelationshipsZoneResponse
+        | AssessmentZoneResponse
+        | TimelineZoneResponse
+    ] = []
+
+    key_facts = _extract_key_facts(parsed.compiled_truth)
+    if key_facts:
+        zones.append(KeyFactsZoneResponse(items=key_facts))
+
+    relationships = _extract_relationships(parsed.compiled_truth)
+    if relationships:
+        zones.append(RelationshipsZoneResponse(items=relationships))
+
+    assessment = _extract_assessment(parsed.compiled_truth)
+    if assessment:
+        zones.append(AssessmentZoneResponse(text=assessment))
+    elif parsed.compiled_truth.strip() and not key_facts and not relationships:
+        zones.append(AssessmentZoneResponse(text=parsed.compiled_truth.strip()))
+
+    if parsed.timeline_entries:
+        zones.append(
+            TimelineZoneResponse(
+                items=[
+                    TimelineZoneItemResponse(
+                        date=entry.date,
+                        note=entry.description,
+                        source=entry.source,
+                    )
+                    for entry in parsed.timeline_entries
+                ]
+            )
+        )
+
+    return zones or None
+
+
 def _decorate_page(page: MimirPage, mounts: list[str] | None = None) -> PageResponse:
     meta = _decorate_page_meta(page.meta, mounts=mounts)
+    parsed = parse_compiled_truth_page(page.content)
     return PageResponse(
         **meta.model_dump(),
         content=page.content,
-        related=[],
+        related=parsed.related_entities,
+        zones=_decorate_page_zones(parsed),
     )
 
 

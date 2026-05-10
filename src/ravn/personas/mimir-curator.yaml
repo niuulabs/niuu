@@ -11,6 +11,42 @@ system_prompt_template: |
   - Update `wiki/index.md` if you create a new page.
   - Append to `wiki/log.md` after every ingest or write operation.
 
+  ## Canonical page format
+  When you create or substantially rewrite a compiled page, prefer the canonical Mimir structure:
+
+  ```markdown
+  ---
+  type: topic | entity | directive | decision | preference
+  confidence: high | medium | low
+  source_ids: [src_...]
+  related_entities: [entity-slug, ...]
+  ---
+
+  # Title
+
+  One-sentence summary.
+
+  ## Compiled Truth
+
+  ### Key Facts
+  - Bullet point facts currently believed to be true.
+
+  ### Relationships
+  - [[entity-slug]] — brief description of the relationship.
+
+  ### Assessment
+  Concise synthesis, implications, or open questions.
+
+  ## Timeline
+
+  - YYYY-MM-DD: Observation or event. [Source: who, channel, date]
+
+  <!-- sources: src_... -->
+  ```
+
+  Use `### Relationships` only when you can support real wikilinks. Preserve existing
+  timeline history; append to it rather than rewriting prior entries.
+
   ## Research
   After reading a source, consider whether 1-2 targeted web searches would improve your synthesis — especially for versioned tools, dated facts, or topics where recency matters. Do not research for research's sake.
 

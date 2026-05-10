@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { MarkdownContent } from '@niuulabs/ui';
 import { splitWikilinks, resolveWikilink } from '../../domain';
 import { WikilinkPill } from './WikilinkPill';
@@ -17,30 +17,123 @@ interface ZoneRendererProps {
   onNavigate: (path: string) => void;
 }
 
+function renderMarkdownInline(text: string): ReactNode {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let key = 0;
+
+  while (cursor < text.length) {
+    if (text.startsWith('**', cursor)) {
+      const end = text.indexOf('**', cursor + 2);
+      if (end !== -1) {
+        parts.push(<strong key={key++}>{text.slice(cursor + 2, end)}</strong>);
+        cursor = end + 2;
+        continue;
+      }
+    }
+
+    if (text[cursor] === '`') {
+      const end = text.indexOf('`', cursor + 1);
+      if (end !== -1) {
+        parts.push(
+          <code key={key++} className="niuu-chat-md-inline-code">
+            {text.slice(cursor + 1, end)}
+          </code>,
+        );
+        cursor = end + 1;
+        continue;
+      }
+    }
+
+    if (text[cursor] === '[') {
+      const labelEnd = text.indexOf('](', cursor + 1);
+      if (labelEnd !== -1) {
+        const urlEnd = text.indexOf(')', labelEnd + 2);
+        if (urlEnd !== -1) {
+          const label = text.slice(cursor + 1, labelEnd);
+          const href = text.slice(labelEnd + 2, urlEnd);
+          parts.push(
+            <a
+              key={key++}
+              href={href}
+              className="niuu-chat-md-link"
+              target="_blank"
+              rel="noreferrer"
+            >
+              {label}
+            </a>,
+          );
+          cursor = urlEnd + 1;
+          continue;
+        }
+      }
+    }
+
+    const next = findNextInlineToken(text, cursor);
+    if (next === cursor) {
+      parts.push(text[cursor]);
+      cursor += 1;
+      continue;
+    }
+    parts.push(text.slice(cursor, next));
+    cursor = next;
+  }
+
+  return parts.length === 1 ? parts[0] : parts;
+}
+
+function findNextInlineToken(text: string, startAt: number): number {
+  const candidates = [
+    text.indexOf('**', startAt),
+    text.indexOf('`', startAt),
+    text.indexOf('[', startAt),
+  ].filter((index) => index !== -1);
+
+  if (candidates.length === 0) {
+    return text.length;
+  }
+
+  return Math.min(...candidates);
+}
+
+function RichInlineText({
+  text,
+  pages,
+  onNavigate,
+}: {
+  text: string;
+  pages: PageMeta[];
+  onNavigate: (path: string) => void;
+}) {
+  const parts = splitWikilinks(text);
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (part.kind === 'link') {
+          const target = resolveWikilink(part.slug, pages);
+          return (
+            <WikilinkPill
+              key={index}
+              slug={part.slug}
+              broken={target.broken}
+              onNavigate={onNavigate}
+            />
+          );
+        }
+        return <Fragment key={index}>{renderMarkdownInline(part.value)}</Fragment>;
+      })}
+    </>
+  );
+}
+
 function KeyFactsZone({ zone, pages, onNavigate }: ZoneRendererProps & { zone: ZoneKeyFacts }) {
   return (
     <ul className="niuu-m-0 niuu-pl-5">
-      {zone.items.map((item, i) => {
-        const parts = splitWikilinks(item);
-        return (
-          <li key={i} className="niuu-text-sm niuu-text-text-secondary niuu-py-[2px]">
-            {parts.map((part, j) => {
-              if (part.kind === 'link') {
-                const target = resolveWikilink(part.slug, pages);
-                return (
-                  <WikilinkPill
-                    key={j}
-                    slug={part.slug}
-                    broken={target.broken}
-                    onNavigate={onNavigate}
-                  />
-                );
-              }
-              return <Fragment key={j}>{part.value}</Fragment>;
-            })}
-          </li>
-        );
-      })}
+      {zone.items.map((item, i) => (
+        <li key={i} className="niuu-text-sm niuu-text-text-secondary niuu-py-[2px]">
+          <RichInlineText text={item} pages={pages} onNavigate={onNavigate} />
+        </li>
+      ))}
     </ul>
   );
 }
@@ -57,7 +150,11 @@ function RelationshipsZone({
         return (
           <li key={i} className="niuu-text-sm niuu-text-text-secondary niuu-py-[2px]">
             <WikilinkPill slug={rel.slug} broken={target.broken} onNavigate={onNavigate} />
-            {rel.note && <span className="niuu-text-text-secondary niuu-ml-2">— {rel.note}</span>}
+            {rel.note && (
+              <span className="niuu-text-text-secondary niuu-ml-2">
+                — <RichInlineText text={rel.note} pages={pages} onNavigate={onNavigate} />
+              </span>
+            )}
           </li>
         );
       })}
@@ -73,7 +170,11 @@ function AssessmentZone({ zone }: { zone: ZoneAssessment }) {
   );
 }
 
-function TimelineZone({ zone }: { zone: ZoneTimeline }) {
+function TimelineZone({
+  zone,
+  pages,
+  onNavigate,
+}: ZoneRendererProps & { zone: ZoneTimeline }) {
   const sorted = [...zone.items].sort((a, b) => b.date.localeCompare(a.date));
   return (
     <div>
@@ -85,7 +186,9 @@ function TimelineZone({ zone }: { zone: ZoneTimeline }) {
           <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted niuu-pt-[2px]">
             {entry.date}
           </span>
-          <span className="niuu-text-sm niuu-text-text-secondary">{entry.note}</span>
+          <span className="niuu-text-sm niuu-text-text-secondary">
+            <RichInlineText text={entry.note} pages={pages} onNavigate={onNavigate} />
+          </span>
         </div>
       ))}
       {zone.items.length === 0 && (
@@ -114,7 +217,7 @@ export function ZoneBodyReadonly({
     case 'assessment':
       return <AssessmentZone zone={zone} />;
     case 'timeline':
-      return <TimelineZone zone={zone} />;
+      return <TimelineZone zone={zone} pages={allPages} onNavigate={onNavigate} />;
   }
 }
 
