@@ -232,6 +232,16 @@ async def test_upsert_page_updates_existing(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_page_derives_title_from_path_when_heading_missing(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    await adapter.upsert_page("raids/NIU-911-postmortem.md", "## Compiled Truth\n\nBody text.")
+
+    page = await adapter.get_page("raids/NIU-911-postmortem.md")
+
+    assert page.meta.title == "NIU-911 Postmortem"
+
+
+@pytest.mark.asyncio
 async def test_read_page_returns_content(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     content = "# Test\n\nBody text."
@@ -305,6 +315,16 @@ async def test_search_returns_empty_for_no_match(tmp_path: Path) -> None:
     await adapter.upsert_page("technical/ravn/tools.md", "# Tools\n\nBash tools.")
     results = await adapter.search("kubernetes longhorn ceph")
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_search_matches_path_title_when_body_omits_query(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    await adapter.upsert_page("raids/NIU-911-postmortem.md", "## Compiled Truth\n\nBody text.")
+
+    results = await adapter.search("postmortem")
+
+    assert [p.meta.path for p in results] == ["raids/NIU-911-postmortem.md"]
 
 
 @pytest.mark.asyncio

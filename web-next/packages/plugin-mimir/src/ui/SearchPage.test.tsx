@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
+import { useMemo, useState } from 'react';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { PluginCtxProvider, ServicesProvider, type PluginCtx } from '@niuulabs/plugin-sdk';
 import { SearchPage } from './SearchPage';
 import { createMimirMockAdapter } from '../adapters/mock';
 import type { IMimirService } from '../ports';
@@ -89,6 +92,54 @@ describe('SearchPage', () => {
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'memory' } });
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', 'local');
+  });
+
+  it('updates the search scope when the active mount changes at runtime', async () => {
+    const search = vi.fn().mockResolvedValue([]);
+    const service: IMimirService = {
+      ...createMimirMockAdapter(),
+      pages: {
+        ...createMimirMockAdapter().pages,
+        search,
+      },
+    };
+
+    function Harness() {
+      const [activeMount, setActiveMount] = useState<string>('all');
+      const ctx = useMemo<PluginCtx>(
+        () => ({
+          tweaks: { activeMount },
+          setTweak: (key, value) => {
+            if (key === 'activeMount') setActiveMount(String(value));
+          },
+        }),
+        [activeMount],
+      );
+      const client = useMemo(
+        () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+        [],
+      );
+      return (
+        <QueryClientProvider client={client}>
+          <PluginCtxProvider value={ctx}>
+            <ServicesProvider services={{ mimir: service }}>
+              <button type="button" onClick={() => ctx.setTweak('activeMount', 'local')}>
+                focus local
+              </button>
+              <SearchPage />
+            </ServicesProvider>
+          </PluginCtxProvider>
+        </QueryClientProvider>
+      );
+    }
+
+    wrap(<Harness />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'memory' } });
+    await waitFor(() => expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', undefined));
+
+    fireEvent.click(screen.getByRole('button', { name: 'focus local' }));
+    await waitFor(() => expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', 'local'));
+    expect(screen.getByPlaceholderText('Search pages in local…')).toBeInTheDocument();
   });
 
   it('each result shows title and path', async () => {

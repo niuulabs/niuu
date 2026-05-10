@@ -25,6 +25,7 @@ system_prompt_template: |
 
   5. Use `mimir_write` to create or update 1-3 concise markdown pages in that
      same mount. Every page must:
+     - start with a single `# Title` heading that names the page clearly
      - synthesize the source in your own words
      - stay concise and factual
      - include `<!-- sources: <source_id> -->`

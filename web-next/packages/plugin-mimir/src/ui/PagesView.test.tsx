@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
+import { useMemo, useState } from 'react';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { PluginCtxProvider, ServicesProvider, type PluginCtx } from '@niuulabs/plugin-sdk';
 import { renderWithMimir as wrap } from '../testing/renderWithMimir';
 import { PagesView } from './PagesView';
+import { createMimirMockAdapter } from '../adapters/mock';
+import type { IMimirService } from '../ports';
 
 describe('PagesView', () => {
   it('renders the page tree sidebar', async () => {
@@ -31,6 +36,64 @@ describe('PagesView', () => {
     expect(screen.getByText('platform mount tree')).toBeInTheDocument();
     expect(screen.queryByText('api/')).not.toBeInTheDocument();
     expect(screen.getByText('infra/')).toBeInTheDocument();
+  });
+
+  it('updates the tree when the active mount changes at runtime', async () => {
+    const listPages = vi
+      .fn<NonNullable<IMimirService['pages']['listPages']>>()
+      .mockImplementation(async (options) => {
+        const pages = await createMimirMockAdapter().pages.listPages(options);
+        return pages;
+      });
+
+    const service: IMimirService = {
+      ...createMimirMockAdapter(),
+      pages: {
+        ...createMimirMockAdapter().pages,
+        listPages,
+      },
+    };
+
+    function Harness() {
+      const [activeMount, setActiveMount] = useState<string>('all');
+      const ctx = useMemo<PluginCtx>(
+        () => ({
+          tweaks: { activeMount },
+          setTweak: (key, value) => {
+            if (key === 'activeMount') setActiveMount(String(value));
+          },
+        }),
+        [activeMount],
+      );
+      const client = useMemo(
+        () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+        [],
+      );
+
+      return (
+        <QueryClientProvider client={client}>
+          <PluginCtxProvider value={ctx}>
+            <ServicesProvider services={{ mimir: service }}>
+              <button type="button" onClick={() => ctx.setTweak('activeMount', 'platform')}>
+                focus platform
+              </button>
+              <PagesView />
+            </ServicesProvider>
+          </PluginCtxProvider>
+        </QueryClientProvider>
+      );
+    }
+
+    wrap(<Harness />);
+    await waitFor(() => expect(screen.getByText('arch/')).toBeInTheDocument());
+    expect(listPages).toHaveBeenCalledWith(undefined);
+
+    fireEvent.click(screen.getByRole('button', { name: 'focus platform' }));
+
+    await waitFor(() => expect(screen.getByText('platform mount tree')).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('arch/')).not.toBeInTheDocument());
+    expect(screen.getByText('infra/')).toBeInTheDocument();
+    expect(listPages).toHaveBeenLastCalledWith({ mountName: 'platform' });
   });
 
   it('displays a page title and summary when a page is selected', async () => {
