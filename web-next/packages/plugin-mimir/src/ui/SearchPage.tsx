@@ -107,9 +107,7 @@ export function SearchPage() {
           <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-muted">
             {results.length} results
           </span>
-          <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint">
-            {mountLabel}
-          </span>
+          <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint">{mountLabel}</span>
         </div>
       </div>
 

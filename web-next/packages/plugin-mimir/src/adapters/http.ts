@@ -276,9 +276,7 @@ function normalizeZones(raw: RawPage): Zone[] | undefined {
   return deriveZonesFromContent(raw.content, raw.path);
 }
 
-function toZone(
-  raw: NonNullable<RawPage['zones']>[number],
-): Zone | null {
+function toZone(raw: NonNullable<RawPage['zones']>[number]): Zone | null {
   switch (raw.kind) {
     case 'key-facts':
       return { kind: 'key-facts', items: asStringArray(raw.items) };
@@ -300,9 +298,7 @@ function asStringArray(items: unknown[] | undefined): string[] {
   return (items ?? []).filter((item): item is string => typeof item === 'string');
 }
 
-function asRelationshipItems(
-  items: unknown[] | undefined,
-): Array<{ slug: string; note: string }> {
+function asRelationshipItems(items: unknown[] | undefined): Array<{ slug: string; note: string }> {
   return (items ?? [])
     .map((item) => {
       if (
@@ -375,12 +371,16 @@ function stripFrontmatter(content: string): string {
 
 function extractSection(content: string, heading: string): string | null {
   const match = content.match(
-    new RegExp(`(?:^|\\r?\\n)${escapeRegExp(heading)}[^\\S\\r\\n]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n##\\s|$)`),
+    new RegExp(
+      `(?:^|\\r?\\n)${escapeRegExp(heading)}[^\\S\\r\\n]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n##\\s|$)`,
+    ),
   );
-  return match ? match[1] ?? '' : null;
+  return match ? (match[1] ?? '') : null;
 }
 
-function parseTimelineItems(timeline: string): Array<{ date: string; note: string; source: string }> {
+function parseTimelineItems(
+  timeline: string,
+): Array<{ date: string; note: string; source: string }> {
   return timeline
     .split('\n')
     .map((line) => line.trim())
@@ -390,7 +390,9 @@ function parseTimelineItems(timeline: string): Array<{ date: string; note: strin
       const date = match[1]!;
       const rest = match[2]!;
       const sourceMatch = rest.match(/\[Source:\s*([^\]]+)\]/);
-      const note = (sourceMatch ? rest.slice(0, sourceMatch.index) : rest).trim().replace(/[. ]+$/, '');
+      const note = (sourceMatch ? rest.slice(0, sourceMatch.index) : rest)
+        .trim()
+        .replace(/[. ]+$/, '');
       return {
         date,
         note,
@@ -418,9 +420,7 @@ function stripLeadingTitle(content: string, path: string): string {
 function inferTitleFromPath(path: string): string {
   const leaf = path.split('/').pop() ?? path;
   const stem = leaf.replace(/\.md$/i, '');
-  return stem
-    .replace(/[-_]+/g, ' ')
-    .replace(/\b([a-z])/g, (m) => m.toUpperCase());
+  return stem.replace(/[-_]+/g, ' ').replace(/\b([a-z])/g, (m) => m.toUpperCase());
 }
 
 function escapeRegExp(text: string): string {

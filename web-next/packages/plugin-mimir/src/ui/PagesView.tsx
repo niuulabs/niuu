@@ -47,7 +47,11 @@ export function PagesView() {
   }, [allPages, selectedPath]);
 
   useEffect(() => {
-    if (requestedPath && requestedPath !== selectedPath && allPages.some((page) => page.path === requestedPath)) {
+    if (
+      requestedPath &&
+      requestedPath !== selectedPath &&
+      allPages.some((page) => page.path === requestedPath)
+    ) {
       setSelectedPath(requestedPath);
     }
   }, [allPages, requestedPath, selectedPath]);
@@ -173,10 +177,9 @@ export function PagesView() {
             <div className="niuu-flex-1 niuu-overflow-y-auto niuu-py-2">
               {Object.values(tree.children).map((child) => {
                 const targetPath = child.isDir ? collectLeaves(child)[0]?.path : child.path;
-                const isActive =
-                  child.isDir
-                    ? activePagePath?.startsWith(`${child.path}/`) ?? false
-                    : activePagePath === child.path;
+                const isActive = child.isDir
+                  ? (activePagePath?.startsWith(`${child.path}/`) ?? false)
+                  : activePagePath === child.path;
                 if (!targetPath) return null;
                 return (
                   <button

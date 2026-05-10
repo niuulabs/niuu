@@ -995,9 +995,8 @@ export function createMimirMockAdapter(): IMimirService {
 
       async getPage(path: string, mountName?: string): Promise<Page | null> {
         return (
-          ALL_PAGES.find(
-            (p) => p.path === path && (!mountName || p.mounts.includes(mountName)),
-          ) ?? null
+          ALL_PAGES.find((p) => p.path === path && (!mountName || p.mounts.includes(mountName))) ??
+          null
         );
       },
 

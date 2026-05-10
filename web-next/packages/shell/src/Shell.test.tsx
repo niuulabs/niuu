@@ -210,7 +210,9 @@ describe('Shell', () => {
   });
 
   it('applies the collapsed subnav class when a plugin toggles it', async () => {
-    wrap(<Shell plugins={[pluginWithCollapsibleSubnav]} _testHistory={memHistory('/collapsible')} />);
+    wrap(
+      <Shell plugins={[pluginWithCollapsibleSubnav]} _testHistory={memHistory('/collapsible')} />,
+    );
     await waitFor(() => {
       expect(screen.getByTestId('collapsible-content')).toBeInTheDocument();
     });

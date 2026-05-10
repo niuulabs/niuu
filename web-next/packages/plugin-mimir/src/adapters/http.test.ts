@@ -206,7 +206,9 @@ describe('buildMimirHttpAdapter', () => {
         }),
       });
 
-      const result = await buildMimirHttpAdapter(client).pages.getPage('raids/NIU-912-postmortem.md');
+      const result = await buildMimirHttpAdapter(client).pages.getPage(
+        'raids/NIU-912-postmortem.md',
+      );
 
       expect(result?.zones).toEqual([
         expect.objectContaining({ kind: 'assessment' }),

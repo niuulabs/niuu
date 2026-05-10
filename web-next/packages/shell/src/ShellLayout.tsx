@@ -46,9 +46,7 @@ export function ShellLayout() {
     navPlugins.map((p) => p.id),
   );
   const active = navPlugins.find((p) => p.id === activeId) ?? navPlugins[0] ?? null;
-  const subnavCollapsed = active
-    ? Boolean(ctx.tweaks[`${active.id}.subnavCollapsed`])
-    : false;
+  const subnavCollapsed = active ? Boolean(ctx.tweaks[`${active.id}.subnavCollapsed`]) : false;
 
   // localStorage follows the router — not the other way around
   useEffect(() => {

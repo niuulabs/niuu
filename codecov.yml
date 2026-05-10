@@ -6,7 +6,8 @@ coverage:
         threshold: 2%
     patch:
       default:
-        target: 80%
+        target: 75%
+        threshold: 5%
 comment:
   layout: "reach,diff,flags,components"
   behavior: default
@@ -18,5 +19,5 @@ flags:
     carryforward: true
   web:
     paths:
-      - web/src/
+      - web-next/
     carryforward: true

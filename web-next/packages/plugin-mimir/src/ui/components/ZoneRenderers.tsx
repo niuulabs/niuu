@@ -170,11 +170,7 @@ function AssessmentZone({ zone }: { zone: ZoneAssessment }) {
   );
 }
 
-function TimelineZone({
-  zone,
-  pages,
-  onNavigate,
-}: ZoneRendererProps & { zone: ZoneTimeline }) {
+function TimelineZone({ zone, pages, onNavigate }: ZoneRendererProps & { zone: ZoneTimeline }) {
   const sorted = [...zone.items].sort((a, b) => b.date.localeCompare(a.date));
   return (
     <div>

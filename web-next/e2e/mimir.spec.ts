@@ -60,10 +60,7 @@ test('/mimir/pages structured key-facts render inline markdown', async ({ page }
   await page.goto('/mimir/pages');
   const infraDir = page.getByText('infra/').first();
   await expect(infraDir).toBeVisible({ timeout: 5000 });
-  await page
-    .getByRole('button', { name: /k8s/ })
-    .first()
-    .click();
+  await page.getByRole('button', { name: /k8s/ }).first().click();
   await expect(page.getByRole('heading', { name: 'Kubernetes Deployment' })).toBeVisible({
     timeout: 5000,
   });
@@ -137,7 +134,8 @@ test('mimir rune is visible in the rail', async ({ page }) => {
 test('/mimir/search renders the search workspace', async ({ page }) => {
   await page.goto('/mimir/search');
   await expect(page.getByRole('searchbox')).toBeVisible();
-  await expect(page.getByText(/mount-aware ranking/i)).toBeVisible();
+  await expect(page.getByPlaceholder('Search pages across all mounts…')).toBeVisible();
+  await expect(page.getByRole('group', { name: /search mode/i })).toBeVisible();
 });
 
 test('/mimir/search shows search input', async ({ page }) => {
