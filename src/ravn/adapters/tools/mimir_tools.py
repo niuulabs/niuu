@@ -116,7 +116,11 @@ class MimirIngestTool(ToolPort):
             entity_paths = await self._entity_extractor.run(source)
             page_paths = page_paths + entity_paths
 
-        result = f"Ingested source '{title}' (id={source.source_id})"
+        result = (
+            f"Ingested source '{title}' (id={source.source_id})\n"
+            f"source_id: {source.source_id}\n"
+            f"source_type: {source_type}"
+        )
         if page_paths:
             result += f"\nPages updated: {', '.join(page_paths)}"
         return ToolResult(tool_call_id="", content=result)

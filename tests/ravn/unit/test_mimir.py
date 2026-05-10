@@ -498,6 +498,8 @@ async def test_mimir_ingest_tool_success(tmp_path: Path) -> None:
     )
     assert not result.is_error
     assert "Ingested source" in result.content
+    assert "source_id: src_" in result.content
+    assert "source_type: document" in result.content
 
 
 @pytest.mark.asyncio

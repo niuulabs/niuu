@@ -2286,8 +2286,13 @@ def _wire_mimir_triggers(
     and ``settings.thread``.
     """
     mc = settings.mimir
+    workflow_runtime = bool(settings.workflow.graph)
 
-    if mc.source_trigger.enabled:
+    if workflow_runtime:
+        logger.info(
+            "mimir: workflow runtime detected — background source/staleness triggers disabled"
+        )
+    elif mc.source_trigger.enabled:
         from ravn.adapters.triggers.mimir_source import MimirSourceTrigger
 
         drive_loop.register_trigger(MimirSourceTrigger(mimir=mimir, config=mc.source_trigger))
@@ -2297,7 +2302,7 @@ def _wire_mimir_triggers(
             mc.source_trigger.persona,
         )
 
-    if mc.staleness_trigger.enabled:
+    if not workflow_runtime and mc.staleness_trigger.enabled:
         from ravn.adapters.mimir.usage_log import LogBasedUsageAdapter
         from ravn.adapters.triggers.mimir_staleness import MimirStalenessTrigger
 
