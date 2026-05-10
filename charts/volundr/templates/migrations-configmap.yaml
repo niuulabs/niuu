@@ -197,6 +197,26 @@ data:
     DROP INDEX IF EXISTS idx_chronicle_events_chronicle_id;
     DROP TABLE IF EXISTS chronicle_events;
 
+  000038_chronicle_history_survives_session_delete.up.sql: |
+    -- Preserve chronicles and timeline history after session deletion
+
+    ALTER TABLE chronicles
+        DROP CONSTRAINT IF EXISTS chronicles_session_id_fkey;
+
+    ALTER TABLE chronicle_events
+        DROP CONSTRAINT IF EXISTS chronicle_events_session_id_fkey;
+
+  000038_chronicle_history_survives_session_delete.down.sql: |
+    -- Restore session foreign keys for chronicles and timeline events
+
+    ALTER TABLE chronicles
+        ADD CONSTRAINT chronicles_session_id_fkey
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL;
+
+    ALTER TABLE chronicle_events
+        ADD CONSTRAINT chronicle_events_session_id_fkey
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE;
+
   000007_session_events.up.sql: |
     -- Add session_events table for the event pipeline
 

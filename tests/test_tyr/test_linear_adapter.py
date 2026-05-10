@@ -1352,6 +1352,36 @@ class TestAllRaidsMerged:
         result = await adapter.all_raids_merged("phase-tid")
         assert result is False
 
+    async def test_with_pool_unassigned_phase_uses_null_phase_rows(self):
+        adapter, pool = _make_adapter_with_pool()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.return_value = _mock_response(
+            {
+                "data": {
+                    "issues": {
+                        "nodes": [
+                            _issue_node(
+                                id="i-1",
+                                identifier="NIU-1",
+                                state={"name": "Done", "type": "completed"},
+                                projectMilestone=None,
+                            ),
+                            _issue_node(
+                                id="i-2",
+                                identifier="NIU-2",
+                                state={"name": "Done", "type": "completed"},
+                                projectMilestone=None,
+                            ),
+                        ]
+                    }
+                }
+            }
+        )
+
+        result = await adapter.all_raids_merged("__unassigned__:proj-id")
+
+        assert result is True
+
 
 # ---------------------------------------------------------------------------
 # list_phases_for_saga
@@ -1381,6 +1411,7 @@ class TestListPhasesForSaga:
                 "confidence": 0.1,
             },
         ]
+        pool.fetchval.return_value = 0
 
         result = await adapter.list_phases_for_saga("proj-id")
 
@@ -1390,15 +1421,34 @@ class TestListPhasesForSaga:
     async def test_returns_phases_from_milestones(self):
         adapter = _make_adapter()
         adapter._gql._client = AsyncMock()
-        adapter._gql._client.post.return_value = _mock_response(
-            {
-                "data": {
-                    "project": {
-                        "projectMilestones": {"nodes": [_milestone_node(id="ms-1", name="Phase 1")]}
+        adapter._gql._client.post.side_effect = [
+            _mock_response(
+                {
+                    "data": {
+                        "project": {
+                            "projectMilestones": {
+                                "nodes": [_milestone_node(id="ms-1", name="Phase 1")]
+                            }
+                        }
                     }
                 }
-            }
-        )
+            ),
+            _mock_response(
+                {
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                _issue_node(
+                                    id="i-1",
+                                    identifier="NIU-1",
+                                    projectMilestone={"id": "ms-1"},
+                                )
+                            ]
+                        }
+                    }
+                }
+            ),
+        ]
 
         result = await adapter.list_phases_for_saga("proj-id")
 
@@ -1409,12 +1459,75 @@ class TestListPhasesForSaga:
     async def test_empty_milestones(self):
         adapter = _make_adapter()
         adapter._gql._client = AsyncMock()
-        adapter._gql._client.post.return_value = _mock_response(
-            {"data": {"project": {"projectMilestones": {"nodes": []}}}}
-        )
+        adapter._gql._client.post.side_effect = [
+            _mock_response({"data": {"project": {"projectMilestones": {"nodes": []}}}}),
+            _mock_response({"data": {"issues": {"nodes": []}}}),
+        ]
 
         result = await adapter.list_phases_for_saga("proj-id")
         assert result == []
+
+    async def test_appends_unassigned_phase_for_tracker_backed_unassigned_issues(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response(
+                {
+                    "data": {
+                        "project": {
+                            "projectMilestones": {
+                                "nodes": [_milestone_node(id="ms-1", name="Phase 1")]
+                            }
+                        }
+                    }
+                }
+            ),
+            _mock_response(
+                {
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                _issue_node(
+                                    id="i-1",
+                                    identifier="NIU-1",
+                                    projectMilestone={"id": "ms-1"},
+                                ),
+                                _issue_node(
+                                    id="i-2",
+                                    identifier="NIU-2",
+                                    projectMilestone=None,
+                                ),
+                            ]
+                        }
+                    }
+                }
+            ),
+        ]
+
+        result = await adapter.list_phases_for_saga("proj-id")
+
+        assert [phase.name for phase in result] == ["Phase 1", "Unassigned"]
+        assert result[-1].tracker_id == "__unassigned__:proj-id"
+
+    async def test_appends_unassigned_phase_to_persisted_phases_when_progress_rows_exist(self):
+        adapter, pool = _make_adapter_with_pool()
+        pool.fetch.return_value = [
+            {
+                "id": uuid4(),
+                "saga_id": uuid4(),
+                "tracker_id": "ms-1",
+                "number": 1,
+                "name": "Phase 1",
+                "status": "ACTIVE",
+                "confidence": 0.4,
+            }
+        ]
+        pool.fetchval.return_value = 1
+
+        result = await adapter.list_phases_for_saga("proj-id")
+
+        assert [phase.name for phase in result] == ["Phase 1", "Unassigned"]
+        assert result[-1].tracker_id == "__unassigned__:proj-id"
 
 
 # ---------------------------------------------------------------------------
@@ -1464,22 +1577,22 @@ class TestGetSagaForRaid:
 
     async def test_with_pool_not_found_returns_none(self):
         adapter, pool = _make_adapter_with_pool()
-        pool.fetchrow.return_value = None
+        pool.fetchrow.side_effect = [None, None]
 
         result = await adapter.get_saga_for_raid("t-1")
         assert result is None
 
     async def test_with_pool_empty_saga_tracker_id_returns_none(self):
         adapter, pool = _make_adapter_with_pool()
-        pool.fetchrow.return_value = {"saga_tracker_id": None}
+        pool.fetchrow.side_effect = [None, {"saga_tracker_id": None}]
 
         result = await adapter.get_saga_for_raid("t-1")
         assert result is None
 
-    async def test_with_pool_found(self):
+    async def test_with_pool_falls_back_to_tracker_project_lookup(self):
         adapter, pool = _make_adapter_with_pool()
         adapter._gql._client = AsyncMock()
-        pool.fetchrow.return_value = {"saga_tracker_id": "proj-1"}
+        pool.fetchrow.side_effect = [None, {"saga_tracker_id": "proj-1"}]
         adapter._gql._client.post.return_value = _mock_response(
             {"data": {"project": _project_node()}}
         )
@@ -1488,6 +1601,35 @@ class TestGetSagaForRaid:
 
         assert result is not None
         assert result.tracker_id == "proj-1"
+
+    async def test_with_pool_returns_persisted_saga_row_when_available(self):
+        adapter, pool = _make_adapter_with_pool()
+        saga_id = uuid4()
+        created_at = datetime.now(UTC)
+        pool.fetchrow.return_value = {
+            "id": saga_id,
+            "tracker_id": "proj-1",
+            "tracker_type": "linear",
+            "slug": "proof-import",
+            "name": "Proof Import",
+            "repos": ["niuulabs/volundr"],
+            "feature_branch": "feat/proof-import",
+            "base_branch": "dev",
+            "status": "ACTIVE",
+            "confidence": 0.0,
+            "created_at": created_at,
+            "owner_id": "dev-user",
+            "workflow_id": None,
+            "workflow_version": None,
+            "workflow_snapshot": None,
+        }
+
+        result = await adapter.get_saga_for_raid("t-1")
+
+        assert result is not None
+        assert result.id == saga_id
+        assert result.owner_id == "dev-user"
+        assert result.base_branch == "dev"
 
 
 # ---------------------------------------------------------------------------
@@ -1508,12 +1650,14 @@ class TestGetPhaseForRaid:
         result = await adapter.get_phase_for_raid("t-1")
         assert result is None
 
-    async def test_with_pool_empty_phase_tracker_id_returns_none(self):
+    async def test_with_pool_empty_phase_tracker_id_returns_synthetic_unassigned_phase(self):
         adapter, pool = _make_adapter_with_pool()
-        pool.fetchrow.return_value = {"phase_tracker_id": ""}
+        pool.fetchrow.return_value = {"phase_tracker_id": "", "saga_tracker_id": "proj-1"}
 
         result = await adapter.get_phase_for_raid("t-1")
-        assert result is None
+        assert result is not None
+        assert result.name == "Unassigned"
+        assert result.tracker_id == "__unassigned__:proj-1"
 
     async def test_with_pool_found(self):
         adapter, pool = _make_adapter_with_pool()

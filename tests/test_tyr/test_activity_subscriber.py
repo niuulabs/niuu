@@ -143,13 +143,27 @@ class MockTracker:
     async def _update_raid_progress_impl(self, tracker_id: str, **kwargs: object) -> Raid:
         """Return a raid with updated status when update_raid_progress is called."""
         # Find the raid by tracker_id
-        for raid in self._raids_by_session.values():
+        for session_id, raid in list(self._raids_by_session.items()):
             if raid.tracker_id == tracker_id:
+                status = kwargs.get("status")
+                if isinstance(status, RaidStatus):
+                    updated = Raid(
+                        **{
+                            **raid.__dict__,
+                            "status": status,
+                            "updated_at": NOW,
+                        }
+                    )
+                    self._raids_by_session[session_id] = updated
+                    return updated
                 return raid
         return _make_raid()
 
     async def get_raid_by_session(self, session_id: str) -> Raid | None:
         return self._raids_by_session.get(session_id)
+
+    async def list_raids_by_status(self, status: RaidStatus) -> list[Raid]:
+        return [raid for raid in self._raids_by_session.values() if raid.status is status]
 
 
 class StubDispatcherRepo(DispatcherRepository):
@@ -411,6 +425,7 @@ class TestActivityEventHandling:
         assert call.args[0] == TRACKER_ISSUE_ID
         assert call.args[1] == OWNER_ID
         assert call.args[2].verdict == "approve"
+        assert call.args[2].authoritative is False
         assert call.kwargs["scope_adherence_threshold"] == pytest.approx(0.7)
 
     @pytest.mark.asyncio
@@ -534,7 +549,16 @@ class TestActivityEventHandling:
                     "scope_adherence": "0.85",
                     "pr_url": " https://github.com/niuulabs/volundr/pull/713 ",
                     "summary": "  all good  ",
+                    "checks": [
+                        {
+                            "persona": "reviewer",
+                            "event_type": "review.completed",
+                            "verdict": "pass",
+                            "summary": "looks good",
+                        }
+                    ],
                 },
+                "completion_peer_id": "workflow-stop:raid-complete",
             },
             owner_id=OWNER_ID,
         )
@@ -549,6 +573,15 @@ class TestActivityEventHandling:
         assert outcome.pr_url == "https://github.com/niuulabs/volundr/pull/713"
         assert outcome.files_changed == ["src/one.py", "src/two.py"]
         assert outcome.summary == "all good"
+        assert outcome.authoritative is True
+        assert outcome.checks == [
+            {
+                "persona": "reviewer",
+                "event_type": "review.completed",
+                "verdict": "pass",
+                "summary": "looks good",
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_idle_with_no_turns_does_not_complete(self) -> None:
@@ -1005,6 +1038,25 @@ class TestFailureDetection:
         assert bus_event.event == "raid.state_changed"
         assert bus_event.data["session_id"] == SESSION_ID
         assert bus_event.data["status"] == "FAILED"
+
+    @pytest.mark.asyncio
+    async def test_reconcile_running_raids_fails_stale_stopped_sessions(self) -> None:
+        raid = _make_raid(session_id="stale-session", tracker_id="issue-stale")
+        volundr = StubVolundr()
+        volundr.sessions["stale-session"] = _make_volundr_session(
+            session_id="stale-session",
+            status="stopped",
+        )
+        tracker = MockTracker(raids_by_session={"stale-session": raid})
+        sub, _, _, _ = _make_subscriber(volundr=volundr, tracker=tracker, raid=raid)
+
+        await sub._reconcile_running_raids(OWNER_ID, volundr)
+
+        tracker.update_raid_progress.assert_called_once()
+        progress_call = tracker.update_raid_progress.call_args
+        assert progress_call.args[0] == "issue-stale"
+        assert progress_call.kwargs["status"] == RaidStatus.FAILED
+        assert progress_call.kwargs["reason"] == "Session stopped"
 
 
 # ---------------------------------------------------------------------------

@@ -182,6 +182,7 @@ class SessionActivitySubscriber:
         """Maintain an SSE subscription for a single owner-cluster pair."""
         while self._running:
             try:
+                await self._reconcile_running_raids(owner_id, volundr)
                 logger.info("SSE subscription started for owner %s", owner_id[:8])
                 async for event in volundr.subscribe_activity():
                     if not self._running:
@@ -201,6 +202,37 @@ class SessionActivitySubscriber:
 
             if self._running:
                 await asyncio.sleep(self._config.reconnect_delay)
+
+    async def _reconcile_running_raids(self, owner_id: str, volundr: VolundrPort) -> None:
+        """Fail tracker-side RUNNING raids whose backing Forge sessions are already terminal.
+
+        This closes the restart gap where Volundr has reconciled dead local
+        sessions to ``stopped`` before Tyr's SSE subscription comes online.
+        Without this pass, ``try_auto_continue()`` can believe all owner slots
+        are still occupied by phantom RUNNING raids.
+        """
+        trackers = await self._tracker_factory.for_owner(owner_id)
+        for tracker in trackers:
+            running_raids = await tracker.list_raids_by_status(RaidStatus.RUNNING)
+            for raid in running_raids:
+                if not raid.session_id:
+                    continue
+                session = await volundr.get_session(raid.session_id)
+                if session is None:
+                    await self._handle_failure(
+                        raid,
+                        tracker,
+                        owner_id,
+                        reason="Session not found during subscriber startup",
+                    )
+                    continue
+                if session.status in self._FAILED_STATUSES:
+                    await self._handle_failure(
+                        raid,
+                        tracker,
+                        owner_id,
+                        reason=f"Session {session.status}",
+                    )
 
     def _cancel_owner_tasks(self, owner_id: str) -> None:
         """Cancel all SSE tasks for *owner_id* and clear the adapter cache."""
@@ -448,6 +480,14 @@ class SessionActivitySubscriber:
                 structured_payload.get("files_changed") or metadata.get("files_changed")
             ),
             summary=_coerce_str(structured_payload.get("summary")) or "",
+            authoritative=str(
+                metadata.get("completion_peer_id") or ""
+            ).startswith("workflow-stop:"),
+            checks=[
+                dict(item)
+                for item in structured_payload.get("checks", [])
+                if isinstance(item, dict)
+            ],
         )
 
         logger.info(

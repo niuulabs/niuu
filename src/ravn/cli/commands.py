@@ -2463,6 +2463,32 @@ def _split_workflow_edge_label(label: Any) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _stage_personas(node: dict[str, Any]) -> set[str]:
+    personas = {
+        str(persona)
+        for persona in (node.get("personaIds") or [])
+        if isinstance(persona, str) and persona
+    }
+    for member in node.get("stageMembers") or []:
+        if not isinstance(member, dict):
+            continue
+        persona_id = member.get("personaId")
+        if isinstance(persona_id, str) and persona_id:
+            personas.add(persona_id)
+    return personas
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 def _join_mode_to_fan_in(join_mode: str) -> str:
     if join_mode == "all":
         return "all_must_pass"
@@ -2471,55 +2497,152 @@ def _join_mode_to_fan_in(join_mode: str) -> str:
     return "merge"
 
 
-def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict[str, Any] | None:
+def _workflow_graph(settings: Settings) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     workflow_cfg = getattr(settings, "workflow", None)
     graph = getattr(workflow_cfg, "graph", None)
     if not isinstance(graph, dict):
-        return None
+        return [], []
+    nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
+    edges = [edge for edge in graph.get("edges", []) if isinstance(edge, dict)]
+    return nodes, edges
 
-    nodes = list(graph.get("nodes") or [])
-    edges = list(graph.get("edges") or [])
+
+def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict[str, Any] | None:
+    nodes, edges = _workflow_graph(settings)
     if not nodes or not edges:
         return None
 
-    matching_nodes: list[dict[str, Any]] = []
+    matching_nodes: list[tuple[dict[str, Any], list[str]]] = []
     for node in nodes:
         if not isinstance(node, dict) or node.get("kind") != "stage":
             continue
         stage_members = list(node.get("stageMembers") or [])
-        if any(member.get("personaId") == persona_name for member in stage_members):
-            matching_nodes.append(node)
-            continue
-        persona_ids = list(node.get("personaIds") or [])
-        if persona_name in persona_ids:
-            matching_nodes.append(node)
+        for member in stage_members:
+            if not isinstance(member, dict) or member.get("personaId") != persona_name:
+                continue
+            member_override_events: list[str] = []
+            consumes_event_types = member.get("consumesEventTypes")
+            if not isinstance(consumes_event_types, list):
+                consumes_event_types = member.get("consumes_event_types")
+            if isinstance(consumes_event_types, list):
+                member_override_events.extend(
+                    str(event_type).strip()
+                    for event_type in consumes_event_types
+                    if str(event_type).strip()
+                )
+            matching_nodes.append((node, member_override_events))
+            break
+        else:
+            persona_ids = list(node.get("personaIds") or [])
+            if persona_name in persona_ids:
+                matching_nodes.append((node, []))
 
     if not matching_nodes:
         return None
 
-    node_ids = {str(node.get("id")) for node in matching_nodes if node.get("id") is not None}
-    event_types: list[str] = []
-    fan_in_strategy = "merge"
+    consumer_groups: list[dict[str, Any]] = []
+    aggregated_event_types: list[str] = []
+    for index, (node, member_override_events) in enumerate(matching_nodes):
+        node_id = str(node.get("id") or f"{persona_name}-stage-{index}")
+        group_event_types: list[str] = []
+        for edge in edges:
+            if str(edge.get("target")) != node_id:
+                continue
+            _, target_event = _split_workflow_edge_label(edge.get("label"))
+            if target_event:
+                group_event_types.append(target_event)
 
-    for edge in edges:
-        if str(edge.get("target")) not in node_ids:
+        resolved_event_types = _dedupe_preserve_order(member_override_events or group_event_types)
+        if not resolved_event_types:
             continue
-        _, target_event = _split_workflow_edge_label(edge.get("label"))
-        if target_event and target_event not in event_types:
-            event_types.append(target_event)
 
-    multi_input_nodes = [
-        node
-        for node in matching_nodes
-        if sum(1 for edge in edges if str(edge.get("target")) == str(node.get("id"))) > 1
-    ]
-    if len(multi_input_nodes) == 1:
-        fan_in_strategy = _join_mode_to_fan_in(str(multi_input_nodes[0].get("joinMode") or "all"))
+        fan_in_strategy = "merge"
+        if len(resolved_event_types) > 1:
+            fan_in_strategy = _join_mode_to_fan_in(str(node.get("joinMode") or "all"))
+
+        consumer_groups.append(
+            {
+                "id": node_id,
+                "label": str(node.get("label") or node_id),
+                "event_types": resolved_event_types,
+                "fan_in_strategy": fan_in_strategy,
+            }
+        )
+        aggregated_event_types.extend(resolved_event_types)
+
+    if not consumer_groups:
+        return None
+
+    default_strategy = (
+        str(consumer_groups[0]["fan_in_strategy"])
+        if len(consumer_groups) == 1
+        else "merge"
+    )
 
     return {
-        "event_types": event_types,
-        "fan_in_strategy": fan_in_strategy,
+        "event_types": _dedupe_preserve_order(aggregated_event_types),
+        "fan_in_strategy": default_strategy,
+        "consumer_groups": consumer_groups,
     }
+
+
+def _workflow_allowed_task_targets(
+    settings: Settings,
+    persona_name: str,
+    *,
+    node_id: str | None = None,
+) -> set[str] | None:
+    nodes, edges = _workflow_graph(settings)
+    if not nodes or not edges:
+        return None
+
+    if node_id:
+        matching_node_ids = {node_id}
+    else:
+        matching_node_ids = {
+            str(node.get("id"))
+            for node in nodes
+            if node.get("kind") == "stage" and persona_name in _stage_personas(node)
+        }
+    if not matching_node_ids:
+        return None
+
+    allowed_personas: set[str] = set()
+    for edge in edges:
+        if str(edge.get("source")) not in matching_node_ids:
+            continue
+        target_id = str(edge.get("target"))
+        if not target_id:
+            continue
+        for node in nodes:
+            if str(node.get("id")) != target_id:
+                continue
+            if node.get("kind") != "stage":
+                continue
+            allowed_personas.update(_stage_personas(node))
+            break
+
+    return allowed_personas if allowed_personas else None
+
+
+def _workflow_allowed_outcome_topics(
+    settings: Settings,
+    *,
+    node_id: str | None,
+) -> set[str] | None:
+    if not node_id:
+        return None
+    nodes, edges = _workflow_graph(settings)
+    if not nodes or not edges:
+        return None
+    topics = {
+        source_event
+        for edge in edges
+        if str(edge.get("source")) == node_id
+        for source_event, _target_event in [_split_workflow_edge_label(edge.get("label"))]
+        if source_event
+    }
+    return topics if topics else None
 
 
 def _wire_cascade(
@@ -2555,12 +2678,39 @@ def _wire_cascade(
             logger.warning("cascade: failed to build mesh adapter: %s", exc)
 
     # Build cascade tools (Mode 1 always; Mode 2/3 when mesh/discovery available)
+    allowed_target_personas = None
+    if persona_config is not None:
+        allowed_target_personas = _workflow_allowed_task_targets(settings, persona_config.name)
+        if allowed_target_personas is not None:
+            logger.info(
+                "cascade: workflow graph restricts %s task_create targets to %s",
+                persona_config.name,
+                sorted(allowed_target_personas),
+            )
+
+    def _resolve_allowed_targets() -> set[str] | None:
+        if persona_config is None:
+            return None
+        current_task = drive_loop.current_task() if hasattr(drive_loop, "current_task") else None
+        current_node_id = (
+            str(getattr(current_task, "workflow_node_id", "") or "").strip() if current_task else ""
+        )
+        if current_node_id:
+            return _workflow_allowed_task_targets(
+                settings,
+                persona_config.name,
+                node_id=current_node_id,
+            ) or set()
+        return _workflow_allowed_task_targets(settings, persona_config.name)
+
     cascade_tools = build_cascade_tools(
         drive_loop=drive_loop,
         mesh=mesh,
         discovery=discovery,
         spawn_adapter=None,  # spawn adapter wired separately if needed
         cascade_config=settings.cascade,
+        allowed_target_personas=allowed_target_personas,
+        allowed_target_resolver=_resolve_allowed_targets,
     )
     logger.info(
         "cascade: registered %d tools (mesh=%s, discovery=%s)",
@@ -2595,6 +2745,10 @@ def _wire_cascade(
                     persona=task_dict.get("persona"),
                     priority=int(task_dict.get("priority", 5)),
                 )
+                if task_dict.get("session_id"):
+                    task.session_id = str(task_dict["session_id"])
+                if task_dict.get("root_correlation_id"):
+                    task.root_correlation_id = str(task_dict["root_correlation_id"])
                 await drive_loop.enqueue(task)
                 return {"status": "accepted", "task_id": task.task_id}
             except Exception as exc:
@@ -2693,14 +2847,22 @@ def _wire_cascade(
     # Wire mesh and persona_config for outcome event publishing
     drive_loop.set_mesh(mesh)
     drive_loop.set_persona_config(persona_config)
+    drive_loop.set_workflow_allowed_outcomes_resolver(
+        lambda task, _persona: _workflow_allowed_outcome_topics(
+            settings,
+            node_id=str(getattr(task, "workflow_node_id", "") or "").strip() or None,
+        )
+    )
 
     # Subscribe to event types this persona consumes
     if mesh is not None and persona_config is not None:
         consumes = getattr(persona_config, "consumes", None)
         event_types = list(getattr(consumes, "event_types", []) if consumes else [])
+        workflow_consumer_groups: list[dict[str, Any]] = []
         workflow_runtime = _workflow_runtime_for_persona(settings, persona_config.name)
         if workflow_runtime is not None and workflow_runtime["event_types"]:
             event_types = list(workflow_runtime["event_types"])
+            workflow_consumer_groups = list(workflow_runtime.get("consumer_groups") or [])
             logger.info(
                 "mesh: workflow graph overrides consumed event_types for %s: %s",
                 persona_config.name,
@@ -2788,45 +2950,81 @@ def _wire_cascade(
                     # task dispatch happens via consumer accumulation below.
 
             # --- Consumer accumulation ---
-            result = drive_loop.fan_in.try_accept_consumer(
-                event_type=event_type,
-                event_payload=payload,
-                root_correlation_id=root_corr,
-                persona_name=persona_config.name if persona_config else "unknown",
-                consumes_event_types=list(event_types),
-                strategy=fan_in_strategy,
-            )
+            consumer_groups = workflow_consumer_groups or [
+                {
+                    "id": persona_config.name,
+                    "label": persona_config.name,
+                    "event_types": list(event_types),
+                    "fan_in_strategy": fan_in_strategy,
+                }
+            ]
+            pending_groups: list[str] = []
+            matched = False
+            for group in consumer_groups:
+                group_event_types = list(group.get("event_types") or [])
+                if event_type not in group_event_types:
+                    continue
+                matched = True
+                group_id = str(group.get("id") or persona_config.name)
+                group_strategy = str(group.get("fan_in_strategy") or fan_in_strategy)
+                result = drive_loop.fan_in.try_accept_consumer(
+                    event_type=event_type,
+                    event_payload=payload,
+                    root_correlation_id=root_corr,
+                    persona_name=persona_config.name if persona_config else "unknown",
+                    consumes_event_types=group_event_types,
+                    strategy=group_strategy,
+                    consumer_key=group_id,
+                )
 
-            if result is None:
+                if result is None:
+                    pending_groups.append(group_id)
+                    continue
+
+                task_id_suffix = (root_corr or "unknown")[:8]
+                safe_group_id = group_id.replace(".", "_").replace("-", "_")
+                task = AgentTask(
+                    task_id=f"event_{safe_group_id}_{task_id_suffix}",
+                    title=f"Handle {result.triggered_by}",
+                    initiative_context=result.merged_context,
+                    triggered_by=result.triggered_by,
+                    output_mode=OutputMode.SILENT,
+                    persona=(
+                        result.persona_name
+                        if result.persona_name != persona_config.name
+                        else None
+                    ),
+                    priority=5,
+                    root_correlation_id=result.root_correlation_id,
+                    workflow_parent_event_id=source_task_id,
+                    workflow_node_id=group_id,
+                )
+                task.session_id = event.session_id or task.session_id
+
+                try:
+                    await drive_loop.enqueue(task)
+                    logger.info(
+                        "mesh: enqueued task %s for %s (fan-in: %s group=%s)",
+                        task.task_id,
+                        result.triggered_by,
+                        group_strategy,
+                        group_id,
+                    )
+                except Exception as exc:
+                    logger.error("mesh: failed to enqueue task for event: %s", exc)
+
+            if pending_groups:
                 logger.info(
-                    "mesh: fan-in pending for %s — waiting for more events",
+                    "mesh: fan-in pending for %s groups=%s — waiting for more events",
+                    persona_config.name if persona_config else "unknown",
+                    pending_groups,
+                )
+            elif not matched:
+                logger.debug(
+                    "mesh: ignoring outcome event_type=%s for %s",
+                    event_type,
                     persona_config.name if persona_config else "unknown",
                 )
-                return
-
-            task_id_suffix = (root_corr or "unknown")[:8]
-            task = AgentTask(
-                task_id=f"event_{event_type.replace('.', '_')}_{task_id_suffix}",
-                title=f"Handle {result.triggered_by}",
-                initiative_context=result.merged_context,
-                triggered_by=result.triggered_by,
-                output_mode=OutputMode.SILENT,
-                persona=result.persona_name if result.persona_name != persona_config.name else None,
-                priority=5,
-                root_correlation_id=result.root_correlation_id,
-            )
-            task.session_id = event.session_id or task.session_id
-
-            try:
-                await drive_loop.enqueue(task)
-                logger.info(
-                    "mesh: enqueued task %s for %s (fan-in: %s)",
-                    task.task_id,
-                    result.triggered_by,
-                    fan_in_strategy,
-                )
-            except Exception as exc:
-                logger.error("mesh: failed to enqueue task for event: %s", exc)
 
         # Store pending subscriptions - will be activated after mesh.start()
         mesh._pending_outcome_subscriptions = [(et, _handle_outcome_event) for et in event_types]

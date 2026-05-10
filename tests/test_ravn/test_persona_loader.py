@@ -406,6 +406,32 @@ class TestBuiltinPersonas:
         cfg = _BUILTIN_PERSONAS["reviewer"]
         assert "error" in cfg.system_prompt_template.lower()
 
+    def test_reviewer_maps_requested_changes_to_followup_event(self) -> None:
+        cfg = _BUILTIN_PERSONAS["reviewer"]
+        assert cfg.produces.event_type == "review.completed"
+        assert cfg.produces.event_type_map["pass"] == "review.passed"
+        assert cfg.produces.event_type_map["needs_changes"] == "review.changes_requested"
+        assert cfg.produces.event_type_map["fail"] == "review.changes_requested"
+
+    def test_security_auditor_maps_requested_changes_to_followup_event(self) -> None:
+        cfg = _BUILTIN_PERSONAS["security-auditor"]
+        assert cfg.produces.event_type == "security.completed"
+        assert cfg.produces.event_type_map["pass"] == "security.passed"
+        assert cfg.produces.event_type_map["needs_review"] == "security.changes_requested"
+        assert cfg.produces.event_type_map["fail"] == "security.changes_requested"
+
+    def test_coordinator_allowed_tools_are_delegation_only(self) -> None:
+        cfg = _BUILTIN_PERSONAS["coordinator"]
+        assert cfg.allowed_tools == ["task_create", "task_collect", "task_status", "todo"]
+
+    def test_coordinator_prompt_requires_coder_and_reviewer_delegation(self) -> None:
+        cfg = _BUILTIN_PERSONAS["coordinator"]
+        prompt = cfg.system_prompt_template
+        assert "persona` to `coder`" in prompt or "persona='coder'" in prompt
+        assert "reviewer" in prompt
+        assert "Do not create a separate review task" in prompt
+        assert "Do not write code yourself" in prompt
+
     def test_qa_agent_exists(self) -> None:
         cfg = _BUILTIN_PERSONAS["qa-agent"]
         assert cfg.name == "qa-agent"

@@ -221,10 +221,10 @@ class ForgeService:
         self,
         *,
         session_id: UUID,
-        summary: str,
-        key_changes: list[str],
-        unfinished_work: list[str],
-        duration_seconds: int,
+        summary: str | None = None,
+        key_changes: list[str] | None = None,
+        unfinished_work: str | None = None,
+        duration_seconds: int | None = None,
     ) -> Chronicle:
         if self._chronicle_service is None:
             raise RuntimeError("Chronicle service not available")

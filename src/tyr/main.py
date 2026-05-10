@@ -787,6 +787,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 dispatcher_repo=dispatcher_repo,
                 dispatch_service=dispatch_svc,
                 ravn_dispatcher=ravn_dispatcher,
+                saga_repo=saga_repo,
             )
             app.state.review_engine = review_engine
             await review_engine.start()

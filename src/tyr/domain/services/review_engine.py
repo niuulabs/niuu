@@ -32,12 +32,14 @@ from tyr.config import ReviewConfig
 from tyr.domain.models import (
     ConfidenceEvent,
     ConfidenceEventType,
+    Phase,
     PhaseStatus,
     PRStatus,
     Raid,
     RaidStatus,
     RavnOutcome,
     Saga,
+    SagaStatus,
     validate_transition,
 )
 from tyr.domain.services.dispatch_service import DispatchService
@@ -49,6 +51,7 @@ from tyr.domain.services.session_transcript import attach_session_transcript
 from tyr.ports.dispatcher_repository import DispatcherRepository
 from tyr.ports.event_bus import EventBusPort, TyrEvent
 from tyr.ports.git import GitPort
+from tyr.ports.saga_repository import SagaRepository
 from tyr.ports.tracker import TrackerFactory, TrackerPort
 from tyr.ports.volundr import VolundrFactory
 
@@ -107,6 +110,36 @@ def detect_scope_breach(
     return ratio > threshold
 
 
+def _is_authoritative_workflow_approval(outcome: RavnOutcome) -> bool:
+    """Return True when a deterministic workflow stop-node approved the work.
+
+    This lets the mesh/runtime stay generic: worker nodes emit canonical
+    outcomes, the deterministic stop node decides the join rule, and Tyr can
+    trust that final approval without re-applying the old confidence gate.
+    """
+    if not outcome.authoritative or outcome.verdict != "approve":
+        return False
+    if not outcome.checks:
+        return False
+
+    successful_verdicts = {
+        "pass",
+        "approve",
+        "approved",
+        "ok",
+        "success",
+        "complete",
+        "completed",
+        "done",
+    }
+
+    for check in outcome.checks:
+        verdict = str(check.get("verdict") or "").strip().lower()
+        if verdict not in successful_verdicts:
+            return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -137,6 +170,7 @@ class ReviewEngine:
         dispatcher_repo: DispatcherRepository | None = None,
         dispatch_service: DispatchService | None = None,
         ravn_dispatcher: RavnDispatcher | None = None,
+        saga_repo: SagaRepository | None = None,
     ) -> None:
         self._tracker_factory = tracker_factory
         self._volundr_factory = volundr_factory
@@ -148,6 +182,7 @@ class ReviewEngine:
         self._dispatcher_repo = dispatcher_repo
         self._dispatch_service = dispatch_service
         self._ravn = ravn_dispatcher
+        self._saga_repo = saga_repo
         self._task: asyncio.Task[None] | None = None
         self._processed: set[str] = set()
         # Maps reviewer_session_id → (raid_tracker_id, owner_id)
@@ -640,6 +675,14 @@ class ReviewEngine:
                     ),
                 )
             case "approve":
+                if _is_authoritative_workflow_approval(outcome):
+                    logger.info(
+                        "handle_ravn_outcome: authoritative workflow approval for raid %s",
+                        tracker_id,
+                    )
+                    return await self._handle_auto_approve(
+                        tracker, tracker_id, owner_id, raid, score
+                    )
                 if score >= self._cfg.auto_approve_threshold:
                     return await self._handle_auto_approve(
                         tracker, tracker_id, owner_id, raid, score
@@ -1294,7 +1337,16 @@ class ReviewEngine:
         current_idx = next(
             (i for i, p in enumerate(phases) if p.tracker_id == phase.tracker_id), -1
         )
-        if current_idx < 0 or current_idx + 1 >= len(phases):
+        if current_idx < 0:
+            return True
+
+        await self._sync_saga_phase_projection(
+            saga=saga,
+            current_phase=phase,
+            next_phase=phases[current_idx + 1] if current_idx + 1 < len(phases) else None,
+        )
+
+        if current_idx + 1 >= len(phases):
             return True
 
         next_phase = phases[current_idx + 1]
@@ -1321,6 +1373,66 @@ class ReviewEngine:
             await self._try_auto_continue(owner_id, saga.tracker_id)
 
         return True
+
+    async def _sync_saga_phase_projection(
+        self,
+        *,
+        saga: Saga,
+        current_phase: object,
+        next_phase: object | None,
+    ) -> None:
+        """Keep Tyr's persisted phase/saga projection aligned with tracker progress."""
+        if self._saga_repo is None:
+            return
+
+        persisted_phases = await self._saga_repo.get_phases_by_saga(saga.id)
+        current_tracker_id = str(getattr(current_phase, "tracker_id", "") or "").strip()
+        next_tracker_id = ""
+        if next_phase is not None:
+            next_tracker_id = str(getattr(next_phase, "tracker_id", "") or "").strip()
+
+        if not persisted_phases:
+            saga_status = SagaStatus.ACTIVE if next_tracker_id else SagaStatus.COMPLETE
+            if saga.status != saga_status:
+                await self._saga_repo.update_saga_status(saga.id, saga_status)
+            return
+
+        for persisted in persisted_phases:
+            if (
+                persisted.tracker_id == current_tracker_id
+                and persisted.status != PhaseStatus.COMPLETE
+            ):
+                await self._saga_repo.save_phase(
+                    Phase(
+                        id=persisted.id,
+                        saga_id=persisted.saga_id,
+                        tracker_id=persisted.tracker_id,
+                        number=persisted.number,
+                        name=persisted.name,
+                        status=PhaseStatus.COMPLETE,
+                        confidence=persisted.confidence,
+                    )
+                )
+            elif (
+                next_tracker_id
+                and persisted.tracker_id == next_tracker_id
+                and persisted.status != PhaseStatus.ACTIVE
+            ):
+                await self._saga_repo.save_phase(
+                    Phase(
+                        id=persisted.id,
+                        saga_id=persisted.saga_id,
+                        tracker_id=persisted.tracker_id,
+                        number=persisted.number,
+                        name=persisted.name,
+                        status=PhaseStatus.ACTIVE,
+                        confidence=persisted.confidence,
+                    )
+                )
+
+        saga_status = SagaStatus.ACTIVE if next_tracker_id else SagaStatus.COMPLETE
+        if saga.status != saga_status:
+            await self._saga_repo.update_saga_status(saga.id, saga_status)
 
     # -- Auto-continue --
 

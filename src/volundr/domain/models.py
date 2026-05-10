@@ -726,6 +726,7 @@ class SessionEventType(StrEnum):
 
     MESSAGE_USER = "message_user"
     MESSAGE_ASSISTANT = "message_assistant"
+    OUTCOME = "outcome"
     FILE_CREATED = "file_created"
     FILE_MODIFIED = "file_modified"
     FILE_DELETED = "file_deleted"
@@ -749,6 +750,7 @@ class SessionEvent:
 
     message_user:      {"content_length": int, "content_preview": str}
     message_assistant:  {"content_length": int, "content_preview": str, "finish_reason": str}
+    outcome:           {"persona": str, "event_type": str, "fields": dict, "valid": bool}
     file_created:       {"path": str, "size_bytes": int}
     file_modified:      {"path": str, "insertions": int, "deletions": int}
     file_deleted:       {"path": str}

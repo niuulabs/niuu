@@ -277,6 +277,14 @@ def _extract_outcome(payload: dict) -> RavnOutcome:
     if summary is None:
         summary = payload.get("summary")
 
+    checks = structured_payload.get("checks")
+    if checks is None:
+        checks = payload.get("checks")
+
+    authoritative = structured_payload.get("authoritative")
+    if authoritative is None:
+        authoritative = payload.get("authoritative")
+
     return RavnOutcome(
         verdict=str(verdict or "escalate"),
         tests_passing=tests_passing,
@@ -284,4 +292,6 @@ def _extract_outcome(payload: dict) -> RavnOutcome:
         pr_url=pr_url,
         files_changed=list(files_changed or []),
         summary=str(summary or ""),
+        authoritative=bool(authoritative),
+        checks=[dict(item) for item in (checks or []) if isinstance(item, dict)],
     )

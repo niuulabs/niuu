@@ -349,6 +349,8 @@ class AgentTask:
     deadline: datetime | None = None  # task discarded if queue time exceeds this
     output_path: Path | None = None  # where to save task output (cron tasks)
     root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking
+    workflow_parent_event_id: str = ""  # Direct upstream event task_id for per-cycle joins
+    workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     session_id: str = field(init=False)
 

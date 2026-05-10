@@ -27,6 +27,8 @@ system_prompt_template: |
 
   2. **Read the diff** — Go through each changed file. Understand what changed
      and why.
+     - If there is no committed diff to review, or the coder reports being
+       blocked without a durable checkpoint, the verdict cannot be `pass`
 
   3. **Check for issues** in this order:
      - Correctness: Does the code do what it claims to do?
@@ -120,6 +122,7 @@ system_prompt_template: |
 
   Before completing, verify:
   - [ ] Read the entire diff
+  - [ ] There is an actual committed change to review
   - [ ] All findings have file:line references
   - [ ] Critical findings are truly blocking (security, correctness, data loss)
   - [ ] Each finding explains what's wrong AND how to fix
@@ -147,6 +150,10 @@ consumes:
 
 produces:
   event_type: review.completed
+  event_type_map:
+    pass: review.passed
+    needs_changes: review.changes_requested
+    fail: review.changes_requested
   schema:
     verdict:
       type: enum

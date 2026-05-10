@@ -178,6 +178,15 @@ class TestExtractOutcome:
                     "scope_adherence": 0.91,
                     "pr_url": "https://github.com/pr/2",
                     "summary": "Canonical session-ended payload",
+                    "authoritative": True,
+                    "checks": [
+                        {
+                            "persona": "reviewer",
+                            "event_type": "review.completed",
+                            "verdict": "pass",
+                            "summary": "looks good",
+                        }
+                    ],
                 },
                 "files_changed": ["src/app.py"],
             }
@@ -188,6 +197,15 @@ class TestExtractOutcome:
         assert outcome.pr_url == "https://github.com/pr/2"
         assert outcome.files_changed == ["src/app.py"]
         assert outcome.summary == "Canonical session-ended payload"
+        assert outcome.authoritative is True
+        assert outcome.checks == [
+            {
+                "persona": "reviewer",
+                "event_type": "review.completed",
+                "verdict": "pass",
+                "summary": "looks good",
+            }
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +393,75 @@ class TestHandleRavnOutcomeDecisions:
         assert decision.action == "escalated"
         updated_raid = tracker._raids_by_id[_TRACKER_ID]
         assert updated_raid.status == RaidStatus.ESCALATED
+
+    @pytest.mark.asyncio
+    async def test_authoritative_workflow_approval_auto_approves_even_below_threshold(self):
+        raid = make_raid(status=RaidStatus.REVIEW, confidence=0.0)
+        tracker = StubTracker(raid)
+        engine = _make_engine(tracker)
+
+        outcome = RavnOutcome(
+            verdict="approve",
+            tests_passing=None,
+            scope_adherence=None,
+            pr_url=None,
+            files_changed=["proofs/native-workflow-step-1.txt"],
+            summary="workflow stop approved",
+            authoritative=True,
+            checks=[
+                {
+                    "persona": "reviewer",
+                    "event_type": "review.completed",
+                    "verdict": "pass",
+                    "summary": "looks good",
+                },
+                {
+                    "persona": "security-auditor",
+                    "event_type": "security.completed",
+                    "verdict": "pass",
+                    "summary": "no issues",
+                },
+            ],
+        )
+        decision = await engine.handle_ravn_outcome(
+            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
+        )
+
+        assert decision.action == "auto_approved"
+        updated_raid = tracker._raids_by_id[_TRACKER_ID]
+        assert updated_raid.status == RaidStatus.MERGED
+
+    @pytest.mark.asyncio
+    async def test_authoritative_workflow_approval_accepts_complete_check_verdict(self):
+        raid = make_raid(status=RaidStatus.REVIEW, confidence=0.0)
+        tracker = StubTracker(raid)
+        engine = _make_engine(tracker)
+
+        outcome = RavnOutcome(
+            verdict="approve",
+            tests_passing=None,
+            scope_adherence=None,
+            pr_url=None,
+            files_changed=["proofs/postmortem-memory-rerun-step-1.txt"],
+            summary="workflow stop approved from postmortem fan-in",
+            authoritative=True,
+            checks=[
+                {
+                    "persona": "postmortem-analyst",
+                    "event_type": "postmortem.completed",
+                    "verdict": "complete",
+                    "summary": "post-mortem written",
+                }
+            ],
+        )
+
+        decision = await engine.handle_ravn_outcome(
+            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
+        )
+
+        assert decision.action == "auto_approved"
+        updated_raid = tracker._raids_by_id[_TRACKER_ID]
+        assert updated_raid.status == RaidStatus.MERGED
 
     @pytest.mark.asyncio
     async def test_verdict_retry_transitions_to_pending(self):

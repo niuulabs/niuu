@@ -160,10 +160,12 @@ class QueueItem:
     title: str
     description: str
     status: str
+    status_type: str = ""
     priority: int = 0
     priority_label: str = ""
     estimate: float | None = None
     url: str = ""
+    milestone_id: str | None = None
     workflow_id: str | None = None
     workflow: str | None = None
     workflow_version: str | None = None
@@ -190,6 +192,7 @@ class DispatchItem:
     connection_id: str | None = None
     workflow_id: str | None = None
     session_definition: str | None = None
+    issue: TrackerIssue | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +266,7 @@ def build_flock_prompt(
     repo: str,
     feature_branch: str,
     mimir_hosted_url: str = "",
+    workflow_snapshot: dict[str, Any] | None = None,
 ) -> str:
     """Build the coordinator's initiative_context for a flock session.
 
@@ -285,14 +289,55 @@ def build_flock_prompt(
             "Query it for relevant context about this repository and area before starting.",
         ]
 
-    parts += [
-        "",
-        (
-            "Decompose this raid into implementation tasks, delegate to the developer peer"
-            + " (coder), collect results, delegate review to the reviewer peer,"
-            + " iterate until acceptance criteria are met, then publish your final outcome."
-        ),
-    ]
+    workflow_personas = {
+        str(persona.get("name") or "")
+        for persona in workflow_personas_from_snapshot(workflow_snapshot)
+        if isinstance(persona, dict)
+    }
+    includes_security = "security-auditor" in workflow_personas
+    includes_postmortem = "postmortem-analyst" in workflow_personas
+
+    parts.append("")
+    if includes_security and includes_postmortem:
+        parts.append(
+            "This raid runs through a staged mesh workflow. The workflow trigger emits "
+            "code.requested for the coder. The coder emits code.changed only after it has "
+            "made a durable checkpoint on the shared feature branch. Reviewer and "
+            "security-auditor react to code.changed in parallel. If either emits a "
+            "changes_requested outcome, the coder handles that revision loop. Once both "
+            "reviewer and security-auditor emit passing outcomes for the same code "
+            "iteration, a postmortem-analyst reads the task history and writes a "
+            "post-mortem memory document into shared Mimir. The workflow runtime only "
+            "finalizes the raid after that post-mortem stage succeeds. Do the work "
+            "directly on the checked-out feature branch for this saga, commit it, and "
+            "push it before reporting success so downstream raids start from the updated "
+            "branch state."
+        )
+    elif includes_security:
+        parts.append(
+            "This raid runs through a staged mesh workflow. The workflow trigger emits "
+            "code.requested for the coder. The coder emits code.changed only after it has "
+            "made a durable checkpoint on the shared feature branch. Reviewer and "
+            "security-auditor react to code.changed in parallel. If either emits a "
+            "changes_requested outcome, the coder handles that revision loop. The "
+            "workflow runtime only finalizes the raid after both reviewer and "
+            "security-auditor emit passing outcomes for the same code iteration. "
+            "Do the work directly on the checked-out feature branch for this saga, "
+            "commit it, and push it before reporting success so downstream raids "
+            "start from the updated branch state."
+        )
+    else:
+        parts.append(
+            "This raid runs through a staged mesh workflow. The workflow trigger emits "
+            "code.requested for the coder. The coder emits code.changed only after it has "
+            "made a durable checkpoint on the shared feature branch. The reviewer "
+            "reacts to code.changed. If the reviewer emits review.changes_requested, "
+            "the coder handles that revision loop. The workflow runtime publishes the "
+            "final raid completion outcome after the reviewer emits a passing result "
+            "for the current code iteration. Do the work directly on the checked-out "
+            "feature branch for this saga, commit it, and push it before reporting "
+            "success so downstream raids start from the updated branch state."
+        )
     return "\n".join(parts)
 
 
@@ -380,7 +425,7 @@ class DispatchConfig:
         default_factory=lambda: [
             {"name": "coordinator"},
             {"name": "coder"},
-            {"name": "reviewer", "consumes_event_types": ["review.requested"]},
+            {"name": "reviewer"},
         ]
     )
     flock_default_workflow_name: str = ""
@@ -568,7 +613,7 @@ class DispatchService:
                 logger.warning("Saga not found: %s", item.saga_id)
                 continue
 
-            issue = issue_cache.get(item.issue_id)
+            issue = item.issue or issue_cache.get(item.issue_id)
             if issue is None:
                 logger.warning("Issue not found: %s", item.issue_id)
                 continue
@@ -667,6 +712,19 @@ class DispatchService:
                     saga_id=q.saga_id,
                     issue_id=q.issue_id,
                     repo=q.repos[0] if q.repos else "",
+                    issue=TrackerIssue(
+                        id=q.issue_id,
+                        identifier=q.identifier,
+                        title=q.title,
+                        description=q.description,
+                        status=q.status,
+                        status_type=q.status_type,
+                        priority=q.priority,
+                        priority_label=q.priority_label,
+                        estimate=q.estimate,
+                        url=q.url,
+                        milestone_id=q.milestone_id,
+                    ),
                 )
                 for q in ready[:available_slots]
             ]
@@ -963,10 +1021,12 @@ class DispatchService:
                             title=issue.title,
                             description=issue.description,
                             status=issue.status,
+                            status_type=issue.status_type,
                             priority=issue.priority,
                             priority_label=issue.priority_label,
                             estimate=issue.estimate,
                             url=issue.url,
+                            milestone_id=issue.milestone_id,
                             workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
                             workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
                             workflow_version=(
@@ -1158,6 +1218,7 @@ class DispatchService:
             item.repo,
             saga.feature_branch,
             mimir_hosted_url=mimir_url,
+            workflow_snapshot=workflow_snapshot,
         )
         workload_config: dict = {
             "personas": personas,

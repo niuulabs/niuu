@@ -282,6 +282,58 @@ class TestBuildSpawnRequestFlockEnabled:
 
         assert req.workload_config["mimir"] == workflow_snapshot["mimir"]
 
+    def test_workflow_snapshot_can_add_parallel_security_auditor(self) -> None:
+        config = _make_flock_config()
+        saga = _make_saga()
+        issue = _make_issue()
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo-a")
+        workflow_snapshot = {
+            "workflow_id": str(uuid4()),
+            "name": "Tyr Raid Flow + Security",
+            "version": "1.0.0",
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "stage-coder",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder", "budget": 40}],
+                    },
+                    {
+                        "id": "stage-reviewer",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "reviewer", "budget": 25}],
+                    },
+                    {
+                        "id": "stage-security",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "security-auditor", "budget": 25}],
+                    },
+                ]
+            },
+        }
+
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        req = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=issue,
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            workflow_snapshot=workflow_snapshot,
+        )
+
+        personas = req.workload_config["personas"]
+        assert [persona["name"] for persona in personas] == [
+            "coder",
+            "reviewer",
+            "security-auditor",
+        ]
+        assert "security-auditor" in req.workload_config["initiative_context"]
+
     def test_workload_config_resolves_registry_backed_mimir_resources(self, tmp_path: Path) -> None:
         registry_path = tmp_path / ".mimir-registry.json"
         store = MimirRegistryStore(registry_path)
@@ -512,8 +564,70 @@ class TestBuildFlockPrompt:
         issue = _make_issue()
         prompt = build_flock_prompt(issue, "org/repo", "feat/x")
         assert "reviewer" in prompt.lower()
-        assert "developer" in prompt.lower()
         assert "coder" in prompt.lower()
+        assert "mesh workflow" in prompt.lower()
+        assert "code.requested" in prompt
+
+    def test_mentions_parallel_security_when_workflow_includes_auditor(self) -> None:
+        issue = _make_issue()
+        prompt = build_flock_prompt(
+            issue,
+            "org/repo",
+            "feat/x",
+            workflow_snapshot={
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "stage-review",
+                            "kind": "stage",
+                            "stageMembers": [{"personaId": "reviewer", "budget": 25}],
+                        },
+                        {
+                            "id": "stage-security",
+                            "kind": "stage",
+                            "stageMembers": [{"personaId": "security-auditor", "budget": 25}],
+                        },
+                    ],
+                    "edges": [],
+                }
+            },
+        )
+        assert "security-auditor" in prompt
+        assert "in parallel" in prompt
+        assert "both reviewer and security-auditor" in prompt
+
+    def test_mentions_postmortem_when_workflow_includes_memory_stage(self) -> None:
+        issue = _make_issue()
+        prompt = build_flock_prompt(
+            issue,
+            "org/repo",
+            "feat/x",
+            workflow_snapshot={
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "stage-review",
+                            "kind": "stage",
+                            "stageMembers": [{"personaId": "reviewer", "budget": 25}],
+                        },
+                        {
+                            "id": "stage-security",
+                            "kind": "stage",
+                            "stageMembers": [{"personaId": "security-auditor", "budget": 25}],
+                        },
+                        {
+                            "id": "stage-postmortem",
+                            "kind": "stage",
+                            "stageMembers": [{"personaId": "postmortem-analyst", "budget": 18}],
+                        },
+                    ],
+                    "edges": [],
+                }
+            },
+        )
+        assert "postmortem-analyst" in prompt
+        assert "shared mimir" in prompt.lower()
+        assert "post-mortem stage" in prompt.lower()
 
 
 # ---------------------------------------------------------------------------

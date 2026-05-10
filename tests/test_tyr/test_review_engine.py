@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
 
+from tests.test_tyr.stubs import InMemorySagaRepository
 from tyr.adapters.memory_event_bus import InMemoryEventBus
 from tyr.config import ReviewConfig
 from tyr.domain.models import (
@@ -436,12 +438,14 @@ def _make_engine(
     config: ReviewConfig | None = None,
     event_bus: InMemoryEventBus | None = None,
     volundr: StubVolundr | None = None,
+    saga_repo: InMemorySagaRepository | None = None,
 ) -> tuple[ReviewEngine, StubTracker, StubGit, InMemoryEventBus, StubVolundr]:
     r = tracker or StubTracker()
     g = git or StubGit()
     e = event_bus or InMemoryEventBus()
     c = config or _default_config()
     v = volundr or StubVolundr()
+    repo = saga_repo or InMemorySagaRepository()
 
     class _StubVolundrFactory:
         async def for_owner(self, owner_id: str) -> list[StubVolundr]:
@@ -456,6 +460,7 @@ def _make_engine(
         git=g,
         review_config=c,
         event_bus=e,
+        saga_repo=repo,
     )
     return engine, r, g, e, v
 
@@ -506,6 +511,38 @@ class TestScopeBreachDetection:
         declared = ["src/main.py", "tests/test_main.py"]
         changed = ["src/main.py", "tests/test_main.py"]
         assert detect_scope_breach(declared, changed, 0.30) is False
+
+
+@pytest.mark.asyncio
+async def test_sync_phase_projection_marks_imported_saga_complete_without_persisted_phases(
+) -> None:
+    repo = InMemorySagaRepository()
+    saga = Saga(
+        id=uuid4(),
+        tracker_id="proj-1",
+        tracker_type="linear",
+        slug="imported-proof",
+        name="Imported Proof",
+        repos=["niuulabs/volundr"],
+        feature_branch="feat/imported-proof",
+        base_branch="dev",
+        status=SagaStatus.ACTIVE,
+        confidence=0.0,
+        created_at=NOW,
+        owner_id="dev-user",
+    )
+    await repo.save_saga(saga)
+    engine, *_ = _make_engine(saga_repo=repo)
+
+    await engine._sync_saga_phase_projection(
+        saga=saga,
+        current_phase=SimpleNamespace(tracker_id="__unassigned__"),
+        next_phase=None,
+    )
+
+    updated = await repo.get_saga(saga.id, owner_id="dev-user")
+    assert updated is not None
+    assert updated.status == SagaStatus.COMPLETE
 
     def test_below_threshold(self) -> None:
         declared = ["src/a.py", "src/b.py", "src/c.py"]
@@ -919,6 +956,8 @@ class TestPhaseGate:
     async def test_phase_gate_unlocked(self) -> None:
         """When all raids in a phase are merged, the next phase is unlocked."""
         engine, repo, git, bus, _ = _make_engine()
+        saga_repo = engine._saga_repo
+        assert isinstance(saga_repo, InMemorySagaRepository)
         raid = _make_raid(confidence=0.5)
         repo.raids[raid.tracker_id] = raid
         repo.saga = _make_saga()
@@ -929,6 +968,9 @@ class TestPhaseGate:
         phase2 = _make_phase(phase_id=next_phase_id, number=2, status=PhaseStatus.GATED)
         repo.phase = phase1
         repo.phases = [phase1, phase2]
+        await saga_repo.save_saga(repo.saga)
+        await saga_repo.save_phase(phase1)
+        await saga_repo.save_phase(phase2)
 
         _setup_passing_pr(git, raid.pr_id)
         git.changed_files[raid.pr_id] = ["src/main.py"]
@@ -957,6 +999,13 @@ class TestPhaseGate:
         assert len(state_events) == 1
         assert state_events[0].data["saga_tracker_id"] == repo.saga.tracker_id
 
+        persisted_phase1 = await saga_repo.get_phase(phase1.id)
+        persisted_phase2 = await saga_repo.get_phase(phase2.id)
+        persisted_saga = await saga_repo.get_saga(repo.saga.id)
+        assert persisted_phase1 is not None and persisted_phase1.status == PhaseStatus.COMPLETE
+        assert persisted_phase2 is not None and persisted_phase2.status == PhaseStatus.ACTIVE
+        assert persisted_saga is not None and persisted_saga.status == SagaStatus.ACTIVE
+
     @pytest.mark.asyncio
     async def test_no_phase_gate_when_raids_remain(self) -> None:
         """Phase gate should not unlock when not all raids are merged."""
@@ -979,12 +1028,16 @@ class TestPhaseGate:
     async def test_no_next_phase(self) -> None:
         """Phase gate unlocked but no next phase — should return True without error."""
         engine, repo, git, _, _ = _make_engine()
+        saga_repo = engine._saga_repo
+        assert isinstance(saga_repo, InMemorySagaRepository)
         raid = _make_raid(confidence=0.5)
         repo.raids[raid.tracker_id] = raid
         repo.saga = _make_saga()
         repo._all_merged = True
         repo.phase = _make_phase()
         repo.phases = [_make_phase()]  # Only one phase
+        await saga_repo.save_saga(repo.saga)
+        await saga_repo.save_phase(repo.phase)
 
         _setup_passing_pr(git, raid.pr_id)
         git.changed_files[raid.pr_id] = ["src/main.py"]
@@ -993,6 +1046,10 @@ class TestPhaseGate:
 
         assert result.phase_gate_unlocked is True
         assert len(repo.phase_status_updates) == 0
+        persisted_phase = await saga_repo.get_phase(repo.phase.id)
+        persisted_saga = await saga_repo.get_saga(repo.saga.id)
+        assert persisted_phase is not None and persisted_phase.status == PhaseStatus.COMPLETE
+        assert persisted_saga is not None and persisted_saga.status == SagaStatus.COMPLETE
 
 
 # ---------------------------------------------------------------------------

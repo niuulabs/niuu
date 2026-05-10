@@ -626,12 +626,25 @@ class TestGitClone:
         checkout_proc.communicate = AsyncMock(return_value=(b"", b""))
 
         spec = SessionSpec(
-            values={"git_token": "tok123"},
+            values={
+                "git": {
+                    "cloneUrl": "https://x-access-token:tok123@github.com/org/repo",
+                    "repoUrl": "https://github.com/org/repo",
+                    "branch": "feat",
+                    "baseBranch": "main",
+                }
+            },
             pod_spec=PodSpecAdditions(),
         )
 
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_exec.side_effect = [mock_proc, checkout_proc]
+            mock_exec.side_effect = [
+                mock_proc,
+                checkout_proc,
+                checkout_proc,
+                checkout_proc,
+                checkout_proc,
+            ]
             await manager._clone_repo(source, workspace, spec)
 
         clone_call = mock_exec.call_args_list[0]
@@ -639,7 +652,20 @@ class TestGitClone:
         assert "git" in args
         assert "clone" in args
         assert "--no-single-branch" in args
-        assert "x-access-token:tok123@github.com" in args[5]
+        assert "x-access-token:tok123@github.com/org/repo" in args[5]
+        assert mock_exec.call_args_list[3][0][-4:] == (
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/org/repo",
+        )
+        assert mock_exec.call_args_list[4][0][-5:] == (
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "https://x-access-token:tok123@github.com/org/repo",
+        )
 
     async def test_clone_failure_sanitizes_token(
         self,
@@ -699,7 +725,7 @@ class TestGitClone:
         self,
         manager: LocalProcessPodManager,
     ) -> None:
-        """Falls back to base_branch when feature branch checkout fails."""
+        """Falls back to base_branch and creates the feature branch locally."""
         source = GitSource(
             repo="https://github.com/org/repo",
             branch="feat/missing",
@@ -713,21 +739,32 @@ class TestGitClone:
         clone_proc.returncode = 0
         clone_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-        # First checkout fails (feature branch), second succeeds (base)
+        # Feature branch missing on remote.
         fail_proc = AsyncMock()
         fail_proc.returncode = 1
         fail_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        head_proc = AsyncMock()
+        head_proc.returncode = 0
+        head_proc.communicate = AsyncMock(return_value=(b"origin/main\n", b""))
 
         ok_proc = AsyncMock()
         ok_proc.returncode = 0
         ok_proc.communicate = AsyncMock(return_value=(b"", b""))
 
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_exec.side_effect = [clone_proc, fail_proc, ok_proc]
+            mock_exec.side_effect = [
+                clone_proc,
+                fail_proc,
+                head_proc,
+                ok_proc,
+                ok_proc,
+                ok_proc,
+                ok_proc,
+            ]
             await manager._clone_repo(source, workspace, spec)
 
-        # 3 calls: clone, checkout feat, checkout main
-        assert mock_exec.call_count == 3
+        assert mock_exec.call_args_list[4][0][-3:] == ("checkout", "-b", "feat/missing")
 
 
 # ------------------------------------------------------------------
@@ -1418,7 +1455,12 @@ class TestProcessSpawning:
                             {
                                 "id": "stage-reviewer",
                                 "kind": "stage",
-                                "personaIds": ["reviewer"],
+                                "stageMembers": [
+                                    {
+                                        "personaId": "reviewer",
+                                        "consumesEventTypes": ["review.requested"],
+                                    }
+                                ],
                             },
                             {
                                 "id": "trigger-1",
@@ -1474,12 +1516,13 @@ class TestProcessSpawning:
                 skuld_port=9101,
             )
 
-        cluster = (flock_dir / "cluster.yaml").read_text(encoding="utf-8")
-        assert "capabilities:" in cluster
-        assert "consumes_event_types:" in cluster
-        assert "emits_event_types:" in cluster
-        assert "code.requested" in cluster
-        assert "code.changed" in cluster
+        cluster = yaml.safe_load((flock_dir / "cluster.yaml").read_text(encoding="utf-8"))
+        assert isinstance(cluster, dict)
+        peers = {peer["persona"]: peer for peer in cluster["peers"]}
+        assert peers["coder"]["capabilities"] == ["file", "git"]
+        assert peers["coder"]["emits_event_types"] == ["code.changed"]
+        assert peers["reviewer"]["capabilities"] == ["file", "ravn"]
+        assert peers["reviewer"]["consumes_event_types"] == ["review.requested"]
 
 
 class TestResolveClaude:

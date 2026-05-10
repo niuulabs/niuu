@@ -252,13 +252,24 @@ def _workflow_event_metadata(
 
     nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
     edges = [edge for edge in graph.get("edges", []) if isinstance(edge, dict)]
-    persona_node_ids = {
-        str(node.get("id"))
-        for node in nodes
-        if persona in _stage_personas(node)
-    }
+    persona_node_ids = {str(node.get("id")) for node in nodes if persona in _stage_personas(node)}
     if not persona_node_ids:
         return [], []
+
+    member_override_events: list[str] = []
+    for node in nodes:
+        for member in node.get("stageMembers") or []:
+            if not isinstance(member, dict) or member.get("personaId") != persona:
+                continue
+            consumes_event_types = member.get("consumesEventTypes")
+            if not isinstance(consumes_event_types, list):
+                consumes_event_types = member.get("consumes_event_types")
+            if isinstance(consumes_event_types, list):
+                member_override_events.extend(
+                    str(event_type).strip()
+                    for event_type in consumes_event_types
+                    if str(event_type).strip()
+                )
 
     consumes: list[str] = []
     emits: list[str] = []
@@ -283,6 +294,9 @@ def _workflow_event_metadata(
             if node.get("kind") == "trigger" and node.get("dispatchEvent")
         ]
         consumes.extend(trigger_events)
+
+    if member_override_events:
+        consumes = member_override_events
 
     return _dedupe_preserve_order(consumes), _dedupe_preserve_order(emits)
 
@@ -632,8 +646,15 @@ class LocalProcessPodManager(PodManager):
         spec: SessionSpec,
     ) -> None:
         """Clone a git repository into the workspace."""
+        git_cfg = spec.values.get("git", {})
         token = spec.values.get("git_token", "")
-        clone_url = _inject_token_into_url(source.repo, token)
+        clone_url = str(git_cfg.get("cloneUrl") or "").strip() or _inject_token_into_url(
+            source.repo,
+            token,
+        )
+        repo_url = str(git_cfg.get("repoUrl") or "").strip() or source.repo
+        branch = str(git_cfg.get("branch") or source.branch or "").strip()
+        base_branch = str(git_cfg.get("baseBranch") or source.base_branch or "").strip()
 
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -654,27 +675,64 @@ class LocalProcessPodManager(PodManager):
             raise RuntimeError(f"Git clone failed: {error_msg}")
 
         repo_dir = workspace / "repo"
-        branch = source.branch
-        base_branch = source.base_branch
-
         if branch:
-            checkout_ok = await self._checkout_branch(repo_dir, branch)
-            if not checkout_ok and base_branch:
-                await self._checkout_branch(repo_dir, base_branch)
+            checkout_ok = await self._checkout_tracking_branch(repo_dir, branch)
+            if not checkout_ok:
+                fallback_branch = base_branch or await self._remote_head_branch(repo_dir)
+                if fallback_branch:
+                    fallback_ok = await self._checkout_tracking_branch(repo_dir, fallback_branch)
+                    if fallback_ok:
+                        await self._create_branch(repo_dir, branch)
 
-    async def _checkout_branch(self, repo_dir: Path, branch: str) -> bool:
-        """Attempt to checkout a branch. Returns True on success."""
+        if repo_url:
+            await self._run_git(repo_dir, "remote", "set-url", "origin", repo_url)
+            if clone_url != repo_url:
+                await self._run_git(repo_dir, "remote", "set-url", "--push", "origin", clone_url)
+
+    async def _run_git(self, repo_dir: Path, *args: str) -> tuple[int, str, str]:
+        """Run a git command in *repo_dir* and return (code, stdout, stderr)."""
         proc = await asyncio.create_subprocess_exec(
             "git",
             "-C",
             str(repo_dir),
-            "checkout",
-            branch,
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
-        return proc.returncode == 0
+        stdout, stderr = await proc.communicate()
+        return (
+            proc.returncode,
+            stdout.decode(errors="replace"),
+            stderr.decode(errors="replace"),
+        )
+
+    async def _checkout_tracking_branch(self, repo_dir: Path, branch: str) -> bool:
+        """Check out *branch* from ``origin/<branch>`` when it exists."""
+        code, _, _ = await self._run_git(repo_dir, "rev-parse", "--verify", f"origin/{branch}")
+        if code != 0:
+            return False
+        code, _, _ = await self._run_git(repo_dir, "checkout", "-B", branch, f"origin/{branch}")
+        return code == 0
+
+    async def _create_branch(self, repo_dir: Path, branch: str) -> bool:
+        """Create a new local branch from the current HEAD."""
+        code, _, _ = await self._run_git(repo_dir, "checkout", "-b", branch)
+        return code == 0
+
+    async def _remote_head_branch(self, repo_dir: Path) -> str:
+        """Return the remote HEAD branch name when available."""
+        code, stdout, _ = await self._run_git(
+            repo_dir,
+            "symbolic-ref",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        )
+        if code != 0:
+            return ""
+        value = stdout.strip()
+        if value.startswith("origin/"):
+            return value.removeprefix("origin/")
+        return value
 
     def _setup_local_mounts(
         self,

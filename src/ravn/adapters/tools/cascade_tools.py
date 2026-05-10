@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -66,14 +67,20 @@ class TaskCreateTool(ToolPort):
         discovery: DiscoveryPort | None = None,
         spawn_adapter: SpawnPort | None = None,
         mesh_delegation_timeout_s: float = _DEFAULT_MESH_DELEGATION_TIMEOUT_S,
+        allowed_target_personas: set[str] | None = None,
+        allowed_target_resolver: Callable[[], set[str] | None] | None = None,
     ) -> None:
         self._drive_loop = drive_loop
         self._mesh = mesh
         self._discovery = discovery
         self._spawn = spawn_adapter
         self._mesh_delegation_timeout_s = mesh_delegation_timeout_s
+        self._allowed_target_personas = allowed_target_personas
+        self._allowed_target_resolver = allowed_target_resolver
         # task_id → peer_id for remote tasks
         self._remote_tasks: dict[str, str] = {}
+        # parent_task_id → personas already dispatched from that workflow node execution
+        self._dispatched_personas_by_parent: dict[str, set[str]] = {}
 
     @property
     def name(self) -> str:
@@ -143,15 +150,107 @@ class TaskCreateTool(ToolPort):
         priority = int(input.get("priority", 5))
         allow_spawn = bool(input.get("spawn", False))
         required_caps: list[str] = input.get("required_caps") or []
+        current_task = (
+            self._drive_loop.current_task()
+            if hasattr(self._drive_loop, "current_task")
+            else None
+        )
+        resolved_allowed_target_personas = (
+            self._allowed_target_resolver() if self._allowed_target_resolver is not None else None
+        )
+        if resolved_allowed_target_personas is None:
+            resolved_allowed_target_personas = self._allowed_target_personas
+
+        if (
+            current_task is not None
+            and current_task.workflow_node_id
+            and resolved_allowed_target_personas is not None
+            and not persona
+        ):
+            logger.warning(
+                "task_create: explicit persona required for workflow node %s",
+                current_task.workflow_node_id,
+            )
+            return ToolResult(
+                tool_call_id="",
+                content=json.dumps(
+                    {
+                        "error": "persona_required",
+                        "workflow_node_id": current_task.workflow_node_id,
+                        "allowed_personas": sorted(resolved_allowed_target_personas),
+                    }
+                ),
+                is_error=True,
+            )
+
+        if (
+            persona
+            and resolved_allowed_target_personas is not None
+            and persona not in resolved_allowed_target_personas
+        ):
+            logger.warning(
+                "task_create: persona %s is not allowed by the active workflow graph (allowed=%s)",
+                persona,
+                sorted(resolved_allowed_target_personas),
+            )
+            return ToolResult(
+                tool_call_id="",
+                content=json.dumps(
+                    {
+                        "error": "persona_not_allowed",
+                        "persona": persona,
+                        "allowed_personas": sorted(resolved_allowed_target_personas),
+                    }
+                ),
+                is_error=True,
+            )
+
+        if current_task is not None and persona:
+            dispatched = self._dispatched_personas_by_parent.setdefault(current_task.task_id, set())
+            if persona in dispatched:
+                logger.warning(
+                    "task_create: persona %s already dispatched from task %s workflow_node=%s",
+                    persona,
+                    current_task.task_id,
+                    current_task.workflow_node_id or "-",
+                )
+                return ToolResult(
+                    tool_call_id="",
+                    content=json.dumps(
+                        {
+                            "error": "duplicate_stage_dispatch",
+                            "persona": persona,
+                            "parent_task_id": current_task.task_id,
+                            "workflow_node_id": current_task.workflow_node_id or "",
+                        }
+                    ),
+                    is_error=True,
+                )
 
         task_id = _new_task_id()
+        parent_root_correlation_id = (
+            current_task.root_correlation_id or current_task.task_id
+            if current_task is not None
+            else ""
+        )
+        parent_session_id = current_task.session_id if current_task is not None else ""
+        if current_task is not None and persona:
+            self._dispatched_personas_by_parent.setdefault(current_task.task_id, set()).add(persona)
 
         # Try to delegate to an idle peer first
         if self._mesh is not None and self._discovery is not None:
             peer_id = self._pick_idle_peer(required_caps, preferred_persona=persona)
             if peer_id is not None:
                 return await self._delegate_to_peer(
-                    peer_id, task_id, title, prompt, persona, output_mode, priority
+                    peer_id,
+                    task_id,
+                    title,
+                    prompt,
+                    persona,
+                    output_mode,
+                    priority,
+                    session_id=parent_session_id,
+                    root_correlation_id=parent_root_correlation_id,
                 )
 
         # No idle peer — maybe spawn
@@ -184,6 +283,10 @@ class TaskCreateTool(ToolPort):
             persona=persona,
             priority=priority,
         )
+        if parent_session_id:
+            agent_task.session_id = parent_session_id
+        if parent_root_correlation_id:
+            agent_task.root_correlation_id = parent_root_correlation_id
         await self._drive_loop.enqueue(agent_task)
         return ToolResult(
             tool_call_id="",
@@ -224,6 +327,9 @@ class TaskCreateTool(ToolPort):
         persona: str | None,
         output_mode: OutputMode,
         priority: int,
+        *,
+        session_id: str = "",
+        root_correlation_id: str = "",
     ) -> ToolResult:
         assert self._mesh is not None  # noqa: S101
         task_dict = {
@@ -235,6 +341,10 @@ class TaskCreateTool(ToolPort):
             "persona": persona,
             "priority": priority,
         }
+        if session_id:
+            task_dict["session_id"] = session_id
+        if root_correlation_id:
+            task_dict["root_correlation_id"] = root_correlation_id
         try:
             reply = await self._mesh.send(
                 target_peer_id=peer_id,
@@ -267,6 +377,10 @@ class TaskCreateTool(ToolPort):
             persona=persona,
             priority=priority,
         )
+        if session_id:
+            agent_task.session_id = session_id
+        if root_correlation_id:
+            agent_task.root_correlation_id = root_correlation_id
         await self._drive_loop.enqueue(agent_task)
         return ToolResult(
             tool_call_id="",
@@ -841,6 +955,8 @@ def build_cascade_tools(
     discovery: DiscoveryPort | None = None,
     spawn_adapter: SpawnPort | None = None,
     cascade_config: object | None = None,
+    allowed_target_personas: set[str] | None = None,
+    allowed_target_resolver: Callable[[], set[str] | None] | None = None,
 ) -> list[ToolPort]:
     """Build and return all cascade tools.
 
@@ -871,6 +987,8 @@ def build_cascade_tools(
         discovery=discovery,
         spawn_adapter=spawn_adapter,
         mesh_delegation_timeout_s=delegation_timeout,
+        allowed_target_personas=allowed_target_personas,
+        allowed_target_resolver=allowed_target_resolver,
     )
     # Share the remote_tasks mapping so other tools can track remote tasks
     task_create._remote_tasks = remote_tasks

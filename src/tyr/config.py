@@ -459,7 +459,7 @@ class FlockConfig(BaseModel):
         default_factory=lambda: [
             PersonaOverride(name="coordinator"),
             PersonaOverride(name="coder"),
-            PersonaOverride(name="reviewer", consumes_event_types=["review.requested"]),
+            PersonaOverride(name="reviewer"),
         ],
         description=(
             "Ravn persona names included in every flock session. "

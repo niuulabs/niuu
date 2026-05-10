@@ -199,6 +199,12 @@ class RavnOutcome:
     summary: str
     """Human-readable one-line summary from the coordinator."""
 
+    authoritative: bool = False
+    """Whether the outcome came from a deterministic workflow/runtime stop node."""
+
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    """Structured child outcomes that contributed to the final verdict."""
+
 
 @dataclass(frozen=True)
 class DispatcherState:

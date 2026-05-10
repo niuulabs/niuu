@@ -19,6 +19,7 @@ Port allocation (mirrors ravn/cli/flock.py via niuu.mesh):
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -699,6 +700,37 @@ class RavnFlockContributor(SessionContributor):
                 initiative_context=initiative_context,
                 persona_dicts=persona_dicts,
             )
+        if workflow is not None:
+            workflow_graph = workflow.get("graph")
+            if isinstance(workflow_graph, dict):
+                skuld_env.extend(
+                    [
+                        {
+                            "name": "SKULD__WORKFLOW__WORKFLOW_ID",
+                            "value": str(workflow.get("workflow_id") or ""),
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__NAME",
+                            "value": str(workflow.get("name") or ""),
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__VERSION",
+                            "value": str(workflow.get("version") or ""),
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__SCOPE",
+                            "value": str(workflow.get("scope") or ""),
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__INITIAL_CONTEXT",
+                            "value": initiative_context,
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__GRAPH",
+                            "value": json.dumps(workflow_graph),
+                        },
+                    ]
+                )
         if workflow_trigger is not None:
             skuld_env.extend(
                 [

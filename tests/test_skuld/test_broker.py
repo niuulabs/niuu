@@ -453,6 +453,442 @@ class TestBroker:
         )
         assert "flock-coder" not in test_broker._peer_watches
 
+    @pytest.mark.asyncio
+    async def test_peer_git_checkpoint_signals_increment_artifacts(self, test_broker):
+        test_broker._room_bridge = MagicMock()
+
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "task_started",
+            {"metadata": {"task_id": "task-1", "title": "Handle code.requested"}},
+        )
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "tool_start",
+            {
+                "metadata": {
+                    "tool_name": "BashTool",
+                    "input": {"command": "git checkout -b feat/test && git push origin feat/test"},
+                }
+            },
+        )
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "tool_start",
+            {
+                "metadata": {
+                    "tool_name": "BashTool",
+                    "input": {"command": "ls proofs"},
+                },
+            },
+        )
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "tool_start",
+            {
+                "metadata": {
+                    "tool_name": "BashTool",
+                    "input": {"command": 'git add proofs && git commit -m "feat: checkpoint"'},
+                }
+            },
+        )
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "tool_result",
+            {
+                "metadata": {
+                    "tool_name": "BashTool",
+                    "is_error": False,
+                },
+                "data": "branch set up and pushed",
+            },
+        )
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "tool_result",
+            {
+                "metadata": {
+                    "tool_name": "BashTool",
+                    "is_error": False,
+                },
+                "data": "native-workflow-step-c1.txt",
+            },
+        )
+        await test_broker._observe_room_peer_event(
+            "flock-coder",
+            "tool_result",
+            {
+                "metadata": {
+                    "tool_name": "BashTool",
+                    "is_error": False,
+                },
+                "data": "[dev abc1234] feat: checkpoint",
+            },
+        )
+
+        assert test_broker._artifacts.git_commit_count == 1
+        assert test_broker._artifacts.git_push_count == 1
+
+    @pytest.mark.asyncio
+    async def test_peer_outcome_is_emitted_to_pipeline(self, test_broker):
+        participant = MagicMock(persona="reviewer")
+        test_broker._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        test_broker._room_bridge = MagicMock()
+        test_broker._room_bridge.participants = {"flock-reviewer": participant}
+        test_broker._emit_pipeline_event = AsyncMock()
+
+        await test_broker._observe_room_peer_event(
+            "flock-reviewer",
+            "outcome",
+            {
+                "metadata": {"event_type": "review.completed"},
+                "data": {
+                    "event_type": "review.completed",
+                    "verdict": "needs_changes",
+                    "summary": "Needs another pass",
+                    "fields": {"comments": "Fix the edge case"},
+                    "room_bridge_skip": True,
+                },
+            },
+        )
+
+        test_broker._emit_pipeline_event.assert_awaited_once()
+        args = test_broker._emit_pipeline_event.await_args.args
+        assert args[0] == "outcome"
+        assert args[1]["persona"] == "reviewer"
+        assert args[1]["event_type"] == "review.completed"
+        assert args[1]["verdict"] == "needs_changes"
+
+    @pytest.mark.asyncio
+    async def test_routing_only_peer_outcome_is_not_emitted_to_pipeline(self, test_broker):
+        participant = MagicMock(persona="reviewer")
+        test_broker._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        test_broker._room_bridge = MagicMock()
+        test_broker._room_bridge.participants = {"flock-reviewer": participant}
+        test_broker._emit_pipeline_event = AsyncMock()
+
+        await test_broker._observe_room_peer_event(
+            "flock-reviewer",
+            "outcome",
+            {
+                "metadata": {"event_type": "review.changes_requested"},
+                "data": {
+                    "event_type": "review.changes_requested",
+                    "canonical_event_type": "review.completed",
+                    "routing_only": True,
+                    "bubble_up": False,
+                    "fields": {"comments": "Fix the edge case"},
+                },
+            },
+        )
+
+        test_broker._emit_pipeline_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_flock_completion_accepts_stage_finisher_persona(self, test_broker):
+        participant = MagicMock(persona="coordinator-finisher")
+        test_broker._room_bridge = MagicMock()
+        test_broker._room_bridge.participants = {"flock-coordinator-finisher": participant}
+        test_broker._report_activity_state = AsyncMock()
+        test_broker._flock_completion_reported = False
+        test_broker._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        await test_broker._observe_room_peer_event(
+            "flock-coordinator-finisher",
+            "outcome",
+            {
+                "metadata": {"event_type": "ravn.task.completed"},
+                "data": {
+                    "event_type": "ravn.task.completed",
+                    "fields": {
+                        "verdict": "approve",
+                        "summary": "done",
+                        "files_changed": ["proofs/step.txt"],
+                    },
+                    "valid": True,
+                },
+            },
+        )
+
+        test_broker._report_activity_state.assert_awaited_once()
+        args = test_broker._report_activity_state.await_args.args
+        kwargs = test_broker._report_activity_state.await_args.kwargs
+        assert args[0] == "idle"
+        assert kwargs["extra_metadata"]["completion_persona"] == "coordinator-finisher"
+        assert kwargs["extra_metadata"]["structured_outcome"]["verdict"] == "approve"
+
+    @pytest.mark.asyncio
+    async def test_parallel_terminal_node_emits_completion_without_finisher_persona(
+        self, tmp_path
+    ):
+        settings = SkuldSettings(
+            session={"id": "sess-1", "workspace_dir": str(tmp_path)},
+            room={"enabled": True},
+            workflow={
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "raid-complete",
+                            "kind": "end",
+                            "joinMode": "all",
+                            "completionEvent": "ravn.task.completed",
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "e-review",
+                            "source": "review-stage",
+                            "target": "raid-complete",
+                            "label": "review.completed -> review.completed",
+                        },
+                        {
+                            "id": "e-security",
+                            "source": "security-stage",
+                            "target": "raid-complete",
+                            "label": "security.completed -> security.completed",
+                        },
+                    ],
+                }
+            },
+        )
+        broker_under_test = Broker(settings=settings)
+        broker_under_test._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "flock-reviewer": MagicMock(persona="reviewer"),
+            "flock-security": MagicMock(persona="security-auditor"),
+        }
+        broker_under_test._artifacts.git_commit_count = 1
+        broker_under_test._artifacts.git_push_count = 1
+        broker_under_test._emit_pipeline_event = AsyncMock()
+        broker_under_test._report_activity_state = AsyncMock()
+        broker_under_test._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-reviewer",
+            "outcome",
+            {
+                "metadata": {"event_type": "review.completed", "task_id": "review-task-1"},
+                "data": {
+                    "event_type": "review.completed",
+                    "workflow_parent_event_id": "code-task-1",
+                    "verdict": "pass",
+                    "summary": "Looks good",
+                    "fields": {"verdict": "pass", "summary": "Looks good"},
+                    "room_bridge_skip": True,
+                },
+            },
+        )
+
+        broker_under_test._report_activity_state.assert_not_awaited()
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-security",
+            "outcome",
+            {
+                "metadata": {"event_type": "security.completed", "task_id": "security-task-1"},
+                "data": {
+                    "event_type": "security.completed",
+                    "workflow_parent_event_id": "code-task-1",
+                    "verdict": "pass",
+                    "summary": "No security issues",
+                    "fields": {"verdict": "pass", "summary": "No security issues"},
+                    "room_bridge_skip": True,
+                },
+            },
+        )
+
+        assert broker_under_test._emit_pipeline_event.await_count == 3
+        final_call = broker_under_test._emit_pipeline_event.await_args_list[-1]
+        assert final_call.args[0] == "outcome"
+        assert final_call.args[1]["event_type"] == "ravn.task.completed"
+        assert final_call.args[1]["verdict"] == "approve"
+        broker_under_test._report_activity_state.assert_awaited_once()
+        completion = broker_under_test._report_activity_state.await_args.kwargs["extra_metadata"]
+        assert completion["structured_outcome"]["verdict"] == "approve"
+
+    @pytest.mark.asyncio
+    async def test_parallel_terminal_node_waits_for_git_push_when_required(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "sess-1", "workspace_dir": str(tmp_path)},
+            room={"enabled": True},
+            workflow={
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "raid-complete",
+                            "kind": "end",
+                            "joinMode": "all",
+                            "completionEvent": "ravn.task.completed",
+                            "completionRules": {
+                                "requireGitCommit": True,
+                                "requireGitPush": True,
+                            },
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "e-review",
+                            "source": "review-stage",
+                            "target": "raid-complete",
+                            "label": "review.completed -> review.completed",
+                        },
+                        {
+                            "id": "e-security",
+                            "source": "security-stage",
+                            "target": "raid-complete",
+                            "label": "security.completed -> security.completed",
+                        },
+                    ],
+                }
+            },
+        )
+        broker_under_test = Broker(settings=settings)
+        broker_under_test._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "flock-reviewer": MagicMock(persona="reviewer"),
+            "flock-security": MagicMock(persona="security-auditor"),
+        }
+        broker_under_test._artifacts.git_commit_count = 1
+        broker_under_test._artifacts.git_push_count = 0
+        broker_under_test._emit_pipeline_event = AsyncMock()
+        broker_under_test._report_activity_state = AsyncMock()
+        broker_under_test._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-reviewer",
+            "outcome",
+            {
+                "metadata": {"event_type": "review.completed", "task_id": "review-task-1"},
+                "data": {
+                    "event_type": "review.completed",
+                    "workflow_parent_event_id": "code-task-1",
+                    "verdict": "pass",
+                    "summary": "Looks good",
+                    "fields": {"verdict": "pass", "summary": "Looks good"},
+                    "room_bridge_skip": True,
+                },
+            },
+        )
+        await broker_under_test._observe_room_peer_event(
+            "flock-security",
+            "outcome",
+            {
+                "metadata": {"event_type": "security.completed", "task_id": "security-task-1"},
+                "data": {
+                    "event_type": "security.completed",
+                    "workflow_parent_event_id": "code-task-1",
+                    "verdict": "pass",
+                    "summary": "No security issues",
+                    "fields": {"verdict": "pass", "summary": "No security issues"},
+                    "room_bridge_skip": True,
+                },
+            },
+        )
+
+        emitted_event_types = [
+            call.args[1]["event_type"]
+            for call in broker_under_test._emit_pipeline_event.await_args_list
+        ]
+        assert "ravn.task.completed" not in emitted_event_types
+        broker_under_test._report_activity_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_parallel_terminal_node_accepts_repo_git_state_when_tool_counts_are_zero(
+        self, tmp_path
+    ):
+        settings = SkuldSettings(
+            session={"id": "sess-1", "workspace_dir": str(tmp_path)},
+            room={"enabled": True},
+            workflow={
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "raid-complete",
+                            "kind": "end",
+                            "joinMode": "all",
+                            "completionEvent": "ravn.task.completed",
+                            "completionRules": {
+                                "requireGitCommit": True,
+                                "requireGitPush": True,
+                            },
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "e-review",
+                            "source": "review-stage",
+                            "target": "raid-complete",
+                            "label": "review.completed -> review.completed",
+                        },
+                        {
+                            "id": "e-security",
+                            "source": "security-stage",
+                            "target": "raid-complete",
+                            "label": "security.completed -> security.completed",
+                        },
+                    ],
+                }
+            },
+        )
+        broker_under_test = Broker(settings=settings)
+        broker_under_test._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "flock-reviewer": MagicMock(persona="reviewer"),
+            "flock-security": MagicMock(persona="security-auditor"),
+        }
+        broker_under_test._artifacts.git_commit_count = 0
+        broker_under_test._artifacts.git_push_count = 0
+        broker_under_test._git_workspace_checkpoint = MagicMock()
+        broker_under_test._emit_pipeline_event = AsyncMock()
+        broker_under_test._report_activity_state = AsyncMock()
+        broker_under_test._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        with patch("skuld.broker._git_workspace_checkpoint_status", return_value=(True, True)):
+            await broker_under_test._observe_room_peer_event(
+                "flock-reviewer",
+                "outcome",
+                {
+                    "metadata": {"event_type": "review.completed", "task_id": "review-task-1"},
+                    "data": {
+                        "event_type": "review.completed",
+                        "workflow_parent_event_id": "code-task-1",
+                        "verdict": "pass",
+                        "summary": "Looks good",
+                        "fields": {"verdict": "pass", "summary": "Looks good"},
+                        "room_bridge_skip": True,
+                    },
+                },
+            )
+            await broker_under_test._observe_room_peer_event(
+                "flock-security",
+                "outcome",
+                {
+                    "metadata": {
+                        "event_type": "security.completed",
+                        "task_id": "security-task-1",
+                    },
+                    "data": {
+                        "event_type": "security.completed",
+                        "workflow_parent_event_id": "code-task-1",
+                        "verdict": "pass",
+                        "summary": "No security issues",
+                        "fields": {"verdict": "pass", "summary": "No security issues"},
+                        "room_bridge_skip": True,
+                    },
+                },
+            )
+
+        emitted_event_types = [
+            call.args[1]["event_type"]
+            for call in broker_under_test._emit_pipeline_event.await_args_list
+        ]
+        assert "ravn.task.completed" in emitted_event_types
+        assert broker_under_test._artifacts.git_commit_count == 1
+        assert broker_under_test._artifacts.git_push_count == 1
+
     def test_create_transport_invalid_class(self, tmp_path):
         """Valid module but missing class raises ValueError via AttributeError."""
         settings = SkuldSettings(
@@ -1524,6 +1960,28 @@ class TestReportChronicle:
         mock_client.post.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_report_chronicle_posts_for_flock_outcome_without_turns(self, test_broker):
+        test_broker._artifacts.structured_outcome = {
+            "summary": "Reviewer approved the changes",
+            "files_changed": ["proofs/marker.txt"],
+        }
+        test_broker._artifacts.files_changed = ["proofs/marker.txt"]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        test_broker._http_client = mock_client
+        test_broker._transport = None
+
+        await test_broker._report_chronicle()
+
+        assert mock_client.post.call_count == 2
+        payload = mock_client.post.call_args_list[0].kwargs["json"]
+        assert payload["summary"] == "Reviewer approved the changes"
+        assert payload["key_changes"] == ["proofs/marker.txt"]
+
+    @pytest.mark.asyncio
     async def test_report_chronicle_handles_exception(self, test_broker):
         test_broker._artifacts.turn_count = 1
         mock_client = AsyncMock()
@@ -2490,6 +2948,9 @@ class TestPipelineEventEmission:
     def test_classify_git(self):
         assert Broker._classify_pipeline_event({"type": "git"}) == "git_commit"
 
+    def test_classify_git_push(self):
+        assert Broker._classify_pipeline_event({"type": "git_push"}) == "git_push"
+
     def test_classify_terminal(self):
         assert Broker._classify_pipeline_event({"type": "terminal"}) == "terminal_command"
 
@@ -2992,6 +3453,7 @@ class TestBrokerRoomBridge:
             return_value=MagicMock(peer_id="agent-1", persona="agent-1")
         )
         b._room_bridge = mock_bridge
+        b._observe_room_peer_event = AsyncMock()
 
         frame = _json.dumps({"type": "response", "data": "Hello", "metadata": {}}) + "\n"
         mock_ws = AsyncMock()
@@ -3000,6 +3462,7 @@ class TestBrokerRoomBridge:
         await b.handle_ravn_websocket(mock_ws, "agent-1")
 
         mock_bridge.handle_ravn_frame.assert_awaited_once()
+        b._observe_room_peer_event.assert_not_awaited()
         call_args = mock_bridge.handle_ravn_frame.call_args[0]
         assert call_args[0] == "agent-1"
         assert call_args[1]["type"] == "response"

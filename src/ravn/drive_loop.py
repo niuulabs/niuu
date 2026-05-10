@@ -13,6 +13,7 @@ daemon instances.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -82,6 +83,7 @@ class FanInSlot:
 class _FanInResult:
     """Returned by FanInBuffer when a slot completes."""
 
+    consumer_key: str
     persona_name: str
     merged_context: str
     root_correlation_id: str
@@ -128,23 +130,31 @@ class FanInBuffer:
         persona_name: str,
         consumes_event_types: list[str],
         strategy: str,
+        consumer_key: str | None = None,
     ) -> _FanInResult | None:
         """Accept an event for consumer-side fan-in.
 
         Returns a ``_FanInResult`` when all required events have arrived,
         otherwise ``None``.  For ``merge`` strategy returns immediately.
         """
-        # Act immediately when: merge strategy, single event type, or no
-        # fan-in contributors registered (solo persona in the flock).
-        if strategy == "merge" or len(consumes_event_types) <= 1 or not self._contributor_names:
+        # Act immediately when:
+        # - merge strategy (plain event subscription)
+        # - any_pass strategy (alternate triggers / OR semantics)
+        # - single event type
+        # - no fan-in contributors registered (solo persona in the flock)
+        if (
+            strategy in {"merge", "any_pass"}
+            or len(consumes_event_types) <= 1
+        ):
             return _FanInResult(
+                consumer_key=consumer_key or persona_name,
                 persona_name=persona_name,
                 merged_context=self._format_single_event(event_type, event_payload),
                 root_correlation_id=root_correlation_id,
                 triggered_by=f"mesh:outcome:{event_type}",
             )
 
-        group_key = f"consumer:{persona_name}:{root_correlation_id}"
+        group_key = f"consumer:{consumer_key or persona_name}:{root_correlation_id}"
         slot = self._slots.get(group_key)
         now = datetime.now(UTC)
 
@@ -363,6 +373,7 @@ class FanInBuffer:
 
         triggered_by_types = list(slot.required_event_types)
         return _FanInResult(
+            consumer_key=slot.group_key.split(":", 2)[1],
             persona_name=slot.persona_name,
             merged_context="\n".join(context_parts),
             root_correlation_id=slot.root_correlation_id,
@@ -417,7 +428,14 @@ class DriveLoop:
         self._completion_events: dict[str, asyncio.Event] = {}
         self._mesh: MeshPort | None = None
         self._persona_config: PersonaConfig | None = None
+        self._workflow_allowed_outcomes_resolver: (
+            Callable[[AgentTask, PersonaConfig], set[str] | None] | None
+        ) = None
         self._fan_in = FanInBuffer()
+        self._current_task_var: contextvars.ContextVar[AgentTask | None] = contextvars.ContextVar(
+            "ravn_current_task",
+            default=None,
+        )
         budget_cfg = getattr(settings, "budget", None)
         if isinstance(budget_cfg, BudgetConfig):
             _cap = budget_cfg.daily_cap_usd
@@ -600,6 +618,17 @@ class DriveLoop:
             emits.extend(persona_config.produces.event_type_map.values())
             self._skuld_channel._emits = list(dict.fromkeys(emits))  # dedupe, preserve order
             self._skuld_channel._tools = persona_config.allowed_tools
+
+    def set_workflow_allowed_outcomes_resolver(
+        self,
+        resolver: Callable[[AgentTask, PersonaConfig], set[str] | None] | None,
+    ) -> None:
+        """Register a resolver for node-scoped workflow outcome topics."""
+        self._workflow_allowed_outcomes_resolver = resolver
+
+    def current_task(self) -> AgentTask | None:
+        """Return the task currently executing in this context, if any."""
+        return self._current_task_var.get()
 
     async def handle_rpc(self, message: dict) -> dict:
         """Dispatch an incoming mesh RPC message to the registered handler.
@@ -813,105 +842,109 @@ class DriveLoop:
         )
 
         success = False
+        token = self._current_task_var.set(task)
         try:
-            turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
-            success = True
-            self._record_task_cost(task, turn_result)
-            await self._maybe_publish_budget_warning(task)
-            self._save_task_output(task, capture_channel or channel)
-            response_text = capture_channel.response_text if capture_channel else ""
-            if response_text:
-                logger.info(
-                    "drive_loop: task %s output: %s",
-                    task.task_id,
-                    response_text[:500],
+            try:
+                turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
+                success = True
+                self._record_task_cost(task, turn_result)
+                await self._maybe_publish_budget_warning(task)
+                self._save_task_output(task, capture_channel or channel)
+                response_text = capture_channel.response_text if capture_channel else ""
+                if response_text:
+                    logger.info(
+                        "drive_loop: task %s output: %s",
+                        task.task_id,
+                        response_text[:500],
+                    )
+            except asyncio.CancelledError:
+                logger.info("drive_loop: task %s cancelled mid-turn", task.task_id)
+                self._result_store.set_status(task.task_id, "cancelled")
+                await self._event_publisher.publish(
+                    RavnEvent(
+                        type=RavnEventType.TASK_COMPLETE,
+                        source=self._source_id,
+                        payload={"task_id": task.task_id, "success": False},
+                        timestamp=datetime.now(UTC),
+                        urgency=0.7,
+                        correlation_id=task.task_id,
+                        session_id=task.session_id,
+                        task_id=task.task_id,
+                    )
                 )
-        except asyncio.CancelledError:
-            logger.info("drive_loop: task %s cancelled mid-turn", task.task_id)
-            self._result_store.set_status(task.task_id, "cancelled")
+                emit_fn = getattr(agent, "emit_session_ended", None)
+                if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
+                    try:
+                        await emit_fn("interrupted")
+                    except Exception:
+                        logger.warning("emit_session_ended failed; continuing", exc_info=True)
+                await self._emit_sleipnir_task_completed(task, "interrupted")
+                if task.triggered_by and task.triggered_by.startswith("thread:"):
+                    thread_path = task.triggered_by.removeprefix("thread:")
+                    await self._finalise_thread(thread_path, False)
+                return
+            except Exception as exc:
+                logger.error("drive_loop: task %s failed: %s", task.task_id, exc)
+                self._result_store.set_status(task.task_id, "failed")
+                await channel.emit(
+                    RavnEvent.error(
+                        source=self._source_id,
+                        message=self._format_task_error(task, exc),
+                        correlation_id=task.task_id,
+                        session_id=task.session_id or task.task_id,
+                        task_id=task.task_id,
+                    )
+                )
+
+            outcome = "success" if success else "error"
+            emit_fn = getattr(agent, "emit_session_ended", None)
+            if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
+                try:
+                    await emit_fn(outcome)
+                except Exception:
+                    logger.warning("emit_session_ended failed; continuing", exc_info=True)
+            response_text = capture_channel.response_text if capture_channel else ""
+            await self._emit_sleipnir_task_completed(task, outcome, response_text=response_text)
+
+            # Publish outcome event to mesh for other agents to consume
+            await self._emit_mesh_outcome_event(task, response_text, success)
+
             await self._event_publisher.publish(
                 RavnEvent(
                     type=RavnEventType.TASK_COMPLETE,
                     source=self._source_id,
-                    payload={"task_id": task.task_id, "success": False},
+                    payload={"task_id": task.task_id, "success": success},
                     timestamp=datetime.now(UTC),
-                    urgency=0.7,
+                    urgency=0.2 if success else 0.7,
                     correlation_id=task.task_id,
                     session_id=task.session_id,
                     task_id=task.task_id,
                 )
             )
-            emit_fn = getattr(agent, "emit_session_ended", None)
-            if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
-                try:
-                    await emit_fn("interrupted")
-                except Exception:
-                    logger.warning("emit_session_ended failed; continuing", exc_info=True)
-            await self._emit_sleipnir_task_completed(task, "interrupted")
-            if task.triggered_by and task.triggered_by.startswith("thread:"):
-                thread_path = task.triggered_by.removeprefix("thread:")
-                await self._finalise_thread(thread_path, False)
-            return
-        except Exception as exc:
-            logger.error("drive_loop: task %s failed: %s", task.task_id, exc)
-            self._result_store.set_status(task.task_id, "failed")
             await channel.emit(
-                RavnEvent.error(
+                RavnEvent.task_complete(
                     source=self._source_id,
-                    message=self._format_task_error(task, exc),
+                    success=success,
                     correlation_id=task.task_id,
                     session_id=task.session_id or task.task_id,
                     task_id=task.task_id,
                 )
             )
 
-        outcome = "success" if success else "error"
-        emit_fn = getattr(agent, "emit_session_ended", None)
-        if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
-            try:
-                await emit_fn(outcome)
-            except Exception:
-                logger.warning("emit_session_ended failed; continuing", exc_info=True)
-        response_text = capture_channel.response_text if capture_channel else ""
-        await self._emit_sleipnir_task_completed(task, outcome, response_text=response_text)
+            if capture_channel and capture_channel.surface_triggered:
+                await self._re_deliver_surface(task, capture_channel.response_text)
+            elif (
+                capture_channel is None
+                and getattr(channel, "surface_triggered", False)
+                and hasattr(channel, "response_text")
+            ):
+                await self._re_deliver_surface(task, channel.response_text)
 
-        # Publish outcome event to mesh for other agents to consume
-        await self._emit_mesh_outcome_event(task, response_text, success)
-
-        await self._event_publisher.publish(
-            RavnEvent(
-                type=RavnEventType.TASK_COMPLETE,
-                source=self._source_id,
-                payload={"task_id": task.task_id, "success": success},
-                timestamp=datetime.now(UTC),
-                urgency=0.2 if success else 0.7,
-                correlation_id=task.task_id,
-                session_id=task.session_id,
-                task_id=task.task_id,
-            )
-        )
-        await channel.emit(
-            RavnEvent.task_complete(
-                source=self._source_id,
-                success=success,
-                correlation_id=task.task_id,
-                session_id=task.session_id or task.task_id,
-                task_id=task.task_id,
-            )
-        )
-
-        if capture_channel and capture_channel.surface_triggered:
-            await self._re_deliver_surface(task, capture_channel.response_text)
-        elif (
-            capture_channel is None
-            and getattr(channel, "surface_triggered", False)
-            and hasattr(channel, "response_text")
-        ):
-            await self._re_deliver_surface(task, channel.response_text)
-
-        if task.triggered_by and task.triggered_by.startswith("thread:"):
-            thread_path = task.triggered_by.removeprefix("thread:")
-            await self._finalise_thread(thread_path, success)
+            if task.triggered_by and task.triggered_by.startswith("thread:"):
+                thread_path = task.triggered_by.removeprefix("thread:")
+                await self._finalise_thread(thread_path, success)
+        finally:
+            self._current_task_var.reset(token)
 
     def _format_task_error(self, task: AgentTask, exc: Exception) -> str:
         """Render a user-visible task failure message for live room chat."""
@@ -966,16 +999,18 @@ class DriveLoop:
     async def _emit_mesh_outcome_event(
         self, task: AgentTask, response_text: str, success: bool
     ) -> None:
-        """Publish persona outcome to mesh for other agents to consume.
+        """Publish persona outcomes for both routing and outward visibility.
 
-        If the persona declares a produces.event_type, this publishes the task
-        outcome to the mesh so other agents can react to it. For example:
-        - Coder finishes with produces.event_type="code.completed"
-        - Reviewer (who consumes code.changed) can pick up the event
+        Canonical outcome events always keep the persona's declared
+        ``produces.event_type``. Those canonical outcomes are what we bubble up
+        to Skuld/Volundr/Tyr so session history and higher-level orchestration
+        see a stable contract.
 
-        This is fully generic — any persona with produces.event_type participates.
+        Verdict-specific aliases from ``event_type_map`` remain valid, but they
+        are published as routing-only mesh topics so downstream personas can
+        react without replacing the canonical outward event.
         """
-        if self._mesh is None or self._persona_config is None:
+        if self._persona_config is None:
             return
         if not success:
             logger.info(
@@ -987,38 +1022,64 @@ class DriveLoop:
 
         # Parse outcome block from response
         parsed = parse_outcome_block(response_text)
-        outcome_fields = parsed.fields if parsed and parsed.valid else {}
-
-        # Determine event type: check event_type_map first, fall back to default
-        event_type = self._persona_config.produces.event_type
-        event_type_map = self._persona_config.produces.event_type_map
-        if event_type_map:
-            # Look for verdict field to determine which event to publish
-            verdict = outcome_fields.get("verdict", "")
-            if verdict and verdict in event_type_map:
-                event_type = event_type_map[verdict]
-                logger.debug(
-                    "drive_loop: mapped verdict=%s to event_type=%s",
-                    verdict,
-                    event_type,
-                )
-
-        if not event_type:
+        outcome_fields = parsed.fields if parsed is not None else {}
+        canonical_event_type = self._persona_config.produces.event_type
+        if not canonical_event_type:
             return
 
-        # Create proper RavnEvent for hexagonal compliance
-        # Propagate root_correlation_id through the event chain so downstream
-        # fan-in consumers can group related events from the same trigger.
         root_corr = task.root_correlation_id or task.task_id
-        event = RavnEvent(
+        verdict = str(outcome_fields.get("verdict", "") or "").strip()
+        summary = str(outcome_fields.get("summary", "") or "").strip()
+        files_changed = outcome_fields.get("files_changed")
+        valid = bool(parsed.valid) if parsed is not None else False
+
+        base_payload: dict[str, object] = {
+            "persona": self._persona_config.name,
+            "success": success,
+            "outcome": outcome_fields,
+            "fields": outcome_fields,
+            "valid": valid,
+            "task_id": task.task_id,
+            "workflow_node_id": task.workflow_node_id,
+        }
+        if task.workflow_parent_event_id:
+            base_payload["workflow_parent_event_id"] = task.workflow_parent_event_id
+        if verdict:
+            base_payload["verdict"] = verdict
+        if summary:
+            base_payload["summary"] = summary
+        if isinstance(files_changed, list) and files_changed:
+            base_payload["files_changed"] = files_changed
+
+        alias_event_type = ""
+        event_type_map = self._persona_config.produces.event_type_map
+        if verdict and verdict in event_type_map:
+            alias_event_type = event_type_map[verdict]
+
+        if self._workflow_allowed_outcomes_resolver is not None:
+            allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
+            if allowed_topics is not None:
+                canonical_allowed = canonical_event_type in allowed_topics or (
+                    bool(alias_event_type) and alias_event_type in allowed_topics
+                )
+                if not canonical_allowed:
+                    logger.info(
+                        "drive_loop: suppressing outcome event_type=%s workflow_node=%s allowed=%s",
+                        canonical_event_type,
+                        task.workflow_node_id or "-",
+                        sorted(allowed_topics),
+                    )
+                    return
+
+        canonical_payload = dict(base_payload)
+        canonical_payload["event_type"] = canonical_event_type
+        canonical_payload["bubble_up"] = True
+        canonical_payload["room_bridge_skip"] = self._skuld_channel is not None
+
+        canonical_event = RavnEvent(
             type=RavnEventType.OUTCOME,
             source=self._source_id,
-            payload={
-                "event_type": event_type,
-                "persona": self._persona_config.name,
-                "success": success,
-                "outcome": outcome_fields,
-            },
+            payload=canonical_payload,
             timestamp=datetime.now(UTC),
             urgency=0.3,
             correlation_id=task.task_id,
@@ -1027,24 +1088,66 @@ class DriveLoop:
             root_correlation_id=root_corr,
         )
 
+        if self._mesh is not None:
+            try:
+                logger.info(
+                    "drive_loop: publishing canonical outcome event_type=%s task_id=%s",
+                    canonical_event_type,
+                    task.task_id,
+                )
+                await self._mesh.publish(canonical_event, topic=canonical_event_type)
+            except Exception:
+                logger.warning(
+                    "Failed to publish canonical mesh outcome event; continuing.",
+                    exc_info=True,
+                )
+
+        if self._skuld_channel is not None:
+            try:
+                await self._skuld_channel.emit(canonical_event)
+            except Exception:
+                logger.warning(
+                    "Failed to emit canonical outcome to skuld; continuing.",
+                    exc_info=True,
+                )
+
+        if self._mesh is None:
+            return
+
+        if not alias_event_type or alias_event_type == canonical_event_type:
+            return
+
+        alias_payload = dict(base_payload)
+        alias_payload["event_type"] = alias_event_type
+        alias_payload["canonical_event_type"] = canonical_event_type
+        alias_payload["routing_only"] = True
+        alias_payload["bubble_up"] = False
+        alias_payload["room_bridge_skip"] = True
+
+        alias_event = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source=self._source_id,
+            payload=alias_payload,
+            timestamp=datetime.now(UTC),
+            urgency=0.3,
+            correlation_id=task.task_id,
+            session_id=task.session_id or "",
+            task_id=task.task_id,
+            root_correlation_id=root_corr,
+        )
         try:
             logger.info(
-                "drive_loop: publishing outcome event_type=%s task_id=%s",
-                event_type,
+                "drive_loop: publishing routing outcome alias=%s canonical=%s task_id=%s",
+                alias_event_type,
+                canonical_event_type,
                 task.task_id,
             )
-            await self._mesh.publish(event, topic=event_type)
+            await self._mesh.publish(alias_event, topic=alias_event_type)
         except Exception:
-            logger.warning("Failed to publish mesh outcome event; continuing.", exc_info=True)
-
-        # In flock mode, live browser activity/response flows directly over the
-        # Skuld websocket channel. Outcomes stay on the mesh to avoid duplicate
-        # room_outcome cards when both direct streaming and RoomMeshBridge exist.
-        if self._skuld_channel is not None and self._mesh is None:
-            try:
-                await self._skuld_channel.emit(event)
-            except Exception:
-                logger.warning("Failed to emit outcome to skuld; continuing.", exc_info=True)
+            logger.warning(
+                "Failed to publish routing mesh outcome alias; continuing.",
+                exc_info=True,
+            )
 
     def _save_task_output(self, task: AgentTask, channel: ChannelPort) -> None:
         """Persist agent response to ``task.output_path`` when set (cron tasks)."""
@@ -1220,6 +1323,8 @@ class DriveLoop:
                         "deadline": task.deadline.isoformat() if task.deadline else None,
                         "output_path": str(task.output_path) if task.output_path else None,
                         "root_correlation_id": task.root_correlation_id,
+                        "workflow_parent_event_id": task.workflow_parent_event_id,
+                        "workflow_node_id": task.workflow_node_id,
                         "created_at": task.created_at.isoformat(),
                     }
                 )
@@ -1270,6 +1375,8 @@ class DriveLoop:
                     deadline=deadline,
                     output_path=Path(output_path_str) if output_path_str else None,
                     root_correlation_id=rec.get("root_correlation_id", ""),
+                    workflow_parent_event_id=rec.get("workflow_parent_event_id", ""),
+                    workflow_node_id=rec.get("workflow_node_id", ""),
                     created_at=created_at,
                 )
                 if deadline is not None and datetime.now(UTC) > deadline:

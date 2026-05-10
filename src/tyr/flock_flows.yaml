@@ -7,7 +7,5 @@
       iteration_budget: 40
     - name: reviewer
       iteration_budget: 25
-      consumes_event_types:
-        - review.requested
   mesh_transport: nng
   max_concurrent_tasks: 3

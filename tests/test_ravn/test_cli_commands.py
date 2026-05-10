@@ -15,6 +15,7 @@ from ravn.cli.commands import (
     _print_usage,
     _run_daemon,
     _run_turn,
+    _workflow_allowed_task_targets,
     _workflow_runtime_for_persona,
     app,
     main,
@@ -326,6 +327,14 @@ class TestWorkflowRuntimeForPersona:
         assert runtime is not None
         assert runtime["event_types"] == ["review.completed", "security.completed"]
         assert runtime["fan_in_strategy"] == "all_must_pass"
+        assert runtime["consumer_groups"] == [
+            {
+                "id": "verify-stage",
+                "label": "Verify",
+                "event_types": ["review.completed", "security.completed"],
+                "fan_in_strategy": "all_must_pass",
+            }
+        ]
 
     def test_returns_none_when_workflow_graph_has_no_matching_persona(self) -> None:
         settings = Settings.model_validate(
@@ -349,6 +358,179 @@ class TestWorkflowRuntimeForPersona:
         )
 
         assert _workflow_runtime_for_persona(settings, "verifier") is None
+
+    def test_prefers_stage_member_consumes_event_type_over_graph_edge(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "workflow_id": "wf-1",
+                    "name": "Code test",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "review-stage",
+                                "kind": "stage",
+                                "label": "Review",
+                                "stageMembers": [
+                                    {
+                                        "personaId": "reviewer",
+                                        "consumesEventTypes": ["review.requested"],
+                                    }
+                                ],
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "id": "e1",
+                                "source": "coder-stage",
+                                "target": "review-stage",
+                                "label": "code.changed -> code.changed",
+                            }
+                        ],
+                    },
+                }
+            }
+        )
+
+        runtime = _workflow_runtime_for_persona(settings, "reviewer")
+
+        assert runtime is not None
+        assert runtime["event_types"] == ["review.requested"]
+        assert runtime["consumer_groups"] == [
+            {
+                "id": "review-stage",
+                "label": "Review",
+                "event_types": ["review.requested"],
+                "fan_in_strategy": "merge",
+            }
+        ]
+
+    def test_returns_separate_consumer_groups_for_same_persona_across_nodes(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "workflow_id": "wf-1",
+                    "name": "Security flow",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "coordinator-start",
+                                "kind": "stage",
+                                "label": "Coordinate raid",
+                                "stageMembers": [{"personaId": "coordinator"}],
+                                "joinMode": "any",
+                            },
+                            {
+                                "id": "coordinator-finish",
+                                "kind": "stage",
+                                "label": "Finalize raid",
+                                "stageMembers": [{"personaId": "coordinator"}],
+                                "joinMode": "all",
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "id": "e1",
+                                "source": "dispatch-root",
+                                "target": "coordinator-start",
+                                "label": "raid.requested -> raid.requested",
+                            },
+                            {
+                                "id": "e2",
+                                "source": "review-stage",
+                                "target": "coordinator-finish",
+                                "label": "review.passed -> review.passed",
+                            },
+                            {
+                                "id": "e3",
+                                "source": "security-stage",
+                                "target": "coordinator-finish",
+                                "label": "security.passed -> security.passed",
+                            },
+                        ],
+                    },
+                }
+            }
+        )
+
+        runtime = _workflow_runtime_for_persona(settings, "coordinator")
+
+        assert runtime is not None
+        assert runtime["event_types"] == ["raid.requested", "review.passed", "security.passed"]
+        assert runtime["fan_in_strategy"] == "merge"
+        assert runtime["consumer_groups"] == [
+            {
+                "id": "coordinator-start",
+                "label": "Coordinate raid",
+                "event_types": ["raid.requested"],
+                "fan_in_strategy": "merge",
+            },
+            {
+                "id": "coordinator-finish",
+                "label": "Finalize raid",
+                "event_types": ["review.passed", "security.passed"],
+                "fan_in_strategy": "all_must_pass",
+            },
+        ]
+
+    def test_workflow_allowed_task_targets_returns_downstream_stage_personas(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "workflow_id": "wf-1",
+                    "name": "Code test",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "coordinator-stage",
+                                "kind": "stage",
+                                "label": "Coordinate",
+                                "stageMembers": [{"personaId": "coordinator"}],
+                            },
+                            {
+                                "id": "coder-stage",
+                                "kind": "stage",
+                                "label": "Code",
+                                "stageMembers": [{"personaId": "coder"}],
+                            },
+                            {
+                                "id": "review-stage",
+                                "kind": "stage",
+                                "label": "Review",
+                                "stageMembers": [{"personaId": "reviewer"}],
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "id": "e1",
+                                "source": "coordinator-stage",
+                                "target": "coder-stage",
+                                "label": "code.requested -> code.requested",
+                            },
+                            {
+                                "id": "e2",
+                                "source": "review-stage",
+                                "target": "coordinator-stage",
+                                "label": "review.passed -> review.passed",
+                            },
+                        ],
+                    },
+                }
+            }
+        )
+
+        assert _workflow_allowed_task_targets(settings, "coordinator") == {"coder"}
+        assert _workflow_allowed_task_targets(settings, "reviewer") == {"coordinator"}
+        assert _workflow_allowed_task_targets(
+            settings,
+            "coordinator",
+            node_id="coordinator-stage",
+        ) == {"coder"}
+        assert _workflow_allowed_task_targets(
+            settings,
+            "reviewer",
+            node_id="review-stage",
+        ) == {"coordinator"}
 
 
 class TestDaemonAgentFactory:

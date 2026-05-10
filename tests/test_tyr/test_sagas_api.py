@@ -378,6 +378,78 @@ class TestGetSaga:
         assert data["phases"][1]["name"] == "Phase 2"
         assert data["phases"][2]["name"] == "Unassigned"
 
+    def test_imported_unassigned_completed_raids_drive_phase_summary(self):
+        tracker = MockTracker()
+        tracker.projects = [
+            TrackerProject(
+                id="proj-import",
+                name="Imported",
+                description="Imported project",
+                status="completed",
+                url="https://linear.app/test/project/imported",
+                milestone_count=0,
+                issue_count=2,
+                slug="imported",
+                progress=1.0,
+            )
+        ]
+        tracker.issues = {
+            "proj-import": [
+                TrackerIssue(
+                    id="i-1",
+                    identifier="IMP-1",
+                    title="Step 1",
+                    description="",
+                    status="Done",
+                    status_type="completed",
+                    milestone_id=None,
+                ),
+                TrackerIssue(
+                    id="i-2",
+                    identifier="IMP-2",
+                    title="Step 2",
+                    description="",
+                    status="Done",
+                    status_type="completed",
+                    milestone_id=None,
+                ),
+            ]
+        }
+        repo = MockSagaRepo()
+        repo.sagas.append(
+            Saga(
+                id=uuid4(),
+                tracker_id="proj-import",
+                tracker_type="mock",
+                slug="imported",
+                name="Imported",
+                repos=["org/repo"],
+                feature_branch="feat/imported",
+                status=SagaStatus.COMPLETE,
+                confidence=0.0,
+                created_at=datetime.now(UTC),
+                base_branch="dev",
+                owner_id="dev-user",
+            )
+        )
+
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.include_router(create_saga_phases_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [tracker]
+        app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.state.settings = _dev_settings()
+        client = TestClient(app)
+
+        resp = client.get(f"/api/v1/tyr/sagas/{repo.sagas[0].id}")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "complete"
+        assert data["phase_summary"] == {"total": 1, "completed": 1}
+        assert len(data["phases"]) == 1
+        assert data["phases"][0]["name"] == "Unassigned"
+
     def test_returns_assigned_workflow_fields(
         self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
     ):
@@ -490,11 +562,7 @@ class TestAssignWorkflow:
                         "stageMembers": [
                             {"personaId": "coordinator", "budget": 40},
                             {"personaId": "coder", "budget": 40},
-                            {
-                                "personaId": "reviewer",
-                                "budget": 25,
-                                "consumesEventTypes": ["review.requested"],
-                            },
+                            {"personaId": "reviewer", "budget": 25},
                         ],
                     }
                 ],
@@ -521,11 +589,7 @@ class TestAssignWorkflow:
         assert workflow_snapshot["personas"] == [
             {"name": "coordinator", "iteration_budget": 40},
             {"name": "coder", "iteration_budget": 40},
-            {
-                "name": "reviewer",
-                "iteration_budget": 25,
-                "consumes_event_types": ["review.requested"],
-            },
+            {"name": "reviewer", "iteration_budget": 25},
         ]
 
     def test_rejects_invalid_saga_id_for_workflow_assignment(
@@ -767,6 +831,104 @@ class TestDeleteSaga:
     def test_delete_not_found(self, client: TestClient):
         resp = client.delete(f"/api/v1/tyr/sagas/{uuid4()}")
         assert resp.status_code == 404
+
+
+class _DispatchRecorder:
+    def __init__(self, *, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.calls: list[tuple[str, str]] = []
+
+    async def try_auto_continue(self, owner_id: str, saga_tracker_id: str) -> None:
+        self.calls.append((owner_id, saga_tracker_id))
+        if self.should_fail:
+            raise RuntimeError("dispatch unavailable")
+
+
+class TestCommitSaga:
+    def test_kicks_off_initial_dispatch_when_service_is_available(
+        self,
+        mock_tracker: MockTracker,
+    ) -> None:
+        repo = MockSagaRepo()
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.state.settings = _dev_settings()
+        recorder = _DispatchRecorder()
+        app.state.dispatch_service = recorder
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/v1/tyr/sagas/commit",
+            json={
+                "name": "Proof Saga",
+                "slug": "proof-saga",
+                "description": "Test kickoff",
+                "repos": ["https://github.com/niuulabs/volundr.git"],
+                "base_branch": "dev",
+                "phases": [
+                    {
+                        "name": "Phase 1",
+                        "raids": [
+                            {
+                                "name": "Create proof file",
+                                "description": "Create a proof file",
+                                "acceptance_criteria": ["file exists"],
+                                "declared_files": ["proof.txt"],
+                                "estimate_hours": 1.0,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 201
+        assert recorder.calls == [("dev-user", "saga-created")]
+
+    def test_returns_created_saga_even_when_initial_dispatch_fails(
+        self,
+        mock_tracker: MockTracker,
+    ) -> None:
+        repo = MockSagaRepo()
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.state.settings = _dev_settings()
+        app.state.dispatch_service = _DispatchRecorder(should_fail=True)
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/v1/tyr/sagas/commit",
+            json={
+                "name": "Proof Saga",
+                "slug": "proof-saga-warning",
+                "description": "Test kickoff warning",
+                "repos": ["https://github.com/niuulabs/volundr.git"],
+                "base_branch": "dev",
+                "phases": [
+                    {
+                        "name": "Phase 1",
+                        "raids": [
+                            {
+                                "name": "Create proof file",
+                                "description": "Create a proof file",
+                                "acceptance_criteria": ["file exists"],
+                                "declared_files": ["proof.txt"],
+                                "estimate_hours": 1.0,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 201
+        assert "Failed to kick off initial dispatch" in response.json()["warnings"][0]
 
 
 class TestExtractStructure:

@@ -27,9 +27,12 @@ from tyr.domain.models import (
     TrackerIssue,
     TrackerMilestone,
     TrackerProject,
+    WorkflowDefinition,
+    WorkflowScope,
 )
 from tyr.ports.saga_repository import SagaRepository
 from tyr.ports.tracker import TrackerPort
+from tyr.ports.workflow_repository import WorkflowRepository
 
 # ---------------------------------------------------------------------------
 # Mock TrackerPort implementation
@@ -394,7 +397,65 @@ class MockSagaRepo(SagaRepository):
         return [raid for raid in self.raids if raid.phase_id == phase_id]
 
 
-def _build_test_client(mock_tracker: MockTracker) -> TestClient:
+class InMemoryWorkflowRepository(WorkflowRepository):
+    def __init__(self, workflows: list[WorkflowDefinition] | None = None) -> None:
+        self._workflows = {workflow.id: workflow for workflow in workflows or []}
+
+    async def list_workflows(
+        self,
+        *,
+        owner_id: str,
+        scope: WorkflowScope | None = None,
+    ) -> list[WorkflowDefinition]:
+        workflows = list(self._workflows.values())
+        if scope is None:
+            return workflows
+        return [workflow for workflow in workflows if workflow.scope == scope]
+
+    async def get_workflow(self, workflow_id):
+        return self._workflows.get(workflow_id)
+
+    async def save_workflow(self, workflow: WorkflowDefinition) -> WorkflowDefinition:
+        self._workflows[workflow.id] = workflow
+        return workflow
+
+    async def delete_workflow(self, workflow_id) -> bool:
+        return self._workflows.pop(workflow_id, None) is not None
+
+
+class _DispatchRecorder:
+    def __init__(self, *, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.calls: list[tuple[str, str]] = []
+
+    async def try_auto_continue(self, owner_id: str, saga_tracker_id: str) -> None:
+        self.calls.append((owner_id, saga_tracker_id))
+        if self.should_fail:
+            raise RuntimeError("dispatch unavailable")
+
+
+def _workflow() -> WorkflowDefinition:
+    now = datetime.now(UTC)
+    return WorkflowDefinition(
+        id=uuid4(),
+        name="Security Review Flow",
+        description="Saved workflow for import tests",
+        version="1.2.3",
+        scope=WorkflowScope.USER,
+        owner_id="dev-user",
+        definition_yaml=None,
+        graph={"nodes": [], "edges": []},
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _build_test_client(
+    mock_tracker: MockTracker,
+    *,
+    workflow_repo: WorkflowRepository | None = None,
+    dispatch_service: object | None = None,
+) -> TestClient:
     app = FastAPI()
     app.state.legacy_route_hits = {}
     app.include_router(create_canonical_tracker_router())
@@ -404,6 +465,10 @@ def _build_test_client(mock_tracker: MockTracker) -> TestClient:
     mock_settings = MagicMock()
     mock_settings.auth = AuthConfig(allow_anonymous_dev=True)
     app.state.settings = mock_settings
+    if workflow_repo is not None:
+        app.state.workflow_repo = workflow_repo
+    if dispatch_service is not None:
+        app.state.dispatch_service = dispatch_service
     return TestClient(app)
 
 
@@ -581,3 +646,120 @@ class TestImportProject:
         assert canonical.status_code == 200
         assert canonical.json()["tracker_id"] == legacy.json()["tracker_id"]
         assert canonical.json()["name"] == legacy.json()["name"]
+
+    def test_assigns_saved_workflow_without_starting_dispatch(self, mock_tracker: MockTracker):
+        workflow = _workflow()
+        dispatch = _DispatchRecorder()
+        client = _build_test_client(
+            mock_tracker,
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            dispatch_service=dispatch,
+        )
+
+        response = client.post(
+            "/api/v1/tyr/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "workflow_id": str(workflow.id),
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["workflow_id"] == str(workflow.id)
+        assert body["workflow"] == "Security Review Flow"
+        assert body["workflow_version"] == "1.2.3"
+        assert body["warnings"] == []
+        assert dispatch.calls == []
+
+        saved = client.app.state.saga_repo.sagas[-1]
+        assert saved.workflow_id == workflow.id
+        assert saved.workflow_version == "1.2.3"
+        assert saved.workflow_snapshot is not None
+        assert saved.workflow_snapshot["name"] == "Security Review Flow"
+
+    def test_start_immediately_requires_workflow(self, client: TestClient):
+        response = client.post(
+            "/api/v1/tyr/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "start_immediately": True,
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "start_immediately requires workflow_id"
+
+    def test_start_immediately_requires_dispatch_service(self, mock_tracker: MockTracker):
+        workflow = _workflow()
+        client = _build_test_client(
+            mock_tracker,
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+
+        response = client.post(
+            "/api/v1/tyr/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "workflow_id": str(workflow.id),
+                "start_immediately": True,
+            },
+        )
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Dispatch service not configured"
+
+    def test_start_immediately_kicks_existing_dispatcher(self, mock_tracker: MockTracker):
+        workflow = _workflow()
+        dispatch = _DispatchRecorder()
+        client = _build_test_client(
+            mock_tracker,
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            dispatch_service=dispatch,
+        )
+
+        response = client.post(
+            "/api/v1/tyr/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "workflow_id": str(workflow.id),
+                "start_immediately": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert dispatch.calls == [("dev-user", "proj-1")]
+        assert response.json()["warnings"] == []
+
+    def test_start_immediately_returns_warning_when_dispatch_fails(
+        self,
+        mock_tracker: MockTracker,
+    ):
+        workflow = _workflow()
+        client = _build_test_client(
+            mock_tracker,
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            dispatch_service=_DispatchRecorder(should_fail=True),
+        )
+
+        response = client.post(
+            "/api/v1/tyr/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "workflow_id": str(workflow.id),
+                "start_immediately": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert "Failed to kick off initial dispatch" in response.json()["warnings"][0]

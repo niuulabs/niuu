@@ -283,6 +283,9 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW_TRIGGER__ENABLED"] == "true"
         assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "code.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "trigger-1"
+        assert env_names["SKULD__WORKFLOW__WORKFLOW_ID"] == "wf-1"
+        assert env_names["SKULD__WORKFLOW__NAME"] == "Code"
+        assert "\"trigger-1\"" in env_names["SKULD__WORKFLOW__GRAPH"]
 
     async def test_skuld_generic_trigger_env_present_for_plain_coordinator_flock(
         self, session

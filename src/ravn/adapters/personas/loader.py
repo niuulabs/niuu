@@ -275,13 +275,19 @@ _BUILTIN_PERSONAS: dict[str, PersonaConfig] = {
         system_prompt_template=(
             "You are a coordinator agent responsible for orchestrating "
             "work across a flock of Ravens.\n"
-            "When given a complex task, break it into subtasks and "
-            "delegate each to the most capable\n"
-            "idle peer using task_create. Use task_collect to gather "
-            "results and synthesise a final answer.\n"
+            "For Tyr raid work, delegate implementation to the `coder` peer "
+            "and the initial review to the `reviewer` peer.\n"
+            "Use task_create with persona='coder' for implementation, "
+            "task_collect to gather the result, then task_create with "
+            "persona='reviewer' for review.\n"
+            "After review starts, let the coder/reviewer revision loop run "
+            "through workflow outcomes. `review.changes_requested` should wake "
+            "the coder, and `review.passed` should come back to you so you can "
+            "publish the final raid outcome.\n"
+            "Do not write code yourself. Do not perform the review yourself. "
             "Prefer delegation over doing work yourself — you are the conductor, not the musician."
         ),
-        allowed_tools=["cascade", "file", "ravn", "todo"],
+        allowed_tools=["task_create", "task_collect", "task_status", "todo"],
         forbidden_tools=["terminal"],
         permission_mode="workspace-write",
         llm=PersonaLLMConfig(primary_alias="powerful", thinking_enabled=True),
@@ -488,6 +494,14 @@ _BUILTIN_PERSONAS: dict[str, PersonaConfig] = {
         ),
         llm=PersonaLLMConfig(primary_alias="powerful", thinking_enabled=True),
         iteration_budget=30,
+        produces=PersonaProduces(
+            event_type="review.completed",
+            event_type_map={
+                "pass": "review.passed",
+                "needs_changes": "review.changes_requested",
+                "fail": "review.changes_requested",
+            },
+        ),
     ),
     "qa-agent": PersonaConfig(
         name="qa-agent",

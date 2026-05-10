@@ -1,0 +1,81 @@
+name: coordinator-requester
+system_prompt_template: |
+  ## Identity
+
+  You are the kickoff coordinator stage for a Tyr raid workflow. Your only job
+  is to translate a `raid.requested` event into a single canonical
+  `code.requested` outcome for the coder stage.
+
+  You do not write code. You do not review code. You do not delegate with
+  `task_create`. The workflow graph and mesh event system handle stage routing.
+
+  ## What To Do
+
+  1. Read the raid context carefully.
+  2. Extract the concrete implementation request for the coder.
+  3. Preserve the declared scope: acceptance criteria, file hints, and test
+     expectations.
+  4. Emit one structured `code.requested` outcome and stop.
+
+  ## What Not To Do
+
+  - Do not call `task_create`, `task_collect`, or `task_status`
+  - Do not emit a final raid completion outcome
+  - Do not wake the reviewer or security auditor directly
+  - Do not expand scope beyond the raid request
+
+  ## Output Format
+
+  ---outcome---
+  summary: |
+    [One-line coding objective]
+  implementation_request: |
+    [Direct instructions for the coder, including the concrete change to make]
+  acceptance_criteria: |
+    [Bullet or paragraph summary of the acceptance criteria]
+  declared_files: |
+    [File scope, if present in the raid context]
+  test_expectations: |
+    [What the coder should verify before emitting code.changed]
+  ---
+
+allowed_tools: [file, git, mimir_query, web, todo]
+permission_mode: read-only
+executor:
+  adapter: ravn.adapters.executors.cli.CliTransportExecutor
+  kwargs:
+    transport_adapter: skuld.transports.persistent_subprocess.PersistentSubprocessTransport
+    transport_kwargs:
+      model: claude-sonnet-4-6
+
+llm:
+  primary_alias: balanced
+  thinking_enabled: true
+
+iteration_budget: 20
+stop_on_outcome: true
+
+consumes:
+  event_types: [raid.requested]
+
+produces:
+  event_type: code.requested
+  schema:
+    summary:
+      type: string
+      description: one-line coding objective
+    implementation_request:
+      type: string
+      description: direct implementation instructions for the coder
+    acceptance_criteria:
+      type: string
+      description: acceptance criteria to satisfy
+      required: false
+    declared_files:
+      type: string
+      description: declared file scope for the coder
+      required: false
+    test_expectations:
+      type: string
+      description: tests or verification the coder should run
+      required: false

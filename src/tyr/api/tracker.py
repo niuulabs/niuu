@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
@@ -17,10 +17,19 @@ from pydantic import BaseModel, Field
 from niuu.domain.models import Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from tyr.adapters.inbound.auth import extract_principal
-from tyr.domain.models import Saga, SagaStatus, TrackerIssue, TrackerMilestone, TrackerProject
+from tyr.domain.models import (
+    Saga,
+    SagaStatus,
+    TrackerIssue,
+    TrackerMilestone,
+    TrackerProject,
+    WorkflowScope,
+)
 from tyr.domain.utils import _slugify
+from tyr.domain.workflow_snapshot import build_workflow_snapshot, workflow_name_from_snapshot
 from tyr.ports.saga_repository import SagaRepository
 from tyr.ports.tracker import TrackerPort
+from tyr.ports.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +49,45 @@ def _is_terminal_project_status(status: str) -> bool:
     return status.strip().lower() in _TERMINAL_PROJECT_STATUSES
 
 
+def _can_use_workflow(workflow, principal: Principal) -> bool:  # noqa: ANN001
+    if workflow.scope == WorkflowScope.SYSTEM:
+        return True
+    return workflow.owner_id == principal.user_id
+
+
+async def _resolve_import_workflow(
+    *,
+    request: Request,
+    principal: Principal,
+    workflow_id_value: str | None,
+) -> tuple[UUID | None, str | None, dict | None]:
+    if workflow_id_value is None:
+        return None, None, None
+
+    workflow_repo: WorkflowRepository | None = getattr(request.app.state, "workflow_repo", None)
+    if workflow_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Workflow repository not configured",
+        )
+
+    try:
+        workflow_id = UUID(workflow_id_value)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid workflow_id: {workflow_id_value!r}",
+        )
+
+    workflow = await workflow_repo.get_workflow(workflow_id)
+    if workflow is None or not _can_use_workflow(workflow, principal):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow not found: {workflow_id_value}",
+        )
+    return workflow.id, workflow.version, build_workflow_snapshot(workflow)
+
+
 # ---------------------------------------------------------------------------
 # Request / Response models
 # ---------------------------------------------------------------------------
@@ -51,6 +99,14 @@ class ImportRequest(BaseModel):
     project_id: str = Field(description="External tracker project ID")
     repos: list[str] = Field(description="Repositories (org/repo)")
     base_branch: str = Field(description="Branch to create feature branch from")
+    workflow_id: str | None = Field(
+        default=None,
+        description="Optional saved workflow UUID to assign on import",
+    )
+    start_immediately: bool = Field(
+        default=False,
+        description="When true, assign a workflow and immediately dispatch ready work",
+    )
 
 
 class SagaResponse(BaseModel):
@@ -64,6 +120,10 @@ class SagaResponse(BaseModel):
     status: str
     phase_count: int
     raid_count: int
+    workflow_id: str | None = None
+    workflow: str | None = None
+    workflow_version: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +327,24 @@ def _build_tracker_router(
                 detail=f"Project not found: {body.project_id}",
             )
 
+        workflow_id, workflow_version, workflow_snapshot = await _resolve_import_workflow(
+            request=request,
+            principal=principal,
+            workflow_id_value=body.workflow_id,
+        )
+        if body.start_immediately and workflow_snapshot is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="start_immediately requires workflow_id",
+            )
+
+        dispatch_service = getattr(request.app.state, "dispatch_service", None)
+        if body.start_immediately and dispatch_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Dispatch service not configured",
+            )
+
         now = datetime.now(UTC)
         slug = project.slug or _slugify(project.name)
         saga_repo: SagaRepository = request.app.state.saga_repo
@@ -290,9 +368,21 @@ def _build_tracker_router(
             created_at=now,
             base_branch=body.base_branch,
             owner_id=principal.user_id,
+            workflow_id=workflow_id,
+            workflow_version=workflow_version,
+            workflow_snapshot=workflow_snapshot,
         )
 
         await saga_repo.save_saga(saga)
+
+        warnings: list[str] = []
+        if body.start_immediately and dispatch_service is not None:
+            try:
+                await dispatch_service.try_auto_continue(principal.user_id, saga.tracker_id)
+            except Exception:
+                msg = f"Failed to kick off initial dispatch for imported saga '{slug}'"
+                logger.warning(msg, exc_info=True)
+                warnings.append(msg)
 
         logger.info(
             "Imported saga '%s' from project %s",
@@ -319,6 +409,10 @@ def _build_tracker_router(
             status=saga.status.value,
             phase_count=project.milestone_count,
             raid_count=project.issue_count,
+            workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
+            workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
+            workflow_version=saga.workflow_version,
+            warnings=warnings,
         )
 
     return router

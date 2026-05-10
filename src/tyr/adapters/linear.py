@@ -55,6 +55,37 @@ _LINEAR_TO_RAID: dict[str, RaidStatus] = {
     "Canceled": RaidStatus.FAILED,
 }
 
+_UNASSIGNED_PHASE_PREFIX = "__unassigned__:"
+
+
+def _unassigned_phase_tracker_id(saga_tracker_id: str) -> str:
+    return f"{_UNASSIGNED_PHASE_PREFIX}{saga_tracker_id}"
+
+
+def _parse_unassigned_phase_tracker_id(phase_tracker_id: str) -> str | None:
+    if not phase_tracker_id.startswith(_UNASSIGNED_PHASE_PREFIX):
+        return None
+    return phase_tracker_id[len(_UNASSIGNED_PHASE_PREFIX) :]
+
+
+def _build_unassigned_phase(
+    saga_tracker_id: str,
+    *,
+    saga_id: UUID = UUID(int=0),
+    number: int = 999999,
+    status: PhaseStatus = PhaseStatus.PENDING,
+) -> Phase:
+    tracker_id = _unassigned_phase_tracker_id(saga_tracker_id)
+    return Phase(
+        id=uuid5(UUID(int=0), f"phase:{tracker_id}"),
+        saga_id=saga_id,
+        tracker_id=tracker_id,
+        number=number,
+        name="Unassigned",
+        status=status,
+        confidence=0.0,
+    )
+
 # ---------------------------------------------------------------------------
 # GraphQL queries
 # ---------------------------------------------------------------------------
@@ -849,6 +880,13 @@ class LinearTrackerAdapter(TrackerPort):
     async def all_raids_merged(self, phase_tracker_id: str) -> bool:
         if self._pool is None:
             return False
+        unassigned_saga_tracker_id = _parse_unassigned_phase_tracker_id(phase_tracker_id)
+        if unassigned_saga_tracker_id is not None:
+            issues = await self.list_issues(unassigned_saga_tracker_id)
+            unassigned_issues = [issue for issue in issues if issue.milestone_id is None]
+            if not unassigned_issues:
+                return False
+            return all(issue.status_type == "completed" for issue in unassigned_issues)
         row = await self._pool.fetchrow(
             """
             SELECT count(*) FILTER (WHERE status != 'MERGED') AS remaining
@@ -871,9 +909,26 @@ class LinearTrackerAdapter(TrackerPort):
                 saga_tracker_id,
             )
             if rows:
-                return [self._row_to_phase(row) for row in rows]
+                phases = [self._row_to_phase(row) for row in rows]
+                unassigned_count = await self._pool.fetchval(
+                    """
+                    SELECT count(*) FROM raid_progress
+                    WHERE saga_tracker_id = $1
+                      AND (phase_tracker_id IS NULL OR phase_tracker_id = '')
+                    """,
+                    saga_tracker_id,
+                )
+                if unassigned_count:
+                    phases.append(
+                        _build_unassigned_phase(
+                            saga_tracker_id,
+                            saga_id=rows[0]["saga_id"],
+                            number=max(phase.number for phase in phases) + 1,
+                        )
+                    )
+                return phases
         milestones = await self.list_milestones(saga_tracker_id)
-        return [
+        phases = [
             Phase(
                 id=uuid4(),
                 saga_id=UUID(int=0),
@@ -885,6 +940,16 @@ class LinearTrackerAdapter(TrackerPort):
             )
             for m in milestones
         ]
+        issues = await self.list_issues(saga_tracker_id)
+        if any(issue.milestone_id is None for issue in issues):
+            next_number = (max((phase.number for phase in phases), default=0) + 1) or 1
+            phases.append(
+                _build_unassigned_phase(
+                    saga_tracker_id,
+                    number=next_number,
+                )
+            )
+        return phases
 
     async def update_phase_status(self, phase_tracker_id: str, status: PhaseStatus) -> Phase | None:
         if self._pool is None:
@@ -907,6 +972,18 @@ class LinearTrackerAdapter(TrackerPort):
         if self._pool is None:
             raise RuntimeError("Database pool not configured — cannot look up saga for raid")
         row = await self._pool.fetchrow(
+            """
+            SELECT s.*
+            FROM sagas s
+            JOIN raid_progress rp ON rp.saga_tracker_id = s.tracker_id
+            WHERE rp.tracker_id = $1
+            """,
+            tracker_id,
+        )
+        if row is not None:
+            return self._row_to_saga(row)
+
+        row = await self._pool.fetchrow(
             "SELECT saga_tracker_id FROM raid_progress WHERE tracker_id = $1",
             tracker_id,
         )
@@ -918,11 +995,19 @@ class LinearTrackerAdapter(TrackerPort):
         if self._pool is None:
             return None
         row = await self._pool.fetchrow(
-            "SELECT phase_tracker_id FROM raid_progress WHERE tracker_id = $1",
+            """
+            SELECT phase_tracker_id, saga_tracker_id
+            FROM raid_progress
+            WHERE tracker_id = $1
+            """,
             tracker_id,
         )
-        if row is None or not row["phase_tracker_id"]:
+        if row is None:
             return None
+        if not row["phase_tracker_id"]:
+            if not row["saga_tracker_id"]:
+                return None
+            return _build_unassigned_phase(row["saga_tracker_id"])
         return await self.get_phase(row["phase_tracker_id"])
 
     async def get_owner_for_raid(self, tracker_id: str) -> str | None:
@@ -1123,6 +1208,34 @@ class LinearTrackerAdapter(TrackerPort):
             name=row["name"],
             status=PhaseStatus(row["status"]),
             confidence=row["confidence"],
+        )
+
+    @staticmethod
+    def _row_to_saga(row) -> Saga:  # noqa: ANN001
+        slug = row["slug"]
+        workflow_snapshot = row.get("workflow_snapshot")
+        if isinstance(workflow_snapshot, str):
+            import json
+
+            workflow_snapshot = json.loads(workflow_snapshot)
+        elif workflow_snapshot is not None:
+            workflow_snapshot = dict(workflow_snapshot)
+        return Saga(
+            id=row["id"],
+            tracker_id=row["tracker_id"],
+            tracker_type=row["tracker_type"],
+            slug=slug,
+            name=row["name"],
+            repos=list(row["repos"]),
+            feature_branch=row.get("feature_branch") or f"feat/{slug}",
+            base_branch=row["base_branch"],
+            status=SagaStatus(row.get("status", "ACTIVE") or "ACTIVE"),
+            confidence=row["confidence"] or 0.0,
+            created_at=row["created_at"] or datetime.now(UTC),
+            owner_id=row.get("owner_id") or "",
+            workflow_id=row.get("workflow_id"),
+            workflow_version=row.get("workflow_version"),
+            workflow_snapshot=workflow_snapshot,
         )
 
     @staticmethod

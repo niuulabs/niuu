@@ -594,6 +594,44 @@ class TestDispatchIssues:
         assert len(volundr.spawned) == 0
 
     @pytest.mark.asyncio
+    async def test_uses_inline_issue_snapshot_when_issue_cache_misses(
+        self,
+        saga_repo: MockSagaRepo,
+        dispatcher_repo: MockDispatcherRepo,
+    ):
+        tracker = _make_tracker()
+        tracker.issues = {"proj-1": []}
+        volundr = MockVolundr()
+        svc = DispatchService(
+            tracker_factory=MockTrackerFactory([tracker]),
+            volundr_factory=MockVolundrFactory(adapters=[volundr]),
+            saga_repo=saga_repo,
+            dispatcher_repo=dispatcher_repo,
+            config=DispatchConfig(default_system_prompt="Be helpful."),
+        )
+        saga_id = str(saga_repo.sagas[0].id)
+        issue = TrackerIssue(
+            id="i-1",
+            identifier="ALPHA-1",
+            title="Setup CI",
+            description="Configure CI pipeline",
+            status="Todo",
+            priority=1,
+            priority_label="Urgent",
+            estimate=2.0,
+            url="https://linear.app/i-1",
+            milestone_id="ms-1",
+        )
+        results = await svc.dispatch_issues(
+            owner_id="dev-user",
+            items=[DispatchItem(saga_id=saga_id, issue_id="i-1", repo="org/repo-a", issue=issue)],
+        )
+        assert len(results) == 1
+        assert results[0].status == "spawned"
+        assert len(volundr.spawned) == 1
+        assert volundr.spawned[0].tracker_issue_id == "ALPHA-1"
+
+    @pytest.mark.asyncio
     async def test_spawn_failure_returns_failed(
         self,
         tracker: MockTracker,

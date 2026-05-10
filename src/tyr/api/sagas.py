@@ -384,6 +384,40 @@ async def _build_phase_summary(
     )
 
 
+def _build_phase_summary_from_hydrated_phases(
+    phases: list[PhaseResponse],
+) -> PhaseSummaryResponse:
+    """Summarize hydrated tracker phases when Tyr has no persisted phase rows."""
+    total = len(phases)
+    completed = sum(
+        1
+        for phase in phases
+        if phase.raids and all(raid.status_type == "completed" for raid in phase.raids)
+    )
+    return PhaseSummaryResponse(total=total, completed=completed)
+
+
+def _display_progress(
+    saga: Saga,
+    project: TrackerProject | None,
+    phase_summary: PhaseSummaryResponse,
+) -> float:
+    """Return a truthful saga progress value for API responses.
+
+    Tracker project progress is useful while work is in flight, but imported
+    or synthetic-phase sagas can finish before the external project progress
+    catches up. When Tyr knows the saga is complete, prefer that truth and
+    report full progress.
+    """
+    if saga.status == SagaStatus.COMPLETE:
+        return 1.0
+    if project is not None:
+        return project.progress
+    if phase_summary.total <= 0:
+        return 0.0
+    return phase_summary.completed / phase_summary.total
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -425,7 +459,7 @@ def create_sagas_router() -> APIRouter:
                     repos=saga.repos,
                     feature_branch=saga.feature_branch,
                     status=saga.status.value.lower(),
-                    progress=project.progress if project else 0.0,
+                    progress=_display_progress(saga, project, phase_summary),
                     milestone_count=project.milestone_count if project else 0,
                     issue_count=project.issue_count if project else 0,
                     url=project.url if project else "",
@@ -525,6 +559,8 @@ def create_sagas_router() -> APIRouter:
             )
 
         phase_summary = await _build_phase_summary(repo, saga.id)
+        if phase_summary.total == 0 and phase_responses:
+            phase_summary = _build_phase_summary_from_hydrated_phases(phase_responses)
 
         return SagaDetailResponse(
             id=str(saga.id),
@@ -536,7 +572,7 @@ def create_sagas_router() -> APIRouter:
             repos=saga.repos,
             feature_branch=saga.feature_branch,
             status=saga.status.value.lower(),
-            progress=project.progress if project else 0.0,
+            progress=_display_progress(saga, project, phase_summary),
             url=project.url if project else "",
             base_branch=saga.base_branch,
             confidence=saga.confidence,
@@ -737,7 +773,11 @@ def create_sagas_router() -> APIRouter:
             repos=saga.repos,
             feature_branch=saga.feature_branch,
             status=new_status.value.lower(),
-            progress=project.progress if project else 0.0,
+            progress=_display_progress(
+                replace(saga, status=new_status),
+                project,
+                await _build_phase_summary(repo, saga.id),
+            ),
             milestone_count=project.milestone_count if project else 0,
             issue_count=project.issue_count if project else 0,
             url=project.url if project else "",
@@ -798,7 +838,7 @@ def create_sagas_router() -> APIRouter:
             repos=updated.repos,
             feature_branch=updated.feature_branch,
             status=updated.status.value.lower(),
-            progress=project.progress if project else 0.0,
+            progress=_display_progress(updated, project, phase_summary),
             milestone_count=project.milestone_count if project else 0,
             issue_count=project.issue_count if project else 0,
             url=project.url if project else "",
@@ -1061,6 +1101,15 @@ def create_sagas_router() -> APIRouter:
                 await publisher.publish(event)
             except Exception:
                 logger.warning("Failed to emit tyr.saga.created; continuing.", exc_info=True)
+
+        dispatch_service = getattr(request.app.state, "dispatch_service", None)
+        if dispatch_service is not None:
+            try:
+                await dispatch_service.try_auto_continue(principal.user_id, saga.tracker_id)
+            except Exception:
+                msg = f"Failed to kick off initial dispatch for saga '{_sanitize_log(body.slug)}'"
+                logger.warning(msg, exc_info=True)
+                warnings.append(msg)
 
         return CommittedSagaResponse(
             id=str(saga.id),

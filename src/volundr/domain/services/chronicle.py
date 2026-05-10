@@ -207,16 +207,17 @@ class ChronicleService:
     ) -> Chronicle:
         """Create or update a chronicle from broker-reported data.
 
-        Idempotent: if a DRAFT chronicle already exists for this session,
-        it is enriched with the supplied data.  Otherwise a new DRAFT is
-        created from the session's current state.
+        Idempotent: if a chronicle already exists for this session,
+        it is enriched with the supplied data and marked COMPLETE.
+        Otherwise a new chronicle is created from the session's current
+        state and finalized immediately.
 
         This is the ingestion point for the broker's ``_report_chronicle``
         POST at shutdown time.
         """
         existing = await self._chronicle_repository.get_by_session(session_id)
 
-        if existing is not None and existing.status == ChronicleStatus.DRAFT:
+        if existing is not None:
             updates: dict = {"updated_at": datetime.now(UTC)}
             if summary is not None:
                 updates["summary"] = summary
@@ -226,6 +227,7 @@ class ChronicleService:
                 updates["unfinished_work"] = unfinished_work
             if duration_seconds is not None:
                 updates["duration_seconds"] = duration_seconds
+            updates["status"] = ChronicleStatus.COMPLETE
 
             updated = existing.model_copy(update=updates)
             result = await self._chronicle_repository.update(updated)
@@ -240,7 +242,10 @@ class ChronicleService:
         chronicle = await self.create_chronicle(session_id)
 
         # Apply broker data on top of the freshly-created chronicle
-        updates = {"updated_at": datetime.now(UTC)}
+        updates = {
+            "updated_at": datetime.now(UTC),
+            "status": ChronicleStatus.COMPLETE,
+        }
         if summary is not None:
             updates["summary"] = summary
         if key_changes is not None:
