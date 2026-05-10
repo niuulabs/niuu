@@ -47,11 +47,7 @@ export interface WorkflowBuilderActions {
   inspectNode(id: string | null): void;
   addNode(kind: WorkflowNodeKind, position?: { x: number; y: number }): void;
   addMimirResource(mount: WorkflowRegistryMount, position?: { x: number; y: number }): void;
-  addStageWithPersona(
-    personaId: string,
-    model?: string,
-    position?: { x: number; y: number },
-  ): void;
+  addStageWithPersona(personaId: string, model?: string, position?: { x: number; y: number }): void;
   deleteNode(id: string): void;
   deleteEdge(id: string): void;
   moveNode(id: string, position: { x: number; y: number }): void;
@@ -204,10 +200,7 @@ function makeDefaultResourceBinding(
   };
 }
 
-function syncStagePersonaIds(
-  node: WorkflowStageNode,
-  defaultModelId = '',
-): WorkflowStageNode {
+function syncStagePersonaIds(node: WorkflowStageNode, defaultModelId = ''): WorkflowStageNode {
   const hasExplicitStageMembers = Object.prototype.hasOwnProperty.call(node, 'stageMembers');
   const stageMembers = hasExplicitStageMembers
     ? (node.stageMembers ?? [])
@@ -426,27 +419,36 @@ export function useWorkflowBuilder(
     [defaultStageModelId],
   );
 
-  const addNode = useCallback((kind: WorkflowNodeKind, position?: { x: number; y: number }) => {
-    setWorkflowState((prev) => {
-      const pos = position ?? nextPosition(prev);
-      const node = makeNewNode(kind, pos);
-        return normalizeWorkflowWithStageDefaults({ ...prev, nodes: [...prev.nodes, node] }, defaultStageModelId);
+  const addNode = useCallback(
+    (kind: WorkflowNodeKind, position?: { x: number; y: number }) => {
+      setWorkflowState((prev) => {
+        const pos = position ?? nextPosition(prev);
+        const node = makeNewNode(kind, pos);
+        return normalizeWorkflowWithStageDefaults(
+          { ...prev, nodes: [...prev.nodes, node] },
+          defaultStageModelId,
+        );
       });
-  }, [defaultStageModelId]);
+    },
+    [defaultStageModelId],
+  );
 
   const addMimirResource = useCallback(
     (mount: WorkflowRegistryMount, position?: { x: number; y: number }) => {
       setWorkflowState((prev) => {
         const pos = position ?? nextPosition(prev);
         const node = makeResourceNodeFromMount(mount, pos);
-        return normalizeWorkflowWithStageDefaults({
-          ...prev,
-          nodes: [...prev.nodes, node],
-          resourceBindings: [
-            ...(prev.resourceBindings ?? []),
-            makeDefaultResourceBinding(prev, node.id),
-          ],
-        }, defaultStageModelId);
+        return normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: [...prev.nodes, node],
+            resourceBindings: [
+              ...(prev.resourceBindings ?? []),
+              makeDefaultResourceBinding(prev, node.id),
+            ],
+          },
+          defaultStageModelId,
+        );
       });
     },
     [defaultStageModelId],
@@ -461,7 +463,7 @@ export function useWorkflowBuilder(
           node.kind === 'stage'
             ? syncStagePersonaIds(
                 {
-                ...node,
+                  ...node,
                   stageMembers: [
                     { personaId, model, budget: 40, consumesEventTypes: [], eventFilters: {} },
                   ],
@@ -471,46 +473,73 @@ export function useWorkflowBuilder(
             : node;
         const autoEdges =
           stage.kind === 'stage' ? autoWireStageForPersona(prev, stage, personas) : [];
-        return normalizeWorkflowWithStageDefaults({
-          ...prev,
-          nodes: [...prev.nodes, stage],
-          edges: [...prev.edges, ...autoEdges],
-        }, defaultStageModelId);
+        return normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: [...prev.nodes, stage],
+            edges: [...prev.edges, ...autoEdges],
+          },
+          defaultStageModelId,
+        );
       });
     },
     [defaultStageModelId, personas],
   );
 
-  const deleteNode = useCallback((id: string) => {
-    setWorkflowState((prev) => normalizeWorkflowWithStageDefaults({
-      ...prev,
-      nodes: prev.nodes.filter((n) => n.id !== id),
-      edges: prev.edges.filter((e) => e.source !== id && e.target !== id),
-      resourceBindings: (prev.resourceBindings ?? []).filter(
-        (binding) => binding.resourceNodeId !== id && binding.targetId !== id,
-      ),
-    }, defaultStageModelId));
-    setSelectedNodeId((s) => (s === id ? null : s));
-    if (connectingFromRef.current === id) {
-      connectingFromRef.current = null;
-      setConnectingFromId(null);
-    }
-    setInspectorNodeId((s) => (s === id ? null : s));
-  }, [defaultStageModelId]);
+  const deleteNode = useCallback(
+    (id: string) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: prev.nodes.filter((n) => n.id !== id),
+            edges: prev.edges.filter((e) => e.source !== id && e.target !== id),
+            resourceBindings: (prev.resourceBindings ?? []).filter(
+              (binding) => binding.resourceNodeId !== id && binding.targetId !== id,
+            ),
+          },
+          defaultStageModelId,
+        ),
+      );
+      setSelectedNodeId((s) => (s === id ? null : s));
+      if (connectingFromRef.current === id) {
+        connectingFromRef.current = null;
+        setConnectingFromId(null);
+      }
+      setInspectorNodeId((s) => (s === id ? null : s));
+    },
+    [defaultStageModelId],
+  );
 
-  const deleteEdge = useCallback((id: string) => {
-    setWorkflowState((prev) => normalizeWorkflowWithStageDefaults({
-      ...prev,
-      edges: prev.edges.filter((edge) => edge.id !== id),
-    }, defaultStageModelId));
-  }, [defaultStageModelId]);
+  const deleteEdge = useCallback(
+    (id: string) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            edges: prev.edges.filter((edge) => edge.id !== id),
+          },
+          defaultStageModelId,
+        ),
+      );
+    },
+    [defaultStageModelId],
+  );
 
-  const moveNode = useCallback((id: string, position: { x: number; y: number }) => {
-    setWorkflowState((prev) => normalizeWorkflowWithStageDefaults({
-      ...prev,
-      nodes: prev.nodes.map((n) => (n.id === id ? { ...n, position } : n)),
-    }, defaultStageModelId));
-  }, [defaultStageModelId]);
+  const moveNode = useCallback(
+    (id: string, position: { x: number; y: number }) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: prev.nodes.map((n) => (n.id === id ? { ...n, position } : n)),
+          },
+          defaultStageModelId,
+        ),
+      );
+    },
+    [defaultStageModelId],
+  );
 
   const startConnect = useCallback((sourceId: string, label?: string) => {
     if (!label) return;
@@ -528,218 +557,293 @@ export function useWorkflowBuilder(
     setConnectingFromLabel(null);
   }, []);
 
-  const completeConnect = useCallback((targetId: string, inputLabel?: string) => {
-    const fromId = connectingFromRef.current;
-    const fromLabel = connectingLabelRef.current;
-    connectingFromRef.current = null;
-    connectingLabelRef.current = null;
-    setConnectingFromId(null);
-    setConnectingFromLabel(null);
-    if (!fromId || !fromLabel || fromId === targetId) return;
-    setWorkflowState((prev) => {
-      const srcNode = prev.nodes.find((n) => n.id === fromId);
-      const tgtNode = prev.nodes.find((n) => n.id === targetId);
-      if (!srcNode || !tgtNode) return prev;
-      const resolvedInputLabel = inputLabel ?? defaultInputLabelForNode(tgtNode);
-      if (!resolvedInputLabel) return prev;
-      const edgeLabel =
-        srcNode.kind === 'trigger'
-          ? `${resolvedInputLabel} -> ${resolvedInputLabel}`
-          : `${fromLabel} -> ${resolvedInputLabel}`;
-      const alreadyExists = prev.edges.some(
-        (e) => e.source === fromId && e.target === targetId && (e.label ?? '') === edgeLabel,
-      );
-      if (alreadyExists) return prev;
-      const { cp1, cp2 } = defaultBezierCPs(srcNode.position, tgtNode.position);
-      const newEdge = {
-        id: makeEdgeId(),
-        source: fromId,
-        target: targetId,
-        label: edgeLabel,
-        cp1,
-        cp2,
-      };
-      const nodes =
-        srcNode.kind === 'trigger'
-          ? prev.nodes.map((node) =>
-              node.id === srcNode.id ? { ...node, dispatchEvent: resolvedInputLabel } : node,
-            )
-          : prev.nodes;
-      return normalizeWorkflowWithStageDefaults({ ...prev, nodes, edges: [...prev.edges, newEdge] }, defaultStageModelId);
-    });
-  }, [defaultStageModelId]);
-
-  const addPersonaToStage = useCallback((
-    nodeId: string,
-    personaId: string,
-    model = defaultStageModelId,
-    budget = 40,
-  ) => {
-    setWorkflowState((prev) => normalizeWorkflowWithStageDefaults({
-      ...prev,
-      nodes: prev.nodes.map((n) => {
-        if (n.id !== nodeId || n.kind !== 'stage') return n;
-        const normalized = syncStagePersonaIds(n, defaultStageModelId);
-        const stageMembers = normalized.stageMembers ?? [];
-        if (stageMembers.some((member) => member.personaId === personaId)) return normalized;
-        return syncStagePersonaIds({
-          ...normalized,
-          stageMembers: [
-            ...stageMembers,
-            { personaId, model, budget, consumesEventTypes: [], eventFilters: {} },
-          ],
-        }, defaultStageModelId);
-      }),
-    }, defaultStageModelId));
-  }, [defaultStageModelId]);
-
-  const replacePersonaInStage = useCallback(
-    (nodeId: string, previousPersonaId: string, personaId: string, model?: string) => {
-      setWorkflowState((prev) => normalizeWorkflowWithStageDefaults({
-        ...prev,
-        nodes: prev.nodes.map((n) => {
-          if (n.id !== nodeId || n.kind !== 'stage') return n;
-          const normalized = syncStagePersonaIds(n, defaultStageModelId);
-          const stageMembers = normalized.stageMembers ?? [];
-          const existing = stageMembers.find((member) => member.personaId === previousPersonaId);
-          return syncStagePersonaIds({
-            ...normalized,
-            stageMembers: stageMembers.map((member) =>
-              member.personaId === previousPersonaId
-                ? {
-                    ...member,
-                    personaId,
-                    model: model ?? existing?.model ?? defaultStageModelId,
-                  }
-                : member,
-            ),
-          }, defaultStageModelId);
-        }),
-      }, defaultStageModelId));
+  const completeConnect = useCallback(
+    (targetId: string, inputLabel?: string) => {
+      const fromId = connectingFromRef.current;
+      const fromLabel = connectingLabelRef.current;
+      connectingFromRef.current = null;
+      connectingLabelRef.current = null;
+      setConnectingFromId(null);
+      setConnectingFromLabel(null);
+      if (!fromId || !fromLabel || fromId === targetId) return;
+      setWorkflowState((prev) => {
+        const srcNode = prev.nodes.find((n) => n.id === fromId);
+        const tgtNode = prev.nodes.find((n) => n.id === targetId);
+        if (!srcNode || !tgtNode) return prev;
+        const resolvedInputLabel = inputLabel ?? defaultInputLabelForNode(tgtNode);
+        if (!resolvedInputLabel) return prev;
+        const edgeLabel =
+          srcNode.kind === 'trigger'
+            ? `${resolvedInputLabel} -> ${resolvedInputLabel}`
+            : `${fromLabel} -> ${resolvedInputLabel}`;
+        const alreadyExists = prev.edges.some(
+          (e) => e.source === fromId && e.target === targetId && (e.label ?? '') === edgeLabel,
+        );
+        if (alreadyExists) return prev;
+        const { cp1, cp2 } = defaultBezierCPs(srcNode.position, tgtNode.position);
+        const newEdge = {
+          id: makeEdgeId(),
+          source: fromId,
+          target: targetId,
+          label: edgeLabel,
+          cp1,
+          cp2,
+        };
+        const nodes =
+          srcNode.kind === 'trigger'
+            ? prev.nodes.map((node) =>
+                node.id === srcNode.id ? { ...node, dispatchEvent: resolvedInputLabel } : node,
+              )
+            : prev.nodes;
+        return normalizeWorkflowWithStageDefaults(
+          { ...prev, nodes, edges: [...prev.edges, newEdge] },
+          defaultStageModelId,
+        );
+      });
     },
     [defaultStageModelId],
   );
 
-  const updatePersonaModel = useCallback((nodeId: string, personaId: string, model: string) => {
-    setWorkflowState((prev) => normalizeWorkflowWithStageDefaults({
-      ...prev,
-      nodes: prev.nodes.map((n) => {
-        if (n.id !== nodeId || n.kind !== 'stage') return n;
-        const normalized = syncStagePersonaIds(n, defaultStageModelId);
-        const stageMembers = normalized.stageMembers ?? [];
-        return syncStagePersonaIds({
-          ...normalized,
-          stageMembers: stageMembers.map((member) =>
-            member.personaId === personaId ? { ...member, model } : member,
-          ),
-        }, defaultStageModelId);
-      }),
-    }, defaultStageModelId));
-  }, [defaultStageModelId]);
+  const addPersonaToStage = useCallback(
+    (nodeId: string, personaId: string, model = defaultStageModelId, budget = 40) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: prev.nodes.map((n) => {
+              if (n.id !== nodeId || n.kind !== 'stage') return n;
+              const normalized = syncStagePersonaIds(n, defaultStageModelId);
+              const stageMembers = normalized.stageMembers ?? [];
+              if (stageMembers.some((member) => member.personaId === personaId)) return normalized;
+              return syncStagePersonaIds(
+                {
+                  ...normalized,
+                  stageMembers: [
+                    ...stageMembers,
+                    { personaId, model, budget, consumesEventTypes: [], eventFilters: {} },
+                  ],
+                },
+                defaultStageModelId,
+              );
+            }),
+          },
+          defaultStageModelId,
+        ),
+      );
+    },
+    [defaultStageModelId],
+  );
 
-  const updatePersonaBudget = useCallback((nodeId: string, personaId: string, budget: number) => {
-    setWorkflowState((prev) => normalizeWorkflowWithStageDefaults({
-      ...prev,
-      nodes: prev.nodes.map((n) => {
-        if (n.id !== nodeId || n.kind !== 'stage') return n;
-        const normalized = syncStagePersonaIds(n, defaultStageModelId);
-        const stageMembers = normalized.stageMembers ?? [];
-        return syncStagePersonaIds({
-          ...normalized,
-          stageMembers: stageMembers.map((member) =>
-            member.personaId === personaId ? { ...member, budget } : member,
-          ),
-        }, defaultStageModelId);
-      }),
-    }, defaultStageModelId));
-  }, [defaultStageModelId]);
+  const replacePersonaInStage = useCallback(
+    (nodeId: string, previousPersonaId: string, personaId: string, model?: string) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: prev.nodes.map((n) => {
+              if (n.id !== nodeId || n.kind !== 'stage') return n;
+              const normalized = syncStagePersonaIds(n, defaultStageModelId);
+              const stageMembers = normalized.stageMembers ?? [];
+              const existing = stageMembers.find(
+                (member) => member.personaId === previousPersonaId,
+              );
+              return syncStagePersonaIds(
+                {
+                  ...normalized,
+                  stageMembers: stageMembers.map((member) =>
+                    member.personaId === previousPersonaId
+                      ? {
+                          ...member,
+                          personaId,
+                          model: model ?? existing?.model ?? defaultStageModelId,
+                        }
+                      : member,
+                  ),
+                },
+                defaultStageModelId,
+              );
+            }),
+          },
+          defaultStageModelId,
+        ),
+      );
+    },
+    [defaultStageModelId],
+  );
 
-  const removePersonaFromStage = useCallback((nodeId: string, personaId: string) => {
-    setWorkflowState((prev) => normalizeWorkflowWithStageDefaults({
-      ...prev,
-      nodes: prev.nodes.map((n) => {
-        if (n.id !== nodeId || n.kind !== 'stage') return n;
-        const normalized = syncStagePersonaIds(n, defaultStageModelId);
-        const stageMembers = normalized.stageMembers ?? [];
-        return syncStagePersonaIds({
-          ...normalized,
-          stageMembers: stageMembers.filter((member) => member.personaId !== personaId),
-        }, defaultStageModelId);
-      }),
-    }, defaultStageModelId));
-  }, [defaultStageModelId]);
+  const updatePersonaModel = useCallback(
+    (nodeId: string, personaId: string, model: string) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: prev.nodes.map((n) => {
+              if (n.id !== nodeId || n.kind !== 'stage') return n;
+              const normalized = syncStagePersonaIds(n, defaultStageModelId);
+              const stageMembers = normalized.stageMembers ?? [];
+              return syncStagePersonaIds(
+                {
+                  ...normalized,
+                  stageMembers: stageMembers.map((member) =>
+                    member.personaId === personaId ? { ...member, model } : member,
+                  ),
+                },
+                defaultStageModelId,
+              );
+            }),
+          },
+          defaultStageModelId,
+        ),
+      );
+    },
+    [defaultStageModelId],
+  );
 
-  const updateNodeLabel = useCallback((id: string, label: string) => {
-    setWorkflowState((prev) => normalizeWorkflowWithStageDefaults({
-      ...prev,
-      nodes: prev.nodes.map((n) => (n.id === id ? { ...n, label } : n)),
-    }, defaultStageModelId));
-  }, [defaultStageModelId]);
+  const updatePersonaBudget = useCallback(
+    (nodeId: string, personaId: string, budget: number) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: prev.nodes.map((n) => {
+              if (n.id !== nodeId || n.kind !== 'stage') return n;
+              const normalized = syncStagePersonaIds(n, defaultStageModelId);
+              const stageMembers = normalized.stageMembers ?? [];
+              return syncStagePersonaIds(
+                {
+                  ...normalized,
+                  stageMembers: stageMembers.map((member) =>
+                    member.personaId === personaId ? { ...member, budget } : member,
+                  ),
+                },
+                defaultStageModelId,
+              );
+            }),
+          },
+          defaultStageModelId,
+        ),
+      );
+    },
+    [defaultStageModelId],
+  );
 
-  const updateNode = useCallback((id: string, patch: Partial<WorkflowNode>) => {
-    setWorkflowState((prev) => {
-      const current = prev.nodes.find((node) => node.id === id);
-      const triggerDispatchEvent =
-        current?.kind === 'trigger' &&
-        'dispatchEvent' in patch &&
-        typeof patch.dispatchEvent === 'string' &&
-        patch.dispatchEvent
-          ? patch.dispatchEvent
-          : null;
-      const nextNodes = prev.nodes.map((n) => {
-        if (n.id !== id) return n;
-        const next = { ...n, ...patch } as WorkflowNode;
-        return next.kind === 'stage' ? syncStagePersonaIds(next, defaultStageModelId) : next;
+  const removePersonaFromStage = useCallback(
+    (nodeId: string, personaId: string) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: prev.nodes.map((n) => {
+              if (n.id !== nodeId || n.kind !== 'stage') return n;
+              const normalized = syncStagePersonaIds(n, defaultStageModelId);
+              const stageMembers = normalized.stageMembers ?? [];
+              return syncStagePersonaIds(
+                {
+                  ...normalized,
+                  stageMembers: stageMembers.filter((member) => member.personaId !== personaId),
+                },
+                defaultStageModelId,
+              );
+            }),
+          },
+          defaultStageModelId,
+        ),
+      );
+    },
+    [defaultStageModelId],
+  );
+
+  const updateNodeLabel = useCallback(
+    (id: string, label: string) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: prev.nodes.map((n) => (n.id === id ? { ...n, label } : n)),
+          },
+          defaultStageModelId,
+        ),
+      );
+    },
+    [defaultStageModelId],
+  );
+
+  const updateNode = useCallback(
+    (id: string, patch: Partial<WorkflowNode>) => {
+      setWorkflowState((prev) => {
+        const current = prev.nodes.find((node) => node.id === id);
+        const triggerDispatchEvent =
+          current?.kind === 'trigger' &&
+          'dispatchEvent' in patch &&
+          typeof patch.dispatchEvent === 'string' &&
+          patch.dispatchEvent
+            ? patch.dispatchEvent
+            : null;
+        const nextNodes = prev.nodes.map((n) => {
+          if (n.id !== id) return n;
+          const next = { ...n, ...patch } as WorkflowNode;
+          return next.kind === 'stage' ? syncStagePersonaIds(next, defaultStageModelId) : next;
+        });
+        const nextEdges = triggerDispatchEvent
+          ? rewriteTriggerEdges(prev.edges, id, triggerDispatchEvent)
+          : prev.edges;
+        return normalizeWorkflowWithStageDefaults(
+          {
+            ...prev,
+            nodes: nextNodes,
+            edges: nextEdges,
+          },
+          defaultStageModelId,
+        );
       });
-      const nextEdges = triggerDispatchEvent
-        ? rewriteTriggerEdges(prev.edges, id, triggerDispatchEvent)
-        : prev.edges;
-      return normalizeWorkflowWithStageDefaults({
-        ...prev,
-        nodes: nextNodes,
-        edges: nextEdges,
-      }, defaultStageModelId);
-    });
-  }, [defaultStageModelId]);
+    },
+    [defaultStageModelId],
+  );
 
   const addResourceBinding = useCallback(
     (
       resourceNodeId: string,
       patch: Partial<Omit<WorkflowResourceBinding, 'id' | 'resourceNodeId'>> = {},
     ) => {
-      setWorkflowState((prev) => normalizeWorkflowGraph({
-        ...prev,
-        resourceBindings: [
-          ...(prev.resourceBindings ?? []),
-          {
-            ...makeDefaultResourceBinding(prev, resourceNodeId),
-            ...patch,
-            id: makeEdgeId(),
-            resourceNodeId,
-          },
-        ],
-      }));
+      setWorkflowState((prev) =>
+        normalizeWorkflowGraph({
+          ...prev,
+          resourceBindings: [
+            ...(prev.resourceBindings ?? []),
+            {
+              ...makeDefaultResourceBinding(prev, resourceNodeId),
+              ...patch,
+              id: makeEdgeId(),
+              resourceNodeId,
+            },
+          ],
+        }),
+      );
     },
     [],
   );
 
   const updateResourceBinding = useCallback(
     (id: string, patch: Partial<WorkflowResourceBinding>) => {
-      setWorkflowState((prev) => normalizeWorkflowGraph({
-        ...prev,
-        resourceBindings: (prev.resourceBindings ?? []).map((binding) =>
-          binding.id === id ? { ...binding, ...patch, id: binding.id } : binding,
-        ),
-      }));
+      setWorkflowState((prev) =>
+        normalizeWorkflowGraph({
+          ...prev,
+          resourceBindings: (prev.resourceBindings ?? []).map((binding) =>
+            binding.id === id ? { ...binding, ...patch, id: binding.id } : binding,
+          ),
+        }),
+      );
     },
     [],
   );
 
   const removeResourceBinding = useCallback((id: string) => {
-    setWorkflowState((prev) => normalizeWorkflowGraph({
-      ...prev,
-      resourceBindings: (prev.resourceBindings ?? []).filter((binding) => binding.id !== id),
-    }));
+    setWorkflowState((prev) =>
+      normalizeWorkflowGraph({
+        ...prev,
+        resourceBindings: (prev.resourceBindings ?? []).filter((binding) => binding.id !== id),
+      }),
+    );
   }, []);
 
   const updateWorkflowMeta = useCallback(

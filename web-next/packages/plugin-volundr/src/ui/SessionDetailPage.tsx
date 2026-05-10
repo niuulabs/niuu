@@ -803,9 +803,7 @@ function MeshCascade({
 
 function ChatTab({ session }: { session: Session }) {
   const room = useMemo(() => {
-    const isDev = Boolean(
-      (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV,
-    );
+    const isDev = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
     return isDev ? buildMockRoom(session) : null;
   }, [session]);
   const turns = useMemo(() => (room ? buildMockTurns(session, room) : []), [session, room]);

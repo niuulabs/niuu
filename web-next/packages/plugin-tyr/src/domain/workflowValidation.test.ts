@@ -131,12 +131,7 @@ describe('validateWorkflowFull — cycle', () => {
     const nodes = [makeStage('coder'), makeStage('reviewer')];
     const edges = [
       makeEdge('e1', 'coder', 'reviewer', 'code.changed -> code.changed'),
-      makeEdge(
-        'e2',
-        'reviewer',
-        'coder',
-        'review.changes_requested -> review.changes_requested',
-      ),
+      makeEdge('e2', 'reviewer', 'coder', 'review.changes_requested -> review.changes_requested'),
     ];
     const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
     expect(issues.filter((i) => i.kind === 'cycle')).toHaveLength(0);

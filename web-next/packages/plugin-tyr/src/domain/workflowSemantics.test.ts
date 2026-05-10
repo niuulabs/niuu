@@ -14,12 +14,7 @@ import {
   workflowStageModels,
 } from './workflowSemantics';
 
-function makeEdge(
-  id: string,
-  label?: string,
-  source = 'a',
-  target = 'b',
-): WorkflowEdge {
+function makeEdge(id: string, label?: string, source = 'a', target = 'b'): WorkflowEdge {
   return {
     id,
     source,
@@ -106,7 +101,12 @@ describe('workflowSemantics', () => {
           stageMembers: [
             { personaId: 'coder', model: 'claude-sonnet-4-6', budget: 40, consumesEventTypes: [] },
             { personaId: 'reviewer', model: 'custom-managed', budget: 30, consumesEventTypes: [] },
-            { personaId: 'security-auditor', model: 'llama3.2:latest', budget: 20, consumesEventTypes: [] },
+            {
+              personaId: 'security-auditor',
+              model: 'llama3.2:latest',
+              budget: 20,
+              consumesEventTypes: [],
+            },
             { personaId: 'mimir-memory-curator', model: '   ', budget: 20, consumesEventTypes: [] },
           ],
         }),
@@ -160,7 +160,15 @@ describe('workflowSemantics', () => {
   it('normalizes stage nodes and preserves already normalized ones by identity', () => {
     const raw = makeStage({
       personaIds: ['legacy-coder'],
-      stageMembers: [{ personaId: 'coder', budget: undefined, model: undefined, consumesEventTypes: undefined, eventFilters: undefined }],
+      stageMembers: [
+        {
+          personaId: 'coder',
+          budget: undefined,
+          model: undefined,
+          consumesEventTypes: undefined,
+          eventFilters: undefined,
+        },
+      ],
     });
     const normalized = normalizeStageNode(raw);
 

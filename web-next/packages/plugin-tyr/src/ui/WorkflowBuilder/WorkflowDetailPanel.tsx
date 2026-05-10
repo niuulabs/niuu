@@ -8,10 +8,7 @@ import type {
   WorkflowStageNode,
 } from '../../domain/workflow';
 import type { WorkflowIssue } from '../../domain/workflowValidation';
-import type {
-  WorkflowBuilderActions,
-  WorkflowStageModelOption,
-} from './useWorkflowBuilder';
+import type { WorkflowBuilderActions, WorkflowStageModelOption } from './useWorkflowBuilder';
 import type { PersonaEntry } from './LibraryPanel';
 import { normalizedStageMembers } from './graphUtils';
 import { EPHEMERAL_LOCAL_MOUNT_ID, type WorkflowRegistryMount } from './mimirRegistry';

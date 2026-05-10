@@ -32,9 +32,7 @@ export function isReentryEventType(eventType?: string | null): boolean {
 export function isReentryEdge(edge: Pick<WorkflowEdge, 'label'>): boolean {
   const parsed = parseWorkflowEdgeLabel(edge.label);
   if (!parsed) return false;
-  return (
-    isReentryEventType(parsed.sourceEventType) || isReentryEventType(parsed.targetEventType)
-  );
+  return isReentryEventType(parsed.sourceEventType) || isReentryEventType(parsed.targetEventType);
 }
 
 export function stagePersonaIds(node: Pick<WorkflowStageNode, 'personaIds' | 'stageMembers'>) {
@@ -66,9 +64,7 @@ export function inferModelVendor(modelId: string): string {
   return '';
 }
 
-export function workflowStageModels(
-  workflow: Pick<Workflow, 'nodes'>,
-): string[] {
+export function workflowStageModels(workflow: Pick<Workflow, 'nodes'>): string[] {
   const models: string[] = [];
   for (const node of workflow.nodes) {
     if (node.kind !== 'stage') continue;
