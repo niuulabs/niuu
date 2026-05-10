@@ -636,10 +636,14 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
         await client.put<void>('/page', body);
       },
 
-      async search(query: string, mode: SearchMode = 'hybrid'): Promise<SearchResult[]> {
-        const raw = await client.get<RawSearchResult[]>(
-          `/search?q=${encodeURIComponent(query)}&mode=${mode}`,
-        );
+      async search(
+        query: string,
+        mode: SearchMode = 'hybrid',
+        mountName?: string,
+      ): Promise<SearchResult[]> {
+        const params = new URLSearchParams({ q: query, mode });
+        if (mountName) params.set('mount', mountName);
+        const raw = await client.get<RawSearchResult[]>(`/search?${params.toString()}`);
         return raw.map((r) => ({
           path: r.path,
           title: r.title,
@@ -647,6 +651,7 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
           category: r.category,
           type: (r.type ?? inferPageType(r.path, r.category)) as SearchResult['type'],
           confidence: (r.confidence ?? 'medium') as SearchResult['confidence'],
+          mounts: mountName ? [mountName] : undefined,
         }));
       },
 

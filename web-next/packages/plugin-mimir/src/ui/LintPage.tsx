@@ -10,6 +10,7 @@
 
 import { useState } from 'react';
 import { StateDot } from '@niuulabs/ui';
+import { useActiveMount } from '../application/useActiveMount';
 import { useLint } from '../application/useLint';
 import type { LintRule, IssueSeverity } from '../domain/lint';
 
@@ -37,7 +38,8 @@ const CHECK_ROW_BASE =
   'niuu-cursor-pointer niuu-text-left niuu-w-full niuu-transition-colors';
 
 export function LintPage() {
-  const { issues, summary, isLoading, isError, error, runAutoFix, isFixing } = useLint();
+  const { activeMount, mountName } = useActiveMount();
+  const { issues, summary, isLoading, isError, error, runAutoFix, isFixing } = useLint(mountName);
   const [selectedRule, setSelectedRule] = useState<LintRule | null>(null);
 
   const { countByRule, autoFixByRule } = issues.reduce<{
@@ -95,7 +97,9 @@ export function LintPage() {
         <div className="niuu-flex niuu-flex-col niuu-gap-[2px] niuu-py-3 niuu-px-4 niuu-bg-bg-secondary niuu-border-r niuu-border-border-subtle">
           <span className={KPI_LBL}>total issues</span>
           <span className={`${KPI_VAL} niuu-text-brand-400`}>{totalLint}</span>
-          <span className={KPI_SUB}>across all mounts</span>
+          <span className={KPI_SUB}>
+            {activeMount === 'all' ? 'across all mounts' : `mount: ${activeMount}`}
+          </span>
         </div>
         <div className="niuu-flex niuu-flex-col niuu-gap-[2px] niuu-py-3 niuu-px-4 niuu-bg-bg-secondary niuu-border-r niuu-border-border-subtle">
           <span className={KPI_LBL}>errors</span>

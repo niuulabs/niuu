@@ -14,7 +14,7 @@ const mockCtx: PluginCtx = {
   setTweak: vi.fn(),
 };
 
-const wrap = (ctx = mockCtx) => renderWithMimir(<MimirSubnav ctx={ctx} />);
+const wrap = (ctx = mockCtx) => renderWithMimir(<MimirSubnav ctx={ctx} />, undefined, ctx);
 
 describe('MimirSubnav', () => {
   beforeEach(() => {

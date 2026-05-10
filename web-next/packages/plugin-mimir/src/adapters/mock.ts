@@ -993,18 +993,24 @@ export function createMimirMockAdapter(): IMimirService {
         return pages.map(toPageMeta);
       },
 
-      async getPage(path: string): Promise<Page | null> {
-        return ALL_PAGES.find((p) => p.path === path) ?? null;
+      async getPage(path: string, mountName?: string): Promise<Page | null> {
+        return (
+          ALL_PAGES.find(
+            (p) => p.path === path && (!mountName || p.mounts.includes(mountName)),
+          ) ?? null
+        );
       },
 
       async upsertPage(): Promise<void> {
         // no-op in mock
       },
 
-      async search(query: string): Promise<SearchResult[]> {
+      async search(query: string, _mode, mountName?: string): Promise<SearchResult[]> {
         const q = query.toLowerCase();
         return MOCK_PAGES.filter(
-          (p) => p.title.toLowerCase().includes(q) || p.summary.toLowerCase().includes(q),
+          (p) =>
+            (p.title.toLowerCase().includes(q) || p.summary.toLowerCase().includes(q)) &&
+            (!mountName || p.mounts.includes(mountName)),
         ).map((p, i) => ({
           path: p.path,
           title: p.title,

@@ -12,6 +12,7 @@
 import { useNavigate } from '@tanstack/react-router';
 import { StateDot } from '@niuulabs/ui';
 import type { PluginCtx } from '@niuulabs/plugin-sdk';
+import { useActiveMount } from '../application/useActiveMount';
 import { useMimirMounts } from './useMimirMounts';
 import { useMimirPages } from './useMimirPages';
 import { useLint } from '../application/useLint';
@@ -26,12 +27,12 @@ interface MimirSubnavProps {
 export function MimirSubnav({ ctx }: MimirSubnavProps) {
   const navigate = useNavigate();
 
-  const activeMount = (ctx.tweaks.activeMount as string | undefined) ?? 'all';
+  const { activeMount, mountName } = useActiveMount();
   const setActiveMount = (m: string) => ctx.setTweak('activeMount', m);
 
   const { data: mounts = [] } = useMimirMounts();
-  const { data: pages = [] } = useMimirPages();
-  const { summary: lintSummary } = useLint();
+  const { data: pages = [] } = useMimirPages(mountName ? { mountName } : undefined);
+  const { summary: lintSummary } = useLint(mountName);
   const { data: ravns = [] } = useRavns();
 
   const errorCount = lintSummary.error;

@@ -6,6 +6,7 @@ test client, so no network is involved.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -256,6 +257,68 @@ def test_registry_mount_crud(registry_client: TestClient) -> None:
     assert delete.status_code == 204
     remaining = registry_client.get("/mimir/registry/mounts")
     assert all(item["id"] != created["id"] for item in remaining.json())
+
+
+def test_registry_local_mount_is_browsable_without_http_server(
+    tmp_path: Path,
+    registry_client: TestClient,
+) -> None:
+    external_root = tmp_path / "mimir-test"
+    external = MarkdownMimirAdapter(root=external_root)
+    asyncio.run(
+        external.upsert_page(
+            "technical/external.md",
+            "# External Memory\nBrowsable local mount page.\n<!-- sources: src_external -->",
+        )
+    )
+
+    create = registry_client.post(
+        "/mimir/registry/mounts",
+        json={
+            "name": "mimir-test",
+            "kind": "local",
+            "lifecycle": "registered",
+            "role": "local",
+            "url": "",
+            "path": str(external_root),
+            "categories": ["technical"],
+            "default_read_priority": 4,
+            "enabled": True,
+            "health_status": "unknown",
+            "health_message": "",
+            "desc": "tmp local mount",
+        },
+    )
+    assert create.status_code == 200
+
+    mounts = registry_client.get("/mimir/mounts")
+    assert mounts.status_code == 200
+    mount = next(item for item in mounts.json() if item["name"] == "mimir-test")
+    assert mount["pages"] == 1
+    assert mount["status"] == "healthy"
+
+    pages = registry_client.get("/mimir/pages", params={"mount": "mimir-test"})
+    assert pages.status_code == 200
+    listed_pages = pages.json()
+    assert len(listed_pages) == 1
+    assert listed_pages[0]["path"] == "technical/external.md"
+    assert listed_pages[0]["title"] == "External Memory"
+    assert listed_pages[0]["summary"] == "Browsable local mount page."
+    assert listed_pages[0]["mounts"] == ["mimir-test"]
+
+    read_page = registry_client.get(
+        "/mimir/page",
+        params={"mount": "mimir-test", "path": "technical/external.md"},
+    )
+    assert read_page.status_code == 200
+    assert "External Memory" in read_page.json()["content"]
+
+    search = registry_client.get(
+        "/mimir/search",
+        params={"mount": "mimir-test", "q": "browsable local"},
+    )
+    assert search.status_code == 200
+    assert [item["path"] for item in search.json()] == ["technical/external.md"]
 
 
 # ---------------------------------------------------------------------------

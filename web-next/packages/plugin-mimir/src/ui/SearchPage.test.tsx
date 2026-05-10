@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { SearchPage } from './SearchPage';
 import { createMimirMockAdapter } from '../adapters/mock';
@@ -69,6 +69,26 @@ describe('SearchPage', () => {
     wrap(<SearchPage />, failing);
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'test' } });
     await waitFor(() => expect(screen.getByText('search service down')).toBeInTheDocument());
+  });
+
+  it('scopes the placeholder to the active mount', () => {
+    wrap(<SearchPage />, undefined, { tweaks: { activeMount: 'local' } });
+    expect(screen.getByPlaceholderText('Search pages in local…')).toBeInTheDocument();
+  });
+
+  it('passes the active mount to the search service', async () => {
+    const search = vi.fn().mockResolvedValue([]);
+    const service: IMimirService = {
+      ...createMimirMockAdapter(),
+      pages: {
+        ...createMimirMockAdapter().pages,
+        search,
+      },
+    };
+    wrap(<SearchPage />, service, { tweaks: { activeMount: 'local' } });
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'memory' } });
+    await waitFor(() => expect(search).toHaveBeenCalled());
+    expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', 'local');
   });
 
   it('each result shows title and path', async () => {

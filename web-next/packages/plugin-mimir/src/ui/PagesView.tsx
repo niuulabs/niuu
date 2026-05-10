@@ -9,6 +9,7 @@
 import { useState, useReducer, useEffect, useRef, useMemo, Fragment } from 'react';
 import { useService } from '@niuulabs/plugin-sdk';
 import { useMimirPages, useMimirPage, useMimirPageSources } from './useMimirPages';
+import { useActiveMount } from '../application/useActiveMount';
 import { TreeNode } from './components/TreeNode';
 import { ZoneBlock } from './components/ZoneBlock';
 import { MetaPanel } from './components/MetaPanel';
@@ -27,7 +28,8 @@ const ZONE_SAVE_RESET_DELAY_MS = 3_000;
 type ReaderLayout = 'structured' | 'split';
 
 export function PagesView() {
-  const { data: allPages = [] } = useMimirPages();
+  const { activeMount, mountName } = useActiveMount();
+  const { data: allPages = [] } = useMimirPages(mountName ? { mountName } : undefined);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [readerLayout, setReaderLayout] = useState<ReaderLayout>('structured');
 
@@ -38,8 +40,14 @@ export function PagesView() {
     }
   }, [allPages, selectedPath]);
 
+  useEffect(() => {
+    if (selectedPath && !allPages.some((page) => page.path === selectedPath)) {
+      setSelectedPath(allPages[0]?.path ?? null);
+    }
+  }, [allPages, selectedPath]);
+
   const activePagePath = selectedPath ?? allPages[0]?.path ?? null;
-  const { data: page } = useMimirPage(activePagePath);
+  const { data: page } = useMimirPage(activePagePath, mountName);
   const { data: pageSources = [] } = useMimirPageSources(activePagePath);
   const service = useService<IMimirService>('mimir');
 
@@ -131,7 +139,7 @@ export function PagesView() {
               Pages
             </span>
             <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint">
-              merged mount tree
+              {activeMount === 'all' ? 'merged mount tree' : `${activeMount} mount tree`}
             </span>
           </div>
           <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">

@@ -10,11 +10,11 @@ export function useMimirPages(options?: { mountName?: string; category?: string 
   });
 }
 
-export function useMimirPage(path: string | null) {
+export function useMimirPage(path: string | null, mountName?: string) {
   const service = useService<IMimirService>('mimir');
   return useQuery({
-    queryKey: ['mimir', 'page', path],
-    queryFn: () => service.pages.getPage(path!),
+    queryKey: ['mimir', 'page', path, mountName ?? null],
+    queryFn: () => service.pages.getPage(path!, mountName),
     enabled: path !== null,
   });
 }

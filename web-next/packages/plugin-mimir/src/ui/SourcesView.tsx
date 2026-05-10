@@ -16,6 +16,7 @@ import { StateDot, Table } from '@niuulabs/ui';
 import type { TableColumn } from '@niuulabs/ui';
 import { useService } from '@niuulabs/plugin-sdk';
 import { useMimirSources } from './useMimirSources';
+import { useActiveMount } from '../application/useActiveMount';
 import type { Source } from '../domain/source';
 import type { OriginType } from '../domain/source';
 import type { IMimirService } from '../ports';
@@ -293,6 +294,7 @@ function IngestForm({ onIngestSuccess, onMutationStart }: IngestFormProps) {
 // ---------------------------------------------------------------------------
 
 export function SourcesView() {
+  const { activeMount, mountName } = useActiveMount();
   const [activeOrigin, setActiveOrigin] = useState<OriginType | 'all'>('all');
   const [showSuccess, setShowSuccess] = useState(false);
 
@@ -301,7 +303,10 @@ export function SourcesView() {
     isLoading,
     isError,
     error,
-  } = useMimirSources(activeOrigin !== 'all' ? { originType: activeOrigin } : undefined);
+  } = useMimirSources({
+    ...(activeOrigin !== 'all' ? { originType: activeOrigin } : {}),
+    ...(mountName ? { mountName } : {}),
+  });
 
   function handleIngestSuccess() {
     setShowSuccess(true);
@@ -371,6 +376,7 @@ export function SourcesView() {
           <p className="niuu-text-xs niuu-text-text-muted niuu-m-0">
             {sources.length} source{sources.length !== 1 ? 's' : ''}
             {activeOrigin !== 'all' ? ` · origin: ${activeOrigin}` : ''}
+            {activeMount !== 'all' ? ` · mount: ${activeMount}` : ''}
           </p>
           <Table<Source> columns={SOURCES_COLUMNS} rows={sources} aria-label="sources table" />
         </>

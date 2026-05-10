@@ -22,7 +22,6 @@ export const tyrPlugin = definePlugin({
     { id: 'dispatch', label: 'Dispatch', rune: '⇥', path: '/tyr/dispatch' },
     { id: 'plan', label: 'Plan', rune: '◇', path: '/tyr/plan' },
     { id: 'workflows', label: 'Workflows', rune: '⚙', path: '/tyr/workflows' },
-    { id: 'settings', label: 'Settings', rune: '⚬', path: '/tyr/settings' },
   ],
   routes: (rootRoute) => [
     createRoute({

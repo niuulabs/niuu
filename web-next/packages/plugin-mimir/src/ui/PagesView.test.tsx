@@ -25,6 +25,14 @@ describe('PagesView', () => {
     await waitFor(() => expect(screen.getByText('10')).toBeInTheDocument());
   });
 
+  it('scopes the tree to the active mount', async () => {
+    wrap(<PagesView />, undefined, { tweaks: { activeMount: 'platform' } });
+    await waitFor(() => expect(screen.getByText('infra/')).toBeInTheDocument());
+    expect(screen.getByText('platform mount tree')).toBeInTheDocument();
+    expect(screen.queryByText('api/')).not.toBeInTheDocument();
+    expect(screen.getByText('infra/')).toBeInTheDocument();
+  });
+
   it('displays a page title and summary when a page is selected', async () => {
     wrap(<PagesView />);
     await waitFor(() => expect(screen.getByText('arch/')).toBeInTheDocument());

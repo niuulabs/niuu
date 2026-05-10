@@ -206,6 +206,13 @@ describe('buildMimirHttpAdapter', () => {
       expect(call).toContain('mode=fts');
     });
 
+    it('passes the active mount through to the backend when provided', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue([]) });
+      await buildMimirHttpAdapter(client).pages.search('k8s', 'hybrid', 'local');
+      const call = (client.get as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+      expect(call).toContain('mount=local');
+    });
+
     it('infers page type and confidence when the backend returns the lean shape', async () => {
       const client = makeClient({
         get: vi.fn().mockResolvedValue([

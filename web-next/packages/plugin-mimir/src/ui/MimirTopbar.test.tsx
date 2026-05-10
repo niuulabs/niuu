@@ -12,7 +12,7 @@ const mockCtx: PluginCtx = {
 };
 
 const wrap = (ctx = mockCtx, service?: IMimirService) =>
-  renderWithMimir(<MimirTopbar ctx={ctx} />, service);
+  renderWithMimir(<MimirTopbar ctx={ctx} />, service, ctx);
 
 describe('MimirTopbar', () => {
   it('renders the mount label', () => {
