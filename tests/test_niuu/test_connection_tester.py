@@ -61,6 +61,21 @@ async def test_code_forge_uses_authenticated_fallback():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_code_forge_allows_unauthenticated_probe_when_token_empty():
+    route = respx.get("http://my-server/api/v1/identity/me").mock(
+        return_value=httpx.Response(200, json={"user_id": "dev-user"})
+    )
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="",
+        trusted_base_urls=("http://my-server",),
+    )
+    assert result.success is True
+    assert route.calls[0].request.headers.get("Authorization") is None
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_code_forge_auth_failure():
     respx.get("http://my-server/api/v1/identity/me").mock(
         return_value=httpx.Response(401, text="unauthorized")

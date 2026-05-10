@@ -93,6 +93,11 @@ from tyr.system_workflows import seed_system_workflows
 logger = logging.getLogger(__name__)
 
 
+def _use_local_volundr_factory(settings: Settings) -> bool:
+    """Return True when Tyr should force the single local Volundr adapter."""
+    return settings.auth.allow_anonymous_dev and not settings.volundr.use_connection_factory_in_dev
+
+
 def _configure_logging(settings: Settings) -> None:
     """Configure structured logging based on settings."""
     level_name = settings.logging.level.upper()
@@ -378,7 +383,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.credential_store = credential_store
 
             # Wire adapter factories (used by autonomous dispatcher)
-            if settings.auth.allow_anonymous_dev:
+            if _use_local_volundr_factory(settings):
                 from tyr.adapters.volundr_factory import LocalVolundrAdapterFactory
 
                 app.state.volundr_factory = LocalVolundrAdapterFactory(
@@ -387,7 +392,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.info("Volundr factory: local (no PAT required)")
             else:
                 app.state.volundr_factory = VolundrAdapterFactory(
-                    integration_repo, credential_store
+                    integration_repo,
+                    credential_store,
+                    allow_unauthenticated=settings.auth.allow_anonymous_dev,
                 )
             # Default Volundr adapter for code paths that don't have a per-owner
             # context (e.g. the Telegram webhook router's _get_volundr). In

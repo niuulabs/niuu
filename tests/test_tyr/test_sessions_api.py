@@ -19,16 +19,31 @@ from tyr.ports.volundr import VolundrPort, VolundrSession
 
 
 class MockVolundr(VolundrPort):
-    def __init__(self) -> None:
-        self.sessions = {
-            "sess-1": VolundrSession(
-                id="sess-1",
-                name="Implement auth refresh",
-                status="running",
-                tracker_issue_id="RAID-1",
-                branch="feat/auth-refresh",
-            )
-        }
+    def __init__(
+        self,
+        *,
+        name: str = "Mac mini",
+        sessions: dict[str, VolundrSession] | None = None,
+    ) -> None:
+        self._name = name
+        self.sessions = (
+            sessions
+            if sessions is not None
+            else {
+                "sess-1": VolundrSession(
+                    id="sess-1",
+                    name="Implement auth refresh",
+                    status="running",
+                    tracker_issue_id="RAID-1",
+                    branch="feat/auth-refresh",
+                    cluster_name=name,
+                )
+            }
+        )
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     async def spawn_session(self, request, *, auth_token=None):  # noqa: ANN001, ANN201
         raise NotImplementedError
@@ -42,9 +57,7 @@ class MockVolundr(VolundrPort):
         return list(self.sessions.values())
 
     async def get_pr_status(self, session_id: str):  # noqa: ANN201
-        from tyr.domain.models import PRStatus
-
-        return PRStatus(exists=True, merged=False, url="https://example.test/pr/1", ci_passed=True)
+        return _build_pr_status()
 
     async def get_chronicle_summary(self, session_id: str) -> str:
         return "line 1\nline 2"
@@ -72,6 +85,19 @@ class MockVolundr(VolundrPort):
     async def subscribe_activity(self):
         return
         yield  # type: ignore[misc]
+
+
+class MockVolundrFactory:
+    def __init__(self, adapters: list[MockVolundr]) -> None:
+        self._adapters = adapters
+
+    async def for_owner(self, owner_id: str) -> list[VolundrPort]:
+        del owner_id
+        return self._adapters
+
+    async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
+        del owner_id
+        return self._adapters[0] if self._adapters else None
 
 
 class MockTracker(TrackerPort):
@@ -207,18 +233,23 @@ class MockTracker(TrackerPort):
         return []
 
 
-def _client(tracker: MockTracker | None = None) -> tuple[TestClient, MockTracker]:
+def _client(
+    tracker: MockTracker | None = None,
+    volundrs: list[MockVolundr] | None = None,
+) -> tuple[TestClient, MockTracker]:
     resolved_tracker = tracker or MockTracker()
+    resolved_volundrs = volundrs or [MockVolundr()]
     app = FastAPI()
     app.include_router(create_sessions_router())
     app.dependency_overrides[resolve_trackers] = lambda: [resolved_tracker]
-    app.dependency_overrides[resolve_volundr] = lambda: MockVolundr()
+    app.dependency_overrides[resolve_volundr] = lambda: resolved_volundrs[0]
     app.dependency_overrides[resolve_git] = lambda: AsyncMock()
     app.state.settings = Settings(
         auth=AuthConfig(allow_anonymous_dev=True),
         review=ReviewConfig(),
     )
     app.state.event_bus = None
+    app.state.volundr_factory = MockVolundrFactory(resolved_volundrs)
     return TestClient(app), resolved_tracker
 
 
@@ -242,22 +273,93 @@ class TestSessionsAPI:
                 "confidence": 82.0,
                 "raid_name": "Implement auth refresh",
                 "saga_name": "Auth Rewrite",
+                "cluster_name": "Mac mini",
             }
         ]
 
+    def test_lists_sessions_across_multiple_clusters(self) -> None:
+        client, _tracker = _client(
+            volundrs=[
+                MockVolundr(name="Mac mini"),
+                MockVolundr(
+                    name="MacBook Pro",
+                    sessions={
+                        "sess-2": VolundrSession(
+                            id="sess-2",
+                            name="Implement dispatch target picker",
+                            status="running",
+                            tracker_issue_id=None,
+                            branch="feat/dispatch-picker",
+                            cluster_name="MacBook Pro",
+                        )
+                    },
+                ),
+            ]
+        )
+
+        response = client.get("/api/v1/tyr/sessions", headers=_auth_headers())
+
+        assert response.status_code == 200
+        assert [session["session_id"] for session in response.json()] == ["sess-1", "sess-2"]
+        assert response.json()[1]["cluster_name"] == "MacBook Pro"
+
     def test_get_session_returns_single_session(self) -> None:
-        client, _tracker = _client()
+        client, _tracker = _client(
+            volundrs=[
+                MockVolundr(
+                    name="Mac mini",
+                    sessions={},
+                ),
+                MockVolundr(
+                    name="MacBook Pro",
+                    sessions={
+                        "sess-1": VolundrSession(
+                            id="sess-1",
+                            name="Implement auth refresh",
+                            status="running",
+                            tracker_issue_id="RAID-1",
+                            branch="feat/auth-refresh",
+                            cluster_name="MacBook Pro",
+                        )
+                    },
+                ),
+            ]
+        )
 
         response = client.get("/api/v1/tyr/sessions/sess-1", headers=_auth_headers())
 
         assert response.status_code == 200
         assert response.json()["session_id"] == "sess-1"
+        assert response.json()["cluster_name"] == "MacBook Pro"
 
     def test_approve_session_updates_tracker(self) -> None:
-        client, tracker = _client()
+        primary = MockVolundr(name="Mac mini", sessions={})
+        secondary = MockVolundr(name="MacBook Pro")
+        primary.get_pr_status = AsyncMock(side_effect=AssertionError("wrong adapter"))  # type: ignore[method-assign]
+        secondary.get_pr_status = AsyncMock(  # type: ignore[method-assign]
+            return_value=awaitable_pr_status()
+        )
+        client, tracker = _client(volundrs=[primary, secondary])
 
         response = client.post("/api/v1/tyr/sessions/sess-1/approve", headers=_auth_headers())
 
         assert response.status_code == 202
         assert tracker.updated_states[-1] == ("RAID-1", RaidStatus.MERGED)
         assert tracker.closed[-1] == "RAID-1"
+        secondary.get_pr_status.assert_awaited_once_with("sess-1")
+
+
+def awaitable_pr_status():
+    return _build_pr_status()
+
+
+def _build_pr_status():
+    from tyr.domain.models import PRStatus
+
+    return PRStatus(
+        pr_id="pr-1",
+        url="https://example.test/pr/1",
+        state="open",
+        mergeable=True,
+        ci_passed=True,
+    )

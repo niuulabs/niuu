@@ -11,6 +11,7 @@ approval flows back under Forge.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -42,6 +43,7 @@ class SessionInfoResponse(BaseModel):
     confidence: float
     raid_name: str
     saga_name: str
+    cluster_name: str = ""
 
 
 def _normalise_confidence(value: float) -> float:
@@ -102,7 +104,80 @@ async def _build_session_info(
         confidence=_normalise_confidence(raid.confidence if raid else 0.0),
         raid_name=raid.name if raid else session.name,
         saga_name=saga.name if saga else "",
+        cluster_name=session.cluster_name or volundr.name,
     )
+
+
+async def _resolve_volundr_adapters(
+    request: Request,
+    *,
+    owner_id: str,
+    fallback: VolundrPort,
+) -> list[VolundrPort]:
+    factory = getattr(request.app.state, "volundr_factory", None)
+    if factory is None:
+        return [fallback]
+
+    try:
+        adapters = await factory.for_owner(owner_id)
+    except Exception:
+        logger.warning(
+            "Failed to resolve Volundr adapters for owner %s",
+            _sanitize_log(owner_id),
+            exc_info=True,
+        )
+        return [fallback]
+
+    return adapters or [fallback]
+
+
+async def _list_sessions_across_adapters(
+    adapters: list[VolundrPort], *, auth_token: str | None = None
+) -> list[tuple[VolundrPort, VolundrSession]]:
+    responses = await asyncio.gather(
+        *(adapter.list_sessions(auth_token=auth_token) for adapter in adapters),
+        return_exceptions=True,
+    )
+
+    seen_session_ids: set[str] = set()
+    sessions: list[tuple[VolundrPort, VolundrSession]] = []
+    for adapter, response in zip(adapters, responses, strict=False):
+        if isinstance(response, Exception):
+            logger.warning(
+                "Failed to list sessions from Volundr adapter %s: %s",
+                _sanitize_log(adapter.name or "<unnamed>"),
+                _sanitize_log(response),
+            )
+            continue
+
+        for session in response:
+            if session.id in seen_session_ids:
+                continue
+            seen_session_ids.add(session.id)
+            sessions.append((adapter, session))
+    return sessions
+
+
+async def _find_session_across_adapters(
+    session_id: str,
+    adapters: list[VolundrPort],
+    *,
+    auth_token: str | None = None,
+) -> tuple[VolundrPort | None, VolundrSession | None]:
+    for adapter in adapters:
+        try:
+            session = await adapter.get_session(session_id, auth_token=auth_token)
+        except Exception:
+            logger.warning(
+                "Failed to load session %s from Volundr adapter %s",
+                _sanitize_log(session_id),
+                _sanitize_log(adapter.name or "<unnamed>"),
+                exc_info=True,
+            )
+            continue
+        if session is not None:
+            return adapter, session
+    return None, None
 
 
 def create_sessions_router() -> APIRouter:
@@ -111,33 +186,42 @@ def create_sessions_router() -> APIRouter:
     @router.get("", response_model=list[SessionInfoResponse])
     async def list_sessions(
         request: Request,
-        _principal: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
         trackers: list[TrackerPort] = Depends(resolve_trackers),
         volundr: VolundrPort = Depends(resolve_volundr),
     ) -> list[SessionInfoResponse]:
         auth_token = extract_bearer_token(request)
-        sessions = await volundr.list_sessions(auth_token=auth_token)
+        adapters = await _resolve_volundr_adapters(
+            request, owner_id=principal.user_id, fallback=volundr
+        )
+        sessions = await _list_sessions_across_adapters(adapters, auth_token=auth_token)
         items: list[SessionInfoResponse] = []
-        for session in sessions:
-            items.append(await _build_session_info(session, volundr=volundr, trackers=trackers))
+        for adapter, session in sessions:
+            items.append(await _build_session_info(session, volundr=adapter, trackers=trackers))
         return items
 
     @router.get("/{session_id}", response_model=SessionInfoResponse)
     async def get_session(
         session_id: str,
         request: Request,
-        _principal: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
         trackers: list[TrackerPort] = Depends(resolve_trackers),
         volundr: VolundrPort = Depends(resolve_volundr),
     ) -> SessionInfoResponse:
         auth_token = extract_bearer_token(request)
-        session = await volundr.get_session(session_id, auth_token=auth_token)
+        adapters = await _resolve_volundr_adapters(
+            request, owner_id=principal.user_id, fallback=volundr
+        )
+        adapter, session = await _find_session_across_adapters(
+            session_id, adapters, auth_token=auth_token
+        )
         if session is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        return await _build_session_info(session, volundr=volundr, trackers=trackers)
+        assert adapter is not None
+        return await _build_session_info(session, volundr=adapter, trackers=trackers)
 
     @router.post("/{session_id}/approve", status_code=status.HTTP_202_ACCEPTED)
     async def approve_session(
@@ -158,8 +242,15 @@ def create_sessions_router() -> APIRouter:
         svc = _build_review_service(request, tracker, principal.user_id)
 
         if raid.session_id:
+            adapters = await _resolve_volundr_adapters(
+                request, owner_id=principal.user_id, fallback=volundr
+            )
+            session_volundr, _session = await _find_session_across_adapters(
+                raid.session_id, adapters
+            )
+            active_volundr = session_volundr or volundr
             try:
-                pr_status = await volundr.get_pr_status(raid.session_id)
+                pr_status = await active_volundr.get_pr_status(raid.session_id)
                 if pr_status.ci_passed is False:
                     logger.warning(
                         "Approving session %s with failing CI",

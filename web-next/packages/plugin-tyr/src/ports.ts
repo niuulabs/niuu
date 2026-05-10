@@ -290,6 +290,13 @@ export interface DispatchApprovalResult {
   clusterName: string;
 }
 
+export interface DispatchCluster {
+  connectionId: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+}
+
 /**
  * Sleipnir dispatch bus port.
  *
@@ -298,6 +305,7 @@ export interface DispatchApprovalResult {
  */
 export interface IDispatchBus {
   getQueue(): Promise<DispatchQueueItem[]>;
+  getClusters(): Promise<DispatchCluster[]>;
   approve(
     items: DispatchApprovalItem[],
     options?: DispatchApprovalOptions,

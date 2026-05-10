@@ -71,6 +71,15 @@ class VolundrConfig(BaseModel):
     """Volundr API connection configuration."""
 
     url: str = Field(default="http://localhost:8080")
+    use_connection_factory_in_dev: bool = Field(
+        default=False,
+        description=(
+            "When True, anonymous dev mode still resolves Volundr adapters from "
+            "stored CODE_FORGE connections instead of forcing the single local "
+            "Volundr adapter. Useful for a local Tyr controlling multiple remote "
+            "Volundr instances."
+        ),
+    )
     trusted_connection_test_urls: list[str] = Field(
         default_factory=list,
         description=(

@@ -21,6 +21,7 @@ import type {
   DispatchApprovalItem,
   DispatchApprovalOptions,
   DispatchApprovalResult,
+  DispatchCluster,
   IWorkflowService,
   ITyrSettingsService,
   IAuditLogService,
@@ -118,6 +119,7 @@ interface RawSessionInfo {
   confidence: number;
   raid_name: string;
   saga_name: string;
+  cluster_name: string;
 }
 
 interface RawTrackerProject {
@@ -190,6 +192,13 @@ interface RawDispatchApprovalResult {
   session_name: string;
   status: string;
   cluster_name: string;
+}
+
+interface RawDispatchCluster {
+  connection_id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
 }
 
 interface RawWorkflow {
@@ -290,6 +299,7 @@ function toSessionInfo(raw: RawSessionInfo): SessionInfo {
     confidence: raw.confidence,
     raidName: raw.raid_name,
     sagaName: raw.saga_name,
+    clusterName: raw.cluster_name,
   };
 }
 
@@ -374,6 +384,15 @@ function toDispatchApprovalResult(raw: RawDispatchApprovalResult): DispatchAppro
     sessionName: raw.session_name,
     status: raw.status,
     clusterName: raw.cluster_name,
+  };
+}
+
+function toDispatchCluster(raw: RawDispatchCluster): DispatchCluster {
+  return {
+    connectionId: raw.connection_id,
+    name: raw.name,
+    url: raw.url,
+    enabled: raw.enabled,
   };
 }
 
@@ -685,6 +704,11 @@ export function buildDispatchBusHttpAdapter(client: ApiClient): IDispatchBus {
     async getQueue(): Promise<DispatchQueueItem[]> {
       const items = await client.get<RawDispatchQueueItem[]>('/dispatch/queue');
       return items.map(toDispatchQueueItem);
+    },
+
+    async getClusters(): Promise<DispatchCluster[]> {
+      const items = await client.get<RawDispatchCluster[]>('/dispatch/clusters');
+      return items.map(toDispatchCluster);
     },
 
     async approve(
