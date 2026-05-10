@@ -85,7 +85,7 @@ class TestChronicleEndpointCreate:
         data = response.json()
         assert data["session_id"] == str(session.id)
         assert data["project"] == "repo"
-        assert data["status"] == "complete"
+        assert data["status"] == "draft"
         assert "id" in data
 
     def test_create_chronicle_session_not_found(self, client: TestClient):
