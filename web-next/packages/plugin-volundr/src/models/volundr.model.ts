@@ -71,6 +71,7 @@ export type SessionOrigin = 'managed' | 'manual';
 export interface VolundrModel {
   name: string;
   provider: ModelProvider;
+  vendor?: string;
   tier: ModelTier;
   color: string;
   cost?: string;

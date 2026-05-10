@@ -312,7 +312,7 @@ function StageNode({
             fontFamily="var(--font-mono)"
             className="niuu-pointer-events-none niuu-select-none"
           >
-            budget {member.budget}
+            {member.model ? member.model : `budget ${member.budget}`}
           </text>
         </g>
       ))}
@@ -1191,7 +1191,7 @@ export function GraphView({
         return;
       }
 
-      onAddStageWithPersona?.(personaId, position);
+      onAddStageWithPersona?.(personaId, undefined, position);
       return;
     }
 

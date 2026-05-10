@@ -260,7 +260,13 @@ class TestBuildSpawnRequestFlockEnabled:
                         "id": "stage-1",
                         "kind": "stage",
                         "label": "Review",
-                        "stageMembers": [{"personaId": "reviewer", "budget": 40}],
+                        "stageMembers": [
+                            {
+                                "personaId": "reviewer",
+                                "model": "claude-sonnet-4-6",
+                                "budget": 40,
+                            }
+                        ],
                     }
                 ]
             },
@@ -296,17 +302,35 @@ class TestBuildSpawnRequestFlockEnabled:
                     {
                         "id": "stage-coder",
                         "kind": "stage",
-                        "stageMembers": [{"personaId": "coder", "budget": 40}],
+                        "stageMembers": [
+                            {
+                                "personaId": "coder",
+                                "model": "claude-sonnet-4-6",
+                                "budget": 40,
+                            }
+                        ],
                     },
                     {
                         "id": "stage-reviewer",
                         "kind": "stage",
-                        "stageMembers": [{"personaId": "reviewer", "budget": 25}],
+                        "stageMembers": [
+                            {
+                                "personaId": "reviewer",
+                                "model": "claude-sonnet-4-6",
+                                "budget": 25,
+                            }
+                        ],
                     },
                     {
                         "id": "stage-security",
                         "kind": "stage",
-                        "stageMembers": [{"personaId": "security-auditor", "budget": 25}],
+                        "stageMembers": [
+                            {
+                                "personaId": "security-auditor",
+                                "model": "claude-sonnet-4-6",
+                                "budget": 25,
+                            }
+                        ],
                     },
                 ]
             },
@@ -374,7 +398,13 @@ class TestBuildSpawnRequestFlockEnabled:
                         "id": "stage-1",
                         "kind": "stage",
                         "label": "Review",
-                        "stageMembers": [{"personaId": "reviewer", "budget": 40}],
+                        "stageMembers": [
+                            {
+                                "personaId": "reviewer",
+                                "model": "claude-sonnet-4-6",
+                                "budget": 40,
+                            }
+                        ],
                     }
                 ]
             },
@@ -760,12 +790,12 @@ class TestRaidExecutorPersona:
     """raid-executor.yaml has correct event_type, schema, and allowed_tools."""
 
     def _load(self) -> dict:
-        path = _PERSONAS_DIR / "raid-executor.yaml"
+        path = _PERSONAS_DIR / "_archived" / "raid-executor.yaml"
         with path.open() as f:
             return yaml.safe_load(f)
 
     def test_file_exists(self) -> None:
-        assert (_PERSONAS_DIR / "raid-executor.yaml").exists()
+        assert (_PERSONAS_DIR / "_archived" / "raid-executor.yaml").exists()
 
     def test_name(self) -> None:
         data = self._load()

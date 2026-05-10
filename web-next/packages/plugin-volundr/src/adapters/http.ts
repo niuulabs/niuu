@@ -252,6 +252,7 @@ type ApiModelInfo = {
   id: string;
   name: string;
   provider: VolundrModel['provider'];
+  vendor?: string;
   tier: VolundrModel['tier'];
   color: string;
   cost_per_million_tokens?: number | null;
@@ -526,6 +527,7 @@ function normalizeModel(payload: ApiModelInfo): VolundrModel {
   return {
     name: payload.name,
     provider: payload.provider,
+    vendor: payload.vendor,
     tier: payload.tier,
     color: payload.color,
     cost:

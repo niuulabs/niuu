@@ -21,7 +21,6 @@ Persona YAML format::
     forbidden_tools: [cascade, volundr]
     permission_mode: workspace-write
     llm:
-      primary_alias: balanced
       thinking_enabled: true
     iteration_budget: 40
     produces:
@@ -53,8 +52,9 @@ from niuu.domain.outcome import OutcomeField, OutcomeSchema, generate_outcome_in
 from ravn.config import ProjectConfig, _safe_int
 from ravn.ports.persona import PersonaRegistryPort
 
-# Bundled personas shipped with the ravn package (src/ravn/personas/*.yaml)
+# Active bundled personas shipped with the ravn package (src/ravn/personas/*.yaml)
 _BUILTIN_PERSONAS_DIR = Path(__file__).parent.parent.parent / "personas"
+_ARCHIVED_BUILTIN_PERSONAS_DIR = _BUILTIN_PERSONAS_DIR / "_archived"
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -63,7 +63,7 @@ _BUILTIN_PERSONAS_DIR = Path(__file__).parent.parent.parent / "personas"
 
 @dataclass
 class PersonaLLMConfig:
-    """LLM settings embedded in a persona."""
+    """Non-model LLM behavior settings embedded in a persona."""
 
     primary_alias: str = ""
     thinking_enabled: bool = False
@@ -156,12 +156,10 @@ class PersonaConfig:
             if self.executor.adapter:
                 executor_dict["adapter"] = self.executor.adapter
             if self.executor.kwargs:
-                executor_dict["kwargs"] = dict(self.executor.kwargs)
+                executor_dict["kwargs"] = _sanitize_executor_kwargs(self.executor.kwargs)
             d["executor"] = executor_dict
 
         llm_dict: dict = {}
-        if self.llm.primary_alias:
-            llm_dict["primary_alias"] = self.llm.primary_alias
         if self.llm.thinking_enabled:
             llm_dict["thinking_enabled"] = self.llm.thinking_enabled
         if self.llm.max_tokens:
@@ -236,8 +234,7 @@ _BUILTIN_PERSONAS: dict[str, PersonaConfig] = {
             kwargs={
                 "transport_adapter": (
                     "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-                ),
-                "transport_kwargs": {"model": "claude-sonnet-4-6"},
+                )
             },
         ),
         llm=PersonaLLMConfig(primary_alias="balanced", thinking_enabled=True),
@@ -488,8 +485,7 @@ _BUILTIN_PERSONAS: dict[str, PersonaConfig] = {
             kwargs={
                 "transport_adapter": (
                     "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-                ),
-                "transport_kwargs": {"model": "claude-sonnet-4-6"},
+                )
             },
         ),
         llm=PersonaLLMConfig(primary_alias="powerful", thinking_enabled=True),
@@ -751,6 +747,19 @@ def _safe_bool(val: Any, default: bool = False) -> bool:
     return default
 
 
+def _sanitize_executor_kwargs(raw_kwargs: dict[str, Any]) -> dict[str, Any]:
+    kwargs = dict(raw_kwargs)
+    transport_kwargs = kwargs.get("transport_kwargs")
+    if isinstance(transport_kwargs, dict):
+        cleaned_transport_kwargs = dict(transport_kwargs)
+        cleaned_transport_kwargs.pop("model", None)
+        if cleaned_transport_kwargs:
+            kwargs["transport_kwargs"] = cleaned_transport_kwargs
+        else:
+            kwargs.pop("transport_kwargs", None)
+    return kwargs
+
+
 _VALID_FAN_IN_STRATEGIES = {"all_must_pass", "any_pass", "majority", "merge"}
 
 
@@ -884,6 +893,14 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _builtin_lookup_dirs() -> list[Path]:
+        """Return active then archived built-in persona directories."""
+        dirs = [_BUILTIN_PERSONAS_DIR]
+        if _ARCHIVED_BUILTIN_PERSONAS_DIR.is_dir():
+            dirs.append(_ARCHIVED_BUILTIN_PERSONAS_DIR)
+        return dirs
+
     def _resolve_dirs(self) -> list[Path]:
         """Return ordered directories to search (highest priority first).
 
@@ -892,7 +909,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         ``True``); otherwise the default three-layer discovery is used:
           1. Project-local: ``<cwd>/.ravn/personas/``
           2. User-global: ``~/.ravn/personas/``
-          3. Bundled: ``src/ravn/personas/`` (when *include_builtin* is ``True``)
+          3. Bundled active set: ``src/ravn/personas/`` (when *include_builtin* is ``True``)
         """
         if self._persona_dirs is not None:
             dirs = list(self._persona_dirs)
@@ -905,6 +922,21 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         ]
         if self._include_builtin:
             dirs.append(_BUILTIN_PERSONAS_DIR)
+        return dirs
+
+    def _resolve_lookup_dirs(self) -> list[Path]:
+        """Return ordered directories for direct persona lookup.
+
+        Unlike :meth:`_resolve_dirs`, this includes archived built-in personas
+        after the active built-in directory so legacy personas can still be
+        loaded explicitly without appearing in the public built-in inventory.
+        """
+        dirs = list(self._resolve_dirs())
+        if not self._include_builtin:
+            return dirs
+        for directory in self._builtin_lookup_dirs()[1:]:
+            if directory not in dirs:
+                dirs.append(directory)
         return dirs
 
     # ------------------------------------------------------------------
@@ -920,7 +952,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         If the persona declares a ``produces.schema``, the outcome block
         instruction is automatically appended to its system prompt.
         """
-        for directory in self._resolve_dirs():
+        for directory in self._resolve_lookup_dirs():
             file_path = directory / f"{name}.yaml"
             if file_path.is_file():
                 persona = self.load_from_file(file_path)
@@ -983,8 +1015,8 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         when *name* is a pure built-in with no user-defined override file.
         Files in the bundled personas directory are never deleted.
         """
-        for directory in self._resolve_dirs():
-            if directory == _BUILTIN_PERSONAS_DIR:
+        for directory in self._resolve_lookup_dirs():
+            if directory in self._builtin_lookup_dirs():
                 continue
             file_path = directory / f"{name}.yaml"
             if file_path.is_file():
@@ -994,7 +1026,9 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
 
     def is_builtin(self, name: str) -> bool:
         """Return ``True`` when *name* is a built-in persona."""
-        return (_BUILTIN_PERSONAS_DIR / f"{name}.yaml").is_file()
+        return any(
+            (directory / f"{name}.yaml").is_file() for directory in self._builtin_lookup_dirs()
+        )
 
     def load_all(self) -> list[PersonaConfig]:
         """Return all resolvable personas with outcome instructions injected."""
@@ -1012,10 +1046,10 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         bundled personas directory.  Returns an empty string when the
         persona cannot be resolved at all.
         """
-        for directory in self._resolve_dirs():
+        for directory in self._resolve_lookup_dirs():
             file_path = directory / f"{name}.yaml"
             if file_path.is_file():
-                if directory == _BUILTIN_PERSONAS_DIR:
+                if directory in self._builtin_lookup_dirs():
                     return "[built-in]"
                 return str(file_path)
         return ""
@@ -1122,7 +1156,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
             llm_raw = raw["llm"]
 
         llm = PersonaLLMConfig(
-            primary_alias=str(llm_raw.get("primary_alias", "")),
+            primary_alias="",
             thinking_enabled=_safe_bool(llm_raw.get("thinking_enabled", False)),
             max_tokens=_safe_int(llm_raw.get("max_tokens", 0)),
         )
@@ -1134,7 +1168,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
         executor = PersonaExecutorConfig(
             adapter=str(executor_raw.get("adapter", "")),
             kwargs=(
-                dict(executor_raw.get("kwargs", {}))
+                _sanitize_executor_kwargs(dict(executor_raw.get("kwargs", {})))
                 if isinstance(executor_raw.get("kwargs"), dict)
                 else {}
             ),

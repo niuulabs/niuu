@@ -8,7 +8,11 @@ import type { Workflow, WorkflowNode, WorkflowEdge } from './workflow';
 
 function makeStage(
   id: string,
-  opts: { raidId?: string | null; personaIds?: string[] } = {},
+  opts: {
+    raidId?: string | null;
+    personaIds?: string[];
+    stageMembers?: Array<{ personaId: string; budget?: number }>;
+  } = {},
 ): WorkflowNode {
   return {
     id,
@@ -16,6 +20,10 @@ function makeStage(
     label: `Stage ${id}`,
     raidId: opts.raidId ?? null,
     personaIds: opts.personaIds ?? [],
+    stageMembers: opts.stageMembers?.map((member) => ({
+      personaId: member.personaId,
+      budget: member.budget ?? 40,
+    })),
     position: { x: 0, y: 0 },
   };
 }
@@ -115,6 +123,21 @@ describe('validateWorkflowFull — cycle', () => {
   it('does not report cycle on acyclic workflow', () => {
     const nodes = [makeStage('a'), makeStage('b'), makeGate('g')];
     const edges = [makeEdge('e1', 'a', 'g'), makeEdge('e2', 'b', 'g')];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
+    expect(issues.filter((i) => i.kind === 'cycle')).toHaveLength(0);
+  });
+
+  it('does not report cycle for an expected re-entry loop', () => {
+    const nodes = [makeStage('coder'), makeStage('reviewer')];
+    const edges = [
+      makeEdge('e1', 'coder', 'reviewer', 'code.changed -> code.changed'),
+      makeEdge(
+        'e2',
+        'reviewer',
+        'coder',
+        'review.changes_requested -> review.changes_requested',
+      ),
+    ];
     const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
     expect(issues.filter((i) => i.kind === 'cycle')).toHaveLength(0);
   });
@@ -245,6 +268,12 @@ describe('validateWorkflowFull — missing_persona', () => {
 
   it('does NOT report missing_persona when personaIds is populated', () => {
     const nodes = [makeStage('s1', { personaIds: ['persona-1'] })];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, []));
+    expect(issues.filter((i) => i.kind === 'missing_persona')).toHaveLength(0);
+  });
+
+  it('does NOT report missing_persona when stageMembers is populated', () => {
+    const nodes = [makeStage('s1', { stageMembers: [{ personaId: 'coder' }] })];
     const issues = validateWorkflowFull(makeWorkflow(nodes, []));
     expect(issues.filter((i) => i.kind === 'missing_persona')).toHaveLength(0);
   });

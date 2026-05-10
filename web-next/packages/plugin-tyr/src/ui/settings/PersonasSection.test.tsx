@@ -80,10 +80,37 @@ describe('PersonasSection', () => {
   });
 
   it('marks overridden persona with label', async () => {
+    const store = {
+      listPersonas: async () =>
+        [
+          ...SEED_PERSONAS,
+          {
+            name: 'reviewer',
+            permissionMode: 'read_only',
+            allowedTools: ['Read'],
+            iterationBudget: 25,
+            isBuiltin: true,
+            hasOverride: true,
+            producesEvent: 'review.completed',
+            consumesEvents: ['code.changed'],
+            role: 'review',
+          },
+        ] satisfies TyrPersonaSummary[],
+      getPersonaYaml: async () => 'name: reviewer\n',
+    };
+
+    render(<PersonasSection />, {
+      wrapper: wrap({ 'ravn.personas': store }),
+    });
+    await waitFor(() => expect(screen.getByText('overridden')).toBeInTheDocument());
+  });
+
+  it('does not mark custom personas as overridden just because they are user-defined', async () => {
     render(<PersonasSection />, {
       wrapper: wrap({ 'ravn.personas': makeMockPersonaStore() }),
     });
-    await waitFor(() => expect(screen.getByText('overridden')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('custom-agent')).toBeInTheDocument());
+    expect(screen.queryByText('overridden')).not.toBeInTheDocument();
   });
 
   it('shows persona count', async () => {

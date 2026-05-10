@@ -162,6 +162,30 @@ describe('PipelineView', () => {
     expect(screen.getByText(/cycle nodes/i)).toBeInTheDocument();
   });
 
+  it('does not show cycle nodes for an expected re-entry loop', () => {
+    const reentryEdges: WorkflowEdge[] = [
+      {
+        id: 'e1',
+        source: 'stage-a',
+        target: 'stage-b',
+        label: 'code.changed -> code.changed',
+        cp1: { x: 80, y: 0 },
+        cp2: { x: -80, y: 0 },
+      },
+      {
+        id: 'e2',
+        source: 'stage-b',
+        target: 'stage-a',
+        label: 'review.changes_requested -> review.changes_requested',
+        cp1: { x: -80, y: 0 },
+        cp2: { x: 80, y: 0 },
+      },
+    ];
+    render(<PipelineView nodes={[stageA, stageB]} edges={reentryEdges} />);
+    expect(screen.queryByText(/cycle nodes/i)).toBeNull();
+    expect(screen.getByText('Layer 0')).toBeInTheDocument();
+  });
+
   it('shows layer labels for linear chain', () => {
     render(<PipelineView nodes={[stageA, stageB, gateC, condD]} edges={linearEdges} />);
     // Each node in a different layer

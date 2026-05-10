@@ -12,6 +12,7 @@ import type {
   WorkflowEdge,
   WorkflowStageNode,
 } from '../../domain/workflow';
+import { stagePersonaIds } from '../../domain/workflowSemantics';
 
 // ---------------------------------------------------------------------------
 // Node geometry constants
@@ -32,9 +33,21 @@ const CP_OFFSET = 92;
 
 export function normalizedStageMembers(node: WorkflowStageNode) {
   if (node.stageMembers && node.stageMembers.length > 0) {
-    return node.stageMembers;
+    return node.stageMembers.map((member) => ({
+      personaId: member.personaId,
+      model: member.model ?? '',
+      budget: member.budget ?? 40,
+      consumesEventTypes: member.consumesEventTypes ?? [],
+      eventFilters: member.eventFilters ?? {},
+    }));
   }
-  return (node.personaIds ?? []).map((personaId) => ({ personaId, budget: 40 }));
+  return (node.personaIds ?? []).map((personaId) => ({
+    personaId,
+    model: '',
+    budget: 40,
+    consumesEventTypes: [],
+    eventFilters: {},
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +184,7 @@ export function workflowToYaml(
       lines.push(`    label: ${JSON.stringify(node.label)}`);
       if (node.kind === 'stage') {
         const stageMembers = normalizedStageMembers(node);
-        const personaIds = node.personaIds ?? [];
+        const personaIds = stagePersonaIds(node);
         lines.push(`    raidId: ${node.raidId === null ? 'null' : JSON.stringify(node.raidId)}`);
         lines.push(
           `    personaIds: ${personaIds.length === 0 ? '[]' : `[${personaIds.map((p) => JSON.stringify(p)).join(', ')}]`}`,
@@ -179,9 +192,24 @@ export function workflowToYaml(
         if (stageMembers.length > 0) {
           lines.push('    stageMembers:');
           for (const member of stageMembers) {
-            lines.push(
-              `      - {personaId: ${JSON.stringify(member.personaId)}, budget: ${member.budget}}`,
-            );
+            const parts = [
+              `personaId: ${JSON.stringify(member.personaId)}`,
+              `model: ${JSON.stringify(member.model ?? '')}`,
+              `budget: ${member.budget}`,
+            ];
+            if ((member.consumesEventTypes ?? []).length > 0) {
+              parts.push(
+                `consumesEventTypes: [${member.consumesEventTypes.map((event) => JSON.stringify(event)).join(', ')}]`,
+              );
+            }
+            if (member.eventFilters && Object.keys(member.eventFilters).length > 0) {
+              parts.push(
+                `eventFilters: {${Object.entries(member.eventFilters)
+                  .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+                  .join(', ')}}`,
+              );
+            }
+            lines.push(`      - {${parts.join(', ')}}`);
           }
         }
         lines.push(`    executionMode: ${node.executionMode ?? 'parallel'}`);

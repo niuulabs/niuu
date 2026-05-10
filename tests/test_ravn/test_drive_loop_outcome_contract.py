@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from niuu.domain.outcome import OutcomeField
 from tests.test_ravn.conftest import _make_agent_task, _make_drive_loop
 
 
@@ -110,6 +111,112 @@ files_changed: 2
         assert alias_event.payload["event_type"] == "code.changed"
         assert alias_event.payload["canonical_event_type"] == "code.completed"
         assert alias_event.payload["routing_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_success_without_verdict_still_routes_pass_alias(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="coder",
+            produces=SimpleNamespace(
+                event_type="code.completed",
+                event_type_map={"pass": "code.changed", "blocked": "code.blocked"},
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(lambda _task, _persona: {"code.changed"})
+
+        task = _make_agent_task(task_id="task-no-verdict")
+        task.session_id = "sess-no-verdict"
+        task.workflow_node_id = "raid-coder"
+        response_text = "Implemented and pushed the requested proof artifact."
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        assert mesh.publish.await_count == 2
+
+        canonical_event = mesh.publish.await_args_list[0].args[0]
+        alias_event = mesh.publish.await_args_list[1].args[0]
+        alias_topic = mesh.publish.await_args_list[1].kwargs["topic"]
+
+        assert canonical_event.payload["verdict"] == "pass"
+        assert canonical_event.payload["valid"] is True
+        assert canonical_event.payload["event_type"] == "code.completed"
+        assert alias_topic == "code.changed"
+        assert alias_event.payload["event_type"] == "code.changed"
+        assert alias_event.payload["canonical_event_type"] == "code.completed"
+
+    @pytest.mark.asyncio
+    async def test_success_without_verdict_uses_successful_schema_verdict(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="mimir-memory-curator",
+            produces=SimpleNamespace(
+                event_type="mimir.curated",
+                event_type_map={"blocked": "mimir.curation_blocked"},
+                schema={"verdict": {"values": ["complete", "blocked"]}},
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(lambda _task, _persona: {"mimir.curated"})
+
+        task = _make_agent_task(task_id="task-curation")
+        task.session_id = "sess-curation"
+        task.workflow_node_id = "raid-memory-curator"
+        response_text = "Curated the ingested memory source into canonical wiki knowledge."
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        canonical_event = mesh.publish.await_args_list[0].args[0]
+        canonical_topic = mesh.publish.await_args_list[0].kwargs["topic"]
+
+        assert canonical_topic == "mimir.curated"
+        assert canonical_event.payload["event_type"] == "mimir.curated"
+        assert canonical_event.payload["verdict"] == "complete"
+        assert canonical_event.payload["valid"] is True
+
+    @pytest.mark.asyncio
+    async def test_success_without_verdict_uses_outcome_field_enum_values(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="mimir-memory-curator",
+            produces=SimpleNamespace(
+                event_type="mimir.curated",
+                event_type_map={"blocked": "mimir.curation_blocked"},
+                schema={
+                    "verdict": OutcomeField(
+                        type="enum",
+                        description="whether curation succeeded",
+                        enum_values=["complete", "blocked"],
+                    )
+                },
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(lambda _task, _persona: {"mimir.curated"})
+
+        task = _make_agent_task(task_id="task-curation-field-schema")
+        task.session_id = "sess-curation-field-schema"
+        task.workflow_node_id = "raid-memory-curator"
+        response_text = "Curated the ingested memory source into canonical wiki knowledge."
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        canonical_event = mesh.publish.await_args_list[0].args[0]
+        canonical_topic = mesh.publish.await_args_list[0].kwargs["topic"]
+
+        assert canonical_topic == "mimir.curated"
+        assert canonical_event.payload["event_type"] == "mimir.curated"
+        assert canonical_event.payload["verdict"] == "complete"
+        assert canonical_event.payload["valid"] is True
 
     @pytest.mark.asyncio
     async def test_suppresses_outcome_when_workflow_node_disallows_it(self) -> None:

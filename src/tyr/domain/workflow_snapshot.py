@@ -39,6 +39,28 @@ def workflow_name_from_snapshot(snapshot: dict[str, Any] | None) -> str | None:
     return None
 
 
+def workflow_stage_models_from_snapshot(snapshot: dict[str, Any] | None) -> list[str]:
+    """Extract explicit stage-member models from a workflow snapshot graph."""
+    if not snapshot:
+        return []
+
+    graph = snapshot.get("graph")
+    if not isinstance(graph, dict):
+        return []
+
+    models: list[str] = []
+    for node in list(graph.get("nodes") or []):
+        if not isinstance(node, dict) or node.get("kind") != "stage":
+            continue
+        for member in list(node.get("stageMembers") or []):
+            if not isinstance(member, dict):
+                continue
+            model = str(member.get("model") or "").strip()
+            if model:
+                models.append(model)
+    return models
+
+
 def workflow_personas_from_snapshot(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Extract an ordered unique persona list from a workflow snapshot graph."""
     if not snapshot:
@@ -254,6 +276,9 @@ def _persona_from_member(member: Any) -> dict[str, Any] | None:
         ]
         if normalized:
             persona["consumes_event_types"] = normalized
+    model = str(member.get("model") or "").strip()
+    if model:
+        persona["model"] = model
     return persona
 
 

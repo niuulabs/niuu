@@ -19,6 +19,7 @@
         stageMembers:
           - personaId: coder
             budget: 40
+            model: claude-sonnet-4-6
         position:
           x: 336
           y: 144
@@ -30,6 +31,7 @@
         stageMembers:
           - personaId: reviewer
             budget: 25
+            model: claude-sonnet-4-6
         position:
           x: 576
           y: 144
@@ -82,6 +84,7 @@
         stageMembers:
           - personaId: coder
             budget: 40
+            model: claude-sonnet-4-6
         position:
           x: 336
           y: 192
@@ -93,6 +96,7 @@
         stageMembers:
           - personaId: reviewer
             budget: 25
+            model: claude-sonnet-4-6
         position:
           x: 576
           y: 104
@@ -104,6 +108,7 @@
         stageMembers:
           - personaId: security-auditor
             budget: 25
+            model: claude-sonnet-4-6
         position:
           x: 576
           y: 280
@@ -168,6 +173,7 @@
         stageMembers:
           - personaId: coder
             budget: 40
+            model: claude-sonnet-4-6
         position:
           x: 320
           y: 248
@@ -179,6 +185,7 @@
         stageMembers:
           - personaId: reviewer
             budget: 25
+            model: claude-sonnet-4-6
         position:
           x: 560
           y: 152
@@ -190,6 +197,7 @@
         stageMembers:
           - personaId: security-auditor
             budget: 25
+            model: claude-sonnet-4-6
         position:
           x: 560
           y: 344
@@ -213,6 +221,7 @@
         stageMembers:
           - personaId: postmortem-analyst
             budget: 18
+            model: claude-sonnet-4-6
         position:
           x: 816
           y: 248
@@ -286,6 +295,7 @@
         stageMembers:
           - personaId: coder
             budget: 40
+            model: gpt-5.5
         position:
           x: 320
           y: 264
@@ -297,6 +307,7 @@
         stageMembers:
           - personaId: reviewer
             budget: 25
+            model: gpt-5.5
         position:
           x: 560
           y: 160
@@ -308,6 +319,7 @@
         stageMembers:
           - personaId: security-auditor
             budget: 25
+            model: gpt-5.5
         position:
           x: 560
           y: 352
@@ -331,6 +343,7 @@
         stageMembers:
           - personaId: postmortem-analyst
             budget: 18
+            model: gpt-5.5
         position:
           x: 816
           y: 232
@@ -342,6 +355,7 @@
         stageMembers:
           - personaId: mimir-memory-curator
             budget: 20
+            model: gpt-5.5
             consumesEventTypes: [mimir.source.ingested]
             eventFilters:
               mount_names: tmp-mimir-test

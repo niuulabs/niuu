@@ -169,7 +169,9 @@ export function PersonaList({
                   </div>
                   <div className="rv-persona-row__badges">
                     {!p.isBuiltin && <span className="rv-persona-usr-badge">USR</span>}
-                    {p.hasOverride && <span className="rv-persona-ovr-badge">OVR</span>}
+                    {p.isBuiltin && p.hasOverride && (
+                      <span className="rv-persona-ovr-badge">OVR</span>
+                    )}
                   </div>
                 </button>
               );

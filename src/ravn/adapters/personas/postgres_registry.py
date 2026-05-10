@@ -18,6 +18,7 @@ from ravn.adapters.personas.loader import (
     PersonaFanIn,
     PersonaLLMConfig,
     PersonaProduces,
+    _sanitize_executor_kwargs,
 )
 
 _ROLE_DEFAULT = "build"
@@ -254,7 +255,11 @@ class PostgresPersonaRegistry:
 
     async def list_personas(self, owner_id: str, *, source: str = "all") -> list[PersonaView]:
         overrides = await self._load_overrides(owner_id)
-        names = set(self._builtin_loader.list_names()) | set(overrides.keys())
+        active_builtin_names = set(self._builtin_loader.list_builtin_names())
+        custom_override_names = {
+            name for name in overrides.keys() if not self._builtin_loader.is_builtin(name)
+        }
+        names = active_builtin_names | custom_override_names
         views: list[PersonaView] = []
 
         for name in sorted(names):
@@ -263,7 +268,7 @@ class PostgresPersonaRegistry:
                 continue
             if source == "builtin" and not view.is_builtin:
                 continue
-            if source == "custom" and not view.has_override:
+            if source == "custom" and view.is_builtin:
                 continue
             views.append(view)
 
@@ -426,9 +431,7 @@ def _normalize_payload(
         payload.get("iteration_budget"),
         default=int(base["iteration_budget"]),
     )
-    normalized["llm_primary_alias"] = str(
-        payload.get("llm_primary_alias") or base["llm_primary_alias"]
-    )
+    normalized["llm_primary_alias"] = ""
     normalized["llm_thinking_enabled"] = bool(
         payload.get("llm_thinking_enabled", base["llm_thinking_enabled"])
     )
@@ -472,10 +475,10 @@ def _config_to_payload(config: PersonaConfig | None) -> dict[str, Any]:
         "permission_mode": _normalize_permission_mode(config.permission_mode),
         "executor": {
             "adapter": config.executor.adapter,
-            "kwargs": dict(config.executor.kwargs),
+            "kwargs": _sanitize_executor_kwargs(config.executor.kwargs),
         },
         "iteration_budget": config.iteration_budget,
-        "llm_primary_alias": config.llm.primary_alias or "",
+        "llm_primary_alias": "",
         "llm_thinking_enabled": config.llm.thinking_enabled,
         "llm_max_tokens": config.llm.max_tokens,
         "llm_temperature": None,
@@ -532,7 +535,7 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
             kwargs=dict((payload.get("executor") or {}).get("kwargs") or {}),
         ),
         llm=PersonaLLMConfig(
-            primary_alias=str(payload["llm_primary_alias"]),
+            primary_alias="",
             thinking_enabled=bool(payload["llm_thinking_enabled"]),
             max_tokens=int(payload["llm_max_tokens"]),
         ),
@@ -626,7 +629,9 @@ def _normalize_executor(raw: object, fallback: object) -> dict[str, Any]:
     kwargs = raw.get("kwargs")
     normalized_kwargs: dict[str, Any] = {}
     if isinstance(kwargs, dict):
-        normalized_kwargs = {str(key): value for key, value in kwargs.items()}
+        normalized_kwargs = _sanitize_executor_kwargs(
+            {str(key): value for key, value in kwargs.items()}
+        )
 
     if not adapter and not normalized_kwargs:
         return {"adapter": "", "kwargs": {}}

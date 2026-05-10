@@ -146,7 +146,7 @@ function detailToRequest(d: PersonaDetail): PersonaCreateRequest {
     permissionMode: d.permissionMode,
     executor: d.executor,
     iterationBudget: d.iterationBudget,
-    llmPrimaryAlias: d.llm.primaryAlias,
+    llmPrimaryAlias: '',
     llmThinkingEnabled: d.llm.thinkingEnabled,
     llmMaxTokens: d.llm.maxTokens,
     llmTemperature: d.llm.temperature,
@@ -165,7 +165,6 @@ function defaultCodexExecutor(): PersonaExecutor {
     adapter: CLI_EXECUTOR_ADAPTER,
     kwargs: {
       transport_adapter: CODEX_WS_TRANSPORT_ADAPTER,
-      transport_kwargs: { model: '' },
     },
   };
 }
@@ -193,15 +192,6 @@ function normalizeExecutor(
 
 function getExecutorTransportAdapter(executor: PersonaCreateRequest['executor']): string {
   const value = executor?.kwargs?.transport_adapter;
-  return typeof value === 'string' ? value : '';
-}
-
-function getExecutorTransportModel(executor: PersonaCreateRequest['executor']): string {
-  const transportKwargs = executor?.kwargs?.transport_kwargs;
-  if (!transportKwargs || typeof transportKwargs !== 'object' || Array.isArray(transportKwargs)) {
-    return '';
-  }
-  const value = (transportKwargs as Record<string, unknown>).model;
   return typeof value === 'string' ? value : '';
 }
 
@@ -330,29 +320,6 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
     [form.executor, updateExecutor],
   );
 
-  const updateTransportModel = useCallback(
-    (model: string) => {
-      const current = form.executor ?? { adapter: CLI_EXECUTOR_ADAPTER, kwargs: {} };
-      const transportKwargs =
-        current.kwargs.transport_kwargs &&
-        typeof current.kwargs.transport_kwargs === 'object' &&
-        !Array.isArray(current.kwargs.transport_kwargs)
-          ? { ...(current.kwargs.transport_kwargs as Record<string, unknown>) }
-          : {};
-      updateExecutor({
-        adapter: current.adapter || CLI_EXECUTOR_ADAPTER,
-        kwargs: {
-          ...current.kwargs,
-          transport_kwargs: {
-            ...transportKwargs,
-            model,
-          },
-        },
-      });
-    },
-    [form.executor, updateExecutor],
-  );
-
   const handleReset = useCallback(() => {
     setForm(detailToRequest(persona));
     setDirty(false);
@@ -468,8 +435,11 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
         </Section>
 
         {/* Runtime — combined section matching web2 (iteration_budget + permission_mode + LLM) */}
-        <Section title="Runtime" subtitle="Iteration budget, permissions and LLM config.">
-          <div className="rv-pf-grid-3">
+        <Section
+          title="Runtime"
+          subtitle="Iteration budget, permissions, and non-model LLM behavior."
+        >
+          <div className="rv-pf-grid-2">
             <label className="rv-pf-field">
               <span className="rv-pf-field__label">iteration_budget</span>
               <input
@@ -493,18 +463,6 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
                     {m}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label className="rv-pf-field">
-              <span className="rv-pf-field__label">llm.alias</span>
-              <select
-                className="niuu-form-control niuu-font-mono"
-                value={form.llmPrimaryAlias}
-                onChange={(e) => update('llmPrimaryAlias', e.target.value)}
-              >
-                <option value="claude-sonnet-4-6">sonnet-primary</option>
-                <option value="claude-opus-4-6">opus-primary</option>
-                <option value="claude-haiku-4-5">haiku-primary</option>
               </select>
             </label>
           </div>
@@ -569,15 +527,6 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
                   className="niuu-form-control niuu-font-mono"
                   value={getExecutorTransportAdapter(form.executor)}
                   onChange={(e) => updateTransportAdapter(e.target.value)}
-                />
-              </label>
-              <label className="rv-pf-field">
-                <span className="rv-pf-field__label">transport.model</span>
-                <input
-                  className="niuu-form-control niuu-font-mono"
-                  value={getExecutorTransportModel(form.executor)}
-                  onChange={(e) => updateTransportModel(e.target.value)}
-                  placeholder="inherit transport default"
                 />
               </label>
             </div>

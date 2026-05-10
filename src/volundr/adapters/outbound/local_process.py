@@ -1221,6 +1221,17 @@ class LocalProcessPodManager(PodManager):
                     str(event_type) for event_type in consumes_event_types
                 ]
 
+            executor_override = persona_override.get("executor")
+            if isinstance(executor_override, dict) and executor_override:
+                persona_runtime_overrides["executor"] = {
+                    "adapter": str(executor_override.get("adapter") or ""),
+                    "kwargs": (
+                        dict(executor_override.get("kwargs") or {})
+                        if isinstance(executor_override.get("kwargs"), dict)
+                        else {}
+                    ),
+                }
+
             if persona_runtime_overrides:
                 node_config["persona_overrides"] = persona_runtime_overrides
             else:

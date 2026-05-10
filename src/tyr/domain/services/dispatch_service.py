@@ -26,6 +26,11 @@ except ImportError:
     _catalog_saga_completed = None  # type: ignore[assignment]
 
 from mimir.registry import MimirRegistryStore
+from niuu.domain.model_runtime import (
+    default_session_definition_for_vendor,
+    default_transport_adapter_for_vendor,
+    vendors_for_models,
+)
 from tyr.domain.flock_merge import build_flock_workload_config
 from tyr.domain.models import (
     Phase,
@@ -44,6 +49,7 @@ from tyr.domain.workflow_snapshot import (
     workflow_mimir_from_snapshot,
     workflow_name_from_snapshot,
     workflow_personas_from_snapshot,
+    workflow_stage_models_from_snapshot,
 )
 from tyr.ports.dispatcher_repository import DispatcherRepository
 from tyr.ports.event_bus import EventBusPort, TyrEvent
@@ -64,11 +70,99 @@ _READY_STATUSES = {"todo", "backlog", "triage"}
 _READY_STATUS_TYPES = {"unstarted"}
 _ACTIVE_SESSION_STATUSES = {"running", "starting", "creating"}
 _COMPLETED_LINEAR_STATES = {"completed", "cancelled"}
+_WORKFLOW_EXECUTOR_ADAPTER = "ravn.adapters.executors.cli.CliTransportExecutor"
 
 
 def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _workflow_persona_model_conflicts(
+    workflow_snapshot: dict[str, Any] | None,
+) -> dict[str, set[str]]:
+    if not isinstance(workflow_snapshot, dict):
+        return {}
+
+    graph = workflow_snapshot.get("graph")
+    if not isinstance(graph, dict):
+        return {}
+
+    persona_models: dict[str, set[str]] = defaultdict(set)
+    for node in list(graph.get("nodes") or []):
+        if not isinstance(node, dict) or str(node.get("kind") or "") != "stage":
+            continue
+        for member in list(node.get("stageMembers") or []):
+            if not isinstance(member, dict):
+                continue
+            persona_id = str(member.get("personaId") or "").strip()
+            model = str(member.get("model") or "").strip()
+            if persona_id and model:
+                persona_models[persona_id].add(model)
+
+    return {name: models for name, models in persona_models.items() if len(models) > 1}
+
+
+def _resolve_workflow_execution(
+    workflow_snapshot: dict[str, Any] | None,
+    *,
+    fallback_model: str,
+    requested_definition: str | None,
+) -> tuple[str, str | None, str, list[dict[str, Any]]]:
+    if not workflow_snapshot:
+        return fallback_model, requested_definition, "", []
+
+    stage_models = workflow_stage_models_from_snapshot(workflow_snapshot)
+    if not stage_models:
+        raise ValueError("Workflow stages must declare an explicit model for each persona.")
+
+    conflicts = _workflow_persona_model_conflicts(workflow_snapshot)
+    if conflicts:
+        formatted = ", ".join(
+            f"{persona}=[{', '.join(sorted(models))}]"
+            for persona, models in sorted(conflicts.items())
+        )
+        raise ValueError(
+            "Workflow assigns multiple models to the same persona, "
+            f"which is unsupported: {formatted}"
+        )
+
+    vendors = vendors_for_models(stage_models)
+    if len(vendors) != 1:
+        raise ValueError(
+            "Workflow stages must use models from a single provider/runtime family."
+        )
+
+    vendor = next(iter(vendors))
+    resolved_definition = default_session_definition_for_vendor(vendor)
+    if requested_definition and requested_definition != resolved_definition:
+        logger.warning(
+            "Workflow runtime overrides requested session definition %s -> %s",
+            requested_definition,
+            resolved_definition,
+        )
+    if not resolved_definition:
+        raise ValueError(f"No default session definition exists for provider '{vendor}'.")
+
+    transport_adapter = default_transport_adapter_for_vendor(vendor)
+    personas: list[dict[str, Any]] = []
+    for persona in workflow_personas_from_snapshot(workflow_snapshot):
+        if not isinstance(persona, dict):
+            continue
+        runtime_persona = dict(persona)
+        model = str(runtime_persona.pop("model", "")).strip()
+        if model:
+            llm = dict(runtime_persona.get("llm") or {})
+            llm["model"] = model
+            runtime_persona["llm"] = llm
+        if transport_adapter:
+            runtime_persona["executor"] = {
+                "adapter": _WORKFLOW_EXECUTOR_ADAPTER,
+                "kwargs": {"transport_adapter": transport_adapter},
+            }
+        personas.append(runtime_persona)
+
+    return stage_models[0], resolved_definition, transport_adapter, personas
 
 
 def _normalize_mimir_workload_config(
@@ -1120,6 +1214,8 @@ class DispatchService:
         session_name = issue.identifier.lower()
         workflow_personas = workflow_personas_from_snapshot(workflow_snapshot)
         use_workflow_flock = bool(workflow_snapshot and workflow_personas)
+        resolved_effective_model = effective_model
+        resolved_session_definition = session_definition
 
         if not self._config.flock_enabled and not use_workflow_flock:
             return SpawnRequest(
@@ -1127,7 +1223,7 @@ class DispatchService:
                 repo=item.repo,
                 branch=saga.feature_branch,
                 base_branch=saga.base_branch,
-                model=effective_model,
+                model=resolved_effective_model,
                 tracker_issue_id=issue.identifier,
                 tracker_issue_url=issue.url,
                 system_prompt=effective_prompt,
@@ -1137,7 +1233,7 @@ class DispatchService:
                     saga.feature_branch,
                     template=self._config.dispatch_prompt_template,
                 ),
-                definition=session_definition,
+                definition=resolved_session_definition,
                 workload_config={"workflow": workflow_snapshot} if workflow_snapshot else {},
                 integration_ids=integration_ids,
             )
@@ -1152,7 +1248,17 @@ class DispatchService:
         mesh_transport = "nng"
 
         if use_workflow_flock:
-            personas = copy.deepcopy(workflow_personas)
+            (
+                resolved_effective_model,
+                resolved_session_definition,
+                _transport_adapter,
+                workflow_persona_overrides,
+            ) = _resolve_workflow_execution(
+                workflow_snapshot,
+                fallback_model=effective_model,
+                requested_definition=session_definition,
+            )
+            personas = copy.deepcopy(workflow_persona_overrides)
             flow_name_for_log = str(workflow_snapshot.get("name") or "")
             mimir_cfg = _resolve_mimir_registry_refs(
                 _normalize_mimir_workload_config(workflow_mimir_from_snapshot(workflow_snapshot)),
@@ -1242,12 +1348,12 @@ class DispatchService:
             repo=item.repo,
             branch=saga.feature_branch,
             base_branch=saga.base_branch,
-            model=effective_model,
+            model=resolved_effective_model,
             tracker_issue_id=issue.identifier,
             tracker_issue_url=issue.url,
             system_prompt=effective_prompt,
             initial_prompt=workload_config["initiative_context"],
-            definition=session_definition,
+            definition=resolved_session_definition,
             workload_type="ravn_flock",
             workload_config=workload_config,
             integration_ids=integration_ids,

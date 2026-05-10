@@ -18,7 +18,11 @@ import { useMemo } from 'react';
 import { SegmentedFilter } from '@niuulabs/ui';
 import type { Workflow } from '../../domain/workflow';
 import { validateWorkflowFull } from '../../domain/workflowValidation';
-import { useWorkflowBuilder, type WorkflowView } from './useWorkflowBuilder';
+import {
+  useWorkflowBuilder,
+  type WorkflowStageModelOption,
+  type WorkflowView,
+} from './useWorkflowBuilder';
 import { GraphView } from './GraphView';
 import { PipelineView } from './PipelineView';
 import { YamlView } from './YamlView';
@@ -34,6 +38,8 @@ export interface WorkflowBuilderProps {
   onSave?: (workflow: Workflow) => void;
   /** Override persona library (defaults to DEFAULT_PERSONAS). */
   personas?: PersonaEntry[];
+  /** Models available for explicit per-stage assignment. */
+  models?: WorkflowStageModelOption[];
   /** Registry-backed Mimir mounts available for drag/drop in the workflow editor. */
   registryMounts?: WorkflowRegistryMount[];
 }
@@ -54,9 +60,10 @@ export function WorkflowBuilder({
   initialWorkflow,
   onSave,
   personas,
+  models = [],
   registryMounts = [],
 }: WorkflowBuilderProps) {
-  const builder = useWorkflowBuilder(initialWorkflow, personas ?? DEFAULT_PERSONAS);
+  const builder = useWorkflowBuilder(initialWorkflow, personas ?? DEFAULT_PERSONAS, models);
   const {
     workflow,
     view,
@@ -78,6 +85,7 @@ export function WorkflowBuilder({
     addPersonaToStage,
     replacePersonaInStage,
     updatePersonaBudget,
+    updatePersonaModel,
     removePersonaFromStage,
     updateNodeLabel,
     updateNode,
@@ -88,7 +96,18 @@ export function WorkflowBuilder({
     setWorkflow: _setWorkflow,
   } = builder;
 
-  const issues = useMemo(() => validateWorkflowFull(workflow), [workflow]);
+  const modelCatalog = useMemo(
+    () =>
+      Object.fromEntries(models.map((model) => [model.id, { vendor: model.vendor }])) as Record<
+        string,
+        { vendor?: string }
+      >,
+    [models],
+  );
+  const issues = useMemo(
+    () => validateWorkflowFull(workflow, modelCatalog),
+    [modelCatalog, workflow],
+  );
   const errorCount = issues.filter((i) => i.severity === 'error').length;
   const warnCount = issues.filter((i) => i.severity === 'warning').length;
 
@@ -230,6 +249,7 @@ export function WorkflowBuilder({
               edges={workflow.edges}
               selectedNodeId={selectedNodeId}
               onSelectNode={selectNode}
+              models={models}
             />
           )}
           {view === 'yaml' && <YamlView workflow={workflow} />}
@@ -252,6 +272,7 @@ export function WorkflowBuilder({
         warnCount={warnCount}
         issues={issues}
         personas={personas ?? DEFAULT_PERSONAS}
+        models={models}
         registryMounts={registryMounts}
         onDeleteNode={deleteNode}
         onUpdateNode={updateNode}
@@ -259,6 +280,7 @@ export function WorkflowBuilder({
         onUpdateWorkflowMeta={updateWorkflowMeta}
         onAddPersona={addPersonaToStage}
         onReplacePersona={replacePersonaInStage}
+        onUpdatePersonaModel={updatePersonaModel}
         onUpdatePersonaBudget={updatePersonaBudget}
         onRemovePersona={removePersonaFromStage}
         onAddResourceBinding={addResourceBinding}

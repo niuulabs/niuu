@@ -72,11 +72,13 @@ def test_list_returns_builtins(client: TestClient) -> None:
     resp = client.get("/api/v1/ravn/personas")
     assert resp.status_code == 200
     names = [p["name"] for p in resp.json()]
-    # All 13 built-ins should be present
-    assert "coding-agent" in names
-    assert "research-agent" in names
+    assert "coder" in names
     assert "reviewer" in names
-    assert len(names) >= 13
+    assert "security-auditor" in names
+    assert "postmortem-analyst" in names
+    assert "mimir-memory-curator" in names
+    assert "coding-agent" not in names
+    assert len(names) == 5
 
 
 def test_list_source_builtin_filter(client: TestClient) -> None:
@@ -101,7 +103,7 @@ def test_list_all_includes_custom_and_builtin(client: TestClient, tmp_persona_di
     assert resp.status_code == 200
     names = [p["name"] for p in resp.json()]
     assert "test-agent" in names
-    assert "coding-agent" in names
+    assert "coder" in names
 
 
 # ---------------------------------------------------------------------------
@@ -110,10 +112,10 @@ def test_list_all_includes_custom_and_builtin(client: TestClient, tmp_persona_di
 
 
 def test_get_builtin_returns_correct_fields(client: TestClient) -> None:
-    resp = client.get("/api/v1/ravn/personas/coding-agent")
+    resp = client.get("/api/v1/ravn/personas/coder")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["name"] == "coding-agent"
+    assert data["name"] == "coder"
     assert data["is_builtin"] is True
     assert data["has_override"] is False
     assert data["yaml_source"] == "[built-in]"
@@ -122,8 +124,8 @@ def test_get_builtin_returns_correct_fields(client: TestClient) -> None:
     assert "produces" in data
     assert "consumes" in data
     assert "fan_in" in data
-    # coding-agent specific checks
-    assert data["permission_mode"] == "workspace-write"
+    # coder specific checks
+    assert data["permission_mode"] == "workspace_write"
     assert data["iteration_budget"] == 40
     assert "file" in data["allowed_tools"]
 
@@ -150,12 +152,12 @@ def test_get_nonexistent_returns_404(client: TestClient) -> None:
 
 
 def test_get_yaml_returns_parseable_yaml(client: TestClient) -> None:
-    resp = client.get("/api/v1/ravn/personas/coding-agent/yaml")
+    resp = client.get("/api/v1/ravn/personas/coder/yaml")
     assert resp.status_code == 200
     assert "text/yaml" in resp.headers["content-type"]
     parsed = yaml.safe_load(resp.text)
     assert isinstance(parsed, dict)
-    assert parsed["name"] == "coding-agent"
+    assert parsed["name"] == "coder"
 
 
 def test_get_yaml_nonexistent_returns_404(client: TestClient) -> None:
@@ -192,7 +194,7 @@ def test_create_persona_409_if_custom_exists(client: TestClient, tmp_persona_dir
 
 
 def test_create_persona_409_if_builtin(client: TestClient) -> None:
-    payload = {"name": "coding-agent"}
+    payload = {"name": "coder"}
     resp = client.post("/api/v1/ravn/personas", json=payload)
     assert resp.status_code == 409
 
@@ -210,16 +212,16 @@ def test_create_persona_rejects_path_traversal(client: TestClient) -> None:
 
 def test_put_builtin_creates_override(client: TestClient, tmp_persona_dir: Path) -> None:
     payload = {
-        "name": "coding-agent",
+        "name": "coder",
         "system_prompt_template": "Overridden.",
         "permission_mode": "read-only",
     }
-    resp = client.put("/api/v1/ravn/personas/coding-agent", json=payload)
+    resp = client.put("/api/v1/ravn/personas/coder", json=payload)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["name"] == "coding-agent"
+    assert data["name"] == "coder"
     # Override file should exist in the first configured persona_dir
-    override_file = tmp_persona_dir / "coding-agent.yaml"
+    override_file = tmp_persona_dir / "coder.yaml"
     assert override_file.exists()
 
 

@@ -188,6 +188,7 @@ class Model:
     name: str
     description: str
     provider: ModelProvider
+    vendor: str
     tier: ModelTier
     color: str
     cost_per_million_tokens: float | None = None

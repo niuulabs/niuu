@@ -67,7 +67,7 @@ function PersonaRow({ persona, selected, onSelect }: PersonaRowProps) {
       {persona.isBuiltin && (
         <span className="niuu-text-xs niuu-text-text-muted niuu-shrink-0">builtin</span>
       )}
-      {persona.hasOverride && (
+      {persona.isBuiltin && persona.hasOverride && (
         <span className="niuu-text-xs niuu-text-accent-amber niuu-shrink-0">overridden</span>
       )}
       <button

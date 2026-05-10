@@ -2433,6 +2433,14 @@ class PersonaOverridesConfig(BaseModel):
             "Empty keeps the persona's built-in consumes.event_types."
         ),
     )
+    executor: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Optional executor override applied to the resolved persona at runtime. "
+            "Used by workflow dispatch to select the session transport independently "
+            "from the persona definition."
+        ),
+    )
 
 
 class WorkflowRuntimeConfig(BaseModel):

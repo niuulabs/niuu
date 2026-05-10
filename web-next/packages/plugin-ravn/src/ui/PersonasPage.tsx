@@ -129,7 +129,7 @@ function PersonaDetailPane({
                 role: <strong>{persona.role}</strong>
                 <span className="rv-pr-head__sep">·</span>
                 {persona.isBuiltin ? 'builtin' : 'user-defined'}
-                {persona.hasOverride && (
+                {persona.isBuiltin && persona.hasOverride && (
                   <>
                     <span className="rv-pr-head__sep">·</span>
                     <span className="rv-pr-head__override">override applied</span>

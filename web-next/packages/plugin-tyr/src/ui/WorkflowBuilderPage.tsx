@@ -9,8 +9,11 @@
  */
 
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useService } from '@niuulabs/plugin-sdk';
 import { StateDot, cn } from '@niuulabs/ui';
 import type { Workflow } from '../domain/workflow';
+import type { IVolundrService } from '@niuulabs/plugin-volundr';
 import {
   useWorkflows,
   useCreateWorkflow,
@@ -20,12 +23,28 @@ import {
 import { usePersonasBrowser } from './settings/usePersonasBrowser';
 import { WorkflowBuilder } from './WorkflowBuilder';
 import type { PersonaEntry } from './WorkflowBuilder/LibraryPanel';
+import type { WorkflowStageModelOption } from './WorkflowBuilder/useWorkflowBuilder';
 import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
 
+function formatModelOption(
+  id: string,
+  model?: { name?: string; vendor?: string; provider?: string; tier?: string },
+): string {
+  if (!model) return id;
+  const parts = [model.name || id, model.vendor || model.provider];
+  if (model.tier) parts.push(model.tier);
+  return parts.filter(Boolean).join(' · ');
+}
+
 export function WorkflowBuilderPage() {
+  const volundr = useService<IVolundrService>('volundr');
   const { data: workflows, isLoading, isError, error } = useWorkflows();
   const { data: personas } = usePersonasBrowser();
   const { data: registryMounts = [] } = useWorkflowRegistryMounts();
+  const modelsQuery = useQuery({
+    queryKey: ['volundr', 'models'],
+    queryFn: () => volundr.getModels(),
+  });
   const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
   const createMutation = useCreateWorkflow();
   const saveMutation = useSaveWorkflow();
@@ -41,6 +60,13 @@ export function WorkflowBuilderPage() {
     produces: persona.producesEvent ? [persona.producesEvent] : [],
     consumes: persona.consumesEvents ?? [],
   }));
+  const workflowModels: WorkflowStageModelOption[] = Object.entries(modelsQuery.data ?? {})
+    .map(([id, model]) => ({
+      id,
+      label: formatModelOption(id, model),
+      vendor: model.vendor,
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
 
   function handleNew() {
     createMutation.mutate(undefined, {
@@ -175,6 +201,7 @@ export function WorkflowBuilderPage() {
             key={displayed.id}
             initialWorkflow={displayed}
             personas={workflowPersonas}
+            models={workflowModels}
             registryMounts={registryMounts}
             onSave={(updated) =>
               saveMutation.mutate(updated, {

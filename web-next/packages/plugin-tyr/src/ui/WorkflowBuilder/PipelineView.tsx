@@ -11,10 +11,13 @@ import { cn } from '@niuulabs/ui';
 import type { WorkflowNode, WorkflowEdge, WorkflowStageNode } from '../../domain/workflow';
 import { topologicalSort } from '../../domain/topologicalSort';
 import { normalizedStageMembers } from './graphUtils';
+import { structuralWorkflowEdges } from '../../domain/workflowSemantics';
+import type { WorkflowStageModelOption } from './useWorkflowBuilder';
 
 export interface PipelineViewProps {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  models?: WorkflowStageModelOption[];
   selectedNodeId?: string | null;
   onSelectNode?: (id: string) => void;
 }
@@ -47,13 +50,21 @@ function stageSummary(node: WorkflowStageNode) {
   };
 }
 
-export function PipelineView({ nodes, edges, selectedNodeId, onSelectNode }: PipelineViewProps) {
+export function PipelineView({
+  nodes,
+  edges,
+  models = [],
+  selectedNodeId,
+  onSelectNode,
+}: PipelineViewProps) {
+  const structuralEdges = structuralWorkflowEdges(edges);
   const layers = topologicalSort(
     nodes.map((n) => n.id),
-    edges,
+    structuralEdges,
   );
 
   const nodeById = new Map<string, WorkflowNode>(nodes.map((n) => [n.id, n]));
+  const modelLabelById = new Map(models.map((model) => [model.id, model.label]));
 
   // Nodes excluded from topological layers (part of a cycle)
   const layerNodeIds = new Set(layers.flatMap((l) => l.nodeIds));
@@ -129,6 +140,17 @@ export function PipelineView({ nodes, edges, selectedNodeId, onSelectNode }: Pip
                           </span>
                           <span className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
                             join {summary.joinMode} · max {summary.maxConcurrent}
+                          </span>
+                          <span className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
+                            {[
+                              ...new Set(
+                                summary.members
+                                  .map((member) => member.model?.trim() ?? '')
+                                  .filter(Boolean),
+                              ),
+                            ]
+                              .map((modelId) => modelLabelById.get(modelId) ?? modelId)
+                              .join(' · ') || 'no model'}
                           </span>
                         </>
                       );

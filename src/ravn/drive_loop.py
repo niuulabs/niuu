@@ -55,6 +55,49 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+_SUCCESS_VERDICT_PREFERENCE = (
+    "pass",
+    "complete",
+    "completed",
+    "approve",
+    "approved",
+    "ok",
+    "success",
+    "succeeded",
+    "clean",
+)
+
+
+def _default_success_verdict(produces: object) -> str:
+    """Return the best success verdict to synthesize for a persona outcome."""
+    event_type_map = getattr(produces, "event_type_map", {}) or {}
+    if isinstance(event_type_map, dict):
+        for candidate in _SUCCESS_VERDICT_PREFERENCE:
+            if candidate in event_type_map:
+                return candidate
+
+    schema = getattr(produces, "schema", {}) or {}
+    if isinstance(schema, dict):
+        verdict_schema = schema.get("verdict")
+        values: list[str] = []
+        if isinstance(verdict_schema, dict):
+            raw_values = verdict_schema.get("values", [])
+            if isinstance(raw_values, list):
+                values = [str(value).strip() for value in raw_values if str(value).strip()]
+        else:
+            raw_values = getattr(verdict_schema, "enum_values", None)
+            if isinstance(raw_values, list):
+                values = [str(value).strip() for value in raw_values if str(value).strip()]
+
+        if values:
+            normalized = {value.lower(): value for value in values}
+            for candidate in _SUCCESS_VERDICT_PREFERENCE:
+                chosen = normalized.get(candidate)
+                if chosen:
+                    return chosen
+
+    return ""
+
 # Type alias for the mesh RPC handler callable
 MeshRpcHandler = Callable[[dict], Awaitable[dict]]
 
@@ -1175,11 +1218,20 @@ class DriveLoop:
             for key, value in self._default_mimir_mount_fields().items():
                 outcome_fields.setdefault(key, value)
 
+        event_type_map = self._persona_config.produces.event_type_map
+        success_verdict = _default_success_verdict(self._persona_config.produces)
+        synthesized_pass = False
         root_corr = task.root_correlation_id or task.task_id
         verdict = str(outcome_fields.get("verdict", "") or "").strip()
+        if not verdict and success and success_verdict:
+            verdict = success_verdict
+            outcome_fields.setdefault("verdict", verdict)
+            synthesized_pass = True
         summary = str(outcome_fields.get("summary", "") or "").strip()
         files_changed = outcome_fields.get("files_changed")
         valid = bool(parsed.valid) if parsed is not None else False
+        if synthesized_pass and not valid:
+            valid = True
 
         base_payload: dict[str, object] = {
             "persona": self._persona_config.name,
@@ -1200,7 +1252,6 @@ class DriveLoop:
             base_payload["files_changed"] = files_changed
 
         alias_event_type = ""
-        event_type_map = self._persona_config.produces.event_type_map
         if verdict and verdict in event_type_map:
             alias_event_type = event_type_map[verdict]
 

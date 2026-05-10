@@ -96,6 +96,16 @@ describe('NodeInspector — stage node', () => {
     expect(screen.getByText('None assigned')).toBeInTheDocument();
   });
 
+  it('renders persona chips from stageMembers when personaIds is empty', () => {
+    const node = {
+      ...stageNode,
+      personaIds: [],
+      stageMembers: [{ personaId: 'coder', budget: 40 }],
+    };
+    render(<NodeInspector node={node} {...defaultHandlers()} />);
+    expect(screen.getByTestId('inspector-persona-coder')).toBeInTheDocument();
+  });
+
   it('does not show condition field for stage node', () => {
     render(<NodeInspector node={stageNode} {...defaultHandlers()} />);
     expect(screen.queryByTestId('inspector-condition')).toBeNull();

@@ -93,8 +93,13 @@ def test_list_returns_builtins(client: TestClient) -> None:
     resp = client.get("/api/v1/ravn/personas")
     assert resp.status_code == 200
     names = [p["name"] for p in resp.json()]
-    assert "coding-agent" in names
-    assert len(names) >= 1
+    assert "coder" in names
+    assert "reviewer" in names
+    assert "security-auditor" in names
+    assert "postmortem-analyst" in names
+    assert "mimir-memory-curator" in names
+    assert "coding-agent" not in names
+    assert len(names) == 5
 
 
 def test_list_source_filter_builtin(client: TestClient) -> None:
@@ -164,10 +169,10 @@ def test_validate_does_not_save(client: TestClient, loader: FilesystemPersonaAda
 
 
 def test_get_builtin_persona(client: TestClient) -> None:
-    resp = client.get("/api/v1/ravn/personas/coding-agent")
+    resp = client.get("/api/v1/ravn/personas/coder")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["name"] == "coding-agent"
+    assert data["name"] == "coder"
     assert data["is_builtin"] is True
     assert "system_prompt_template" in data
     assert "llm" in data
@@ -184,10 +189,10 @@ def test_get_nonexistent_persona_returns_404(client: TestClient) -> None:
 
 
 def test_get_persona_yaml_returns_text(client: TestClient) -> None:
-    resp = client.get("/api/v1/ravn/personas/coding-agent/yaml")
+    resp = client.get("/api/v1/ravn/personas/coder/yaml")
     assert resp.status_code == 200
     assert "yaml" in resp.headers.get("content-type", "")
-    assert "coding-agent" in resp.text
+    assert "coder" in resp.text
 
 
 def test_get_persona_yaml_404_for_missing(client: TestClient) -> None:
@@ -217,7 +222,7 @@ def test_create_persona_conflict_for_duplicate(
 
 
 def test_create_builtin_returns_conflict(client: TestClient) -> None:
-    payload = {**_CREATE_PAYLOAD, "name": "coding-agent"}
+    payload = {**_CREATE_PAYLOAD, "name": "coder"}
     resp = client.post("/api/v1/ravn/personas", json=payload)
     assert resp.status_code == 409
 

@@ -19,7 +19,6 @@ const MOCK_PERSONA: PersonaDetail = {
     adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
     kwargs: {
       transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-      transport_kwargs: { model: '' },
     },
   },
   iterationBudget: 20,
@@ -78,12 +77,11 @@ describe('PersonaForm', () => {
     );
   });
 
-  it('populates LLM alias from persona', () => {
+  it('does not expose persona-level model selection', () => {
     render(<PersonaForm persona={MOCK_PERSONA} onSave={vi.fn()} />, {
       wrapper: wrap(),
     });
-    // LLM alias is now a select in the Runtime section
-    expect(screen.getByDisplayValue('sonnet-primary')).toBeInTheDocument();
+    expect(screen.queryByText('llm.alias')).not.toBeInTheDocument();
   });
 
   it('populates execution mode from persona executor', () => {
@@ -117,21 +115,20 @@ describe('PersonaForm', () => {
     await waitFor(() => expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument());
   });
 
-  it('calls onSave with updated LLM alias when saved', async () => {
+  it('keeps llmPrimaryAlias empty when saved', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(<PersonaForm persona={MOCK_PERSONA} onSave={onSave} />, {
       wrapper: wrap(),
     });
 
-    const aliasSelect = screen.getByDisplayValue('sonnet-primary');
-    fireEvent.change(aliasSelect, { target: { value: 'claude-opus-4-6' } });
+    fireEvent.change(screen.getByDisplayValue('8192'), { target: { value: '4096' } });
 
     await waitFor(() => expect(screen.getByText('Unsaved changes')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /save persona/i }));
 
     await waitFor(() => {
       expect(onSave).toHaveBeenCalledWith(
-        expect.objectContaining({ llmPrimaryAlias: 'claude-opus-4-6' }),
+        expect.objectContaining({ llmPrimaryAlias: '', llmMaxTokens: 4096 }),
       );
     });
   });
@@ -196,7 +193,6 @@ describe('PersonaForm', () => {
             adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
             kwargs: {
               transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-              transport_kwargs: { model: '' },
             },
           },
         }),

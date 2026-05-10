@@ -31,10 +31,13 @@ export type WorkflowNodeKind = z.input<typeof workflowNodeKindSchema>;
 const positionSchema = z.object({ x: z.number(), y: z.number() });
 const stageExecutionModeSchema = z.enum(['parallel', 'sequential']);
 const stageJoinModeSchema = z.enum(['all', 'any', 'merge']);
+const stageEventFiltersSchema = z.record(z.string()).default({});
 const stageMemberSchema = z.object({
   personaId: z.string().min(1),
+  model: z.string().default(''),
   budget: z.number().int().nonnegative().default(40),
   consumesEventTypes: z.array(z.string()).default([]),
+  eventFilters: stageEventFiltersSchema,
 });
 export type StageExecutionMode = z.input<typeof stageExecutionModeSchema>;
 export type StageJoinMode = z.input<typeof stageJoinModeSchema>;

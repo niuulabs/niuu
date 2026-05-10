@@ -1139,7 +1139,13 @@ class TestBuildSpawnRequestPersonaOverrides:
                         "id": "stage-1",
                         "kind": "stage",
                         "label": "Review",
-                        "stageMembers": [{"personaId": "reviewer", "budget": 40}],
+                        "stageMembers": [
+                            {
+                                "personaId": "reviewer",
+                                "model": "claude-sonnet-4-6",
+                                "budget": 40,
+                            }
+                        ],
                     }
                 ]
             },
@@ -1162,7 +1168,22 @@ class TestBuildSpawnRequestPersonaOverrides:
 
         assert req.workload_type == "ravn_flock"
         assert req.workload_config["workflow"]["name"] == "Review Flow"
-        assert req.workload_config["personas"] == [{"name": "reviewer", "iteration_budget": 40}]
+        assert req.workload_config["personas"] == [
+            {
+                "name": "reviewer",
+                "iteration_budget": 40,
+                "llm": {"model": "claude-sonnet-4-6"},
+                "executor": {
+                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                    "kwargs": {
+                        "transport_adapter": (
+                            "skuld.transports.persistent_subprocess."
+                            "PersistentSubprocessTransport"
+                        )
+                    },
+                },
+            }
+        ]
 
 
 class _StubWorkflowRepo(WorkflowRepository):

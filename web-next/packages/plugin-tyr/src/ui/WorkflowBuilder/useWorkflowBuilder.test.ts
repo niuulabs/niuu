@@ -66,7 +66,7 @@ describe('useWorkflowBuilder — initial state', () => {
   it('starts with the provided workflow', () => {
     const wf = makeWorkflow();
     const { result } = renderHook(() => useWorkflowBuilder(wf));
-    expect(result.current.workflow).toBe(wf);
+    expect(result.current.workflow).toMatchObject(wf);
   });
 
   it('starts on graph view', () => {
@@ -87,6 +87,36 @@ describe('useWorkflowBuilder — initial state', () => {
   it('has no inspectorNodeId', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
     expect(result.current.inspectorNodeId).toBeNull();
+  });
+
+  it('normalizes personaIds from stageMembers on load', () => {
+    const wf: Workflow = {
+      ...makeWorkflow(),
+      nodes: [
+        {
+          id: 'stage-1',
+          kind: 'stage',
+          label: 'Stage 1',
+          raidId: null,
+          personaIds: [],
+          stageMembers: [{ personaId: 'coder', model: '', budget: 40 }],
+          position: { x: 100, y: 100 },
+        },
+        {
+          id: 'gate-1',
+          kind: 'gate',
+          label: 'Gate',
+          condition: 'ok',
+          position: { x: 300, y: 100 },
+        },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(wf));
+    const node = result.current.workflow.nodes.find((candidate) => candidate.id === 'stage-1');
+    expect(node?.kind).toBe('stage');
+    if (node?.kind === 'stage') {
+      expect(node.personaIds).toEqual(['coder']);
+    }
   });
 });
 
@@ -392,7 +422,7 @@ describe('useWorkflowBuilder — startConnect / cancelConnect / completeConnect'
           label: 'Review',
           raidId: null,
           personaIds: ['reviewer'],
-          stageMembers: [{ personaId: 'reviewer', budget: 40 }],
+          stageMembers: [{ personaId: 'reviewer', model: '', budget: 40 }],
           executionMode: 'parallel',
           maxConcurrent: 3,
           joinMode: 'all',
@@ -466,7 +496,7 @@ describe('useWorkflowBuilder — persona management', () => {
           label: 'Code',
           raidId: null,
           personaIds: ['coder'],
-          stageMembers: [{ personaId: 'coder', budget: 40 }],
+          stageMembers: [{ personaId: 'coder', model: '', budget: 40 }],
           executionMode: 'parallel',
           maxConcurrent: 3,
           joinMode: 'all',
@@ -536,7 +566,7 @@ describe('useWorkflowBuilder — updateNodeLabel', () => {
           label: 'Code',
           raidId: null,
           personaIds: ['coder'],
-          stageMembers: [{ personaId: 'coder', budget: 40 }],
+          stageMembers: [{ personaId: 'coder', model: '', budget: 40 }],
           executionMode: 'parallel',
           maxConcurrent: 3,
           joinMode: 'all',

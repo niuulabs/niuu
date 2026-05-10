@@ -10,6 +10,13 @@
 
 import type { Workflow } from './workflow';
 import { detectCycle } from './topologicalSort';
+import {
+  stagePersonaIds,
+  structuralWorkflowEdges,
+  workflowModelVendors,
+  workflowPersonaModelConflicts,
+  type WorkflowModelCatalogEntry,
+} from './workflowSemantics';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +29,9 @@ export type WorkflowIssueKind =
   | 'resource_link'
   | 'confidence_underset'
   | 'missing_persona'
+  | 'missing_model'
+  | 'mixed_model_provider'
+  | 'persona_model_conflict'
   | 'no_producer'
   | 'no_consumer';
 
@@ -42,18 +52,22 @@ export interface WorkflowIssue {
  *
  * Rules checked (in order):
  *
- * 1. **cycle** — directed cycle exists; every participating node gets an issue.
+ * 1. **cycle** — unexpected directed cycle exists; expected retry/re-entry
+ *    edges are excluded from this check.
  * 2. **orphan** — node has no edges at all (workflow has >1 node).
  * 3. **dangling_condition** — `cond` node has fewer than 2 outgoing edges.
  * 4. **confidence_underset** — when any stage is raid-mapped, other `stage`
  *    nodes without `raidId` are treated as unplanned work.
- * 5. **missing_persona** — `stage` node has an empty `personaIds` array.
+ * 5. **missing_persona** — `stage` node has no stage members or persona IDs.
  * 6. **no_producer** — `gate`/`cond` node has no incoming edges.
  * 7. **no_consumer** — `stage` node has no outgoing edges (non-singleton workflow).
  *
  * Returns an empty array when the workflow is valid.
  */
-export function validateWorkflowFull(workflow: Workflow): WorkflowIssue[] {
+export function validateWorkflowFull(
+  workflow: Workflow,
+  modelCatalog?: Record<string, WorkflowModelCatalogEntry>,
+): WorkflowIssue[] {
   const issues: WorkflowIssue[] = [];
   const { nodes, edges } = workflow;
   const kindLabel = (kind: Workflow['nodes'][number]['kind']) => {
@@ -76,13 +90,13 @@ export function validateWorkflowFull(workflow: Workflow): WorkflowIssue[] {
   // ── 1. Cycle detection ────────────────────────────────────────────────────
   const cycleNodeIds = detectCycle(
     nodes.map((n) => n.id),
-    edges,
+    structuralWorkflowEdges(edges),
   );
   for (const nodeId of cycleNodeIds) {
     issues.push({
       kind: 'cycle',
       nodeId,
-      message: 'Node is part of a directed cycle',
+      message: 'Node is part of an unexpected directed cycle',
       severity: 'error',
     });
   }
@@ -134,7 +148,7 @@ export function validateWorkflowFull(workflow: Workflow): WorkflowIssue[] {
   // ── 5. Missing personas ───────────────────────────────────────────────────
   for (const node of nodes) {
     if (node.kind !== 'stage') continue;
-    if ((node.personaIds ?? []).length === 0) {
+    if (stagePersonaIds(node).length === 0) {
       issues.push({
         kind: 'missing_persona',
         nodeId: node.id,
@@ -142,6 +156,37 @@ export function validateWorkflowFull(workflow: Workflow): WorkflowIssue[] {
         severity: 'warning',
       });
     }
+    const missingModelMember = (node.stageMembers ?? []).find(
+      (member) => !member.model || !member.model.trim(),
+    );
+    if (missingModelMember) {
+      issues.push({
+        kind: 'missing_model',
+        nodeId: node.id,
+        message: `Stage persona '${missingModelMember.personaId}' has no model assigned`,
+        severity: 'error',
+      });
+    }
+  }
+
+  const vendors = workflowModelVendors(workflow, modelCatalog);
+  if (vendors.size > 1) {
+    issues.push({
+      kind: 'mixed_model_provider',
+      nodeId: null,
+      message: 'Workflow stages mix multiple model providers; use one provider per workflow',
+      severity: 'error',
+    });
+  }
+
+  const personaModelConflicts = workflowPersonaModelConflicts(workflow);
+  for (const [personaId, models] of Object.entries(personaModelConflicts)) {
+    issues.push({
+      kind: 'persona_model_conflict',
+      nodeId: null,
+      message: `Persona '${personaId}' is assigned multiple models in one workflow: ${models.join(', ')}`,
+      severity: 'error',
+    });
   }
 
   // ── 6. No-producer ────────────────────────────────────────────────────────

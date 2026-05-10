@@ -20,7 +20,7 @@ import dataclasses
 import logging
 
 from niuu.domain.llm_merge import _SECURITY_KEYS, concat_prompt_extras
-from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes
+from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes, PersonaExecutorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,24 @@ def apply_config_overrides(persona: PersonaConfig, overrides: dict) -> PersonaCo
                 event_types=list(consumes_event_types),
                 injects=list(persona.consumes.injects),
                 schema=dict(persona.consumes.schema),
+            ),
+        )
+
+    executor_override = overrides.get("executor") or {}
+    if isinstance(executor_override, dict) and executor_override:
+        logger.info(
+            "persona_overrides: replacing executor config for persona %r",
+            persona.name,
+        )
+        persona = dataclasses.replace(
+            persona,
+            executor=PersonaExecutorConfig(
+                adapter=str(executor_override.get("adapter") or ""),
+                kwargs=(
+                    dict(executor_override.get("kwargs") or {})
+                    if isinstance(executor_override.get("kwargs"), dict)
+                    else {}
+                ),
             ),
         )
 

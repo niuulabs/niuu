@@ -10,6 +10,7 @@
 import { cn, Dialog, DialogContent } from '@niuulabs/ui';
 import type { WorkflowNode } from '../../domain/workflow';
 import type { WorkflowBuilderActions } from './useWorkflowBuilder';
+import { stagePersonaIds } from '../../domain/workflowSemantics';
 
 export interface NodeInspectorProps {
   node: WorkflowNode;
@@ -24,6 +25,7 @@ export function NodeInspector({
   onUpdateLabel,
   onRemovePersona,
 }: NodeInspectorProps) {
+  const stagePersonas = node.kind === 'stage' ? stagePersonaIds(node) : [];
   const kindLabel = node.kind === 'stage' ? 'Stage' : node.kind === 'gate' ? 'Gate' : 'Condition';
 
   return (
@@ -114,11 +116,11 @@ export function NodeInspector({
                 <span className="niuu-block niuu-text-xs niuu-text-text-muted niuu-mb-1">
                   Personas
                 </span>
-                {(node.personaIds ?? []).length === 0 ? (
+                {stagePersonas.length === 0 ? (
                   <div className="niuu-text-text-muted niuu-text-xs">None assigned</div>
                 ) : (
                   <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
-                    {(node.personaIds ?? []).map((pid) => (
+                    {stagePersonas.map((pid) => (
                       <span
                         key={pid}
                         data-testid={`inspector-persona-${pid}`}

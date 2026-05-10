@@ -70,6 +70,51 @@ function makeCyclicWorkflow(): Workflow {
   };
 }
 
+function makeReentryWorkflow(): Workflow {
+  return {
+    id: '00000000-0000-0000-0000-000000000003',
+    name: 'Reentry',
+    nodes: [
+      {
+        id: 'coder',
+        kind: 'stage',
+        label: 'Coder',
+        raidId: null,
+        personaIds: [],
+        stageMembers: [{ personaId: 'coder', budget: 40, model: 'gpt-5.5' }],
+        position: { x: 0, y: 0 },
+      },
+      {
+        id: 'reviewer',
+        kind: 'stage',
+        label: 'Reviewer',
+        raidId: null,
+        personaIds: [],
+        stageMembers: [{ personaId: 'reviewer', budget: 25, model: 'gpt-5.5' }],
+        position: { x: 200, y: 0 },
+      },
+    ],
+    edges: [
+      {
+        id: 'e1',
+        source: 'coder',
+        target: 'reviewer',
+        label: 'code.changed -> code.changed',
+        cp1: { x: 80, y: 0 },
+        cp2: { x: -80, y: 0 },
+      },
+      {
+        id: 'e2',
+        source: 'reviewer',
+        target: 'coder',
+        label: 'review.changes_requested -> review.changes_requested',
+        cp1: { x: -80, y: 0 },
+        cp2: { x: 80, y: 0 },
+      },
+    ],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -149,6 +194,18 @@ describe('ValidationPanel', () => {
     );
     const count = Number(screen.getByTestId('validation-pill').getAttribute('data-issue-count'));
     expect(count).toBeGreaterThan(0);
+  });
+
+  it('does not surface a retry loop as a cycle issue', () => {
+    render(
+      <ValidationPanel
+        workflow={makeReentryWorkflow()}
+        onSelectNode={vi.fn()}
+        errorCount={0}
+        warnCount={0}
+      />,
+    );
+    expect(screen.getByTestId('validation-pill')).toHaveAttribute('data-issue-count', '0');
   });
 
   it('expands issue list when pill is clicked', () => {

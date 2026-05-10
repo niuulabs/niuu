@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { cn, SegmentedFilter } from '@niuulabs/ui';
 import type {
   Workflow,
@@ -8,7 +8,10 @@ import type {
   WorkflowStageNode,
 } from '../../domain/workflow';
 import type { WorkflowIssue } from '../../domain/workflowValidation';
-import type { WorkflowBuilderActions } from './useWorkflowBuilder';
+import type {
+  WorkflowBuilderActions,
+  WorkflowStageModelOption,
+} from './useWorkflowBuilder';
 import type { PersonaEntry } from './LibraryPanel';
 import { normalizedStageMembers } from './graphUtils';
 import { EPHEMERAL_LOCAL_MOUNT_ID, type WorkflowRegistryMount } from './mimirRegistry';
@@ -20,6 +23,7 @@ export interface WorkflowDetailPanelProps {
   warnCount: number;
   issues: WorkflowIssue[];
   personas: PersonaEntry[];
+  models: WorkflowStageModelOption[];
   registryMounts: WorkflowRegistryMount[];
   onDeleteNode: WorkflowBuilderActions['deleteNode'];
   onUpdateNode: WorkflowBuilderActions['updateNode'];
@@ -27,6 +31,7 @@ export interface WorkflowDetailPanelProps {
   onUpdateWorkflowMeta: WorkflowBuilderActions['updateWorkflowMeta'];
   onAddPersona: WorkflowBuilderActions['addPersonaToStage'];
   onReplacePersona: WorkflowBuilderActions['replacePersonaInStage'];
+  onUpdatePersonaModel: WorkflowBuilderActions['updatePersonaModel'];
   onUpdatePersonaBudget: WorkflowBuilderActions['updatePersonaBudget'];
   onRemovePersona: WorkflowBuilderActions['removePersonaFromStage'];
   onAddResourceBinding: WorkflowBuilderActions['addResourceBinding'];
@@ -198,11 +203,13 @@ function StageInspector({
   node,
   workflow,
   personas,
+  models,
   issues,
   onUpdateNode,
   onUpdateLabel,
   onAddPersona,
   onReplacePersona,
+  onUpdatePersonaModel,
   onUpdatePersonaBudget,
   onRemovePersona,
   onDeleteNode,
@@ -210,20 +217,25 @@ function StageInspector({
   node: WorkflowStageNode;
   workflow: Workflow;
   personas: PersonaEntry[];
+  models: WorkflowStageModelOption[];
   issues: WorkflowIssue[];
   onUpdateNode: WorkflowBuilderActions['updateNode'];
   onUpdateLabel: WorkflowBuilderActions['updateNodeLabel'];
   onAddPersona: WorkflowBuilderActions['addPersonaToStage'];
   onReplacePersona: WorkflowBuilderActions['replacePersonaInStage'];
+  onUpdatePersonaModel: WorkflowBuilderActions['updatePersonaModel'];
   onUpdatePersonaBudget: WorkflowBuilderActions['updatePersonaBudget'];
   onRemovePersona: WorkflowBuilderActions['removePersonaFromStage'];
   onDeleteNode: WorkflowBuilderActions['deleteNode'];
 }) {
   const [tab, setTab] = useState<'config' | 'flock' | 'validate'>('config');
+  const [newPersonaId, setNewPersonaId] = useState('');
+  const [newModelId, setNewModelId] = useState(models[0]?.id ?? '');
   const inbound = workflow.edges.filter((edge) => edge.target === node.id);
   const outbound = workflow.edges.filter((edge) => edge.source === node.id);
   const nodeIssues = issues.filter((issue) => issue.nodeId === node.id);
   const stageMembers = normalizedStageMembers(node);
+  const defaultModelId = models[0]?.id ?? '';
   const executionOptions = [
     { value: 'parallel' as const, label: 'parallel' },
     { value: 'sequential' as const, label: 'sequential' },
@@ -231,6 +243,12 @@ function StageInspector({
   const availablePersonas = personas.filter(
     (persona) => !stageMembers.some((member) => member.personaId === persona.id),
   );
+
+  useEffect(() => {
+    if (!newModelId && defaultModelId) {
+      setNewModelId(defaultModelId);
+    }
+  }, [defaultModelId, newModelId]);
 
   return (
     <div className="niuu-px-4 niuu-py-0 niuu-flex niuu-flex-col niuu-gap-4">
@@ -352,8 +370,9 @@ function StageInspector({
                       <div className="niuu-text-[13px] niuu-font-semibold niuu-text-text-primary">
                         {persona?.label ?? member.personaId}
                       </div>
-                      <div className="niuu-text-[9px] niuu-font-mono niuu-text-text-faint">
-                        {persona?.role ?? 'unknown'}
+                      <div className="niuu-text-[9px] niuu-font-mono niuu-text-text-faint niuu-flex niuu-flex-wrap niuu-gap-2">
+                        <span>{persona?.role ?? 'unknown'}</span>
+                        <span>{member.model || 'no model'}</span>
                       </div>
                     </div>
                     <button
@@ -380,6 +399,24 @@ function StageInspector({
                         )
                       }
                     />
+                  </div>
+
+                  <div>
+                    <div className={SECTION_LABEL}>Model</div>
+                    <select
+                      className={cn(INPUT, 'niuu-mt-0.5')}
+                      value={member.model ?? ''}
+                      onChange={(e) =>
+                        onUpdatePersonaModel(node.id, member.personaId, e.target.value)
+                      }
+                    >
+                      <option value="">Select a model…</option>
+                      {models.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   <div className="niuu-grid niuu-grid-cols-1 niuu-gap-2">
@@ -432,7 +469,9 @@ function StageInspector({
                     <select
                       className={cn(INPUT, 'niuu-mt-0.5')}
                       value={member.personaId}
-                      onChange={(e) => onReplacePersona(node.id, member.personaId, e.target.value)}
+                      onChange={(e) =>
+                        onReplacePersona(node.id, member.personaId, e.target.value, member.model)
+                      }
                     >
                       {personas.map((personaOption) => (
                         <option key={personaOption.id} value={personaOption.id}>
@@ -448,22 +487,45 @@ function StageInspector({
 
           <div className="niuu-border-t niuu-border-border niuu-pt-6">
             <label className={SECTION_LABEL}>Add persona</label>
-            <select
-              className={cn(INPUT, 'niuu-mt-0.5')}
-              defaultValue=""
-              onChange={(e) => {
-                if (!e.target.value) return;
-                onAddPersona(node.id, e.target.value, 40);
-                e.currentTarget.value = '';
-              }}
-            >
-              <option value="">Select a ravn…</option>
-              {availablePersonas.map((persona) => (
-                <option key={persona.id} value={persona.id}>
-                  {persona.label} · {persona.role}
-                </option>
-              ))}
-            </select>
+            <div className="niuu-grid niuu-grid-cols-1 niuu-gap-2 niuu-mt-0.5">
+              <select
+                className={INPUT}
+                value={newPersonaId}
+                onChange={(e) => setNewPersonaId(e.target.value)}
+              >
+                <option value="">Select a ravn…</option>
+                {availablePersonas.map((persona) => (
+                  <option key={persona.id} value={persona.id}>
+                    {persona.label} · {persona.role}
+                  </option>
+                ))}
+              </select>
+              <select
+                className={INPUT}
+                value={newModelId}
+                onChange={(e) => setNewModelId(e.target.value)}
+              >
+                <option value="">Select a model…</option>
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className={CHIP_BTN}
+                disabled={!newPersonaId || !newModelId}
+                onClick={() => {
+                  if (!newPersonaId || !newModelId) return;
+                  onAddPersona(node.id, newPersonaId, newModelId, 40);
+                  setNewPersonaId('');
+                  setNewModelId(defaultModelId);
+                }}
+              >
+                Add ravn
+              </button>
+            </div>
           </div>
 
           <div className="niuu-border-t niuu-border-border niuu-pt-4">
@@ -869,6 +931,7 @@ export function WorkflowDetailPanel({
   warnCount,
   issues,
   personas,
+  models,
   registryMounts,
   onDeleteNode,
   onUpdateNode,
@@ -876,6 +939,7 @@ export function WorkflowDetailPanel({
   onUpdateWorkflowMeta,
   onAddPersona,
   onReplacePersona,
+  onUpdatePersonaModel,
   onUpdatePersonaBudget,
   onRemovePersona,
   onAddResourceBinding,
@@ -906,12 +970,14 @@ export function WorkflowDetailPanel({
           node={selectedNode}
           workflow={workflow}
           personas={personas}
+          models={models}
           issues={issues}
           onDeleteNode={onDeleteNode}
           onUpdateNode={onUpdateNode}
           onUpdateLabel={onUpdateLabel}
           onAddPersona={onAddPersona}
           onReplacePersona={onReplacePersona}
+          onUpdatePersonaModel={onUpdatePersonaModel}
           onUpdatePersonaBudget={onUpdatePersonaBudget}
           onRemovePersona={onRemovePersona}
         />

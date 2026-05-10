@@ -139,11 +139,8 @@ executor:
   adapter: ravn.adapters.executors.cli.CliTransportExecutor
   kwargs:
     transport_adapter: skuld.transports.persistent_subprocess.PersistentSubprocessTransport
-    transport_kwargs:
-      model: claude-sonnet-4-6
 
 llm:
-  primary_alias: balanced
   thinking_enabled: true
 
 iteration_budget: 40

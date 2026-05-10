@@ -455,6 +455,7 @@ class ModelInfo(BaseModel):
     name: str = Field(description="Human-readable model name")
     description: str = Field(description="Model capabilities description")
     provider: ModelProvider = Field(description="Provider type: cloud or local")
+    vendor: str = Field(description="Model vendor/runtime family (e.g. anthropic, openai)")
     tier: ModelTier = Field(description="Model tier classification")
     color: str = Field(description="UI color code for the model badge")
     cost_per_million_tokens: float | None = Field(
@@ -474,6 +475,7 @@ class ModelInfo(BaseModel):
             name=model.name,
             description=model.description,
             provider=model.provider,
+            vendor=model.vendor,
             tier=model.tier,
             color=model.color,
             cost_per_million_tokens=model.cost_per_million_tokens,
