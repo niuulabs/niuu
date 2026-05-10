@@ -242,6 +242,22 @@ async def test_get_page_derives_title_from_path_when_heading_missing(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_get_page_works_when_adapter_root_is_symlink(tmp_path: Path) -> None:
+    real_root = tmp_path / "real-mimir"
+    alias_root = tmp_path / "alias-mimir"
+    real_root.mkdir(parents=True, exist_ok=True)
+    alias_root.symlink_to(real_root, target_is_directory=True)
+
+    adapter = MarkdownMimirAdapter(root=alias_root)
+    await adapter.upsert_page("raids/NIU-912-postmortem.md", "## Compiled Truth\n\nBody text.")
+
+    page = await adapter.get_page("raids/NIU-912-postmortem.md")
+
+    assert page.meta.path == "raids/NIU-912-postmortem.md"
+    assert page.meta.title == "NIU-912 Postmortem"
+
+
+@pytest.mark.asyncio
 async def test_read_page_returns_content(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     content = "# Test\n\nBody text."

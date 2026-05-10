@@ -294,6 +294,13 @@ class MarkdownMimirAdapter(MimirPort):
             )
         return resolved
 
+    def _wiki_relative_path(self, path: Path) -> Path:
+        """Return *path* relative to the wiki root, tolerant of symlink aliases."""
+        try:
+            return path.relative_to(self._wiki)
+        except ValueError:
+            return path.resolve().relative_to(self._wiki.resolve())
+
     # ------------------------------------------------------------------
     # MimirPort implementation
     # ------------------------------------------------------------------
@@ -810,7 +817,7 @@ class MarkdownMimirAdapter(MimirPort):
             if md_path.name in {"index.md", "log.md"}:
                 continue
             content = md_path.read_text(encoding="utf-8")
-            rel = str(md_path.relative_to(self._wiki))
+            rel = str(self._wiki_relative_path(md_path))
             await self._reindex_page(rel, content)
             count += 1
 
@@ -1377,7 +1384,7 @@ class MarkdownMimirAdapter(MimirPort):
 
     def _build_page_meta(self, md_path: Path, content: str) -> MimirPageMeta:
         """Build a MimirPageMeta from a path and its already-read content."""
-        rel = md_path.relative_to(self._wiki)
+        rel = self._wiki_relative_path(md_path)
         path_str = str(rel)
         parts = path_str.split("/")
         category = parts[0] if len(parts) > 1 else "uncategorised"
