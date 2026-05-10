@@ -1,0 +1,10 @@
+security workflow proof marker
+
+workflow key : l
+step         : 1
+date         : 2026-05-10
+issue        : NIU-875
+
+This file marks the successful completion of step 1 in the import security workflow
+for the saga imported under issue NIU-875. The workflow key `l` identifies the
+security audit lane for this import cycle.
