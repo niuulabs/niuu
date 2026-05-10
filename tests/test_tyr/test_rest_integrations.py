@@ -15,11 +15,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.domain.models import IntegrationConnection, IntegrationType
-from tyr.config import AuthConfig, Settings
 from tyr.adapters.inbound.rest_integrations import (
     create_integrations_router,
     create_telegram_setup_router,
 )
+from tyr.config import AuthConfig, Settings
 
 # -------------------------------------------------------------------
 # Helpers
