@@ -256,12 +256,148 @@
       - id: edge-postmortem-to-end
         source: raid-postmortem
         target: raid-complete
-        label: postmortem.completed -> postmortem.completed
+        label: mimir.source.ingested -> mimir.source.ingested
     resourceBindings:
       - id: binding-memory-workflow
         resourceNodeId: raid-memory
         targetType: workflow
         targetId: tyr-raid-flow-security-postmortem-memory
+        access: read_write
+        writePrefixes: [postmortems/]
+        readPriority: 1
+- name: Tyr Raid Flow + Security + Memory Curation
+  description: Tyr to Volundr ravn_flock workflow with parallel review, security, post-mortem ingest, and visible Mimir curation.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: dispatch-root
+        kind: trigger
+        label: Dispatch raid
+        source: tyr dispatch
+        dispatchEvent: code.requested
+        position:
+          x: 96
+          y: 264
+      - id: raid-coder
+        kind: stage
+        label: Implement code
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+        position:
+          x: 320
+          y: 264
+      - id: raid-reviewer
+        kind: stage
+        label: Review changes
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 25
+        position:
+          x: 560
+          y: 160
+      - id: raid-security
+        kind: stage
+        label: Security review
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: security-auditor
+            budget: 25
+        position:
+          x: 560
+          y: 352
+      - id: raid-memory
+        kind: resource
+        label: Shared Mimir Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir-test
+        path: /tmp/mimir-test
+        role: shared
+        categories: [memory, postmortem]
+        position:
+          x: 560
+          y: 488
+      - id: raid-postmortem
+        kind: stage
+        label: Capture post-mortem
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: postmortem-analyst
+            budget: 18
+        position:
+          x: 816
+          y: 232
+      - id: raid-memory-curator
+        kind: stage
+        label: Curate shared memory
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: mimir-memory-curator
+            budget: 20
+            consumesEventTypes: [mimir.source.ingested]
+            eventFilters:
+              mount_names: tmp-mimir-test
+        position:
+          x: 1064
+          y: 232
+      - id: raid-complete
+        kind: end
+        label: Raid complete
+        joinMode: all
+        completionEvent: ravn.task.completed
+        position:
+          x: 1320
+          y: 232
+    edges:
+      - id: edge-dispatch-to-coder
+        source: dispatch-root
+        target: raid-coder
+        label: code.requested -> code.requested
+      - id: edge-coder-to-reviewer
+        source: raid-coder
+        target: raid-reviewer
+        label: code.changed -> code.changed
+      - id: edge-coder-to-security
+        source: raid-coder
+        target: raid-security
+        label: code.changed -> code.changed
+      - id: edge-reviewer-to-coder
+        source: raid-reviewer
+        target: raid-coder
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-security-to-coder
+        source: raid-security
+        target: raid-coder
+        label: security.changes_requested -> security.changes_requested
+      - id: edge-reviewer-to-postmortem
+        source: raid-reviewer
+        target: raid-postmortem
+        label: review.completed -> review.completed
+      - id: edge-security-to-postmortem
+        source: raid-security
+        target: raid-postmortem
+        label: security.completed -> security.completed
+      - id: edge-postmortem-to-memory-curator
+        source: raid-postmortem
+        target: raid-memory-curator
+        label: mimir.source.ingested -> mimir.source.ingested
+      - id: edge-memory-curator-to-end
+        source: raid-memory-curator
+        target: raid-complete
+        label: mimir.curated -> mimir.curated
+    resourceBindings:
+      - id: binding-memory-workflow
+        resourceNodeId: raid-memory
+        targetType: workflow
+        targetId: tyr-raid-flow-security-memory-curation
         access: read_write
         writePrefixes: [postmortems/]
         readPriority: 1

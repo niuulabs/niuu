@@ -33,6 +33,7 @@ _BUILTIN_NAMES: frozenset[str] = frozenset(
         "health-auditor",
         "investigator",
         "mimir-curator",
+        "mimir-memory-curator",
         "office-hours",
         "planning-agent",
         "produce-recap",

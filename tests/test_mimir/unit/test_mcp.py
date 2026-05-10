@@ -1,4 +1,4 @@
-"""Unit tests for MimirMcpServer — JSON-RPC protocol, all six tools, and transports.
+"""Unit tests for MimirMcpServer — JSON-RPC protocol, all seven tools, and transports.
 
 Tests use a real MarkdownMimirAdapter backed by a tmp_path — no network, no mocking.
 """
@@ -88,6 +88,7 @@ class TestProtocol:
             "mimir_read",
             "mimir_write",
             "mimir_ingest",
+            "mimir_read_source",
             "mimir_lint",
             "mimir_stats",
         }
@@ -346,6 +347,8 @@ class TestIngestTool:
         result_content = resp.json()["result"]["content"]
         result = json.loads(result_content[0]["text"])
         assert result["source_id"].startswith("src_")
+        assert result["title"] == "K8s Patterns"
+        assert result["source_type"] == "url"
 
     def test_ingest_derives_title_from_content(self, tmp_path: Path) -> None:
         client = _make_client(tmp_path)
@@ -361,6 +364,39 @@ class TestIngestTool:
         )
         # Should succeed without explicit title
         assert resp.json()["result"]["content"][0]["type"] == "text"
+
+    def test_read_source_after_ingest(self, tmp_path: Path) -> None:
+        client = _make_client(tmp_path)
+        ingest = client.post(
+            "/mcp",
+            json=_jsonrpc(
+                "tools/call",
+                {
+                    "name": "mimir_ingest",
+                    "arguments": {
+                        "content": "# Auto Title\nBody text here.",
+                        "source_type": "document",
+                    },
+                },
+            ),
+        )
+        ingest_result = json.loads(ingest.json()["result"]["content"][0]["text"])
+        source_id = ingest_result["source_id"]
+
+        read = client.post(
+            "/mcp",
+            json=_jsonrpc(
+                "tools/call",
+                {
+                    "name": "mimir_read_source",
+                    "arguments": {"source_id": source_id},
+                },
+            ),
+        )
+        read_result = json.loads(read.json()["result"]["content"][0]["text"])
+        assert read_result["source_id"] == source_id
+        assert read_result["title"] == "Auto Title"
+        assert "Body text here." in read_result["content"]
 
 
 # ---------------------------------------------------------------------------

@@ -448,7 +448,7 @@ class TestHandleRavnOutcomeDecisions:
             checks=[
                 {
                     "persona": "postmortem-analyst",
-                    "event_type": "postmortem.completed",
+                    "event_type": "mimir.source.ingested",
                     "verdict": "complete",
                     "summary": "post-mortem written",
                 }

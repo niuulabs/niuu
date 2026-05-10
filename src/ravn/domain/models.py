@@ -351,6 +351,7 @@ class AgentTask:
     root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking
     workflow_parent_event_id: str = ""  # Direct upstream event task_id for per-cycle joins
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
+    tool_outcomes: dict[str, dict[str, Any]] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     session_id: str = field(init=False)
 

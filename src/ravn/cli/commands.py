@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 import os
 import signal
 import sys
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -414,6 +416,7 @@ def _build_tools(
     persona_config: Any | None = None,
     profile: str = "default",
     discovery: Any | None = None,
+    mimir_event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
 ) -> list[Any]:
     """Build the tool list from the built-in registry, filtered by profile.
 
@@ -498,7 +501,13 @@ def _build_tools(
         entity_extractor = None
         if settings.mimir.ingest.entity_detection and llm is not None:
             entity_extractor = EntityExtractor(mimir=mimir, llm=llm, config=settings.mimir.ingest)
-        tools.extend(build_mimir_tools(mimir, entity_extractor=entity_extractor))
+        tools.extend(
+            build_mimir_tools(
+                mimir,
+                entity_extractor=entity_extractor,
+                event_emitter=mimir_event_emitter,
+            )
+        )
 
     # -- Custom tools from config --
     for ct in settings.tools.custom:
@@ -769,6 +778,8 @@ async def _start_mcp(
 
 async def _start_mcp_shared(
     settings: Settings,
+    *,
+    tool_result_hook: Any | None = None,
 ) -> tuple[Any | None, list[Any]]:
     """Start MCP servers and return (manager, tools) for gateway use.
 
@@ -799,7 +810,7 @@ async def _start_mcp_shared(
         store = LocalEncryptedTokenStore(path=ts_cfg.local_path)
 
     auth_session = MCPAuthSession(store)
-    manager = MCPManager(settings.mcp_servers)
+    manager = MCPManager(settings.mcp_servers, tool_result_hook=tool_result_hook)
 
     try:
         mcp_tools: list[Any] = await manager.start()
@@ -817,6 +828,56 @@ async def _start_mcp_shared(
         len(mcp_tools) - 1,  # exclude auth tool from count
     )
     return manager, mcp_tools
+
+
+def _mimir_mount_name_from_mcp_server_name(server_name: str) -> str | None:
+    if not server_name.startswith("mimir-"):
+        return None
+    mount_name = server_name.removeprefix("mimir-").strip()
+    return mount_name or None
+
+
+def _mimir_ingest_event_fields_from_mcp_result(
+    *,
+    server_name: str,
+    arguments: dict[str, Any],
+    result: ToolResult,
+) -> dict[str, Any] | None:
+    if result.is_error:
+        return None
+
+    try:
+        parsed = json.loads(result.content)
+    except Exception:
+        logger.debug("Failed to parse mimir_ingest MCP result from %s", server_name, exc_info=True)
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    source_id = str(parsed.get("source_id") or "").strip()
+    if not source_id:
+        return None
+
+    page_paths_raw = parsed.get("pages_updated")
+    page_paths = page_paths_raw if isinstance(page_paths_raw, list) else []
+    mount_name = _mimir_mount_name_from_mcp_server_name(server_name)
+    source_title = str(parsed.get("title") or arguments.get("title") or source_id).strip()
+    source_type = str(
+        parsed.get("source_type") or arguments.get("source_type") or "document"
+    ).strip()
+
+    fields: dict[str, Any] = {
+        "source_id": source_id,
+        "source_title": source_title or source_id,
+        "source_type": source_type or "document",
+        "page_paths": [str(path) for path in page_paths if str(path).strip()],
+        "mcp_server_name": server_name,
+    }
+    if mount_name:
+        fields["mount_name"] = mount_name
+        fields["mount_names"] = [mount_name]
+    return fields
 
 
 async def _shutdown_mcp(manager: Any | None) -> None:
@@ -1733,7 +1794,8 @@ async def _run_gateway(
     )
 
     # Start MCP servers (shared across sessions)
-    mcp_manager, mcp_tools = await _start_mcp_shared(settings)
+    mcp_manager: Any | None = None
+    mcp_tools: list[Any] = []
 
     def _agent_factory(channel: ChannelPort) -> ExecutionAgentPort:
         # Per-session: fresh session, budget, and tools
@@ -1954,10 +2016,12 @@ async def _run_daemon(
         settings.llm.extended_thinking if settings.llm.extended_thinking.enabled else None
     )
 
-    mcp_manager, mcp_tools = await _start_mcp_shared(settings)
+    mcp_manager: Any | None = None
+    mcp_tools: list[Any] = []
 
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
+    drive_loop: Any | None = None
 
     # Populated by _wire_cron after drive_loop is created; captured by _agent_factory.
     cron_tools: list[Any] = []
@@ -2014,6 +2078,26 @@ async def _run_daemon(
         profile = "worker" if is_anonymous_cascade else "default"
         profile_cfg = _get_tool_group(settings, profile)
 
+        async def _emit_mimir_ingest_event(
+            event_type: str,
+            fields: dict[str, Any],
+        ) -> None:
+            if drive_loop is None or resolved_persona is None:
+                return
+            current_task = drive_loop.resolve_task_context(task_id)
+            if current_task is None:
+                logger.warning(
+                    "mimir_ingest: no task context available for persona=%s task_id=%s",
+                    resolved_persona.name,
+                    task_id,
+                )
+                return
+            drive_loop.record_tool_outcome_fields(
+                task=current_task,
+                event_type=event_type,
+                fields=fields,
+            )
+
         tools = _build_tools(
             settings,
             workspace,
@@ -2025,6 +2109,9 @@ async def _run_daemon(
             persona_config=resolved_persona,
             profile=profile,
             discovery=_cascade_participant.discovery if _cascade_participant is not None else None,
+            mimir_event_emitter=(
+                _emit_mimir_ingest_event if resolved_persona is not None else None
+            ),
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
@@ -2185,6 +2272,39 @@ async def _run_daemon(
 
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
+
+    async def _handle_mcp_tool_result(
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        result: ToolResult,
+    ) -> None:
+        if tool_name != "mimir_ingest" or drive_loop is None:
+            return
+        current_task = drive_loop.resolve_task_context()
+        if current_task is None:
+            logger.warning(
+                "mimir_ingest MCP hook: no task context available for server=%s",
+                server_name,
+            )
+            return
+        fields = _mimir_ingest_event_fields_from_mcp_result(
+            server_name=server_name,
+            arguments=arguments,
+            result=result,
+        )
+        if fields is None:
+            return
+        drive_loop.record_tool_outcome_fields(
+            task=current_task,
+            event_type="mimir.source.ingested",
+            fields=fields,
+        )
+
+    mcp_manager, mcp_tools = await _start_mcp_shared(
+        settings,
+        tool_result_hook=_handle_mcp_tool_result,
+    )
 
     # NIU-598: start post-session reflection service for daemon mode.
     daemon_reflection_svc: Any | None = None
@@ -2512,12 +2632,61 @@ def _workflow_graph(settings: Settings) -> tuple[list[dict[str, Any]], list[dict
     return nodes, edges
 
 
+def _normalize_workflow_event_filters(member: dict[str, Any]) -> dict[str, str]:
+    raw_filters = member.get("eventFilters")
+    if not isinstance(raw_filters, dict):
+        raw_filters = member.get("event_filters")
+    if not isinstance(raw_filters, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in raw_filters.items():
+        key_text = str(key).strip()
+        value_text = str(value).strip()
+        if key_text and value_text:
+            normalized[key_text] = value_text
+    return normalized
+
+
+def _workflow_event_matches_filters(
+    payload: dict[str, Any],
+    filters: dict[str, str],
+) -> bool:
+    if not filters:
+        return True
+
+    nested_fields = payload.get("fields")
+    if not isinstance(nested_fields, dict):
+        nested_fields = {}
+    nested_outcome = payload.get("outcome")
+    if not isinstance(nested_outcome, dict):
+        nested_outcome = {}
+
+    for key, expected in filters.items():
+        actual: Any = None
+        if key in payload:
+            actual = payload.get(key)
+        elif key in nested_fields:
+            actual = nested_fields.get(key)
+        elif key in nested_outcome:
+            actual = nested_outcome.get(key)
+
+        if isinstance(actual, list):
+            if expected not in {str(item).strip() for item in actual if str(item).strip()}:
+                return False
+            continue
+
+        if str(actual or "").strip() != expected:
+            return False
+
+    return True
+
+
 def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict[str, Any] | None:
     nodes, edges = _workflow_graph(settings)
-    if not nodes or not edges:
+    if not nodes:
         return None
 
-    matching_nodes: list[tuple[dict[str, Any], list[str]]] = []
+    matching_nodes: list[tuple[dict[str, Any], list[str], dict[str, str]]] = []
     for node in nodes:
         if not isinstance(node, dict) or node.get("kind") != "stage":
             continue
@@ -2535,19 +2704,25 @@ def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict
                     for event_type in consumes_event_types
                     if str(event_type).strip()
                 )
-            matching_nodes.append((node, member_override_events))
+            matching_nodes.append(
+                (
+                    node,
+                    member_override_events,
+                    _normalize_workflow_event_filters(member),
+                )
+            )
             break
         else:
             persona_ids = list(node.get("personaIds") or [])
             if persona_name in persona_ids:
-                matching_nodes.append((node, []))
+                matching_nodes.append((node, [], {}))
 
     if not matching_nodes:
         return None
 
     consumer_groups: list[dict[str, Any]] = []
     aggregated_event_types: list[str] = []
-    for index, (node, member_override_events) in enumerate(matching_nodes):
+    for index, (node, member_override_events, member_event_filters) in enumerate(matching_nodes):
         node_id = str(node.get("id") or f"{persona_name}-stage-{index}")
         group_event_types: list[str] = []
         for edge in edges:
@@ -2571,6 +2746,11 @@ def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict
                 "label": str(node.get("label") or node_id),
                 "event_types": resolved_event_types,
                 "fan_in_strategy": fan_in_strategy,
+                **(
+                    {"event_filters": member_event_filters}
+                    if member_event_filters
+                    else {}
+                ),
             }
         )
         aggregated_event_types.extend(resolved_event_types)
@@ -2969,6 +3149,25 @@ def _wire_cascade(
                 group_event_types = list(group.get("event_types") or [])
                 if event_type not in group_event_types:
                     continue
+                group_filters = group.get("event_filters") or {}
+                if isinstance(group_filters, dict) and group_filters:
+                    normalized_filters = {
+                        str(key): str(value)
+                        for key, value in group_filters.items()
+                        if str(key).strip() and str(value).strip()
+                    }
+                    if normalized_filters and not _workflow_event_matches_filters(
+                        payload,
+                        normalized_filters,
+                    ):
+                        logger.debug(
+                            "mesh: filtered outcome event_type=%s for %s group=%s filters=%s",
+                            event_type,
+                            persona_config.name if persona_config else "unknown",
+                            group.get("id") or persona_config.name,
+                            normalized_filters,
+                        )
+                        continue
                 matched = True
                 group_id = str(group.get("id") or persona_config.name)
                 group_strategy = str(group.get("fan_in_strategy") or fan_in_strategy)

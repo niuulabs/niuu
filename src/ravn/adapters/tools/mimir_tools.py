@@ -2,6 +2,7 @@
 
 Tools:
   mimir_ingest  — ingest a URL or raw text into the wiki
+  mimir_read_source — read a specific raw source by source_id
   mimir_query   — search the wiki and synthesise an answer
   mimir_read    — read a specific wiki page
   mimir_write   — create or update a wiki page
@@ -12,7 +13,9 @@ Tools:
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from niuu.domain.mimir import MimirSource, compute_content_hash
@@ -25,10 +28,29 @@ logger = logging.getLogger(__name__)
 
 _PERMISSION = "mimir:write"
 _PERMISSION_READ = "mimir:read"
+_MIMIR_SOURCE_INGESTED_EVENT = "mimir.source.ingested"
 
 
 def _source_id_from_content(title: str, content: str) -> str:
     return "src_" + compute_content_hash(f"{title}:{content}")[:16]
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _resolve_ingest_mount_names(adapter: MimirPort, explicit: str | None = None) -> list[str]:
+    resolver = getattr(type(adapter), "ingest_targets", None)
+    if resolver is not None:
+        try:
+            return _string_list(resolver(adapter, explicit))
+        except Exception:
+            logger.debug("mimir_ingest: failed to resolve ingest targets", exc_info=True)
+    if explicit:
+        return [explicit]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -43,9 +65,11 @@ class MimirIngestTool(ToolPort):
         self,
         adapter: MimirPort,
         entity_extractor: EntityExtractor | None = None,
+        event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._adapter = adapter
         self._entity_extractor = entity_extractor
+        self._event_emitter = event_emitter
 
     @property
     def name(self) -> str:
@@ -81,6 +105,13 @@ class MimirIngestTool(ToolPort):
                     "type": "string",
                     "description": "Original URL, if fetched from the web.",
                 },
+                "mimir": {
+                    "type": "string",
+                    "description": (
+                        "Optional named Mimir mount to ingest into deterministically. "
+                        "When omitted, the adapter's default routing is used."
+                    ),
+                },
             },
             "required": ["content", "title"],
         }
@@ -94,6 +125,7 @@ class MimirIngestTool(ToolPort):
         title = input.get("title", "").strip()
         source_type = input.get("source_type", "document")
         origin_url = input.get("origin_url")
+        target_mimir = str(input.get("mimir", "") or "").strip() or None
 
         if not content:
             return ToolResult(tool_call_id="", content="content is required", is_error=True)
@@ -110,17 +142,57 @@ class MimirIngestTool(ToolPort):
             ingested_at=datetime.now(UTC),
         )
 
-        page_paths = await self._adapter.ingest(source)
+        ingest_to = getattr(type(self._adapter), "ingest_to", None)
+        if target_mimir and ingest_to is not None:
+            page_paths = await ingest_to(self._adapter, source, target_mimir)
+        else:
+            page_paths = await self._adapter.ingest(source)
 
         if self._entity_extractor is not None:
             entity_paths = await self._entity_extractor.run(source)
             page_paths = page_paths + entity_paths
+
+        mount_names = _resolve_ingest_mount_names(self._adapter, target_mimir)
+        if self._event_emitter is not None:
+            event_fields: dict[str, Any] = {
+                "source_id": source.source_id,
+                "source_title": title,
+                "source_type": source_type,
+                "page_paths": list(dict.fromkeys(page_paths)),
+            }
+            if target_mimir:
+                event_fields["mount_name"] = target_mimir
+                event_fields["mount_names"] = [target_mimir]
+            elif mount_names:
+                event_fields["mount_names"] = mount_names
+                if len(mount_names) == 1:
+                    event_fields["mount_name"] = mount_names[0]
+            try:
+                logger.info(
+                    "mimir_ingest: emitting source-ingested event source_id=%s",
+                    source.source_id,
+                )
+                await self._event_emitter(_MIMIR_SOURCE_INGESTED_EVENT, event_fields)
+            except Exception:
+                logger.warning(
+                    "mimir_ingest: failed to emit source-ingested event",
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "mimir_ingest: no event emitter wired for source_id=%s",
+                source.source_id,
+            )
 
         result = (
             f"Ingested source '{title}' (id={source.source_id})\n"
             f"source_id: {source.source_id}\n"
             f"source_type: {source_type}"
         )
+        if target_mimir:
+            result += f"\nmount_name: {target_mimir}"
+        elif mount_names:
+            result += f"\nmount_names: {', '.join(mount_names)}"
         if page_paths:
             result += f"\nPages updated: {', '.join(page_paths)}"
         return ToolResult(tool_call_id="", content=result)
@@ -245,6 +317,86 @@ class MimirReadTool(ToolPort):
             )
 
         return ToolResult(tool_call_id="", content=content)
+
+
+# ---------------------------------------------------------------------------
+# mimir_read_source
+# ---------------------------------------------------------------------------
+
+
+class MimirReadSourceTool(ToolPort):
+    """Read an ingested raw Mimir source by ID."""
+
+    def __init__(self, adapter: MimirPort) -> None:
+        self._adapter = adapter
+
+    @property
+    def name(self) -> str:
+        return "mimir_read_source"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Read an immutable raw Mimir source by source_id. "
+            "Use this after a mimir.source.ingested event to synthesize compiled wiki pages."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "source_id": {
+                    "type": "string",
+                    "description": "Immutable Mimir source id to read.",
+                },
+                "mimir": {
+                    "type": "string",
+                    "description": (
+                        "Optional named Mimir mount to read from deterministically "
+                        "when multiple mounts are available."
+                    ),
+                },
+            },
+            "required": ["source_id"],
+        }
+
+    @property
+    def required_permission(self) -> str:
+        return _PERMISSION_READ
+
+    async def execute(self, input: dict) -> ToolResult:
+        source_id = input.get("source_id", "").strip()
+        target_mimir = str(input.get("mimir", "") or "").strip() or None
+        if not source_id:
+            return ToolResult(tool_call_id="", content="source_id is required", is_error=True)
+
+        read_source_from_mount = getattr(type(self._adapter), "read_source_from_mount", None)
+        if target_mimir and read_source_from_mount is not None:
+            source = await read_source_from_mount(self._adapter, source_id, target_mimir)
+        else:
+            source = await self._adapter.read_source(source_id)
+        if source is None:
+            suffix = f" in mount '{target_mimir}'" if target_mimir else ""
+            return ToolResult(
+                tool_call_id="",
+                content=f"Source not found: {source_id}{suffix}",
+                is_error=True,
+            )
+
+        lines = [
+            f"Source ID: {source.source_id}",
+            f"Title: {source.title}",
+            f"Type: {source.source_type}",
+            f"Ingested: {source.ingested_at.isoformat()}",
+        ]
+        if target_mimir:
+            lines.append(f"Mount: {target_mimir}")
+        if source.origin_url:
+            lines.append(f"Origin URL: {source.origin_url}")
+        lines.append("")
+        lines.append(source.content)
+        return ToolResult(tool_call_id="", content="\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -530,16 +682,18 @@ class MimirLintTool(ToolPort):
 def build_mimir_tools(
     adapter: MimirPort,
     entity_extractor: EntityExtractor | None = None,
+    event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
 ) -> list[ToolPort]:
-    """Return all six Mímir tools wired to *adapter*.
+    """Return all Mímir tools wired to *adapter*.
 
     When *entity_extractor* is provided it is wired into :class:`MimirIngestTool`
     so that LLM-based entity detection runs automatically on every ingest.
     """
     return [
-        MimirIngestTool(adapter, entity_extractor=entity_extractor),
+        MimirIngestTool(adapter, entity_extractor=entity_extractor, event_emitter=event_emitter),
         MimirQueryTool(adapter),
         MimirReadTool(adapter),
+        MimirReadSourceTool(adapter),
         MimirWriteTool(adapter),
         MimirSearchTool(adapter),
         MimirLintTool(adapter),

@@ -419,6 +419,7 @@ class DriveLoop:
         # (priority, counter, AgentTask)
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=config.task_queue_max)
         self._active_tasks: dict[str, asyncio.Task] = {}
+        self._active_task_contexts: dict[str, AgentTask] = {}
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
         self._journal_path = Path(config.queue_journal_path).expanduser()
         self._source_id = "drive_loop"
@@ -629,6 +630,59 @@ class DriveLoop:
     def current_task(self) -> AgentTask | None:
         """Return the task currently executing in this context, if any."""
         return self._current_task_var.get()
+
+    def resolve_task_context(self, task_id: str | None = None) -> AgentTask | None:
+        """Resolve the task context for tool-originated workflow events."""
+        if task_id:
+            task = self._active_task_contexts.get(task_id)
+            if task is not None:
+                return task
+        current = self.current_task()
+        if current is not None:
+            return current
+        if len(self._active_task_contexts) == 1:
+            return next(iter(self._active_task_contexts.values()))
+        return None
+
+    def record_tool_outcome_fields(
+        self,
+        *,
+        task: AgentTask,
+        event_type: str,
+        fields: dict[str, object],
+    ) -> None:
+        """Remember deterministic tool metadata for the task's final outcome."""
+        if not event_type or not fields:
+            return
+        existing = task.tool_outcomes.get(event_type) or {}
+        merged = dict(existing)
+        merged.update(fields)
+        task.tool_outcomes[event_type] = merged
+
+    def _default_mimir_mount_fields(self) -> dict[str, object]:
+        """Infer the active Mimir mount names from runtime config when unambiguous."""
+        mimir_cfg = getattr(self._settings, "mimir", None)
+        if mimir_cfg is None:
+            return {}
+
+        mount_names = [
+            str(name).strip()
+            for name in getattr(getattr(mimir_cfg, "write_routing", None), "default", []) or []
+            if str(name).strip()
+        ]
+        if not mount_names:
+            mount_names = [
+                str(instance.name).strip()
+                for instance in getattr(mimir_cfg, "instances", []) or []
+                if str(getattr(instance, "name", "")).strip()
+            ]
+        if not mount_names:
+            return {}
+
+        fields: dict[str, object] = {"mount_names": mount_names}
+        if len(mount_names) == 1:
+            fields["mount_name"] = mount_names[0]
+        return fields
 
     async def handle_rpc(self, message: dict) -> dict:
         """Dispatch an incoming mesh RPC message to the registered handler.
@@ -843,6 +897,7 @@ class DriveLoop:
 
         success = False
         token = self._current_task_var.set(task)
+        self._active_task_contexts[task.task_id] = task
         try:
             try:
                 turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
@@ -944,6 +999,7 @@ class DriveLoop:
                 thread_path = task.triggered_by.removeprefix("thread:")
                 await self._finalise_thread(thread_path, success)
         finally:
+            self._active_task_contexts.pop(task.task_id, None)
             self._current_task_var.reset(token)
 
     def _format_task_error(self, task: AgentTask, exc: Exception) -> str:
@@ -996,6 +1052,92 @@ class DriveLoop:
         except Exception:
             logger.warning("Failed to emit ravn.task.completed; continuing.", exc_info=True)
 
+    async def emit_tool_outcome_event(
+        self,
+        *,
+        task: AgentTask,
+        persona_name: str,
+        event_type: str,
+        fields: dict[str, object],
+    ) -> None:
+        """Publish a canonical workflow outcome emitted deterministically by a tool.
+
+        This keeps tool-originated workflow events on the same mesh/Skuld path
+        as persona outcomes, which makes them visible to downstream subscribers,
+        room/session timelines, and Tyr's outer orchestration without inventing
+        a second signaling mechanism.
+        """
+        if not event_type:
+            return
+
+        if self._workflow_allowed_outcomes_resolver is not None:
+            allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
+            if allowed_topics is not None and event_type not in allowed_topics:
+                logger.info(
+                    (
+                        "drive_loop: suppressing tool outcome event_type=%s "
+                        "workflow_node=%s allowed=%s"
+                    ),
+                    event_type,
+                    task.workflow_node_id or "-",
+                    sorted(allowed_topics),
+                )
+                return
+
+        root_corr = task.root_correlation_id or task.task_id
+        payload: dict[str, object] = {
+            "persona": persona_name,
+            "success": True,
+            "outcome": fields,
+            "fields": fields,
+            "valid": True,
+            "task_id": task.task_id,
+            "workflow_node_id": task.workflow_node_id,
+            "event_type": event_type,
+            "bubble_up": True,
+            "room_bridge_skip": self._skuld_channel is not None,
+        }
+        if task.workflow_parent_event_id:
+            payload["workflow_parent_event_id"] = task.workflow_parent_event_id
+        summary = fields.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            payload["summary"] = summary.strip()
+
+        event = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source=self._source_id,
+            payload=payload,
+            timestamp=datetime.now(UTC),
+            urgency=0.3,
+            correlation_id=task.task_id,
+            session_id=task.session_id or "",
+            task_id=task.task_id,
+            root_correlation_id=root_corr,
+        )
+
+        if self._mesh is not None:
+            try:
+                logger.info(
+                    "drive_loop: publishing tool outcome event_type=%s task_id=%s",
+                    event_type,
+                    task.task_id,
+                )
+                await self._mesh.publish(event, topic=event_type)
+            except Exception:
+                logger.warning(
+                    "Failed to publish tool-originated mesh outcome event; continuing.",
+                    exc_info=True,
+                )
+
+        if self._skuld_channel is not None:
+            try:
+                await self._skuld_channel.emit(event)
+            except Exception:
+                logger.warning(
+                    "Failed to emit tool-originated outcome to skuld; continuing.",
+                    exc_info=True,
+                )
+
     async def _emit_mesh_outcome_event(
         self, task: AgentTask, response_text: str, success: bool
     ) -> None:
@@ -1022,10 +1164,16 @@ class DriveLoop:
 
         # Parse outcome block from response
         parsed = parse_outcome_block(response_text)
-        outcome_fields = parsed.fields if parsed is not None else {}
+        outcome_fields = dict(parsed.fields) if parsed is not None else {}
         canonical_event_type = self._persona_config.produces.event_type
         if not canonical_event_type:
             return
+        tool_fields = task.tool_outcomes.get(canonical_event_type) or {}
+        for key, value in tool_fields.items():
+            outcome_fields.setdefault(key, value)
+        if canonical_event_type == "mimir.source.ingested":
+            for key, value in self._default_mimir_mount_fields().items():
+                outcome_fields.setdefault(key, value)
 
         root_corr = task.root_correlation_id or task.task_id
         verdict = str(outcome_fields.get("verdict", "") or "").strip()
@@ -1325,6 +1473,7 @@ class DriveLoop:
                         "root_correlation_id": task.root_correlation_id,
                         "workflow_parent_event_id": task.workflow_parent_event_id,
                         "workflow_node_id": task.workflow_node_id,
+                        "tool_outcomes": task.tool_outcomes,
                         "created_at": task.created_at.isoformat(),
                     }
                 )
@@ -1377,6 +1526,7 @@ class DriveLoop:
                     root_correlation_id=rec.get("root_correlation_id", ""),
                     workflow_parent_event_id=rec.get("workflow_parent_event_id", ""),
                     workflow_node_id=rec.get("workflow_node_id", ""),
+                    tool_outcomes=rec.get("tool_outcomes", {}) or {},
                     created_at=created_at,
                 )
                 if deadline is not None and datetime.now(UTC) > deadline:

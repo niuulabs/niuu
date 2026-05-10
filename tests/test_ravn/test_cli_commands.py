@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -12,6 +13,7 @@ from typer.testing import CliRunner
 from ravn.adapters.personas.loader import PersonaConfig
 from ravn.cli.commands import (
     _chat,
+    _mimir_ingest_event_fields_from_mcp_result,
     _print_usage,
     _run_daemon,
     _run_turn,
@@ -25,6 +27,7 @@ from ravn.domain.models import (
     StreamEvent,
     StreamEventType,
     TokenUsage,
+    ToolResult,
     TurnResult,
 )
 
@@ -46,6 +49,55 @@ class TestPrintUsage:
                 cache_write_tokens=200,
             )
         )
+
+
+class TestMcpMimirIngestEventFields:
+    def test_parses_fields_from_mount_server_result(self) -> None:
+        result = ToolResult(
+            tool_call_id="",
+            content=json.dumps(
+                {
+                    "source_id": "src_123",
+                    "title": "NIU-901 postmortem",
+                    "source_type": "document",
+                    "pages_updated": ["wiki/postmortems/niu-901.md"],
+                }
+            ),
+            is_error=False,
+        )
+
+        fields = _mimir_ingest_event_fields_from_mcp_result(
+            server_name="mimir-tmp-mimir-test",
+            arguments={},
+            result=result,
+        )
+
+        assert fields == {
+            "source_id": "src_123",
+            "source_title": "NIU-901 postmortem",
+            "source_type": "document",
+            "page_paths": ["wiki/postmortems/niu-901.md"],
+            "mcp_server_name": "mimir-tmp-mimir-test",
+            "mount_name": "tmp-mimir-test",
+            "mount_names": ["tmp-mimir-test"],
+        }
+
+    def test_falls_back_to_arguments_when_result_is_sparse(self) -> None:
+        result = ToolResult(
+            tool_call_id="",
+            content=json.dumps({"source_id": "src_abc", "pages_updated": []}),
+            is_error=False,
+        )
+
+        fields = _mimir_ingest_event_fields_from_mcp_result(
+            server_name="mimir-tmp-mimir-test",
+            arguments={"title": "Fallback title", "source_type": "conversation"},
+            result=result,
+        )
+
+        assert fields is not None
+        assert fields["source_title"] == "Fallback title"
+        assert fields["source_type"] == "conversation"
 
 
 class TestRunCommand:
@@ -402,6 +454,48 @@ class TestWorkflowRuntimeForPersona:
                 "label": "Review",
                 "event_types": ["review.requested"],
                 "fan_in_strategy": "merge",
+            }
+        ]
+
+    def test_carries_stage_member_event_filters_into_consumer_groups(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "workflow_id": "wf-1",
+                    "name": "Memory curation",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "memory-curator-stage",
+                                "kind": "stage",
+                                "label": "Curate memory",
+                                "stageMembers": [
+                                    {
+                                        "personaId": "mimir-memory-curator",
+                                        "consumesEventTypes": ["mimir.source.ingested"],
+                                        "eventFilters": {"mount_names": "tmp-mimir-test"},
+                                    }
+                                ],
+                                "joinMode": "any",
+                            }
+                        ],
+                        "edges": [],
+                    },
+                }
+            }
+        )
+
+        runtime = _workflow_runtime_for_persona(settings, "mimir-memory-curator")
+
+        assert runtime is not None
+        assert runtime["event_types"] == ["mimir.source.ingested"]
+        assert runtime["consumer_groups"] == [
+            {
+                "id": "memory-curator-stage",
+                "label": "Curate memory",
+                "event_types": ["mimir.source.ingested"],
+                "fan_in_strategy": "merge",
+                "event_filters": {"mount_names": "tmp-mimir-test"},
             }
         ]
 

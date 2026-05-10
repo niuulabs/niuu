@@ -128,6 +128,12 @@ _BUILTIN_METADATA: dict[str, dict[str, str]] = {
         "summary": "Curates and indexes knowledge into Mimir.",
         "description": "Curates and indexes knowledge into Mimir.",
     },
+    "mimir-memory-curator": {
+        "role": "knowledge",
+        "color": "var(--color-accent-purple)",
+        "summary": "Transforms ingested memory sources into Mimir wiki knowledge.",
+        "description": "Transforms ingested memory sources into Mimir wiki knowledge.",
+    },
     "office-hours": {
         "role": "report",
         "color": "var(--color-accent-emerald)",

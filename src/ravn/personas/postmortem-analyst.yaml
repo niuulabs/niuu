@@ -88,7 +88,7 @@ consumes:
   event_types: [review.completed, security.completed]
 
 produces:
-  event_type: postmortem.completed
+  event_type: mimir.source.ingested
   event_type_map:
     blocked: postmortem.blocked
   schema:

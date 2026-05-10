@@ -6,7 +6,7 @@ Tests cover:
 - Staleness detection (content_hash comparison)
 - Log and index maintenance
 - MIMIR.md seeding on first run
-- Six mimir_* tool wrappers: execute() paths, error handling
+- Seven mimir_* tool wrappers: execute() paths, error handling
 - MimirConfig defaults
 - Auto-distillation trigger criteria (post-session drive loop)
 - Integration: session → ingest → wiki page created with log entry
@@ -18,7 +18,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -31,6 +31,7 @@ from ravn.adapters.tools.mimir_tools import (
     MimirIngestTool,
     MimirLintTool,
     MimirQueryTool,
+    MimirReadSourceTool,
     MimirReadTool,
     MimirSearchTool,
     MimirWriteTool,
@@ -503,6 +504,25 @@ async def test_mimir_ingest_tool_success(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_mimir_ingest_tool_emits_source_ingested_event(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    event_emitter = AsyncMock()
+    tool = MimirIngestTool(adapter, event_emitter=event_emitter)
+
+    result = await tool.execute(
+        {"content": "Some content.", "title": "My Source", "source_type": "tool_output"}
+    )
+
+    assert not result.is_error
+    event_emitter.assert_awaited_once()
+    event_type, fields = event_emitter.await_args.args
+    assert event_type == "mimir.source.ingested"
+    assert fields["source_id"].startswith("src_")
+    assert fields["source_title"] == "My Source"
+    assert fields["source_type"] == "tool_output"
+
+
+@pytest.mark.asyncio
 async def test_mimir_ingest_tool_missing_content() -> None:
     adapter = MagicMock(spec=["ingest"])
     tool = MimirIngestTool(adapter)
@@ -569,6 +589,21 @@ async def test_mimir_read_tool_missing_path() -> None:
     tool = MimirReadTool(adapter)
     result = await tool.execute({})
     assert result.is_error
+
+
+@pytest.mark.asyncio
+async def test_mimir_read_source_tool_success(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    source = _make_source(title="Source Title", content="Source content.")
+    await adapter.ingest(source)
+
+    tool = MimirReadSourceTool(adapter)
+    result = await tool.execute({"source_id": source.source_id})
+
+    assert not result.is_error
+    assert "Source ID:" in result.content
+    assert "Source Title" in result.content
+    assert "Source content." in result.content
 
 
 @pytest.mark.asyncio
@@ -740,15 +775,16 @@ async def test_mimir_lint_tool_reports_issues(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_mimir_tools_returns_six(tmp_path: Path) -> None:
+def test_build_mimir_tools_returns_seven(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     tools = build_mimir_tools(adapter)
-    assert len(tools) == 6
+    assert len(tools) == 7
     names = {t.name for t in tools}
     assert names == {
         "mimir_ingest",
         "mimir_query",
         "mimir_read",
+        "mimir_read_source",
         "mimir_write",
         "mimir_search",
         "mimir_lint",

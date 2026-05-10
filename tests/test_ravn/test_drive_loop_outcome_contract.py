@@ -139,3 +139,77 @@ summary: task completed
 
         mesh.publish.assert_not_awaited()
         dl._skuld_channel.emit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_merges_tool_metadata_into_canonical_outcome(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = AsyncMock()
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="postmortem-analyst",
+            produces=SimpleNamespace(event_type="mimir.source.ingested", event_type_map={}),
+        )
+
+        task = _make_agent_task(task_id="task-mimir-123")
+        task.session_id = "sess-mimir-123"
+        task.root_correlation_id = "root-mimir-123"
+        dl.record_tool_outcome_fields(
+            task=task,
+            event_type="mimir.source.ingested",
+            fields={
+                "source_id": "src_123",
+                "mount_name": "tmp-mimir-test",
+                "mount_names": ["tmp-mimir-test"],
+            },
+        )
+        response_text = """\
+---outcome---
+verdict: complete
+source_title: NIU-907 postmortem
+summary: post-mortem source captured
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        canonical_event = mesh.publish.await_args_list[0].args[0]
+        assert canonical_event.payload["event_type"] == "mimir.source.ingested"
+        assert canonical_event.payload["fields"]["source_id"] == "src_123"
+        assert canonical_event.payload["fields"]["mount_name"] == "tmp-mimir-test"
+        assert canonical_event.payload["fields"]["mount_names"] == ["tmp-mimir-test"]
+        assert canonical_event.payload["fields"]["source_title"] == "NIU-907 postmortem"
+
+    @pytest.mark.asyncio
+    async def test_infers_mimir_mount_from_runtime_when_tool_metadata_missing(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = AsyncMock()
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="postmortem-analyst",
+            produces=SimpleNamespace(event_type="mimir.source.ingested", event_type_map={}),
+        )
+        dl._settings.mimir.instances = [
+            SimpleNamespace(name="tmp-mimir-test"),
+        ]
+        dl._settings.mimir.write_routing.default = []
+
+        task = _make_agent_task(task_id="task-mimir-default-123")
+        task.session_id = "sess-mimir-default-123"
+        response_text = """\
+---outcome---
+verdict: complete
+source_id: src_456
+source_title: NIU-909 postmortem
+summary: post-mortem source captured
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        canonical_event = mesh.publish.await_args_list[0].args[0]
+        assert canonical_event.payload["fields"]["mount_name"] == "tmp-mimir-test"
+        assert canonical_event.payload["fields"]["mount_names"] == ["tmp-mimir-test"]

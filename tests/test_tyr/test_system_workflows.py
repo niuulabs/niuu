@@ -43,6 +43,7 @@ def test_load_system_workflows_includes_tyr_raid_flow() -> None:
     assert "Tyr Raid Flow" in names
     assert "Tyr Raid Flow + Security" in names
     assert "Tyr Raid Flow + Security + Postmortem Memory" in names
+    assert "Tyr Raid Flow + Security + Memory Curation" in names
     raid_flow = next(workflow for workflow in workflows if workflow.name == "Tyr Raid Flow")
     assert raid_flow.scope == WorkflowScope.SYSTEM
     assert raid_flow.owner_id is None
@@ -116,7 +117,7 @@ def test_load_system_workflows_includes_tyr_raid_flow() -> None:
     postmortem_edge_labels = {edge["label"] for edge in postmortem_flow.graph["edges"]}
     assert "review.completed -> review.completed" in postmortem_edge_labels
     assert "security.completed -> security.completed" in postmortem_edge_labels
-    assert "postmortem.completed -> postmortem.completed" in postmortem_edge_labels
+    assert "mimir.source.ingested -> mimir.source.ingested" in postmortem_edge_labels
     postmortem_stage_personas = {
         node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
         for node in postmortem_flow.graph["nodes"]
@@ -143,6 +144,30 @@ def test_load_system_workflows_includes_tyr_raid_flow() -> None:
         }
     ]
     assert postmortem_flow.definition_yaml is None
+
+    curation_flow = next(
+        workflow
+        for workflow in workflows
+        if workflow.name == "Tyr Raid Flow + Security + Memory Curation"
+    )
+    curation_stage_personas = {
+        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
+        for node in curation_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+    }
+    assert curation_stage_personas["Capture post-mortem"] == ["postmortem-analyst"]
+    assert curation_stage_personas["Curate shared memory"] == ["mimir-memory-curator"]
+    curation_edge_labels = {edge["label"] for edge in curation_flow.graph["edges"]}
+    assert "mimir.source.ingested -> mimir.source.ingested" in curation_edge_labels
+    assert "mimir.curated -> mimir.curated" in curation_edge_labels
+    curator_member = next(
+        member
+        for node in curation_flow.graph["nodes"]
+        if node.get("label") == "Curate shared memory"
+        for member in node.get("stageMembers", [])
+    )
+    assert curator_member["eventFilters"] == {"mount_names": "tmp-mimir-test"}
+    assert curation_flow.definition_yaml is None
 
 
 @pytest.mark.asyncio
