@@ -37,6 +37,19 @@ const pluginWithTabs = definePlugin({
   footer: () => <span data-testid="tabbed-footer-chip">api ● connected</span>,
 });
 
+const pluginWithCollapsibleSubnav = definePlugin({
+  id: 'collapsible',
+  rune: 'ᚲ',
+  title: 'Collapsible',
+  subtitle: 'subnav test',
+  render: () => <div data-testid="collapsible-content">collapsible-rendered</div>,
+  subnav: (ctx) => (
+    <button type="button" onClick={() => ctx.setTweak('collapsible.subnavCollapsed', true)}>
+      collapse subnav
+    </button>
+  ),
+});
+
 // Plugin without subnav — tests collapse
 const pluginNoSubnav = definePlugin({
   id: 'flat',
@@ -194,5 +207,18 @@ describe('Shell', () => {
     expect(subnav).toBeInTheDocument();
     // Empty subnav — collapsed via :empty CSS rule
     expect(subnav?.childElementCount).toBe(0);
+  });
+
+  it('applies the collapsed subnav class when a plugin toggles it', async () => {
+    wrap(<Shell plugins={[pluginWithCollapsibleSubnav]} _testHistory={memHistory('/collapsible')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('collapsible-content')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /collapse subnav/i }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.niuu-shell__subnav--collapsed')).toBeInTheDocument();
+    });
   });
 });

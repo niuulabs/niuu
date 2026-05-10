@@ -116,6 +116,19 @@ describe('DispatchView', () => {
     expect(screen.getByText(/NIU-010/)).toBeInTheDocument();
   });
 
+  it('lets the shell own vertical scrolling instead of creating an inner page scroller', async () => {
+    render(<DispatchView />, { wrapper: wrap(makeServices()) });
+    await waitFor(() => expect(screen.getByText('Test Raid')).toBeInTheDocument());
+
+    const pageLayout = screen.getByTestId('dispatch-page-layout');
+    const queueGroups = screen.getByTestId('dispatch-queue-groups');
+
+    expect(pageLayout.className).not.toContain('niuu-overflow-y-auto');
+    expect(pageLayout.className).toContain('niuu-min-h-full');
+    expect(queueGroups.className).not.toContain('niuu-overflow-y-auto');
+    expect(queueGroups.className).not.toContain('niuu-flex-1');
+  });
+
   it('shows error state when dispatcher service fails', async () => {
     const services = makeServices({
       dispatcher: {

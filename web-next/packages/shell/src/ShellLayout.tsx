@@ -46,6 +46,9 @@ export function ShellLayout() {
     navPlugins.map((p) => p.id),
   );
   const active = navPlugins.find((p) => p.id === activeId) ?? navPlugins[0] ?? null;
+  const subnavCollapsed = active
+    ? Boolean(ctx.tweaks[`${active.id}.subnavCollapsed`])
+    : false;
 
   // localStorage follows the router — not the other way around
   useEffect(() => {
@@ -181,7 +184,9 @@ export function ShellLayout() {
         </div>
       </header>
 
-      <nav className="niuu-shell__subnav">
+      <nav
+        className={clsx('niuu-shell__subnav', subnavCollapsed && 'niuu-shell__subnav--collapsed')}
+      >
         <PluginSlot render={active?.subnav ?? null} ctx={ctx} />
       </nav>
 

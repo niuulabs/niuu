@@ -701,9 +701,12 @@ function DispatchViewContent() {
 
   return (
     <TooltipProvider>
-      <div className="niuu-flex niuu-h-full niuu-overflow-hidden">
+      <div
+        data-testid="dispatch-page-layout"
+        className="niuu-flex niuu-min-h-full niuu-items-start niuu-overflow-x-hidden"
+      >
         {/* ── Left: queue ─────────────────────────────── */}
-        <div className="niuu-flex niuu-flex-col niuu-flex-1 niuu-overflow-hidden">
+        <div className="niuu-flex niuu-min-w-0 niuu-flex-col niuu-flex-1">
           {/* Header */}
           <div className="niuu-px-4 niuu-py-3 niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary">
             <div className="niuu-text-xs niuu-uppercase niuu-tracking-wide niuu-text-text-muted niuu-mb-1">
@@ -784,9 +787,10 @@ function DispatchViewContent() {
 
           {/* Grouped queue */}
           <div
-            className="niuu-flex-1 niuu-overflow-y-auto niuu-p-2 niuu-flex niuu-flex-col niuu-gap-3"
+            className="niuu-p-2 niuu-flex niuu-flex-col niuu-gap-3"
             role="list"
             aria-label="Dispatch queue"
+            data-testid="dispatch-queue-groups"
           >
             {groupedBySaga.length === 0 ? (
               <div className="niuu-py-12 niuu-text-center niuu-text-sm niuu-text-text-muted">
@@ -826,7 +830,7 @@ function DispatchViewContent() {
 
         {/* ── Right: rules panel ──────────────────────── */}
         <div
-          className="niuu-border-l niuu-border-border-subtle niuu-overflow-y-auto niuu-bg-bg-primary niuu-w-[280px] niuu-shrink-0"
+          className="niuu-border-l niuu-border-border-subtle niuu-bg-bg-primary niuu-w-[280px] niuu-shrink-0"
           aria-label="Dispatch rules panel"
         >
           {dispatcherState ? (

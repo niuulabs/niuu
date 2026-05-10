@@ -96,6 +96,53 @@ describe('PagesView', () => {
     expect(listPages).toHaveBeenLastCalledWith({ mountName: 'platform' });
   });
 
+  it('uses a requested page path from plugin tweaks', async () => {
+    wrap(<PagesView />, undefined, { tweaks: { 'mimir.selectedPagePath': '/api/overview' } });
+    await waitFor(() => expect(screen.getByText('API Design Guidelines')).toBeInTheDocument());
+  });
+
+  it('can collapse and expand the pages sidebar', async () => {
+    function Harness() {
+      const [tweaks, setTweaks] = useState<Record<string, unknown>>({});
+      const ctx = useMemo<PluginCtx>(
+        () => ({
+          tweaks,
+          setTweak: (key, value) => setTweaks((prev) => ({ ...prev, [key]: value })),
+        }),
+        [tweaks],
+      );
+      const client = useMemo(
+        () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+        [],
+      );
+
+      return (
+        <QueryClientProvider client={client}>
+          <PluginCtxProvider value={ctx}>
+            <ServicesProvider services={{ mimir: createMimirMockAdapter() }}>
+              <PagesView />
+            </ServicesProvider>
+          </PluginCtxProvider>
+        </QueryClientProvider>
+      );
+    }
+
+    wrap(<Harness />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /collapse pages sidebar/i })).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /collapse pages sidebar/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /expand pages sidebar/i })).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /expand pages sidebar/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /collapse pages sidebar/i })).toBeInTheDocument(),
+    );
+  });
+
   it('displays a page title and summary when a page is selected', async () => {
     wrap(<PagesView />);
     await waitFor(() => expect(screen.getByText('arch/')).toBeInTheDocument());

@@ -29,6 +29,8 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
 
   const { activeMount, mountName } = useActiveMount();
   const setActiveMount = (m: string) => ctx.setTweak('activeMount', m);
+  const subnavCollapsed = Boolean(ctx.tweaks['mimir.subnavCollapsed']);
+  const setSubnavCollapsed = (value: boolean) => ctx.setTweak('mimir.subnavCollapsed', value);
 
   const { data: mounts = [] } = useMimirMounts();
   const { data: pages = [] } = useMimirPages(mountName ? { mountName } : undefined);
@@ -39,8 +41,111 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
   const flaggedCount = pages.filter((p) => p.flagged).length;
   const lowConfidenceCount = pages.filter((p) => p.confidence === 'low').length;
 
+  if (subnavCollapsed) {
+    return (
+      <nav className="mm-subnav mm-subnav--collapsed" aria-label="Mímir navigation">
+        <div className="mm-subnav-collapsed-head">
+          <button
+            type="button"
+            className="mm-subnav-toggle"
+            onClick={() => setSubnavCollapsed(false)}
+            aria-label="Expand Mímir sidebar"
+            data-testid="mimir-subnav-toggle"
+          >
+            ›
+          </button>
+        </div>
+        <div className="mm-subnav-collapsed-body">
+          <button
+            type="button"
+            className={`mm-subnav-collapsed-item${activeMount === 'all' ? ' mm-subnav-collapsed-item--active' : ''}`}
+            onClick={() => setActiveMount('all')}
+            aria-label="All mounts"
+            title="All mounts"
+          >
+            ◎
+          </button>
+          {mounts.map((m) => (
+            <button
+              key={m.name}
+              type="button"
+              className={`mm-subnav-collapsed-item${activeMount === m.name ? ' mm-subnav-collapsed-item--active' : ''}`}
+              onClick={() => setActiveMount(m.name)}
+              aria-label={m.name}
+              title={m.name}
+            >
+              {m.name.slice(0, 2)}
+            </button>
+          ))}
+          <div className="mm-subnav-collapsed-sep" />
+          <button
+            type="button"
+            className="mm-subnav-collapsed-item"
+            onClick={() => navigate({ to: '/mimir/lint' })}
+            aria-label={`Lint errors ${errorCount}`}
+            title={`Errors ${errorCount}`}
+          >
+            !
+          </button>
+          <button
+            type="button"
+            className="mm-subnav-collapsed-item"
+            onClick={() => navigate({ to: '/mimir/pages' })}
+            aria-label={`Flagged pages ${flaggedCount}`}
+            title={`Flagged ${flaggedCount}`}
+          >
+            ⚑
+          </button>
+          <button
+            type="button"
+            className="mm-subnav-collapsed-item"
+            onClick={() => navigate({ to: '/mimir/pages' })}
+            aria-label={`Low confidence pages ${lowConfidenceCount}`}
+            title={`Low confidence ${lowConfidenceCount}`}
+          >
+            ◇
+          </button>
+          {ravns.length > 0 && (
+            <>
+              <div className="mm-subnav-collapsed-sep" />
+              {ravns.slice(0, 6).map((ravn) => (
+                <button
+                  key={ravn.ravnId}
+                  type="button"
+                  className="mm-subnav-collapsed-item"
+                  onClick={() => navigate({ to: '/mimir/ravns' })}
+                  aria-label={`Warden ${ravn.ravnId}`}
+                  title={ravn.ravnId}
+                >
+                  {ravn.ravnId.charAt(0)}
+                  {ravn.ravnId.charAt(ravn.ravnId.length - 1)}
+                </button>
+              ))}
+            </>
+          )}
+        </div>
+      </nav>
+    );
+  }
+
   return (
     <nav className="mm-subnav" aria-label="Mímir navigation">
+      <div className="mm-subnav-head">
+        <div>
+          <div className="mm-subnav-head__title">Context</div>
+          <div className="mm-subnav-head__subtitle">mounts · filters · wardens</div>
+        </div>
+        <button
+          type="button"
+          className="mm-subnav-toggle"
+          onClick={() => setSubnavCollapsed(true)}
+          aria-label="Collapse Mímir sidebar"
+          data-testid="mimir-subnav-toggle"
+        >
+          ‹
+        </button>
+      </div>
+
       {/* ── Mount picker ─────────────────────────────────────────── */}
       <div className="mm-subnav-block">
         <div className="mm-subnav-label">Mount focus</div>

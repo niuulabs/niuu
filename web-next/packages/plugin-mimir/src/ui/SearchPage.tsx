@@ -1,3 +1,5 @@
+import { useNavigate } from '@tanstack/react-router';
+import { usePluginCtx } from '@niuulabs/plugin-sdk';
 import { StateDot } from '@niuulabs/ui';
 import { useSearch } from '../application/useSearch';
 import { useActiveMount } from '../application/useActiveMount';
@@ -48,12 +50,22 @@ function highlightText(text: string, query: string): React.ReactNode {
 // ---------------------------------------------------------------------------
 
 export function SearchPage() {
+  const navigate = useNavigate();
+  const ctx = usePluginCtx();
   const { activeMount, mountName } = useActiveMount();
   const { query, mode, setQuery, setMode, results, isLoading, isError, error } =
     useSearch(mountName);
   const mountLabel = activeMount === 'all' ? 'all mounts' : activeMount;
   const placeholder =
     activeMount === 'all' ? 'Search pages across all mounts…' : `Search pages in ${activeMount}…`;
+
+  function openResult(path: string, mounts?: string[]) {
+    ctx.setTweak('mimir.selectedPagePath', path);
+    if (activeMount === 'all' && mounts?.length === 1) {
+      ctx.setTweak('activeMount', mounts[0]);
+    }
+    navigate({ to: '/mimir/pages' });
+  }
 
   return (
     <div className="niuu-flex niuu-flex-col niuu-h-full">
@@ -130,10 +142,12 @@ export function SearchPage() {
           aria-label="Search results"
         >
           {results.map((result) => (
-            <div
+            <button
+              type="button"
               key={result.path}
-              className="niuu-py-3 niuu-px-5 niuu-border-b niuu-border-border niuu-cursor-pointer hover:niuu-bg-bg-tertiary"
+              className="niuu-w-full niuu-py-3 niuu-px-5 niuu-border-b niuu-border-border niuu-cursor-pointer hover:niuu-bg-bg-tertiary niuu-text-left niuu-bg-transparent niuu-border-x-0 niuu-border-t-0"
               data-testid="search-result"
+              onClick={() => openResult(result.path, result.mounts)}
             >
               {/* Title + score */}
               <div className="niuu-flex niuu-items-baseline niuu-gap-3">
@@ -175,7 +189,7 @@ export function SearchPage() {
                   </span>
                 ))}
               </div>
-            </div>
+            </button>
           ))}
         </div>
       )}

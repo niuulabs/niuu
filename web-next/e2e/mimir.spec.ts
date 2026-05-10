@@ -187,6 +187,18 @@ test('/mimir/search — searching across mounts (hybrid mode)', async ({ page })
   await expect(page.getByTestId('search-result').first()).toBeVisible({ timeout: 5000 });
 });
 
+test('/mimir/search — clicking a result opens it in pages', async ({ page }) => {
+  await page.goto('/mimir/search');
+  await page.getByRole('searchbox').fill('architecture');
+  const firstResult = page.getByTestId('search-result').first();
+  await expect(firstResult).toBeVisible({ timeout: 5000 });
+  await firstResult.click();
+  await expect(page).toHaveURL(/\/mimir\/pages/);
+  await expect(page.getByRole('heading', { name: 'Architecture Overview' })).toBeVisible({
+    timeout: 5000,
+  });
+});
+
 // ---------------------------------------------------------------------------
 // /mimir/graph — Graph view
 // ---------------------------------------------------------------------------
