@@ -85,7 +85,7 @@ class TestChronicleEndpointCreate:
         data = response.json()
         assert data["session_id"] == str(session.id)
         assert data["project"] == "repo"
-        assert data["status"] == "draft"
+        assert data["status"] == "complete"
         assert "id" in data
 
     def test_create_chronicle_session_not_found(self, client: TestClient):
@@ -369,7 +369,7 @@ class TestChronicleEndpointBrokerReport:
         assert data["summary"] == "Implemented feature X"
         assert data["key_changes"] == ["main.py: added handler"]
         assert data["duration_seconds"] == 120
-        assert data["status"] == "draft"
+        assert data["status"] == "complete"
 
     async def test_broker_report_enriches_existing_draft(
         self,

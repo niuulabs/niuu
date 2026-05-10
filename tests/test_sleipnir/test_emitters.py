@@ -449,6 +449,7 @@ class TestDispatchServiceEmitter:
         saga = self._make_completed_saga()
 
         svc._saga_repo.list_sagas = AsyncMock(return_value=[saga])
+        svc._saga_repo.get_phases_by_saga = AsyncMock(return_value=[])
         svc._saga_repo.update_saga_status = AsyncMock()
 
         mock_volundr = MagicMock()
@@ -470,6 +471,7 @@ class TestDispatchServiceEmitter:
         saga = self._make_completed_saga()
 
         svc._saga_repo.list_sagas = AsyncMock(return_value=[saga])
+        svc._saga_repo.get_phases_by_saga = AsyncMock(return_value=[])
         svc._saga_repo.update_saga_status = AsyncMock()
 
         mock_volundr = MagicMock()
