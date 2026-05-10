@@ -7,6 +7,7 @@
  */
 
 import { Fragment } from 'react';
+import { MarkdownContent } from '@niuulabs/ui';
 import { splitWikilinks } from '../../domain';
 
 interface RawSource {
@@ -29,6 +30,13 @@ function SourceContent({
   content: string;
   onNavigate?: (path: string) => void;
 }) {
+  if (!content.includes('[[')) {
+    return (
+      <div className="niuu-text-xs niuu-text-text-secondary">
+        <MarkdownContent content={content} />
+      </div>
+    );
+  }
   const parts = splitWikilinks(content);
   return (
     <p className="niuu-m-0 niuu-text-xs niuu-text-text-secondary niuu-font-mono niuu-whitespace-pre-wrap niuu-break-words">

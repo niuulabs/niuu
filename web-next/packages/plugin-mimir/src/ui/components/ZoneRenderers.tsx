@@ -1,4 +1,5 @@
 import { Fragment } from 'react';
+import { MarkdownContent } from '@niuulabs/ui';
 import { splitWikilinks, resolveWikilink } from '../../domain';
 import { WikilinkPill } from './WikilinkPill';
 import type {
@@ -65,7 +66,11 @@ function RelationshipsZone({
 }
 
 function AssessmentZone({ zone }: { zone: ZoneAssessment }) {
-  return <p className="niuu-text-sm niuu-text-text-secondary niuu-m-0">{zone.text}</p>;
+  return (
+    <div className="niuu-text-sm niuu-text-text-secondary">
+      <MarkdownContent content={zone.text} />
+    </div>
+  );
 }
 
 function TimelineZone({ zone }: { zone: ZoneTimeline }) {

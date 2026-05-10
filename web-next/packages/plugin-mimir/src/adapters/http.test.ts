@@ -180,6 +180,42 @@ describe('buildMimirHttpAdapter', () => {
       const result = await buildMimirHttpAdapter(client).pages.getPage('/missing');
       expect(result).toBeNull();
     });
+
+    it('derives structured zones from compiled truth markdown when the backend omits zones', async () => {
+      const client = makeClient({
+        get: vi.fn().mockResolvedValue({
+          path: 'raids/NIU-912-postmortem.md',
+          title: 'NIU-912 Postmortem',
+          summary: 'Summary',
+          category: 'raids',
+          updated_at: '2026-05-10T14:03:29.614843+00:00',
+          source_ids: ['src-1'],
+          content: `## Compiled Truth
+
+**Raid**: test
+
+### What was done
+
+- Added artifact
+
+## Timeline
+
+- 2026-05-10: Artifact created. [Source: src-1]
+`,
+          related: [],
+        }),
+      });
+
+      const result = await buildMimirHttpAdapter(client).pages.getPage('raids/NIU-912-postmortem.md');
+
+      expect(result?.zones).toEqual([
+        expect.objectContaining({ kind: 'assessment' }),
+        expect.objectContaining({
+          kind: 'timeline',
+          items: [expect.objectContaining({ date: '2026-05-10', note: 'Artifact created' })],
+        }),
+      ]);
+    });
   });
 
   describe('pages.upsertPage', () => {

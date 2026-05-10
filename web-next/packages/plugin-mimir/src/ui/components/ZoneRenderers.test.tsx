@@ -82,6 +82,17 @@ describe('ZoneBodyReadonly — assessment', () => {
     render(<ZoneBodyReadonly zone={zone} allPages={MOCK_PAGES} onNavigate={noop} />);
     expect(screen.getByText('Architecture looks solid.')).toBeInTheDocument();
   });
+
+  it('renders markdown structure inside the assessment zone', () => {
+    const zone: Zone = {
+      kind: 'assessment',
+      text: '### What was done\n\n- Added artifact\n- Reviewed output',
+    };
+    render(<ZoneBodyReadonly zone={zone} allPages={MOCK_PAGES} onNavigate={noop} />);
+    expect(screen.getByText('What was done')).toBeInTheDocument();
+    expect(screen.getByText('Added artifact')).toBeInTheDocument();
+    expect(screen.getByText('Reviewed output')).toBeInTheDocument();
+  });
 });
 
 // ── ZoneBodyReadonly — timeline ───────────────────────────────────────────────
