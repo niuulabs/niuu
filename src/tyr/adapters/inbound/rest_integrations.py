@@ -55,6 +55,12 @@ def _trusted_code_forge_base_urls(request: Request) -> tuple[str, ...]:
     return tuple(ordered)
 
 
+def _allow_unauthenticated_code_forge(request: Request, integration_type: str) -> bool:
+    settings = getattr(request.app.state, "settings", None)
+    allow_anon = settings.auth.allow_anonymous_dev if settings is not None else False
+    return allow_anon and integration_type == IntegrationType.CODE_FORGE.value
+
+
 # --- Request / Response models ---
 
 
@@ -80,8 +86,7 @@ class IntegrationCreateRequest(BaseModel):
         description="Name under which the credential is stored",
     )
     credential_value: str = Field(
-        ...,
-        min_length=1,
+        default="",
         description="Secret value (PAT, token) — stored in credential store, never persisted raw",
     )
     config: dict[str, Any] = Field(
@@ -139,15 +144,22 @@ def create_integrations_router() -> APIRouter:
         """Create a new integration connection and store its credential."""
         credential_store = _get_credential_store(request)
         repo = _get_repo(request)
+        allow_unauthenticated = _allow_unauthenticated_code_forge(request, data.integration_type)
 
-        # Store credential value in the credential store
-        await credential_store.store(
-            owner_type="user",
-            owner_id=principal.user_id,
-            name=data.credential_name,
-            secret_type=SecretType.API_KEY,
-            data={"token": data.credential_value},
-        )
+        if not data.credential_value and not allow_unauthenticated:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="credential_value is required",
+            )
+
+        if data.credential_value:
+            await credential_store.store(
+                owner_type="user",
+                owner_id=principal.user_id,
+                name=data.credential_name,
+                secret_type=SecretType.API_KEY,
+                data={"token": data.credential_value},
+            )
 
         now = datetime.now(UTC)
         connection = IntegrationConnection(
@@ -165,7 +177,7 @@ def create_integrations_router() -> APIRouter:
         test_result = await test_connection(
             data.integration_type,
             data.config,
-            {"token": data.credential_value},
+            {"token": data.credential_value} if data.credential_value else {},
             trusted_code_forge_base_urls=_trusted_code_forge_base_urls(request),
         )
         if not test_result.success:

@@ -82,6 +82,7 @@ nav:
       - Issue Trackers: configuration/trackers.md
   - Setup Guide:
       - AI-Agent Setup: setup/agent-guide.md
+      - Three-Mac Tyr Lab: setup/three-mac-lab.md
   - Architecture:
       - Overview: architecture/overview.md
       - Components: architecture/components.md

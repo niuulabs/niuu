@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.domain.models import IntegrationConnection, IntegrationType
+from tyr.config import AuthConfig, Settings
 from tyr.adapters.inbound.rest_integrations import (
     create_integrations_router,
     create_telegram_setup_router,
@@ -84,9 +85,19 @@ def mock_credential_store() -> AsyncMock:
 
 @pytest.fixture
 def client(mock_repo: AsyncMock, mock_credential_store: AsyncMock) -> TestClient:
+    return _make_client(mock_repo, mock_credential_store)
+
+
+def _make_client(
+    mock_repo: AsyncMock,
+    mock_credential_store: AsyncMock,
+    *,
+    allow_anonymous_dev: bool = False,
+) -> TestClient:
     app = FastAPI()
     app.state.integration_repo = mock_repo
     app.state.credential_store = mock_credential_store
+    app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=allow_anonymous_dev))
     app.include_router(create_integrations_router())
     app.include_router(
         create_telegram_setup_router(
@@ -209,6 +220,50 @@ class TestCreateIntegration:
             headers=_auth_headers(),
         )
         assert resp.status_code == 422
+
+    def test_rejects_empty_credential_value_outside_anonymous_dev(
+        self,
+        mock_repo: AsyncMock,
+        mock_credential_store: AsyncMock,
+    ) -> None:
+        client = _make_client(mock_repo, mock_credential_store, allow_anonymous_dev=False)
+
+        resp = client.post(
+            "/api/v1/tyr/integrations",
+            json={
+                "integration_type": "code_forge",
+                "adapter": "tyr.adapters.volundr_http.VolundrHTTPAdapter",
+                "credential_name": "volundr-dev",
+                "credential_value": "",
+                "config": {"url": "http://volundr"},
+            },
+            headers=_auth_headers(),
+        )
+
+        assert resp.status_code == 422
+        mock_credential_store.store.assert_not_called()
+
+    def test_allows_empty_code_forge_credential_value_in_anonymous_dev(
+        self,
+        mock_repo: AsyncMock,
+        mock_credential_store: AsyncMock,
+    ) -> None:
+        client = _make_client(mock_repo, mock_credential_store, allow_anonymous_dev=True)
+
+        resp = client.post(
+            "/api/v1/tyr/integrations",
+            json={
+                "integration_type": "code_forge",
+                "adapter": "tyr.adapters.volundr_http.VolundrHTTPAdapter",
+                "credential_name": "volundr-dev",
+                "credential_value": "",
+                "config": {"url": "http://volundr"},
+            },
+            headers=_auth_headers(),
+        )
+
+        assert resp.status_code == 201
+        mock_credential_store.store.assert_not_called()
 
     def test_credential_value_not_in_response(self, client: TestClient, mock_repo: AsyncMock):
         resp = client.post(

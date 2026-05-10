@@ -24,6 +24,7 @@ import type {
   CreateIntegrationParams,
   ConnectionTestResult,
   TelegramSetupResult,
+  DispatchCluster,
   FlockConfig,
   DispatchDefaults,
   NotificationSettings,
@@ -642,6 +643,7 @@ const SEED_SESSIONS: SessionInfo[] = [
     confidence: 90,
     raidName: 'Implement OIDC flow',
     sagaName: 'Auth Rewrite',
+    clusterName: 'Mac mini',
   },
   {
     sessionId: 'sess-002',
@@ -651,6 +653,28 @@ const SEED_SESSIONS: SessionInfo[] = [
     confidence: 65,
     raidName: 'Add PAT generation',
     sagaName: 'Auth Rewrite',
+    clusterName: 'MacBook Pro',
+  },
+];
+
+const SEED_DISPATCH_CLUSTERS: DispatchCluster[] = [
+  {
+    connectionId: 'cluster-mini',
+    name: 'Mac mini',
+    url: 'http://mac-mini.local:8000',
+    enabled: true,
+  },
+  {
+    connectionId: 'cluster-macbook',
+    name: 'MacBook Pro',
+    url: 'http://macbook-pro.local:8000',
+    enabled: true,
+  },
+  {
+    connectionId: 'cluster-macbook-air',
+    name: 'MacBook Air',
+    url: 'http://macbook-air.local:8000',
+    enabled: true,
   },
 ];
 
@@ -1357,13 +1381,17 @@ export function createMockDispatchBus(): IDispatchBus {
       return [];
     },
 
-    async approve(items) {
+    async getClusters() {
+      return SEED_DISPATCH_CLUSTERS.map((cluster) => ({ ...cluster }));
+    },
+
+    async approve(items, options) {
       return items.map((item) => ({
         issueId: item.issueId,
         sessionId: `sess-${item.issueId}`,
         sessionName: item.issueId,
         status: 'spawned',
-        clusterName: '',
+        clusterName: item.connectionId ?? options?.connectionId ?? 'local',
       }));
     },
 

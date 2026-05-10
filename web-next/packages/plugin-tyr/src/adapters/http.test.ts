@@ -104,6 +104,7 @@ const rawSessionInfo = {
   confidence: 80,
   raid_name: 'Implement JWT refresh',
   saga_name: 'Auth Rewrite',
+  cluster_name: 'Mac mini',
 };
 
 const rawProject = {
@@ -141,6 +142,13 @@ const rawDispatchApprovalResult = {
   session_name: 'NIU-010',
   status: 'spawned',
   cluster_name: 'Default',
+};
+
+const rawDispatchCluster = {
+  connection_id: 'cluster-mini',
+  name: 'Mac mini',
+  url: 'http://mac-mini.local:8000',
+  enabled: true,
 };
 
 const rawMilestone = {
@@ -551,6 +559,7 @@ describe('buildTyrSessionHttpAdapter', () => {
     expect(session?.sessionId).toBe('sess-abc');
     expect(session?.chronicleLines).toEqual(['line 1', 'line 2']);
     expect(session?.raidName).toBe('Implement JWT refresh');
+    expect(session?.clusterName).toBe('Mac mini');
   });
 
   it('calls GET /sessions/:id', async () => {
@@ -753,6 +762,21 @@ describe('buildDispatchBusHttpAdapter', () => {
     expect(item?.priorityLabel).toBe(rawDispatchQueueItem.priority_label);
   });
 
+  it('calls GET /dispatch/clusters and camelizes cluster items', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([rawDispatchCluster]);
+
+    const [cluster] = await buildDispatchBusHttpAdapter(client).getClusters();
+
+    expect(client.get).toHaveBeenCalledWith('/dispatch/clusters');
+    expect(cluster).toEqual({
+      connectionId: 'cluster-mini',
+      name: 'Mac mini',
+      url: 'http://mac-mini.local:8000',
+      enabled: true,
+    });
+  });
+
   it('calls POST /dispatch/approve with snake_case request fields', async () => {
     const client = makeClient();
     client.post.mockResolvedValue([rawDispatchApprovalResult]);
@@ -802,6 +826,7 @@ describe('buildDispatchBusHttpAdapter', () => {
     const client = makeClient();
     const svc: IDispatchBus = buildDispatchBusHttpAdapter(client);
     expect(typeof svc.getQueue).toBe('function');
+    expect(typeof svc.getClusters).toBe('function');
     expect(typeof svc.approve).toBe('function');
     expect(typeof svc.dispatch).toBe('function');
     expect(typeof svc.dispatchBatch).toBe('function');

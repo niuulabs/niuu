@@ -117,9 +117,10 @@ async def test_code_forge(
             follow_redirects=False,
             trust_env=False,
         ) as client:
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
             resp = await client.get(
                 f"{trusted_url}/api/v1/identity/me",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
             )
             if resp.status_code == 200:
                 data = resp.json()

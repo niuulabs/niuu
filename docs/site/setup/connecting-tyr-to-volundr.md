@@ -17,6 +17,15 @@ Tyr can dispatch sessions to Volundr autonomously using a **Personal Access Toke
 4. Set the Volundr base URL if it differs from the default (`http://volundr:8000`).
 5. Enable the connection.
 
+For multi-cluster setups, repeat this once per Volundr instance and give each
+connection a distinct `config.name` such as `mac-mini`, `macbook-pro`, or
+`office-mini`.
+
+In anonymous local dev mode, `code_forge` connections may also be created with
+an empty credential value. Tyr will then talk to Volundr without a Bearer token.
+This is intentionally insecure and should only be used on trusted local/dev
+networks.
+
 Behind the scenes this creates an `IntegrationConnection` of type `CODE_FORGE` and stores the PAT in the credential store under the connection's `credential_name`.
 
 ## 3. Verify autonomous dispatch
@@ -33,6 +42,26 @@ VolundrAdapterFactory.for_owner(owner_id)
 Every `spawn_session` call made by the adapter includes `Authorization: Bearer <pat>` without any manual `set_auth_token()` call.
 
 To verify, trigger a dispatch for the owner and confirm that the session is created in Volundr.
+
+## Anonymous local Tyr with multiple Volundrs
+
+If you want one local Tyr UI to drive multiple Volundr instances without a real
+auth proxy, use:
+
+```yaml
+auth:
+  allow_anonymous_dev: true
+  default_user_id: dev-user
+
+volundr:
+  use_connection_factory_in_dev: true
+  trusted_connection_test_urls:
+    - http://mac-mini.local:8080
+    - http://macbook-pro.local:8080
+```
+
+Without `use_connection_factory_in_dev: true`, anonymous dev Tyr falls back to
+the single local Volundr adapter and ignores stored `CODE_FORGE` connections.
 
 ## How runtime tokens interact with stored PATs
 

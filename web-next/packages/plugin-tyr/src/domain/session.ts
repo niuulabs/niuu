@@ -36,5 +36,7 @@ export const sessionInfoSchema = z.object({
   raidName: z.string(),
   /** Name of the saga this raid belongs to. */
   sagaName: z.string(),
+  /** Human-readable Volundr cluster label hosting the session. */
+  clusterName: z.string(),
 });
 export type SessionInfo = z.infer<typeof sessionInfoSchema>;
