@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,8 +31,70 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
+from ravn.ports.warden_deployer import WardenDeploymentError, WardenDeploymentResult
+from ravn.warden import WardenSpec, WardenStore
+from ravn.warden.artifacts import service_label, start_command, write_runtime_config
+from ravn.warden.models import WardenSupervisor
 
 runner = CliRunner()
+
+
+class FakeWardenDeployer:
+    def __init__(self, *, fail_on: str = "") -> None:
+        self._fail_on = fail_on
+
+    def install(self, spec: WardenSpec, *, warden_dir: Path, workspace_root: Path | None = None):
+        if self._fail_on == "install":
+            raise WardenDeploymentError("install failed")
+        config_path = write_runtime_config(
+            spec,
+            warden_dir=warden_dir,
+            workspace_root=workspace_root,
+        )
+        service_path = warden_dir / "warden.plist"
+        service_path.write_text("service", encoding="utf-8")
+        return WardenDeploymentResult(
+            supervisor=WardenSupervisor(
+                installed=True,
+                service_label=service_label(spec.id),
+                service_file=str(service_path),
+                config_file=str(config_path),
+                start_command=start_command(spec, config_path=config_path),
+                last_install_at=datetime.now(UTC),
+            ),
+            runtime_state="idle",
+        )
+
+    def start(self, spec: WardenSpec, *, warden_dir: Path):
+        if self._fail_on == "start":
+            raise WardenDeploymentError("start failed")
+        return WardenDeploymentResult(
+            supervisor=spec.supervisor,
+            runtime_state="active",
+        )
+
+    def stop(self, spec: WardenSpec, *, warden_dir: Path):
+        if self._fail_on == "stop":
+            raise WardenDeploymentError("stop failed")
+        return WardenDeploymentResult(
+            supervisor=spec.supervisor,
+            runtime_state="idle",
+        )
+
+    def uninstall(self, spec: WardenSpec, *, warden_dir: Path):
+        if self._fail_on == "uninstall":
+            raise WardenDeploymentError("uninstall failed")
+        return WardenDeploymentResult(
+            supervisor=WardenSupervisor(),
+            runtime_state="offline",
+        )
+
+
+def _build_test_warden_store(tmp_path: Path, *, fail_on: str = "") -> WardenStore:
+    return WardenStore(
+        root=tmp_path,
+        deployer_factory=lambda spec: FakeWardenDeployer(fail_on=fail_on),
+    )
 
 
 class TestPrintUsage:
@@ -252,6 +315,200 @@ class TestConfigFlag:
             result = runner.invoke(app, ["run", "Hello!", "--config", str(cfg)])
 
         assert result.exit_code == 0
+
+
+class TestWardenCommands:
+    def test_warden_list_empty(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            result = runner.invoke(app, ["warden", "list"])
+
+        assert result.exit_code == 0
+        assert "No wardens found." in result.output
+
+    def test_warden_create_and_show(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            create_result = runner.invoke(
+                app,
+                [
+                    "warden",
+                    "create",
+                    "Research Warden",
+                    "--persona",
+                    "research-and-distill",
+                    "--mount",
+                    "local",
+                    "--mount",
+                    "shared",
+                    "--write-mount",
+                    "local",
+                    "--autostart",
+                ],
+            )
+            show_result = runner.invoke(app, ["warden", "show", "research-warden"])
+
+        assert create_result.exit_code == 0
+        assert "Created warden research-warden" in create_result.output
+        assert show_result.exit_code == 0
+        assert "name: Research Warden" in show_result.output
+        assert "persona: research-and-distill" in show_result.output
+        assert "mounts: local, shared" in show_result.output
+
+    def test_warden_create_parses_deployment_args(self, tmp_path: Path) -> None:
+        store = _build_test_warden_store(tmp_path)
+        with patch("ravn.warden.build_warden_store", return_value=store):
+            result = runner.invoke(
+                app,
+                [
+                    "warden",
+                    "create",
+                    "Cluster Warden",
+                    "--deployment",
+                    "k8s-gitops",
+                    "--deployment-arg",
+                    "repo_path=/tmp/gitops",
+                    "--deployment-arg",
+                    "auto_commit=true",
+                    "--deployment-arg",
+                    "namespace=ravn-dev",
+                ],
+            )
+
+        assert result.exit_code == 0
+        created = store.get("cluster-warden")
+        assert created is not None
+        assert created.deployment == "k8s-gitops"
+        assert created.deployment_kwargs["repo_path"] == "/tmp/gitops"
+        assert created.deployment_kwargs["auto_commit"] is True
+        assert created.deployment_kwargs["namespace"] == "ravn-dev"
+
+    def test_warden_list_json(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            result = runner.invoke(app, ["warden", "list", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload[0]["id"] == "research-warden"
+
+    def test_warden_show_missing_exits_nonzero(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            result = runner.invoke(app, ["warden", "show", "missing"])
+
+        assert result.exit_code == 1
+        assert "Warden not found: missing" in result.output
+
+    def test_warden_install_and_start(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            install_result = runner.invoke(app, ["warden", "install", "research-warden"])
+            show_result = runner.invoke(app, ["warden", "show", "research-warden"])
+            start_result = runner.invoke(app, ["warden", "start", "research-warden"])
+
+        assert install_result.exit_code == 0
+        assert "Installed warden research-warden" in install_result.output
+        assert "installed: true" in show_result.output
+        assert "state: idle" in show_result.output
+        assert start_result.exit_code == 0
+        assert "Started warden research-warden" in start_result.output
+
+    def test_warden_stop_and_uninstall(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            runner.invoke(app, ["warden", "install", "research-warden"])
+            runner.invoke(app, ["warden", "start", "research-warden"])
+            stop_result = runner.invoke(app, ["warden", "stop", "research-warden"])
+            uninstall_result = runner.invoke(app, ["warden", "uninstall", "research-warden"])
+
+        assert stop_result.exit_code == 0
+        assert "Stopped warden research-warden" in stop_result.output
+        assert uninstall_result.exit_code == 0
+        assert "Uninstalled warden research-warden" in uninstall_result.output
+
+    def test_warden_start_requires_install(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            result = runner.invoke(app, ["warden", "start", "research-warden"])
+
+        assert result.exit_code == 1
+        assert "must be installed before it can be started" in result.output
+
+    def test_warden_stop_requires_install(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            result = runner.invoke(app, ["warden", "stop", "research-warden"])
+
+        assert result.exit_code == 1
+        assert "must be installed before it can be stopped" in result.output
+
+    def test_warden_install_reports_deployer_failures(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path, fail_on="install"),
+        ):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            result = runner.invoke(app, ["warden", "install", "research-warden"])
+
+        assert result.exit_code == 1
+        assert "Failed to install warden research-warden: install failed" in result.output
+
+    def test_warden_start_reports_deployer_failures(self, tmp_path: Path) -> None:
+        install_store = _build_test_warden_store(tmp_path)
+        failing_store = _build_test_warden_store(tmp_path, fail_on="start")
+        with patch("ravn.warden.build_warden_store", return_value=install_store):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            runner.invoke(app, ["warden", "install", "research-warden"])
+        with patch("ravn.warden.build_warden_store", return_value=failing_store):
+            result = runner.invoke(app, ["warden", "start", "research-warden"])
+
+        assert result.exit_code == 1
+        assert "Failed to start warden research-warden: start failed" in result.output
+
+    def test_warden_stop_reports_deployer_failures(self, tmp_path: Path) -> None:
+        install_store = _build_test_warden_store(tmp_path)
+        failing_store = _build_test_warden_store(tmp_path, fail_on="stop")
+        with patch("ravn.warden.build_warden_store", return_value=install_store):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            runner.invoke(app, ["warden", "install", "research-warden"])
+        with patch("ravn.warden.build_warden_store", return_value=failing_store):
+            result = runner.invoke(app, ["warden", "stop", "research-warden"])
+
+        assert result.exit_code == 1
+        assert "Failed to stop warden research-warden: stop failed" in result.output
+
+    def test_warden_uninstall_reports_deployer_failures(self, tmp_path: Path) -> None:
+        install_store = _build_test_warden_store(tmp_path)
+        failing_store = _build_test_warden_store(tmp_path, fail_on="uninstall")
+        with patch("ravn.warden.build_warden_store", return_value=install_store):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+        with patch("ravn.warden.build_warden_store", return_value=failing_store):
+            result = runner.invoke(app, ["warden", "uninstall", "research-warden"])
+
+        assert result.exit_code == 1
+        assert "Failed to uninstall warden research-warden: uninstall failed" in result.output
 
 
 class TestReplMode:
