@@ -42,6 +42,29 @@ spec:
           env:
             - name: NIUU_CONFIG
               value: "/etc/niuu/config.yaml"
+            - name: DATABASE__HOST
+              value: {{ include "niuu-shared.databaseHost" . | quote }}
+            - name: DATABASE__PORT
+              value: {{ include "niuu-shared.databasePort" . | quote }}
+            - name: DATABASE__NAME
+              value: {{ .Values.database.name | quote }}
+            - name: DATABASE__USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "niuu-shared.databaseSecretName" . }}
+                  key: {{ .Values.database.userKey | default "username" }}
+            - name: DATABASE__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "niuu-shared.databaseSecretName" . }}
+                  key: {{ .Values.database.passwordKey | default "password" }}
+            {{- if and .Values.pat .Values.pat.issuerSecretName }}
+            - name: PAT__TOKEN_ISSUER_KWARGS__CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.pat.issuerSecretName }}
+                  key: {{ .Values.pat.issuerSecretKey | default "client-secret" }}
+            {{- end }}
             {{- if .Values.git.github.existingSecret }}
             - name: GIT__GITHUB__TOKEN
               valueFrom:
@@ -74,9 +97,34 @@ spec:
                   key: {{ $inst.tokenKey | default "token" }}
             {{- end }}
             {{- end }}
+            {{- range .Values.storageAdapter.secretKwargs }}
+            - name: STORAGE_ADAPTER_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- range .Values.identity.secretKwargs }}
+            - name: IDENTITY_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- range .Values.gateway.secretKwargs }}
+            - name: GATEWAY_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with .Values.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if .Values.livenessProbe.enabled }}
           livenessProbe:
             httpGet:

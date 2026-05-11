@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from fastapi.middleware.cors import CORSMiddleware
 
-from niuu.config import CorsConfig, GitConfig, NiuuSettings
+from niuu.config import CorsConfig, GitConfig
 from niuu.main import create_app as create_niuu_app
+from niuu.service_settings import Settings as NiuuSharedSettings
 from tyr.config import Settings as TyrSettings
 from tyr.main import create_app as create_tyr_app
 from volundr.config import Settings as VolundrSettings
@@ -69,7 +70,7 @@ class TestServiceCorsWiring:
     def test_niuu_shared_uses_settings_cors(self) -> None:
         app = create_niuu_app(
             git_config=GitConfig(),
-            settings=NiuuSettings(
+            settings=NiuuSharedSettings(
                 cors=CorsConfig(
                     allowed_origins=["https://ui.example.com"],
                     allow_credentials=False,
