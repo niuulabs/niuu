@@ -141,3 +141,109 @@ export interface IBudgetStream {
   getBudget(ravnId: string): Promise<BudgetState>;
   getFleetBudget(): Promise<BudgetState>;
 }
+
+export interface WardenFeatures {
+  wakefulnessEnabled: boolean;
+  dreamCycleEnabled: boolean;
+  threadQueueEnabled: boolean;
+  threadEnricherEnabled: boolean;
+  recapEnabled: boolean;
+  sourceTriggerEnabled: boolean;
+  stalenessTriggerEnabled: boolean;
+}
+
+export interface WardenDreamSummary {
+  id: string;
+  timestamp: string;
+  ravn: string;
+  mounts: string[];
+  pagesUpdated: number;
+  entitiesCreated: number;
+  lintFixes: number;
+  durationMs: number;
+}
+
+export interface WardenRuntime {
+  state?: 'active' | 'idle' | 'offline';
+  pagesTouched?: number;
+  lastStartedAt?: string;
+  lastDream?: WardenDreamSummary | null;
+}
+
+export interface WardenSupervisor {
+  installed: boolean;
+  serviceLabel?: string;
+  serviceFile?: string;
+  configFile?: string;
+  startCommand?: string;
+  lastInstallAt?: string;
+  observation?: WardenObservation;
+}
+
+export interface WardenObservedField {
+  label: string;
+  value: string;
+}
+
+export interface WardenObservation {
+  status: 'running' | 'idle' | 'missing' | 'degraded' | 'unknown';
+  detail?: string;
+  source?: string;
+  checkedAt?: string;
+  fields?: WardenObservedField[];
+}
+
+export interface WardenOperator {
+  rune?: string;
+  bio?: string;
+  expertise?: string[];
+  tools?: string[];
+  role?: PersonaRole;
+}
+
+export interface WardenSummary {
+  id: string;
+  name: string;
+  persona: string;
+  profile: string;
+  deployment: string;
+  deploymentKwargs?: Record<string, unknown>;
+  mountNames: string[];
+  writeMount: string;
+  categoryScope: string[];
+  features: WardenFeatures;
+  autostart: boolean;
+  createdAt: string;
+  createdBy: string;
+  runtime?: WardenRuntime;
+  supervisor?: WardenSupervisor;
+  operator?: WardenOperator;
+}
+
+export type WardenListener = (warden: WardenSummary) => void;
+
+export interface WardenCreateRequest {
+  name: string;
+  persona?: string;
+  profile?: string;
+  deployment?: string;
+  deploymentKwargs?: Record<string, unknown>;
+  mountNames?: string[];
+  writeMount?: string;
+  categoryScope?: string[];
+  features?: Partial<WardenFeatures>;
+  autostart?: boolean;
+  createdBy?: string;
+}
+
+export interface IWardenStore {
+  listWardens(): Promise<WardenSummary[]>;
+  getWarden(id: string): Promise<WardenSummary>;
+  createWarden(req: WardenCreateRequest): Promise<WardenSummary>;
+  subscribeWarden(id: string, listener: WardenListener): () => void;
+  observeWarden(id: string): Promise<WardenSummary>;
+  installWarden(id: string): Promise<WardenSummary>;
+  startWarden(id: string): Promise<WardenSummary>;
+  stopWarden(id: string): Promise<WardenSummary>;
+  uninstallWarden(id: string): Promise<WardenSummary>;
+}

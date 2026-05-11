@@ -36,11 +36,13 @@ const ravnMocks = vi.hoisted(() => ({
   createMockSessionStream: vi.fn(() => ({})),
   createMockTriggerStore: vi.fn(() => ({})),
   createMockBudgetStream: vi.fn(() => ({})),
+  createMockWardenStore: vi.fn(() => ({})),
   buildRavnPersonaAdapter: vi.fn(() => ({})),
   buildRavnRavenAdapter: vi.fn(() => ({})),
   buildRavnSessionAdapter: vi.fn(() => ({})),
   buildRavnTriggerAdapter: vi.fn(() => ({})),
   buildRavnBudgetAdapter: vi.fn(() => ({})),
+  buildRavnWardenAdapter: vi.fn(() => ({})),
 }));
 
 const observatoryMocks = vi.hoisted(() => ({
@@ -467,6 +469,12 @@ describe('buildServiceBackendStatus', () => {
       target: 'http://localhost:8080/api/v1',
       source: 'shared-api',
     });
+    expect(status['ravn.wardens']).toEqual({
+      mode: 'live',
+      transport: 'http',
+      target: 'http://localhost:8080/api/v1/ravn',
+      source: 'ravn',
+    });
   });
 
   it('derives a live forge pty websocket backend from the forge host when available', () => {
@@ -525,6 +533,7 @@ describe('buildServiceBackendStatus', () => {
         'ravn.sessions': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/sessions' },
         'ravn.triggers': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/triggers' },
         'ravn.budget': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/budget' },
+        'ravn.wardens': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/wardens' },
       },
     } as any);
 
@@ -557,6 +566,12 @@ describe('buildServiceBackendStatus', () => {
       transport: 'http',
       target: 'http://localhost:8080/api/v1/ravn',
       source: 'ravn.budget',
+    });
+    expect(status['ravn.wardens']).toEqual({
+      mode: 'live',
+      transport: 'http',
+      target: 'http://localhost:8080/api/v1/ravn',
+      source: 'ravn.wardens',
     });
   });
 
@@ -774,6 +789,7 @@ describe('buildServices', () => {
         'ravn.ravens': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/ravens' },
         'ravn.triggers': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/triggers' },
         'ravn.budget': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/budget' },
+        'ravn.wardens': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/wardens' },
       },
     } as any);
 
@@ -790,6 +806,9 @@ describe('buildServices', () => {
       basePath: 'http://localhost:8080/api/v1/ravn',
     });
     expect(ravnMocks.buildRavnBudgetAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ravn',
+    });
+    expect(ravnMocks.buildRavnWardenAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/ravn',
     });
   });

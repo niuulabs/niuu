@@ -60,6 +60,7 @@ export {
   createMockSessionStream,
   createMockTriggerStore,
   createMockBudgetStream,
+  createMockWardenStore,
 } from './adapters/mock';
 
 // HTTP adapters
@@ -69,6 +70,7 @@ export {
   buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
   buildRavnBudgetAdapter,
+  buildRavnWardenAdapter,
 } from './adapters/http';
 
 // Port interfaces + types
@@ -78,6 +80,7 @@ export type {
   ISessionStream,
   ITriggerStore,
   IBudgetStream,
+  IWardenStore,
   PersonaSummary,
   PersonaDetail,
   PersonaCreateRequest,
@@ -87,6 +90,14 @@ export type {
   PersonaProduces,
   PersonaConsumes,
   PersonaFanIn,
+  WardenFeatures,
+  WardenDreamSummary,
+  WardenRuntime,
+  WardenSupervisor,
+  WardenOperator,
+  WardenListener,
+  WardenSummary,
+  WardenCreateRequest,
 } from './ports';
 
 // Domain types

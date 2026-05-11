@@ -4,11 +4,13 @@ import {
   createMockSessionStream,
   createMockTriggerStore,
   createMockBudgetStream,
+  createMockWardenStore,
   buildRavnPersonaAdapter,
   buildRavnRavenAdapter,
   buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
   buildRavnBudgetAdapter,
+  buildRavnWardenAdapter,
 } from '@niuulabs/plugin-ravn';
 import {
   createMockTyrService,
@@ -319,7 +321,13 @@ export function resolveSettingsServiceBase(
 
 function resolveRavnServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'ravn.personas' | 'ravn.ravens' | 'ravn.sessions' | 'ravn.triggers' | 'ravn.budget',
+  serviceKey:
+    | 'ravn.personas'
+    | 'ravn.ravens'
+    | 'ravn.sessions'
+    | 'ravn.triggers'
+    | 'ravn.budget'
+    | 'ravn.wardens',
 ): string | null {
   const explicitBase =
     serviceKey === 'ravn.personas'
@@ -342,6 +350,8 @@ function resolveRavnServiceBase(
       return explicitBase.replace(/\/triggers\/?$/, '');
     case 'ravn.budget':
       return explicitBase.replace(/\/budget\/?$/, '');
+    case 'ravn.wardens':
+      return explicitBase.replace(/\/wardens\/?$/, '');
     default:
       return explicitBase;
   }
@@ -349,7 +359,13 @@ function resolveRavnServiceBase(
 
 function resolveRavnServiceStatus(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'ravn.personas' | 'ravn.ravens' | 'ravn.sessions' | 'ravn.triggers' | 'ravn.budget',
+  serviceKey:
+    | 'ravn.personas'
+    | 'ravn.ravens'
+    | 'ravn.sessions'
+    | 'ravn.triggers'
+    | 'ravn.budget'
+    | 'ravn.wardens',
 ): ServiceBackendStatus {
   const explicit =
     serviceKey === 'ravn.personas'
@@ -364,6 +380,8 @@ function resolveRavnServiceStatus(
       return { ...explicit, target: explicit.target.replace(/\/sessions\/?$/, '') };
     if (serviceKey === 'ravn.triggers')
       return { ...explicit, target: explicit.target.replace(/\/triggers\/?$/, '') };
+    if (serviceKey === 'ravn.wardens')
+      return { ...explicit, target: explicit.target.replace(/\/wardens\/?$/, '') };
     return { ...explicit, target: explicit.target.replace(/\/budget\/?$/, '') };
   }
 
@@ -460,6 +478,7 @@ export function buildServiceBackendStatus(
     'ravn.sessions': resolveRavnServiceStatus(config, 'ravn.sessions'),
     'ravn.triggers': resolveRavnServiceStatus(config, 'ravn.triggers'),
     'ravn.budget': resolveRavnServiceStatus(config, 'ravn.budget'),
+    'ravn.wardens': resolveRavnServiceStatus(config, 'ravn.wardens'),
     'niuu.repos': resolveRepoCatalogStatus(config),
     forge: resolveDirectServiceStatus(config, 'http', 'forge', 'volundr'),
     'forge.pty':
@@ -1034,6 +1053,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const ravnSessionBase = resolveRavnServiceBase(config, 'ravn.sessions');
   const ravnTriggerBase = resolveRavnServiceBase(config, 'ravn.triggers');
   const ravnBudgetBase = resolveRavnServiceBase(config, 'ravn.budget');
+  const ravnWardenBase = resolveRavnServiceBase(config, 'ravn.wardens');
   const ravnPersonas = ravnPersonaBase
     ? buildRavnPersonaAdapter(createApiClient(ravnPersonaBase))
     : createMockPersonaStore();
@@ -1049,6 +1069,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const ravnBudget = ravnBudgetBase
     ? buildRavnBudgetAdapter(createApiClient(ravnBudgetBase))
     : createMockBudgetStream();
+  const ravnWardens = ravnWardenBase
+    ? buildRavnWardenAdapter(createApiClient(ravnWardenBase))
+    : createMockWardenStore();
 
   // ── Mímir ──
   const mimir = hasHttpBackend(mimirSvc)
@@ -1156,6 +1179,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ravn.sessions': ravnSessions,
     'ravn.triggers': ravnTriggers,
     'ravn.budget': ravnBudget,
+    'ravn.wardens': ravnWardens,
     mimir,
     volundr,
     'niuu.repos': repoCatalogService,

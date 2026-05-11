@@ -8,8 +8,14 @@ import {
   buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
   buildRavnBudgetAdapter,
+  buildRavnWardenAdapter,
 } from './http';
-import type { IPersonaStore, PersonaCreateRequest } from '../ports';
+import type {
+  IPersonaStore,
+  IWardenStore,
+  PersonaCreateRequest,
+  WardenCreateRequest,
+} from '../ports';
 
 // ---------------------------------------------------------------------------
 // Shared test fixtures
@@ -45,11 +51,26 @@ const rawDetail = {
 
 function makeClient() {
   return {
+    basePath: '/api/v1/ravn',
     get: vi.fn(),
     post: vi.fn(),
     put: vi.fn(),
     delete: vi.fn(),
   };
+}
+
+function mockSseResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -462,5 +483,256 @@ describe('buildRavnBudgetAdapter', () => {
     client.get.mockResolvedValue(rawBudget);
     await buildRavnBudgetAdapter(client).getFleetBudget();
     expect(client.get).toHaveBeenCalledWith('/budget/fleet');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRavnWardenAdapter
+// ---------------------------------------------------------------------------
+
+const rawWarden = {
+  id: 'ravn-fjolnir',
+  name: 'Ravn Fjolnir',
+  persona: 'research-and-distill',
+  profile: 'infra-synthesis',
+  deployment: 'launchd',
+  deployment_kwargs: {
+    namespace: 'ravn-dev',
+    auto_commit: true,
+  },
+  mimir: {
+    mount_names: ['local', 'shared'],
+    write_mount: 'local',
+    category_scope: ['infra'],
+  },
+  features: {
+    wakefulness_enabled: true,
+    dream_cycle_enabled: true,
+    thread_queue_enabled: true,
+    thread_enricher_enabled: true,
+    recap_enabled: true,
+    source_trigger_enabled: true,
+    staleness_trigger_enabled: false,
+  },
+  autostart: true,
+  created_at: '2026-04-20T11:00:00Z',
+  created_by: 'operator',
+  runtime: {
+    state: 'idle',
+    pages_touched: 12,
+    last_started_at: '2026-04-20T11:05:00Z',
+    last_dream: null,
+  },
+  supervisor: {
+    installed: true,
+    service_label: 'dev.niuu.ravn.warden.ravn-fjolnir',
+    service_file: '/tmp/ravn-fjolnir.plist',
+    config_file: '/tmp/ravn-fjolnir.yaml',
+    start_command: 'ravn daemon --config /tmp/ravn-fjolnir.yaml',
+    last_install_at: '2026-04-20T11:01:00Z',
+    observation: {
+      status: 'running',
+      detail: 'launchd reports the agent as running',
+      source: 'launchctl',
+      checked_at: '2026-04-20T11:06:00Z',
+      fields: [{ label: 'pid', value: '1234' }],
+    },
+  },
+};
+
+describe('buildRavnWardenAdapter', () => {
+  it('lists wardens from GET /wardens and camel-cases the response', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([rawWarden]);
+    const result = await buildRavnWardenAdapter(client).listWardens();
+    expect(client.get).toHaveBeenCalledWith('/wardens');
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: 'ravn-fjolnir',
+        deploymentKwargs: {
+          namespace: 'ravn-dev',
+          auto_commit: true,
+        },
+        mountNames: ['local', 'shared'],
+        writeMount: 'local',
+        categoryScope: ['infra'],
+        autostart: true,
+        createdAt: '2026-04-20T11:00:00Z',
+        createdBy: 'operator',
+        runtime: expect.objectContaining({
+          state: 'idle',
+          pagesTouched: 12,
+          lastStartedAt: '2026-04-20T11:05:00Z',
+        }),
+        supervisor: expect.objectContaining({
+          installed: true,
+          serviceLabel: 'dev.niuu.ravn.warden.ravn-fjolnir',
+          serviceFile: '/tmp/ravn-fjolnir.plist',
+          observation: expect.objectContaining({
+            status: 'running',
+            source: 'launchctl',
+          }),
+        }),
+        features: expect.objectContaining({
+          wakefulnessEnabled: true,
+          stalenessTriggerEnabled: false,
+        }),
+      }),
+    ]);
+  });
+
+  it('fetches a single warden by id', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawWarden);
+    const result = await buildRavnWardenAdapter(client).getWarden(rawWarden.id);
+    expect(client.get).toHaveBeenCalledWith(`/wardens/${rawWarden.id}`);
+    expect(result.name).toBe('Ravn Fjolnir');
+  });
+
+  it('converts camelCase create requests to snake_case wire format', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawWarden);
+    const req: WardenCreateRequest = {
+      name: 'Ravn Fjolnir',
+      persona: 'research-and-distill',
+      profile: 'infra-synthesis',
+      deployment: 'launchd',
+      deploymentKwargs: {
+        namespace: 'ravn-dev',
+        auto_commit: true,
+      },
+      mountNames: ['local', 'shared'],
+      writeMount: 'local',
+      categoryScope: ['infra'],
+      autostart: true,
+      createdBy: 'operator',
+      features: {
+        wakefulnessEnabled: true,
+        dreamCycleEnabled: true,
+        threadQueueEnabled: false,
+      },
+    };
+    await buildRavnWardenAdapter(client).createWarden(req);
+    expect(client.post).toHaveBeenCalledWith('/wardens', {
+      name: 'Ravn Fjolnir',
+      persona: 'research-and-distill',
+      profile: 'infra-synthesis',
+      deployment: 'launchd',
+      deployment_kwargs: {
+        namespace: 'ravn-dev',
+        auto_commit: true,
+      },
+      mount_names: ['local', 'shared'],
+      write_mount: 'local',
+      category_scope: ['infra'],
+      features: {
+        wakefulness_enabled: true,
+        dream_cycle_enabled: true,
+        thread_queue_enabled: false,
+        thread_enricher_enabled: undefined,
+        recap_enabled: undefined,
+        source_trigger_enabled: undefined,
+        staleness_trigger_enabled: undefined,
+      },
+      autostart: true,
+      created_by: 'operator',
+    });
+  });
+
+  it('satisfies the IWardenStore interface', () => {
+    const client = makeClient();
+    const store: IWardenStore = buildRavnWardenAdapter(client);
+    expect(typeof store.listWardens).toBe('function');
+    expect(typeof store.getWarden).toBe('function');
+    expect(typeof store.createWarden).toBe('function');
+    expect(typeof store.subscribeWarden).toBe('function');
+    expect(typeof store.observeWarden).toBe('function');
+    expect(typeof store.installWarden).toBe('function');
+    expect(typeof store.startWarden).toBe('function');
+    expect(typeof store.stopWarden).toBe('function');
+    expect(typeof store.uninstallWarden).toBe('function');
+  });
+
+  it('subscribes to per-warden SSE updates', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async () =>
+      mockSseResponse([
+        `event: warden.observed\ndata: ${JSON.stringify(rawWarden)}\n\n`,
+      ]),
+    );
+    const listener = vi.fn();
+
+    const unsubscribe = buildRavnWardenAdapter(makeClient()).subscribeWarden(rawWarden.id, listener);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    unsubscribe();
+    global.fetch = originalFetch;
+
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: rawWarden.id,
+        supervisor: expect.objectContaining({
+          observation: expect.objectContaining({
+            status: 'running',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('posts install actions to the warden install endpoint', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawWarden);
+    const result = await buildRavnWardenAdapter(client).installWarden(rawWarden.id);
+    expect(client.post).toHaveBeenCalledWith(`/wardens/${rawWarden.id}/install`, {});
+    expect(result.supervisor?.installed).toBe(true);
+  });
+
+  it('posts observe actions to the warden observe endpoint', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawWarden);
+    const result = await buildRavnWardenAdapter(client).observeWarden(rawWarden.id);
+    expect(client.post).toHaveBeenCalledWith(`/wardens/${rawWarden.id}/observe`, {});
+    expect(result.supervisor?.observation?.status).toBe('running');
+  });
+
+  it('posts start actions to the warden start endpoint', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      ...rawWarden,
+      runtime: {
+        ...rawWarden.runtime,
+        state: 'active',
+      },
+    });
+    const result = await buildRavnWardenAdapter(client).startWarden(rawWarden.id);
+    expect(client.post).toHaveBeenCalledWith(`/wardens/${rawWarden.id}/start`, {});
+    expect(result.runtime?.state).toBe('active');
+  });
+
+  it('posts stop actions to the warden stop endpoint', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawWarden);
+    const result = await buildRavnWardenAdapter(client).stopWarden(rawWarden.id);
+    expect(client.post).toHaveBeenCalledWith(`/wardens/${rawWarden.id}/stop`, {});
+    expect(result.runtime?.state).toBe('idle');
+  });
+
+  it('posts uninstall actions to the warden uninstall endpoint', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      ...rawWarden,
+      runtime: {
+        ...rawWarden.runtime,
+        state: 'offline',
+      },
+      supervisor: {
+        ...rawWarden.supervisor,
+        installed: false,
+      },
+    });
+    const result = await buildRavnWardenAdapter(client).uninstallWarden(rawWarden.id);
+    expect(client.post).toHaveBeenCalledWith(`/wardens/${rawWarden.id}/uninstall`, {});
+    expect(result.supervisor?.installed).toBe(false);
+    expect(result.runtime?.state).toBe('offline');
   });
 });
