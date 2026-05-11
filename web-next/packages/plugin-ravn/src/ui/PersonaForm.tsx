@@ -8,11 +8,7 @@ import {
   MountChip,
 } from '@niuulabs/ui';
 import type { FieldType, PersonaRole } from '@niuulabs/domain';
-import type {
-  PersonaDetail,
-  PersonaCreateRequest,
-  PersonaConsumesEvent,
-} from '../ports';
+import type { PersonaDetail, PersonaCreateRequest, PersonaConsumesEvent } from '../ports';
 import { validatePersona } from './validatePersona';
 import { SEED_EVENT_CATALOG, SEED_TOOL_REGISTRY } from '../catalog';
 import './PersonaForm.css';

@@ -118,7 +118,7 @@ describe('LaunchWizard', () => {
     fireEvent.click(screen.getByTestId('wizard-next'));
     await waitFor(() => expect(screen.getByTestId('step-booting-content')).toBeInTheDocument());
     await waitFor(() => {
-        expect(startSession).toHaveBeenCalledWith(
+      expect(startSession).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'main',
           source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },

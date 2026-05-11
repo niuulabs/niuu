@@ -110,9 +110,7 @@ describe('PersonaForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /save persona/i }));
 
     await waitFor(() => {
-      expect(onSave).toHaveBeenCalledWith(
-        expect.objectContaining({ llmMaxTokens: 4096 }),
-      );
+      expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ llmMaxTokens: 4096 }));
     });
   });
 
