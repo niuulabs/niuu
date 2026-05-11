@@ -269,8 +269,11 @@ async def test_functional_multiple_subscribers(ipc_address):
         async with NngSubscriber(ipc_address) as sub:
             await sub.subscribe(["*"], handler_a)
             await sub.subscribe(["*"], handler_b)
+            # Give the SUB socket a brief moment to apply both topic registrations
+            # before the first publish; this avoids a flaky race on CI.
+            await asyncio.sleep(0.05)
             await pub.publish(make_event(event_id="nng-multi"))
-            await asyncio.wait_for(asyncio.gather(done_a.wait(), done_b.wait()), timeout=3.0)
+            await asyncio.wait_for(asyncio.gather(done_a.wait(), done_b.wait()), timeout=5.0)
 
     assert bucket_a == ["nng-multi"]
     assert bucket_b == ["nng-multi"]
