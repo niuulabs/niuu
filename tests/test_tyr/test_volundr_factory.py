@@ -97,6 +97,21 @@ async def test_credential_store_returns_none_returns_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_credential_store_returns_none_allows_unauthenticated_in_dev() -> None:
+    conn = _make_connection(enabled=True, config={"url": "http://cluster-a:8000", "name": "alpha"})
+    factory = VolundrAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=[conn]),
+        credential_store=StubCredentialStore(values={}),
+        allow_unauthenticated=True,
+    )
+    result = await factory.for_owner("owner-1")
+    assert len(result) == 1
+    assert result[0]._base_url == "http://cluster-a:8000"
+    assert result[0]._api_key is None
+    assert result[0]._name == "alpha"
+
+
+@pytest.mark.asyncio
 async def test_uses_default_url_when_not_in_config() -> None:
     conn = _make_connection(enabled=True, config={})
     factory = VolundrAdapterFactory(

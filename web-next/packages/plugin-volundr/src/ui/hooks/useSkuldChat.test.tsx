@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useSkuldChat } from './useSkuldChat';
+import { getStorageKey, useSkuldChat } from './useSkuldChat';
 
 vi.mock('@niuulabs/query', () => ({
   getAccessToken: () => null,
@@ -94,6 +94,119 @@ describe('useSkuldChat', () => {
     expect(result.current.messages[0]?.content).toBe('Kick off the raid.');
   });
 
+  it('hydrates participants from conversation_history turn metadata when room_state is missing', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'conversation_history',
+          turns: [
+            {
+              id: 'turn-1',
+              role: 'assistant',
+              content: 'Opinion submitted.',
+              created_at: '2026-05-01T10:18:36.889091+00:00',
+              participant_id: 'flock-council-member-b',
+              participant_meta: {
+                peer_id: 'flock-council-member-b',
+                persona: 'council-member-b',
+                participant_type: 'ravn',
+                display_name: 'council-member-b',
+              },
+            },
+          ],
+        }),
+      );
+    });
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    expect(result.current.participants.get('flock-council-member-b')?.participantType).toBe('ravn');
+    expect(result.current.participants.get('flock-council-member-b')?.persona).toBe(
+      'council-member-b',
+    );
+    expect(result.current.participants.get('skuld-primary')).toMatchObject({
+      persona: 'Skuld',
+      participantType: 'skuld',
+    });
+  });
+
+  it('hydrates mesh outcome events from conversation_history outcome turns', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'conversation_history',
+          turns: [
+            {
+              id: 'turn-1',
+              role: 'assistant',
+              content: `---outcome---
+verdict: opinion_submitted
+summary: Wrote opinion memo
+page_path: council/demo/opinion-b.md
+---end---`,
+              created_at: '2026-05-01T10:18:36.889091+00:00',
+              participant_id: 'flock-council-member-b',
+              participant_meta: {
+                peer_id: 'flock-council-member-b',
+                persona: 'council-member-b',
+                participant_type: 'ravn',
+                display_name: 'council-member-b',
+              },
+            },
+          ],
+        }),
+      );
+    });
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    expect(result.current.meshEvents).toHaveLength(1);
+    expect(result.current.meshEvents[0]).toMatchObject({
+      type: 'outcome',
+      participantId: 'flock-council-member-b',
+      persona: 'council-member-b',
+      summary: 'Wrote opinion memo',
+    });
+  });
+
+  it('normalizes punctuation spacing in history-derived outcome summaries', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'conversation_history',
+          turns: [
+            {
+              id: 'turn-2',
+              role: 'assistant',
+              content: `---outcome---
+verdict: opinion_submitted
+summary: Wrote opinion recommending low-confidence, high-risk, or bootstrap/test cases.
+page_path: council/demo/opinion-b.md
+---end---`,
+              created_at: '2026-05-01T10:19:36.889091+00:00',
+              participant_id: 'flock-council-member-b',
+              participant_meta: {
+                peer_id: 'flock-council-member-b',
+                persona: 'council-member-b',
+                participant_type: 'ravn',
+                display_name: 'council-member-b',
+              },
+            },
+          ],
+        }),
+      );
+    });
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    expect(result.current.meshEvents[0]).toMatchObject({
+      summary: 'Wrote opinion recommending low-confidence, high-risk, or bootstrap/test cases.',
+    });
+  });
+
   it('renders live user_confirmed events without requiring a refresh', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
@@ -176,6 +289,38 @@ describe('useSkuldChat', () => {
     expect(result.current.messages[0]?.content).toContain('summary: Found two regressions.');
     expect(result.current.messages[0]?.content).toContain('findings_count: 2');
     expect(result.current.messages[0]?.content).toContain('files: ["README.md","docs/api.md"]');
+  });
+
+  it('normalizes punctuation spacing in live room_outcome summaries', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_outcome',
+          participantId: 'peer-1',
+          participant: { peer_id: 'peer-1', persona: 'reviewer', participant_type: 'ravn' },
+          persona: 'reviewer',
+          eventType: 'review.completed',
+          verdict: 'needs_changes',
+          summary: 'Wrote opinion for low-confidence,high-risk,or bootstrap/test cases.',
+          fields: {
+            verdict: 'needs_changes',
+            summary: 'Wrote opinion for low-confidence,high-risk,or bootstrap/test cases.',
+          },
+        }),
+      );
+    });
+
+    expect(result.current.meshEvents).toHaveLength(1);
+    expect(result.current.meshEvents[0]).toMatchObject({
+      summary: 'Wrote opinion for low-confidence, high-risk, or bootstrap/test cases.',
+    });
+    expect(result.current.messages[0]?.content).toContain(
+      'summary: Wrote opinion for low-confidence, high-risk, or bootstrap/test cases.',
+    );
   });
 
   it('serializes multiline room_outcome fields as yaml block scalars', async () => {
@@ -494,7 +639,7 @@ describe('useSkuldChat', () => {
     );
 
     sessionStorage.setItem(
-      'niuu.skuldChat.ws://localhost:8080/s/test/session',
+      getStorageKey('ws://localhost:8080/s/test/session'),
       JSON.stringify({
         messages: [
           {

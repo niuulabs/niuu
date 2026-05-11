@@ -15,19 +15,13 @@ const MOCK_PERSONA: PersonaDetail = {
   permissionMode: 'default',
   allowedTools: ['read', 'write'],
   forbiddenTools: [],
-  executor: {
-    adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
-    kwargs: {
-      transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-    },
-  },
   iterationBudget: 20,
   isBuiltin: false,
   hasOverride: false,
   producesEvent: 'code.changed',
   consumesEvents: ['review.completed'],
   systemPromptTemplate: '# test-persona\nYou are {{name}}, a {{role}} persona.',
-  llm: { primaryAlias: 'claude-sonnet-4-6', thinkingEnabled: false, maxTokens: 8192 },
+  llm: { thinkingEnabled: false, maxTokens: 8192 },
   produces: { eventType: 'code.changed', schemaDef: { file: 'string' } },
   consumes: { events: [{ name: 'review.completed' }], schemaDef: { topic: 'string' } },
   fanIn: { strategy: 'merge', params: {} },
@@ -52,7 +46,6 @@ describe('PersonaForm', () => {
     });
     expect(screen.getByText('Identity')).toBeInTheDocument();
     expect(screen.getByText('Runtime')).toBeInTheDocument();
-    expect(screen.getByText('Execution')).toBeInTheDocument();
     expect(screen.getByText('Tool access')).toBeInTheDocument();
     expect(screen.getByText('Produces')).toBeInTheDocument();
     expect(screen.getByText('Consumes')).toBeInTheDocument();
@@ -84,16 +77,6 @@ describe('PersonaForm', () => {
     expect(screen.queryByText('llm.alias')).not.toBeInTheDocument();
   });
 
-  it('populates execution mode from persona executor', () => {
-    render(<PersonaForm persona={MOCK_PERSONA} onSave={vi.fn()} />, {
-      wrapper: wrap(),
-    });
-    expect(screen.getByDisplayValue('codex streaming')).toBeInTheDocument();
-    expect(
-      screen.getByDisplayValue('skuld.transports.codex_ws.CodexWebSocketTransport'),
-    ).toBeInTheDocument();
-  });
-
   it('shows save bar when a field is changed', async () => {
     render(<PersonaForm persona={MOCK_PERSONA} onSave={vi.fn()} />, {
       wrapper: wrap(),
@@ -115,7 +98,7 @@ describe('PersonaForm', () => {
     await waitFor(() => expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument());
   });
 
-  it('keeps llmPrimaryAlias empty when saved', async () => {
+  it('saves llm runtime settings without a persona model alias', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(<PersonaForm persona={MOCK_PERSONA} onSave={onSave} />, {
       wrapper: wrap(),
@@ -127,9 +110,7 @@ describe('PersonaForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /save persona/i }));
 
     await waitFor(() => {
-      expect(onSave).toHaveBeenCalledWith(
-        expect.objectContaining({ llmPrimaryAlias: '', llmMaxTokens: 4096 }),
-      );
+      expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ llmMaxTokens: 4096 }));
     });
   });
 
@@ -150,51 +131,6 @@ describe('PersonaForm', () => {
       expect(onSave).toHaveBeenCalledWith(
         expect.objectContaining({
           systemPromptTemplate: '# updated\nYou are a stricter reviewer.',
-        }),
-      );
-    });
-  });
-
-  it('switches to the embedded ravn executor when selected', async () => {
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<PersonaForm persona={MOCK_PERSONA} onSave={onSave} />, {
-      wrapper: wrap(),
-    });
-
-    fireEvent.change(screen.getByDisplayValue('codex streaming'), {
-      target: { value: 'ravn' },
-    });
-
-    await waitFor(() => expect(screen.getByText('Unsaved changes')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /save persona/i }));
-
-    await waitFor(() => {
-      expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ executor: undefined }));
-    });
-  });
-
-  it('switches to codex streaming preset when selected', async () => {
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<PersonaForm persona={{ ...MOCK_PERSONA, executor: undefined }} onSave={onSave} />, {
-      wrapper: wrap(),
-    });
-
-    fireEvent.change(screen.getByDisplayValue('embedded ravn agent'), {
-      target: { value: 'codex_ws' },
-    });
-
-    await waitFor(() => expect(screen.getByText('Unsaved changes')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /save persona/i }));
-
-    await waitFor(() => {
-      expect(onSave).toHaveBeenCalledWith(
-        expect.objectContaining({
-          executor: {
-            adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
-            kwargs: {
-              transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-            },
-          },
         }),
       );
     });

@@ -466,6 +466,10 @@ class ModelInfo(BaseModel):
         default=None,
         description="VRAM required for local models (e.g. 24GB)",
     )
+    session_definition: str | None = Field(
+        default=None,
+        description="Resolved model-specific runtime override, when configured.",
+    )
 
     @classmethod
     def from_model(cls, model: Model) -> "ModelInfo":
@@ -480,6 +484,7 @@ class ModelInfo(BaseModel):
             color=model.color,
             cost_per_million_tokens=model.cost_per_million_tokens,
             vram_required=model.vram_required,
+            session_definition=model.session_definition,
         )
 
 

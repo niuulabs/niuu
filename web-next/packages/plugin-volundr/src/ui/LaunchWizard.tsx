@@ -76,6 +76,11 @@ const STEP_LABELS: Record<string, string> = {
 
 /** Map definition keys to runes for visual branding. */
 const DEFINITION_RUNES: Record<string, string> = {
+  skuldClaude: '\u16D7',
+  skuldCodex: '\u16B2',
+  skuldGemini: '\u16C7',
+  skuldAider: '\u16A8',
+  skuldOpenCode: '\u16A0',
   'skuld-claude': '\u16D7',
   'skuld-codex': '\u16B2',
   'skuld-gemini': '\u16C7',
@@ -89,25 +94,85 @@ const DEFINITION_RUNES: Record<string, string> = {
 
 const FALLBACK_SESSION_DEFINITIONS: SessionDefinition[] = [
   {
-    key: 'skuld-claude',
+    key: 'skuldClaude',
     displayName: 'Claude Code',
     description: '',
     labels: [],
     defaultModel: '',
+    compatibleProviders: ['anthropic'],
   },
-  { key: 'skuld-codex', displayName: 'Codex', description: '', labels: [], defaultModel: '' },
-  { key: 'skuld-gemini', displayName: 'Gemini', description: '', labels: [], defaultModel: '' },
-  { key: 'skuld-aider', displayName: 'Aider', description: '', labels: [], defaultModel: '' },
+  {
+    key: 'skuldCodex',
+    displayName: 'Codex',
+    description: '',
+    labels: [],
+    defaultModel: '',
+    compatibleProviders: ['openai'],
+  },
+  {
+    key: 'skuldGemini',
+    displayName: 'Gemini',
+    description: '',
+    labels: [],
+    defaultModel: '',
+    compatibleProviders: ['google'],
+  },
+  {
+    key: 'skuldAider',
+    displayName: 'Aider',
+    description: '',
+    labels: [],
+    defaultModel: '',
+    compatibleProviders: [],
+  },
 ];
 
 export function getDefinitionRune(key: string): string {
   return DEFINITION_RUNES[key] ?? '\u16A0';
 }
 
+export function normalizeDefinitionKey(definitionKey: string): string {
+  const normalized = definitionKey.trim();
+  const legacyMap: Record<string, string> = {
+    claude: 'skuldClaude',
+    codex: 'skuldCodex',
+    gemini: 'skuldGemini',
+    aider: 'skuldAider',
+    opencode: 'skuldOpenCode',
+    'skuld-claude': 'skuldClaude',
+    'skuld-codex': 'skuldCodex',
+    'skuld-gemini': 'skuldGemini',
+    'skuld-aider': 'skuldAider',
+    'skuld-opencode': 'skuldOpenCode',
+  };
+  return legacyMap[normalized] ?? normalized;
+}
+
 /** Derive a CLI tool name from a definition key for backward compat. */
 export function deriveCliTool(definitionKey: string): string {
-  if (definitionKey.startsWith('skuld-')) return definitionKey.slice('skuld-'.length);
-  return definitionKey;
+  const normalized = normalizeDefinitionKey(definitionKey);
+  const cliToolMap: Record<string, string> = {
+    skuldClaude: 'claude',
+    skuldCodex: 'codex',
+    skuldGemini: 'gemini',
+    skuldAider: 'aider',
+    skuldOpenCode: 'opencode',
+  };
+  if (normalized in cliToolMap) return cliToolMap[normalized]!;
+  if (normalized.startsWith('skuld-')) return normalized.slice('skuld-'.length);
+  return normalized;
+}
+
+export function definitionToTaskType(definitionKey: string): string {
+  const normalized = normalizeDefinitionKey(definitionKey);
+  const taskTypeMap: Record<string, string> = {
+    skuldClaude: 'skuld-claude',
+    skuldCodex: 'skuld-codex',
+    skuldGemini: 'skuld-gemini',
+    skuldAider: 'skuld-aider',
+    skuldOpenCode: 'skuld-opencode',
+  };
+  return taskTypeMap[normalized] ?? normalized;
 }
 
 const BOOT_STEPS = [
@@ -401,9 +466,7 @@ export function buildPresetRuntimePayload(
     description: '',
     isDefault: false,
     cliTool: deriveCliTool(form.definition) as VolundrPreset['cliTool'],
-    workloadType: form.definition.startsWith('skuld-')
-      ? form.definition
-      : `skuld-${form.definition}`,
+    workloadType: definitionToTaskType(form.definition),
     model: form.model || null,
     systemPrompt: form.systemPrompt || null,
     resourceConfig: buildResourceConfig(form) ?? {},
@@ -466,9 +529,7 @@ export function buildPresetComparisonPayload(
 export function buildYamlRuntimeFields(form: WizardForm) {
   return {
     cliTool: deriveCliTool(form.definition) as 'claude' | 'codex' | 'gemini' | 'aider',
-    workloadType: form.definition.startsWith('skuld-')
-      ? form.definition
-      : `skuld-${form.definition}`,
+    workloadType: definitionToTaskType(form.definition),
     model: form.model,
     systemPrompt: form.systemPrompt,
     resourceConfig: buildResourceConfig(form) ?? {},
@@ -1871,7 +1932,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     mcpServers: [],
     envVars: [],
     setupScripts: [],
-    definition: 'skuld-claude',
+    definition: 'skuldClaude',
     model: 'sonnet-primary',
     permission: 'restricted',
     cpu: '2',
@@ -2041,7 +2102,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       setForm((current) => ({
         ...current,
         presetId,
-        definition: preset.workloadType || `skuld-${preset.cliTool}`,
+        definition: normalizeDefinitionKey(preset.workloadType || `skuld-${preset.cliTool}`),
         model: preset.model ?? current.model,
         systemPrompt: preset.systemPrompt ?? '',
         selectedCredentials: [...preset.envSecretRefs],
@@ -2189,9 +2250,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         templateName: selectedTemplate?.name,
         presetId,
         definition: form.definition,
-        taskType: form.definition.startsWith('skuld-')
-          ? form.definition
-          : `skuld-${form.definition}`,
+        taskType: definitionToTaskType(form.definition),
         trackerIssue: form.trackerIssue ?? undefined,
         terminalRestricted: form.permission === 'restricted',
         workspaceId: form.workspaceId || undefined,

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from urllib.parse import urlparse
 
 import httpx
 
@@ -197,6 +198,31 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             resp.raise_for_status()
 
+    async def send_directed_room_message(
+        self,
+        session_id: str,
+        target_peer_id: str,
+        message: str,
+        *,
+        auth_token: str | None = None,
+    ) -> None:
+        session = await self.get_session(session_id, auth_token=auth_token)
+        if session is None or not session.chat_endpoint:
+            raise LookupError(f"Session {session_id} has no active room endpoint")
+
+        base_url = _session_chat_base_url(session.chat_endpoint)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base_url}/api/room/direct",
+                headers=self._headers(auth_token),
+                json={
+                    "target_peer_id": target_peer_id,
+                    "content": message,
+                    "source": "tyr",
+                },
+            )
+            resp.raise_for_status()
+
     async def stop_session(
         self,
         session_id: str,
@@ -344,3 +370,14 @@ class VolundrHTTPAdapter(VolundrPort):
                         event_type = ""
                     elif line == "":
                         event_type = ""
+
+
+def _session_chat_base_url(chat_endpoint: str) -> str:
+    normalized = chat_endpoint.replace("wss://", "https://", 1).replace("ws://", "http://", 1)
+    parsed = urlparse(normalized)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid chat endpoint: {chat_endpoint}")
+    path = parsed.path
+    if path.endswith("/session"):
+        path = path[: -len("/session")]
+    return parsed._replace(path=path, params="", query="", fragment="").geturl().rstrip("/")

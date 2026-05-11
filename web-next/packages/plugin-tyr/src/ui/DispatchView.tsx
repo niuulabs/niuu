@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
   StateDot,
@@ -11,7 +12,12 @@ import {
   cn,
 } from '@niuulabs/ui';
 import type { SegmentedFilterOption } from '@niuulabs/ui';
-import type { IDispatchBus, IDispatcherService } from '../ports';
+import type {
+  DispatchApprovalResult,
+  DispatchCluster,
+  IDispatchBus,
+  IDispatcherService,
+} from '../ports';
 import type { RaidStatus } from '../domain/saga';
 import type { Workflow } from '../domain/workflow';
 import { checkFeasibility, type FeasibilityResult } from '../application/dispatch-feasibility';
@@ -85,6 +91,20 @@ function buildFilterOptions(
   }));
 }
 
+function formatDispatchTargetSummary(results: DispatchApprovalResult[]): string {
+  const clusterNames = Array.from(
+    new Set(
+      results
+        .map((result) => result.clusterName.trim())
+        .filter((clusterName) => clusterName.length > 0),
+    ),
+  );
+
+  if (clusterNames.length === 0) return '';
+  if (clusterNames.length === 1) return ` to ${clusterNames[0]}`;
+  return ` across ${clusterNames.length} clusters`;
+}
+
 // ---------------------------------------------------------------------------
 // Batch dispatch bar
 // ---------------------------------------------------------------------------
@@ -155,7 +175,13 @@ function BatchDispatchBar({
   );
 }
 
-function PendingDispatchBar({ entries }: { entries: EnrichedEntry[] }) {
+function PendingDispatchBar({
+  entries,
+  targetLabel,
+}: {
+  entries: EnrichedEntry[];
+  targetLabel: string;
+}) {
   if (entries.length === 0) return null;
 
   return (
@@ -172,6 +198,9 @@ function PendingDispatchBar({ entries }: { entries: EnrichedEntry[] }) {
           </div>
           <div className="niuu-mt-1 niuu-text-xs niuu-text-text-secondary">
             Keeping this batch visible while Tyr submits it.
+          </div>
+          <div className="niuu-mt-2 niuu-text-[11px] niuu-uppercase niuu-tracking-wide niuu-text-brand">
+            Target: {targetLabel}
           </div>
           <div className="niuu-mt-3 niuu-flex niuu-flex-col niuu-gap-2">
             {entries.map((entry) => (
@@ -194,6 +223,38 @@ function PendingDispatchBar({ entries }: { entries: EnrichedEntry[] }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function DispatchTargetSelect({
+  clusters,
+  selectedClusterId,
+  onChange,
+  isLoading,
+}: {
+  clusters: DispatchCluster[];
+  selectedClusterId: string;
+  onChange: (clusterId: string) => void;
+  isLoading: boolean;
+}) {
+  return (
+    <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-xs niuu-text-text-secondary">
+      <span className="niuu-whitespace-nowrap">Dispatch target</span>
+      <select
+        value={selectedClusterId}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Dispatch target"
+        disabled={isLoading}
+        className="niuu-min-w-[180px] niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-1.5 niuu-text-xs niuu-text-text-primary niuu-outline-none focus:niuu-border-brand disabled:niuu-opacity-60"
+      >
+        <option value="">{isLoading ? 'Loading targets…' : 'Auto (primary/default)'}</option>
+        {clusters.map((cluster) => (
+          <option key={cluster.connectionId} value={cluster.connectionId}>
+            {cluster.name}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -445,6 +506,11 @@ function DispatchViewContent() {
   const queueQuery = useDispatchQueue();
   const dispatchBus = useService<IDispatchBus>('tyr.dispatch');
   const dispatcherService = useService<IDispatcherService>('tyr.dispatcher');
+  const clustersQuery = useQuery({
+    queryKey: ['tyr', 'dispatch-clusters'],
+    queryFn: () => dispatchBus.getClusters(),
+    retry: false,
+  });
   const { toast } = useToast();
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -454,6 +520,7 @@ function DispatchViewContent() {
   const [pendingDispatchEntries, setPendingDispatchEntries] = useState<EnrichedEntry[]>([]);
   const [isDispatching, setIsDispatching] = useState(false);
   const [isPausing, setIsPausing] = useState(false);
+  const [selectedClusterId, setSelectedClusterId] = useState('');
 
   // Modal visibility
   const [showWorkflowModal, setShowWorkflowModal] = useState(false);
@@ -470,6 +537,12 @@ function DispatchViewContent() {
   } | null>(null);
 
   const dispatcherState = dispatcherQuery.data ?? null;
+  const clusters = useMemo(
+    () => (clustersQuery.data ?? []).filter((cluster) => cluster.enabled),
+    [clustersQuery.data],
+  );
+  const selectedCluster = clusters.find((cluster) => cluster.connectionId === selectedClusterId);
+  const pendingTargetLabel = selectedCluster?.name ?? 'Auto (primary/default)';
 
   // Effective display values (server state + local overrides)
   const effectiveThreshold = thresholdOverride ?? dispatcherState?.threshold ?? 70;
@@ -601,16 +674,20 @@ function DispatchViewContent() {
     setSelectedIds(new Set());
 
     try {
-      const results = await dispatchBus.approve(items);
+      const results = await dispatchBus.approve(
+        items,
+        selectedClusterId ? { connectionId: selectedClusterId } : undefined,
+      );
       await queueQuery.refetch();
       setOptimisticQueued(new Set());
       setPendingDispatchEntries([]);
       const spawned = results.filter((result) => result.status === 'spawned').length;
+      const targetSummary = formatDispatchTargetSummary(results);
       toast({
         title:
           spawned === ids.length
-            ? `Dispatched ${ids.length} raid${ids.length !== 1 ? 's' : ''}`
-            : `Dispatched ${spawned} of ${ids.length} raids`,
+            ? `Dispatched ${ids.length} raid${ids.length !== 1 ? 's' : ''}${targetSummary}`
+            : `Dispatched ${spawned} of ${ids.length} raids${targetSummary}`,
         tone: spawned > 0 ? 'success' : 'critical',
       });
     } catch {
@@ -763,6 +840,12 @@ function DispatchViewContent() {
               }}
               aria-label="Filter raids by status"
             />
+            <DispatchTargetSelect
+              clusters={clusters}
+              selectedClusterId={selectedClusterId}
+              onChange={setSelectedClusterId}
+              isLoading={clustersQuery.isLoading}
+            />
             <input
               type="search"
               value={searchQuery}
@@ -783,7 +866,7 @@ function DispatchViewContent() {
             onOverrideThreshold={() => setShowThresholdModal(true)}
           />
 
-          <PendingDispatchBar entries={pendingDispatchEntries} />
+          <PendingDispatchBar entries={pendingDispatchEntries} targetLabel={pendingTargetLabel} />
 
           {/* Grouped queue */}
           <div

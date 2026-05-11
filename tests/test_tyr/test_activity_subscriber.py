@@ -12,7 +12,7 @@ import pytest
 
 from tyr.adapters.memory_event_bus import InMemoryEventBus
 from tyr.config import WatcherConfig
-from tyr.domain.models import DispatcherState, PRStatus, Raid, RaidStatus
+from tyr.domain.models import DispatcherState, PRStatus, Raid, RaidStatus, SessionMessage
 from tyr.domain.services.activity_subscriber import (
     CompletionEvaluation,
     SessionActivitySubscriber,
@@ -135,6 +135,7 @@ class MockTracker:
 
     def __init__(self, raids_by_session: dict[str, Raid] | None = None) -> None:
         self._raids_by_session = raids_by_session or {}
+        self.messages: dict[UUID, list[SessionMessage]] = {}
         self.update_raid_progress = AsyncMock(
             side_effect=self._update_raid_progress_impl,
         )
@@ -164,6 +165,18 @@ class MockTracker:
 
     async def list_raids_by_status(self, status: RaidStatus) -> list[Raid]:
         return [raid for raid in self._raids_by_session.values() if raid.status is status]
+
+    async def save_session_message(self, message: SessionMessage) -> None:
+        self.messages.setdefault(message.raid_id, []).append(message)
+
+    async def get_session_messages(self, tracker_id: str) -> list[SessionMessage]:
+        for raid in self._raids_by_session.values():
+            if raid.tracker_id == tracker_id:
+                return self.messages.get(raid.id, [])
+        return []
+
+    async def get_saga_for_raid(self, tracker_id: str):  # noqa: ANN001
+        return type("SagaStub", (), {"id": SAGA_ID, "name": "Research Council"})()
 
 
 class StubDispatcherRepo(DispatcherRepository):
@@ -427,6 +440,44 @@ class TestActivityEventHandling:
         assert call.args[2].verdict == "approve"
         assert call.args[2].authoritative is False
         assert call.kwargs["scope_adherence_threshold"] == pytest.approx(0.7)
+
+    @pytest.mark.asyncio
+    async def test_idle_event_persists_help_needed_and_emits_feedback_notification(self) -> None:
+        sub, volundr, tracker, event_bus = _make_subscriber()
+        volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
+
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="idle",
+            metadata={
+                "turn_count": 5,
+                "duration_seconds": 60,
+                "help_needed": {
+                    "summary": "Need operator approval before publication",
+                    "reason": "require_human_confirmation",
+                    "attempted": ["Completed review round"],
+                    "recommendation": "Approve or request changes",
+                    "persona": "council-chair",
+                    "target_peer_id": "flock-council-chair",
+                    "context": {"slug": "research/council"},
+                },
+            },
+            owner_id=OWNER_ID,
+        )
+
+        q = event_bus.subscribe()
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+
+        tracker.update_raid_progress.assert_not_called()
+        stored = tracker.messages[RAID_ID]
+        assert len(stored) == 1
+        assert stored[0].sender == "help_needed"
+        assert '"target_peer_id": "flock-council-chair"' in stored[0].content
+
+        bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
+        assert bus_event.event == "raid.feedback_requested"
+        assert bus_event.data["tracker_id"] == TRACKER_ISSUE_ID
+        assert bus_event.data["summary"] == "Need operator approval before publication"
 
     @pytest.mark.asyncio
     async def test_idle_event_keeps_waiting_when_review_engine_missing(self) -> None:

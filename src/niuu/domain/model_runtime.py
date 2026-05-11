@@ -9,16 +9,18 @@ if TYPE_CHECKING:
     from volundr.config import AIModelConfig, SessionDefinitionConfig
 
 
-_DEFAULT_SESSION_DEFINITION_BY_VENDOR = {
-    "anthropic": "skuldClaude",
-    "openai": "skuldCodex",
-    "local": "skuldOpenCode",
-}
-
-_DEFAULT_TRANSPORT_ADAPTER_BY_VENDOR = {
-    "anthropic": "skuld.transports.persistent_subprocess.PersistentSubprocessTransport",
-    "openai": "skuld.transports.codex_ws.CodexWebSocketTransport",
-}
+def _find_model_config(
+    model_id: str,
+    *,
+    configured_models: Iterable[AIModelConfig] | None = None,
+) -> AIModelConfig | None:
+    normalized_model = str(model_id or "").strip()
+    if not normalized_model:
+        return None
+    for config in configured_models or []:
+        if str(getattr(config, "id", "")).strip() == normalized_model:
+            return config
+    return None
 
 
 def normalize_model_vendor(value: str | None) -> str:
@@ -56,14 +58,61 @@ def vendor_for_model(
     if not normalized_model:
         return ""
 
-    for config in configured_models or []:
-        if str(getattr(config, "id", "")).strip() != normalized_model:
-            continue
+    config = _find_model_config(normalized_model, configured_models=configured_models)
+    if config is not None:
         vendor = normalize_model_vendor(getattr(config, "provider", ""))
         if vendor:
             return vendor
 
     return infer_model_vendor(normalized_model)
+
+
+def session_definition_for_model(
+    model_id: str,
+    *,
+    session_definitions: Mapping[str, SessionDefinitionConfig],
+    configured_models: Iterable[AIModelConfig] | None = None,
+) -> tuple[str | None, str | None]:
+    normalized_model = str(model_id or "").strip()
+    if not normalized_model:
+        return None, "Workflow stages must declare an explicit model."
+
+    config = _find_model_config(normalized_model, configured_models=configured_models)
+    model_override = str(getattr(config, "session_definition", "") or "").strip()
+    if model_override:
+        definition = session_definitions.get(model_override)
+        if definition is None or not getattr(definition, "enabled", True):
+            return (
+                None,
+                f"Model '{normalized_model}' references unknown or disabled runtime "
+                f"'{model_override}'.",
+            )
+        return model_override, None
+
+    vendor = vendor_for_model(normalized_model, configured_models=configured_models)
+    if not vendor:
+        return (
+            None,
+            f"Workflow model '{normalized_model}' could not be mapped to a runtime provider.",
+        )
+
+    provider_neutral_match: str | None = None
+    for key, definition in session_definitions.items():
+        if not getattr(definition, "enabled", True):
+            continue
+        compatible = [
+            normalize_model_vendor(entry)
+            for entry in getattr(definition, "compatible_providers", []) or []
+        ]
+        if compatible and vendor in compatible:
+            return key, None
+        if not compatible and provider_neutral_match is None:
+            provider_neutral_match = key
+
+    if provider_neutral_match:
+        return provider_neutral_match, None
+
+    return None, f"No enabled session definition accepts provider '{vendor}'."
 
 
 def vendors_for_models(
@@ -116,6 +165,49 @@ def resolve_session_definition_for_models(
     return None, f"No enabled session definition accepts provider '{vendor}'."
 
 
+def validate_session_definition_for_models(
+    definition_key: str | None,
+    model_ids: Iterable[str],
+    *,
+    session_definitions: Mapping[str, SessionDefinitionConfig],
+    configured_models: Iterable[AIModelConfig] | None = None,
+) -> str | None:
+    if not definition_key:
+        return "Workflow must declare an explicit session definition/runtime."
+
+    definition = session_definitions.get(definition_key)
+    if definition is None or not getattr(definition, "enabled", True):
+        return f"Workflow references unknown or disabled session definition '{definition_key}'."
+
+    models = [str(model_id).strip() for model_id in model_ids if str(model_id).strip()]
+    if not models:
+        return "Workflow stages must declare an explicit model."
+
+    vendors = vendors_for_models(models, configured_models=configured_models)
+    if not vendors:
+        unknown = ", ".join(sorted(set(models)))
+        return f"Workflow models could not be mapped to a runtime provider: {unknown}"
+
+    if len(vendors) > 1:
+        return "Workflow stages mix multiple model providers; use a single provider per workflow."
+
+    compatible = {
+        normalize_model_vendor(entry)
+        for entry in getattr(definition, "compatible_providers", []) or []
+    }
+    if not compatible:
+        return None
+
+    vendor = next(iter(vendors))
+    if vendor in compatible:
+        return None
+
+    return (
+        f"Session definition '{definition_key}' does not accept provider '{vendor}'. "
+        f"Compatible providers: {', '.join(sorted(compatible))}"
+    )
+
+
 def transport_adapter_for_session_definition(
     definition_key: str | None,
     *,
@@ -137,11 +229,3 @@ def transport_adapter_for_session_definition(
         return ""
 
     return str(broker.get("transportAdapter") or "").strip()
-
-
-def default_session_definition_for_vendor(vendor: str | None) -> str | None:
-    return _DEFAULT_SESSION_DEFINITION_BY_VENDOR.get(normalize_model_vendor(vendor))
-
-
-def default_transport_adapter_for_vendor(vendor: str | None) -> str:
-    return _DEFAULT_TRANSPORT_ADAPTER_BY_VENDOR.get(normalize_model_vendor(vendor), "")

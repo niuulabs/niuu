@@ -20,10 +20,12 @@ import type {
   CommitSagaRequest,
   PlanSession,
   ExtractedStructure,
+  RaidSessionMessage,
   IntegrationConnection,
   CreateIntegrationParams,
   ConnectionTestResult,
   TelegramSetupResult,
+  DispatchCluster,
   FlockConfig,
   DispatchDefaults,
   NotificationSettings,
@@ -642,6 +644,7 @@ const SEED_SESSIONS: SessionInfo[] = [
     confidence: 90,
     raidName: 'Implement OIDC flow',
     sagaName: 'Auth Rewrite',
+    clusterName: 'Mac mini',
   },
   {
     sessionId: 'sess-002',
@@ -651,6 +654,28 @@ const SEED_SESSIONS: SessionInfo[] = [
     confidence: 65,
     raidName: 'Add PAT generation',
     sagaName: 'Auth Rewrite',
+    clusterName: 'MacBook Pro',
+  },
+];
+
+const SEED_DISPATCH_CLUSTERS: DispatchCluster[] = [
+  {
+    connectionId: 'cluster-mini',
+    name: 'Mac mini',
+    url: 'http://mac-mini.local:8000',
+    enabled: true,
+  },
+  {
+    connectionId: 'cluster-macbook',
+    name: 'MacBook Pro',
+    url: 'http://macbook-pro.local:8000',
+    enabled: true,
+  },
+  {
+    connectionId: 'cluster-macbook-air',
+    name: 'MacBook Air',
+    url: 'http://macbook-air.local:8000',
+    enabled: true,
   },
 ];
 
@@ -1031,6 +1056,7 @@ export function createMockTyrService(): ITyrService {
     ['00000000-0000-0000-0000-000000000007', SEED_BIFROST_PHASES],
     ['00000000-0000-0000-0000-000000000001', [...SEED_PHASES]],
   ]);
+  const messagesByRaid = new Map<string, RaidSessionMessage[]>();
 
   return {
     async getSagas() {
@@ -1043,6 +1069,28 @@ export function createMockTyrService(): ITyrService {
 
     async getPhases(sagaId: string) {
       return phasesBySaga.get(sagaId) ?? [];
+    },
+
+    async listRaidMessages(raidId: string) {
+      return messagesByRaid.get(raidId) ?? [];
+    },
+
+    async sendRaidMessage(raidId: string, content: string, _targetPeerId?: string) {
+      const raid =
+        Array.from(phasesBySaga.values())
+          .flatMap((phases) => phases.flatMap((phase) => phase.raids))
+          .find((entry) => entry.id === raidId) ?? null;
+      const message: RaidSessionMessage = {
+        id: `message-${Date.now()}`,
+        sessionId: raid?.sessionId ?? 'mock-session',
+        content,
+        sender: 'user',
+        createdAt: new Date().toISOString(),
+        kind: 'message',
+        helpRequest: null,
+      };
+      messagesByRaid.set(raidId, [...(messagesByRaid.get(raidId) ?? []), message]);
+      return message;
     },
 
     async createSaga(spec: string, _repo: string) {
@@ -1357,13 +1405,17 @@ export function createMockDispatchBus(): IDispatchBus {
       return [];
     },
 
-    async approve(items) {
+    async getClusters() {
+      return SEED_DISPATCH_CLUSTERS.map((cluster) => ({ ...cluster }));
+    },
+
+    async approve(items, options) {
       return items.map((item) => ({
         issueId: item.issueId,
         sessionId: `sess-${item.issueId}`,
         sessionName: item.issueId,
         status: 'spawned',
-        clusterName: '',
+        clusterName: item.connectionId ?? options?.connectionId ?? 'local',
       }));
     },
 

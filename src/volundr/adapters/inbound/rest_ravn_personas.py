@@ -49,17 +49,9 @@ class PersonaSummaryResponse(BaseModel):
 class PersonaLLMResponse(BaseModel):
     """LLM configuration embedded in persona detail responses."""
 
-    primary_alias: str
     thinking_enabled: bool
     max_tokens: int
     temperature: float | None = None
-
-
-class PersonaExecutorResponse(BaseModel):
-    """Executor configuration embedded in persona detail responses."""
-
-    adapter: str
-    kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
 class PersonaProducesResponse(BaseModel):
@@ -97,7 +89,6 @@ class PersonaDetailResponse(PersonaSummaryResponse):
     description: str
     system_prompt_template: str
     forbidden_tools: list[str]
-    executor: PersonaExecutorResponse | None = None
     llm: PersonaLLMResponse
     produces: PersonaProducesResponse
     consumes: PersonaConsumesResponse
@@ -115,13 +106,6 @@ class PersonaConsumesEventRequest(BaseModel):
     trust: float | None = Field(default=None, ge=0, le=1)
 
 
-class PersonaExecutorRequest(BaseModel):
-    """Executor request payload."""
-
-    adapter: str = Field(default="")
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-
-
 class PersonaCreateRequest(BaseModel):
     """Create or replace a persona."""
 
@@ -135,9 +119,7 @@ class PersonaCreateRequest(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     forbidden_tools: list[str] = Field(default_factory=list)
     permission_mode: str = Field(default="default")
-    executor: PersonaExecutorRequest | None = Field(default=None)
     iteration_budget: int = Field(default=0, ge=0)
-    llm_primary_alias: str = Field(default="")
     llm_thinking_enabled: bool = Field(default=False)
     llm_max_tokens: int = Field(default=0, ge=0)
     llm_temperature: float | None = Field(default=None, ge=0, le=2)
@@ -162,9 +144,9 @@ class PersonaCreateRequest(BaseModel):
             "allowed_tools": list(self.allowed_tools),
             "forbidden_tools": list(self.forbidden_tools),
             "permission_mode": self.permission_mode,
-            "executor": self.executor.model_dump() if self.executor is not None else None,
+            "executor": None,
             "iteration_budget": self.iteration_budget,
-            "llm_primary_alias": self.llm_primary_alias,
+            "llm_primary_alias": "",
             "llm_thinking_enabled": self.llm_thinking_enabled,
             "llm_max_tokens": self.llm_max_tokens,
             "llm_temperature": self.llm_temperature,
@@ -460,9 +442,7 @@ def _to_detail(view: PersonaView) -> PersonaDetailResponse:
         description=str(payload["description"]),
         system_prompt_template=str(payload["system_prompt_template"]),
         forbidden_tools=list(payload["forbidden_tools"]),
-        executor=_to_executor(payload.get("executor")),
         llm=PersonaLLMResponse(
-            primary_alias=str(payload["llm_primary_alias"]),
             thinking_enabled=bool(payload["llm_thinking_enabled"]),
             max_tokens=int(payload["llm_max_tokens"]),
             temperature=(
@@ -493,14 +473,3 @@ def _to_detail(view: PersonaView) -> PersonaDetailResponse:
         yaml_source=view.yaml_source,
         override_source=view.override_source,
     )
-
-
-def _to_executor(raw: object) -> PersonaExecutorResponse | None:
-    if not isinstance(raw, dict):
-        return None
-    adapter = str(raw.get("adapter", "")).strip()
-    kwargs = raw.get("kwargs")
-    normalized_kwargs = dict(kwargs) if isinstance(kwargs, dict) else {}
-    if not adapter and not normalized_kwargs:
-        return None
-    return PersonaExecutorResponse(adapter=adapter, kwargs=normalized_kwargs)

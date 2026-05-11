@@ -1,10 +1,14 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useService } from '@niuulabs/plugin-sdk';
+import { useQueries } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
-import { LoadingState, ErrorState, EmptyState, PersonaAvatar } from '@niuulabs/ui';
 import type { PersonaRole } from '@niuulabs/domain';
+import { EmptyState, ErrorState, LoadingState, PersonaAvatar } from '@niuulabs/ui';
 import type { RaidStatus, Saga, Phase, Raid } from '../domain/saga';
+import type { ITyrService, RaidSessionMessage } from '../ports';
 import { useAssignSagaWorkflow, useSaga } from './useSaga';
 import { usePhases } from './usePhases';
+import { useSendRaidMessage } from './useRaidMessages';
 import { WorkflowCard } from './WorkflowCard';
 import { SagaWorkflowModal } from './SagaWorkflowModal';
 import { StageProgressRail } from './StageProgressRail';
@@ -127,6 +131,187 @@ function RaidPersona({ raid }: { raid: Raid }) {
   );
 }
 
+interface PendingFeedbackRequest {
+  raid: Raid;
+  message: RaidSessionMessage;
+}
+
+function getPendingFeedbackRequest(raid: Raid, messages: RaidSessionMessage[]): PendingFeedbackRequest | null {
+  const latestHelp = [...messages]
+    .reverse()
+    .find((message) => message.kind === 'help_request' && message.helpRequest);
+  if (!latestHelp) {
+    return null;
+  }
+  const latestHelpAt = Date.parse(latestHelp.createdAt);
+  const hasReply = messages.some(
+    (message) => message.sender === 'user' && Date.parse(message.createdAt) > latestHelpAt,
+  );
+  if (hasReply) {
+    return null;
+  }
+  return { raid, message: latestHelp };
+}
+
+function FeedbackRequestCard({ request }: { request: PendingFeedbackRequest }) {
+  const navigate = useNavigate();
+  const sendReply = useSendRaidMessage();
+  const [draft, setDraft] = useState('');
+  const help = request.message.helpRequest;
+  const sessionId = request.raid.sessionId || request.message.sessionId;
+
+  if (!help) {
+    return null;
+  }
+
+  return (
+    <section className="niuu-rounded-xl niuu-border niuu-border-accent-amber/35 niuu-bg-accent-amber/5 niuu-p-4 niuu-space-y-3">
+      <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3">
+        <div className="niuu-min-w-0">
+          <div className="niuu-text-[12px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-accent-amber">
+            Needs feedback
+          </div>
+          <h3 className="niuu-mt-1 niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+            {request.raid.trackerId} · {request.raid.name}
+          </h3>
+          <p className="niuu-mt-2 niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
+            {help.summary}
+          </p>
+        </div>
+        {sessionId ? (
+          <button
+            type="button"
+            onClick={() =>
+              void navigate({ to: '/volundr/session/$sessionId', params: { sessionId } })
+            }
+            className="niuu-shrink-0 niuu-rounded-md niuu-border niuu-border-border niuu-px-3 niuu-py-2 niuu-text-xs niuu-font-medium niuu-text-text-secondary hover:niuu-text-text-primary"
+          >
+            Open session
+          </button>
+        ) : null}
+      </div>
+
+      <dl className="niuu-grid niuu-gap-2 niuu-text-sm">
+        <div className="niuu-grid niuu-gap-1">
+          <dt className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+            Reason
+          </dt>
+          <dd className="niuu-text-text-secondary">{help.reason}</dd>
+        </div>
+        {help.recommendation ? (
+          <div className="niuu-grid niuu-gap-1">
+            <dt className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+              Recommendation
+            </dt>
+            <dd className="niuu-text-text-secondary">{help.recommendation}</dd>
+          </div>
+        ) : null}
+        {help.attempted.length > 0 ? (
+          <div className="niuu-grid niuu-gap-1">
+            <dt className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+              Already tried
+            </dt>
+            <dd className="niuu-space-y-1">
+              {help.attempted.map((item) => (
+                <div key={item} className="niuu-text-text-secondary">
+                  • {item}
+                </div>
+              ))}
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+
+      <div className="niuu-space-y-2">
+        <label
+          htmlFor={`feedback-${request.raid.id}`}
+          className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted"
+        >
+          Your feedback
+        </label>
+        <textarea
+          id={`feedback-${request.raid.id}`}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder="Share context, ask for changes, or tell the chair how to proceed."
+          rows={5}
+          className="niuu-w-full niuu-rounded-lg niuu-border niuu-border-border niuu-bg-bg-primary niuu-px-3 niuu-py-2.5 niuu-text-sm niuu-text-text-primary placeholder:niuu-text-text-muted"
+        />
+        <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
+          <p className="niuu-text-xs niuu-text-text-muted">
+            Your reply goes directly back to the waiting chair and resumes the council.
+          </p>
+          <button
+            type="button"
+            disabled={!draft.trim() || sendReply.isPending}
+            onClick={() =>
+              sendReply.mutate({
+                raidId: request.raid.id,
+                content: draft.trim(),
+                targetPeerId: help.targetPeerId,
+              }, {
+                onSuccess: () => setDraft(''),
+              })
+            }
+            className="niuu-rounded-md niuu-bg-brand niuu-px-3 niuu-py-2 niuu-text-sm niuu-font-medium niuu-text-bg-primary disabled:niuu-opacity-50"
+          >
+            {sendReply.isPending ? 'Sending…' : 'Send feedback'}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SagaFeedbackPanel({ raids }: { raids: Raid[] }) {
+  const tyr = useService<ITyrService>('tyr');
+  const raidIds = useMemo(() => raids.map((raid) => raid.id), [raids]);
+  const messageQueries = useQueries({
+    queries: raidIds.map((raidId) => ({
+      queryKey: ['tyr', 'raids', raidId, 'messages'],
+      queryFn: () => tyr.listRaidMessages(raidId),
+      enabled: !!raidId,
+    })),
+  });
+
+  const isLoading = messageQueries.some((query) => query.isLoading);
+  const hasError = messageQueries.find((query) => query.isError);
+
+  const pendingRequests = messageQueries
+    .map((query, index) => getPendingFeedbackRequest(raids[index]!, query.data ?? []))
+    .filter((request): request is PendingFeedbackRequest => request !== null);
+
+  return (
+    <section
+      aria-label="Human feedback"
+      className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4 niuu-space-y-3"
+    >
+      <div>
+        <div className="niuu-text-[12px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+          Operator feedback
+        </div>
+        <h2 className="niuu-mt-1 niuu-text-[17px] niuu-font-semibold niuu-text-text-primary">
+          Human input requests
+        </h2>
+      </div>
+      {isLoading ? <div className="niuu-text-sm niuu-text-text-muted">Loading feedback requests…</div> : null}
+      {hasError ? (
+        <div className="niuu-text-sm niuu-text-critical-fg">Failed to load feedback requests.</div>
+      ) : null}
+      {!isLoading && !hasError && pendingRequests.length === 0 ? (
+        <div className="niuu-text-sm niuu-text-text-muted">
+          No raids are waiting on human feedback right now.
+        </div>
+      ) : null}
+      {!isLoading && !hasError
+        ? pendingRequests.map((request) => (
+            <FeedbackRequestCard key={request.message.id} request={request} />
+          ))
+        : null}
+    </section>
+  );
+}
+
 function PhaseCard({ phase }: { phase: Phase }) {
   return (
     <section className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-overflow-hidden">
@@ -208,6 +393,9 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
   if (!saga) return <ErrorState message={`Saga "${sagaId}" not found`} />;
 
   const allPhases = phases ?? [];
+  const activeRaids = allPhases
+    .flatMap((phase) => phase.raids)
+    .filter((raid) => raid.sessionId && ['running', 'review', 'escalated'].includes(raid.status));
   const branchLabel = `${saga.featureBranch} → ${saga.baseBranch}`;
 
   function handleAssignWorkflow(workflowId: string | null) {
@@ -254,6 +442,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
         </div>
 
         <div className="niuu-space-y-4">
+          <SagaFeedbackPanel raids={activeRaids} />
           <WorkflowCard
             workflow={saga.workflow}
             workflowVersion={saga.workflowVersion}

@@ -7,6 +7,7 @@ import { SagaDetailPage, SagaDetailRoute } from './SagaDetailPage';
 import { createMockTyrService } from '../adapters/mock';
 import type { Saga, Phase, Raid } from '../domain/saga';
 import type { Workflow } from '../domain/workflow';
+import type { RaidSessionMessage } from '../ports';
 
 const mockNavigate = vi.fn();
 const mockUseParams = vi.fn().mockReturnValue({ sagaId: '00000000-0000-0000-0000-000000000001' });
@@ -204,6 +205,75 @@ describe('SagaDetailPage', () => {
     await user.click(screen.getByText('Ship Workflow'));
     await waitFor(() =>
       expect(assignWorkflow).toHaveBeenCalledWith(SAGA_ID, '00000000-0000-0000-0000-0000000000aa'),
+    );
+  });
+
+  it('shows pending feedback requests and sends a directed reply', async () => {
+    const user = userEvent.setup();
+    const listRaidMessages = vi.fn(async (): Promise<RaidSessionMessage[]> => [
+      {
+        id: 'msg-help-1',
+        sessionId: 'session-council-1',
+        content: '{"summary":"Need your call","reason":"needs_feedback"}',
+        sender: 'help_needed',
+        createdAt: '2026-05-11T12:00:00Z',
+        kind: 'help_request',
+        helpRequest: {
+          summary: 'Need your call on the final recommendation.',
+          reason: 'needs_feedback',
+          attempted: ['Compared the top two options'],
+          recommendation: 'Pick the rollout order.',
+          context: { slug: 'research/council-human-v1' },
+          targetPeerId: 'flock-council-chair',
+          persona: 'council-chair',
+        },
+      },
+    ]);
+    const sendRaidMessage = vi.fn(async (): Promise<RaidSessionMessage> => ({
+      id: 'msg-user-1',
+      sessionId: 'session-council-1',
+      content: 'Please prefer the staged rollout option.',
+      sender: 'user',
+      createdAt: '2026-05-11T12:05:00Z',
+      kind: 'message',
+      helpRequest: null,
+    }));
+
+    const svc = {
+      getSaga: async () => makeSaga(),
+      getPhases: async () => [
+        makePhase([
+          makeRaid({
+            trackerId: 'NIU-777',
+            name: 'Research Council',
+            status: 'escalated',
+            sessionId: 'session-council-1',
+          }),
+        ]),
+      ],
+      listRaidMessages,
+      sendRaidMessage,
+    };
+
+    render(<SagaDetailPage sagaId={SAGA_ID} />, { wrapper: wrap({ tyr: svc }) });
+
+    await waitFor(() => expect(screen.getByText('Human input requests')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/Need your call on the final recommendation/)).toBeInTheDocument(),
+    );
+
+    await user.type(
+      screen.getByLabelText('Your feedback'),
+      'Please prefer the staged rollout option.',
+    );
+    await user.click(screen.getByRole('button', { name: 'Send feedback' }));
+
+    await waitFor(() =>
+      expect(sendRaidMessage).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000010',
+        'Please prefer the staged rollout option.',
+        'flock-council-chair',
+      ),
     );
   });
 });

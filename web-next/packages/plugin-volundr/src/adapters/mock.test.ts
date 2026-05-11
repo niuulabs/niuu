@@ -208,9 +208,10 @@ describe('createMockVolundrService', () => {
     expect(definitions[0]).toHaveProperty('description');
     expect(definitions[0]).toHaveProperty('labels');
     expect(definitions[0]).toHaveProperty('defaultModel');
+    expect(definitions[0]).toHaveProperty('compatibleProviders');
     const keys = definitions.map((d) => d.key);
-    expect(keys).toContain('skuld-claude');
-    expect(keys).toContain('skuld-codex');
+    expect(keys).toContain('skuldClaude');
+    expect(keys).toContain('skuldCodex');
   });
 });
 

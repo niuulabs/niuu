@@ -450,7 +450,12 @@ def _build_llm(settings: Settings) -> Any:
 
 
 def _build_executor(persona_config: Any | None = None) -> ExecutorPort:
-    """Build the persona-selected executor adapter."""
+    """Build the runtime-selected executor adapter.
+
+    Persona-level runtime overrides win so mixed-provider workflows can run
+    different transports in one flock. Session/workload transport settings are
+    used as the default when a persona does not override them.
+    """
     adapter_path = "ravn.adapters.executors.agent.AgentExecutor"
     kwargs: dict[str, Any] = {}
 
@@ -460,6 +465,11 @@ def _build_executor(persona_config: Any | None = None) -> ExecutorPort:
         raw_kwargs = getattr(executor_cfg, "kwargs", {})
         if isinstance(raw_kwargs, dict):
             kwargs = dict(raw_kwargs)
+    else:
+        runtime_transport_adapter = str(os.environ.get("SKULD__TRANSPORT_ADAPTER") or "").strip()
+        if runtime_transport_adapter:
+            adapter_path = "ravn.adapters.executors.cli.CliTransportExecutor"
+            kwargs = {"transport_adapter": runtime_transport_adapter}
 
     cls = _import_class(adapter_path)
     return cls(**kwargs)
@@ -1159,6 +1169,37 @@ def _mimir_ingest_event_fields_from_mcp_result(
         "source_title": source_title or source_id,
         "source_type": source_type or "document",
         "page_paths": [str(path) for path in page_paths if str(path).strip()],
+        "mcp_server_name": server_name,
+    }
+    if mount_name:
+        fields["mount_name"] = mount_name
+        fields["mount_names"] = [mount_name]
+    return fields
+
+
+def _mimir_write_event_fields_from_mcp_result(
+    *,
+    server_name: str,
+    arguments: dict[str, Any],
+    result: ToolResult,
+) -> dict[str, Any] | None:
+    if result.is_error:
+        return None
+
+    page_path = str(arguments.get("path") or "").strip()
+    if not page_path:
+        content = str(result.content or "").strip()
+        prefix = "Page written: "
+        if content.startswith(prefix):
+            page_path = content[len(prefix) :].split(" (routed to:", 1)[0].strip()
+    if not page_path:
+        return None
+
+    explicit_mimir = str(arguments.get("mimir") or "").strip()
+    mount_name = explicit_mimir or _mimir_mount_name_from_mcp_server_name(server_name)
+
+    fields: dict[str, Any] = {
+        "page_path": page_path,
         "mcp_server_name": server_name,
     }
     if mount_name:
@@ -2566,16 +2607,32 @@ async def _run_daemon(
         arguments: dict[str, Any],
         result: ToolResult,
     ) -> None:
-        if tool_name != "mimir_ingest" or drive_loop is None:
+        if tool_name not in {"mimir_ingest", "mimir_write"} or drive_loop is None:
             return
         current_task = drive_loop.resolve_task_context()
         if current_task is None:
             logger.warning(
-                "mimir_ingest MCP hook: no task context available for server=%s",
+                "%s MCP hook: no task context available for server=%s",
+                tool_name,
                 server_name,
             )
             return
-        fields = _mimir_ingest_event_fields_from_mcp_result(
+        if tool_name == "mimir_ingest":
+            fields = _mimir_ingest_event_fields_from_mcp_result(
+                server_name=server_name,
+                arguments=arguments,
+                result=result,
+            )
+            if fields is None:
+                return
+            drive_loop.record_tool_outcome_fields(
+                task=current_task,
+                event_type="mimir.source.ingested",
+                fields=fields,
+            )
+            return
+
+        fields = _mimir_write_event_fields_from_mcp_result(
             server_name=server_name,
             arguments=arguments,
             result=result,
@@ -2584,7 +2641,7 @@ async def _run_daemon(
             return
         drive_loop.record_tool_outcome_fields(
             task=current_task,
-            event_type="mimir.source.ingested",
+            event_type="mimir.page.written",
             fields=fields,
         )
 

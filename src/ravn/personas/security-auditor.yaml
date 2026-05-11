@@ -185,10 +185,6 @@ system_prompt_template: |
 allowed_tools: [file, git, web, ravn]
 forbidden_tools: [terminal, cascade]
 permission_mode: read-only
-executor:
-  adapter: ravn.adapters.executors.cli.CliTransportExecutor
-  kwargs:
-    transport_adapter: skuld.transports.persistent_subprocess.PersistentSubprocessTransport
 
 llm:
   thinking_enabled: true

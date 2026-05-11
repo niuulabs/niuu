@@ -73,12 +73,16 @@ def test_list_returns_builtins(client: TestClient) -> None:
     assert resp.status_code == 200
     names = [p["name"] for p in resp.json()]
     assert "coder" in names
+    assert "council-chair" in names
+    assert "council-member-a" in names
+    assert "council-member-b" in names
+    assert "council-member-c" in names
     assert "reviewer" in names
     assert "security-auditor" in names
     assert "postmortem-analyst" in names
     assert "mimir-memory-curator" in names
     assert "coding-agent" not in names
-    assert len(names) == 5
+    assert len(names) == 9
 
 
 def test_list_source_builtin_filter(client: TestClient) -> None:

@@ -52,11 +52,19 @@ function wrap(service: Record<string, unknown>) {
       listRegistryMounts: vi.fn().mockResolvedValue([]),
     },
   };
+  const volundrService = {
+    getModels: vi.fn().mockResolvedValue({}),
+  };
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
         <ServicesProvider
-          services={{ 'ravn.personas': personaService, mimir: mimirService, ...service }}
+          services={{
+            'ravn.personas': personaService,
+            mimir: mimirService,
+            volundr: volundrService,
+            ...service,
+          }}
         >
           {children}
         </ServicesProvider>

@@ -1184,8 +1184,14 @@ class AIModelConfig(BaseModel):
     provider: str = Field(
         default="",
         description=(
-            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google'). "
-            "Used to filter the model dropdown by the chosen session runtime."
+            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google')."
+        ),
+    )
+    session_definition: str | None = Field(
+        default=None,
+        description=(
+            "Optional session definition/runtime override for this model. When omitted, "
+            "the runtime is resolved from the provider default."
         ),
     )
     cost_per_million_tokens: float = 0.0

@@ -105,6 +105,26 @@ export interface ExtractedStructure {
   } | null;
 }
 
+export interface RaidHelpRequest {
+  summary: string;
+  reason: string;
+  attempted: string[];
+  recommendation?: string;
+  context: Record<string, unknown>;
+  targetPeerId?: string;
+  persona?: string;
+}
+
+export interface RaidSessionMessage {
+  id: string;
+  sessionId: string;
+  content: string;
+  sender: string;
+  createdAt: string;
+  kind: 'message' | 'help_request';
+  helpRequest?: RaidHelpRequest | null;
+}
+
 /**
  * Core Tyr service — saga lifecycle, planning, and decomposition.
  *
@@ -115,6 +135,12 @@ export interface ITyrService {
   getSagas(): Promise<Saga[]>;
   getSaga(id: string): Promise<Saga | null>;
   getPhases(sagaId: string): Promise<Phase[]>;
+  listRaidMessages(raidId: string): Promise<RaidSessionMessage[]>;
+  sendRaidMessage(
+    raidId: string,
+    content: string,
+    targetPeerId?: string,
+  ): Promise<RaidSessionMessage>;
   createSaga(spec: string, repo: string): Promise<Saga>;
   commitSaga(request: CommitSagaRequest): Promise<Saga>;
   decompose(spec: string, repo: string): Promise<Phase[]>;
@@ -290,6 +316,13 @@ export interface DispatchApprovalResult {
   clusterName: string;
 }
 
+export interface DispatchCluster {
+  connectionId: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+}
+
 /**
  * Sleipnir dispatch bus port.
  *
@@ -298,6 +331,7 @@ export interface DispatchApprovalResult {
  */
 export interface IDispatchBus {
   getQueue(): Promise<DispatchQueueItem[]>;
+  getClusters(): Promise<DispatchCluster[]>;
   approve(
     items: DispatchApprovalItem[],
     options?: DispatchApprovalOptions,
@@ -325,8 +359,6 @@ export interface TyrPersonaSummary {
   hasOverride: boolean;
   producesEvent: string;
   consumesEvents: string[];
-  /** LLM model identifier (e.g. 'sonnet-4.5'). */
-  model?: string;
   /** Functional role — drives the avatar shape (plan, build, verify, …). */
   role?: string;
 }

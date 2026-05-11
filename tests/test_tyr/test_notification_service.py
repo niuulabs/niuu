@@ -176,6 +176,15 @@ class TestTelegramNotificationAdapter:
         assert adapter.should_notify(low) is False
         assert adapter.should_notify(high) is True
 
+    def test_adapter_accepts_notify_only_and_message_thread_id(self) -> None:
+        adapter = TelegramNotificationAdapter(
+            bot_token="tok",
+            chat_id="123",
+            notify_only=True,
+            message_thread_id=7,
+        )
+        assert adapter._message_thread_id == 7  # noqa: SLF001
+
     def test_format_message_basic(self) -> None:
         n = Notification(
             title="Raid ready",
@@ -255,6 +264,33 @@ class TestTelegramNotificationAdapter:
             await adapter.send(n)
 
             assert route.called
+            await adapter.close()
+
+    @pytest.mark.asyncio
+    async def test_send_includes_message_thread_id_when_configured(self) -> None:
+        import respx
+
+        with respx.mock:
+            route = respx.post("https://api.telegram.org/bottok123/sendMessage").respond(
+                200, json={"ok": True}
+            )
+            adapter = TelegramNotificationAdapter(
+                bot_token="tok123",
+                chat_id="456",
+                message_thread_id=9,
+            )
+            n = Notification(
+                title="Need feedback",
+                body="We need your feedback.",
+                urgency=NotificationUrgency.HIGH,
+                owner_id="u",
+                event_type="raid.feedback_requested",
+            )
+            await adapter.send(n)
+
+            assert route.called
+            payload = route.calls[0].request.content.decode()
+            assert '"message_thread_id":9' in payload
             await adapter.close()
 
     @pytest.mark.asyncio
@@ -345,6 +381,28 @@ class TestNotificationChannelFactory:
         channels = await factory.for_owner("user-1")
         assert len(channels) == 1
         assert isinstance(channels[0], TelegramNotificationAdapter)
+
+    @pytest.mark.asyncio
+    async def test_valid_connection_allows_extra_telegram_config(self) -> None:
+        conn = IntegrationConnection(
+            id="conn-1",
+            owner_id="user-1",
+            integration_type=IntegrationType.MESSAGING,
+            adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+            credential_name="tg-cred",
+            config={"chat_id": "123", "notify_only": True, "message_thread_id": 11},
+            enabled=True,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        repo = StubIntegrationRepo(connections=[conn])
+        cred_store = StubCredentialStore(values={"user:user-1:tg-cred": {"bot_token": "tok"}})
+        factory = NotificationChannelFactory(repo, cred_store)
+        channels = await factory.for_owner("user-1")
+
+        assert len(channels) == 1
+        assert isinstance(channels[0], TelegramNotificationAdapter)
+        assert channels[0]._message_thread_id == 11  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_invalid_adapter_path_skipped(self) -> None:
@@ -756,6 +814,40 @@ class TestNotificationServiceEventMapping:
         await service.stop()
 
         assert len(channel.sent) == 0
+
+    @pytest.mark.asyncio
+    async def test_feedback_requested_notification(self) -> None:
+        event_bus = InMemoryEventBus()
+        channel = RecordingChannel()
+        factory = StubChannelFactory(channels={"user-1": [channel]})
+
+        service = NotificationService(event_bus, factory, confidence_threshold=0.3)
+        await service.start()
+
+        await event_bus.emit(
+            TyrEvent(
+                event="raid.feedback_requested",
+                data={
+                    "owner_id": "user-1",
+                    "raid_id": str(uuid4()),
+                    "saga_id": str(uuid4()),
+                    "raid_name": "Research Council: permanent vs ephemeral Mimir",
+                    "summary": "We need your call on the final recommendation.",
+                    "reason": "needs_feedback",
+                    "ui_path": "/tyr/sagas/00000000-0000-0000-0000-000000000001",
+                },
+            )
+        )
+
+        await asyncio.sleep(0.1)
+        await service.stop()
+
+        assert len(channel.sent) == 1
+        notification = channel.sent[0]
+        assert notification.title == "We need your feedback"
+        assert "final recommendation" in notification.body
+        assert "/tyr/sagas/00000000-0000-0000-0000-000000000001" in notification.body
+        assert notification.metadata["ui_path"] == "/tyr/sagas/00000000-0000-0000-0000-000000000001"
 
     @pytest.mark.asyncio
     async def test_confidence_below_threshold(self) -> None:

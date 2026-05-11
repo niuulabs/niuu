@@ -16,9 +16,12 @@ the chronicle summary and delegates to ReviewEngine.handle_reviewer_completion.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 try:
     from sleipnir.domain.catalog import tyr_raid_needs_approval as _catalog_raid_needs_approval
@@ -26,7 +29,7 @@ except ImportError:
     _catalog_raid_needs_approval = None  # type: ignore[assignment]
 
 from tyr.config import WatcherConfig
-from tyr.domain.models import Raid, RaidStatus, RavnOutcome
+from tyr.domain.models import Raid, RaidStatus, RavnOutcome, SessionMessage
 from tyr.ports.dispatcher_repository import DispatcherRepository
 from tyr.ports.event_bus import EventBusPort, TyrEvent
 from tyr.ports.tracker import TrackerFactory, TrackerPort  # noqa: F401 — re-exported for consumers
@@ -274,6 +277,9 @@ class SessionActivitySubscriber:
             await self._on_session_failed(event, volundr, owner_id)
             return
 
+        if await self._maybe_handle_help_needed(event, owner_id):
+            return
+
         if event.state != "idle":
             pending = self._pending_evaluations.pop(event.session_id, None)
             if pending is not None:
@@ -435,6 +441,66 @@ class SessionActivitySubscriber:
             pr_id=pr_id,
             pr_url=pr_url,
         )
+
+    async def _maybe_handle_help_needed(self, event: ActivityEvent, owner_id: str) -> bool:
+        payload = _help_needed_payload(event.metadata)
+        if payload is None:
+            return False
+
+        raid, tracker = await self._find_raid_for_session(event.session_id, owner_id)
+        if raid is None or tracker is None:
+            logger.warning(
+                "Help-needed activity received for unknown session %s",
+                event.session_id[:8] if event.session_id else "?",
+            )
+            return False
+
+        if raid.session_id:
+            payload["session_id"] = raid.session_id
+
+        serialized = json.dumps(payload, default=str, sort_keys=True)
+        messages = await tracker.get_session_messages(raid.tracker_id)
+        if _is_duplicate_help_request(messages, serialized):
+            return True
+
+        now = datetime.now(UTC)
+        await tracker.save_session_message(
+            SessionMessage(
+                id=uuid4(),
+                raid_id=raid.id,
+                session_id=raid.session_id or str(payload.get("session_id") or ""),
+                content=serialized,
+                sender="help_needed",
+                created_at=now,
+            )
+        )
+
+        saga = await tracker.get_saga_for_raid(raid.tracker_id)
+        await self._event_bus.emit(
+            TyrEvent(
+                event="raid.feedback_requested",
+                owner_id=owner_id,
+                data={
+                    "owner_id": owner_id,
+                    "raid_id": str(raid.id),
+                    "raid_name": raid.name,
+                    "tracker_id": raid.tracker_id,
+                    "session_id": raid.session_id or str(payload.get("session_id") or ""),
+                    "saga_id": str(saga.id) if saga is not None else "",
+                    "saga_name": saga.name if saga is not None else "",
+                    "summary": payload.get("summary", ""),
+                    "reason": payload.get("reason", ""),
+                    "recommendation": payload.get("recommendation", ""),
+                    "ui_path": f"/tyr/sagas/{saga.id}" if saga is not None else "",
+                },
+            )
+        )
+        logger.info(
+            "Recorded help-needed request for raid=%s session=%s",
+            raid.tracker_id,
+            event.session_id[:8] if event.session_id else "?",
+        )
+        return True
 
     async def _try_handle_flock_completion(
         self,
@@ -723,3 +789,41 @@ def _coerce_str_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _help_needed_payload(metadata: dict) -> dict[str, object] | None:
+    raw = metadata.get("help_needed")
+    if not isinstance(raw, dict):
+        return None
+    attempted = raw.get("attempted")
+    context = raw.get("context")
+    return {
+        "summary": str(raw.get("summary") or "Agent requested human feedback."),
+        "reason": str(raw.get("reason") or "needs_context"),
+        "attempted": (
+            [str(item).strip() for item in attempted if str(item).strip()]
+            if isinstance(attempted, list)
+            else []
+        ),
+        "recommendation": str(raw.get("recommendation") or ""),
+        "context": context if isinstance(context, dict) else {},
+        "persona": str(raw.get("persona") or ""),
+        "target_peer_id": str(raw.get("target_peer_id") or ""),
+        "session_id": str(raw.get("session_id") or ""),
+    }
+
+
+def _is_duplicate_help_request(messages: list[SessionMessage], serialized_payload: str) -> bool:
+    latest_help = next(
+        (message for message in reversed(messages) if message.sender == "help_needed"),
+        None,
+    )
+    if latest_help is None or latest_help.content != serialized_payload:
+        return False
+    latest_user = next(
+        (message for message in reversed(messages) if message.sender == "user"),
+        None,
+    )
+    if latest_user is None:
+        return True
+    return latest_user.created_at <= latest_help.created_at

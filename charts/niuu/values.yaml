@@ -48,19 +48,21 @@ ingress:
   annotations: {}
   routeSets:
     api:
-      - path: /api/v1
-        service: volundr
+      - path: /api/v1/tokens
+        service: niuu-shared
+      - path: /api/v1/identity
+        service: niuu-shared
+      - path: /api/v1/features
+        service: niuu-shared
+      - path: /api/v1/personas
+        service: niuu-shared
+      - path: /api/v1/ravn/personas
+        service: niuu-shared
       - path: /api/v1/forge
         service: volundr
       - path: /api/v1/users
         service: volundr
-      - path: /api/v1/tokens
-        service: volundr
-      - path: /api/v1/identity
-        service: volundr
       - path: /api/v1/integrations
-        service: volundr
-      - path: /api/v1/features
         service: volundr
       - path: /api/v1/credentials
         service: volundr
@@ -84,6 +86,8 @@ ingress:
         service: tyr
       - path: /api/v1/niuu
         service: niuu-shared
+      - path: /api/v1
+        service: volundr
       - path: /mimir
         service: mimir-shared
       - path: /mcp

@@ -104,6 +104,25 @@ const rawSessionInfo = {
   confidence: 80,
   raid_name: 'Implement JWT refresh',
   saga_name: 'Auth Rewrite',
+  cluster_name: 'Mac mini',
+};
+
+const rawHelpMessage = {
+  id: 'msg-1',
+  session_id: 'sess-abc',
+  content: '{"summary":"Need your call","reason":"needs_feedback"}',
+  sender: 'help_needed',
+  created_at: '2026-05-11T12:00:00Z',
+  kind: 'help_request',
+  help_request: {
+    summary: 'Need your call on the final recommendation.',
+    reason: 'needs_feedback',
+    attempted: ['Compared the top two options'],
+    recommendation: 'Pick the rollout order.',
+    context: { slug: 'research/council-human-v1' },
+    target_peer_id: 'flock-council-chair',
+    persona: 'council-chair',
+  },
 };
 
 const rawProject = {
@@ -141,6 +160,13 @@ const rawDispatchApprovalResult = {
   session_name: 'NIU-010',
   status: 'spawned',
   cluster_name: 'Default',
+};
+
+const rawDispatchCluster = {
+  connection_id: 'cluster-mini',
+  name: 'Mac mini',
+  url: 'http://mac-mini.local:8000',
+  enabled: true,
 };
 
 const rawMilestone = {
@@ -289,6 +315,59 @@ describe('buildTyrHttpAdapter', () => {
       expect(phase?.sagaId).toBe('00000000-0000-0000-0000-000000000001');
       expect(phase?.raids[0]?.phaseId).toBe('00000000-0000-0000-0000-000000000010');
       expect(phase?.raids[0]?.acceptanceCriteria).toEqual(['Refreshes before expiry']);
+    });
+  });
+
+  describe('raid messages', () => {
+    it('lists and transforms help requests', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue([rawHelpMessage]);
+
+      const [message] = await buildTyrHttpAdapter(client).listRaidMessages(
+        '00000000-0000-0000-0000-000000000002',
+      );
+
+      expect(client.get).toHaveBeenCalledWith(
+        '/raids/00000000-0000-0000-0000-000000000002/messages',
+      );
+      expect(message).toMatchObject({
+        id: 'msg-1',
+        sessionId: 'sess-abc',
+        kind: 'help_request',
+        helpRequest: {
+          targetPeerId: 'flock-council-chair',
+          persona: 'council-chair',
+        },
+      });
+    });
+
+    it('sends a directed reply payload and normalizes the receipt', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({
+        message_id: 'msg-user-1',
+        raid_id: 'raid-1',
+        session_id: 'sess-abc',
+        content: 'Please prefer the staged rollout option.',
+        sender: 'user',
+        created_at: '2026-05-11T12:05:00Z',
+      });
+
+      const message = await buildTyrHttpAdapter(client).sendRaidMessage(
+        'raid-1',
+        'Please prefer the staged rollout option.',
+        'flock-council-chair',
+      );
+
+      expect(client.post).toHaveBeenCalledWith('/raids/raid-1/message', {
+        content: 'Please prefer the staged rollout option.',
+        target_peer_id: 'flock-council-chair',
+      });
+      expect(message).toMatchObject({
+        id: 'msg-user-1',
+        sessionId: 'sess-abc',
+        sender: 'user',
+        kind: 'message',
+      });
     });
   });
 
@@ -551,6 +630,7 @@ describe('buildTyrSessionHttpAdapter', () => {
     expect(session?.sessionId).toBe('sess-abc');
     expect(session?.chronicleLines).toEqual(['line 1', 'line 2']);
     expect(session?.raidName).toBe('Implement JWT refresh');
+    expect(session?.clusterName).toBe('Mac mini');
   });
 
   it('calls GET /sessions/:id', async () => {
@@ -753,6 +833,21 @@ describe('buildDispatchBusHttpAdapter', () => {
     expect(item?.priorityLabel).toBe(rawDispatchQueueItem.priority_label);
   });
 
+  it('calls GET /dispatch/clusters and camelizes cluster items', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([rawDispatchCluster]);
+
+    const [cluster] = await buildDispatchBusHttpAdapter(client).getClusters();
+
+    expect(client.get).toHaveBeenCalledWith('/dispatch/clusters');
+    expect(cluster).toEqual({
+      connectionId: 'cluster-mini',
+      name: 'Mac mini',
+      url: 'http://mac-mini.local:8000',
+      enabled: true,
+    });
+  });
+
   it('calls POST /dispatch/approve with snake_case request fields', async () => {
     const client = makeClient();
     client.post.mockResolvedValue([rawDispatchApprovalResult]);
@@ -802,6 +897,7 @@ describe('buildDispatchBusHttpAdapter', () => {
     const client = makeClient();
     const svc: IDispatchBus = buildDispatchBusHttpAdapter(client);
     expect(typeof svc.getQueue).toBe('function');
+    expect(typeof svc.getClusters).toBe('function');
     expect(typeof svc.approve).toBe('function');
     expect(typeof svc.dispatch).toBe('function');
     expect(typeof svc.dispatchBatch).toBe('function');

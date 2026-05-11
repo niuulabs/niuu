@@ -17,7 +17,6 @@ import type { Message } from './domain/message';
 // ---------------------------------------------------------------------------
 
 export interface PersonaLLM {
-  primaryAlias: string;
   thinkingEnabled: boolean;
   maxTokens: number;
   temperature?: number;
@@ -44,11 +43,6 @@ export interface PersonaFanIn {
   params: Record<string, unknown>;
 }
 
-export interface PersonaExecutor {
-  adapter: string;
-  kwargs: Record<string, unknown>;
-}
-
 export interface PersonaSummary {
   name: string;
   role: PersonaRole;
@@ -68,7 +62,6 @@ export interface PersonaDetail extends PersonaSummary {
   description: string;
   systemPromptTemplate: string;
   forbiddenTools: string[];
-  executor?: PersonaExecutor;
   llm: PersonaLLM;
   produces: PersonaProduces;
   consumes: PersonaConsumes;
@@ -89,9 +82,7 @@ export interface PersonaCreateRequest {
   allowedTools: string[];
   forbiddenTools: string[];
   permissionMode: string;
-  executor?: PersonaExecutor;
   iterationBudget: number;
-  llmPrimaryAlias: string;
   llmThinkingEnabled: boolean;
   llmMaxTokens: number;
   llmTemperature?: number;

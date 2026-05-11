@@ -261,15 +261,104 @@ describe('DispatchView', () => {
     await user.click(screen.getByRole('checkbox', { name: /select row/i }));
     await user.click(screen.getByRole('button', { name: /dispatch now/i }));
     await waitFor(() =>
-      expect(approveSpy).toHaveBeenCalledWith([
-        {
-          sagaId: '00000000-0000-0000-0000-000000000001',
-          issueId: 'issue-1',
-          repo: 'niuulabs/volundr',
-        },
-      ]),
+      expect(approveSpy).toHaveBeenCalledWith(
+        [
+          {
+            sagaId: '00000000-0000-0000-0000-000000000001',
+            issueId: 'issue-1',
+            repo: 'niuulabs/volundr',
+            workflowId: undefined,
+          },
+        ],
+        undefined,
+      ),
     );
     await waitFor(() => expect(screen.queryByText(/1 selected/i)).not.toBeInTheDocument());
+  });
+
+  it('passes the selected dispatch target to approve and shows it while dispatching', async () => {
+    const user = userEvent.setup();
+    let resolveApprove:
+      | ((
+          value: {
+            issueId: string;
+            sessionId: string;
+            sessionName: string;
+            status: string;
+            clusterName: string;
+          }[],
+        ) => void)
+      | null = null;
+    const approveSpy = vi.fn(
+      () =>
+        new Promise<
+          {
+            issueId: string;
+            sessionId: string;
+            sessionName: string;
+            status: string;
+            clusterName: string;
+          }[]
+        >((resolve) => {
+          resolveApprove = resolve;
+        }),
+    );
+    const services = makeServices({
+      dispatch: {
+        approve: approveSpy,
+        getClusters: async () => [
+          {
+            connectionId: 'cluster-mini',
+            name: 'Mac mini',
+            url: 'http://mac-mini.local:8000',
+            enabled: true,
+          },
+          {
+            connectionId: 'cluster-macbook',
+            name: 'MacBook Pro',
+            url: 'http://macbook-pro.local:8000',
+            enabled: true,
+          },
+        ],
+      },
+    });
+
+    render(<DispatchView />, { wrapper: wrap(services) });
+    await waitFor(() => screen.getByText('Test Raid'));
+
+    await user.selectOptions(screen.getByRole('combobox', { name: /dispatch target/i }), [
+      'cluster-mini',
+    ]);
+    await user.click(screen.getByRole('checkbox', { name: /select row/i }));
+    await user.click(screen.getByRole('button', { name: /dispatch now/i }));
+
+    await waitFor(() =>
+      expect(approveSpy).toHaveBeenCalledWith(
+        [
+          {
+            sagaId: '00000000-0000-0000-0000-000000000001',
+            issueId: 'issue-1',
+            repo: 'niuulabs/volundr',
+          },
+        ],
+        { connectionId: 'cluster-mini' },
+      ),
+    );
+    expect(screen.getByText(/target: mac mini/i)).toBeInTheDocument();
+
+    resolveApprove?.([
+      {
+        issueId: 'issue-1',
+        sessionId: 'sess-1',
+        sessionName: 'NIU-010',
+        status: 'spawned',
+        clusterName: 'Mac mini',
+      },
+    ]);
+
+    await waitFor(() =>
+      expect(screen.getByText(/dispatched 1 raid to mac mini/i)).toBeInTheDocument(),
+    );
   });
 
   it('shows a dispatching overlay while approval is in flight', async () => {

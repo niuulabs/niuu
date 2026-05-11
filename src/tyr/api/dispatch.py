@@ -258,8 +258,6 @@ async def _resolve_dispatch_item_for_raid(
         saga = await tracker.get_saga_for_raid(raid.tracker_id)
         if saga is None:
             return None, "parent saga not found"
-        if not saga.repos:
-            return None, "saga has no repos"
 
         issues = await tracker.list_issues(saga.tracker_id)
         issue = next(
@@ -277,7 +275,7 @@ async def _resolve_dispatch_item_for_raid(
             ServiceDispatchItem(
                 saga_id=str(saga.id),
                 issue_id=issue.id,
-                repo=saga.repos[0],
+                repo=saga.repos[0] if saga.repos else "",
                 connection_id=None,
             ),
             None,

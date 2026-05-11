@@ -76,6 +76,7 @@ export interface VolundrModel {
   color: string;
   cost?: string;
   vram?: string;
+  sessionDefinition?: string;
 }
 
 export interface VolundrRepo {
@@ -324,6 +325,7 @@ export interface SessionDefinition {
   description: string;
   labels: string[];
   defaultModel: string;
+  compatibleProviders: string[];
 }
 
 // ---------------------------------------------------------------------------

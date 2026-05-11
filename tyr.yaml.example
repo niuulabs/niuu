@@ -19,6 +19,13 @@ logging:
 
 volundr:
   url: http://localhost:8080
+  # Keep false for the classic single-Volundr local setup. Set true when you
+  # want anonymous dev Tyr to drive one or more remote/local Volundr stacks
+  # through stored CODE_FORGE integrations instead of binding directly to the
+  # single URL above.
+  use_connection_factory_in_dev: false
+  # Add every Volundr base URL Tyr should allow during integration test/setup.
+  trusted_connection_test_urls: []
 
 # ---------------------------------------------------------------------------
 # Dispatch — coding session configuration
@@ -389,6 +396,7 @@ git:
 
 auth:
   allow_anonymous_dev: false
+  default_user_id: dev-user
 
 credential_store:
   adapter: niuu.adapters.memory_credential_store.MemoryCredentialStore

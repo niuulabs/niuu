@@ -53,9 +53,12 @@ class VolundrAdapterFactory:
         self,
         integration_repo: IntegrationRepository,
         credential_store: CredentialStorePort,
+        *,
+        allow_unauthenticated: bool = False,
     ) -> None:
         self._integration_repo = integration_repo
         self._credential_store = credential_store
+        self._allow_unauthenticated = allow_unauthenticated
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
         """Return all authenticated VolundrHTTPAdapter instances for *owner_id*.
@@ -86,13 +89,14 @@ class VolundrAdapterFactory:
                 cred = await self._credential_store.get_value(
                     "user", owner_id, conn.credential_name
                 )
-                if cred is None:
+                token = cred.get("token") if cred is not None else None
+                if not token and not self._allow_unauthenticated:
                     continue
                 adapter_name = conn.config.get("name", "") or conn.slug or conn.id
                 adapters.append(
                     VolundrHTTPAdapter(
                         base_url=conn.config.get("url", DEFAULT_VOLUNDR_URL),
-                        api_key=cred.get("token"),
+                        api_key=token,
                         name=adapter_name,
                     )
                 )

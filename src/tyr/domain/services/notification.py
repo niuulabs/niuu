@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 from tyr.ports.channel_resolver import ChannelResolverPort
@@ -150,6 +151,8 @@ class NotificationService:
                 return self._map_phase_unlocked(event.data)
             case "raid.needs_approval":
                 return self._map_raid_needs_approval(event.data)
+            case "raid.feedback_requested":
+                return self._map_raid_feedback_requested(event.data)
             case _:
                 return None
 
@@ -293,3 +296,57 @@ class NotificationService:
             owner_id=owner_id,
             event_type="phase.unlocked",
         )
+
+    @staticmethod
+    def _map_raid_feedback_requested(data: dict[str, Any]) -> Notification | None:
+        owner_id = str(data.get("owner_id") or "").strip()
+        if not owner_id:
+            return None
+        raid_name = str(
+            data.get("raid_name") or data.get("tracker_id") or data.get("raid_id") or ""
+        )
+        summary = str(data.get("summary") or "A council member needs your feedback.")
+        reason = str(data.get("reason") or "").strip()
+        ui_path = str(data.get("ui_path") or "").strip()
+        ui_url = _ui_url(ui_path)
+
+        body = f'We need your feedback on "{raid_name}".\n{summary}'
+        if reason:
+            body += f"\nReason: {reason}"
+        if ui_url:
+            body += f"\nTyr: {ui_url}"
+
+        metadata = {
+            "raid_id": str(data.get("raid_id") or ""),
+            "saga_id": str(data.get("saga_id") or ""),
+            "ui_path": ui_path,
+        }
+        if ui_url:
+            metadata["ui_url"] = ui_url
+
+        return Notification(
+            title="We need your feedback",
+            body=body,
+            urgency=NotificationUrgency.HIGH,
+            owner_id=owner_id,
+            event_type="raid.feedback_requested",
+            metadata=metadata,
+        )
+
+
+def _ui_url(path: str) -> str:
+    normalized = path.strip()
+    if not normalized:
+        return ""
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        return normalized
+
+    origin = os.environ.get("NIUU_PUBLIC_ORIGIN", "").strip().rstrip("/")
+    if not origin:
+        host = os.environ.get("NIUU_SERVER_HOST", "").strip()
+        port = os.environ.get("NIUU_SERVER_PORT", "").strip() or "8080"
+        if host:
+            origin = f"http://{host}:{port}"
+        else:
+            origin = "http://localhost:8080"
+    return f"{origin}{normalized if normalized.startswith('/') else f'/{normalized}'}"

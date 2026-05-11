@@ -483,6 +483,36 @@ class TestSendMessage:
         with pytest.raises(httpx.HTTPStatusError):
             await adapter.send_message("ses-1", "hello")
 
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_send_directed_room_message(self, adapter: VolundrHTTPAdapter):
+        respx.get(f"{SESSIONS_URL}/ses-1").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ses-1",
+                    "name": "research-council",
+                    "status": "running",
+                    "chat_endpoint": "http://volundr.test:8000/s/ses-1/chat",
+                },
+            )
+        )
+        route = respx.post("http://volundr.test:8000/s/ses-1/chat/api/room/direct").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+
+        await adapter.send_directed_room_message(
+            "ses-1",
+            "flock-council-chair",
+            "Please prefer the staged rollout option.",
+        )
+
+        sent = route.calls[0].request
+        body = json.loads(sent.content)
+        assert body["target_peer_id"] == "flock-council-chair"
+        assert body["content"] == "Please prefer the staged rollout option."
+        assert body["source"] == "tyr"
+
 
 class TestStopSession:
     @pytest.mark.asyncio

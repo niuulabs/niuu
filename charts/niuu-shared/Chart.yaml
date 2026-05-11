@@ -1,6 +1,6 @@
 apiVersion: v2
 name: niuu-shared
-description: "Niuu — shared platform services (repos, integrations)"
+description: "Niuu — shared platform APIs (repos, identity, features, personas, PATs)"
 type: application
 version: 0.0.0-tyr.243
 appVersion: "0.0.0-tyr.243"
@@ -8,7 +8,10 @@ keywords:
   - niuu
   - shared
   - repos
-  - integrations
+  - identity
+  - features
+  - personas
+  - pat
 maintainers:
   - name: Niuu Labs
     url: https://github.com/niuulabs

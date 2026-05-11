@@ -27,9 +27,8 @@ except ImportError:
 
 from mimir.registry import MimirRegistryStore
 from niuu.domain.model_runtime import (
-    default_session_definition_for_vendor,
-    default_transport_adapter_for_vendor,
-    vendors_for_models,
+    session_definition_for_model,
+    transport_adapter_for_session_definition,
 )
 from tyr.domain.flock_merge import build_flock_workload_config
 from tyr.domain.models import (
@@ -58,6 +57,7 @@ from tyr.ports.saga_repository import SagaRepository
 from tyr.ports.tracker import TrackerFactory, TrackerPort
 from tyr.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort
 from tyr.ports.workflow_repository import WorkflowRepository
+from volundr.config import _default_session_definitions
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ _READY_STATUSES = {"todo", "backlog", "triage"}
 _READY_STATUS_TYPES = {"unstarted"}
 _ACTIVE_SESSION_STATUSES = {"running", "starting", "creating"}
 _COMPLETED_LINEAR_STATES = {"completed", "cancelled"}
-_WORKFLOW_EXECUTOR_ADAPTER = "ravn.adapters.executors.cli.CliTransportExecutor"
+_CLI_TRANSPORT_EXECUTOR = "ravn.adapters.executors.cli.CliTransportExecutor"
 
 
 def _sanitize_log(value: object) -> str:
@@ -108,9 +108,11 @@ def _resolve_workflow_execution(
     *,
     fallback_model: str,
     requested_definition: str | None,
-) -> tuple[str, str | None, str, list[dict[str, Any]]]:
+    session_definitions: dict[str, Any],
+    configured_models: list[Any] | None = None,
+) -> tuple[str, str | None, list[dict[str, Any]]]:
     if not workflow_snapshot:
-        return fallback_model, requested_definition, "", []
+        return fallback_model, requested_definition, []
 
     stage_models = workflow_stage_models_from_snapshot(workflow_snapshot)
     if not stage_models:
@@ -126,26 +128,8 @@ def _resolve_workflow_execution(
             "Workflow assigns multiple models to the same persona, "
             f"which is unsupported: {formatted}"
         )
-
-    vendors = vendors_for_models(stage_models)
-    if len(vendors) != 1:
-        raise ValueError(
-            "Workflow stages must use models from a single provider/runtime family."
-        )
-
-    vendor = next(iter(vendors))
-    resolved_definition = default_session_definition_for_vendor(vendor)
-    if requested_definition and requested_definition != resolved_definition:
-        logger.warning(
-            "Workflow runtime overrides requested session definition %s -> %s",
-            requested_definition,
-            resolved_definition,
-        )
-    if not resolved_definition:
-        raise ValueError(f"No default session definition exists for provider '{vendor}'.")
-
-    transport_adapter = default_transport_adapter_for_vendor(vendor)
     personas: list[dict[str, Any]] = []
+    resolved_definitions: set[str] = set()
     for persona in workflow_personas_from_snapshot(workflow_snapshot):
         if not isinstance(persona, dict):
             continue
@@ -155,14 +139,41 @@ def _resolve_workflow_execution(
             llm = dict(runtime_persona.get("llm") or {})
             llm["model"] = model
             runtime_persona["llm"] = llm
-        if transport_adapter:
-            runtime_persona["executor"] = {
-                "adapter": _WORKFLOW_EXECUTOR_ADAPTER,
-                "kwargs": {"transport_adapter": transport_adapter},
-            }
+            resolved_definition, runtime_error = session_definition_for_model(
+                model,
+                session_definitions=session_definitions,
+                configured_models=configured_models,
+            )
+            if runtime_error:
+                raise ValueError(
+                    f"Persona '{runtime_persona.get('name', 'unknown')}' model '{model}': "
+                    f"{runtime_error}"
+                )
+            if resolved_definition:
+                resolved_definitions.add(resolved_definition)
+                transport_adapter = transport_adapter_for_session_definition(
+                    resolved_definition,
+                    session_definitions=session_definitions,
+                )
+                if transport_adapter:
+                    runtime_persona["executor"] = {
+                        "adapter": _CLI_TRANSPORT_EXECUTOR,
+                        "kwargs": {"transport_adapter": transport_adapter},
+                    }
         personas.append(runtime_persona)
 
-    return stage_models[0], resolved_definition, transport_adapter, personas
+    if len(resolved_definitions) == 1:
+        session_definition = next(iter(resolved_definitions))
+    else:
+        if requested_definition and resolved_definitions:
+            logger.warning(
+                "Ignoring requested session definition %s; workflow stages resolved to %s",
+                requested_definition,
+                ", ".join(sorted(resolved_definitions)),
+            )
+        session_definition = None
+
+    return stage_models[0], session_definition, personas
 
 
 def _normalize_mimir_workload_config(
@@ -529,6 +540,8 @@ class DispatchConfig:
     flock_sleipnir_publish_urls: list[str] = field(default_factory=list)
     flock_llm_config: dict = field(default_factory=dict)
     live_flock: object | None = field(default=None, repr=False)
+    session_definitions: dict[str, Any] = field(default_factory=_default_session_definitions)
+    configured_models: list[Any] = field(default_factory=list)
 
     def __getattribute__(self, name: str) -> object:
         live = super().__getattribute__("live_flock")
@@ -1251,12 +1264,13 @@ class DispatchService:
             (
                 resolved_effective_model,
                 resolved_session_definition,
-                _transport_adapter,
                 workflow_persona_overrides,
             ) = _resolve_workflow_execution(
                 workflow_snapshot,
                 fallback_model=effective_model,
                 requested_definition=session_definition,
+                session_definitions=self._config.session_definitions,
+                configured_models=self._config.configured_models,
             )
             personas = copy.deepcopy(workflow_persona_overrides)
             flow_name_for_log = str(workflow_snapshot.get("name") or "")

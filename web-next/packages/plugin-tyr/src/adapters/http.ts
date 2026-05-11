@@ -21,6 +21,7 @@ import type {
   DispatchApprovalItem,
   DispatchApprovalOptions,
   DispatchApprovalResult,
+  DispatchCluster,
   IWorkflowService,
   ITyrSettingsService,
   IAuditLogService,
@@ -28,6 +29,8 @@ import type {
   PlanSession,
   ExtractedStructure,
   PhaseSpec,
+  RaidSessionMessage,
+  RaidHelpRequest,
   IntegrationConnection,
   CreateIntegrationParams,
   ConnectionTestResult,
@@ -118,6 +121,36 @@ interface RawSessionInfo {
   confidence: number;
   raid_name: string;
   saga_name: string;
+  cluster_name: string;
+}
+
+interface RawHelpRequest {
+  summary: string;
+  reason: string;
+  attempted: string[];
+  recommendation?: string | null;
+  context: Record<string, unknown>;
+  target_peer_id?: string | null;
+  persona?: string | null;
+}
+
+interface RawSessionMessage {
+  id: string;
+  session_id: string;
+  content: string;
+  sender: string;
+  created_at: string;
+  kind?: 'message' | 'help_request';
+  help_request?: RawHelpRequest | null;
+}
+
+interface RawSendMessageResponse {
+  message_id: string;
+  raid_id: string;
+  session_id: string;
+  content: string;
+  sender: string;
+  created_at: string;
 }
 
 interface RawTrackerProject {
@@ -190,6 +223,13 @@ interface RawDispatchApprovalResult {
   session_name: string;
   status: string;
   cluster_name: string;
+}
+
+interface RawDispatchCluster {
+  connection_id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
 }
 
 interface RawWorkflow {
@@ -290,6 +330,31 @@ function toSessionInfo(raw: RawSessionInfo): SessionInfo {
     confidence: raw.confidence,
     raidName: raw.raid_name,
     sagaName: raw.saga_name,
+    clusterName: raw.cluster_name,
+  };
+}
+
+function toHelpRequest(raw: RawHelpRequest): RaidHelpRequest {
+  return {
+    summary: raw.summary,
+    reason: raw.reason,
+    attempted: raw.attempted ?? [],
+    recommendation: raw.recommendation ?? undefined,
+    context: raw.context ?? {},
+    targetPeerId: raw.target_peer_id ?? undefined,
+    persona: raw.persona ?? undefined,
+  };
+}
+
+function toRaidSessionMessage(raw: RawSessionMessage): RaidSessionMessage {
+  return {
+    id: raw.id,
+    sessionId: raw.session_id,
+    content: raw.content,
+    sender: raw.sender,
+    createdAt: raw.created_at,
+    kind: raw.kind ?? (raw.help_request ? 'help_request' : 'message'),
+    helpRequest: raw.help_request ? toHelpRequest(raw.help_request) : null,
   };
 }
 
@@ -374,6 +439,15 @@ function toDispatchApprovalResult(raw: RawDispatchApprovalResult): DispatchAppro
     sessionName: raw.session_name,
     status: raw.status,
     clusterName: raw.cluster_name,
+  };
+}
+
+function toDispatchCluster(raw: RawDispatchCluster): DispatchCluster {
+  return {
+    connectionId: raw.connection_id,
+    name: raw.name,
+    url: raw.url,
+    enabled: raw.enabled,
   };
 }
 
@@ -478,6 +552,31 @@ export function buildTyrHttpAdapter(client: ApiClient): ITyrService {
     async getPhases(sagaId: string) {
       const raw = await client.get<RawPhase[]>(`/sagas/${encodeURIComponent(sagaId)}/phases`);
       return raw.map(toPhase);
+    },
+
+    async listRaidMessages(raidId: string) {
+      const raw = await client.get<RawSessionMessage[]>(
+        `/raids/${encodeURIComponent(raidId)}/messages`,
+      );
+      return raw.map(toRaidSessionMessage);
+    },
+
+    async sendRaidMessage(raidId: string, content: string, targetPeerId?: string) {
+      const raw = await client.post<RawSendMessageResponse>(
+        `/raids/${encodeURIComponent(raidId)}/message`,
+        {
+          content,
+          target_peer_id: targetPeerId ?? null,
+        },
+      );
+      return toRaidSessionMessage({
+        id: raw.message_id,
+        session_id: raw.session_id,
+        content: raw.content,
+        sender: raw.sender,
+        created_at: raw.created_at,
+        kind: 'message',
+      });
     },
 
     async createSaga(spec: string, repo: string) {
@@ -685,6 +784,11 @@ export function buildDispatchBusHttpAdapter(client: ApiClient): IDispatchBus {
     async getQueue(): Promise<DispatchQueueItem[]> {
       const items = await client.get<RawDispatchQueueItem[]>('/dispatch/queue');
       return items.map(toDispatchQueueItem);
+    },
+
+    async getClusters(): Promise<DispatchCluster[]> {
+      const items = await client.get<RawDispatchCluster[]>('/dispatch/clusters');
+      return items.map(toDispatchCluster);
     },
 
     async approve(

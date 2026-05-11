@@ -68,6 +68,7 @@ class HardcodedPricingProvider(PricingProvider):
                         tier=ModelTier.BALANCED,
                         color="#2563EB",
                         cost_per_million_tokens=cfg.cost_per_million_tokens,
+                        session_definition=cfg.session_definition,
                     )
                 )
 
