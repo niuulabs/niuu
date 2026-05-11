@@ -169,6 +169,84 @@ def test_load_system_workflows_includes_tyr_raid_flow() -> None:
     assert curator_member["eventFilters"] == {"mount_names": "tmp-mimir-test"}
     assert curation_flow.definition_yaml is None
 
+    research_council = next(
+        workflow for workflow in workflows if workflow.name == "Research Council"
+    )
+    research_stage_personas = {
+        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
+        for node in research_council.graph["nodes"]
+        if node.get("kind") == "stage"
+    }
+    assert research_stage_personas == {
+        "Brief the council": ["council-chair"],
+        "Seat A first opinion": ["council-member-a"],
+        "Seat B first opinion": ["council-member-b"],
+        "Build anonymized review packet": ["council-chair"],
+        "Seat A review packet": ["council-member-a"],
+        "Seat B review packet": ["council-member-b"],
+        "Synthesize final decision": ["council-chair"],
+    }
+    research_edge_labels = {edge["label"] for edge in research_council.graph["edges"]}
+    assert "research.requested -> research.requested" in research_edge_labels
+    assert "council.briefed -> council.briefed" in research_edge_labels
+    assert "council.review.requested -> council.review.requested" in research_edge_labels
+    assert "research.completed -> research.completed" in research_edge_labels
+    research_resources = {
+        node["label"]: node
+        for node in research_council.graph["nodes"]
+        if node.get("kind") == "resource"
+    }
+    assert research_resources["Council Scratch Board"]["bindingMode"] == "ephemeral_local"
+    assert research_resources["Permanent Research Memory"]["bindingMode"] == "registry"
+    assert research_resources["Permanent Research Memory"]["registryEntryId"] == "tmp-mimir-test"
+    assert research_resources["Permanent Research Memory"]["path"] == "/tmp/mimir-test"
+    research_end = next(
+        node for node in research_council.graph["nodes"] if node.get("kind") == "end"
+    )
+    assert research_end["completionEvent"] == "research.completed"
+    assert research_council.definition_yaml is None
+
+    research_council_third = next(
+        workflow for workflow in workflows if workflow.name == "Research Council + Third Seat"
+    )
+    third_stage_personas = {
+        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
+        for node in research_council_third.graph["nodes"]
+        if node.get("kind") == "stage"
+    }
+    assert third_stage_personas["Seat C first opinion"] == ["council-member-c"]
+    assert third_stage_personas["Seat C review packet"] == ["council-member-c"]
+    third_edge_labels = {edge["label"] for edge in research_council_third.graph["edges"]}
+    assert "council.c.opinion.submitted -> council.c.opinion.submitted" in third_edge_labels
+    assert "council.c.review.submitted -> council.c.review.submitted" in third_edge_labels
+    third_end = next(
+        node for node in research_council_third.graph["nodes"] if node.get("kind") == "end"
+    )
+    assert third_end["completionEvent"] == "research.completed"
+    assert research_council_third.definition_yaml is None
+
+    research_council_human = next(
+        workflow for workflow in workflows if workflow.name == "Research Council + Human Input"
+    )
+    human_stage_labels = [
+        node["label"]
+        for node in research_council_human.graph["nodes"]
+        if node.get("kind") == "stage"
+    ]
+    assert human_stage_labels[-1] == "Synthesize or ask operator"
+    human_resources = {
+        node["label"]: node
+        for node in research_council_human.graph["nodes"]
+        if node.get("kind") == "resource"
+    }
+    assert human_resources["Council Scratch Board"]["bindingMode"] == "ephemeral_local"
+    assert human_resources["Permanent Research Memory"]["registryEntryId"] == "tmp-mimir-test"
+    human_end = next(
+        node for node in research_council_human.graph["nodes"] if node.get("kind") == "end"
+    )
+    assert human_end["completionEvent"] == "research.completed"
+    assert research_council_human.definition_yaml is None
+
 
 @pytest.mark.asyncio
 async def test_seed_system_workflows_upserts_existing_by_name() -> None:

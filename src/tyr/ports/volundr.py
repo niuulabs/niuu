@@ -134,6 +134,21 @@ class VolundrPort(ABC):
         """Send a human message to a running Volundr session."""
         ...
 
+    async def send_directed_room_message(
+        self,
+        session_id: str,
+        target_peer_id: str,
+        message: str,
+        *,
+        auth_token: str | None = None,
+    ) -> None:
+        """Send a directed human message to a specific room participant.
+
+        Implementations that do not expose room-level addressing can safely
+        fall back to the generic session message channel.
+        """
+        await self.send_message(session_id, message, auth_token=auth_token)
+
     @abstractmethod
     async def stop_session(
         self,

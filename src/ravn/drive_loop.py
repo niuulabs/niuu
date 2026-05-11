@@ -16,14 +16,15 @@ import asyncio
 import contextvars
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from niuu.domain.mimir import ThreadState
-from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.channels.capture import CaptureChannel, TaskResult, TaskResultStore
 from ravn.adapters.channels.composite import CompositeChannel
@@ -66,6 +67,7 @@ _SUCCESS_VERDICT_PREFERENCE = (
     "succeeded",
     "clean",
 )
+_MIMIR_PAGE_WRITTEN_OUTCOME = "mimir.page.written"
 
 
 def _default_success_verdict(produces: object) -> str:
@@ -97,6 +99,103 @@ def _default_success_verdict(produces: object) -> str:
                     return chosen
 
     return ""
+
+
+def _known_verdict_tokens(produces: object) -> set[str]:
+    """Collect known verdict tokens for a persona outcome contract."""
+    tokens: set[str] = set()
+
+    event_type_map = getattr(produces, "event_type_map", {}) or {}
+    if isinstance(event_type_map, dict):
+        tokens.update(str(key).strip() for key in event_type_map if str(key).strip())
+
+    schema = getattr(produces, "schema", {}) or {}
+    if isinstance(schema, dict):
+        verdict_schema = schema.get("verdict")
+        if isinstance(verdict_schema, dict):
+            raw_values = verdict_schema.get("values", [])
+            if isinstance(raw_values, list):
+                tokens.update(str(value).strip() for value in raw_values if str(value).strip())
+        else:
+            raw_values = getattr(verdict_schema, "enum_values", None)
+            if isinstance(raw_values, list):
+                tokens.update(str(value).strip() for value in raw_values if str(value).strip())
+
+    success_verdict = _default_success_verdict(produces)
+    if success_verdict:
+        tokens.add(success_verdict)
+
+    return tokens
+
+
+def _normalize_outcome_verdict(raw_verdict: object, produces: object) -> str:
+    """Normalize wrapped verdict tokens back onto the declared contract."""
+    verdict = str(raw_verdict or "").strip()
+    if not verdict:
+        return ""
+
+    known = _known_verdict_tokens(produces)
+    if not known:
+        return verdict
+
+    folded = " ".join(verdict.split())
+    candidates: list[str] = []
+    for candidate in (
+        verdict,
+        folded,
+        re.sub(r"\s+", "_", folded),
+        re.sub(r"\s+", "", folded),
+    ):
+        candidate = candidate.strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    known_by_lower = {token.lower(): token for token in known}
+    for candidate in candidates:
+        resolved = known_by_lower.get(candidate.lower())
+        if resolved:
+            return resolved
+
+    return verdict
+
+
+def _infer_tool_written_verdict(
+    *,
+    allowed_topics: set[str] | None,
+    event_type_map: dict[str, str],
+) -> str:
+    """Infer a workflow verdict when one alias outcome is unambiguously allowed."""
+    if not allowed_topics or len(allowed_topics) != 1 or not event_type_map:
+        return ""
+
+    matches = [
+        verdict
+        for verdict, topic in event_type_map.items()
+        if str(topic).strip() and topic in allowed_topics
+    ]
+    if len(matches) != 1:
+        return ""
+    return matches[0]
+
+
+def _parse_outcome_for_persona(
+    response_text: str,
+    persona_config: PersonaConfig | None,
+):
+    """Parse outcome text with persona schema when one is declared."""
+    if not response_text:
+        return None
+    produces = getattr(persona_config, "produces", None)
+    schema_fields = getattr(produces, "schema", None)
+    if schema_fields:
+        try:
+            return parse_outcome_block(response_text, OutcomeSchema(fields=schema_fields))
+        except Exception:
+            logger.warning(
+                "drive_loop: schema-aware outcome parsing failed; falling back to generic parse",
+                exc_info=True,
+            )
+    return parse_outcome_block(response_text)
 
 # Type alias for the mesh RPC handler callable
 MeshRpcHandler = Callable[[dict], Awaitable[dict]]
@@ -740,7 +839,46 @@ class DriveLoop:
             logger.error("drive_loop: rpc handler raised: %s", exc)
             return {"error": str(exc)}
 
-    async def _handle_directed_message(self, content: str) -> None:
+    @staticmethod
+    def _directed_message_context(
+        content: str,
+        metadata: dict[str, Any] | None,
+    ) -> str:
+        """Render a directed human reply as initiative context for the target persona."""
+        trimmed = content.strip()
+        if not metadata:
+            return trimmed
+
+        help_summary = str(metadata.get("help_summary") or "").strip()
+        help_reason = str(metadata.get("help_reason") or "").strip()
+        help_recommendation = str(metadata.get("help_recommendation") or "").strip()
+        attempted = metadata.get("help_attempted")
+        context = metadata.get("help_context")
+
+        parts = [
+            "This is a directed human reply for an in-progress workflow turn.",
+        ]
+        if help_summary:
+            parts.append(f"Pending help summary: {help_summary}")
+        if help_reason:
+            parts.append(f"Reason: {help_reason}")
+        if isinstance(attempted, list):
+            attempted_items = [str(item).strip() for item in attempted if str(item).strip()]
+            if attempted_items:
+                parts.append("Already attempted:")
+                parts.extend(f"  - {item}" for item in attempted_items[:6])
+        if help_recommendation:
+            parts.append(f"Previous recommendation: {help_recommendation}")
+        if isinstance(context, dict) and context:
+            parts.append(f"Workflow context: {json.dumps(context, sort_keys=True)}")
+        parts.append(f"Human reply: {trimmed}")
+        return "\n".join(parts)
+
+    async def _handle_directed_message(
+        self,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         """Enqueue a directed message from the browser as an agent task."""
         import time
 
@@ -749,12 +887,25 @@ class DriveLoop:
         task = AgentTask(
             task_id=task_id,
             title="Directed message from user",
-            initiative_context=content,
+            initiative_context=self._directed_message_context(content, metadata),
             triggered_by="skuld:directed_message",
             output_mode=OutputMode.SURFACE,
             persona=persona,
             priority=1,  # high priority — user is waiting
         )
+        if metadata:
+            root_correlation_id = str(metadata.get("root_correlation_id") or "").strip()
+            workflow_parent_event_id = str(metadata.get("workflow_parent_event_id") or "").strip()
+            workflow_node_id = str(metadata.get("workflow_node_id") or "").strip()
+            session_id = str(metadata.get("session_id") or "").strip()
+            if root_correlation_id:
+                task.root_correlation_id = root_correlation_id
+            if workflow_parent_event_id:
+                task.workflow_parent_event_id = workflow_parent_event_id
+            if workflow_node_id:
+                task.workflow_node_id = workflow_node_id
+            if session_id:
+                task.session_id = session_id
         logger.info("drive_loop: directed message enqueued as task %s", task_id)
         await self.enqueue(task)
 
@@ -1077,7 +1228,7 @@ class DriveLoop:
             if task.session_id:
                 event.payload["session_id"] = task.session_id
 
-            parsed = parse_outcome_block(response_text) if response_text else None
+            parsed = _parse_outcome_for_persona(response_text, self._persona_config)
             if parsed is not None:
                 event.payload["structured_outcome"] = parsed.fields
                 event.payload["outcome_valid"] = parsed.valid
@@ -1206,7 +1357,7 @@ class DriveLoop:
             return
 
         # Parse outcome block from response
-        parsed = parse_outcome_block(response_text)
+        parsed = _parse_outcome_for_persona(response_text, self._persona_config)
         outcome_fields = dict(parsed.fields) if parsed is not None else {}
         canonical_event_type = self._persona_config.produces.event_type
         if not canonical_event_type:
@@ -1222,15 +1373,41 @@ class DriveLoop:
         success_verdict = _default_success_verdict(self._persona_config.produces)
         synthesized_pass = False
         root_corr = task.root_correlation_id or task.task_id
+        allowed_topics: set[str] | None = None
+        if self._workflow_allowed_outcomes_resolver is not None:
+            allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
+
+        page_write_fields = task.tool_outcomes.get(_MIMIR_PAGE_WRITTEN_OUTCOME) or {}
         verdict = str(outcome_fields.get("verdict", "") or "").strip()
+        valid = bool(parsed.valid) if parsed is not None else False
+        synthesized_from_tool_write = False
+        if not verdict and page_write_fields:
+            inferred_verdict = _infer_tool_written_verdict(
+                allowed_topics=allowed_topics,
+                event_type_map=event_type_map,
+            )
+            if inferred_verdict:
+                verdict = inferred_verdict
+                outcome_fields.setdefault("verdict", inferred_verdict)
+                for key, value in page_write_fields.items():
+                    outcome_fields.setdefault(key, value)
+                page_path = str(outcome_fields.get("page_path", "") or "").strip()
+                if page_path and not str(outcome_fields.get("summary", "") or "").strip():
+                    outcome_fields["summary"] = f"Wrote {page_path}"
+                synthesized_from_tool_write = True
+                valid = True
         if not verdict and success and success_verdict:
             verdict = success_verdict
             outcome_fields.setdefault("verdict", verdict)
             synthesized_pass = True
+        elif verdict:
+            normalized_verdict = _normalize_outcome_verdict(verdict, self._persona_config.produces)
+            if normalized_verdict != verdict:
+                verdict = normalized_verdict
+                outcome_fields["verdict"] = normalized_verdict
         summary = str(outcome_fields.get("summary", "") or "").strip()
         files_changed = outcome_fields.get("files_changed")
-        valid = bool(parsed.valid) if parsed is not None else False
-        if synthesized_pass and not valid:
+        if (synthesized_pass or synthesized_from_tool_write) and not valid:
             valid = True
 
         base_payload: dict[str, object] = {
@@ -1255,20 +1432,20 @@ class DriveLoop:
         if verdict and verdict in event_type_map:
             alias_event_type = event_type_map[verdict]
 
-        if self._workflow_allowed_outcomes_resolver is not None:
-            allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
-            if allowed_topics is not None:
-                canonical_allowed = canonical_event_type in allowed_topics or (
-                    bool(alias_event_type) and alias_event_type in allowed_topics
+        if allowed_topics is not None:
+            canonical_allowed = canonical_event_type in allowed_topics or (
+                bool(alias_event_type) and alias_event_type in allowed_topics
+            )
+            if verdict == "help_needed":
+                canonical_allowed = True
+            if not canonical_allowed:
+                logger.info(
+                    "drive_loop: suppressing outcome event_type=%s workflow_node=%s allowed=%s",
+                    canonical_event_type,
+                    task.workflow_node_id or "-",
+                    sorted(allowed_topics),
                 )
-                if not canonical_allowed:
-                    logger.info(
-                        "drive_loop: suppressing outcome event_type=%s workflow_node=%s allowed=%s",
-                        canonical_event_type,
-                        task.workflow_node_id or "-",
-                        sorted(allowed_topics),
-                    )
-                    return
+                return
 
         canonical_payload = dict(base_payload)
         canonical_payload["event_type"] = canonical_event_type
@@ -1311,6 +1488,57 @@ class DriveLoop:
                 )
 
         if self._mesh is None:
+            mesh_available = False
+        else:
+            mesh_available = True
+
+        if verdict == "help_needed":
+            attempted = outcome_fields.get("attempted")
+            if not isinstance(attempted, list):
+                attempted = []
+            help_context = outcome_fields.get("context")
+            if not isinstance(help_context, dict):
+                help_context = {}
+            help_context = {
+                **help_context,
+                "root_correlation_id": root_corr,
+                "workflow_parent_event_id": task.workflow_parent_event_id,
+                "workflow_node_id": task.workflow_node_id,
+                "session_id": task.session_id,
+            }
+            help_event = RavnEvent.help_needed(
+                source=self._source_id,
+                persona=self._persona_config.name,
+                reason=str(outcome_fields.get("reason") or "needs_context"),
+                summary=summary or "Agent requested human input before continuing.",
+                attempted=[str(item) for item in attempted if str(item).strip()],
+                recommendation=str(
+                    outcome_fields.get("recommendation")
+                    or "Reply directly to this agent with the missing guidance."
+                ),
+                correlation_id=task.task_id,
+                session_id=task.session_id or "",
+                task_id=task.task_id,
+                context=help_context,
+            )
+            if mesh_available:
+                try:
+                    await self._mesh.publish(help_event, topic=str(RavnEventType.HELP_NEEDED))
+                except Exception:
+                    logger.warning(
+                        "Failed to publish help_needed mesh event; continuing.",
+                        exc_info=True,
+                    )
+            if self._skuld_channel is not None:
+                try:
+                    await self._skuld_channel.emit(help_event)
+                except Exception:
+                    logger.warning(
+                        "Failed to emit help_needed to skuld; continuing.",
+                        exc_info=True,
+                    )
+
+        if not mesh_available:
             return
 
         if not alias_event_type or alias_event_type == canonical_event_type:

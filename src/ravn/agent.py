@@ -1333,7 +1333,10 @@ async def _validate_mimir_outcome_for_persona(
     """
     if persona_config is None or mimir is None:
         return parsed_outcome
-    if persona_config.produces.event_type != "research.completed":
+    produces_research_completed = persona_config.produces.event_type == "research.completed" or (
+        "research.completed" in set(persona_config.produces.event_type_map.values())
+    )
+    if not produces_research_completed:
         return parsed_outcome
 
     page_path = str(parsed_outcome.fields.get("page_path") or "").strip()

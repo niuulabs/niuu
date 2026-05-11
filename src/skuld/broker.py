@@ -53,6 +53,7 @@ from skuld.service_manager import (
 )
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.catalog import ravn_session_ended
+from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
 
 # ---------------------------------------------------------------------------
@@ -1338,6 +1339,9 @@ class Broker:
 
         if event_type == "outcome":
             await self._emit_peer_outcome_pipeline_event(peer_id, frame)
+        elif event_type == "help_needed":
+            await self._report_peer_help_needed_activity(peer_id, frame)
+            await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
 
         now = time.monotonic()
         watch = self._peer_watches.get(peer_id)
@@ -1448,6 +1452,91 @@ class Broker:
 
         await self._emit_pipeline_event("outcome", payload)
         await self._maybe_emit_workflow_terminal_outcome(peer_id, frame, payload)
+
+    async def _emit_peer_help_needed_sleipnir_event(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        """Publish a canonical help-needed event so Tyr can request human input."""
+        payload = self._build_peer_help_needed_payload(peer_id, frame)
+        if payload is None:
+            return
+        session_id = str(payload.get("session_id") or "").strip()
+
+        event = SleipnirEvent(
+            event_type="ravn.help.needed",
+            source=f"ravn:{peer_id}",
+            payload=payload,
+            urgency=float(frame.get("metadata", {}).get("urgency", 0.85)),
+            correlation_id=session_id or self.session_id,
+            summary=f"Help needed ({payload.get('persona') or peer_id}): {payload['summary']}",
+            domain="code",
+            timestamp=SleipnirEvent.now(),
+        )
+        try:
+            await self._sleipnir_publisher.publish(event)
+            logger.info(
+                "Peer help-needed event emitted: peer=%s session=%s raid=%s",
+                peer_id,
+                session_id or "-",
+                self._artifacts.raid_id or "-",
+            )
+        except Exception:
+            logger.warning("Failed to emit peer help-needed event", exc_info=True)
+
+    def _build_peer_help_needed_payload(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        data = frame.get("data", {})
+        if isinstance(data, str):
+            data = {"summary": data}
+        if not isinstance(data, dict):
+            return None
+
+        participant = self._room_bridge.participants.get(peer_id)
+        persona = (
+            participant.persona if participant is not None else str(data.get("persona") or "")
+        ).strip()
+        context = data.get("context")
+        if not isinstance(context, dict):
+            context = {}
+
+        session_id = str(
+            data.get("session_id")
+            or context.get("session_id")
+            or frame.get("session_id")
+            or self.session_id
+        ).strip()
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "persona": persona,
+            "summary": str(data.get("summary") or "Agent requested human feedback."),
+            "reason": str(data.get("reason") or "needs_context"),
+            "recommendation": str(data.get("recommendation") or ""),
+            "context": context,
+            "target_peer_id": peer_id,
+        }
+        attempted = data.get("attempted")
+        if isinstance(attempted, list):
+            payload["attempted"] = [str(item) for item in attempted if str(item).strip()]
+        if self._artifacts.raid_id:
+            payload["raid_id"] = self._artifacts.raid_id
+        if self._artifacts.saga_id:
+            payload["saga_id"] = self._artifacts.saga_id
+        return payload
+
+    async def _report_peer_help_needed_activity(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        payload = self._build_peer_help_needed_payload(peer_id, frame)
+        if payload is None:
+            return
+        await self._report_activity_state("idle", extra_metadata={"help_needed": payload})
 
     async def _maybe_emit_workflow_terminal_outcome(
         self,
@@ -2089,7 +2178,11 @@ class Broker:
                 content = data.get("content", "")
                 if not target or not content:
                     return
-                await self._room_bridge.route_directed_message(target, content)
+                await self._room_bridge.route_directed_message(
+                    target,
+                    content,
+                    metadata=data.get("metadata"),
+                )
 
             # Default: treat as user message (backward compat with {"content": "..."})
             case _:
@@ -2223,7 +2316,11 @@ class Broker:
             deliver_to_transport=False,
         )
 
-        delivered = await self._room_bridge.route_directed_message(target_peer_id, content)
+        delivered = await self._room_bridge.route_directed_message(
+            target_peer_id,
+            content,
+            metadata=metadata,
+        )
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id

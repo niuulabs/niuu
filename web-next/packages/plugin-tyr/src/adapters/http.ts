@@ -29,6 +29,8 @@ import type {
   PlanSession,
   ExtractedStructure,
   PhaseSpec,
+  RaidSessionMessage,
+  RaidHelpRequest,
   IntegrationConnection,
   CreateIntegrationParams,
   ConnectionTestResult,
@@ -120,6 +122,35 @@ interface RawSessionInfo {
   raid_name: string;
   saga_name: string;
   cluster_name: string;
+}
+
+interface RawHelpRequest {
+  summary: string;
+  reason: string;
+  attempted: string[];
+  recommendation?: string | null;
+  context: Record<string, unknown>;
+  target_peer_id?: string | null;
+  persona?: string | null;
+}
+
+interface RawSessionMessage {
+  id: string;
+  session_id: string;
+  content: string;
+  sender: string;
+  created_at: string;
+  kind?: 'message' | 'help_request';
+  help_request?: RawHelpRequest | null;
+}
+
+interface RawSendMessageResponse {
+  message_id: string;
+  raid_id: string;
+  session_id: string;
+  content: string;
+  sender: string;
+  created_at: string;
 }
 
 interface RawTrackerProject {
@@ -300,6 +331,30 @@ function toSessionInfo(raw: RawSessionInfo): SessionInfo {
     raidName: raw.raid_name,
     sagaName: raw.saga_name,
     clusterName: raw.cluster_name,
+  };
+}
+
+function toHelpRequest(raw: RawHelpRequest): RaidHelpRequest {
+  return {
+    summary: raw.summary,
+    reason: raw.reason,
+    attempted: raw.attempted ?? [],
+    recommendation: raw.recommendation ?? undefined,
+    context: raw.context ?? {},
+    targetPeerId: raw.target_peer_id ?? undefined,
+    persona: raw.persona ?? undefined,
+  };
+}
+
+function toRaidSessionMessage(raw: RawSessionMessage): RaidSessionMessage {
+  return {
+    id: raw.id,
+    sessionId: raw.session_id,
+    content: raw.content,
+    sender: raw.sender,
+    createdAt: raw.created_at,
+    kind: raw.kind ?? (raw.help_request ? 'help_request' : 'message'),
+    helpRequest: raw.help_request ? toHelpRequest(raw.help_request) : null,
   };
 }
 
@@ -497,6 +552,31 @@ export function buildTyrHttpAdapter(client: ApiClient): ITyrService {
     async getPhases(sagaId: string) {
       const raw = await client.get<RawPhase[]>(`/sagas/${encodeURIComponent(sagaId)}/phases`);
       return raw.map(toPhase);
+    },
+
+    async listRaidMessages(raidId: string) {
+      const raw = await client.get<RawSessionMessage[]>(
+        `/raids/${encodeURIComponent(raidId)}/messages`,
+      );
+      return raw.map(toRaidSessionMessage);
+    },
+
+    async sendRaidMessage(raidId: string, content: string, targetPeerId?: string) {
+      const raw = await client.post<RawSendMessageResponse>(
+        `/raids/${encodeURIComponent(raidId)}/message`,
+        {
+          content,
+          target_peer_id: targetPeerId ?? null,
+        },
+      );
+      return toRaidSessionMessage({
+        id: raw.message_id,
+        session_id: raw.session_id,
+        content: raw.content,
+        sender: raw.sender,
+        created_at: raw.created_at,
+        kind: 'message',
+      });
     },
 
     async createSaga(spec: string, repo: string) {

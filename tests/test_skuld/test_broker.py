@@ -28,6 +28,8 @@ from skuld.transports import (
     SubprocessTransport,
     TransportCapabilities,
 )
+from sleipnir.adapters.in_process import InProcessBus
+from sleipnir.testing import EventCapture
 
 
 class TestBroker:
@@ -558,6 +560,74 @@ class TestBroker:
         assert args[1]["persona"] == "reviewer"
         assert args[1]["event_type"] == "review.completed"
         assert args[1]["verdict"] == "needs_changes"
+
+    @pytest.mark.asyncio
+    async def test_peer_help_needed_is_emitted_to_sleipnir(self, settings, tmp_path):
+        bus = InProcessBus()
+        settings.session.workspace_dir = str(tmp_path)
+        broker_under_test = Broker(settings=settings, sleipnir_publisher=bus)
+        broker_under_test._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "flock-council-chair": MagicMock(persona="council-chair")
+        }
+        broker_under_test._artifacts.raid_id = "raid-human-1"
+        broker_under_test._artifacts.saga_id = "saga-human-1"
+
+        async with EventCapture(bus, ["ravn.help.needed"]) as capture:
+            await broker_under_test._observe_room_peer_event(
+                "flock-council-chair",
+                "help_needed",
+                {
+                    "metadata": {"urgency": 0.92},
+                    "data": {
+                        "summary": (
+                            "Need your decision on whether to prioritize latency or quality."
+                        ),
+                        "reason": "needs_feedback",
+                        "attempted": [
+                            "Compared the top two proposals",
+                            "Wrote the pending decision note",
+                        ],
+                        "recommendation": "Pick the preferred tradeoff.",
+                        "context": {
+                            "slug": "research/council-human-v1",
+                            "workflow_parent_event_id": "parent-1",
+                        },
+                        "persona": "council-chair",
+                    },
+                },
+            )
+            await bus.flush()
+
+        assert len(capture.events) == 1
+        event = capture.events[0]
+        assert event.event_type == "ravn.help.needed"
+        assert event.source == "ravn:flock-council-chair"
+        assert event.correlation_id == "test-session-123"
+        assert event.payload["session_id"] == "test-session-123"
+        assert event.payload["persona"] == "council-chair"
+        assert event.payload["raid_id"] == "raid-human-1"
+        assert event.payload["saga_id"] == "saga-human-1"
+        assert event.payload["reason"] == "needs_feedback"
+
+    @pytest.mark.asyncio
+    async def test_peer_help_needed_publish_failure_is_swallowed(self, settings, tmp_path):
+        failing_publisher = AsyncMock()
+        failing_publisher.publish.side_effect = RuntimeError("bus down")
+        settings.session.workspace_dir = str(tmp_path)
+        broker_under_test = Broker(settings=settings, sleipnir_publisher=failing_publisher)
+        broker_under_test._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "flock-council-chair": MagicMock(persona="council-chair")
+        }
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-council-chair",
+            "help_needed",
+            {"data": {"summary": "Need a human decision."}},
+        )
 
     @pytest.mark.asyncio
     async def test_routing_only_peer_outcome_is_not_emitted_to_pipeline(self, test_broker):
@@ -3179,7 +3249,11 @@ class TestBrokerRoomBridge:
             {"type": "directed_message", "targetPeerId": "agent-1", "content": "Hi!"}
         )
 
-        mock_bridge.route_directed_message.assert_awaited_once_with("agent-1", "Hi!")
+        mock_bridge.route_directed_message.assert_awaited_once_with(
+            "agent-1",
+            "Hi!",
+            metadata=None,
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_directed_message_empty_target_ignored(self, room_settings):

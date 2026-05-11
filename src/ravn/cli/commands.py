@@ -890,6 +890,37 @@ def _mimir_ingest_event_fields_from_mcp_result(
     return fields
 
 
+def _mimir_write_event_fields_from_mcp_result(
+    *,
+    server_name: str,
+    arguments: dict[str, Any],
+    result: ToolResult,
+) -> dict[str, Any] | None:
+    if result.is_error:
+        return None
+
+    page_path = str(arguments.get("path") or "").strip()
+    if not page_path:
+        content = str(result.content or "").strip()
+        prefix = "Page written: "
+        if content.startswith(prefix):
+            page_path = content[len(prefix) :].split(" (routed to:", 1)[0].strip()
+    if not page_path:
+        return None
+
+    explicit_mimir = str(arguments.get("mimir") or "").strip()
+    mount_name = explicit_mimir or _mimir_mount_name_from_mcp_server_name(server_name)
+
+    fields: dict[str, Any] = {
+        "page_path": page_path,
+        "mcp_server_name": server_name,
+    }
+    if mount_name:
+        fields["mount_name"] = mount_name
+        fields["mount_names"] = [mount_name]
+    return fields
+
+
 async def _shutdown_mcp(manager: Any | None) -> None:
     """Gracefully shut down MCP servers."""
     if manager is None:
@@ -2289,16 +2320,32 @@ async def _run_daemon(
         arguments: dict[str, Any],
         result: ToolResult,
     ) -> None:
-        if tool_name != "mimir_ingest" or drive_loop is None:
+        if tool_name not in {"mimir_ingest", "mimir_write"} or drive_loop is None:
             return
         current_task = drive_loop.resolve_task_context()
         if current_task is None:
             logger.warning(
-                "mimir_ingest MCP hook: no task context available for server=%s",
+                "%s MCP hook: no task context available for server=%s",
+                tool_name,
                 server_name,
             )
             return
-        fields = _mimir_ingest_event_fields_from_mcp_result(
+        if tool_name == "mimir_ingest":
+            fields = _mimir_ingest_event_fields_from_mcp_result(
+                server_name=server_name,
+                arguments=arguments,
+                result=result,
+            )
+            if fields is None:
+                return
+            drive_loop.record_tool_outcome_fields(
+                task=current_task,
+                event_type="mimir.source.ingested",
+                fields=fields,
+            )
+            return
+
+        fields = _mimir_write_event_fields_from_mcp_result(
             server_name=server_name,
             arguments=arguments,
             result=result,
@@ -2307,7 +2354,7 @@ async def _run_daemon(
             return
         drive_loop.record_tool_outcome_fields(
             task=current_task,
-            event_type="mimir.source.ingested",
+            event_type="mimir.page.written",
             fields=fields,
         )
 

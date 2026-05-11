@@ -14,6 +14,7 @@ from ravn.adapters.personas.loader import PersonaConfig
 from ravn.cli.commands import (
     _chat,
     _mimir_ingest_event_fields_from_mcp_result,
+    _mimir_write_event_fields_from_mcp_result,
     _print_usage,
     _run_daemon,
     _run_turn,
@@ -98,6 +99,46 @@ class TestMcpMimirIngestEventFields:
         assert fields is not None
         assert fields["source_title"] == "Fallback title"
         assert fields["source_type"] == "conversation"
+
+
+class TestMcpMimirWriteEventFields:
+    def test_parses_page_path_and_mount_from_arguments(self) -> None:
+        result = ToolResult(
+            tool_call_id="",
+            content="Page written: council/example/opinion-b.md",
+            is_error=False,
+        )
+
+        fields = _mimir_write_event_fields_from_mcp_result(
+            server_name="mimir-council-scratch-board",
+            arguments={"path": "council/example/opinion-b.md"},
+            result=result,
+        )
+
+        assert fields == {
+            "page_path": "council/example/opinion-b.md",
+            "mcp_server_name": "mimir-council-scratch-board",
+            "mount_name": "council-scratch-board",
+            "mount_names": ["council-scratch-board"],
+        }
+
+    def test_prefers_explicit_mimir_argument(self) -> None:
+        result = ToolResult(
+            tool_call_id="",
+            content="Page written: research/example.md (routed to: tmp-mimir-test)",
+            is_error=False,
+        )
+
+        fields = _mimir_write_event_fields_from_mcp_result(
+            server_name="mimir-council-scratch-board",
+            arguments={"path": "research/example.md", "mimir": "tmp-mimir-test"},
+            result=result,
+        )
+
+        assert fields is not None
+        assert fields["page_path"] == "research/example.md"
+        assert fields["mount_name"] == "tmp-mimir-test"
+        assert fields["mount_names"] == ["tmp-mimir-test"]
 
 
 class TestRunCommand:

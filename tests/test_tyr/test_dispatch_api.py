@@ -1158,6 +1158,31 @@ class TestDispatchAliases:
         assert dispatched_items[0].issue_id == "i-1"
         assert dispatched_items[0].repo == "org/repo"
 
+    def test_dispatch_single_raid_alias_allows_repo_less_sagas(self) -> None:
+        tracker = DispatchAliasTracker()
+        tracker._saga = Saga(
+            **{
+                **tracker._saga.__dict__,
+                "repos": [],
+            }
+        )
+        service = AsyncMock()
+        service.dispatch_issues.return_value = [
+            DispatchResult(
+                issue_id="i-1",
+                session_id="sess-1",
+                session_name="dispatch-me",
+                status="running",
+            )
+        ]
+        client = self._client(tracker, service)
+
+        response = client.post("/api/v1/tyr/dispatch/i-1", headers=_auth_headers())
+
+        assert response.status_code == 202
+        dispatched_items = service.dispatch_issues.await_args.kwargs["items"]
+        assert dispatched_items[0].repo == ""
+
     def test_dispatch_batch_alias_reports_dispatches_and_failures(self) -> None:
         tracker = DispatchAliasTracker()
         service = AsyncMock()

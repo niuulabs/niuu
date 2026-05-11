@@ -25,7 +25,7 @@ from tyr.ports.volundr import VolundrPort
 
 logger = logging.getLogger(__name__)
 
-RUNNING_STATUSES = frozenset({RaidStatus.RUNNING, RaidStatus.REVIEW})
+RUNNING_STATUSES = frozenset({RaidStatus.RUNNING, RaidStatus.REVIEW, RaidStatus.ESCALATED})
 
 
 class NoActiveSessionError(Exception):
@@ -70,6 +70,7 @@ class SessionMessageService:
         *,
         sender: str = "user",
         auth_token: str | None = None,
+        target_peer_id: str | None = None,
     ) -> MessageResult:
         """Send a message to the session running a raid.
 
@@ -93,7 +94,15 @@ class SessionMessageService:
             raise NoActiveSessionError(raid_id)
 
         # Send the message to Volundr
-        await self._volundr.send_message(target_session, content, auth_token=auth_token)
+        if target_peer_id:
+            await self._volundr.send_directed_room_message(
+                target_session,
+                target_peer_id,
+                content,
+                auth_token=auth_token,
+            )
+        else:
+            await self._volundr.send_message(target_session, content, auth_token=auth_token)
 
         # Persist audit record
         now = datetime.now(UTC)
@@ -128,6 +137,7 @@ class SessionMessageService:
                         "session_id": raid.session_id,
                         "sender": sender,
                         "content_length": len(content),
+                        "target_peer_id": target_peer_id or "",
                     },
                 )
             )

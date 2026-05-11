@@ -62,6 +62,97 @@ findings: |
     expect(routePairItem).toHaveTextContent('Route pair count: 26');
     expect(screen.getByText('/api/v1/credentials/secrets')).toBeInTheDocument();
   });
+
+  it('normalizes soft-wrapped outcome fields before rendering', () => {
+    render(
+      <OutcomeCard
+        raw={`ver
+dict
+:
+ opinion
+_sub
+mitted
+
+summary
+:
+ W
+rote
+ opinion
+ recommending
+ risk
+-tier
+ed
+ opt
+-out
+ autonomy
+.
+
+page
+_path
+:
+ council
+/
+demo
+/
+opinion
+-b
+.md`}
+      />,
+    );
+
+    expect(screen.getByText('opinion_submitted')).toBeInTheDocument();
+    expect(
+      screen.getByText('Wrote opinion recommending risk-tiered opt-out autonomy.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('council/demo/opinion-b.md')).toBeInTheDocument();
+  });
+
+  it('preserves spaces after soft-wrapped punctuation in summaries', () => {
+    render(
+      <OutcomeCard
+        raw={`ver
+dict
+:
+ opinion
+_sub
+mitted
+
+summary
+:
+ W
+rote
+ opinion
+ recommending
+ risk
+-tier
+ed
+ opt
+-out
+ autonomy
+ with
+ human
+ approval
+ for
+ low
+-confidence
+,
+ high
+-risk
+,
+ or
+ bootstrap
+/test
+ cases
+.`}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        'Wrote opinion recommending risk-tiered opt-out autonomy with human approval for low-confidence, high-risk, or bootstrap/test cases.',
+      ),
+    ).toBeInTheDocument();
+  });
 });
 
 describe('extractOutcomeBlock', () => {
@@ -94,6 +185,50 @@ describe('extractOutcomeBlock', () => {
     expect(result).toEqual({
       before: 'before\n',
       raw: 'verdict: pass\nsummary: All good',
+      after: '\nafter',
+    });
+  });
+
+  it('extracts and normalizes soft-wrapped dashed outcome markers', () => {
+    const text = `before
+---
+out
+come
+---
+
+ver
+dict
+:
+ review
+_sub
+mitted
+
+summary
+:
+ Prefer
+ Opinion
+ A
+.
+
+page
+_path
+:
+ council
+/
+demo
+/
+review
+-b
+.md
+
+---
+end
+---
+after`;
+    const result = extractOutcomeBlock(text);
+    expect(result).toEqual({
+      before: 'before\n',
+      raw: 'verdict: review_submitted\nsummary: Prefer Opinion A.\npage_path: council/demo/review-b.md',
       after: '\nafter',
     });
   });

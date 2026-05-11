@@ -20,6 +20,7 @@ import type {
   CommitSagaRequest,
   PlanSession,
   ExtractedStructure,
+  RaidSessionMessage,
   IntegrationConnection,
   CreateIntegrationParams,
   ConnectionTestResult,
@@ -1055,6 +1056,7 @@ export function createMockTyrService(): ITyrService {
     ['00000000-0000-0000-0000-000000000007', SEED_BIFROST_PHASES],
     ['00000000-0000-0000-0000-000000000001', [...SEED_PHASES]],
   ]);
+  const messagesByRaid = new Map<string, RaidSessionMessage[]>();
 
   return {
     async getSagas() {
@@ -1067,6 +1069,28 @@ export function createMockTyrService(): ITyrService {
 
     async getPhases(sagaId: string) {
       return phasesBySaga.get(sagaId) ?? [];
+    },
+
+    async listRaidMessages(raidId: string) {
+      return messagesByRaid.get(raidId) ?? [];
+    },
+
+    async sendRaidMessage(raidId: string, content: string, _targetPeerId?: string) {
+      const raid =
+        Array.from(phasesBySaga.values())
+          .flatMap((phases) => phases.flatMap((phase) => phase.raids))
+          .find((entry) => entry.id === raidId) ?? null;
+      const message: RaidSessionMessage = {
+        id: `message-${Date.now()}`,
+        sessionId: raid?.sessionId ?? 'mock-session',
+        content,
+        sender: 'user',
+        createdAt: new Date().toISOString(),
+        kind: 'message',
+        helpRequest: null,
+      };
+      messagesByRaid.set(raidId, [...(messagesByRaid.get(raidId) ?? []), message]);
+      return message;
     },
 
     async createSaga(spec: string, _repo: string) {

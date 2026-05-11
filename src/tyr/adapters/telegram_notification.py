@@ -33,11 +33,16 @@ class TelegramNotificationAdapter(NotificationChannel):
         *,
         timeout: float = 10.0,
         min_urgency: str = "low",
+        notify_only: bool = False,
+        message_thread_id: int | None = None,
+        **_unused: object,
     ) -> None:
         self._bot_token = bot_token
         self._chat_id = chat_id
         self._client = httpx.AsyncClient(timeout=timeout)
         self._min_urgency = NotificationUrgency(min_urgency)
+        self._notify_only = notify_only
+        self._message_thread_id = message_thread_id
         self._urgency_rank = {
             NotificationUrgency.LOW: 0,
             NotificationUrgency.MEDIUM: 1,
@@ -65,6 +70,11 @@ class TelegramNotificationAdapter(NotificationChannel):
                     "chat_id": self._chat_id,
                     "text": text,
                     "parse_mode": "Markdown",
+                    **(
+                        {"message_thread_id": self._message_thread_id}
+                        if self._message_thread_id is not None
+                        else {}
+                    ),
                 },
             )
             if resp.status_code != 200:

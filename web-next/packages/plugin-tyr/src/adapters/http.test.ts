@@ -107,6 +107,24 @@ const rawSessionInfo = {
   cluster_name: 'Mac mini',
 };
 
+const rawHelpMessage = {
+  id: 'msg-1',
+  session_id: 'sess-abc',
+  content: '{"summary":"Need your call","reason":"needs_feedback"}',
+  sender: 'help_needed',
+  created_at: '2026-05-11T12:00:00Z',
+  kind: 'help_request',
+  help_request: {
+    summary: 'Need your call on the final recommendation.',
+    reason: 'needs_feedback',
+    attempted: ['Compared the top two options'],
+    recommendation: 'Pick the rollout order.',
+    context: { slug: 'research/council-human-v1' },
+    target_peer_id: 'flock-council-chair',
+    persona: 'council-chair',
+  },
+};
+
 const rawProject = {
   id: 'proj-1',
   name: 'My Project',
@@ -297,6 +315,59 @@ describe('buildTyrHttpAdapter', () => {
       expect(phase?.sagaId).toBe('00000000-0000-0000-0000-000000000001');
       expect(phase?.raids[0]?.phaseId).toBe('00000000-0000-0000-0000-000000000010');
       expect(phase?.raids[0]?.acceptanceCriteria).toEqual(['Refreshes before expiry']);
+    });
+  });
+
+  describe('raid messages', () => {
+    it('lists and transforms help requests', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue([rawHelpMessage]);
+
+      const [message] = await buildTyrHttpAdapter(client).listRaidMessages(
+        '00000000-0000-0000-0000-000000000002',
+      );
+
+      expect(client.get).toHaveBeenCalledWith(
+        '/raids/00000000-0000-0000-0000-000000000002/messages',
+      );
+      expect(message).toMatchObject({
+        id: 'msg-1',
+        sessionId: 'sess-abc',
+        kind: 'help_request',
+        helpRequest: {
+          targetPeerId: 'flock-council-chair',
+          persona: 'council-chair',
+        },
+      });
+    });
+
+    it('sends a directed reply payload and normalizes the receipt', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({
+        message_id: 'msg-user-1',
+        raid_id: 'raid-1',
+        session_id: 'sess-abc',
+        content: 'Please prefer the staged rollout option.',
+        sender: 'user',
+        created_at: '2026-05-11T12:05:00Z',
+      });
+
+      const message = await buildTyrHttpAdapter(client).sendRaidMessage(
+        'raid-1',
+        'Please prefer the staged rollout option.',
+        'flock-council-chair',
+      );
+
+      expect(client.post).toHaveBeenCalledWith('/raids/raid-1/message', {
+        content: 'Please prefer the staged rollout option.',
+        target_peer_id: 'flock-council-chair',
+      });
+      expect(message).toMatchObject({
+        id: 'msg-user-1',
+        sessionId: 'sess-abc',
+        sender: 'user',
+        kind: 'message',
+      });
     });
   });
 

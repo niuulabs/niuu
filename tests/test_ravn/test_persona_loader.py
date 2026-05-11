@@ -248,6 +248,10 @@ class TestListBuiltinNames:
     def test_returns_expected_personas(self) -> None:
         names = FilesystemPersonaAdapter().list_builtin_names()
         assert "coder" in names
+        assert "council-chair" in names
+        assert "council-member-a" in names
+        assert "council-member-b" in names
+        assert "council-member-c" in names
         assert "reviewer" in names
         assert "security-auditor" in names
         assert "postmortem-analyst" in names

@@ -105,6 +105,26 @@ export interface ExtractedStructure {
   } | null;
 }
 
+export interface RaidHelpRequest {
+  summary: string;
+  reason: string;
+  attempted: string[];
+  recommendation?: string;
+  context: Record<string, unknown>;
+  targetPeerId?: string;
+  persona?: string;
+}
+
+export interface RaidSessionMessage {
+  id: string;
+  sessionId: string;
+  content: string;
+  sender: string;
+  createdAt: string;
+  kind: 'message' | 'help_request';
+  helpRequest?: RaidHelpRequest | null;
+}
+
 /**
  * Core Tyr service — saga lifecycle, planning, and decomposition.
  *
@@ -115,6 +135,12 @@ export interface ITyrService {
   getSagas(): Promise<Saga[]>;
   getSaga(id: string): Promise<Saga | null>;
   getPhases(sagaId: string): Promise<Phase[]>;
+  listRaidMessages(raidId: string): Promise<RaidSessionMessage[]>;
+  sendRaidMessage(
+    raidId: string,
+    content: string,
+    targetPeerId?: string,
+  ): Promise<RaidSessionMessage>;
   createSaga(spec: string, repo: string): Promise<Saga>;
   commitSaga(request: CommitSagaRequest): Promise<Saga>;
   decompose(spec: string, repo: string): Promise<Phase[]>;

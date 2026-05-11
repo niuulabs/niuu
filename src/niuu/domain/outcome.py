@@ -13,6 +13,17 @@ _OUTCOME_START = re.compile(r"---outcome---", re.IGNORECASE)
 # Accept ---end--- or just --- on its own line as end marker
 _OUTCOME_END = re.compile(r"---end---|(?:^|\n)---(?:\s*$|\n)", re.IGNORECASE)
 _CODE_FENCE = re.compile(r"^```[a-z]*\s*\n?(.*?)```\s*$", re.DOTALL)
+_SIMPLE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_KEY_VALUE_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$")
+_WRAPPED_OUTCOME_START = re.compile(
+    r"---\s*o\s*u\s*t\s*c\s*o\s*m\s*e\s*---",
+    re.IGNORECASE,
+)
+_WRAPPED_OUTCOME_END = re.compile(
+    r"---\s*e\s*n\s*d\s*---",
+    re.IGNORECASE,
+)
+_SOFT_KEY_FRAGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 
 _TYPE_VALIDATORS: dict[str, type] = {
     "string": str,
@@ -91,21 +102,23 @@ def _strip_code_fence(text: str) -> str:
 
 def _find_outcome_blocks(text: str) -> list[str]:
     """Return list of raw content strings between ---outcome--- and ---end--- markers."""
+    normalized_text = _WRAPPED_OUTCOME_START.sub("---outcome---", text)
+    normalized_text = _WRAPPED_OUTCOME_END.sub("---end---", normalized_text)
     blocks: list[str] = []
     pos = 0
     while True:
-        start_m = _OUTCOME_START.search(text, pos)
+        start_m = _OUTCOME_START.search(normalized_text, pos)
         if start_m is None:
             break
         content_start = start_m.end()
-        end_m = _OUTCOME_END.search(text, content_start)
+        end_m = _OUTCOME_END.search(normalized_text, content_start)
         if end_m is None:
             # Missing ---end--- — use end of text
-            raw = textwrap.dedent(text[content_start:]).strip()
+            raw = textwrap.dedent(normalized_text[content_start:]).strip()
         else:
-            raw = textwrap.dedent(text[content_start : end_m.start()]).strip()
+            raw = textwrap.dedent(normalized_text[content_start : end_m.start()]).strip()
         blocks.append(raw)
-        pos = end_m.end() if end_m else len(text)
+        pos = end_m.end() if end_m else len(normalized_text)
     return blocks
 
 
@@ -131,6 +144,173 @@ def _validate_field(
 
     if not isinstance(value, expected):
         errors.append(f"field '{name}': expected {field_def.type}, got {type(value).__name__}")
+
+
+def _join_soft_wrapped_parts(parts: list[str], *, compact: bool = False) -> str:
+    cleaned = [part.strip() for part in parts if part.strip()]
+    if compact:
+        return "".join(cleaned)
+
+    result = ""
+    previous = ""
+    for part in cleaned:
+        if not result:
+            result = part
+        elif part.startswith((".", ",", ";", ":", "!", "?", ")", "]", "}", "/", "_", "-")):
+            result += part
+        elif result.endswith(("(", "[", "{", "/", "_", "-")):
+            result += part
+        elif len(previous) == 1 and part[:1].islower():
+            result += part
+        else:
+            result += f" {part}"
+        previous = part
+    return result
+
+
+def _coerce_simple_scalar(key: str, parts: list[str]) -> Any:
+    compact_keys = {"verdict", "page_path", "source_id"}
+    text = _join_soft_wrapped_parts(parts, compact=key in compact_keys).strip()
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if re.fullmatch(r"-?\d+", text):
+        try:
+            return int(text)
+        except ValueError:
+            return text
+    if re.fullmatch(r"-?\d+\.\d+", text):
+        try:
+            return float(text)
+        except ValueError:
+            return text
+    return text
+
+
+def _merge_soft_wrapped_key_line(lines: list[str], start_index: int) -> tuple[str, int]:
+    stripped = lines[start_index].strip()
+    inline_match = _KEY_VALUE_LINE.match(stripped)
+    if inline_match:
+        return stripped, start_index + 1
+
+    if not _SOFT_KEY_FRAGMENT.match(stripped):
+        return stripped, start_index + 1
+
+    fragments = [stripped]
+    index = start_index + 1
+    while index < len(lines):
+        next_stripped = lines[index].strip()
+        if not next_stripped:
+            break
+
+        inline_match = _KEY_VALUE_LINE.match(next_stripped)
+        if inline_match:
+            merged_key = "".join(fragments) + inline_match.group(1)
+            merged_value = inline_match.group(2).strip()
+            if merged_value:
+                return f"{merged_key}: {merged_value}", index + 1
+            return f"{merged_key}:", index + 1
+
+        if next_stripped.startswith(":"):
+            return f"{''.join(fragments)}{next_stripped}", index + 1
+
+        if not _SOFT_KEY_FRAGMENT.match(next_stripped):
+            break
+
+        fragments.append(next_stripped)
+        index += 1
+
+    return stripped, start_index + 1
+
+
+def _parse_soft_wrapped_mapping(
+    text: str,
+    *,
+    expected_keys: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Recover simple key/value outcome blocks that were soft-wrapped by a model."""
+    lines = text.splitlines()
+    parsed: dict[str, Any] = {}
+    current_key: str | None = None
+    scalar_parts: list[str] = []
+    list_parts: list[str] = []
+    current_mode: Literal["scalar", "list"] = "scalar"
+
+    def flush() -> None:
+        nonlocal current_key, scalar_parts, list_parts, current_mode
+        if current_key is None:
+            return
+        if current_mode == "list":
+            parsed[current_key] = list_parts[:]
+        else:
+            parsed[current_key] = _coerce_simple_scalar(current_key, scalar_parts)
+        current_key = None
+        scalar_parts = []
+        list_parts = []
+        current_mode = "scalar"
+
+    index = 0
+    while index < len(lines):
+        current_raw = lines[index].strip()
+        if (
+            current_key is not None
+            and current_mode == "scalar"
+            and current_raw
+            and _KEY_VALUE_LINE.match(current_raw) is None
+            and _SOFT_KEY_FRAGMENT.match(current_raw)
+            and expected_keys
+        ):
+            merged_line, _ = _merge_soft_wrapped_key_line(lines, index)
+            merged_match = _KEY_VALUE_LINE.match(merged_line)
+            next_match = None
+            if index + 1 < len(lines):
+                next_match = _KEY_VALUE_LINE.match(lines[index + 1].strip())
+            if (
+                merged_match is not None
+                and merged_match.group(1) not in expected_keys
+                and next_match is not None
+                and next_match.group(1) in expected_keys
+            ):
+                scalar_parts.append(current_raw)
+                index += 1
+                continue
+
+        stripped, index = _merge_soft_wrapped_key_line(lines, index)
+
+        if not stripped:
+            continue
+
+        match = _KEY_VALUE_LINE.match(stripped)
+        if match:
+            flush()
+            current_key = match.group(1)
+            value = match.group(2).strip()
+            if value:
+                scalar_parts.append(value)
+            continue
+
+        if current_key is None:
+            continue
+
+        if stripped.startswith("- "):
+            if current_mode != "list":
+                current_mode = "list"
+            list_parts.append(stripped[2:].strip())
+            continue
+
+        if current_mode == "list":
+            if list_parts:
+                list_parts[-1] = f"{list_parts[-1]} {stripped}".strip()
+            else:
+                scalar_parts.append(stripped)
+            continue
+
+        scalar_parts.append(stripped)
+
+    flush()
+    return parsed or None
 
 
 def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> ParsedOutcome | None:
@@ -163,6 +343,13 @@ def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> Parse
             errors.append(f"outcome block did not parse as a YAML mapping; got {got}")
     except yaml.YAMLError as exc:
         errors.append(f"YAML parse error: {exc}")
+
+    if errors:
+        expected_keys = set(schema.fields) if schema is not None else None
+        salvaged = _parse_soft_wrapped_mapping(clean, expected_keys=expected_keys)
+        if salvaged is not None:
+            parsed_fields = salvaged
+            errors = []
 
     if schema is not None and not errors:
         for name, field_def in schema.fields.items():

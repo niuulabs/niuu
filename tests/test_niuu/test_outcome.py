@@ -196,6 +196,48 @@ def test_validate_boolean_rejected_for_number_field(simple_schema: OutcomeSchema
     assert any("findings_count" in e for e in result.errors)
 
 
+def test_soft_wrapped_scalar_before_next_key_uses_schema_to_recover_verdict() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "verdict": OutcomeField(
+                type="enum",
+                description="workflow verdict",
+                enum_values=["opinion_submitted", "review_submitted", "blocked"],
+            ),
+            "summary": OutcomeField(type="string", description="one-line summary"),
+            "page_path": OutcomeField(type="string", description="written page path"),
+        }
+    )
+    text = """\
+---outcome---
+ver
+dict: opinion_sub
+mitted
+summary:
+ Recommended lightweight human approval by
+ default for final council publication
+, with autonomous scratch
+ work and risk-based graduation
+ conditions.
+page_path: council
+/niu-906
+-human-approval-gate
+/opinions/opinion
+-b.md
+---
+end---
+"""
+    result = parse_outcome_block(text, schema)
+    assert result is not None
+    assert result.valid is True
+    assert result.fields["verdict"] == "opinion_submitted"
+    assert result.fields["summary"].startswith("Recommended lightweight human approval")
+    assert (
+        result.fields["page_path"]
+        == "council/niu-906-human-approval-gate/opinions/opinion-b.md"
+    )
+
+
 def test_validate_boolean_field() -> None:
     schema = OutcomeSchema(
         fields={

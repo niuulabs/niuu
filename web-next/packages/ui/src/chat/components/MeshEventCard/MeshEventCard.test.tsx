@@ -70,6 +70,18 @@ describe('MeshEventCard', () => {
     expect(screen.getByText('Reason: Ambiguous requirements')).toBeInTheDocument();
   });
 
+  it('normalizes punctuation spacing in outcome summaries', () => {
+    const event: MeshEvent = {
+      ...outcomeEvent,
+      id: 'e6',
+      summary: 'low-confidence,high-risk,or bootstrap/test cases',
+    };
+    render(<MeshEventCard event={event} />);
+    expect(
+      screen.getByText('low-confidence, high-risk, or bootstrap/test cases'),
+    ).toBeInTheDocument();
+  });
+
   it('renders fail verdict', () => {
     const event: MeshEvent = { ...outcomeEvent, id: 'e4', verdict: 'fail' };
     render(<MeshEventCard event={event} />);

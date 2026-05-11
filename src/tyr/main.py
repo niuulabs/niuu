@@ -845,12 +845,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # Wire RavnOutcomeHandler (canonical ravn.session.ended plus compatibility task events)
             ravn_outcome_handler = None
+            ravn_help_needed_handler = None
             if (
                 settings.ravn_outcome.enabled
                 and sleipnir_bus is not None
                 and hasattr(sleipnir_bus, "subscribe")
             ):
+                from tyr.adapters.ravn_help_needed_handler import (  # noqa: PLC0415
+                    RavnHelpNeededHandler,
+                )
                 from tyr.adapters.ravn_outcome_handler import RavnOutcomeHandler  # noqa: PLC0415
+
+                ravn_help_needed_handler = RavnHelpNeededHandler(
+                    subscriber=sleipnir_bus,
+                    tracker_factory=app.state.tracker_factory,
+                    event_bus=event_bus,
+                    owner_id=settings.ravn_outcome.owner_id,
+                )
+                await ravn_help_needed_handler.start()
+                app.state.ravn_help_needed_handler = ravn_help_needed_handler
+                logger.info("RavnHelpNeededHandler started")
 
                 ravn_outcome_handler = RavnOutcomeHandler(
                     subscriber=sleipnir_bus,
@@ -888,6 +902,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
 
             # Lifecycle cleanup
+            if ravn_help_needed_handler is not None:
+                await ravn_help_needed_handler.stop()
             if ravn_outcome_handler is not None:
                 await ravn_outcome_handler.stop()
             if event_trigger_adapter is not None:
