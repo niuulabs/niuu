@@ -57,6 +57,7 @@ from tyr.ports.saga_repository import SagaRepository
 from tyr.ports.tracker import TrackerFactory, TrackerPort
 from tyr.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort
 from tyr.ports.workflow_repository import WorkflowRepository
+from volundr.config import _default_session_definitions
 
 logger = logging.getLogger(__name__)
 
@@ -539,7 +540,7 @@ class DispatchConfig:
     flock_sleipnir_publish_urls: list[str] = field(default_factory=list)
     flock_llm_config: dict = field(default_factory=dict)
     live_flock: object | None = field(default=None, repr=False)
-    session_definitions: dict[str, Any] = field(default_factory=dict)
+    session_definitions: dict[str, Any] = field(default_factory=_default_session_definitions)
     configured_models: list[Any] = field(default_factory=list)
 
     def __getattribute__(self, name: str) -> object:
