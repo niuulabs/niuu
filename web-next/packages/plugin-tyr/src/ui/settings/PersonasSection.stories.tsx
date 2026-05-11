@@ -53,7 +53,7 @@ export const Data: Story = {
             return SEED_PERSONAS;
           },
           async getPersonaYaml(name: string) {
-            return `name: ${name}\nmodel: claude-sonnet-4-6\niterationBudget: 40\n`;
+            return `name: ${name}\niterationBudget: 40\n`;
           },
         },
       });

@@ -852,9 +852,7 @@ function toDetail(summary: PersonaSummary, req?: PersonaCreateRequest): PersonaD
           ].join('\n')
         : `# ${summary.name}\nYou are the ${summary.name} persona.`),
     forbiddenTools: req?.forbiddenTools ?? (isReviewer ? ['write', 'bash', 'apply_patch'] : []),
-    executor: req?.executor,
     llm: {
-      primaryAlias: req?.llmPrimaryAlias ?? (isReviewer ? 'sonnet-primary' : 'claude-sonnet-4-6'),
       thinkingEnabled: req?.llmThinkingEnabled ?? isReviewer,
       maxTokens: req?.llmMaxTokens ?? 8192,
       temperature: req?.llmTemperature,

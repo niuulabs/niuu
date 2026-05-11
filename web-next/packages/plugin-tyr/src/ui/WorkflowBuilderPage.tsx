@@ -69,9 +69,12 @@ export function WorkflowBuilderPage() {
     .sort((left, right) => left.label.localeCompare(right.label));
 
   function handleNew() {
-    createMutation.mutate(undefined, {
-      onSuccess: (newWf) => setActiveWorkflow(newWf),
-    });
+    createMutation.mutate(
+      {},
+      {
+        onSuccess: (newWf) => setActiveWorkflow(newWf),
+      },
+    );
   }
 
   function handleDelete(id: string) {

@@ -206,6 +206,7 @@ describe('buildVolundrHttpAdapter', () => {
         description: 'Anthropic Claude agent',
         labels: ['anthropic'],
         defaultModel: 'sonnet-primary',
+        compatibleProviders: [],
       },
     ]);
   });

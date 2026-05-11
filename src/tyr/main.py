@@ -517,6 +517,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     default_model=settings.dispatch.default_model,
                     default_session_definition=settings.dispatch.default_session_definition,
                     dispatch_prompt_template=settings.dispatch.dispatch_prompt_template,
+                    session_definitions=settings.session_definitions,
+                    configured_models=list(settings.ai_models),
                     live_flock=settings.dispatch.flock,
                 ),
                 sleipnir_publisher=sleipnir_bus,

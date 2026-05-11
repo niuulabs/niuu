@@ -257,6 +257,7 @@ type ApiModelInfo = {
   color: string;
   cost_per_million_tokens?: number | null;
   vram_required?: string | null;
+  session_definition?: string | null;
 };
 
 type SessionDefinitionPayload = {
@@ -267,6 +268,8 @@ type SessionDefinitionPayload = {
   labels: string[];
   default_model?: string;
   defaultModel?: string;
+  compatible_providers?: string[];
+  compatibleProviders?: string[];
 };
 
 function normalizeSessionDefinition(payload: SessionDefinitionPayload): SessionDefinition {
@@ -276,6 +279,7 @@ function normalizeSessionDefinition(payload: SessionDefinitionPayload): SessionD
     description: payload.description,
     labels: payload.labels,
     defaultModel: payload.defaultModel ?? payload.default_model ?? '',
+    compatibleProviders: payload.compatibleProviders ?? payload.compatible_providers ?? [],
   };
 }
 
@@ -533,6 +537,7 @@ function normalizeModel(payload: ApiModelInfo): VolundrModel {
     cost:
       payload.cost_per_million_tokens != null ? `$${payload.cost_per_million_tokens}/M` : undefined,
     vram: payload.vram_required ?? undefined,
+    sessionDefinition: payload.session_definition ?? undefined,
   };
 }
 

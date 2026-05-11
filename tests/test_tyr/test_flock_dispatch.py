@@ -31,6 +31,7 @@ from tyr.domain.services.dispatch_service import (
     build_flock_prompt,
 )
 from tyr.ports.volundr import SpawnRequest
+from volundr.config import AIModelConfig, _default_session_definitions
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,6 +83,7 @@ def _make_flock_config(**overrides) -> DispatchConfig:
         flock_mimir_hosted_url="https://mimir.example.com",
         flock_mimir_registry_path="~/.ravn/mimir/.mimir-registry.json",
         flock_sleipnir_publish_urls=["nats://sleipnir.example.com"],
+        session_definitions=_default_session_definitions(),
     )
     defaults.update(overrides)
     return DispatchConfig(**defaults)
@@ -357,6 +359,89 @@ class TestBuildSpawnRequestFlockEnabled:
             "security-auditor",
         ]
         assert "security-auditor" in req.workload_config["initiative_context"]
+
+    def test_workflow_snapshot_can_mix_runtime_providers_per_stage(self) -> None:
+        config = _make_flock_config(
+            session_definitions=_default_session_definitions(),
+            configured_models=[
+                AIModelConfig(
+                    id="claude-sonnet-4-6",
+                    name="Claude Sonnet 4.6",
+                    provider="anthropic",
+                ),
+                AIModelConfig(
+                    id="gpt-5.5",
+                    name="GPT-5.5",
+                    provider="openai",
+                ),
+            ],
+        )
+        saga = _make_saga()
+        issue = _make_issue()
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo-a")
+        workflow_snapshot = {
+            "workflow_id": str(uuid4()),
+            "name": "Mixed Runtime Raid",
+            "version": "1.0.0",
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "stage-coder",
+                        "kind": "stage",
+                        "stageMembers": [
+                            {
+                                "personaId": "coder",
+                                "model": "claude-sonnet-4-6",
+                                "budget": 40,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "stage-reviewer",
+                        "kind": "stage",
+                        "stageMembers": [
+                            {
+                                "personaId": "reviewer",
+                                "model": "gpt-5.5",
+                                "budget": 25,
+                            }
+                        ],
+                    },
+                ]
+            },
+        }
+
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        req = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=issue,
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            workflow_snapshot=workflow_snapshot,
+        )
+
+        assert req.definition is None
+        personas = req.workload_config["personas"]
+        assert [persona["name"] for persona in personas] == ["coder", "reviewer"]
+        assert personas[0]["llm"]["model"] == "claude-sonnet-4-6"
+        assert personas[0]["executor"] == {
+            "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+            "kwargs": {
+                "transport_adapter": (
+                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+                )
+            },
+        }
+        assert personas[1]["llm"]["model"] == "gpt-5.5"
+        assert personas[1]["executor"] == {
+            "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+            "kwargs": {"transport_adapter": "skuld.transports.codex_ws.CodexWebSocketTransport"},
+        }
 
     def test_workload_config_resolves_registry_backed_mimir_resources(self, tmp_path: Path) -> None:
         registry_path = tmp_path / ".mimir-registry.json"

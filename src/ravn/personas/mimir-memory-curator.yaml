@@ -71,11 +71,6 @@ allowed_tools: [mimir_query, mimir_search, mimir_read_source, mimir_write]
 forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web]
 permission_mode: workspace-write
 
-executor:
-  adapter: ravn.adapters.executors.cli.CliTransportExecutor
-  kwargs:
-    transport_adapter: skuld.transports.persistent_subprocess.PersistentSubprocessTransport
-
 llm:
   thinking_enabled: false
 

@@ -124,15 +124,7 @@ def _make_payload(name: str) -> dict:
         "allowed_tools": ["read", "write"],
         "forbidden_tools": [],
         "permission_mode": "default",
-        "executor": {
-            "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-            "kwargs": {
-                "transport_adapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
-                "transport_kwargs": {"model": ""},
-            },
-        },
         "iteration_budget": 12,
-        "llm_primary_alias": "claude-sonnet-4-6",
         "llm_thinking_enabled": True,
         "llm_max_tokens": 8192,
         "produces_event_type": "code.changed",
@@ -158,7 +150,6 @@ class TestRavnPersonaRoutes:
         created = create_resp.json()
         assert created["name"] == "custom-agent"
         assert created["role"] == "build"
-        assert created["executor"]["adapter"] == "ravn.adapters.executors.cli.CliTransportExecutor"
         assert created["mimir_write_routing"] == "local"
         assert created["consumes"]["events"][0]["name"] == "code.requested"
         assert created["consumes"]["schema_def"] == {

@@ -27,7 +27,6 @@ const KIND_ICON: Record<WorkflowIssue['kind'], string> = {
   confidence_underset: '?',
   missing_persona: '👤',
   missing_model: '◇',
-  mixed_model_provider: '⚑',
   persona_model_conflict: '⇄',
   no_producer: '←',
   no_consumer: '→',

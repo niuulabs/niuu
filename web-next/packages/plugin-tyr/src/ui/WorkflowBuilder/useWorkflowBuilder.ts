@@ -72,7 +72,9 @@ export interface WorkflowBuilderActions {
   ): void;
   updateResourceBinding(id: string, patch: Partial<WorkflowResourceBinding>): void;
   removeResourceBinding(id: string): void;
-  updateWorkflowMeta(patch: Partial<Pick<Workflow, 'name' | 'description' | 'version'>>): void;
+  updateWorkflowMeta(
+    patch: Partial<Pick<Workflow, 'name' | 'description' | 'version'>>,
+  ): void;
   setWorkflow(workflow: Workflow): void;
 }
 
@@ -237,6 +239,10 @@ function normalizeWorkflowWithStageDefaults(workflow: Workflow, defaultModelId =
   });
 }
 
+function defaultStageModelIdForWorkflow(models: WorkflowStageModelOption[]): string {
+  return models[0]?.id ?? '';
+}
+
 function defaultInputLabelForNode(node: WorkflowNode): string | null {
   switch (node.kind) {
     case 'end':
@@ -390,7 +396,7 @@ export function useWorkflowBuilder(
   personas: PersonaEntry[] = [],
   models: WorkflowStageModelOption[] = [],
 ): WorkflowBuilderState & WorkflowBuilderActions {
-  const defaultStageModelId = models[0]?.id ?? '';
+  const defaultStageModelId = defaultStageModelIdForWorkflow(models);
   const [workflow, setWorkflowState] = useState<Workflow>(() =>
     normalizeWorkflowWithStageDefaults(initial, defaultStageModelId),
   );
@@ -457,6 +463,7 @@ export function useWorkflowBuilder(
   const addStageWithPersona = useCallback(
     (personaId: string, model = defaultStageModelId, position?: { x: number; y: number }) => {
       setWorkflowState((prev) => {
+        const preferredModelId = defaultStageModelIdForWorkflow(models);
         const pos = position ?? nextPosition(prev);
         const node = makeNewNode('stage', pos);
         const stage =
@@ -465,10 +472,16 @@ export function useWorkflowBuilder(
                 {
                   ...node,
                   stageMembers: [
-                    { personaId, model, budget: 40, consumesEventTypes: [], eventFilters: {} },
+                    {
+                      personaId,
+                      model: model || preferredModelId,
+                      budget: 40,
+                      consumesEventTypes: [],
+                      eventFilters: {},
+                    },
                   ],
                 },
-                defaultStageModelId,
+                preferredModelId,
               )
             : node;
         const autoEdges =
@@ -479,11 +492,11 @@ export function useWorkflowBuilder(
             nodes: [...prev.nodes, stage],
             edges: [...prev.edges, ...autoEdges],
           },
-          defaultStageModelId,
+          preferredModelId,
         );
       });
     },
-    [defaultStageModelId, personas],
+    [defaultStageModelId, models, personas],
   );
 
   const deleteNode = useCallback(
@@ -606,13 +619,14 @@ export function useWorkflowBuilder(
 
   const addPersonaToStage = useCallback(
     (nodeId: string, personaId: string, model = defaultStageModelId, budget = 40) => {
-      setWorkflowState((prev) =>
-        normalizeWorkflowWithStageDefaults(
+      setWorkflowState((prev) => {
+        const preferredModelId = defaultStageModelIdForWorkflow(models);
+        return normalizeWorkflowWithStageDefaults(
           {
             ...prev,
             nodes: prev.nodes.map((n) => {
               if (n.id !== nodeId || n.kind !== 'stage') return n;
-              const normalized = syncStagePersonaIds(n, defaultStageModelId);
+              const normalized = syncStagePersonaIds(n, preferredModelId);
               const stageMembers = normalized.stageMembers ?? [];
               if (stageMembers.some((member) => member.personaId === personaId)) return normalized;
               return syncStagePersonaIds(
@@ -620,18 +634,24 @@ export function useWorkflowBuilder(
                   ...normalized,
                   stageMembers: [
                     ...stageMembers,
-                    { personaId, model, budget, consumesEventTypes: [], eventFilters: {} },
+                    {
+                      personaId,
+                      model: model || preferredModelId,
+                      budget,
+                      consumesEventTypes: [],
+                      eventFilters: {},
+                    },
                   ],
                 },
-                defaultStageModelId,
+                preferredModelId,
               );
             }),
           },
-          defaultStageModelId,
-        ),
-      );
+          preferredModelId,
+        );
+      });
     },
-    [defaultStageModelId],
+    [defaultStageModelId, models],
   );
 
   const replacePersonaInStage = useCallback(
@@ -847,10 +867,17 @@ export function useWorkflowBuilder(
   }, []);
 
   const updateWorkflowMeta = useCallback(
-    (patch: Partial<Pick<Workflow, 'name' | 'description' | 'version'>>) => {
-      setWorkflowState((prev) => normalizeWorkflowGraph({ ...prev, ...patch }));
+    (
+      patch: Partial<Pick<Workflow, 'name' | 'description' | 'version'>>,
+    ) => {
+      setWorkflowState((prev) =>
+        normalizeWorkflowWithStageDefaults(
+          { ...prev, ...patch },
+          defaultStageModelIdForWorkflow(models),
+        ),
+      );
     },
-    [],
+    [models],
   );
 
   return {

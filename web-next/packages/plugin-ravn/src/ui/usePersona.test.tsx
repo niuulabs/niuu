@@ -89,7 +89,6 @@ describe('useUpdatePersona', () => {
       forbiddenTools: [],
       permissionMode: 'default',
       iterationBudget: 40,
-      llmPrimaryAlias: 'claude-opus-4-6',
       llmThinkingEnabled: true,
       llmMaxTokens: 16384,
       producesEventType: 'code.changed',
@@ -131,14 +130,7 @@ describe('useCreatePersona', () => {
       allowedTools: [],
       forbiddenTools: [],
       permissionMode: 'default',
-      executor: {
-        adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
-        kwargs: {
-          transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-        },
-      },
       iterationBudget: 20,
-      llmPrimaryAlias: 'claude-sonnet-4-6',
       llmThinkingEnabled: false,
       llmMaxTokens: 8192,
       producesEventType: '',

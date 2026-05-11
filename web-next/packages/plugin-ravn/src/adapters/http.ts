@@ -32,7 +32,6 @@ import type { Message, MessageKind } from '../domain/message';
 // ---------------------------------------------------------------------------
 
 interface RawPersonaLLM {
-  primary_alias: string;
   thinking_enabled: boolean;
   max_tokens: number;
 }
@@ -58,11 +57,6 @@ interface RawPersonaFanIn {
   params: Record<string, unknown>;
 }
 
-interface RawPersonaExecutor {
-  adapter: string;
-  kwargs?: Record<string, unknown>;
-}
-
 interface RawPersonaSummary {
   name: string;
   role: string;
@@ -82,7 +76,6 @@ interface RawPersonaDetail extends RawPersonaSummary {
   description: string;
   system_prompt_template: string;
   forbidden_tools: string[];
-  executor?: RawPersonaExecutor;
   llm: RawPersonaLLM & { temperature?: number };
   produces: RawPersonaProduces;
   consumes: RawPersonaConsumes;
@@ -119,14 +112,7 @@ function toDetail(raw: RawPersonaDetail): PersonaDetail {
     description: raw.description,
     systemPromptTemplate: raw.system_prompt_template,
     forbiddenTools: raw.forbidden_tools,
-    executor: raw.executor
-      ? {
-          adapter: raw.executor.adapter,
-          kwargs: raw.executor.kwargs ?? {},
-        }
-      : undefined,
     llm: {
-      primaryAlias: raw.llm.primary_alias,
       thinkingEnabled: raw.llm.thinking_enabled,
       maxTokens: raw.llm.max_tokens,
       temperature: raw.llm.temperature,
@@ -165,14 +151,7 @@ function toRequestBody(req: PersonaCreateRequest): Record<string, unknown> {
     allowed_tools: req.allowedTools,
     forbidden_tools: req.forbiddenTools,
     permission_mode: req.permissionMode,
-    executor: req.executor
-      ? {
-          adapter: req.executor.adapter,
-          kwargs: req.executor.kwargs,
-        }
-      : null,
     iteration_budget: req.iterationBudget,
-    llm_primary_alias: req.llmPrimaryAlias,
     llm_thinking_enabled: req.llmThinkingEnabled,
     llm_max_tokens: req.llmMaxTokens,
     llm_temperature: req.llmTemperature,

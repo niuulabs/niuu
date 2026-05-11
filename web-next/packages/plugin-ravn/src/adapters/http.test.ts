@@ -35,14 +35,7 @@ const rawDetail = {
   description: 'Full coding agent description',
   system_prompt_template: 'You are a coder.',
   forbidden_tools: [],
-  executor: {
-    adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
-    kwargs: {
-      transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-      transport_kwargs: { model: '' },
-    },
-  },
-  llm: { primary_alias: 'claude-sonnet-4-6', thinking_enabled: true, max_tokens: 8192 },
+  llm: { thinking_enabled: true, max_tokens: 8192 },
   produces: { event_type: 'code.changed', schema_def: { file: 'string' } },
   consumes: { events: [{ name: 'code.requested' }], schema_def: { topic: 'string' } },
   fan_in: { strategy: 'merge', params: {} },
@@ -136,14 +129,7 @@ describe('getPersona', () => {
       name: 'coder',
       systemPromptTemplate: 'You are a coder.',
       forbiddenTools: [],
-      executor: {
-        adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
-        kwargs: {
-          transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-          transport_kwargs: { model: '' },
-        },
-      },
-      llm: { primaryAlias: 'claude-sonnet-4-6', thinkingEnabled: true, maxTokens: 8192 },
+      llm: { thinkingEnabled: true, maxTokens: 8192 },
       produces: { eventType: 'code.changed', schemaDef: { file: 'string' } },
       consumes: { events: [{ name: 'code.requested' }], schemaDef: { topic: 'string' } },
       fanIn: { strategy: 'merge', params: {} },
@@ -183,15 +169,7 @@ describe('createPersona', () => {
     allowedTools: ['read'],
     forbiddenTools: [],
     permissionMode: 'default',
-    executor: {
-      adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
-      kwargs: {
-        transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-        transport_kwargs: { model: '' },
-      },
-    },
     iterationBudget: 10,
-    llmPrimaryAlias: 'claude-sonnet-4-6',
     llmThinkingEnabled: false,
     llmMaxTokens: 8192,
     producesEventType: '',
@@ -218,15 +196,7 @@ describe('createPersona', () => {
       system_prompt_template: 'You are helpful.',
       allowed_tools: ['read'],
       permission_mode: 'default',
-      executor: {
-        adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
-        kwargs: {
-          transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-          transport_kwargs: { model: '' },
-        },
-      },
       iteration_budget: 10,
-      llm_primary_alias: 'claude-sonnet-4-6',
       llm_thinking_enabled: false,
       llm_max_tokens: 8192,
       produces_schema: {},
@@ -240,7 +210,7 @@ describe('createPersona', () => {
     client.post.mockResolvedValue(rawDetail);
     const result = await buildRavnPersonaAdapter(client).createPersona(req);
     expect(result.systemPromptTemplate).toBe('You are a coder.');
-    expect(result.llm.primaryAlias).toBe('claude-sonnet-4-6');
+    expect(result.llm.thinkingEnabled).toBe(true);
   });
 });
 
@@ -260,14 +230,7 @@ describe('updatePersona', () => {
     allowedTools: [],
     forbiddenTools: [],
     permissionMode: 'default',
-    executor: {
-      adapter: 'ravn.adapters.executors.cli.CliTransportExecutor',
-      kwargs: {
-        transport_adapter: 'skuld.transports.codex_ws.CodexWebSocketTransport',
-      },
-    },
     iterationBudget: 0,
-    llmPrimaryAlias: 'claude-sonnet-4-6',
     llmThinkingEnabled: false,
     llmMaxTokens: 8192,
     producesEventType: '',

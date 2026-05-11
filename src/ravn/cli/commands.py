@@ -163,7 +163,12 @@ def _build_llm(settings: Settings) -> Any:
 
 
 def _build_executor(persona_config: Any | None = None) -> ExecutorPort:
-    """Build the persona-selected executor adapter."""
+    """Build the runtime-selected executor adapter.
+
+    Persona-level runtime overrides win so mixed-provider workflows can run
+    different transports in one flock. Session/workload transport settings are
+    used as the default when a persona does not override them.
+    """
     adapter_path = "ravn.adapters.executors.agent.AgentExecutor"
     kwargs: dict[str, Any] = {}
 
@@ -173,6 +178,11 @@ def _build_executor(persona_config: Any | None = None) -> ExecutorPort:
         raw_kwargs = getattr(executor_cfg, "kwargs", {})
         if isinstance(raw_kwargs, dict):
             kwargs = dict(raw_kwargs)
+    else:
+        runtime_transport_adapter = str(os.environ.get("SKULD__TRANSPORT_ADAPTER") or "").strip()
+        if runtime_transport_adapter:
+            adapter_path = "ravn.adapters.executors.cli.CliTransportExecutor"
+            kwargs = {"transport_adapter": runtime_transport_adapter}
 
     cls = _import_class(adapter_path)
     return cls(**kwargs)

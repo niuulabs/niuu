@@ -167,7 +167,10 @@ export function edgeToPath(edge: WorkflowEdge, nodes: Map<string, WorkflowNode>)
  * The output is deterministic — keys are in a fixed meaningful order.
  */
 export function workflowToYaml(
-  workflow: Pick<Workflow, 'id' | 'name' | 'nodes' | 'edges' | 'resourceBindings'>,
+  workflow: Pick<
+    Workflow,
+    'id' | 'name' | 'nodes' | 'edges' | 'resourceBindings'
+  >,
 ): string {
   const lines: string[] = [];
 

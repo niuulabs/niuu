@@ -333,8 +333,6 @@ export interface TyrPersonaSummary {
   hasOverride: boolean;
   producesEvent: string;
   consumesEvents: string[];
-  /** LLM model identifier (e.g. 'sonnet-4.5'). */
-  model?: string;
   /** Functional role — drives the avatar shape (plan, build, verify, …). */
   role?: string;
 }

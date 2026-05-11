@@ -56,14 +56,6 @@ function PersonaRow({ persona, selected, onSelect }: PersonaRowProps) {
       >
         budget {persona.iterationBudget}
       </span>
-      {persona.model && (
-        <span
-          className="niuu-text-xs niuu-px-1.5 niuu-py-0.5 niuu-rounded niuu-bg-bg-secondary niuu-text-text-secondary niuu-shrink-0"
-          data-testid="model-chip"
-        >
-          model · {persona.model}
-        </span>
-      )}
       {persona.isBuiltin && (
         <span className="niuu-text-xs niuu-text-text-muted niuu-shrink-0">builtin</span>
       )}

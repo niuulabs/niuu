@@ -15,7 +15,6 @@ const SEED_PERSONAS: TyrPersonaSummary[] = [
     hasOverride: false,
     producesEvent: 'code.changed',
     consumesEvents: [],
-    model: 'sonnet-4.5',
     role: 'build',
   },
   {
@@ -183,17 +182,6 @@ describe('PersonasSection', () => {
     expect(budgetChips).toHaveLength(2);
     expect(budgetChips[0]).toHaveTextContent('budget 40');
     expect(budgetChips[1]).toHaveTextContent('budget 10');
-  });
-
-  it('shows model chip only for personas with a model', async () => {
-    render(<PersonasSection />, {
-      wrapper: wrap({ 'ravn.personas': makeMockPersonaStore() }),
-    });
-    await waitFor(() => expect(screen.getByText('coder')).toBeInTheDocument());
-    const modelChips = screen.getAllByTestId('model-chip');
-    // Only "coder" has model set, custom-agent does not
-    expect(modelChips).toHaveLength(1);
-    expect(modelChips[0]).toHaveTextContent('model · sonnet-4.5');
   });
 
   it('shows Edit button for each persona', async () => {

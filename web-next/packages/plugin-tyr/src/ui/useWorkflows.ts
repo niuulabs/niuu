@@ -30,13 +30,14 @@ export function useWorkflow(id: string) {
 export function useCreateWorkflow() {
   const svc = useService<IWorkflowService>('tyr.workflows');
   const queryClient = useQueryClient();
-  return useMutation<Workflow, Error, void>({
-    mutationFn: (): Promise<Workflow> => {
+  return useMutation<Workflow, Error, Partial<Workflow> | undefined>({
+    mutationFn: (seed): Promise<Workflow> => {
       const newWf: Workflow = {
         id: randomId(),
         name: 'New Workflow',
         nodes: [],
         edges: [],
+        ...seed,
       };
       return svc.saveWorkflow(newWf);
     },

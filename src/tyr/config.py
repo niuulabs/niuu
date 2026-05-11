@@ -25,6 +25,7 @@ from pydantic_settings import (
 )
 
 from niuu.config import CorsConfig
+from volundr.config import SessionDefinitionConfig, _default_session_definitions
 
 
 # Config file search paths (in order of priority).
@@ -111,8 +112,14 @@ class AIModelConfig(BaseModel):
     provider: str = Field(
         default="",
         description=(
-            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google'). "
-            "Used to filter the model dropdown by the chosen session runtime."
+            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google')."
+        ),
+    )
+    session_definition: str | None = Field(
+        default=None,
+        description=(
+            "Optional session definition/runtime override for this model. When omitted, "
+            "the runtime is resolved from the provider default."
         ),
     )
 
@@ -1058,6 +1065,9 @@ class Settings(BaseSettings):
     cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
+    session_definitions: dict[str, SessionDefinitionConfig] = Field(
+        default_factory=_default_session_definitions
+    )
     ai_models: list[AIModelConfig] = Field(
         default_factory=lambda: [
             AIModelConfig(id="claude-opus-4-7", name="Opus 4.7", provider="anthropic"),

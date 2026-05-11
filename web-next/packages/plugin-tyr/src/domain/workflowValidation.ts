@@ -13,7 +13,6 @@ import { detectCycle } from './topologicalSort';
 import {
   stagePersonaIds,
   structuralWorkflowEdges,
-  workflowModelVendors,
   workflowPersonaModelConflicts,
   type WorkflowModelCatalogEntry,
 } from './workflowSemantics';
@@ -30,7 +29,6 @@ export type WorkflowIssueKind =
   | 'confidence_underset'
   | 'missing_persona'
   | 'missing_model'
-  | 'mixed_model_provider'
   | 'persona_model_conflict'
   | 'no_producer'
   | 'no_consumer';
@@ -66,7 +64,7 @@ export interface WorkflowIssue {
  */
 export function validateWorkflowFull(
   workflow: Workflow,
-  modelCatalog?: Record<string, WorkflowModelCatalogEntry>,
+  _modelCatalog?: Record<string, WorkflowModelCatalogEntry>,
 ): WorkflowIssue[] {
   const issues: WorkflowIssue[] = [];
   const { nodes, edges } = workflow;
@@ -167,16 +165,6 @@ export function validateWorkflowFull(
         severity: 'error',
       });
     }
-  }
-
-  const vendors = workflowModelVendors(workflow, modelCatalog);
-  if (vendors.size > 1) {
-    issues.push({
-      kind: 'mixed_model_provider',
-      nodeId: null,
-      message: 'Workflow stages mix multiple model providers; use one provider per workflow',
-      severity: 'error',
-    });
   }
 
   const personaModelConflicts = workflowPersonaModelConflicts(workflow);

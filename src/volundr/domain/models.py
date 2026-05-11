@@ -193,6 +193,7 @@ class Model:
     color: str
     cost_per_million_tokens: float | None = None
     vram_required: str | None = None
+    session_definition: str | None = None
 
 
 @dataclass(frozen=True)

@@ -232,7 +232,8 @@ function StageInspector({
   const outbound = workflow.edges.filter((edge) => edge.source === node.id);
   const nodeIssues = issues.filter((issue) => issue.nodeId === node.id);
   const stageMembers = normalizedStageMembers(node);
-  const defaultModelId = models[0]?.id ?? '';
+  const availableModels = models;
+  const defaultModelId = availableModels[0]?.id ?? '';
   const executionOptions = [
     { value: 'parallel' as const, label: 'parallel' },
     { value: 'sequential' as const, label: 'sequential' },
@@ -408,7 +409,7 @@ function StageInspector({
                       }
                     >
                       <option value="">Select a model…</option>
-                      {models.map((model) => (
+                      {availableModels.map((model) => (
                         <option key={model.id} value={model.id}>
                           {model.label}
                         </option>
@@ -503,7 +504,7 @@ function StageInspector({
                 onChange={(e) => setNewModelId(e.target.value)}
               >
                 <option value="">Select a model…</option>
-                {models.map((model) => (
+                {availableModels.map((model) => (
                   <option key={model.id} value={model.id}>
                     {model.label}
                   </option>
