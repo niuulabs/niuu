@@ -1497,12 +1497,7 @@ export function createMockWardenStore(): IWardenStore {
           state: current.runtime?.state === 'active' ? 'active' : 'idle',
         },
         supervisor: {
-          ...defaultSupervisor(
-            id,
-            true,
-            current.runtime?.state ?? 'idle',
-            current.deployment,
-          ),
+          ...defaultSupervisor(id, true, current.runtime?.state ?? 'idle', current.deployment),
           installed: true,
           lastInstallAt: new Date().toISOString(),
         },

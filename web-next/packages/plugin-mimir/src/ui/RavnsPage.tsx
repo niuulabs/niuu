@@ -46,10 +46,7 @@ interface PlacementField {
   value: string;
 }
 
-const OBSERVATION_PILL: Record<
-  'running' | 'idle' | 'missing' | 'degraded' | 'unknown',
-  string
-> = {
+const OBSERVATION_PILL: Record<'running' | 'idle' | 'missing' | 'degraded' | 'unknown', string> = {
   running: 'niuu-bg-bg-tertiary niuu-text-brand-200',
   idle: 'niuu-bg-bg-tertiary niuu-text-text-muted',
   missing: 'niuu-bg-critical-bg niuu-text-critical',
@@ -58,7 +55,12 @@ const OBSERVATION_PILL: Record<
 };
 
 function normalizeDeployment(value: string): DeploymentKind | 'unknown' {
-  if (value === 'launchd' || value === 'systemd' || value === 'k8s-apply' || value === 'k8s-gitops') {
+  if (
+    value === 'launchd' ||
+    value === 'systemd' ||
+    value === 'k8s-apply' ||
+    value === 'k8s-gitops'
+  ) {
     return value;
   }
   return 'unknown';
@@ -189,25 +191,34 @@ function observedPlacementFields(warden: RavnWardenSummary): PlacementField[] {
   switch (deployment) {
     case 'launchd':
       fields.push({ label: 'host', value: 'This Mac' });
-      if (supervisor?.serviceLabel) fields.push({ label: 'launch agent label', value: supervisor.serviceLabel });
-      if (supervisor?.serviceFile) fields.push({ label: 'launch agent file', value: supervisor.serviceFile });
-      if (supervisor?.configFile) fields.push({ label: 'runtime config', value: supervisor.configFile });
+      if (supervisor?.serviceLabel)
+        fields.push({ label: 'launch agent label', value: supervisor.serviceLabel });
+      if (supervisor?.serviceFile)
+        fields.push({ label: 'launch agent file', value: supervisor.serviceFile });
+      if (supervisor?.configFile)
+        fields.push({ label: 'runtime config', value: supervisor.configFile });
       break;
     case 'systemd':
       fields.push({ label: 'host', value: 'Linux user service' });
-      if (supervisor?.serviceLabel) fields.push({ label: 'unit label', value: supervisor.serviceLabel });
-      if (supervisor?.serviceFile) fields.push({ label: 'unit file', value: supervisor.serviceFile });
-      if (supervisor?.configFile) fields.push({ label: 'runtime config', value: supervisor.configFile });
+      if (supervisor?.serviceLabel)
+        fields.push({ label: 'unit label', value: supervisor.serviceLabel });
+      if (supervisor?.serviceFile)
+        fields.push({ label: 'unit file', value: supervisor.serviceFile });
+      if (supervisor?.configFile)
+        fields.push({ label: 'runtime config', value: supervisor.configFile });
       break;
     case 'k8s-apply':
       fields.push({
         label: 'namespace',
         value: String(warden.deploymentKwargs?.namespace ?? 'ravn'),
       });
-      if (supervisor?.serviceLabel) fields.push({ label: 'deployment resource', value: supervisor.serviceLabel });
+      if (supervisor?.serviceLabel)
+        fields.push({ label: 'deployment resource', value: supervisor.serviceLabel });
       fields.push({ label: 'desired scale', value: desiredReplicaLabel(warden) });
-      if (supervisor?.serviceFile) fields.push({ label: 'rendered bundle', value: supervisor.serviceFile });
-      if (supervisor?.configFile) fields.push({ label: 'config snapshot', value: supervisor.configFile });
+      if (supervisor?.serviceFile)
+        fields.push({ label: 'rendered bundle', value: supervisor.serviceFile });
+      if (supervisor?.configFile)
+        fields.push({ label: 'config snapshot', value: supervisor.configFile });
       if (warden.deploymentKwargs?.image) {
         fields.push({ label: 'image', value: String(warden.deploymentKwargs.image) });
       }
@@ -229,7 +240,10 @@ function observedPlacementFields(warden: RavnWardenSummary): PlacementField[] {
       }
       fields.push({ label: 'desired scale', value: desiredReplicaLabel(warden) });
       if (warden.deploymentKwargs?.manifests_subdir) {
-        fields.push({ label: 'manifest folder', value: String(warden.deploymentKwargs.manifests_subdir) });
+        fields.push({
+          label: 'manifest folder',
+          value: String(warden.deploymentKwargs.manifests_subdir),
+        });
       }
       if (supervisor?.configFile) {
         fields.push({ label: 'config snapshot', value: supervisor.configFile });
@@ -237,8 +251,10 @@ function observedPlacementFields(warden: RavnWardenSummary): PlacementField[] {
       break;
     }
     default:
-      if (supervisor?.serviceFile) fields.push({ label: 'service artifact', value: supervisor.serviceFile });
-      if (supervisor?.configFile) fields.push({ label: 'runtime config', value: supervisor.configFile });
+      if (supervisor?.serviceFile)
+        fields.push({ label: 'service artifact', value: supervisor.serviceFile });
+      if (supervisor?.configFile)
+        fields.push({ label: 'runtime config', value: supervisor.configFile });
       break;
   }
 
@@ -743,7 +759,9 @@ function RavnProfile({
         <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-text-sm">
           <div>
             <div className="niuu-text-text-muted">deployment</div>
-            <div className="niuu-font-mono niuu-text-text-primary">{deploymentLabel(warden.deployment)}</div>
+            <div className="niuu-font-mono niuu-text-text-primary">
+              {deploymentLabel(warden.deployment)}
+            </div>
           </div>
           <div>
             <div className="niuu-text-text-muted">persona</div>
@@ -815,7 +833,10 @@ function RavnProfile({
             </div>
           </div>
           {observation?.source && (
-            <div className="niuu-text-xs niuu-text-text-muted niuu-mb-2" data-testid="warden-observation-source">
+            <div
+              className="niuu-text-xs niuu-text-text-muted niuu-mb-2"
+              data-testid="warden-observation-source"
+            >
               source: {observation.source}
               {observation.checkedAt ? ` · checked ${formatTimestamp(observation.checkedAt)}` : ''}
             </div>
@@ -1071,7 +1092,8 @@ export function RavnsPage() {
             Wardens
           </h2>
           <p className="niuu-m-0 niuu-text-sm niuu-text-text-secondary">
-            Create, install, and start local or cluster-backed Ravn wardens from the Mímir control surface.
+            Create, install, and start local or cluster-backed Ravn wardens from the Mímir control
+            surface.
           </p>
         </div>
         <button

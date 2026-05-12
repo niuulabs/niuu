@@ -631,10 +631,7 @@ export function buildRavnWardenAdapter(client: ApiClient): IWardenStore {
       return toWarden(raw);
     },
     async uninstallWarden(id) {
-      const raw = await client.post<RawWarden>(
-        `/wardens/${encodeURIComponent(id)}/uninstall`,
-        {},
-      );
+      const raw = await client.post<RawWarden>(`/wardens/${encodeURIComponent(id)}/uninstall`, {});
       return toWarden(raw);
     },
   };

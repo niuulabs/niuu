@@ -96,7 +96,9 @@ function upsertWarden(
   const updated = existing.some((warden) => warden.id === next.id)
     ? existing.map((warden) => (warden.id === next.id ? next : warden))
     : [...existing, next];
-  return updated.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+  return updated.sort(
+    (left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id),
+  );
 }
 
 function syncWardenCaches(queryClient: QueryClient, next: RavnWardenSummary): void {

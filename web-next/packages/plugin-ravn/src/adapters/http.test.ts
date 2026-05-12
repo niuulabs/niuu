@@ -656,13 +656,14 @@ describe('buildRavnWardenAdapter', () => {
   it('subscribes to per-warden SSE updates', async () => {
     const originalFetch = global.fetch;
     global.fetch = vi.fn(async () =>
-      mockSseResponse([
-        `event: warden.observed\ndata: ${JSON.stringify(rawWarden)}\n\n`,
-      ]),
+      mockSseResponse([`event: warden.observed\ndata: ${JSON.stringify(rawWarden)}\n\n`]),
     );
     const listener = vi.fn();
 
-    const unsubscribe = buildRavnWardenAdapter(makeClient()).subscribeWarden(rawWarden.id, listener);
+    const unsubscribe = buildRavnWardenAdapter(makeClient()).subscribeWarden(
+      rawWarden.id,
+      listener,
+    );
     await new Promise((resolve) => setTimeout(resolve, 10));
     unsubscribe();
     global.fetch = originalFetch;

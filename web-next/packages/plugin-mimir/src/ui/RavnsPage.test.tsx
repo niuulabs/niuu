@@ -40,6 +40,36 @@ function createStaticWardenService(warden: RavnWardenSummary): IRavnWardenServic
   };
 }
 
+function createFailingWardenService(
+  warden: RavnWardenSummary,
+  failures: Partial<Record<'create' | 'install' | 'start' | 'stop' | 'uninstall', string>>,
+): IRavnWardenService {
+  const base = createStaticWardenService(warden);
+  return {
+    ...base,
+    async createWarden() {
+      if (failures.create) throw new Error(failures.create);
+      return warden;
+    },
+    async installWarden() {
+      if (failures.install) throw new Error(failures.install);
+      return warden;
+    },
+    async startWarden() {
+      if (failures.start) throw new Error(failures.start);
+      return warden;
+    },
+    async stopWarden() {
+      if (failures.stop) throw new Error(failures.stop);
+      return warden;
+    },
+    async uninstallWarden() {
+      if (failures.uninstall) throw new Error(failures.uninstall);
+      return warden;
+    },
+  };
+}
+
 describe('RavnsPage', () => {
   it('renders the page title', () => {
     wrap(<RavnsPage />);
@@ -286,6 +316,51 @@ describe('RavnsPage', () => {
     expect(screen.getByTestId('warden-deployment-config')).toHaveTextContent('ravn-dev');
   });
 
+  it('surfaces create failures and lets the operator close the form', async () => {
+    const failingCreate = createFailingWardenService(
+      {
+        id: 'warden-failing-create',
+        name: 'Failing Create',
+        persona: 'research-and-distill',
+        profile: '',
+        deployment: 'launchd',
+        deploymentKwargs: {},
+        mountNames: ['local'],
+        writeMount: 'local',
+        categoryScope: [],
+        features: {
+          wakefulnessEnabled: true,
+          dreamCycleEnabled: true,
+          threadQueueEnabled: true,
+          threadEnricherEnabled: true,
+          recapEnabled: true,
+          sourceTriggerEnabled: true,
+          stalenessTriggerEnabled: true,
+        },
+        autostart: false,
+        createdAt: '2026-05-11T00:00:00Z',
+        createdBy: 'test',
+        runtime: { state: 'offline', pagesTouched: 0, lastDream: null },
+        supervisor: { installed: false },
+      },
+      { create: 'create exploded' },
+    );
+
+    wrap(<RavnsPage />, undefined, {}, failingCreate);
+
+    fireEvent.click(screen.getByRole('button', { name: /create warden/i }));
+    fireEvent.change(screen.getByLabelText(/warden name/i), {
+      target: { value: 'Broken Warden' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^create warden$/i }));
+
+    await waitFor(() => expect(screen.getByText('create exploded')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    await waitFor(() => expect(screen.queryByLabelText(/warden name/i)).not.toBeInTheDocument());
+    expect(screen.queryByText('create exploded')).not.toBeInTheDocument();
+  });
+
   it('can install and start an offline warden from the profile view', async () => {
     wrap(<RavnsPage />);
     await waitFor(() => expect(screen.getAllByTestId('ravn-item').length).toBeGreaterThan(0));
@@ -325,6 +400,150 @@ describe('RavnsPage', () => {
     expect(screen.getByRole('button', { name: /set desired scale to 1/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /remove gitops manifest/i })).toBeInTheDocument();
     expect(screen.getByTestId('warden-observed-placement')).toHaveTextContent('/tmp/gitops');
+  });
+
+  it('renders systemd-specific placement and lifecycle labels', async () => {
+    const systemd = createStaticWardenService({
+      id: 'warden-systemd',
+      name: 'Systemd Warden',
+      persona: 'research-and-distill',
+      profile: '',
+      deployment: 'systemd',
+      deploymentKwargs: {},
+      mountNames: ['local'],
+      writeMount: 'local',
+      categoryScope: [],
+      features: {
+        wakefulnessEnabled: true,
+        dreamCycleEnabled: true,
+        threadQueueEnabled: true,
+        threadEnricherEnabled: true,
+        recapEnabled: true,
+        sourceTriggerEnabled: true,
+        stalenessTriggerEnabled: true,
+      },
+      autostart: true,
+      createdAt: '2026-05-11T00:00:00Z',
+      createdBy: 'test',
+      runtime: { state: 'active', pagesTouched: 1, lastDream: null },
+      supervisor: {
+        installed: true,
+        serviceLabel: 'dev.niuu.ravn.warden.warden-systemd',
+        serviceFile: '/tmp/warden-systemd.service',
+        configFile: '/tmp/warden-systemd.yaml',
+        startCommand: 'python -m ravn daemon --config /tmp/warden-systemd.yaml',
+        observation: { status: 'running', fields: [] },
+      },
+    });
+
+    wrap(<RavnsPage />, undefined, {}, systemd);
+    await waitFor(() => expect(screen.getByTestId('ravn-item')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ravn-item'));
+    await waitFor(() => screen.getByTestId('ravn-profile'));
+
+    expect(screen.getByText(/linux user service \(systemd --user\)/i)).toBeInTheDocument();
+    expect(screen.getByTestId('warden-observed-placement')).toHaveTextContent(
+      'dev.niuu.ravn.warden.warden-systemd',
+    );
+    expect(screen.getByRole('button', { name: /stop service/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /remove service/i })).toBeInTheDocument();
+  });
+
+  it('renders direct-apply kubernetes placement and scaling labels', async () => {
+    const k8sApply = createStaticWardenService({
+      id: 'warden-k8s-apply',
+      name: 'Apply Warden',
+      persona: 'research-and-distill',
+      profile: '',
+      deployment: 'k8s-apply',
+      deploymentKwargs: {
+        namespace: 'ravn-dev',
+        image: 'ghcr.io/niuulabs/ravn:latest',
+      },
+      mountNames: ['local'],
+      writeMount: 'local',
+      categoryScope: [],
+      features: {
+        wakefulnessEnabled: true,
+        dreamCycleEnabled: true,
+        threadQueueEnabled: true,
+        threadEnricherEnabled: true,
+        recapEnabled: true,
+        sourceTriggerEnabled: true,
+        stalenessTriggerEnabled: true,
+      },
+      autostart: false,
+      createdAt: '2026-05-11T00:00:00Z',
+      createdBy: 'test',
+      runtime: { state: 'idle', pagesTouched: 1, lastDream: null },
+      supervisor: {
+        installed: true,
+        serviceLabel: 'deployment/warden-k8s-apply',
+        serviceFile: '/tmp/warden-k8s-apply.yaml',
+        configFile: '/tmp/warden-k8s-apply-config.yaml',
+        observation: { status: 'idle', fields: [] },
+      },
+    });
+
+    wrap(<RavnsPage />, undefined, {}, k8sApply);
+    await waitFor(() => expect(screen.getByTestId('ravn-item')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ravn-item'));
+    await waitFor(() => screen.getByTestId('ravn-profile'));
+
+    expect(screen.getByText(/kubernetes \(direct apply\)/i)).toBeInTheDocument();
+    expect(screen.getByTestId('warden-observed-placement')).toHaveTextContent('ravn-dev');
+    expect(screen.getByTestId('warden-observed-placement')).toHaveTextContent('0 replicas');
+    expect(screen.getByRole('button', { name: /scale up/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /scale down/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /remove from cluster/i })).toBeInTheDocument();
+  });
+
+  it('falls back to generic deployment copy for unknown targets', async () => {
+    const unknown = createStaticWardenService({
+      id: 'warden-custom',
+      name: 'Custom Warden',
+      persona: 'research-and-distill',
+      profile: '',
+      deployment: 'custom-runtime',
+      deploymentKwargs: {},
+      mountNames: ['local'],
+      writeMount: 'local',
+      categoryScope: [],
+      features: {
+        wakefulnessEnabled: true,
+        dreamCycleEnabled: false,
+        threadQueueEnabled: true,
+        threadEnricherEnabled: false,
+        recapEnabled: true,
+        sourceTriggerEnabled: false,
+        stalenessTriggerEnabled: true,
+      },
+      autostart: false,
+      createdAt: '2026-05-11T00:00:00Z',
+      createdBy: 'test',
+      runtime: { state: 'offline', pagesTouched: 0, lastDream: null },
+      supervisor: {
+        installed: false,
+        serviceFile: '/tmp/custom-runtime.bundle',
+        configFile: '/tmp/custom-runtime.yaml',
+      },
+    });
+
+    wrap(<RavnsPage />, undefined, {}, unknown);
+    await waitFor(() => expect(screen.getByTestId('ravn-item')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ravn-item'));
+    await waitFor(() => screen.getByTestId('ravn-profile'));
+
+    expect(screen.getByText('custom-runtime')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /install prepares the deployment artifact for this target and lifecycle actions update its running state/i,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^install$/i })).toBeInTheDocument();
+    expect(screen.getByTestId('warden-observed-placement')).toHaveTextContent(
+      '/tmp/custom-runtime.bundle',
+    );
   });
 
   it('shows observed placement details for seeded GitOps wardens', async () => {
@@ -409,5 +628,133 @@ describe('RavnsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /remove service/i }));
     await waitFor(() => expect(screen.getByText(/not installed/i)).toBeInTheDocument());
     expect(screen.getByTestId('ravn-state')).toHaveTextContent('offline');
+  });
+
+  it('surfaces lifecycle action failures in the profile view', async () => {
+    const installFailure = createFailingWardenService(
+      {
+        id: 'warden-install-fail',
+        name: 'Install Fail',
+        persona: 'research-and-distill',
+        profile: '',
+        deployment: 'launchd',
+        deploymentKwargs: {},
+        mountNames: ['local'],
+        writeMount: 'local',
+        categoryScope: [],
+        features: {
+          wakefulnessEnabled: true,
+          dreamCycleEnabled: true,
+          threadQueueEnabled: true,
+          threadEnricherEnabled: true,
+          recapEnabled: true,
+          sourceTriggerEnabled: true,
+          stalenessTriggerEnabled: true,
+        },
+        autostart: false,
+        createdAt: '2026-05-11T00:00:00Z',
+        createdBy: 'test',
+        runtime: { state: 'offline', pagesTouched: 0, lastDream: null },
+        supervisor: { installed: false },
+      },
+      { install: 'install exploded' },
+    );
+
+    wrap(<RavnsPage />, undefined, {}, installFailure);
+    await waitFor(() => expect(screen.getByTestId('ravn-item')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ravn-item'));
+    await waitFor(() => screen.getByTestId('ravn-profile'));
+    fireEvent.click(screen.getByRole('button', { name: /install on this mac/i }));
+    await waitFor(() => expect(screen.getByText('install exploded')).toBeInTheDocument());
+  });
+
+  it('surfaces start failures for installed idle wardens', async () => {
+    const startFailure = createFailingWardenService(
+      {
+        id: 'warden-start-fail',
+        name: 'Start Fail',
+        persona: 'research-and-distill',
+        profile: '',
+        deployment: 'launchd',
+        deploymentKwargs: {},
+        mountNames: ['local'],
+        writeMount: 'local',
+        categoryScope: [],
+        features: {
+          wakefulnessEnabled: true,
+          dreamCycleEnabled: true,
+          threadQueueEnabled: true,
+          threadEnricherEnabled: true,
+          recapEnabled: true,
+          sourceTriggerEnabled: true,
+          stalenessTriggerEnabled: true,
+        },
+        autostart: false,
+        createdAt: '2026-05-11T00:00:00Z',
+        createdBy: 'test',
+        runtime: { state: 'idle', pagesTouched: 0, lastDream: null },
+        supervisor: {
+          installed: true,
+          serviceLabel: 'dev.niuu.ravn.warden.warden-start-fail',
+          serviceFile: '/tmp/warden-start-fail.plist',
+          configFile: '/tmp/warden-start-fail.yaml',
+        },
+      },
+      { start: 'start exploded' },
+    );
+
+    wrap(<RavnsPage />, undefined, {}, startFailure);
+    await waitFor(() => expect(screen.getByTestId('ravn-item')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ravn-item'));
+    await waitFor(() => screen.getByTestId('ravn-profile'));
+    fireEvent.click(screen.getByRole('button', { name: /start service/i }));
+    await waitFor(() => expect(screen.getByText('start exploded')).toBeInTheDocument());
+  });
+
+  it('surfaces stop and uninstall failures for active installed wardens', async () => {
+    const failingLifecycle = createFailingWardenService(
+      {
+        id: 'warden-stop-uninstall-fail',
+        name: 'Lifecycle Fail',
+        persona: 'research-and-distill',
+        profile: '',
+        deployment: 'launchd',
+        deploymentKwargs: {},
+        mountNames: ['local'],
+        writeMount: 'local',
+        categoryScope: [],
+        features: {
+          wakefulnessEnabled: true,
+          dreamCycleEnabled: true,
+          threadQueueEnabled: true,
+          threadEnricherEnabled: true,
+          recapEnabled: true,
+          sourceTriggerEnabled: true,
+          stalenessTriggerEnabled: true,
+        },
+        autostart: true,
+        createdAt: '2026-05-11T00:00:00Z',
+        createdBy: 'test',
+        runtime: { state: 'active', pagesTouched: 0, lastDream: null },
+        supervisor: {
+          installed: true,
+          serviceLabel: 'dev.niuu.ravn.warden.warden-stop-uninstall-fail',
+          serviceFile: '/tmp/warden-stop-uninstall-fail.plist',
+          configFile: '/tmp/warden-stop-uninstall-fail.yaml',
+        },
+      },
+      { stop: 'stop exploded', uninstall: 'uninstall exploded' },
+    );
+
+    wrap(<RavnsPage />, undefined, {}, failingLifecycle);
+    await waitFor(() => expect(screen.getByTestId('ravn-item')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ravn-item'));
+    await waitFor(() => screen.getByTestId('ravn-profile'));
+
+    fireEvent.click(screen.getByRole('button', { name: /stop service/i }));
+    await waitFor(() => expect(screen.getByText('stop exploded')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /remove service/i }));
+    await waitFor(() => expect(screen.getByText('uninstall exploded')).toBeInTheDocument());
   });
 });

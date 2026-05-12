@@ -241,12 +241,16 @@ async def test_warden_stream_broker_fans_out_updates():
     broker = WardenStreamBroker()
     warden = WardenSpec(id="research-warden", name="Research Warden")
     queue = broker.subscribe(warden.id)
+    second_queue = broker.subscribe(warden.id)
 
     await broker.publish("warden.started", warden)
     event = await asyncio.wait_for(queue.get(), timeout=0.1)
+    second_event = await asyncio.wait_for(second_queue.get(), timeout=0.1)
 
     assert event.event == "warden.started"
     assert event.warden.id == "research-warden"
+    assert second_event.event == "warden.started"
+    assert second_event.warden.id == "research-warden"
 
 
 def test_observe_warden_refreshes_backend_status(tmp_path):

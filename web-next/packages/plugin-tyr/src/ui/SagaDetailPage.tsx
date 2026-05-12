@@ -136,7 +136,10 @@ interface PendingFeedbackRequest {
   message: RaidSessionMessage;
 }
 
-function getPendingFeedbackRequest(raid: Raid, messages: RaidSessionMessage[]): PendingFeedbackRequest | null {
+function getPendingFeedbackRequest(
+  raid: Raid,
+  messages: RaidSessionMessage[],
+): PendingFeedbackRequest | null {
   const latestHelp = [...messages]
     .reverse()
     .find((message) => message.kind === 'help_request' && message.helpRequest);
@@ -245,13 +248,16 @@ function FeedbackRequestCard({ request }: { request: PendingFeedbackRequest }) {
             type="button"
             disabled={!draft.trim() || sendReply.isPending}
             onClick={() =>
-              sendReply.mutate({
-                raidId: request.raid.id,
-                content: draft.trim(),
-                targetPeerId: help.targetPeerId,
-              }, {
-                onSuccess: () => setDraft(''),
-              })
+              sendReply.mutate(
+                {
+                  raidId: request.raid.id,
+                  content: draft.trim(),
+                  targetPeerId: help.targetPeerId,
+                },
+                {
+                  onSuccess: () => setDraft(''),
+                },
+              )
             }
             className="niuu-rounded-md niuu-bg-brand niuu-px-3 niuu-py-2 niuu-text-sm niuu-font-medium niuu-text-bg-primary disabled:niuu-opacity-50"
           >
@@ -294,7 +300,9 @@ function SagaFeedbackPanel({ raids }: { raids: Raid[] }) {
           Human input requests
         </h2>
       </div>
-      {isLoading ? <div className="niuu-text-sm niuu-text-text-muted">Loading feedback requests…</div> : null}
+      {isLoading ? (
+        <div className="niuu-text-sm niuu-text-text-muted">Loading feedback requests…</div>
+      ) : null}
       {hasError ? (
         <div className="niuu-text-sm niuu-text-critical-fg">Failed to load feedback requests.</div>
       ) : null}

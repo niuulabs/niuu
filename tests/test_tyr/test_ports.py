@@ -72,6 +72,7 @@ class TestVolundrPort:
             "get_pr_status",
             "get_chronicle_summary",
             "send_message",
+            "send_directed_room_message",
             "stop_session",
             "list_integration_ids",
             "list_repos",

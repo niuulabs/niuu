@@ -4,11 +4,15 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from ravn.adapters.deployment import (
     KubernetesApplyWardenDeploymentAdapter,
     KubernetesGitOpsWardenDeploymentAdapter,
     LaunchdWardenDeploymentAdapter,
     SystemdUserWardenDeploymentAdapter,
+    _field,
+    _runtime_state_from_observation,
 )
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.warden import WardenSpec
@@ -50,6 +54,19 @@ def test_launchd_install_writes_files_and_registers_service(tmp_path: Path) -> N
     assert "load -w" in " ".join(run.call_args_list[1].args[0])
 
 
+def test_deployment_field_formats_none_bool_and_scalar_values() -> None:
+    assert _field("missing", None).value == ""
+    assert _field("enabled", True).value == "yes"
+    assert _field("disabled", False).value == "no"
+    assert _field("replicas", 3).value == "3"
+
+
+def test_runtime_state_from_observation_maps_expected_statuses() -> None:
+    assert _runtime_state_from_observation("running") == "active"
+    assert _runtime_state_from_observation("missing") == "offline"
+    assert _runtime_state_from_observation("degraded") == "idle"
+
+
 def test_launchd_start_raises_on_launchctl_failure(tmp_path: Path) -> None:
     adapter = LaunchdWardenDeploymentAdapter(
         launch_agents_dir=str(tmp_path / "LaunchAgents"),
@@ -75,6 +92,41 @@ def test_launchd_start_raises_on_launchctl_failure(tmp_path: Path) -> None:
             assert str(exc) == "boom"
         else:
             raise AssertionError("expected WardenDeploymentError")
+
+
+def test_launchd_start_updates_supervisor_from_observation(tmp_path: Path) -> None:
+    adapter = LaunchdWardenDeploymentAdapter(
+        launch_agents_dir=str(tmp_path / "LaunchAgents"),
+        launchctl_bin="launchctl",
+        user_id=501,
+    )
+    spec = WardenSpec(
+        id="research-warden",
+        name="Research Warden",
+        supervisor={
+            "installed": True,
+            "service_file": str(
+                tmp_path / "LaunchAgents" / "dev.niuu.ravn.warden.research-warden.plist"
+            ),
+            "config_file": str(tmp_path / "research-warden" / "config.yaml"),
+        },
+    )
+
+    with patch(
+        "subprocess.run",
+        side_effect=[
+            _completed(),
+            _completed(),
+            _completed(stdout="state = running\npid = 4321\n"),
+        ],
+    ):
+        result = adapter.start(spec, warden_dir=tmp_path / spec.id)
+
+    assert result.runtime_state == "active"
+    assert result.supervisor.installed is True
+    assert result.supervisor.service_label == "dev.niuu.ravn.warden.research-warden"
+    assert result.supervisor.start_command.startswith(local_python_executable())
+    assert result.supervisor.observation.status == "running"
 
 
 def test_launchd_stop_and_uninstall_remove_local_artifacts(tmp_path: Path) -> None:
@@ -136,6 +188,85 @@ def test_launchd_observe_reports_running_agent(tmp_path: Path) -> None:
 
     assert observed.supervisor.observation.status == "running"
     assert observed.supervisor.observation.source == "launchctl"
+
+
+def test_launchd_observe_reports_idle_agent(tmp_path: Path) -> None:
+    adapter = LaunchdWardenDeploymentAdapter(
+        launch_agents_dir=str(tmp_path / "LaunchAgents"),
+        launchctl_bin="launchctl",
+        user_id=501,
+    )
+    service_path = tmp_path / "LaunchAgents" / "dev.niuu.ravn.warden.research-warden.plist"
+    service_path.parent.mkdir(parents=True, exist_ok=True)
+    service_path.write_text("service", encoding="utf-8")
+    config_path = tmp_path / "research-warden" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("config", encoding="utf-8")
+    spec = WardenSpec(
+        id="research-warden",
+        name="Research Warden",
+        supervisor={
+            "installed": True,
+            "service_file": str(service_path),
+            "config_file": str(config_path),
+        },
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=_completed(stdout="state = waiting\n"),
+    ):
+        observed = adapter.observe(spec, warden_dir=tmp_path / spec.id)
+
+    assert observed.supervisor.observation.status == "idle"
+    assert observed.supervisor.observation.source == "launchctl"
+
+
+def test_launchd_observe_reports_degraded_when_artifact_exists_but_launchctl_unknown(
+    tmp_path: Path,
+) -> None:
+    adapter = LaunchdWardenDeploymentAdapter(
+        launch_agents_dir=str(tmp_path / "LaunchAgents"),
+        launchctl_bin="launchctl",
+        user_id=501,
+    )
+    service_path = tmp_path / "LaunchAgents" / "dev.niuu.ravn.warden.research-warden.plist"
+    service_path.parent.mkdir(parents=True, exist_ok=True)
+    service_path.write_text("service", encoding="utf-8")
+    spec = WardenSpec(
+        id="research-warden",
+        name="Research Warden",
+        supervisor={"installed": True, "service_file": str(service_path)},
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=_completed(stderr="spawn scheduled", returncode=113),
+    ):
+        observed = adapter.observe(spec, warden_dir=tmp_path / spec.id)
+
+    assert observed.supervisor.observation.status == "degraded"
+    assert observed.supervisor.observation.detail == "spawn scheduled"
+
+
+def test_launchd_observe_reports_missing_when_artifact_and_launchctl_state_are_absent(
+    tmp_path: Path,
+) -> None:
+    adapter = LaunchdWardenDeploymentAdapter(
+        launch_agents_dir=str(tmp_path / "LaunchAgents"),
+        launchctl_bin="launchctl",
+        user_id=501,
+    )
+    spec = WardenSpec(id="research-warden", name="Research Warden")
+
+    with patch(
+        "subprocess.run",
+        return_value=_completed(returncode=113),
+    ):
+        observed = adapter.observe(spec, warden_dir=tmp_path / spec.id)
+
+    assert observed.supervisor.observation.status == "missing"
+    assert "launch agent file is missing" in observed.supervisor.observation.detail
 
 
 def test_systemd_install_writes_files_and_enables_unit(tmp_path: Path) -> None:
@@ -497,3 +628,35 @@ def test_k8s_gitops_observe_reads_desired_scale_from_manifest(tmp_path: Path) ->
 
     assert observed.supervisor.observation.status == "running"
     assert observed.supervisor.observation.source == "gitops"
+
+
+def test_k8s_gitops_read_manifest_replicas_handles_non_deployment_documents(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "warden.yaml"
+    manifest_path.write_text(
+        (
+            "---\n"
+            "kind: ConfigMap\n"
+            "metadata:\n"
+            "  name: demo\n"
+            "---\n"
+            "kind: Deployment\n"
+            "spec:\n"
+            "  replicas: 2\n"
+        ),
+        encoding="utf-8",
+    )
+
+    assert KubernetesGitOpsWardenDeploymentAdapter._read_manifest_replicas(manifest_path) == 2
+
+
+def test_k8s_gitops_read_manifest_replicas_raises_for_invalid_yaml(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "broken.yaml"
+    manifest_path.write_text(":\n", encoding="utf-8")
+
+    with pytest.raises(
+        WardenDeploymentError,
+        match="failed to parse GitOps manifest",
+    ):
+        KubernetesGitOpsWardenDeploymentAdapter._read_manifest_replicas(manifest_path)

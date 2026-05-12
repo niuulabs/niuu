@@ -1012,12 +1012,12 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
             } else {
               setMessages(nextMessages);
             }
-              if (historyParticipants && historyParticipants.size > 0) {
-                setParticipants(historyParticipants);
-              }
-              if (historyMeshEvents && historyMeshEvents.length > 0) {
-                setMeshEvents(historyMeshEvents);
-              }
+            if (historyParticipants && historyParticipants.size > 0) {
+              setParticipants(historyParticipants);
+            }
+            if (historyMeshEvents && historyMeshEvents.length > 0) {
+              setMeshEvents(historyMeshEvents);
+            }
             if (url) {
               setHistoryLoadedForUrl(url);
             }
