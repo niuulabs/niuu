@@ -71,7 +71,7 @@
     "@codingame/monaco-vscode-configuration-service-override": "^28.4.1",
     "@codingame/monaco-vscode-cpp-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-csharp-default-extension": "^28.4.1",
-    "@codingame/monaco-vscode-css-default-extension": "^28.4.1",
+    "@codingame/monaco-vscode-css-default-extension": "^31.0.1",
     "@codingame/monaco-vscode-debug-service-override": "^28.4.1",
     "@codingame/monaco-vscode-dialogs-service-override": "^28.4.1",
     "@codingame/monaco-vscode-diff-default-extension": "^28.4.1",
