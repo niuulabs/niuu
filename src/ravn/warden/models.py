@@ -59,7 +59,7 @@ class WardenSupervisor(BaseModel):
     config_file: str = ""
     start_command: str = ""
     last_install_at: datetime | None = None
-    observation: "WardenObservation" = Field(default_factory=lambda: WardenObservation())
+    observation: WardenObservation = Field(default_factory=lambda: WardenObservation())
 
 
 class WardenObservedField(BaseModel):
