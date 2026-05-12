@@ -97,6 +97,8 @@ class LaunchdWardenDeploymentAdapter(WardenDeploymentPort):
             service_label=service_label(spec.id),
             service_file=str(service_path),
             config_file=str(config_path),
+            stdout_log=str(log_path(warden_dir)),
+            stderr_log=str(error_log_path(warden_dir)),
             start_command=local_start_command(
                 spec,
                 config_path=config_path,
@@ -110,16 +112,13 @@ class LaunchdWardenDeploymentAdapter(WardenDeploymentPort):
                 warden_dir=warden_dir,
             )
             supervisor = observed.supervisor
-            runtime_state = _runtime_state_from_observation(
-                observed.supervisor.observation.status
-            )
+            runtime_state = _runtime_state_from_observation(observed.supervisor.observation.status)
         return WardenDeploymentResult(supervisor=supervisor, runtime_state=runtime_state)
 
     def start(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
         python_executable = local_python_executable()
         config_path = Path(
-            spec.supervisor.config_file
-            or write_runtime_config(spec, warden_dir=warden_dir)
+            spec.supervisor.config_file or write_runtime_config(spec, warden_dir=warden_dir)
         )
         service_path = Path(spec.supervisor.service_file or self._service_file_path(spec.id))
         self._run(self._launchctl_bin, "unload", "-w", str(service_path), check=False)
@@ -130,6 +129,8 @@ class LaunchdWardenDeploymentAdapter(WardenDeploymentPort):
                 "service_label": spec.supervisor.service_label or service_label(spec.id),
                 "service_file": str(service_path),
                 "config_file": str(config_path),
+                "stdout_log": spec.supervisor.stdout_log or str(log_path(warden_dir)),
+                "stderr_log": spec.supervisor.stderr_log or str(error_log_path(warden_dir)),
                 "start_command": local_start_command(
                     spec,
                     config_path=config_path,
@@ -143,9 +144,7 @@ class LaunchdWardenDeploymentAdapter(WardenDeploymentPort):
         )
         return WardenDeploymentResult(
             supervisor=observed.supervisor,
-            runtime_state=_runtime_state_from_observation(
-                observed.supervisor.observation.status
-            ),
+            runtime_state=_runtime_state_from_observation(observed.supervisor.observation.status),
         )
 
     def stop(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
@@ -210,8 +209,7 @@ class LaunchdWardenDeploymentAdapter(WardenDeploymentPort):
             observation = _now_observation(
                 status="degraded",
                 detail=(
-                    output
-                    or "launch agent file exists but launchctl does not report it as loaded"
+                    output or "launch agent file exists but launchctl does not report it as loaded"
                 ),
                 source="launchctl",
                 fields=fields,
@@ -313,6 +311,8 @@ class SystemdUserWardenDeploymentAdapter(WardenDeploymentPort):
             service_label=service_label(spec.id),
             service_file=str(service_path),
             config_file=str(config_path),
+            stdout_log=str(log_path(warden_dir)),
+            stderr_log=str(error_log_path(warden_dir)),
             start_command=local_start_command(
                 spec,
                 config_path=config_path,
@@ -326,16 +326,13 @@ class SystemdUserWardenDeploymentAdapter(WardenDeploymentPort):
                 warden_dir=warden_dir,
             )
             supervisor = observed.supervisor
-            runtime_state = _runtime_state_from_observation(
-                observed.supervisor.observation.status
-            )
+            runtime_state = _runtime_state_from_observation(observed.supervisor.observation.status)
         return WardenDeploymentResult(supervisor=supervisor, runtime_state=runtime_state)
 
     def start(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
         python_executable = local_python_executable()
         config_path = Path(
-            spec.supervisor.config_file
-            or write_runtime_config(spec, warden_dir=warden_dir)
+            spec.supervisor.config_file or write_runtime_config(spec, warden_dir=warden_dir)
         )
         unit_name = self._unit_name(spec)
         self._run(self._systemctl_bin, "--user", "start", unit_name)
@@ -344,6 +341,8 @@ class SystemdUserWardenDeploymentAdapter(WardenDeploymentPort):
                 "installed": True,
                 "service_label": spec.supervisor.service_label or service_label(spec.id),
                 "config_file": str(config_path),
+                "stdout_log": spec.supervisor.stdout_log or str(log_path(warden_dir)),
+                "stderr_log": spec.supervisor.stderr_log or str(error_log_path(warden_dir)),
                 "start_command": local_start_command(
                     spec,
                     config_path=config_path,
@@ -357,9 +356,7 @@ class SystemdUserWardenDeploymentAdapter(WardenDeploymentPort):
         )
         return WardenDeploymentResult(
             supervisor=observed.supervisor,
-            runtime_state=_runtime_state_from_observation(
-                observed.supervisor.observation.status
-            ),
+            runtime_state=_runtime_state_from_observation(observed.supervisor.observation.status),
         )
 
     def stop(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
@@ -672,9 +669,7 @@ class KubernetesApplyWardenDeploymentAdapter(WardenDeploymentPort):
         if not observed.get("config_map_present", False):
             status = "degraded" if status != "missing" else status
             detail = (
-                "deployment exists but the config map is missing"
-                if status != "missing"
-                else detail
+                "deployment exists but the config map is missing" if status != "missing" else detail
             )
 
         observation = _now_observation(
@@ -865,11 +860,7 @@ class KubernetesApplyWardenDeploymentAdapter(WardenDeploymentPort):
                                     "--persona",
                                     spec.persona,
                                 ]
-                                + (
-                                    ["--profile", spec.profile]
-                                    if spec.profile
-                                    else []
-                                ),
+                                + (["--profile", spec.profile] if spec.profile else []),
                                 "env": [
                                     {"name": key, "value": value}
                                     for key, value in sorted(self._extra_env.items())

@@ -107,6 +107,8 @@ export type { SessionDetailPageProps, SessionTab } from './ui/SessionDetailPage'
 export { SessionsPage } from './ui/SessionsPage';
 export { ForgePage } from './ui/ForgePage';
 export { CredentialsPage } from './ui/CredentialsPage';
+export { StructuredLogViewer } from './ui/components/StructuredLogViewer';
+export { useSkuldChat } from './ui/hooks/useSkuldChat';
 
 // Atoms
 export { CliBadge } from './ui/atoms/CliBadge';
@@ -133,6 +135,8 @@ export type {
   VolundrFeatures,
   VolundrMessage,
   VolundrLog,
+  VolundrAggregatedLog,
+  VolundrLogParticipant,
   VolundrTemplate,
   VolundrPreset,
   SessionChronicle,

@@ -220,8 +220,7 @@ def warden_create(
         "launchd",
         "--deployment",
         help=(
-            "Deployment backend shorthand, for example launchd, systemd, "
-            "k8s-apply, or k8s-gitops."
+            "Deployment backend shorthand, for example launchd, systemd, k8s-apply, or k8s-gitops."
         ),
     ),
     deployment_arg: list[str] = typer.Option(
@@ -273,11 +272,7 @@ def warden_create(
     typer.echo(f"  write_mount: {created.mimir.write_mount or '-'}")
     typer.echo(
         "  mounts: "
-        + (
-            ", ".join(created.mimir.mount_names)
-            if created.mimir.mount_names
-            else "none"
-        )
+        + (", ".join(created.mimir.mount_names) if created.mimir.mount_names else "none")
     )
 
 
@@ -506,6 +501,20 @@ def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:
             }
         )
     return servers
+
+
+def _uses_cli_transport_runtime() -> bool:
+    """Return True when the daemon is configured to execute turns via CLI transport."""
+    return bool(str(os.environ.get("SKULD__TRANSPORT_ADAPTER") or "").strip())
+
+
+def _uses_cli_transport_executor(persona_config: Any | None = None) -> bool:
+    """Return True when the effective executor is the CLI transport wrapper."""
+    executor_cfg = getattr(persona_config, "executor", None)
+    adapter_path = str(getattr(executor_cfg, "adapter", "") or "").strip()
+    if adapter_path:
+        return adapter_path == "ravn.adapters.executors.cli.CliTransportExecutor"
+    return _uses_cli_transport_runtime()
 
 
 # ---------------------------------------------------------------------------
@@ -1420,7 +1429,8 @@ def _build_agent(
     permission_mode = settings.permission.mode
     if persona_config is not None and persona_config.permission_mode:
         permission_mode = persona_config.permission_mode
-    llm = _build_llm(settings)
+    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    llm = None if cli_transport_executor else _build_llm(settings)
     session = session or Session()
     base_channel: CliChannel = CliChannel()
     channel: ChannelPort = base_channel
@@ -1456,13 +1466,15 @@ def _build_agent(
         no_tools=no_tools,
         persona_config=persona_config,
     )
-    compressor = _build_compressor(settings, llm)
+    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
     prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
     checkpoint_port = _build_checkpoint(settings)
 
     extended_thinking = (
-        settings.llm.extended_thinking if settings.llm.extended_thinking.enabled else None
+        settings.llm.extended_thinking
+        if settings.llm.extended_thinking.enabled and not cli_transport_executor
+        else None
     )
 
     cp_cfg = settings.checkpoint
@@ -2111,14 +2123,17 @@ async def _run_gateway(
 
     # Shared resources (safe to reuse across sessions)
     workspace = _resolve_workspace(settings)
-    llm = _build_llm(settings)
+    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings, llm=llm)
-    compressor = _build_compressor(settings, llm)
+    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
     prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
 
     extended_thinking = (
-        settings.llm.extended_thinking if settings.llm.extended_thinking.enabled else None
+        settings.llm.extended_thinking
+        if settings.llm.extended_thinking.enabled and not cli_transport_executor
+        else None
     )
 
     # Start MCP servers (shared across sessions)
@@ -2334,14 +2349,17 @@ async def _run_daemon(
                 max_iterations = persona_config.iteration_budget
 
     workspace = _resolve_workspace(settings)
-    llm = _build_llm(settings)
+    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
-    compressor = _build_compressor(settings, llm)
+    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
     prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
 
     extended_thinking = (
-        settings.llm.extended_thinking if settings.llm.extended_thinking.enabled else None
+        settings.llm.extended_thinking
+        if settings.llm.extended_thinking.enabled and not cli_transport_executor
+        else None
     )
 
     mcp_manager: Any | None = None
@@ -2793,19 +2811,32 @@ def _wire_mimir_triggers(
 
     # Thread enricher (Sjón) — classifies new Mímir pages as threads.
     if settings.thread.enabled and llm is not None:
-        from ravn.adapters.triggers.thread_enricher import ThreadEnricher
+        if _uses_cli_transport_runtime():
+            logger.info(
+                "thread: enricher skipped for CLI-transport runtime; auxiliary LLM hooks still "
+                "need transport-backed support"
+            )
+        else:
+            from ravn.adapters.triggers.thread_enricher import ThreadEnricher
 
-        drive_loop.register_trigger(ThreadEnricher(mimir=mimir, llm=llm, config=settings.thread))
-        logger.info(
-            "thread: enricher registered (poll=%ds, confidence=%.2f, llm_alias=%s)",
-            settings.thread.enricher_poll_interval_seconds,
-            settings.thread.confidence_threshold,
-            settings.thread.enricher_llm_alias,
-        )
+            drive_loop.register_trigger(
+                ThreadEnricher(mimir=mimir, llm=llm, config=settings.thread)
+            )
+            logger.info(
+                "thread: enricher registered (poll=%ds, confidence=%.2f, llm_alias=%s)",
+                settings.thread.enricher_poll_interval_seconds,
+                settings.thread.confidence_threshold,
+                settings.thread.enricher_llm_alias,
+            )
 
     # Wakefulness trigger (NIU-565) — detects silence, reflects, emits intents.
     if settings.wakefulness.enabled and llm is not None:
-        if interaction_tracker is None:
+        if _uses_cli_transport_runtime():
+            logger.info(
+                "wakefulness: skipped for CLI-transport runtime; auxiliary LLM hooks still need "
+                "transport-backed support"
+            )
+        elif interaction_tracker is None:
             logger.warning("wakefulness: no interaction tracker provided — skipping")
         else:
             from ravn.adapters.triggers.wakefulness import WakefulnessTrigger
@@ -2878,8 +2909,12 @@ def _wire_cron(
     from ravn.adapters.tools.cron_tools import build_cron_tools
     from ravn.adapters.triggers.cron import make_cron_trigger
 
+    journal_dir = Path(initiative.queue_journal_path).expanduser().parent
     trigger, store = make_cron_trigger(
         jobs=cron_jobs,
+        jobs_path=journal_dir / "cron_jobs.json",
+        state_path=journal_dir / "cron_state.json",
+        lock_path=journal_dir / "cron.lock",
         tick_seconds=initiative.cron_tick_seconds,
     )
     drive_loop.register_trigger(trigger)
@@ -3090,11 +3125,7 @@ def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict
                 "label": str(node.get("label") or node_id),
                 "event_types": resolved_event_types,
                 "fan_in_strategy": fan_in_strategy,
-                **(
-                    {"event_filters": member_event_filters}
-                    if member_event_filters
-                    else {}
-                ),
+                **({"event_filters": member_event_filters} if member_event_filters else {}),
             }
         )
         aggregated_event_types.extend(resolved_event_types)
@@ -3103,9 +3134,7 @@ def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict
         return None
 
     default_strategy = (
-        str(consumer_groups[0]["fan_in_strategy"])
-        if len(consumer_groups) == 1
-        else "merge"
+        str(consumer_groups[0]["fan_in_strategy"]) if len(consumer_groups) == 1 else "merge"
     )
 
     return {
@@ -3225,11 +3254,14 @@ def _wire_cascade(
             str(getattr(current_task, "workflow_node_id", "") or "").strip() if current_task else ""
         )
         if current_node_id:
-            return _workflow_allowed_task_targets(
-                settings,
-                persona_config.name,
-                node_id=current_node_id,
-            ) or set()
+            return (
+                _workflow_allowed_task_targets(
+                    settings,
+                    persona_config.name,
+                    node_id=current_node_id,
+                )
+                or set()
+            )
         return _workflow_allowed_task_targets(settings, persona_config.name)
 
     cascade_tools = build_cascade_tools(
@@ -3538,9 +3570,7 @@ def _wire_cascade(
                     triggered_by=result.triggered_by,
                     output_mode=OutputMode.SILENT,
                     persona=(
-                        result.persona_name
-                        if result.persona_name != persona_config.name
-                        else None
+                        result.persona_name if result.persona_name != persona_config.name else None
                     ),
                     priority=5,
                     root_correlation_id=result.root_correlation_id,

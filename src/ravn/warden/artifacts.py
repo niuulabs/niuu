@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import plistlib
 import shlex
 import sys
@@ -9,6 +10,10 @@ from pathlib import Path
 
 import yaml
 
+from niuu.domain.model_runtime import (
+    session_definition_for_model,
+    transport_adapter_for_session_definition,
+)
 from ravn.warden.models import WardenSpec
 
 
@@ -38,6 +43,27 @@ def local_python_executable() -> str:
     if executable:
         return executable
     return "/usr/bin/python3"
+
+
+def supervisor_environment(spec: WardenSpec) -> dict[str, str]:
+    """Return the local supervisor environment for one warden."""
+    env: dict[str, str] = {}
+
+    for env_name in {"HOME", "PATH", "PYTHONPATH", "VIRTUAL_ENV"}:
+        value = str(os.environ.get(env_name, "")).strip()
+        if value:
+            env[env_name] = value
+
+    runtime_environment = _runtime_transport_environment(spec.model)
+    if not runtime_environment:
+        for env_name in _credential_env_names(spec.model):
+            value = str(os.environ.get(env_name, "")).strip()
+            if value:
+                env[env_name] = value
+
+    env["RAVN_LLM__MODEL"] = spec.model
+    env.update(runtime_environment)
+    return env
 
 
 def start_command(spec: WardenSpec, *, config_path: Path) -> str:
@@ -100,13 +126,24 @@ def runtime_config_payload(
     spec: WardenSpec,
     *,
     workspace_root: Path | None = None,
+    warden_dir: Path | None = None,
 ) -> dict:
     """Build the generated ravn daemon config for one persisted warden."""
-    write_mount = spec.mimir.write_mount or (
-        spec.mimir.mount_names[0] if spec.mimir.mount_names else "local"
+    read_mounts = spec.mimir.read_mount_names or spec.mimir.mount_names
+    write_mounts = spec.mimir.write_mount_names or (
+        [spec.mimir.write_mount] if spec.mimir.write_mount else []
     )
+    if not read_mounts and write_mounts:
+        read_mounts = list(write_mounts)
+    if not write_mounts and read_mounts:
+        write_mounts = [read_mounts[0]]
+    all_mounts = list(dict.fromkeys([*read_mounts, *write_mounts]))
+    state_root = (warden_dir or (Path.home() / ".ravn" / "wardens" / spec.id)).expanduser()
+    queue_journal_path = state_root / "queue.json"
+    daemon_state_dir = state_root / "state"
+
     instances = []
-    for index, mount_name in enumerate(spec.mimir.mount_names):
+    for index, mount_name in enumerate(all_mounts):
         instances.append(
             {
                 "name": mount_name,
@@ -116,14 +153,33 @@ def runtime_config_payload(
             }
         )
 
-    return {
+    mimir_mcp_servers = _mimir_mcp_servers(all_mounts)
+    payload = {
         "permission": {
             "mode": "workspace_write",
             "workspace_root": str((workspace_root or Path.cwd()).resolve()),
         },
+        "logging": {
+            "level": "info",
+            "format": "text",
+        },
+        "llm": {
+            "model": spec.model,
+        },
+        "mcp_servers": mimir_mcp_servers,
         "initiative": {
             "enabled": True,
             "default_persona": spec.persona,
+            "queue_journal_path": str(queue_journal_path),
+        },
+        "gateway": {
+            "channels": {
+                "http": {
+                    "enabled": spec.console.enabled,
+                    "host": spec.console.host,
+                    "port": spec.console.port,
+                }
+            }
         },
         "thread": {
             "enabled": spec.features.thread_queue_enabled,
@@ -136,24 +192,139 @@ def runtime_config_payload(
         },
         "dream_cycle": {
             "enabled": spec.features.dream_cycle_enabled,
-            "persona": "mimir-curator",
+            "persona": spec.persona,
+            "cron_expression": spec.schedules.dream_cycle_cron_expression,
+            "poll_interval_seconds": spec.schedules.dream_cycle_poll_interval_seconds,
+            "state_dir": str(daemon_state_dir),
         },
         "mimir": {
             "enabled": True,
             "instances": instances,
             "write_routing": {
-                "default": [write_mount],
+                "default": write_mounts or ["local"],
             },
             "source_trigger": {
                 "enabled": spec.features.source_trigger_enabled,
                 "persona": spec.persona,
+                "poll_interval_seconds": spec.schedules.source_trigger_poll_interval_seconds,
             },
             "staleness_trigger": {
                 "enabled": spec.features.staleness_trigger_enabled,
-                "persona": "mimir-curator",
+                "persona": spec.persona,
+                "schedule_hours": spec.schedules.staleness_trigger_schedule_hours,
             },
         },
     }
+    if not _runtime_transport_environment(spec.model):
+        payload["llm"]["provider"] = _llm_provider_config(spec.model)
+    return payload
+
+
+def _llm_provider_config(model: str) -> dict:
+    from niuu.domain.model_runtime import vendor_for_model
+
+    vendor = vendor_for_model(model)
+    if vendor == "openai":
+        return {
+            "adapter": "ravn.adapters.llm.openai.OpenAICompatibleAdapter",
+            "secret_kwargs_env": {
+                "api_key": "OPENAI_API_KEY",
+            },
+        }
+    if vendor == "anthropic":
+        return {
+            "adapter": "ravn.adapters.llm.anthropic.AnthropicAdapter",
+            "secret_kwargs_env": {
+                "api_key": "ANTHROPIC_API_KEY",
+            },
+        }
+    return {
+        "adapter": "ravn.adapters.llm.anthropic.AnthropicAdapter",
+        "secret_kwargs_env": {
+            "api_key": "ANTHROPIC_API_KEY",
+        },
+    }
+
+
+def _mimir_mcp_servers(mount_names: list[str]) -> list[dict[str, object]]:
+    python_executable = local_python_executable()
+    servers: list[dict[str, object]] = []
+    for mount_name in mount_names:
+        normalized = str(mount_name or "").strip()
+        if not normalized:
+            continue
+        servers.append(
+            {
+                "name": f"mimir-{normalized}",
+                "transport": "stdio",
+                "command": python_executable,
+                "args": [
+                    "-m",
+                    "mimir",
+                    "mcp",
+                    "--path",
+                    f"~/.ravn/mimir/{normalized}",
+                    "--name",
+                    normalized,
+                ],
+                "env": {},
+                "enabled": True,
+            }
+        )
+    return servers
+
+
+def _credential_env_names(model: str) -> list[str]:
+    provider_config = _llm_provider_config(model)
+    secret_names = list(provider_config.get("secret_kwargs_env", {}).values())
+    return [name for name in secret_names if isinstance(name, str) and name.strip()]
+
+
+def _runtime_transport_environment(model: str) -> dict[str, str]:
+    try:
+        from volundr.config import Settings as VolundrSettings
+
+        settings = VolundrSettings()
+    except Exception:
+        return {}
+
+    definition_key, error = session_definition_for_model(
+        model,
+        session_definitions=settings.session_definitions,
+        configured_models=settings.models,
+    )
+    if error or not definition_key:
+        return {}
+
+    definition = settings.session_definitions.get(definition_key)
+    if definition is None:
+        return {}
+
+    defaults = getattr(definition, "defaults", {}) or {}
+    if not isinstance(defaults, dict):
+        return {}
+
+    broker = defaults.get("broker", {})
+    if not isinstance(broker, dict):
+        broker = {}
+
+    env: dict[str, str] = {}
+    cli_type = str(broker.get("cliType") or "").strip()
+    if cli_type:
+        env["SKULD__CLI_TYPE"] = cli_type
+
+    transport = str(broker.get("transport") or "").strip()
+    if transport:
+        env["SKULD__TRANSPORT"] = transport
+
+    transport_adapter = transport_adapter_for_session_definition(
+        definition_key,
+        session_definitions=settings.session_definitions,
+    )
+    if transport_adapter:
+        env["SKULD__TRANSPORT_ADAPTER"] = transport_adapter
+
+    return env
 
 
 def write_runtime_config(
@@ -167,7 +338,7 @@ def write_runtime_config(
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         yaml.safe_dump(
-            runtime_config_payload(spec, workspace_root=workspace_root),
+            runtime_config_payload(spec, workspace_root=workspace_root, warden_dir=warden_dir),
             sort_keys=False,
             allow_unicode=False,
         ),
@@ -186,6 +357,7 @@ def render_launchd_plist(
     python_executable: str,
 ) -> str:
     """Render the launchd plist for one warden."""
+    environment = supervisor_environment(spec)
     payload = {
         "Label": service_label(spec.id),
         "ProgramArguments": local_daemon_program_arguments(
@@ -199,6 +371,8 @@ def render_launchd_plist(
         "StandardOutPath": str(stdout_path),
         "StandardErrorPath": str(stderr_path),
     }
+    if environment:
+        payload["EnvironmentVariables"] = environment
     return plistlib.dumps(payload).decode("utf-8")
 
 
@@ -215,6 +389,7 @@ def render_systemd_unit(
         config_path=config_path,
         python_executable=python_executable,
     )
+    environment = supervisor_environment(spec)
     return "\n".join(
         [
             "[Unit]",
@@ -224,6 +399,7 @@ def render_systemd_unit(
             "Type=simple",
             f"WorkingDirectory={working_directory}",
             f"ExecStart={exec_start}",
+            *[f"Environment={key}={value}" for key, value in sorted(environment.items())],
             "Restart=always",
             "",
             "[Install]",

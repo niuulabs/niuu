@@ -4,9 +4,11 @@ import { MimirSubnav } from './MimirSubnav';
 import { renderWithMimir } from '../testing/renderWithMimir';
 import type { PluginCtx } from '@niuulabs/plugin-sdk';
 
+const navigateMock = vi.fn();
+
 // Mock TanStack Router hooks — subnav uses useNavigate
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigateMock,
 }));
 
 const mockCtx: PluginCtx = {
@@ -95,9 +97,12 @@ describe('MimirSubnav', () => {
   });
 
   it('clicking a warden navigates', async () => {
-    wrap();
+    const setTweak = vi.fn();
+    wrap({ tweaks: {}, setTweak });
     await waitFor(() => expect(screen.getByText('ravn-fjolnir')).toBeInTheDocument());
     fireEvent.click(screen.getByText('ravn-fjolnir'));
+    expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', 'ravn-fjolnir');
+    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/ravns' });
   });
 
   it('can collapse the Mímir subnav', async () => {

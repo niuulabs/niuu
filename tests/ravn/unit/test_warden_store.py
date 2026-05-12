@@ -74,7 +74,7 @@ def test_create_persists_and_loads_spec(tmp_path):
         WardenSpec(
             id="",
             name="Research Warden",
-            persona="research-and-distill",
+            persona="mimir-warden",
             mimir={"mount_names": ["local", "shared"], "write_mount": "local"},
             created_by="test",
         )
@@ -115,7 +115,7 @@ def test_install_generates_config_and_service_artifacts(tmp_path):
         WardenSpec(
             id="",
             name="Research Warden",
-            persona="research-and-distill",
+            persona="mimir-warden",
             profile="infra-synthesis",
             mimir={
                 "mount_names": ["local", "shared"],
@@ -134,7 +134,7 @@ def test_install_generates_config_and_service_artifacts(tmp_path):
     assert installed.runtime.state == "idle"
     config_text = store.runtime_config_path(created.id).read_text(encoding="utf-8")
     assert "initiative:" in config_text
-    assert "research-and-distill" in config_text
+    assert "mimir-warden" in config_text
 
 
 def test_start_marks_installed_warden_active(tmp_path):
@@ -185,3 +185,64 @@ def test_observe_updates_supervisor_observation(tmp_path):
     assert observed.runtime.state == "idle"
     assert observed.supervisor.observation.status == "idle"
     assert observed.supervisor.observation.source == "fake"
+
+
+def test_get_enriches_last_dream_from_attached_mimir_log(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dream_log = tmp_path / ".ravn" / "mimir" / "local" / "wiki" / "log.md"
+    dream_log.parent.mkdir(parents=True, exist_ok=True)
+    state_file = (
+        tmp_path / ".ravn" / "wardens" / "research-warden" / "state" / "dream_cycle_state.json"
+    )
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text('{"last_dream_at":"2026-05-12T21:00:00+00:00"}', encoding="utf-8")
+    dream_log.write_text(
+        "# Mimir log\n\n"
+        "## [2026-05-12] dream | 2026-05-12T20:58:59+00:00\n"
+        "pages_updated=3 entities_created=2 lint_fixes=1 duration_ms=4000\n",
+        encoding="utf-8",
+    )
+    store = _store(tmp_path / "wardens")
+    created = store.create(
+        WardenSpec(
+            id="",
+            name="Research Warden",
+            mimir={"mount_names": ["local"], "write_mount": "local"},
+        )
+    )
+
+    loaded = store.get(created.id)
+
+    assert loaded is not None
+    assert loaded.runtime.last_dream is not None
+    assert loaded.runtime.last_dream.mounts == ["local"]
+    assert loaded.runtime.last_dream.pages_updated == 3
+    assert loaded.runtime.last_dream.entities_created == 2
+    assert loaded.runtime.last_dream.lint_fixes == 1
+    assert loaded.runtime.pages_touched == 3
+
+
+def test_get_does_not_assign_shared_dream_without_warden_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dream_log = tmp_path / ".ravn" / "mimir" / "local" / "wiki" / "log.md"
+    dream_log.parent.mkdir(parents=True, exist_ok=True)
+    dream_log.write_text(
+        "# Mimir log\n\n"
+        "## [2026-05-12] dream | 2026-05-12T20:58:59+00:00\n"
+        "pages_updated=3 entities_created=2 lint_fixes=1 duration_ms=4000\n",
+        encoding="utf-8",
+    )
+    store = _store(tmp_path / "wardens")
+    created = store.create(
+        WardenSpec(
+            id="",
+            name="Research Warden",
+            mimir={"mount_names": ["local"], "write_mount": "local"},
+        )
+    )
+
+    loaded = store.get(created.id)
+
+    assert loaded is not None
+    assert loaded.runtime.last_dream is None
+    assert loaded.runtime.pages_touched == 0

@@ -135,6 +135,14 @@ _BUILTIN_METADATA: dict[str, dict[str, str]] = {
         "summary": "Transforms ingested memory sources into Mimir wiki knowledge.",
         "description": "Transforms ingested memory sources into Mimir wiki knowledge.",
     },
+    "mimir-warden": {
+        "role": "knowledge",
+        "color": "var(--color-accent-purple)",
+        "summary": "Long-lived Mimir warden for curation, refresh, and dream-cycle maintenance.",
+        "description": (
+            "Long-lived Mimir warden for curation, refresh, and dream-cycle maintenance."
+        ),
+    },
     "office-hours": {
         "role": "report",
         "color": "var(--color-accent-emerald)",

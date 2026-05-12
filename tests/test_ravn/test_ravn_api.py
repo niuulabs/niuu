@@ -173,8 +173,7 @@ def test_create_warden_persists_spec(tmp_path):
         "/api/v1/ravn/wardens",
         json={
             "name": "Research Warden",
-            "persona": "research-and-distill",
-            "profile": "infra-synthesis",
+            "persona": "mimir-warden",
             "mount_names": ["local", "shared"],
             "write_mount": "local",
             "category_scope": ["infra"],
@@ -194,6 +193,7 @@ def test_create_warden_persists_spec(tmp_path):
     persisted = store.get("research-warden")
     assert persisted is not None
     assert persisted.name == "Research Warden"
+    assert persisted.persona == "mimir-warden"
 
 
 def test_create_warden_persists_deployment_kwargs(tmp_path):
@@ -390,3 +390,97 @@ def test_uninstall_warden_returns_502_when_deployer_fails(tmp_path):
     resp = client.post(f"/api/v1/ravn/wardens/{created.id}/uninstall")
     assert resp.status_code == 502
     assert resp.json()["detail"] == "uninstall failed"
+
+
+def test_get_warden_logs_includes_dream_summaries_from_mimir_log(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dream_log = tmp_path / ".ravn" / "mimir" / "local" / "wiki" / "log.md"
+    dream_log.parent.mkdir(parents=True, exist_ok=True)
+    state_file = (
+        tmp_path / ".ravn" / "wardens" / "research-warden" / "state" / "dream_cycle_state.json"
+    )
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text('{"last_dream_at":"2026-05-12T21:00:00+00:00"}', encoding="utf-8")
+    dream_log.write_text(
+        "# Mimir log\n\n"
+        "## [2026-05-12] dream | 2026-05-12T20:58:59+00:00\n"
+        "pages_updated=4 entities_created=1 lint_fixes=2\n",
+        encoding="utf-8",
+    )
+    store = _store(tmp_path / "wardens")
+    created = store.create(
+        WardenSpec(
+            id="",
+            name="Research Warden",
+            mimir={"mount_names": ["local"], "write_mount": "local"},
+        )
+    )
+    client = TestClient(create_app(warden_store=store))
+
+    resp = client.get(f"/api/v1/ravn/wardens/{created.id}/logs?stream=stdout")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert any(entry["logger"] == "mimir.dream" for entry in payload)
+    assert any("pages_updated=4" in entry["message"] for entry in payload)
+
+
+def test_get_warden_includes_last_dream_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dream_log = tmp_path / ".ravn" / "mimir" / "local" / "wiki" / "log.md"
+    dream_log.parent.mkdir(parents=True, exist_ok=True)
+    state_file = (
+        tmp_path / ".ravn" / "wardens" / "research-warden" / "state" / "dream_cycle_state.json"
+    )
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text('{"last_dream_at":"2026-05-12T21:00:00+00:00"}', encoding="utf-8")
+    dream_log.write_text(
+        "# Mimir log\n\n"
+        "## [2026-05-12] dream | 2026-05-12T20:58:59+00:00\n"
+        "pages_updated=2 entities_created=0 lint_fixes=1\n",
+        encoding="utf-8",
+    )
+    store = _store(tmp_path / "wardens")
+    created = store.create(
+        WardenSpec(
+            id="",
+            name="Research Warden",
+            mimir={"mount_names": ["local"], "write_mount": "local"},
+        )
+    )
+    client = TestClient(create_app(warden_store=store))
+
+    resp = client.get(f"/api/v1/ravn/wardens/{created.id}")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["runtime"]["pages_touched"] == 2
+    assert payload["runtime"]["last_dream"]["pages_updated"] == 2
+
+
+def test_get_warden_does_not_borrow_shared_dream_without_state_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dream_log = tmp_path / ".ravn" / "mimir" / "local" / "wiki" / "log.md"
+    dream_log.parent.mkdir(parents=True, exist_ok=True)
+    dream_log.write_text(
+        "# Mimir log\n\n"
+        "## [2026-05-12] dream | 2026-05-12T20:58:59+00:00\n"
+        "pages_updated=2 entities_created=0 lint_fixes=1\n",
+        encoding="utf-8",
+    )
+    store = _store(tmp_path / "wardens")
+    created = store.create(
+        WardenSpec(
+            id="",
+            name="Research Warden",
+            mimir={"mount_names": ["local"], "write_mount": "local"},
+        )
+    )
+    client = TestClient(create_app(warden_store=store))
+
+    resp = client.get(f"/api/v1/ravn/wardens/{created.id}")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["runtime"]["last_dream"] is None
+    assert payload["runtime"]["pages_touched"] == 0

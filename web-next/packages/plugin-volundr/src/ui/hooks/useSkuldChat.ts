@@ -503,7 +503,15 @@ export function parseEvent(raw: string): CliStreamEvent | null {
   }
 }
 
-export function useSkuldChat(url: string | null): UseSkuldChatResult {
+interface UseSkuldChatOptions {
+  historyMode?: 'session' | 'none';
+}
+
+export function useSkuldChat(
+  url: string | null,
+  options: UseSkuldChatOptions = {},
+): UseSkuldChatResult {
+  const { historyMode = 'session' } = options;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [participants, setParticipants] = useState<Map<string, RoomParticipant>>(new Map());
   const [meshEvents, setMeshEvents] = useState<MeshEvent[]>([]);
@@ -657,6 +665,10 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
 
   useEffect(() => {
     if (!url || historyLoaded) return;
+    if (historyMode === 'none') {
+      setHistoryLoadedForUrl(url);
+      return;
+    }
 
     const httpBase = wsUrlToHttpBase(url);
     if (!httpBase) {
@@ -721,7 +733,7 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
       cancelled = true;
       clearHistoryRetryTimer();
     };
-  }, [clearHistoryRetryTimer, ensureSingleParticipant, historyLoaded, url]);
+  }, [clearHistoryRetryTimer, ensureSingleParticipant, historyLoaded, historyMode, url]);
 
   useEffect(() => {
     if (!url) return;

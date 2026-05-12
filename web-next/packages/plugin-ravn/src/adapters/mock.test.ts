@@ -12,10 +12,11 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('createMockPersonaStore', () => {
-  it('returns the 16 seeded personas', async () => {
+  it('returns the seeded personas including the warden curator', async () => {
     const store = createMockPersonaStore();
     const result = await store.listPersonas();
-    expect(result.length).toBe(16);
+    expect(result.length).toBe(17);
+    expect(result.some((persona) => persona.name === 'mimir-warden')).toBe(true);
   });
 
   it('filters to builtin personas only', async () => {

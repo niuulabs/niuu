@@ -1,11 +1,14 @@
 import { render, type RenderResult } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PluginCtxProvider, ServicesProvider, type PluginCtx } from '@niuulabs/plugin-sdk';
+import { createMockVolundrService, type IVolundrService } from '@niuulabs/plugin-volundr';
+import { createMockPersonaStore } from '../../../plugin-ravn/src/adapters/mock';
 import { createMimirMockAdapter } from '../adapters/mock';
 import {
   toRavnWardenSummary,
   type IRavnWardenService,
   type RavnWardenSummary,
+  type WardenLogEntry,
 } from '../application/useRavns';
 import type { IMimirService } from '../ports';
 
@@ -34,6 +37,49 @@ function createStatefulWardenService(svc: IMimirService): IRavnWardenService {
     for (const listener of subscribers) listener(warden);
   }
 
+  function sampleLogEntries(
+    warden: RavnWardenSummary,
+    source: 'stdout' | 'stderr',
+  ): WardenLogEntry[] {
+    const now = new Date().toISOString();
+    if (source === 'stderr') {
+      return [
+        {
+          id: `${warden.id}-stderr-1`,
+          source,
+          lineNumber: 1,
+          raw: '',
+          timestamp: now,
+          level: 'WARN',
+          logger: 'ravn.daemon',
+          message: 'No stderr events recorded in the test daemon.',
+        },
+      ];
+    }
+    return [
+      {
+        id: `${warden.id}-stdout-1`,
+        source,
+        lineNumber: 1,
+        raw: '',
+        timestamp: now,
+        level: 'INFO',
+        logger: 'ravn.daemon',
+        message: 'ravn daemon started.',
+      },
+      {
+        id: `${warden.id}-stdout-2`,
+        source,
+        lineNumber: 2,
+        raw: '',
+        timestamp: now,
+        level: 'INFO',
+        logger: 'ravn.daemon',
+        message: 'Drive loop: running (max 3 concurrent tasks)',
+      },
+    ];
+  }
+
   return {
     async listWardens() {
       return [...(await ensureWardens())];
@@ -56,12 +102,15 @@ function createStatefulWardenService(svc: IMimirService): IRavnWardenService {
       const created: RavnWardenSummary = {
         id: nextId,
         name: req.name,
-        persona: req.persona ?? 'research-and-distill',
+        persona: req.persona ?? 'mimir-warden',
         profile: req.profile ?? '',
         deployment: req.deployment ?? 'launchd',
         deploymentKwargs: req.deploymentKwargs ?? {},
+        model: req.model ?? 'claude-sonnet-4-6',
         mountNames: req.mountNames ?? [],
         writeMount: req.writeMount ?? req.mountNames?.[0] ?? '',
+        readMountNames: req.readMountNames ?? req.mountNames ?? [],
+        writeMountNames: req.writeMountNames ?? (req.writeMount ? [req.writeMount] : []),
         categoryScope: req.categoryScope ?? [],
         features: {
           wakefulnessEnabled: true,
@@ -71,6 +120,19 @@ function createStatefulWardenService(svc: IMimirService): IRavnWardenService {
           recapEnabled: true,
           sourceTriggerEnabled: true,
           stalenessTriggerEnabled: true,
+        },
+        schedules: {
+          dreamCycleCronExpression: req.schedules?.dreamCycleCronExpression ?? '0 3 * * *',
+          dreamCyclePollIntervalSeconds: req.schedules?.dreamCyclePollIntervalSeconds ?? 60,
+          sourceTriggerPollIntervalSeconds: req.schedules?.sourceTriggerPollIntervalSeconds ?? 60,
+          stalenessTriggerScheduleHours: req.schedules?.stalenessTriggerScheduleHours ?? 6,
+        },
+        console: {
+          enabled: req.console?.enabled ?? true,
+          host: req.console?.host ?? '0.0.0.0',
+          port: req.console?.port ?? 8400,
+          publicHost: req.console?.publicHost ?? '',
+          authMode: req.console?.authMode ?? 'noop',
         },
         autostart: req.autostart ?? false,
         createdAt: new Date().toISOString(),
@@ -157,6 +219,8 @@ function createStatefulWardenService(svc: IMimirService): IRavnWardenService {
                   ? `/tmp/${id}.yaml`
                   : `/tmp/${id}.${warden.deployment === 'systemd' ? 'service' : 'plist'}`,
                 configFile: `/tmp/${id}.yaml`,
+                stdoutLog: `/tmp/${id}.stdout.log`,
+                stderrLog: `/tmp/${id}.stderr.log`,
                 startCommand: warden.deployment.startsWith('k8s')
                   ? warden.deployment
                   : `ravn daemon --config /tmp/${id}.yaml --persona ${warden.persona}`,
@@ -240,6 +304,34 @@ function createStatefulWardenService(svc: IMimirService): IRavnWardenService {
       emit(uninstalled);
       return uninstalled;
     },
+    async getWardenLogs(id, options) {
+      const wardens = await ensureWardens();
+      const current = wardens.find((warden) => warden.id === id);
+      if (!current) throw new Error(`Warden not found: ${id}`);
+      return sampleLogEntries(current, options?.stream ?? 'stdout').slice(0, options?.limit ?? 200);
+    },
+    async getWardenActivity(id, limit = 120) {
+      const wardens = await ensureWardens();
+      const current = wardens.find((warden) => warden.id === id);
+      if (!current) throw new Error(`Warden not found: ${id}`);
+      return sampleLogEntries(current, 'stdout')
+        .concat([
+          {
+            id: `${current.id}-activity-3`,
+            source: 'stderr',
+            lineNumber: 3,
+            raw: '',
+            timestamp: new Date().toISOString(),
+            level: current.runtime?.state === 'active' ? 'INFO' : 'WARN',
+            logger: 'ravn.dream',
+            message:
+              current.runtime?.state === 'active'
+                ? 'dream cycle scheduled and waiting for next cron window'
+                : 'warden is installed but idle',
+          },
+        ])
+        .slice(0, limit);
+    },
   };
 }
 
@@ -248,6 +340,7 @@ export function renderWithMimir(
   service?: IMimirService,
   ctx: Partial<PluginCtx> = {},
   wardenService?: IRavnWardenService,
+  volundrService: IVolundrService = createMockVolundrService(),
 ): RenderResult {
   const svc = service ?? createMimirMockAdapter();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -260,7 +353,14 @@ export function renderWithMimir(
   return render(
     <QueryClientProvider client={client}>
       <PluginCtxProvider value={pluginCtx}>
-        <ServicesProvider services={{ mimir: svc, 'ravn.wardens': ravnWardens }}>
+        <ServicesProvider
+          services={{
+            mimir: svc,
+            'ravn.wardens': ravnWardens,
+            'ravn.personas': createMockPersonaStore(),
+            volundr: volundrService,
+          }}
+        >
           {ui}
         </ServicesProvider>
       </PluginCtxProvider>

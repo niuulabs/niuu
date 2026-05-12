@@ -1,11 +1,21 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within, fireEvent } from '@testing-library/react';
 import { renderWithMimir as wrap } from '../testing/renderWithMimir';
 import { OverviewView } from './OverviewView';
 import { createMimirMockAdapter } from '../adapters/mock';
 import type { IMimirService } from '../ports';
 
+const navigateMock = vi.fn();
+
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => navigateMock,
+}));
+
 describe('OverviewView', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('renders loading state initially', () => {
     wrap(<OverviewView />);
     expect(screen.getByText(/loading/)).toBeInTheDocument();
@@ -152,6 +162,17 @@ describe('OverviewView', () => {
     await waitFor(() => expect(screen.getByText('Wardens')).toBeInTheDocument());
     // At least one "last dream" label
     expect(screen.getAllByText(/last dream/).length).toBeGreaterThan(0);
+  });
+
+  it('opens the selected warden from the overview roster', async () => {
+    const setTweak = vi.fn();
+    wrap(<OverviewView />, undefined, { tweaks: {}, setTweak });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /open warden ravn-fjolnir/i })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /open warden ravn-fjolnir/i }));
+    expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', 'ravn-fjolnir');
+    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/ravns' });
   });
 
   it('shows "never" for last dream when ravn has no dream cycle', async () => {

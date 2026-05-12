@@ -113,7 +113,10 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
                   key={ravn.ravnId}
                   type="button"
                   className="mm-subnav-collapsed-item"
-                  onClick={() => navigate({ to: '/mimir/ravns' })}
+                  onClick={() => {
+                    ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
+                    navigate({ to: '/mimir/ravns' });
+                  }}
                   aria-label={`Warden ${ravn.ravnId}`}
                   title={ravn.ravnId}
                 >
@@ -231,7 +234,10 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
               key={ravn.ravnId}
               type="button"
               className="mm-subnav-btn"
-              onClick={() => navigate({ to: '/mimir/ravns' })}
+              onClick={() => {
+                ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
+                navigate({ to: '/mimir/ravns' });
+              }}
               aria-label={`Warden ${ravn.ravnId}`}
             >
               <span className="mm-subnav-btn__initials" aria-hidden>

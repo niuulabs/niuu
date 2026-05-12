@@ -495,6 +495,7 @@ const rawWarden = {
   name: 'Ravn Fjolnir',
   persona: 'research-and-distill',
   profile: 'infra-synthesis',
+  model: 'claude-sonnet-4-6',
   deployment: 'launchd',
   deployment_kwargs: {
     namespace: 'ravn-dev',
@@ -503,6 +504,8 @@ const rawWarden = {
   mimir: {
     mount_names: ['local', 'shared'],
     write_mount: 'local',
+    read_mount_names: ['local', 'shared'],
+    write_mount_names: ['local'],
     category_scope: ['infra'],
   },
   features: {
@@ -513,6 +516,19 @@ const rawWarden = {
     recap_enabled: true,
     source_trigger_enabled: true,
     staleness_trigger_enabled: false,
+  },
+  schedules: {
+    dream_cycle_cron_expression: '0 3 * * *',
+    dream_cycle_poll_interval_seconds: 60,
+    source_trigger_poll_interval_seconds: 90,
+    staleness_trigger_schedule_hours: 8,
+  },
+  console: {
+    enabled: true,
+    host: '0.0.0.0',
+    port: 8412,
+    public_host: 'warden.example.test',
+    auth_mode: 'noop',
   },
   autostart: true,
   created_at: '2026-04-20T11:00:00Z',
@@ -529,6 +545,8 @@ const rawWarden = {
     service_file: '/tmp/ravn-fjolnir.plist',
     config_file: '/tmp/ravn-fjolnir.yaml',
     start_command: 'ravn daemon --config /tmp/ravn-fjolnir.yaml',
+    stdout_log: '/tmp/ravn-fjolnir.log',
+    stderr_log: '/tmp/ravn-fjolnir.err.log',
     last_install_at: '2026-04-20T11:01:00Z',
     observation: {
       status: 'running',
@@ -549,16 +567,29 @@ describe('buildRavnWardenAdapter', () => {
     expect(result).toEqual([
       expect.objectContaining({
         id: 'ravn-fjolnir',
+        model: 'claude-sonnet-4-6',
         deploymentKwargs: {
           namespace: 'ravn-dev',
           auto_commit: true,
         },
         mountNames: ['local', 'shared'],
         writeMount: 'local',
+        readMountNames: ['local', 'shared'],
+        writeMountNames: ['local'],
         categoryScope: ['infra'],
         autostart: true,
         createdAt: '2026-04-20T11:00:00Z',
         createdBy: 'operator',
+        schedules: expect.objectContaining({
+          dreamCycleCronExpression: '0 3 * * *',
+          sourceTriggerPollIntervalSeconds: 90,
+          stalenessTriggerScheduleHours: 8,
+        }),
+        console: expect.objectContaining({
+          enabled: true,
+          port: 8412,
+          publicHost: 'warden.example.test',
+        }),
         runtime: expect.objectContaining({
           state: 'idle',
           pagesTouched: 12,
@@ -596,6 +627,7 @@ describe('buildRavnWardenAdapter', () => {
       name: 'Ravn Fjolnir',
       persona: 'research-and-distill',
       profile: 'infra-synthesis',
+      model: 'gpt-5.5',
       deployment: 'launchd',
       deploymentKwargs: {
         namespace: 'ravn-dev',
@@ -603,7 +635,22 @@ describe('buildRavnWardenAdapter', () => {
       },
       mountNames: ['local', 'shared'],
       writeMount: 'local',
+      readMountNames: ['local', 'shared'],
+      writeMountNames: ['local'],
       categoryScope: ['infra'],
+      schedules: {
+        dreamCycleCronExpression: '15 2 * * *',
+        dreamCyclePollIntervalSeconds: 30,
+        sourceTriggerPollIntervalSeconds: 75,
+        stalenessTriggerScheduleHours: 12,
+      },
+      console: {
+        enabled: true,
+        host: '127.0.0.1',
+        port: 8500,
+        publicHost: 'warden.example.test',
+        authMode: 'noop',
+      },
       autostart: true,
       createdBy: 'operator',
       features: {
@@ -617,6 +664,7 @@ describe('buildRavnWardenAdapter', () => {
       name: 'Ravn Fjolnir',
       persona: 'research-and-distill',
       profile: 'infra-synthesis',
+      model: 'gpt-5.5',
       deployment: 'launchd',
       deployment_kwargs: {
         namespace: 'ravn-dev',
@@ -624,6 +672,8 @@ describe('buildRavnWardenAdapter', () => {
       },
       mount_names: ['local', 'shared'],
       write_mount: 'local',
+      read_mount_names: ['local', 'shared'],
+      write_mount_names: ['local'],
       category_scope: ['infra'],
       features: {
         wakefulness_enabled: true,
@@ -633,6 +683,19 @@ describe('buildRavnWardenAdapter', () => {
         recap_enabled: undefined,
         source_trigger_enabled: undefined,
         staleness_trigger_enabled: undefined,
+      },
+      schedules: {
+        dream_cycle_cron_expression: '15 2 * * *',
+        dream_cycle_poll_interval_seconds: 30,
+        source_trigger_poll_interval_seconds: 75,
+        staleness_trigger_schedule_hours: 12,
+      },
+      console: {
+        enabled: true,
+        host: '127.0.0.1',
+        port: 8500,
+        public_host: 'warden.example.test',
+        auth_mode: 'noop',
       },
       autostart: true,
       created_by: 'operator',
@@ -651,6 +714,8 @@ describe('buildRavnWardenAdapter', () => {
     expect(typeof store.startWarden).toBe('function');
     expect(typeof store.stopWarden).toBe('function');
     expect(typeof store.uninstallWarden).toBe('function');
+    expect(typeof store.getWardenLogs).toBe('function');
+    expect(typeof store.getWardenActivity).toBe('function');
   });
 
   it('subscribes to per-warden SSE updates', async () => {
@@ -735,5 +800,53 @@ describe('buildRavnWardenAdapter', () => {
     expect(client.post).toHaveBeenCalledWith(`/wardens/${rawWarden.id}/uninstall`, {});
     expect(result.supervisor?.installed).toBe(false);
     expect(result.runtime?.state).toBe('offline');
+  });
+
+  it('fetches stdout log entries', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        id: 'line-1',
+        source: 'stdout',
+        line_number: 1,
+        raw: 'raw',
+        timestamp: '2026-04-20T11:00:00Z',
+        level: 'INFO',
+        logger: 'ravn.daemon',
+        message: 'ravn daemon started.',
+      },
+    ]);
+    const result = await buildRavnWardenAdapter(client).getWardenLogs(rawWarden.id, {
+      stream: 'stdout',
+      limit: 50,
+    });
+    expect(client.get).toHaveBeenCalledWith(`/wardens/${rawWarden.id}/logs?stream=stdout&limit=50`);
+    expect(result[0]).toMatchObject({
+      source: 'stdout',
+      lineNumber: 1,
+      message: 'ravn daemon started.',
+    });
+  });
+
+  it('fetches recent warden activity', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        id: 'activity-1',
+        source: 'stderr',
+        line_number: 1,
+        raw: 'raw',
+        timestamp: '2026-04-20T11:00:00Z',
+        level: 'WARN',
+        logger: 'ravn.dream',
+        message: 'warden is installed but idle',
+      },
+    ]);
+    const result = await buildRavnWardenAdapter(client).getWardenActivity(rawWarden.id, 20);
+    expect(client.get).toHaveBeenCalledWith(`/wardens/${rawWarden.id}/activity?limit=20`);
+    expect(result[0]).toMatchObject({
+      source: 'stderr',
+      message: 'warden is installed but idle',
+    });
   });
 });

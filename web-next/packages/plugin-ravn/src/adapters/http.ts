@@ -281,7 +281,24 @@ interface RawWardenFeatures {
 interface RawWardenMimirBinding {
   mount_names: string[];
   write_mount: string;
+  read_mount_names?: string[];
+  write_mount_names?: string[];
   category_scope: string[];
+}
+
+interface RawWardenSchedules {
+  dream_cycle_cron_expression: string;
+  dream_cycle_poll_interval_seconds: number;
+  source_trigger_poll_interval_seconds: number;
+  staleness_trigger_schedule_hours: number;
+}
+
+interface RawWardenConsole {
+  enabled: boolean;
+  host: string;
+  port: number;
+  public_host?: string;
+  auth_mode: 'noop' | 'token';
 }
 
 interface RawWardenRuntime {
@@ -306,6 +323,8 @@ interface RawWardenSupervisor {
   service_file?: string;
   config_file?: string;
   start_command?: string;
+  stdout_log?: string;
+  stderr_log?: string;
   last_install_at?: string;
   observation?: {
     status: 'running' | 'idle' | 'missing' | 'degraded' | 'unknown';
@@ -329,16 +348,30 @@ interface RawWarden {
   name: string;
   persona: string;
   profile: string;
+  model: string;
   deployment: string;
   deployment_kwargs?: Record<string, unknown>;
   mimir: RawWardenMimirBinding;
   features: RawWardenFeatures;
+  schedules: RawWardenSchedules;
+  console: RawWardenConsole;
   autostart: boolean;
   created_at: string;
   created_by: string;
   runtime?: RawWardenRuntime;
   supervisor?: RawWardenSupervisor;
   operator?: RawWardenOperator;
+}
+
+interface RawWardenLogEntry {
+  id: string;
+  source: string;
+  line_number: number;
+  raw: string;
+  timestamp?: string;
+  level?: string;
+  logger?: string;
+  message: string;
 }
 
 function toRavn(raw: RawRavn): Ravn {
@@ -396,15 +429,32 @@ function toBudgetState(raw: RawBudgetState): BudgetState {
 }
 
 function toWarden(raw: RawWarden): WardenSummary {
+  const schedules = raw.schedules ?? {
+    dream_cycle_cron_expression: '0 3 * * *',
+    dream_cycle_poll_interval_seconds: 60,
+    source_trigger_poll_interval_seconds: 60,
+    staleness_trigger_schedule_hours: 6,
+  };
+  const consoleConfig = raw.console ?? {
+    enabled: true,
+    host: '0.0.0.0',
+    port: 8400,
+    public_host: '',
+    auth_mode: 'noop',
+  };
   return {
     id: raw.id,
     name: raw.name,
     persona: raw.persona,
     profile: raw.profile,
+    model: raw.model || 'claude-sonnet-4-6',
     deployment: raw.deployment,
     deploymentKwargs: raw.deployment_kwargs ?? {},
     mountNames: raw.mimir.mount_names,
     writeMount: raw.mimir.write_mount,
+    readMountNames: raw.mimir.read_mount_names ?? raw.mimir.mount_names,
+    writeMountNames:
+      raw.mimir.write_mount_names ?? (raw.mimir.write_mount ? [raw.mimir.write_mount] : []),
     categoryScope: raw.mimir.category_scope,
     features: {
       wakefulnessEnabled: raw.features.wakefulness_enabled,
@@ -414,6 +464,19 @@ function toWarden(raw: RawWarden): WardenSummary {
       recapEnabled: raw.features.recap_enabled,
       sourceTriggerEnabled: raw.features.source_trigger_enabled,
       stalenessTriggerEnabled: raw.features.staleness_trigger_enabled,
+    },
+    schedules: {
+      dreamCycleCronExpression: schedules.dream_cycle_cron_expression,
+      dreamCyclePollIntervalSeconds: schedules.dream_cycle_poll_interval_seconds,
+      sourceTriggerPollIntervalSeconds: schedules.source_trigger_poll_interval_seconds,
+      stalenessTriggerScheduleHours: schedules.staleness_trigger_schedule_hours,
+    },
+    console: {
+      enabled: consoleConfig.enabled,
+      host: consoleConfig.host,
+      port: consoleConfig.port,
+      publicHost: consoleConfig.public_host,
+      authMode: consoleConfig.auth_mode,
     },
     autostart: raw.autostart,
     createdAt: raw.created_at,
@@ -444,6 +507,8 @@ function toWarden(raw: RawWarden): WardenSummary {
           serviceFile: raw.supervisor.service_file,
           configFile: raw.supervisor.config_file,
           startCommand: raw.supervisor.start_command,
+          stdoutLog: raw.supervisor.stdout_log,
+          stderrLog: raw.supervisor.stderr_log,
           lastInstallAt: raw.supervisor.last_install_at,
           observation: raw.supervisor.observation
             ? {
@@ -476,10 +541,13 @@ function toWardenCreateBody(req: WardenCreateRequest): Record<string, unknown> {
     name: req.name,
     persona: req.persona,
     profile: req.profile,
+    model: req.model,
     deployment: req.deployment,
     deployment_kwargs: req.deploymentKwargs ?? {},
     mount_names: req.mountNames ?? [],
     write_mount: req.writeMount ?? '',
+    read_mount_names: req.readMountNames ?? [],
+    write_mount_names: req.writeMountNames ?? [],
     category_scope: req.categoryScope ?? [],
     features: req.features
       ? {
@@ -492,8 +560,38 @@ function toWardenCreateBody(req: WardenCreateRequest): Record<string, unknown> {
           staleness_trigger_enabled: req.features.stalenessTriggerEnabled,
         }
       : undefined,
+    schedules: req.schedules
+      ? {
+          dream_cycle_cron_expression: req.schedules.dreamCycleCronExpression,
+          dream_cycle_poll_interval_seconds: req.schedules.dreamCyclePollIntervalSeconds,
+          source_trigger_poll_interval_seconds: req.schedules.sourceTriggerPollIntervalSeconds,
+          staleness_trigger_schedule_hours: req.schedules.stalenessTriggerScheduleHours,
+        }
+      : undefined,
+    console: req.console
+      ? {
+          enabled: req.console.enabled,
+          host: req.console.host,
+          port: req.console.port,
+          public_host: req.console.publicHost,
+          auth_mode: req.console.authMode,
+        }
+      : undefined,
     autostart: req.autostart,
     created_by: req.createdBy,
+  };
+}
+
+function toWardenLogEntry(raw: RawWardenLogEntry) {
+  return {
+    id: raw.id,
+    source: raw.source,
+    lineNumber: raw.line_number,
+    raw: raw.raw,
+    timestamp: raw.timestamp,
+    level: raw.level,
+    logger: raw.logger,
+    message: raw.message,
   };
 }
 
@@ -633,6 +731,23 @@ export function buildRavnWardenAdapter(client: ApiClient): IWardenStore {
     async uninstallWarden(id) {
       const raw = await client.post<RawWarden>(`/wardens/${encodeURIComponent(id)}/uninstall`, {});
       return toWarden(raw);
+    },
+    async getWardenLogs(id, options) {
+      const params = new URLSearchParams();
+      if (options?.stream) params.set('stream', options.stream);
+      if (options?.limit) params.set('limit', String(options.limit));
+      const suffix = params.size > 0 ? `?${params.toString()}` : '';
+      const raw = await client.get<RawWardenLogEntry[]>(
+        `/wardens/${encodeURIComponent(id)}/logs${suffix}`,
+      );
+      return raw.map(toWardenLogEntry);
+    },
+    async getWardenActivity(id, limit) {
+      const suffix = limit ? `?limit=${encodeURIComponent(String(limit))}` : '';
+      const raw = await client.get<RawWardenLogEntry[]>(
+        `/wardens/${encodeURIComponent(id)}/activity${suffix}`,
+      );
+      return raw.map(toWardenLogEntry);
     },
   };
 }

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -55,12 +57,15 @@ from ravn.api.runtime_data import (
 from ravn.api.warden_stream import WardenStreamBroker
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.warden import (
+    WardenConsoleConfig,
     WardenFeatures,
+    WardenScheduleConfig,
     WardenSpec,
     WardenStore,
     build_warden_store,
     resolve_deployment_adapter,
 )
+from ravn.warden.observability import synthetic_warden_dream_logs
 
 if TYPE_CHECKING:
     from ravn.ports.persona import PersonaRegistryPort
@@ -75,16 +80,38 @@ class TriggerCreateRequest(BaseModel):
 
 class WardenCreateRequest(BaseModel):
     name: str
-    persona: str = "research-and-distill"
+    persona: str = "mimir-warden"
     profile: str = ""
+    model: str = "claude-sonnet-4-6"
     deployment: str = "launchd"
     deployment_kwargs: dict[str, object] = Field(default_factory=dict)
     features: WardenFeatures | None = None
     mount_names: list[str] = Field(default_factory=list)
     write_mount: str = ""
+    read_mount_names: list[str] = Field(default_factory=list)
+    write_mount_names: list[str] = Field(default_factory=list)
     category_scope: list[str] = Field(default_factory=list)
+    schedules: WardenScheduleConfig | None = None
+    console: WardenConsoleConfig | None = None
     autostart: bool = False
     created_by: str = "api"
+
+
+class WardenLogEntry(BaseModel):
+    id: str
+    source: str
+    line_number: int
+    raw: str
+    timestamp: str | None = None
+    level: str | None = None
+    logger: str | None = None
+    message: str
+
+
+_LOG_LINE_RE = re.compile(
+    r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) "
+    r"(?P<logger>[\w.]+) (?P<level>[A-Z]+) (?P<message>.*)$"
+)
 
 
 def create_app(
@@ -110,6 +137,61 @@ def create_app(
 
     def encode_sse(event: str, payload: dict[str, object]) -> str:
         return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+    def parse_log_entry(source: str, line_number: int, raw: str) -> WardenLogEntry:
+        text = raw.rstrip("\n")
+        match = _LOG_LINE_RE.match(text)
+        if match:
+            return WardenLogEntry(
+                id=f"{source}:{line_number}",
+                source=source,
+                line_number=line_number,
+                raw=text,
+                timestamp=match.group("timestamp"),
+                level=match.group("level"),
+                logger=match.group("logger"),
+                message=match.group("message"),
+            )
+        return WardenLogEntry(
+            id=f"{source}:{line_number}",
+            source=source,
+            line_number=line_number,
+            raw=text,
+            message=text,
+        )
+
+    def read_log_entries(path: Path, *, source: str, limit: int) -> list[WardenLogEntry]:
+        if not path.exists():
+            return []
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        start = max(0, len(lines) - limit)
+        return [
+            parse_log_entry(source, start + offset + 1, line)
+            for offset, line in enumerate(lines[start:])
+        ]
+
+    def merge_log_entries(*groups: list[WardenLogEntry], limit: int) -> list[WardenLogEntry]:
+        merged = [entry for group in groups for entry in group]
+        merged.sort(key=lambda entry: (_entry_sort_timestamp(entry.timestamp), entry.id))
+        return merged[-limit:]
+
+    def _entry_sort_timestamp(raw: str | None) -> datetime:
+        if not raw:
+            return datetime.min.replace(tzinfo=UTC)
+        for candidate in (raw, raw.replace("Z", "+00:00")):
+            try:
+                parsed = datetime.fromisoformat(candidate)
+                return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+            except ValueError:
+                continue
+        try:
+            parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S,%f")
+            return parsed.replace(tzinfo=UTC)
+        except ValueError:
+            return datetime.min.replace(tzinfo=UTC)
 
     @app.get("/api/v1/ravn/status")
     async def status_endpoint() -> dict:
@@ -199,6 +281,7 @@ def create_app(
             name=body.name,
             persona=body.persona,
             profile=body.profile,
+            model=body.model,
             deployment=body.deployment,
             deployment_adapter=resolve_deployment_adapter(body.deployment),
             deployment_kwargs=body.deployment_kwargs,
@@ -206,8 +289,12 @@ def create_app(
             mimir={
                 "mount_names": body.mount_names,
                 "write_mount": body.write_mount,
+                "read_mount_names": body.read_mount_names,
+                "write_mount_names": body.write_mount_names,
                 "category_scope": body.category_scope,
             },
+            schedules=body.schedules or WardenScheduleConfig(),
+            console=body.console or WardenConsoleConfig(),
             autostart=body.autostart,
             created_by=body.created_by,
         )
@@ -225,6 +312,77 @@ def create_app(
                 detail="Warden not found",
             )
         return warden
+
+    @app.get("/api/v1/ravn/wardens/{warden_id}/logs", response_model=list[WardenLogEntry])
+    async def get_warden_logs_endpoint(
+        warden_id: str,
+        stream: str = "stdout",
+        limit: int = 200,
+    ) -> list[WardenLogEntry]:
+        """Return recent warden log lines for one persisted warden."""
+        warden = store.get(warden_id)
+        if warden is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Warden not found",
+            )
+
+        normalized_stream = stream.strip().lower()
+        limit = max(1, min(limit, 1000))
+        default_stdout = store.warden_dir(warden_id) / "warden.log"
+        default_stderr = store.warden_dir(warden_id) / "warden.error.log"
+        stdout_entries = read_log_entries(
+            Path(warden.supervisor.stdout_log or default_stdout),
+            source="stdout",
+            limit=limit,
+        )
+        stderr_entries = read_log_entries(
+            Path(warden.supervisor.stderr_log or default_stderr),
+            source="stderr",
+            limit=limit,
+        )
+        dream_entries = [
+            WardenLogEntry.model_validate(entry)
+            for entry in synthetic_warden_dream_logs(warden, limit=limit)
+        ]
+        if normalized_stream == "stderr":
+            return stderr_entries
+        if normalized_stream == "stdout":
+            return merge_log_entries(stdout_entries, dream_entries, limit=limit)
+        if normalized_stream == "all":
+            return merge_log_entries(stdout_entries, stderr_entries, dream_entries, limit=limit)
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail="stream must be 'stdout', 'stderr', or 'all'",
+        )
+
+    @app.get("/api/v1/ravn/wardens/{warden_id}/activity", response_model=list[WardenLogEntry])
+    async def get_warden_activity_endpoint(
+        warden_id: str, limit: int = 200
+    ) -> list[WardenLogEntry]:
+        """Return recent parsed activity entries from both warden log streams."""
+        warden = store.get(warden_id)
+        if warden is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Warden not found",
+            )
+        limit = max(1, min(limit, 1000))
+        default_stdout = store.warden_dir(warden_id) / "warden.log"
+        stdout_entries = read_log_entries(
+            Path(warden.supervisor.stdout_log or default_stdout),
+            source="stdout",
+            limit=limit,
+        )
+        default_stderr = store.warden_dir(warden_id) / "warden.error.log"
+        stderr_entries = read_log_entries(
+            Path(warden.supervisor.stderr_log or default_stderr),
+            source="stderr",
+            limit=limit,
+        )
+        merged = [*stdout_entries, *stderr_entries]
+        merged.sort(key=lambda entry: (entry.timestamp or "", entry.id))
+        return merged[-limit:]
 
     @app.get("/api/v1/ravn/wardens/{warden_id}/stream")
     async def stream_warden_endpoint(warden_id: str, request: Request) -> StreamingResponse:

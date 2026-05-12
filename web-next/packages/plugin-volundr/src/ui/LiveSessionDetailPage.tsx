@@ -38,6 +38,7 @@ import { SessionFilesWorkspace } from './SessionFilesWorkspace';
 import { useSkuldChat } from './hooks/useSkuldChat';
 import { deriveTerminalWsUrl, normalizeSessionUrl, wsUrlToHttpBase } from './liveSessionTransport';
 import { SessionTerminalLive } from './SessionTerminalLive';
+import { StructuredLogViewer } from './components/StructuredLogViewer';
 import './LiveSessionDetailPage.css';
 
 type SessionTab = 'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'logs';
@@ -191,34 +192,6 @@ async function copyText(text: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function downloadText(filename: string, text: string): void {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return;
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-  const url = window.URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  window.URL.revokeObjectURL(url);
-}
-
-function formatLogTimestamp(value: number): string {
-  const date = new Date(value);
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(
-    2,
-    '0',
-  )}:${String(date.getSeconds()).padStart(2, '0')}`;
-}
-
-function serializeAggregatedLogs(lines: VolundrAggregatedLog[]): string {
-  return lines
-    .map(
-      (line) =>
-        `${new Date(line.timestamp).toISOString()} ${line.level.toUpperCase()} ${line.participant} ${line.source} ${line.message}`,
-    )
-    .join('\n');
 }
 
 function normalizeRepoLink(source: VolundrSession['source'] | null | undefined) {
@@ -535,7 +508,6 @@ function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolu
     participants: VolundrLogParticipant[];
   }>({ lines: [], participants: [] });
   const [loading, setLoading] = useState(true);
-  const [selectedParticipant, setSelectedParticipant] = useState('all');
   const [level, setLevel] = useState('DEBUG');
 
   useEffect(() => {
@@ -585,163 +557,18 @@ function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolu
     return Array.from(seen.values());
   }, [logs.lines, logs.participants]);
 
-  useEffect(() => {
-    if (selectedParticipant === 'all') return;
-    if (participants.some((participant) => participant.id === selectedParticipant)) return;
-    setSelectedParticipant('all');
-  }, [participants, selectedParticipant]);
-
-  const filteredLogs = useMemo(
-    () =>
-      selectedParticipant === 'all'
-        ? logs.lines
-        : logs.lines.filter((line) => line.participant === selectedParticipant),
-    [logs.lines, selectedParticipant],
-  );
-
-  const lineCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const line of logs.lines) {
-      counts.set(line.participant, (counts.get(line.participant) ?? 0) + 1);
-    }
-    return counts;
-  }, [logs.lines]);
-
   return (
     <div className="niuu-flex niuu-h-full niuu-flex-col" data-testid="live-logs-tab">
-      <div
-        className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-4 niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-3"
-        data-testid="live-logs-toolbar"
-      >
-        <div className="niuu-flex niuu-flex-1 niuu-flex-wrap niuu-gap-2">
-          <button
-            type="button"
-            className={cn(
-              'niuu-rounded-full niuu-border niuu-px-3 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em]',
-              selectedParticipant === 'all'
-                ? 'niuu-border-brand/60 niuu-bg-brand/10 niuu-text-brand'
-                : 'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-secondary',
-            )}
-            onClick={() => setSelectedParticipant('all')}
-          >
-            All
-            <span className="niuu-ml-2 niuu-text-text-faint">{logs.lines.length}</span>
-          </button>
-          {participants.map((participant) => (
-            <button
-              key={participant.id}
-              type="button"
-              className={cn(
-                'niuu-rounded-full niuu-border niuu-px-3 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em]',
-                selectedParticipant === participant.id
-                  ? 'niuu-border-brand/60 niuu-bg-brand/10 niuu-text-brand'
-                  : 'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-secondary',
-              )}
-              onClick={() => setSelectedParticipant(participant.id)}
-              data-testid={`log-participant-${participant.id}`}
-            >
-              {participant.label}
-              <span className="niuu-ml-2 niuu-text-text-faint">
-                {lineCounts.get(participant.id) ?? 0}
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="niuu-flex niuu-items-center niuu-gap-2">
-          <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em] niuu-text-text-faint">
-            <span>Level</span>
-            <select
-              className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-2 niuu-py-1 niuu-text-[11px] niuu-text-text-secondary"
-              value={level}
-              onChange={(event) => setLevel(event.target.value)}
-            >
-              <option value="DEBUG">Debug</option>
-              <option value="INFO">Info</option>
-              <option value="WARNING">Warn</option>
-              <option value="ERROR">Error</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em] niuu-text-text-secondary hover:niuu-text-text-primary"
-            onClick={() =>
-              downloadText(
-                `${sessionId}-${selectedParticipant}-logs.log`,
-                serializeAggregatedLogs(filteredLogs),
-              )
-            }
-          >
-            Download
-          </button>
-        </div>
-      </div>
-      <div
-        className="niuu-grid niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-2 niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-faint"
-        style={{ gridTemplateColumns: '84px 84px minmax(180px, 0.9fr) minmax(0, 3.1fr)' }}
-      >
-        <div>Time</div>
-        <div>Level</div>
-        <div>Source</div>
-        <div>Message</div>
-      </div>
-      <div className="niuu-flex-1 niuu-overflow-auto niuu-bg-bg-primary">
-        {loading && filteredLogs.length === 0 && (
-          <div className="niuu-p-4 niuu-text-center niuu-text-sm niuu-text-text-muted">
-            Loading logs…
-          </div>
-        )}
-        {!loading && filteredLogs.length === 0 && (
-          <div className="niuu-p-4 niuu-text-center niuu-text-sm niuu-text-text-muted">
-            No log entries yet.
-          </div>
-        )}
-        {filteredLogs.map((line) => (
-          <div
-            key={line.id}
-            className="niuu-grid niuu-gap-0 niuu-border-b niuu-border-border-subtle niuu-px-4 niuu-py-2 niuu-font-mono niuu-text-[12px]"
-            style={{ gridTemplateColumns: '84px 84px minmax(180px, 0.9fr) minmax(0, 3.1fr)' }}
-          >
-            <span className="niuu-text-text-muted">{formatLogTimestamp(line.timestamp)}</span>
-            <span
-              className={cn(
-                'niuu-uppercase',
-                line.level === 'error'
-                  ? 'niuu-text-rose-300'
-                  : line.level === 'warn'
-                    ? 'niuu-text-amber-300'
-                    : line.level === 'debug'
-                      ? 'niuu-text-text-faint'
-                      : 'niuu-text-sky-300',
-              )}
-            >
-              {line.level}
-            </span>
-            <div className="niuu-flex niuu-min-w-0 niuu-items-center niuu-gap-2">
-              <span
-                className={cn(
-                  'niuu-rounded-full niuu-border niuu-px-2 niuu-py-0.5 niuu-text-[10px] niuu-uppercase niuu-tracking-[0.14em]',
-                  line.participantKind === 'broker'
-                    ? 'niuu-border-sky-500/40 niuu-bg-sky-500/10 niuu-text-sky-300'
-                    : line.participantKind === 'service'
-                      ? 'niuu-border-emerald-500/40 niuu-bg-emerald-500/10 niuu-text-emerald-300'
-                      : 'niuu-border-violet-500/40 niuu-bg-violet-500/10 niuu-text-violet-300',
-                )}
-              >
-                {line.participantLabel}
-              </span>
-              <span
-                className="niuu-truncate niuu-text-text-faint"
-                title={`${line.source} · ${line.stream}`}
-              >
-                {line.source}
-              </span>
-            </div>
-            <span className="niuu-whitespace-pre-wrap niuu-break-words niuu-text-text-primary">
-              {line.message}
-            </span>
-          </div>
-        ))}
-      </div>
+      <StructuredLogViewer
+        logs={logs.lines}
+        participants={participants}
+        loading={loading}
+        initialLevel={level as 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'}
+        level={level as 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'}
+        onLevelChange={setLevel}
+        downloadFilename={`${sessionId}-logs.log`}
+        toolbarTestId="live-logs-toolbar"
+      />
     </div>
   );
 }

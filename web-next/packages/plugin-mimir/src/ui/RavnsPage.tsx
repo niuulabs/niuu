@@ -1,18 +1,40 @@
-import { useState } from 'react';
-import { StateDot, Chip } from '@niuulabs/ui';
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
+import type { Mount } from '@niuulabs/domain';
+import type {
+  IVolundrService,
+  VolundrAggregatedLog,
+  VolundrLogParticipant,
+} from '@niuulabs/plugin-volundr';
+import { StructuredLogViewer, useSkuldChat } from '@niuulabs/plugin-volundr';
+import { StateDot, Chip, SessionChat } from '@niuulabs/ui';
 import {
   toRavnBinding,
   useCreateWarden,
+  useWardenLogs,
   useInstallWarden,
   useObservedWarden,
   useStartWarden,
   useStopWarden,
   useUninstallWarden,
   useWardenDirectory,
+  type WardenLogEntry,
   type RavnWardenSummary,
 } from '../application/useRavns';
 import type { RavnBinding } from '../domain/ravn-binding';
+import type { IMimirService } from '../ports';
 import { formatDuration, formatTimestamp } from './format';
+
+interface PersonaOption {
+  name: string;
+  summary: string;
+  isBuiltin: boolean;
+}
+
+interface PersonaCatalogService {
+  listPersonas(filter?: 'all' | 'builtin' | 'custom'): Promise<PersonaOption[]>;
+}
 
 const STATE_PILL: Record<RavnBinding['state'], string> = {
   active: 'niuu-bg-bg-tertiary niuu-text-brand-200',
@@ -31,12 +53,26 @@ const BTN_BASE =
   'disabled:niuu-opacity-50 disabled:niuu-cursor-not-allowed';
 
 const BTN_PRIMARY = `${BTN_BASE} niuu-bg-brand niuu-border-brand niuu-text-bg-primary niuu-font-medium`;
+const CHECKBOX_BASE = 'niuu-h-4 niuu-w-4 niuu-shrink-0 niuu-cursor-pointer';
+const CHECKBOX_STYLE = {
+  appearance: 'auto',
+  WebkitAppearance: 'checkbox',
+  accentColor: 'var(--color-brand)',
+} as const;
 
-function splitCsv(value: string): string[] {
-  return value
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+function toggleSelection(values: string[], value: string, checked: boolean): string[] {
+  if (checked) return values.includes(value) ? values : [...values, value];
+  return values.filter((entry) => entry !== value);
+}
+
+function formatModelOption(
+  id: string,
+  model?: { name?: string; vendor?: string; provider?: string; tier?: string },
+): string {
+  if (!model) return id;
+  const parts = [model.name || id, model.vendor || model.provider];
+  if (model.tier) parts.push(model.tier);
+  return parts.filter(Boolean).join(' · ');
 }
 
 type DeploymentKind = 'launchd' | 'systemd' | 'k8s-apply' | 'k8s-gitops';
@@ -168,6 +204,76 @@ function formatDeploymentValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function formatConsoleAddress(warden: RavnWardenSummary): string {
+  const configuredHost = warden.console.publicHost?.trim() || warden.console.host || '0.0.0.0';
+  const host =
+    configuredHost === '0.0.0.0'
+      ? typeof window !== 'undefined'
+        ? window.location.hostname
+        : '127.0.0.1'
+      : configuredHost;
+  return `${host}:${warden.console.port}`;
+}
+
+function consoleTransportProtocol(kind: 'http' | 'ws'): string {
+  const secure = typeof window !== 'undefined' && window.location.protocol === 'https:';
+  if (kind === 'ws') return secure ? 'wss' : 'ws';
+  return secure ? 'https' : 'http';
+}
+
+function consoleGatewayUrl(
+  warden: Pick<RavnWardenSummary, 'console'>,
+  path: string,
+  kind: 'http' | 'ws' = 'http',
+): string | null {
+  if (!warden.console?.enabled || !warden.console.port) return null;
+  return `${consoleTransportProtocol(kind)}://${formatConsoleAddress(
+    warden as RavnWardenSummary,
+  )}${path}`;
+}
+
+function normalizeLogLevel(level?: string): VolundrAggregatedLog['level'] {
+  const normalized = (level ?? '').toLowerCase();
+  if (normalized === 'error') return 'error';
+  if (normalized === 'warn' || normalized === 'warning') return 'warn';
+  if (normalized === 'debug') return 'debug';
+  return 'info';
+}
+
+function toStructuredLogs(
+  sessionId: string,
+  entries: WardenLogEntry[],
+  participant: VolundrLogParticipant,
+): VolundrAggregatedLog[] {
+  return entries.map((entry, index) => ({
+    id: entry.id,
+    sessionId,
+    timestamp: entry.timestamp
+      ? Date.parse(entry.timestamp) || Date.now() + index
+      : Date.now() + index,
+    level: normalizeLogLevel(entry.level),
+    participant: participant.id,
+    participantLabel: participant.label,
+    participantKind: participant.kind,
+    source: entry.logger ?? entry.source,
+    message: entry.message,
+    sequence: index + 1,
+    stream: entry.source,
+  }));
+}
+
+function mergeStructuredLogs(...groups: VolundrAggregatedLog[][]): VolundrAggregatedLog[] {
+  return groups
+    .flat()
+    .sort(
+      (left, right) =>
+        left.timestamp - right.timestamp ||
+        left.sequence - right.sequence ||
+        left.participant.localeCompare(right.participant) ||
+        left.id.localeCompare(right.id),
+    );
+}
+
 function repoManifestPath(warden: RavnWardenSummary): string {
   const repoPath = String(warden.deploymentKwargs?.repo_path ?? '').trim();
   if (!repoPath) return '';
@@ -269,29 +375,63 @@ function observedPlacementFields(warden: RavnWardenSummary): PlacementField[] {
 }
 
 interface CreateWardenFormProps {
+  availableModels: Array<{ id: string; label: string }>;
+  availablePersonas: Array<{ id: string; label: string; summary: string }>;
+  availableMounts: Mount[];
   isCreating: boolean;
   errorMessage: string | null;
   onCancel: () => void;
   onSubmit: (draft: {
     name: string;
     persona: string;
-    profile: string;
+    model: string;
     deployment: DeploymentKind;
     deploymentKwargs: Record<string, unknown>;
-    mounts: string[];
-    writeMount: string;
+    readMountNames: string[];
+    writeMountNames: string[];
+    categoryScope: string[];
+    schedules: {
+      dreamCycleCronExpression: string;
+      dreamCyclePollIntervalSeconds: number;
+      sourceTriggerPollIntervalSeconds: number;
+      stalenessTriggerScheduleHours: number;
+    };
+    console: {
+      enabled: boolean;
+      host: string;
+      port: number;
+      publicHost: string;
+      authMode: 'noop' | 'token';
+    };
     autostart: boolean;
   }) => void | Promise<void>;
 }
 
-function CreateWardenForm({ isCreating, errorMessage, onCancel, onSubmit }: CreateWardenFormProps) {
+function CreateWardenForm({
+  availableModels,
+  availablePersonas,
+  availableMounts,
+  isCreating,
+  errorMessage,
+  onCancel,
+  onSubmit,
+}: CreateWardenFormProps) {
   const [name, setName] = useState('');
-  const [persona, setPersona] = useState('research-and-distill');
-  const [profile, setProfile] = useState('');
+  const [persona, setPersona] = useState('');
+  const [model, setModel] = useState('');
   const [deployment, setDeployment] = useState<DeploymentKind>('launchd');
-  const [mounts, setMounts] = useState('local');
-  const [writeMount, setWriteMount] = useState('local');
+  const [readMountNames, setReadMountNames] = useState<string[]>([]);
+  const [writeMountNames, setWriteMountNames] = useState<string[]>([]);
   const [autostart, setAutostart] = useState(true);
+  const [dreamCycleCronExpression, setDreamCycleCronExpression] = useState('0 3 * * *');
+  const [dreamCyclePollIntervalSeconds, setDreamCyclePollIntervalSeconds] = useState('60');
+  const [sourceTriggerPollIntervalSeconds, setSourceTriggerPollIntervalSeconds] = useState('60');
+  const [stalenessTriggerScheduleHours, setStalenessTriggerScheduleHours] = useState('6');
+  const [consoleEnabled, setConsoleEnabled] = useState(true);
+  const [consoleHost, setConsoleHost] = useState('0.0.0.0');
+  const [consolePort, setConsolePort] = useState('0');
+  const [consolePublicHost, setConsolePublicHost] = useState('');
+  const [consoleAuthMode, setConsoleAuthMode] = useState<'noop' | 'token'>('noop');
   const [namespace, setNamespace] = useState('ravn');
   const [image, setImage] = useState('ghcr.io/niuulabs/ravn:latest');
   const [serviceAccountName, setServiceAccountName] = useState('');
@@ -300,6 +440,37 @@ function CreateWardenForm({ isCreating, errorMessage, onCancel, onSubmit }: Crea
   const [manifestsSubdir, setManifestsSubdir] = useState('wardens');
   const [autoCommit, setAutoCommit] = useState(true);
   const [autoPush, setAutoPush] = useState(false);
+  const selectedModel = model || availableModels[0]?.id || '';
+  const preferredPersona =
+    availablePersonas.find((option) => option.id === 'mimir-warden')?.id ||
+    availablePersonas[0]?.id ||
+    'mimir-warden';
+  const selectedPersona = persona || preferredPersona;
+  const selectedPersonaMeta = availablePersonas.find((option) => option.id === selectedPersona);
+
+  useEffect(() => {
+    if (!model && availableModels.length > 0) {
+      setModel(availableModels[0]!.id);
+    }
+  }, [availableModels, model]);
+
+  useEffect(() => {
+    if (!persona && preferredPersona) {
+      setPersona(preferredPersona);
+    }
+  }, [persona, preferredPersona]);
+
+  useEffect(() => {
+    const preferredMount =
+      availableMounts.find((mount) => mount.name === 'local') ?? availableMounts[0];
+    if (!preferredMount) return;
+    if (readMountNames.length === 0) {
+      setReadMountNames([preferredMount.name]);
+    }
+    if (writeMountNames.length === 0) {
+      setWriteMountNames([preferredMount.name]);
+    }
+  }, [availableMounts, readMountNames.length, writeMountNames.length]);
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -319,14 +490,35 @@ function CreateWardenForm({ isCreating, errorMessage, onCancel, onSubmit }: Crea
       deploymentKwargs.auto_push = autoPush;
     }
 
+    const selectedMounts = availableMounts.filter(
+      (mount) => readMountNames.includes(mount.name) || writeMountNames.includes(mount.name),
+    );
+    const categoryScope = Array.from(
+      new Set(selectedMounts.flatMap((mount) => mount.categories ?? [])),
+    );
+
     void onSubmit({
       name,
-      persona,
-      profile,
+      persona: selectedPersona,
+      model: selectedModel,
       deployment,
       deploymentKwargs,
-      mounts: splitCsv(mounts),
-      writeMount: writeMount.trim(),
+      readMountNames,
+      writeMountNames,
+      categoryScope,
+      schedules: {
+        dreamCycleCronExpression: dreamCycleCronExpression.trim() || '0 3 * * *',
+        dreamCyclePollIntervalSeconds: Number(dreamCyclePollIntervalSeconds) || 60,
+        sourceTriggerPollIntervalSeconds: Number(sourceTriggerPollIntervalSeconds) || 60,
+        stalenessTriggerScheduleHours: Number(stalenessTriggerScheduleHours) || 6,
+      },
+      console: {
+        enabled: consoleEnabled,
+        host: consoleHost.trim() || '0.0.0.0',
+        port: Number(consolePort) || 0,
+        publicHost: consolePublicHost.trim(),
+        authMode: consoleAuthMode,
+      },
       autostart,
     });
   }
@@ -363,24 +555,41 @@ function CreateWardenForm({ isCreating, errorMessage, onCancel, onSubmit }: Crea
       <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
         <label className="niuu-flex niuu-flex-col niuu-gap-1">
           <span className="niuu-text-xs niuu-text-text-muted">Persona</span>
-          <input
+          <select
             className={INPUT_BASE}
-            value={persona}
+            value={selectedPersona}
             onChange={(event) => setPersona(event.target.value)}
-            placeholder="research-and-distill"
             aria-label="Persona"
             required
-          />
+          >
+            {availablePersonas.length === 0 && <option value="mimir-warden">mimir-warden</option>}
+            {availablePersonas.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <span className="niuu-text-xs niuu-text-text-secondary">
+            {selectedPersonaMeta?.summary ||
+              'Long-lived Warden persona for curation, refresh, and dream cycles.'}
+          </span>
         </label>
         <label className="niuu-flex niuu-flex-col niuu-gap-1">
-          <span className="niuu-text-xs niuu-text-text-muted">Profile</span>
-          <input
+          <span className="niuu-text-xs niuu-text-text-muted">Model</span>
+          <select
             className={INPUT_BASE}
-            value={profile}
-            onChange={(event) => setProfile(event.target.value)}
-            placeholder="infra-synthesis"
-            aria-label="Profile"
-          />
+            value={selectedModel}
+            onChange={(event) => setModel(event.target.value)}
+            aria-label="Model"
+            required
+          >
+            {availableModels.length === 0 && <option value="">No models available</option>}
+            {availableModels.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 
@@ -440,6 +649,8 @@ function CreateWardenForm({ isCreating, errorMessage, onCancel, onSubmit }: Crea
           <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
             <input
               type="checkbox"
+              className={CHECKBOX_BASE}
+              style={CHECKBOX_STYLE}
               checked={createNamespace}
               onChange={(event) => setCreateNamespace(event.target.checked)}
               aria-label="Create namespace if missing"
@@ -474,6 +685,8 @@ function CreateWardenForm({ isCreating, errorMessage, onCancel, onSubmit }: Crea
                 <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
                   <input
                     type="checkbox"
+                    className={CHECKBOX_BASE}
+                    style={CHECKBOX_STYLE}
                     checked={autoCommit}
                     onChange={(event) => setAutoCommit(event.target.checked)}
                     aria-label="Auto commit GitOps changes"
@@ -483,6 +696,8 @@ function CreateWardenForm({ isCreating, errorMessage, onCancel, onSubmit }: Crea
                 <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
                   <input
                     type="checkbox"
+                    className={CHECKBOX_BASE}
+                    style={CHECKBOX_STYLE}
                     checked={autoPush}
                     onChange={(event) => setAutoPush(event.target.checked)}
                     aria-label="Auto push GitOps changes"
@@ -495,32 +710,199 @@ function CreateWardenForm({ isCreating, errorMessage, onCancel, onSubmit }: Crea
         </div>
       )}
 
-      <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
-        <label className="niuu-flex niuu-flex-col niuu-gap-1">
-          <span className="niuu-text-xs niuu-text-text-muted">Mounts</span>
+      <div className="niuu-p-3 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-md niuu-flex niuu-flex-col niuu-gap-3">
+        <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
+          <div>
+            <div className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+              Mimir mounts
+            </div>
+            <div className="niuu-text-sm niuu-text-text-secondary">
+              Select which registered mounts this Warden can read and write.
+            </div>
+          </div>
+          <div className="niuu-text-xs niuu-text-text-muted">
+            {availableMounts.length} available
+          </div>
+        </div>
+        <div className="niuu-grid niuu-grid-cols-[minmax(0,1fr)_minmax(0,1fr)] niuu-gap-3">
+          <div className="niuu-flex niuu-flex-col niuu-gap-2">
+            <div className="niuu-text-xs niuu-text-text-muted">Read mounts</div>
+            {availableMounts.map((mount) => (
+              <label
+                key={`read-${mount.name}`}
+                className="niuu-flex niuu-items-start niuu-gap-2 niuu-text-sm niuu-text-text-secondary"
+              >
+                <input
+                  type="checkbox"
+                  className={CHECKBOX_BASE}
+                  style={CHECKBOX_STYLE}
+                  checked={readMountNames.includes(mount.name)}
+                  onChange={(event) =>
+                    setReadMountNames(
+                      toggleSelection(readMountNames, mount.name, event.target.checked),
+                    )
+                  }
+                  aria-label={`Read mount ${mount.name}`}
+                />
+                <span className="niuu-flex niuu-flex-col niuu-gap-0.5">
+                  <span className="niuu-font-mono niuu-text-text-primary">{mount.name}</span>
+                  <span className="niuu-text-xs niuu-text-text-muted">
+                    {mount.desc || mount.host || mount.role}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+          <div className="niuu-flex niuu-flex-col niuu-gap-2">
+            <div className="niuu-text-xs niuu-text-text-muted">Write mounts</div>
+            {availableMounts.map((mount) => (
+              <label
+                key={`write-${mount.name}`}
+                className="niuu-flex niuu-items-start niuu-gap-2 niuu-text-sm niuu-text-text-secondary"
+              >
+                <input
+                  type="checkbox"
+                  className={CHECKBOX_BASE}
+                  style={CHECKBOX_STYLE}
+                  checked={writeMountNames.includes(mount.name)}
+                  onChange={(event) =>
+                    setWriteMountNames(
+                      toggleSelection(writeMountNames, mount.name, event.target.checked),
+                    )
+                  }
+                  aria-label={`Write mount ${mount.name}`}
+                />
+                <span className="niuu-flex niuu-flex-col niuu-gap-0.5">
+                  <span className="niuu-font-mono niuu-text-text-primary">{mount.name}</span>
+                  <span className="niuu-text-xs niuu-text-text-muted">
+                    {mount.desc || mount.host || mount.role}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="niuu-p-3 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-md niuu-flex niuu-flex-col niuu-gap-3">
+        <div className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+          Trigger schedules
+        </div>
+        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
+          <label className="niuu-flex niuu-flex-col niuu-gap-1 niuu-col-span-2">
+            <span className="niuu-text-xs niuu-text-text-muted">Dream cycle cron</span>
+            <input
+              className={INPUT_BASE}
+              value={dreamCycleCronExpression}
+              onChange={(event) => setDreamCycleCronExpression(event.target.value)}
+              placeholder="0 3 * * *"
+              aria-label="Dream cycle cron"
+            />
+          </label>
+          <label className="niuu-flex niuu-flex-col niuu-gap-1">
+            <span className="niuu-text-xs niuu-text-text-muted">Dream cycle poll (seconds)</span>
+            <input
+              className={INPUT_BASE}
+              type="number"
+              min="1"
+              value={dreamCyclePollIntervalSeconds}
+              onChange={(event) => setDreamCyclePollIntervalSeconds(event.target.value)}
+              aria-label="Dream cycle poll interval"
+            />
+          </label>
+          <label className="niuu-flex niuu-flex-col niuu-gap-1">
+            <span className="niuu-text-xs niuu-text-text-muted">Source trigger poll (seconds)</span>
+            <input
+              className={INPUT_BASE}
+              type="number"
+              min="1"
+              value={sourceTriggerPollIntervalSeconds}
+              onChange={(event) => setSourceTriggerPollIntervalSeconds(event.target.value)}
+              aria-label="Source trigger poll interval"
+            />
+          </label>
+          <label className="niuu-flex niuu-flex-col niuu-gap-1">
+            <span className="niuu-text-xs niuu-text-text-muted">Staleness cadence (hours)</span>
+            <input
+              className={INPUT_BASE}
+              type="number"
+              min="1"
+              value={stalenessTriggerScheduleHours}
+              onChange={(event) => setStalenessTriggerScheduleHours(event.target.value)}
+              aria-label="Staleness cadence hours"
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="niuu-p-3 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-md niuu-flex niuu-flex-col niuu-gap-3">
+        <div className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+          Console
+        </div>
+        <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
           <input
-            className={INPUT_BASE}
-            value={mounts}
-            onChange={(event) => setMounts(event.target.value)}
-            placeholder="local, shared"
-            aria-label="Mounts"
+            type="checkbox"
+            className={CHECKBOX_BASE}
+            style={CHECKBOX_STYLE}
+            checked={consoleEnabled}
+            onChange={(event) => setConsoleEnabled(event.target.checked)}
+            aria-label="Enable console"
           />
+          Enable live console gateway
         </label>
-        <label className="niuu-flex niuu-flex-col niuu-gap-1">
-          <span className="niuu-text-xs niuu-text-text-muted">Write mount</span>
-          <input
-            className={INPUT_BASE}
-            value={writeMount}
-            onChange={(event) => setWriteMount(event.target.value)}
-            placeholder="local"
-            aria-label="Write mount"
-          />
-        </label>
+        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
+          <label className="niuu-flex niuu-flex-col niuu-gap-1">
+            <span className="niuu-text-xs niuu-text-text-muted">Bind host</span>
+            <input
+              className={INPUT_BASE}
+              value={consoleHost}
+              onChange={(event) => setConsoleHost(event.target.value)}
+              placeholder="0.0.0.0"
+              aria-label="Console host"
+            />
+          </label>
+          <label className="niuu-flex niuu-flex-col niuu-gap-1">
+            <span className="niuu-text-xs niuu-text-text-muted">Port</span>
+            <input
+              className={INPUT_BASE}
+              type="number"
+              min="0"
+              value={consolePort}
+              onChange={(event) => setConsolePort(event.target.value)}
+              placeholder="0"
+              aria-label="Console port"
+            />
+          </label>
+          <label className="niuu-flex niuu-flex-col niuu-gap-1">
+            <span className="niuu-text-xs niuu-text-text-muted">Public host</span>
+            <input
+              className={INPUT_BASE}
+              value={consolePublicHost}
+              onChange={(event) => setConsolePublicHost(event.target.value)}
+              placeholder="warden.example.com"
+              aria-label="Console public host"
+            />
+          </label>
+          <label className="niuu-flex niuu-flex-col niuu-gap-1">
+            <span className="niuu-text-xs niuu-text-text-muted">Auth mode</span>
+            <select
+              className={INPUT_BASE}
+              value={consoleAuthMode}
+              onChange={(event) => setConsoleAuthMode(event.target.value as 'noop' | 'token')}
+              aria-label="Console auth mode"
+            >
+              <option value="noop">No-op (dev)</option>
+              <option value="token">Token (future)</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
         <input
           type="checkbox"
+          className={CHECKBOX_BASE}
+          style={CHECKBOX_STYLE}
           checked={autostart}
           onChange={(event) => setAutostart(event.target.checked)}
           aria-label="Autostart"
@@ -634,6 +1016,10 @@ function RavnCard({ ravn, onClick }: RavnCardProps) {
 interface RavnProfileProps {
   ravn: RavnBinding;
   warden: RavnWardenSummary;
+  stdoutLogs: WardenLogEntry[];
+  stderrLogs: WardenLogEntry[];
+  logsLoading: boolean;
+  logsError: string | null;
   isObserving: boolean;
   observationError: string | null;
   isInstalling: boolean;
@@ -651,6 +1037,10 @@ interface RavnProfileProps {
 function RavnProfile({
   ravn,
   warden,
+  stdoutLogs,
+  stderrLogs,
+  logsLoading,
+  logsError,
   isObserving,
   observationError,
   isInstalling,
@@ -669,6 +1059,42 @@ function RavnProfile({
   const deploymentEntries = Object.entries(warden.deploymentKwargs ?? {});
   const placementFields = observedPlacementFields(warden);
   const observation = warden.supervisor?.observation;
+  const schedules = warden.schedules ?? {
+    dreamCycleCronExpression: '0 3 * * *',
+    dreamCyclePollIntervalSeconds: 60,
+    sourceTriggerPollIntervalSeconds: 60,
+    stalenessTriggerScheduleHours: 6,
+  };
+  const consoleConfig = warden.console ?? {
+    enabled: false,
+    host: '0.0.0.0',
+    port: 0,
+    authMode: 'noop' as const,
+    publicHost: '',
+  };
+  const readMountNames = warden.readMountNames?.length ? warden.readMountNames : ravn.mountNames;
+  const writeMountNames = warden.writeMountNames?.length
+    ? warden.writeMountNames
+    : ravn.writeMount
+      ? [ravn.writeMount]
+      : [];
+  const stdoutParticipant: VolundrLogParticipant = {
+    id: `${warden.id}-stdout`,
+    label: 'stdout',
+    kind: 'service',
+  };
+  const stderrParticipant: VolundrLogParticipant = {
+    id: `${warden.id}-stderr`,
+    label: 'stderr',
+    kind: 'service',
+  };
+  const stdoutStructuredLogs = toStructuredLogs(warden.id, stdoutLogs, stdoutParticipant);
+  const stderrStructuredLogs = toStructuredLogs(warden.id, stderrLogs, stderrParticipant);
+  const mergedStructuredLogs = mergeStructuredLogs(stdoutStructuredLogs, stderrStructuredLogs);
+  const consoleAddress = formatConsoleAddress({ ...warden, console: consoleConfig });
+  const consoleWsUrl = consoleGatewayUrl({ console: consoleConfig }, '/ws', 'ws');
+  const consoleChat = useSkuldChat(consoleWsUrl, { historyMode: 'none' });
+  const [activeTab, setActiveTab] = useState<'overview' | 'console' | 'logs'>('overview');
 
   return (
     <div className="niuu-flex niuu-flex-col niuu-gap-6" data-testid="ravn-profile">
@@ -715,300 +1141,587 @@ function RavnProfile({
         </div>
       </div>
 
-      <section className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
-        <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-mb-3">
-          <div>
-            <h4 className="niuu-m-0 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
-              Lifecycle
-            </h4>
-            <p className="niuu-m-0 niuu-text-sm niuu-text-text-secondary">
-              {lifecycleCopy(warden.deployment)}
-            </p>
-          </div>
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
-            <button type="button" className={BTN_BASE} onClick={onInstall} disabled={isInstalling}>
-              {isInstalling ? 'working…' : installLabel(warden.deployment, isInstalled)}
-            </button>
-            <button
-              type="button"
-              className={BTN_PRIMARY}
-              onClick={onStart}
-              disabled={isStarting || !isInstalled || isActive}
-            >
-              {isStarting ? 'working…' : startLabel(warden.deployment, isActive)}
-            </button>
-            <button
-              type="button"
-              className={BTN_BASE}
-              onClick={onStop}
-              disabled={isStopping || !isInstalled || !isActive}
-            >
-              {isStopping ? 'working…' : stopLabel(warden.deployment)}
-            </button>
-            <button
-              type="button"
-              className={BTN_BASE}
-              onClick={onUninstall}
-              disabled={isUninstalling || !isInstalled}
-            >
-              {isUninstalling ? 'working…' : uninstallLabel(warden.deployment)}
-            </button>
-          </div>
-        </div>
+      <div
+        className="niuu-flex niuu-flex-nowrap niuu-items-center niuu-gap-1 niuu-overflow-x-auto niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-px-3"
+        role="tablist"
+        aria-label="Warden detail tabs"
+      >
+        {(
+          [
+            ['overview', 'Overview'],
+            ['console', 'Console'],
+            ['logs', 'Logs'],
+          ] as const
+        ).map(([tabId, label]) => (
+          <button
+            key={tabId}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tabId}
+            className={
+              activeTab === tabId
+                ? 'niuu-flex niuu-items-center niuu-gap-2 niuu-border-b-2 niuu-border-brand niuu-px-3 niuu-py-2.5 niuu-font-mono niuu-text-[13px] niuu-font-medium niuu-text-brand'
+                : 'niuu-flex niuu-items-center niuu-gap-2 niuu-border-b-2 niuu-border-transparent niuu-px-3 niuu-py-2.5 niuu-font-mono niuu-text-[13px] niuu-text-text-muted hover:niuu-text-text-secondary'
+            }
+            onClick={() => setActiveTab(tabId)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
-        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-text-sm">
-          <div>
-            <div className="niuu-text-text-muted">deployment</div>
-            <div className="niuu-font-mono niuu-text-text-primary">
-              {deploymentLabel(warden.deployment)}
+      {activeTab === 'overview' && (
+        <>
+          <section className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
+            <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-mb-3">
+              <div>
+                <h4 className="niuu-m-0 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                  Lifecycle
+                </h4>
+                <p className="niuu-m-0 niuu-text-sm niuu-text-text-secondary">
+                  {lifecycleCopy(warden.deployment)}
+                </p>
+              </div>
+              <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+                <button
+                  type="button"
+                  className={BTN_BASE}
+                  onClick={onInstall}
+                  disabled={isInstalling}
+                >
+                  {isInstalling ? 'working…' : installLabel(warden.deployment, isInstalled)}
+                </button>
+                <button
+                  type="button"
+                  className={BTN_PRIMARY}
+                  onClick={onStart}
+                  disabled={isStarting || !isInstalled || isActive}
+                >
+                  {isStarting ? 'working…' : startLabel(warden.deployment, isActive)}
+                </button>
+                <button
+                  type="button"
+                  className={BTN_BASE}
+                  onClick={onStop}
+                  disabled={isStopping || !isInstalled || !isActive}
+                >
+                  {isStopping ? 'working…' : stopLabel(warden.deployment)}
+                </button>
+                <button
+                  type="button"
+                  className={BTN_BASE}
+                  onClick={onUninstall}
+                  disabled={isUninstalling || !isInstalled}
+                >
+                  {isUninstalling ? 'working…' : uninstallLabel(warden.deployment)}
+                </button>
+              </div>
             </div>
-          </div>
-          <div>
-            <div className="niuu-text-text-muted">persona</div>
-            <div className="niuu-font-mono niuu-text-text-primary">{warden.persona}</div>
-          </div>
-          {deploymentEntries.length > 0 && (
-            <div className="niuu-col-span-2">
-              <div className="niuu-text-text-muted">deployment options</div>
-              <div
-                className="niuu-mt-2 niuu-grid niuu-grid-cols-2 niuu-gap-2 niuu-text-xs"
-                data-testid="warden-deployment-config"
-              >
-                {deploymentEntries.map(([key, value]) => (
+
+            <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-text-sm">
+              <div>
+                <div className="niuu-text-text-muted">deployment</div>
+                <div className="niuu-font-mono niuu-text-text-primary">
+                  {deploymentLabel(warden.deployment)}
+                </div>
+              </div>
+              <div>
+                <div className="niuu-text-text-muted">persona</div>
+                <div className="niuu-font-mono niuu-text-text-primary">{warden.persona}</div>
+              </div>
+              {deploymentEntries.length > 0 && (
+                <div className="niuu-col-span-2">
+                  <div className="niuu-text-text-muted">deployment options</div>
                   <div
-                    key={key}
+                    className="niuu-mt-2 niuu-grid niuu-grid-cols-2 niuu-gap-2 niuu-text-xs"
+                    data-testid="warden-deployment-config"
+                  >
+                    {deploymentEntries.map(([key, value]) => (
+                      <div
+                        key={key}
+                        className="niuu-p-2 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-sm"
+                      >
+                        <div className="niuu-text-text-muted">{toTitleCase(key)}</div>
+                        <div className="niuu-font-mono niuu-text-text-primary niuu-break-all">
+                          {formatDeploymentValue(value)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {actionError && (
+              <div className="niuu-mt-3 niuu-text-sm niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-3 niuu-py-2">
+                {actionError}
+              </div>
+            )}
+          </section>
+
+          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-4">
+            <section
+              className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-col-span-2"
+              data-testid="warden-observed-placement"
+            >
+              <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3 niuu-mb-3">
+                <div>
+                  <h4 className="niuu-m-0 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                    Observed placement
+                  </h4>
+                  {observation?.detail && (
+                    <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-secondary">
+                      {observation.detail}
+                    </p>
+                  )}
+                  {!observation?.detail && !isObserving && !observationError && (
+                    <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-secondary">
+                      Live backend updates stream here over SSE while this profile is open.
+                    </p>
+                  )}
+                </div>
+                <div className="niuu-flex niuu-items-center niuu-gap-2">
+                  {isObserving && (
+                    <span className="niuu-text-xs niuu-text-text-muted">refreshing…</span>
+                  )}
+                  <span
+                    className={`niuu-text-xs niuu-font-mono niuu-px-2 niuu-rounded-sm ${
+                      OBSERVATION_PILL[observation?.status ?? 'unknown']
+                    }`}
+                    data-testid="warden-observation-status"
+                  >
+                    {observation?.status ?? 'unknown'}
+                  </span>
+                </div>
+              </div>
+              {observation?.source && (
+                <div
+                  className="niuu-text-xs niuu-text-text-muted niuu-mb-2"
+                  data-testid="warden-observation-source"
+                >
+                  source: {observation.source}
+                  {observation.checkedAt
+                    ? ` · checked ${formatTimestamp(observation.checkedAt)}`
+                    : ''}
+                </div>
+              )}
+              {observationError && (
+                <div className="niuu-mb-3 niuu-text-sm niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-3 niuu-py-2">
+                  {observationError}
+                </div>
+              )}
+              <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2 niuu-text-xs">
+                {observation?.fields?.map((field) => (
+                  <div
+                    key={`observed-${field.label}`}
                     className="niuu-p-2 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-sm"
                   >
-                    <div className="niuu-text-text-muted">{toTitleCase(key)}</div>
+                    <div className="niuu-text-text-muted">{field.label}</div>
                     <div className="niuu-font-mono niuu-text-text-primary niuu-break-all">
-                      {formatDeploymentValue(value)}
+                      {field.value}
+                    </div>
+                  </div>
+                ))}
+                {placementFields.map((field) => (
+                  <div
+                    key={field.label}
+                    className="niuu-p-2 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-sm"
+                  >
+                    <div className="niuu-text-text-muted">{field.label}</div>
+                    <div
+                      className="niuu-font-mono niuu-text-text-primary niuu-break-all"
+                      data-testid={
+                        field.label.includes('label') || field.label === 'deployment resource'
+                          ? 'warden-service-label'
+                          : undefined
+                      }
+                    >
+                      {field.value}
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
-        </div>
+            </section>
 
-        {actionError && (
-          <div className="niuu-mt-3 niuu-text-sm niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-3 niuu-py-2">
-            {actionError}
+            <section className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
+              <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                Runtime config
+              </h4>
+              <div className="niuu-flex niuu-flex-col niuu-gap-2 niuu-text-sm">
+                <div className="niuu-flex niuu-justify-between niuu-gap-3">
+                  <span className="niuu-text-text-muted">model</span>
+                  <span className="niuu-font-mono niuu-text-text-primary">
+                    {warden.model || 'claude-sonnet-4-6'}
+                  </span>
+                </div>
+                <div className="niuu-flex niuu-justify-between niuu-gap-3">
+                  <span className="niuu-text-text-muted">dream cycle cron</span>
+                  <span className="niuu-font-mono niuu-text-text-primary">
+                    {schedules.dreamCycleCronExpression}
+                  </span>
+                </div>
+                <div className="niuu-flex niuu-justify-between niuu-gap-3">
+                  <span className="niuu-text-text-muted">source poll</span>
+                  <span className="niuu-font-mono niuu-text-text-primary">
+                    {schedules.sourceTriggerPollIntervalSeconds}s
+                  </span>
+                </div>
+                <div className="niuu-flex niuu-justify-between niuu-gap-3">
+                  <span className="niuu-text-text-muted">staleness cadence</span>
+                  <span className="niuu-font-mono niuu-text-text-primary">
+                    every {schedules.stalenessTriggerScheduleHours}h
+                  </span>
+                </div>
+                <div className="niuu-flex niuu-justify-between niuu-gap-3">
+                  <span className="niuu-text-text-muted">console</span>
+                  <span className="niuu-font-mono niuu-text-text-primary">
+                    {consoleConfig.enabled ? consoleAddress : 'disabled'}
+                  </span>
+                </div>
+                <div className="niuu-flex niuu-justify-between niuu-gap-3">
+                  <span className="niuu-text-text-muted">auth mode</span>
+                  <span className="niuu-font-mono niuu-text-text-primary">
+                    {consoleConfig.authMode}
+                  </span>
+                </div>
+              </div>
+            </section>
+
+            <section className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
+              <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                Mount bindings
+              </h4>
+              <div className="niuu-flex niuu-flex-col niuu-gap-3">
+                <div>
+                  <div className="niuu-text-xs niuu-text-text-muted niuu-mb-2">Read mounts</div>
+                  <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+                    {readMountNames.map((mount) => (
+                      <Chip key={`read-${mount}`} tone="muted">
+                        {mount}
+                      </Chip>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="niuu-text-xs niuu-text-text-muted niuu-mb-2">Write mounts</div>
+                  <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+                    {writeMountNames.map((mount) => (
+                      <Chip key={`write-${mount}`} tone="brand">
+                        ✎ {mount}
+                      </Chip>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section
+              className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
+              data-testid="ravn-expertise"
+            >
+              <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                Areas of expertise
+              </h4>
+              {ravn.expertise.length > 0 ? (
+                <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+                  {ravn.expertise.map((e) => (
+                    <Chip key={e} tone="brand">
+                      {e}
+                    </Chip>
+                  ))}
+                </div>
+              ) : (
+                <p className="niuu-text-sm niuu-text-text-muted niuu-italic niuu-m-0">
+                  no expertise defined
+                </p>
+              )}
+            </section>
+
+            {ravn.lastDream ? (
+              <section
+                className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
+                data-testid="ravn-dream"
+              >
+                <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                  Last dream
+                </h4>
+                <div className="niuu-flex niuu-flex-col niuu-gap-2">
+                  {(
+                    [
+                      ['time', formatTimestamp(ravn.lastDream.timestamp), false],
+                      ['pages updated', String(ravn.lastDream.pagesUpdated), true],
+                      ['entities created', String(ravn.lastDream.entitiesCreated), true],
+                      ['lint fixes', String(ravn.lastDream.lintFixes), true],
+                      ['duration', formatDuration(ravn.lastDream.durationMs), false],
+                    ] as [string, string, boolean][]
+                  ).map(([label, value, bold]) => (
+                    <div
+                      key={label}
+                      className="niuu-flex niuu-justify-between niuu-items-baseline niuu-py-[3px] niuu-border-b niuu-border-border-subtle niuu-text-xs last:niuu-border-b-0"
+                    >
+                      <span className="niuu-text-text-muted">{label}</span>
+                      {bold ? (
+                        <strong className="niuu-text-text-primary">{value}</strong>
+                      ) : (
+                        <span className="niuu-font-mono niuu-text-text-secondary">{value}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : (
+              <section
+                className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
+                data-testid="ravn-no-dream"
+              >
+                <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                  Last dream
+                </h4>
+                <p className="niuu-text-sm niuu-text-text-muted niuu-italic niuu-m-0">
+                  no dream cycles yet
+                </p>
+              </section>
+            )}
           </div>
-        )}
-      </section>
+        </>
+      )}
 
-      <div className="niuu-grid niuu-grid-cols-2 niuu-gap-4">
+      {activeTab === 'console' && (
         <section
-          className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-col-span-2"
-          data-testid="warden-observed-placement"
+          className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
+          data-testid="warden-live-console"
         >
           <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3 niuu-mb-3">
             <div>
               <h4 className="niuu-m-0 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
-                Observed placement
+                Live console
               </h4>
-              {observation?.detail && (
-                <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-secondary">
-                  {observation.detail}
-                </p>
-              )}
-              {!observation?.detail && !isObserving && !observationError && (
-                <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-secondary">
-                  Live backend updates stream here over SSE while this profile is open.
-                </p>
-              )}
+              <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-secondary">
+                Join the Warden&apos;s own gateway in-page. This is a live operator connection to
+                the daemon, not a Völundr session.
+              </p>
             </div>
-            <div className="niuu-flex niuu-items-center niuu-gap-2">
-              {isObserving && (
-                <span className="niuu-text-xs niuu-text-text-muted">refreshing…</span>
-              )}
-              <span
-                className={`niuu-text-xs niuu-font-mono niuu-px-2 niuu-rounded-sm ${
-                  OBSERVATION_PILL[observation?.status ?? 'unknown']
-                }`}
-                data-testid="warden-observation-status"
-              >
-                {observation?.status ?? 'unknown'}
-              </span>
-            </div>
-          </div>
-          {observation?.source && (
-            <div
-              className="niuu-text-xs niuu-text-text-muted niuu-mb-2"
-              data-testid="warden-observation-source"
+            <span
+              className={`niuu-text-xs niuu-font-mono niuu-px-2 niuu-rounded-sm ${
+                !consoleWsUrl
+                  ? 'niuu-bg-bg-tertiary niuu-text-text-muted'
+                  : consoleChat.connected
+                    ? 'niuu-bg-bg-tertiary niuu-text-brand-200'
+                    : 'niuu-bg-bg-tertiary niuu-text-warning'
+              }`}
             >
-              source: {observation.source}
-              {observation.checkedAt ? ` · checked ${formatTimestamp(observation.checkedAt)}` : ''}
-            </div>
-          )}
-          {observationError && (
-            <div className="niuu-mb-3 niuu-text-sm niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-3 niuu-py-2">
-              {observationError}
-            </div>
-          )}
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2 niuu-text-xs">
-            {observation?.fields?.map((field) => (
-              <div
-                key={`observed-${field.label}`}
-                className="niuu-p-2 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-sm"
-              >
-                <div className="niuu-text-text-muted">{field.label}</div>
-                <div className="niuu-font-mono niuu-text-text-primary niuu-break-all">
-                  {field.value}
-                </div>
-              </div>
-            ))}
-            {placementFields.map((field) => (
-              <div
-                key={field.label}
-                className="niuu-p-2 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-sm"
-              >
-                <div className="niuu-text-text-muted">{field.label}</div>
-                <div
-                  className="niuu-font-mono niuu-text-text-primary niuu-break-all"
-                  data-testid={
-                    field.label.includes('label') || field.label === 'deployment resource'
-                      ? 'warden-service-label'
-                      : undefined
-                  }
-                >
-                  {field.value}
-                </div>
-              </div>
-            ))}
+              {!consoleWsUrl ? 'disabled' : consoleChat.connected ? 'connected' : 'connecting'}
+            </span>
           </div>
-        </section>
 
-        <section className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
-          <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
-            Mount bindings
-          </h4>
-          <div className="niuu-flex niuu-flex-col niuu-gap-2">
-            {ravn.mountNames.map((m) => (
-              <div key={m} className="niuu-flex niuu-items-center niuu-gap-2">
-                <Chip tone={m === ravn.writeMount ? 'brand' : 'muted'}>
-                  {m === ravn.writeMount ? `✎ ${m}` : m}
-                </Chip>
-                {m === ravn.writeMount && (
-                  <span className="niuu-text-xs niuu-text-text-muted">write mount</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section
-          className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
-          data-testid="ravn-expertise"
-        >
-          <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
-            Areas of expertise
-          </h4>
-          {ravn.expertise.length > 0 ? (
-            <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
-              {ravn.expertise.map((e) => (
-                <Chip key={e} tone="brand">
-                  {e}
-                </Chip>
-              ))}
+          {consoleWsUrl ? (
+            <div className="niuu-h-[640px] niuu-overflow-hidden niuu-rounded-md niuu-border niuu-border-border-subtle">
+              <SessionChat
+                messages={consoleChat.messages}
+                streamingContent={consoleChat.streamingContent}
+                streamingParts={consoleChat.streamingParts}
+                streamingModel={consoleChat.streamingModel}
+                connected={consoleChat.connected}
+                historyLoaded={consoleChat.historyLoaded}
+                participants={consoleChat.participants}
+                meshEvents={consoleChat.meshEvents}
+                agentEvents={consoleChat.agentEvents}
+                pendingPermissions={consoleChat.pendingPermissions}
+                capabilities={consoleChat.capabilities}
+                sessionName={`${warden.name} console`}
+                chatEndpoint={null}
+                onSend={consoleChat.sendMessage}
+                onSendDirected={consoleChat.sendDirectedMessages}
+                onStop={consoleChat.sendInterrupt}
+                onClear={consoleChat.clearMessages}
+                onSetModel={consoleChat.sendSetModel}
+                onSetThinkingTokens={consoleChat.sendSetThinkingTokens}
+                onRewindFiles={consoleChat.sendRewindFiles}
+                onSetInternalVisibility={consoleChat.sendSetInternalVisibility}
+                onPermissionRespond={consoleChat.respondToPermission}
+              />
             </div>
           ) : (
-            <p className="niuu-text-sm niuu-text-text-muted niuu-italic niuu-m-0">
-              no expertise defined
+            <p className="niuu-m-0 niuu-text-sm niuu-text-text-muted">
+              Enable the live console gateway and assign a port to connect here.
             </p>
           )}
         </section>
+      )}
 
-        {ravn.lastDream ? (
+      {activeTab === 'logs' && (
+        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-4">
           <section
-            className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
-            data-testid="ravn-dream"
+            className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-col-span-2"
+            data-testid="warden-daemon-log"
           >
-            <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
-              Last dream
-            </h4>
-            <div className="niuu-flex niuu-flex-col niuu-gap-2">
-              {(
-                [
-                  ['time', formatTimestamp(ravn.lastDream.timestamp), false],
-                  ['pages updated', String(ravn.lastDream.pagesUpdated), true],
-                  ['entities created', String(ravn.lastDream.entitiesCreated), true],
-                  ['lint fixes', String(ravn.lastDream.lintFixes), true],
-                  ['duration', formatDuration(ravn.lastDream.durationMs), false],
-                ] as [string, string, boolean][]
-              ).map(([label, value, bold]) => (
-                <div
-                  key={label}
-                  className="niuu-flex niuu-justify-between niuu-items-baseline niuu-py-[3px] niuu-border-b niuu-border-border-subtle niuu-text-xs last:niuu-border-b-0"
-                >
-                  <span className="niuu-text-text-muted">{label}</span>
-                  {bold ? (
-                    <strong className="niuu-text-text-primary">{value}</strong>
-                  ) : (
-                    <span className="niuu-font-mono niuu-text-text-secondary">{value}</span>
-                  )}
-                </div>
-              ))}
+            <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-mb-3">
+              <h4 className="niuu-m-0 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                Daemon logs
+              </h4>
+              <div className="niuu-flex niuu-flex-col niuu-items-end niuu-gap-1">
+                {warden.supervisor?.stdoutLog && (
+                  <span className="niuu-text-[11px] niuu-font-mono niuu-text-text-faint">
+                    stdout: {warden.supervisor.stdoutLog}
+                  </span>
+                )}
+                {warden.supervisor?.stderrLog && (
+                  <span className="niuu-text-[11px] niuu-font-mono niuu-text-text-faint">
+                    stderr: {warden.supervisor.stderrLog}
+                  </span>
+                )}
+              </div>
+            </div>
+            <p className="niuu-m-0 niuu-mb-3 niuu-text-sm niuu-text-text-secondary">
+              One merged viewer with source filters for stdout and stderr.
+            </p>
+            {logsError && (
+              <div className="niuu-mb-3 niuu-text-sm niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-3 niuu-py-2">
+                {logsError}
+              </div>
+            )}
+            <div className="niuu-h-[320px] niuu-overflow-hidden niuu-rounded-md niuu-border niuu-border-border-subtle">
+              <StructuredLogViewer
+                logs={mergedStructuredLogs}
+                participants={[stdoutParticipant, stderrParticipant]}
+                loading={logsLoading}
+                emptyText="No daemon log lines yet."
+                downloadFilename={`${warden.id}-daemon.log`}
+              />
             </div>
           </section>
-        ) : (
-          <section
-            className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
-            data-testid="ravn-no-dream"
-          >
-            <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
-              Last dream
-            </h4>
-            <p className="niuu-text-sm niuu-text-text-muted niuu-italic niuu-m-0">
-              no dream cycles yet
-            </p>
-          </section>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
 
 export function RavnsPage() {
+  const ctx = usePluginCtx();
+  const volundr = useService<IVolundrService>('volundr');
+  const mimir = useService<IMimirService>('mimir');
+  const personas = useService<PersonaCatalogService>('ravn.personas');
   const { data: wardens, isLoading, isError, error } = useWardenDirectory();
   const createWarden = useCreateWarden();
   const installWarden = useInstallWarden();
   const startWarden = useStartWarden();
   const stopWarden = useStopWarden();
   const uninstallWarden = useUninstallWarden();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const selectedIdFromCtx =
+    typeof ctx.tweaks['mimir.selectedWardenId'] === 'string' &&
+    ctx.tweaks['mimir.selectedWardenId'].trim().length > 0
+      ? (ctx.tweaks['mimir.selectedWardenId'] as string)
+      : null;
+  const [selectedId, setSelectedIdState] = useState<string | null>(selectedIdFromCtx);
+  const setSelectedId = (nextId: string | null) => {
+    setSelectedIdState(nextId);
+    ctx.setTweak('mimir.selectedWardenId', nextId ?? '');
+  };
   const observedWardenQuery = useObservedWarden(selectedId);
+  const modelsQuery = useQuery({
+    queryKey: ['volundr', 'models', 'wardens'],
+    queryFn: () => volundr.getModels(),
+  });
+  const mountsQuery = useQuery({
+    queryKey: ['mimir', 'mounts', 'wardens'],
+    queryFn: async () => {
+      const mounts = await mimir.mounts.listMounts();
+      return [...mounts].sort((left, right) => left.name.localeCompare(right.name));
+    },
+  });
+  const personasQuery = useQuery({
+    queryKey: ['ravn', 'personas', 'wardens'],
+    queryFn: async () => {
+      const entries = await personas.listPersonas('all');
+      return [...entries].sort((left, right) => left.name.localeCompare(right.name));
+    },
+  });
+  const stdoutLogsQuery = useWardenLogs(selectedId, { stream: 'stdout', limit: 120 });
+  const stderrLogsQuery = useWardenLogs(selectedId, { stream: 'stderr', limit: 120 });
 
   const ravns = (wardens ?? []).map(toRavnBinding);
+  const modelOptions = useMemo(
+    () =>
+      Object.entries(modelsQuery.data ?? {})
+        .map(([id, model]) => ({
+          id,
+          label: formatModelOption(id, model),
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label)),
+    [modelsQuery.data],
+  );
+  const personaOptions = useMemo(
+    () =>
+      (personasQuery.data ?? []).map((persona) => ({
+        id: persona.name,
+        label: persona.name,
+        summary: persona.summary,
+      })),
+    [personasQuery.data],
+  );
+  const availableMounts = mountsQuery.data ?? [];
   const selectedWarden = selectedId
     ? (wardens ?? []).find((warden) => warden.id === selectedId)
     : null;
   const profileWarden = observedWardenQuery.data ?? selectedWarden;
   const selectedRavn = profileWarden ? toRavnBinding(profileWarden) : null;
 
+  useEffect(() => {
+    setSelectedIdState(selectedIdFromCtx);
+  }, [selectedIdFromCtx]);
+
+  useEffect(() => {
+    if (!selectedId || !wardens) return;
+    if (wardens.some((warden) => warden.id === selectedId)) return;
+    setSelectedIdState(null);
+    ctx.setTweak('mimir.selectedWardenId', '');
+  }, [ctx, selectedId, wardens]);
+
   async function handleCreate(draft: {
     name: string;
     persona: string;
-    profile: string;
+    model: string;
     deployment: DeploymentKind;
     deploymentKwargs: Record<string, unknown>;
-    mounts: string[];
-    writeMount: string;
+    readMountNames: string[];
+    writeMountNames: string[];
+    categoryScope: string[];
+    schedules: {
+      dreamCycleCronExpression: string;
+      dreamCyclePollIntervalSeconds: number;
+      sourceTriggerPollIntervalSeconds: number;
+      stalenessTriggerScheduleHours: number;
+    };
+    console: {
+      enabled: boolean;
+      host: string;
+      port: number;
+      publicHost: string;
+      authMode: 'noop' | 'token';
+    };
     autostart: boolean;
   }) {
     setActionError(null);
     try {
+      const mountNames = Array.from(
+        new Set([...draft.readMountNames, ...draft.writeMountNames].filter(Boolean)),
+      );
       const created = await createWarden.mutateAsync({
         name: draft.name,
         persona: draft.persona,
-        profile: draft.profile,
+        profile: '',
+        model: draft.model,
         deployment: draft.deployment,
         deploymentKwargs: draft.deploymentKwargs,
-        mountNames: draft.mounts,
-        writeMount: draft.writeMount || draft.mounts[0] || '',
-        categoryScope: draft.mounts,
+        mountNames,
+        writeMount: draft.writeMountNames[0] || mountNames[0] || '',
+        readMountNames: draft.readMountNames,
+        writeMountNames: draft.writeMountNames,
+        categoryScope: draft.categoryScope,
+        schedules: draft.schedules,
+        console: draft.console,
         autostart: draft.autostart,
         createdBy: 'mimir-ui',
       });
@@ -1065,6 +1778,16 @@ export function RavnsPage() {
         <RavnProfile
           ravn={selectedRavn}
           warden={profileWarden}
+          stdoutLogs={stdoutLogsQuery.data ?? []}
+          stderrLogs={stderrLogsQuery.data ?? []}
+          logsLoading={stdoutLogsQuery.isFetching || stderrLogsQuery.isFetching}
+          logsError={
+            stdoutLogsQuery.error instanceof Error
+              ? stdoutLogsQuery.error.message
+              : stderrLogsQuery.error instanceof Error
+                ? stderrLogsQuery.error.message
+                : null
+          }
           isObserving={observedWardenQuery.isFetching}
           observationError={
             observedWardenQuery.error instanceof Error ? observedWardenQuery.error.message : null
@@ -1092,8 +1815,13 @@ export function RavnsPage() {
             Wardens
           </h2>
           <p className="niuu-m-0 niuu-text-sm niuu-text-text-secondary">
-            Create, install, and start local or cluster-backed Ravn wardens from the Mímir control
-            surface.
+            Wardens are long-lived Ravn daemons that watch Mimir mounts, react to new sources, run
+            scheduled dream cycles, and keep curated knowledge fresh without needing a Volundr
+            session.
+          </p>
+          <p className="niuu-m-0 niuu-mt-2 niuu-text-sm niuu-text-text-secondary">
+            Use this control surface to choose the persona, model, schedules, console, and Mimir
+            bindings for each Warden, then install it locally or onto a cluster.
           </p>
         </div>
         <button
@@ -1110,6 +1838,9 @@ export function RavnsPage() {
 
       {isCreating && (
         <CreateWardenForm
+          availableModels={modelOptions}
+          availablePersonas={personaOptions}
+          availableMounts={availableMounts}
           isCreating={createWarden.isPending}
           errorMessage={actionError}
           onCancel={() => {

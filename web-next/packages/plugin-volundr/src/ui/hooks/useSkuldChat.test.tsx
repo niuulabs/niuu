@@ -202,6 +202,21 @@ describe('useSkuldChat', () => {
     expect(result.current.participants.get('peer-1')?.status).toBe('thinking');
   });
 
+  it('skips session history fetch for warden-style live consoles', async () => {
+    const fetchSpy = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ turns: [] }),
+    }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/wardens/test/ws', { historyMode: 'none' }),
+    );
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('hydrates room_message events with participant, timestamp, and visibility metadata', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 

@@ -256,6 +256,7 @@ class TestListBuiltinNames:
         assert "security-auditor" in names
         assert "postmortem-analyst" in names
         assert "mimir-memory-curator" in names
+        assert "mimir-warden" in names
         assert "coding-agent" not in names
         assert "research-agent" not in names
         assert "qa-agent" not in names

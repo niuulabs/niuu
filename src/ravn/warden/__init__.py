@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from ravn.warden.models import (
+    WardenConsoleConfig,
     WardenDreamSummary,
     WardenFeatures,
     WardenMimirBinding,
     WardenOperator,
     WardenRuntime,
+    WardenScheduleConfig,
     WardenSpec,
     WardenSupervisor,
 )
@@ -39,12 +41,15 @@ def __getattr__(name: str):
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)
 
+
 __all__ = [
     "WardenDreamSummary",
+    "WardenConsoleConfig",
     "WardenFeatures",
     "WardenMimirBinding",
     "WardenOperator",
     "WardenRuntime",
+    "WardenScheduleConfig",
     "WardenSpec",
     "WardenStore",
     "WardenSupervisor",

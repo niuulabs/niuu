@@ -152,6 +152,21 @@ export interface WardenFeatures {
   stalenessTriggerEnabled: boolean;
 }
 
+export interface WardenScheduleConfig {
+  dreamCycleCronExpression: string;
+  dreamCyclePollIntervalSeconds: number;
+  sourceTriggerPollIntervalSeconds: number;
+  stalenessTriggerScheduleHours: number;
+}
+
+export interface WardenConsole {
+  enabled: boolean;
+  host: string;
+  port: number;
+  publicHost?: string;
+  authMode: 'noop' | 'token';
+}
+
 export interface WardenDreamSummary {
   id: string;
   timestamp: string;
@@ -176,6 +191,8 @@ export interface WardenSupervisor {
   serviceFile?: string;
   configFile?: string;
   startCommand?: string;
+  stdoutLog?: string;
+  stderrLog?: string;
   lastInstallAt?: string;
   observation?: WardenObservation;
 }
@@ -206,12 +223,17 @@ export interface WardenSummary {
   name: string;
   persona: string;
   profile: string;
+  model: string;
   deployment: string;
   deploymentKwargs?: Record<string, unknown>;
   mountNames: string[];
   writeMount: string;
+  readMountNames: string[];
+  writeMountNames: string[];
   categoryScope: string[];
   features: WardenFeatures;
+  schedules: WardenScheduleConfig;
+  console: WardenConsole;
   autostart: boolean;
   createdAt: string;
   createdBy: string;
@@ -220,18 +242,34 @@ export interface WardenSummary {
   operator?: WardenOperator;
 }
 
+export interface WardenLogEntry {
+  id: string;
+  source: 'stdout' | 'stderr' | string;
+  lineNumber: number;
+  raw: string;
+  timestamp?: string;
+  level?: string;
+  logger?: string;
+  message: string;
+}
+
 export type WardenListener = (warden: WardenSummary) => void;
 
 export interface WardenCreateRequest {
   name: string;
   persona?: string;
   profile?: string;
+  model?: string;
   deployment?: string;
   deploymentKwargs?: Record<string, unknown>;
   mountNames?: string[];
   writeMount?: string;
+  readMountNames?: string[];
+  writeMountNames?: string[];
   categoryScope?: string[];
   features?: Partial<WardenFeatures>;
+  schedules?: Partial<WardenScheduleConfig>;
+  console?: Partial<WardenConsole>;
   autostart?: boolean;
   createdBy?: string;
 }
@@ -246,4 +284,9 @@ export interface IWardenStore {
   startWarden(id: string): Promise<WardenSummary>;
   stopWarden(id: string): Promise<WardenSummary>;
   uninstallWarden(id: string): Promise<WardenSummary>;
+  getWardenLogs(
+    id: string,
+    options?: { stream?: 'stdout' | 'stderr'; limit?: number },
+  ): Promise<WardenLogEntry[]>;
+  getWardenActivity(id: string, limit?: number): Promise<WardenLogEntry[]>;
 }

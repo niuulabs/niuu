@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import zlib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ import yaml
 from ravn.ports.warden_deployer import WardenDeploymentPort
 from ravn.warden.artifacts import runtime_config_path, service_label
 from ravn.warden.models import WardenSpec
+from ravn.warden.observability import latest_warden_dream
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -256,9 +258,21 @@ class WardenStore:
         role = spec.operator.role or self._infer_role(spec.persona)
         bio = spec.operator.bio or self._default_bio(spec)
         rune = spec.operator.rune or "ᚱ"
+        console_port = spec.console.port or self._default_console_port(spec.id or spec.name)
+        latest_dream = latest_warden_dream(spec)
+        pages_touched = (
+            latest_dream.pages_updated if latest_dream is not None else spec.runtime.pages_touched
+        )
 
         return spec.model_copy(
             update={
+                "console": spec.console.model_copy(update={"port": console_port}),
+                "runtime": spec.runtime.model_copy(
+                    update={
+                        "pages_touched": pages_touched,
+                        "last_dream": latest_dream,
+                    }
+                ),
                 "operator": spec.operator.model_copy(
                     update={
                         "rune": rune,
@@ -267,13 +281,14 @@ class WardenStore:
                         "tools": tools,
                         "role": role,
                     }
-                )
+                ),
             }
         )
 
     @staticmethod
     def _infer_role(persona: str) -> str:
         mapping = {
+            "mimir-warden": "knowledge",
             "research-and-distill": "index",
             "mimir-curator": "knowledge",
             "draft-a-note": "write",
@@ -316,8 +331,17 @@ class WardenStore:
     def _default_bio(spec: WardenSpec) -> str:
         if spec.profile:
             return f"{spec.name} runs the {spec.profile} profile."
-        mounts = ", ".join(spec.mimir.mount_names) if spec.mimir.mount_names else "attached mounts"
+        mounts = (
+            ", ".join(spec.mimir.read_mount_names or spec.mimir.mount_names)
+            if (spec.mimir.read_mount_names or spec.mimir.mount_names)
+            else "attached mounts"
+        )
         return f"{spec.name} runs the {spec.persona} persona across {mounts}."
+
+    @staticmethod
+    def _default_console_port(seed: str) -> int:
+        normalized = str(seed or "warden").strip().encode("utf-8")
+        return 8400 + (zlib.adler32(normalized) % 1000)
 
     def service_label(self, warden_id: str) -> str:
         return service_label(warden_id)

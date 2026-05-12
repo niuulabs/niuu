@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import plistlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,8 @@ from ravn.warden.artifacts import (
     daemon_program_arguments,
     local_daemon_program_arguments,
     local_python_executable,
+    render_launchd_plist,
+    render_systemd_unit,
     runtime_config_payload,
 )
 from ravn.warden.deployment import (
@@ -63,16 +66,19 @@ def test_local_python_executable_falls_back_when_sys_executable_is_empty() -> No
 def test_runtime_config_payload_defaults_write_mount_and_enables_secondary_roles(
     tmp_path: Path,
 ) -> None:
+    warden_dir = tmp_path / "warden-home"
     spec = WardenSpec(
         id="council-warden",
         name="Council Warden",
+        persona="mimir-warden",
         profile="deep-research",
         mimir={"mount_names": ["scratch", "shared"]},
     )
 
-    payload = runtime_config_payload(spec, workspace_root=tmp_path)
+    payload = runtime_config_payload(spec, workspace_root=tmp_path, warden_dir=warden_dir)
 
     assert payload["permission"]["workspace_root"] == str(tmp_path.resolve())
+    assert payload["logging"] == {"level": "info", "format": "text"}
     assert payload["mimir"]["write_routing"]["default"] == ["scratch"]
     assert payload["mimir"]["instances"] == [
         {
@@ -86,6 +92,46 @@ def test_runtime_config_payload_defaults_write_mount_and_enables_secondary_roles
             "role": "shared",
             "path": "~/.ravn/mimir/shared",
             "read_priority": 19,
+        },
+    ]
+    assert payload["initiative"]["default_persona"] == "mimir-warden"
+    assert payload["initiative"]["queue_journal_path"] == str(warden_dir / "queue.json")
+    assert payload["llm"] == {"model": "claude-sonnet-4-6"}
+    assert payload["dream_cycle"]["persona"] == "mimir-warden"
+    assert payload["dream_cycle"]["state_dir"] == str(warden_dir / "state")
+    assert payload["mimir"]["staleness_trigger"]["persona"] == "mimir-warden"
+    assert payload["mcp_servers"] == [
+        {
+            "name": "mimir-scratch",
+            "transport": "stdio",
+            "command": local_python_executable(),
+            "args": [
+                "-m",
+                "mimir",
+                "mcp",
+                "--path",
+                "~/.ravn/mimir/scratch",
+                "--name",
+                "scratch",
+            ],
+            "env": {},
+            "enabled": True,
+        },
+        {
+            "name": "mimir-shared",
+            "transport": "stdio",
+            "command": local_python_executable(),
+            "args": [
+                "-m",
+                "mimir",
+                "mcp",
+                "--path",
+                "~/.ravn/mimir/shared",
+                "--name",
+                "shared",
+            ],
+            "env": {},
+            "enabled": True,
         },
     ]
 
@@ -120,6 +166,75 @@ def test_daemon_program_arguments_include_optional_profile() -> None:
         "--profile",
         "infra-synthesis",
     ]
+
+
+def test_local_supervisor_artifacts_use_runtime_model_env_for_claude() -> None:
+    spec = WardenSpec(id="env-warden", name="Env Warden", model="claude-sonnet-4-6")
+
+    with patch.dict(
+        "os.environ",
+        {
+            "HOME": "/Users/tester",
+            "PATH": "/tmp/bin:/usr/bin",
+        },
+        clear=False,
+    ):
+        plist_text = render_launchd_plist(
+            spec,
+            config_path=Path("/tmp/warden.yaml"),
+            working_directory=Path("/tmp"),
+            stdout_path=Path("/tmp/stdout.log"),
+            stderr_path=Path("/tmp/stderr.log"),
+            python_executable="/usr/bin/python3",
+        )
+        unit_text = render_systemd_unit(
+            spec,
+            config_path=Path("/tmp/warden.yaml"),
+            working_directory=Path("/tmp"),
+            python_executable="/usr/bin/python3",
+        )
+
+    payload = plistlib.loads(plist_text.encode("utf-8"))
+    assert payload["EnvironmentVariables"]["HOME"] == "/Users/tester"
+    assert payload["EnvironmentVariables"]["PATH"] == "/tmp/bin:/usr/bin"
+    assert payload["EnvironmentVariables"]["RAVN_LLM__MODEL"] == "claude-sonnet-4-6"
+    assert payload["EnvironmentVariables"]["SKULD__CLI_TYPE"] == "claude"
+    assert payload["EnvironmentVariables"]["SKULD__TRANSPORT"] == "persistent_subprocess"
+    assert payload["EnvironmentVariables"]["SKULD__TRANSPORT_ADAPTER"] == (
+        "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+    )
+    assert "ANTHROPIC_API_KEY" not in payload["EnvironmentVariables"]
+    assert "Environment=HOME=/Users/tester" in unit_text
+    assert "Environment=PATH=/tmp/bin:/usr/bin" in unit_text
+    assert "Environment=RAVN_LLM__MODEL=claude-sonnet-4-6" in unit_text
+    assert "Environment=SKULD__CLI_TYPE=claude" in unit_text
+    assert "Environment=SKULD__TRANSPORT=persistent_subprocess" in unit_text
+    assert (
+        "Environment=SKULD__TRANSPORT_ADAPTER="
+        "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+    ) in unit_text
+
+
+def test_local_supervisor_artifacts_use_model_runtime_resolution_for_codex() -> None:
+    spec = WardenSpec(id="codex-warden", name="Codex Warden", model="gpt-5.5")
+
+    with patch.dict("os.environ", {}, clear=False):
+        plist_text = render_launchd_plist(
+            spec,
+            config_path=Path("/tmp/codex-warden.yaml"),
+            working_directory=Path("/tmp"),
+            stdout_path=Path("/tmp/codex-stdout.log"),
+            stderr_path=Path("/tmp/codex-stderr.log"),
+            python_executable="/usr/bin/python3",
+        )
+
+    payload = plistlib.loads(plist_text.encode("utf-8"))
+    assert payload["EnvironmentVariables"]["RAVN_LLM__MODEL"] == "gpt-5.5"
+    assert payload["EnvironmentVariables"]["SKULD__CLI_TYPE"] == "codex-ws"
+    assert payload["EnvironmentVariables"]["SKULD__TRANSPORT_ADAPTER"] == (
+        "skuld.transports.codex_ws.CodexWebSocketTransport"
+    )
+    assert "OPENAI_API_KEY" not in payload["EnvironmentVariables"]
 
 
 def test_warden_stream_broker_unsubscribe_cleans_up_subscribers() -> None:
@@ -176,9 +291,7 @@ def test_store_helpers_cover_error_paths_and_role_inference(tmp_path: Path) -> N
     assert enriched.operator.tools == ["ravn", "mimir"]
     assert enriched.operator.bio == "Scribe runs the draft-followup persona across attached mounts."
 
-    mystery = store.save(
-        WardenSpec(id="mystery", name="Mystery", persona="enigmatic-helper")
-    )
+    mystery = store.save(WardenSpec(id="mystery", name="Mystery", persona="enigmatic-helper"))
     assert mystery.operator.role == "autonomy"
     assert store.service_label("mystery") == "dev.niuu.ravn.warden.mystery"
 

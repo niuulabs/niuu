@@ -15,17 +15,48 @@ interface WardenFeatures {
   stalenessTriggerEnabled: boolean;
 }
 
+interface WardenSchedules {
+  dreamCycleCronExpression: string;
+  dreamCyclePollIntervalSeconds: number;
+  sourceTriggerPollIntervalSeconds: number;
+  stalenessTriggerScheduleHours: number;
+}
+
+interface WardenConsole {
+  enabled: boolean;
+  host: string;
+  port: number;
+  publicHost?: string;
+  authMode: 'noop' | 'token';
+}
+
+export interface WardenLogEntry {
+  id: string;
+  source: string;
+  lineNumber: number;
+  raw: string;
+  timestamp?: string;
+  level?: string;
+  logger?: string;
+  message: string;
+}
+
 export interface RavnWardenSummary {
   id: string;
   name: string;
   persona: string;
   profile: string;
+  model: string;
   deployment: string;
   deploymentKwargs?: Record<string, unknown>;
   mountNames: string[];
   writeMount: string;
+  readMountNames: string[];
+  writeMountNames: string[];
   categoryScope: string[];
   features: WardenFeatures;
+  schedules: WardenSchedules;
+  console: WardenConsole;
   autostart: boolean;
   createdAt: string;
   createdBy: string;
@@ -41,6 +72,8 @@ export interface RavnWardenSummary {
     serviceFile?: string;
     configFile?: string;
     startCommand?: string;
+    stdoutLog?: string;
+    stderrLog?: string;
     lastInstallAt?: string;
     observation?: {
       status: 'running' | 'idle' | 'missing' | 'degraded' | 'unknown';
@@ -68,9 +101,14 @@ export interface IRavnWardenService {
     profile?: string;
     deployment?: string;
     deploymentKwargs?: Record<string, unknown>;
+    model?: string;
     mountNames?: string[];
     writeMount?: string;
+    readMountNames?: string[];
+    writeMountNames?: string[];
     categoryScope?: string[];
+    schedules?: Partial<WardenSchedules>;
+    console?: Partial<WardenConsole>;
     autostart?: boolean;
     createdBy?: string;
   }): Promise<RavnWardenSummary>;
@@ -80,6 +118,11 @@ export interface IRavnWardenService {
   startWarden(id: string): Promise<RavnWardenSummary>;
   stopWarden(id: string): Promise<RavnWardenSummary>;
   uninstallWarden(id: string): Promise<RavnWardenSummary>;
+  getWardenLogs(
+    id: string,
+    options?: { stream?: 'stdout' | 'stderr'; limit?: number },
+  ): Promise<WardenLogEntry[]>;
+  getWardenActivity(id: string, limit?: number): Promise<WardenLogEntry[]>;
 }
 
 const WARDENS_QUERY_KEY = ['ravn', 'wardens'] as const;
@@ -109,6 +152,7 @@ function syncWardenCaches(queryClient: QueryClient, next: RavnWardenSummary): vo
 }
 
 const PERSONA_ROLE_BY_NAME: Record<string, PersonaRole> = {
+  'mimir-warden': 'knowledge',
   'research-and-distill': 'index',
   'mimir-curator': 'knowledge',
   'draft-a-note': 'write',
@@ -199,8 +243,11 @@ export function toRavnWardenSummary(binding: RavnBinding): RavnWardenSummary {
     profile: '',
     deployment: 'launchd',
     deploymentKwargs: {},
+    model: 'claude-sonnet-4-6',
     mountNames: binding.mountNames,
     writeMount: binding.writeMount,
+    readMountNames: binding.mountNames,
+    writeMountNames: binding.writeMount ? [binding.writeMount] : [],
     categoryScope: binding.expertise,
     features: {
       wakefulnessEnabled: true,
@@ -210,6 +257,18 @@ export function toRavnWardenSummary(binding: RavnBinding): RavnWardenSummary {
       recapEnabled: true,
       sourceTriggerEnabled: true,
       stalenessTriggerEnabled: true,
+    },
+    schedules: {
+      dreamCycleCronExpression: '0 3 * * *',
+      dreamCyclePollIntervalSeconds: 60,
+      sourceTriggerPollIntervalSeconds: 60,
+      stalenessTriggerScheduleHours: 6,
+    },
+    console: {
+      enabled: true,
+      host: '0.0.0.0',
+      port: 8400,
+      authMode: 'noop',
     },
     autostart: binding.state === 'active',
     createdAt: new Date(0).toISOString(),
@@ -226,6 +285,12 @@ export function toRavnWardenSummary(binding: RavnBinding): RavnWardenSummary {
         ? `/Users/jozefvaneenbergen/.ravn/wardens/${binding.ravnId}/warden.plist`
         : '',
       configFile: installed ? configFile : '',
+      stdoutLog: installed
+        ? `/Users/jozefvaneenbergen/.ravn/wardens/${binding.ravnId}/warden.log`
+        : '',
+      stderrLog: installed
+        ? `/Users/jozefvaneenbergen/.ravn/wardens/${binding.ravnId}/warden.error.log`
+        : '',
       startCommand: installed ? `ravn daemon --config ${configFile}` : '',
     },
     operator: {
@@ -324,5 +389,28 @@ export function useUninstallWarden() {
     onSuccess: (warden) => {
       syncWardenCaches(queryClient, warden);
     },
+  });
+}
+
+export function useWardenLogs(
+  id: string | null,
+  options: { stream?: 'stdout' | 'stderr'; limit?: number },
+) {
+  const service = useService<IRavnWardenService>('ravn.wardens');
+  return useQuery({
+    queryKey: ['ravn', 'wardens', id, 'logs', options.stream ?? 'stdout', options.limit ?? 200],
+    queryFn: () => service.getWardenLogs(id!, options),
+    enabled: Boolean(id),
+    retry: false,
+  });
+}
+
+export function useWardenActivity(id: string | null, limit = 120) {
+  const service = useService<IRavnWardenService>('ravn.wardens');
+  return useQuery({
+    queryKey: ['ravn', 'wardens', id, 'activity', limit],
+    queryFn: () => service.getWardenActivity(id!, limit),
+    enabled: Boolean(id),
+    retry: false,
   });
 }

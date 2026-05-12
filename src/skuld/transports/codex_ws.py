@@ -156,7 +156,9 @@ class CodexWebSocketTransport(CLITransport):
 
         env = dict(os.environ)
         if "OPENAI_API_KEY" not in env:
-            logger.warning("OPENAI_API_KEY not found — Codex app-server may fail to authenticate")
+            logger.info(
+                "OPENAI_API_KEY not found — relying on Codex CLI auth state for app-server access"
+            )
 
         logger.info("Spawning Codex app-server on %s", listen_url)
         self._process = await asyncio.create_subprocess_exec(
@@ -649,9 +651,7 @@ class CodexWebSocketTransport(CLITransport):
             exit_code = item.get("exitCode", 0)
             if output or exit_code != 0:
                 prefix = "" if exit_code == 0 else f"[exit code {exit_code}] "
-                await self._emit_tool_result(
-                    item_id, prefix + output, is_error=exit_code != 0
-                )
+                await self._emit_tool_result(item_id, prefix + output, is_error=exit_code != 0)
             return
 
         if item_type == "agentMessage":

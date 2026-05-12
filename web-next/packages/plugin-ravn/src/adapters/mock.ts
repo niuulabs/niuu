@@ -1,7 +1,7 @@
 /**
  * Mock adapters for all Ravn ports.
  *
- * Seeded from the 16 built-in persona definitions that mirror
+ * Seeded from the built-in persona definitions that mirror
  * the backend YAML files in src/ravn/personas/.
  */
 
@@ -150,6 +150,25 @@ const SEED_PERSONAS: PersonaSummary[] = [
     consumesEvents: [],
   },
   {
+    name: 'mimir-warden',
+    role: 'knowledge',
+    letter: 'W',
+    color: 'var(--color-accent-purple)',
+    summary: 'Long-lived Mimir warden for curation, refresh, and dream-cycle maintenance.',
+    permissionMode: 'default',
+    allowedTools: ['read', 'web', 'mimir.read', 'mimir.write', 'ravn.dispatch'],
+    iterationBudget: 60,
+    isBuiltin: true,
+    hasOverride: false,
+    producesEvent: 'mimir.warden.completed',
+    consumesEvents: [
+      'mimir.source.ingested',
+      'mimir.page.stale',
+      'mimir.dream.requested',
+      'cron.weekly',
+    ],
+  },
+  {
     name: 'planning-agent',
     role: 'plan',
     letter: 'P',
@@ -273,6 +292,21 @@ const DEFAULT_WARDEN_FEATURES: WardenSummary['features'] = {
   stalenessTriggerEnabled: true,
 };
 
+const DEFAULT_WARDEN_SCHEDULES: WardenSummary['schedules'] = {
+  dreamCycleCronExpression: '0 3 * * *',
+  dreamCyclePollIntervalSeconds: 60,
+  sourceTriggerPollIntervalSeconds: 60,
+  stalenessTriggerScheduleHours: 6,
+};
+
+const DEFAULT_WARDEN_CONSOLE: WardenSummary['console'] = {
+  enabled: true,
+  host: '0.0.0.0',
+  port: 8400,
+  publicHost: '',
+  authMode: 'noop',
+};
+
 function defaultSupervisor(
   id: string,
   installed: boolean,
@@ -291,6 +325,8 @@ function defaultSupervisor(
     serviceFile: installed ? serviceFile : '',
     configFile: installed ? configFile : '',
     startCommand: installed ? startCommand : '',
+    stdoutLog: installed ? `/Users/jozefvaneenbergen/.ravn/wardens/${id}/warden.log` : '',
+    stderrLog: installed ? `/Users/jozefvaneenbergen/.ravn/wardens/${id}/warden.error.log` : '',
     lastInstallAt: installed && runtimeState !== 'offline' ? '2026-04-19T02:30:00Z' : undefined,
     observation: installed
       ? {
@@ -321,10 +357,15 @@ const SEED_WARDENS: WardenSummary[] = [
     profile: 'infra-synthesis',
     deployment: 'launchd',
     deploymentKwargs: {},
+    model: 'claude-sonnet-4-6',
     mountNames: ['local', 'shared', 'platform'],
     writeMount: 'local',
+    readMountNames: ['local', 'shared', 'platform'],
+    writeMountNames: ['local'],
     categoryScope: ['infra', 'api', 'arch'],
     features: DEFAULT_WARDEN_FEATURES,
+    schedules: DEFAULT_WARDEN_SCHEDULES,
+    console: DEFAULT_WARDEN_CONSOLE,
     autostart: true,
     createdAt: '2026-04-15T10:00:00Z',
     createdBy: 'operator',
@@ -359,10 +400,15 @@ const SEED_WARDENS: WardenSummary[] = [
     profile: 'api-distillation',
     deployment: 'launchd',
     deploymentKwargs: {},
+    model: 'gpt-5.5',
     mountNames: ['shared', 'platform'],
     writeMount: 'shared',
+    readMountNames: ['shared', 'platform'],
+    writeMountNames: ['shared'],
     categoryScope: ['api', 'observability'],
     features: DEFAULT_WARDEN_FEATURES,
+    schedules: DEFAULT_WARDEN_SCHEDULES,
+    console: DEFAULT_WARDEN_CONSOLE,
     autostart: false,
     createdAt: '2026-04-15T10:05:00Z',
     createdBy: 'operator',
@@ -397,10 +443,15 @@ const SEED_WARDENS: WardenSummary[] = [
     profile: 'consistency-checks',
     deployment: 'launchd',
     deploymentKwargs: {},
+    model: 'claude-sonnet-4-6',
     mountNames: ['shared'],
     writeMount: 'shared',
+    readMountNames: ['shared'],
+    writeMountNames: ['shared'],
     categoryScope: ['lint', 'wikilinks'],
     features: DEFAULT_WARDEN_FEATURES,
+    schedules: DEFAULT_WARDEN_SCHEDULES,
+    console: DEFAULT_WARDEN_CONSOLE,
     autostart: false,
     createdAt: '2026-04-15T10:10:00Z',
     createdBy: 'operator',
@@ -425,10 +476,15 @@ const SEED_WARDENS: WardenSummary[] = [
     profile: 'history-indexing',
     deployment: 'launchd',
     deploymentKwargs: {},
+    model: 'gpt-5.5',
     mountNames: ['shared', 'forge'],
     writeMount: 'shared',
+    readMountNames: ['shared', 'forge'],
+    writeMountNames: ['shared'],
     categoryScope: ['sagas', 'raids'],
     features: DEFAULT_WARDEN_FEATURES,
+    schedules: DEFAULT_WARDEN_SCHEDULES,
+    console: DEFAULT_WARDEN_CONSOLE,
     autostart: false,
     createdAt: '2026-04-15T10:15:00Z',
     createdBy: 'operator',
@@ -463,10 +519,15 @@ const SEED_WARDENS: WardenSummary[] = [
     profile: 'ops-watch',
     deployment: 'systemd',
     deploymentKwargs: {},
+    model: 'claude-sonnet-4-6',
     mountNames: ['local', 'shared'],
     writeMount: 'local',
+    readMountNames: ['local', 'shared'],
+    writeMountNames: ['local'],
     categoryScope: ['monitoring', 'runbooks'],
     features: DEFAULT_WARDEN_FEATURES,
+    schedules: DEFAULT_WARDEN_SCHEDULES,
+    console: DEFAULT_WARDEN_CONSOLE,
     autostart: true,
     createdAt: '2026-04-15T10:20:00Z',
     createdBy: 'operator',
@@ -506,10 +567,15 @@ const SEED_WARDENS: WardenSummary[] = [
       manifests_subdir: 'clusters/dev/wardens',
       auto_commit: true,
     },
+    model: 'gpt-5.5',
     mountNames: ['platform'],
     writeMount: 'platform',
+    readMountNames: ['platform'],
+    writeMountNames: ['platform'],
     categoryScope: ['adr', 'compliance'],
     features: DEFAULT_WARDEN_FEATURES,
+    schedules: DEFAULT_WARDEN_SCHEDULES,
+    console: DEFAULT_WARDEN_CONSOLE,
     autostart: false,
     createdAt: '2026-04-15T10:25:00Z',
     createdBy: 'operator',
@@ -1164,7 +1230,7 @@ function toDetail(summary: PersonaSummary, req?: PersonaCreateRequest): PersonaD
 // Factory functions
 // ---------------------------------------------------------------------------
 
-/** Create a mock IPersonaStore with the 16 built-in seed personas. */
+/** Create a mock IPersonaStore with the seeded built-in personas. */
 export function createMockPersonaStore(): IPersonaStore {
   const store = new Map<string, PersonaSummary>(SEED_PERSONAS.map((p) => [p.name, p]));
 
@@ -1430,16 +1496,27 @@ export function createMockWardenStore(): IWardenStore {
       const created: WardenSummary = {
         id: nextId,
         name: req.name,
-        persona: req.persona ?? 'research-and-distill',
+        persona: req.persona ?? 'mimir-warden',
         profile: req.profile ?? '',
         deployment: req.deployment ?? 'launchd',
         deploymentKwargs: req.deploymentKwargs ?? {},
+        model: req.model ?? 'claude-sonnet-4-6',
         mountNames: req.mountNames ?? [],
         writeMount: req.writeMount ?? '',
+        readMountNames: req.readMountNames ?? req.mountNames ?? [],
+        writeMountNames: req.writeMountNames ?? (req.writeMount ? [req.writeMount] : []),
         categoryScope: req.categoryScope ?? [],
         features: {
           ...DEFAULT_WARDEN_FEATURES,
           ...req.features,
+        },
+        schedules: {
+          ...DEFAULT_WARDEN_SCHEDULES,
+          ...req.schedules,
+        },
+        console: {
+          ...DEFAULT_WARDEN_CONSOLE,
+          ...req.console,
         },
         autostart: req.autostart ?? false,
         createdAt: new Date().toISOString(),
@@ -1570,6 +1647,41 @@ export function createMockWardenStore(): IWardenStore {
       wardens = wardens.map((entry) => (entry.id === id ? uninstalled : entry));
       emit(uninstalled);
       return uninstalled;
+    },
+    async getWardenLogs(id, options) {
+      const warden = wardens.find((entry) => entry.id === id);
+      if (!warden) throw new Error(`Warden not found: ${id}`);
+      return [
+        {
+          id: `${id}-${options?.stream ?? 'stdout'}-1`,
+          source: options?.stream ?? 'stdout',
+          lineNumber: 1,
+          raw: '',
+          timestamp: new Date().toISOString(),
+          level: 'INFO',
+          logger: 'ravn.daemon',
+          message: 'ravn daemon started.',
+        },
+      ];
+    },
+    async getWardenActivity(id) {
+      const warden = wardens.find((entry) => entry.id === id);
+      if (!warden) throw new Error(`Warden not found: ${id}`);
+      return [
+        {
+          id: `${id}-activity-1`,
+          source: 'stdout',
+          lineNumber: 1,
+          raw: '',
+          timestamp: new Date().toISOString(),
+          level: warden.runtime?.state === 'active' ? 'INFO' : 'WARN',
+          logger: 'ravn.dream',
+          message:
+            warden.runtime?.state === 'active'
+              ? 'dream cycle scheduled and waiting for next cron window'
+              : 'warden is installed but idle',
+        },
+      ];
     },
   };
 }

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class WardenMimirBinding(BaseModel):
@@ -13,7 +13,29 @@ class WardenMimirBinding(BaseModel):
 
     mount_names: list[str] = Field(default_factory=list)
     write_mount: str = ""
+    read_mount_names: list[str] = Field(default_factory=list)
+    write_mount_names: list[str] = Field(default_factory=list)
     category_scope: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _normalize_mount_fields(self) -> WardenMimirBinding:
+        read_mounts = list(dict.fromkeys(self.read_mount_names or self.mount_names))
+        write_mounts = list(
+            dict.fromkeys(
+                self.write_mount_names or ([self.write_mount] if self.write_mount else [])
+            )
+        )
+
+        if not read_mounts and write_mounts:
+            read_mounts = list(write_mounts)
+        if not write_mounts and read_mounts:
+            write_mounts = [read_mounts[0]]
+
+        self.read_mount_names = read_mounts
+        self.write_mount_names = write_mounts
+        self.mount_names = list(dict.fromkeys([*read_mounts, *write_mounts]))
+        self.write_mount = write_mounts[0] if write_mounts else ""
+        return self
 
 
 class WardenFeatures(BaseModel):
@@ -26,6 +48,26 @@ class WardenFeatures(BaseModel):
     recap_enabled: bool = True
     source_trigger_enabled: bool = True
     staleness_trigger_enabled: bool = True
+
+
+class WardenScheduleConfig(BaseModel):
+    """Operator-facing cadence configuration for long-lived triggers."""
+
+    dream_cycle_cron_expression: str = "0 3 * * *"
+    dream_cycle_poll_interval_seconds: int = 60
+    source_trigger_poll_interval_seconds: int = 60
+    staleness_trigger_schedule_hours: int = 6
+
+
+class WardenConsoleConfig(BaseModel):
+    """Live operator console settings for a warden daemon."""
+
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 0
+    public_host: str = ""
+    # TODO: enforce real operator/daemon attach validation for remote consoles.
+    auth_mode: Literal["noop", "token"] = "noop"
 
 
 class WardenDreamSummary(BaseModel):
@@ -58,6 +100,8 @@ class WardenSupervisor(BaseModel):
     service_file: str = ""
     config_file: str = ""
     start_command: str = ""
+    stdout_log: str = ""
+    stderr_log: str = ""
     last_install_at: datetime | None = None
     observation: WardenObservation = Field(default_factory=lambda: WardenObservation())
 
@@ -94,13 +138,16 @@ class WardenSpec(BaseModel):
 
     id: str
     name: str
-    persona: str = "research-and-distill"
+    persona: str = "mimir-warden"
     profile: str = ""
+    model: str = "claude-sonnet-4-6"
     deployment: str = "launchd"
     deployment_adapter: str = ""
     deployment_kwargs: dict[str, object] = Field(default_factory=dict)
     mimir: WardenMimirBinding = Field(default_factory=WardenMimirBinding)
     features: WardenFeatures = Field(default_factory=WardenFeatures)
+    schedules: WardenScheduleConfig = Field(default_factory=WardenScheduleConfig)
+    console: WardenConsoleConfig = Field(default_factory=WardenConsoleConfig)
     runtime: WardenRuntime = Field(default_factory=WardenRuntime)
     supervisor: WardenSupervisor = Field(default_factory=WardenSupervisor)
     operator: WardenOperator = Field(default_factory=WardenOperator)

@@ -28,12 +28,15 @@ function buildWarden(overrides: Partial<RavnWardenSummary> = {}): RavnWardenSumm
   return {
     id: 'warden-test',
     name: 'Warden Test',
-    persona: 'research-and-distill',
+    persona: 'mimir-warden',
     profile: '',
     deployment: 'launchd',
     deploymentKwargs: {},
+    model: 'claude-sonnet-4-6',
     mountNames: ['local'],
     writeMount: 'local',
+    readMountNames: ['local'],
+    writeMountNames: ['local'],
     categoryScope: [],
     features: {
       wakefulnessEnabled: true,
@@ -43,6 +46,18 @@ function buildWarden(overrides: Partial<RavnWardenSummary> = {}): RavnWardenSumm
       recapEnabled: true,
       sourceTriggerEnabled: true,
       stalenessTriggerEnabled: true,
+    },
+    schedules: {
+      dreamCycleCronExpression: '0 3 * * *',
+      dreamCyclePollIntervalSeconds: 60,
+      sourceTriggerPollIntervalSeconds: 60,
+      stalenessTriggerScheduleHours: 6,
+    },
+    console: {
+      enabled: true,
+      host: '0.0.0.0',
+      port: 8400,
+      authMode: 'noop',
     },
     autostart: true,
     createdAt: '2026-05-11T00:00:00Z',
@@ -58,6 +73,8 @@ function buildWarden(overrides: Partial<RavnWardenSummary> = {}): RavnWardenSumm
       serviceFile: '/tmp/warden-test.plist',
       configFile: '/tmp/warden-test.yaml',
       startCommand: 'ravn daemon --config /tmp/warden-test.yaml',
+      stdoutLog: '/tmp/warden-test.log',
+      stderrLog: '/tmp/warden-test.err.log',
     },
     ...overrides,
   };
@@ -193,6 +210,8 @@ describe('useRavns', () => {
       startWarden: async () => buildWarden(),
       stopWarden: async () => buildWarden(),
       uninstallWarden: async () => buildWarden(),
+      getWardenLogs: async () => [],
+      getWardenActivity: async () => [],
     };
 
     const { result } = renderWithWardens(() => useObservedWarden(null), service);
@@ -218,6 +237,8 @@ describe('useRavns', () => {
       startWarden: async () => buildWarden(),
       stopWarden: async () => buildWarden(),
       uninstallWarden: async () => buildWarden(),
+      getWardenLogs: async () => [],
+      getWardenActivity: async () => [],
     };
 
     const { result } = renderWithWardens(() => useObservedWarden('warden-test'), service);
