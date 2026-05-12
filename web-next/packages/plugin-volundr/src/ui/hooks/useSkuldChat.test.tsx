@@ -1115,7 +1115,9 @@ page_path: council/demo/opinion-b.md
       wsHandlers.onMessage?.(
         JSON.stringify({
           type: 'room_state',
-          participants: [{ peer_id: 'peer-2', persona: 'council-member-b', participant_type: 'ravn' }],
+          participants: [
+            { peer_id: 'peer-2', persona: 'council-member-b', participant_type: 'ravn' },
+          ],
         }),
       );
       wsHandlers.onMessage?.(
