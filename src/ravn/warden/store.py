@@ -191,6 +191,13 @@ class WardenStore:
         result = deployer.observe(spec, warden_dir=self.warden_dir(warden_id))
         updated = spec.model_copy(
             update={
+                "runtime": spec.runtime.model_copy(
+                    update={
+                        "state": _runtime_state_from_observation(
+                            result.supervisor.observation.status
+                        ),
+                    }
+                ),
                 "supervisor": result.supervisor,
             }
         )
@@ -320,3 +327,11 @@ class WardenStore:
             msg = "WardenStore requires a deployment adapter factory for install/start operations"
             raise RuntimeError(msg)
         return self._deployer_factory(spec)
+
+
+def _runtime_state_from_observation(status: str) -> str:
+    if status == "running":
+        return "active"
+    if status == "missing":
+        return "offline"
+    return "idle"

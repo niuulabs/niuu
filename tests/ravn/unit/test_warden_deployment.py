@@ -12,6 +12,7 @@ from ravn.adapters.deployment import (
 )
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.warden import WardenSpec
+from ravn.warden.artifacts import local_python_executable
 
 
 def _completed(
@@ -32,15 +33,21 @@ def test_launchd_install_writes_files_and_registers_service(tmp_path: Path) -> N
 
     with patch(
         "subprocess.run",
-        side_effect=[_completed(), _completed(), _completed(), _completed()],
+        side_effect=[
+            _completed(),
+            _completed(),
+            _completed(stdout="state = running\npid = 1234\n"),
+        ],
     ) as run:
         result = adapter.install(spec, warden_dir=tmp_path / spec.id, workspace_root=tmp_path)
 
     assert result.runtime_state == "active"
     assert Path(result.supervisor.config_file).exists()
     assert Path(result.supervisor.service_file).exists()
-    assert "bootstrap" in " ".join(run.call_args_list[1].args[0])
-    assert "kickstart" in " ".join(run.call_args_list[3].args[0])
+    assert result.supervisor.start_command.startswith(local_python_executable())
+    assert " -m ravn daemon " in result.supervisor.start_command
+    assert "unload -w" in " ".join(run.call_args_list[0].args[0])
+    assert "load -w" in " ".join(run.call_args_list[1].args[0])
 
 
 def test_launchd_start_raises_on_launchctl_failure(tmp_path: Path) -> None:
@@ -92,7 +99,7 @@ def test_launchd_stop_and_uninstall_remove_local_artifacts(tmp_path: Path) -> No
         },
     )
 
-    with patch("subprocess.run", side_effect=[_completed(), _completed(), _completed()]) as run:
+    with patch("subprocess.run", side_effect=[_completed(), _completed()]) as run:
         stopped = adapter.stop(spec, warden_dir=tmp_path / spec.id)
         uninstalled = adapter.uninstall(spec, warden_dir=tmp_path / spec.id)
 
@@ -103,8 +110,7 @@ def test_launchd_stop_and_uninstall_remove_local_artifacts(tmp_path: Path) -> No
     assert not service_path.exists()
     assert not config_path.exists()
     commands = [" ".join(call.args[0]) for call in run.call_args_list]
-    assert any("bootout gui/501/dev.niuu.ravn.warden.research-warden" in cmd for cmd in commands)
-    assert any("disable gui/501/dev.niuu.ravn.warden.research-warden" in cmd for cmd in commands)
+    assert all("unload -w" in cmd for cmd in commands)
 
 
 def test_launchd_observe_reports_running_agent(tmp_path: Path) -> None:
@@ -145,6 +151,9 @@ def test_systemd_install_writes_files_and_enables_unit(tmp_path: Path) -> None:
     assert result.runtime_state == "idle"
     assert Path(result.supervisor.config_file).exists()
     assert Path(result.supervisor.service_file).exists()
+    assert result.supervisor.start_command.startswith(local_python_executable())
+    assert " -m ravn daemon " in result.supervisor.start_command
+    assert "ExecStart=" in Path(result.supervisor.service_file).read_text(encoding="utf-8")
     joined = " ".join(" ".join(call.args[0]) for call in run.call_args_list)
     assert "--user daemon-reload" in joined
     assert "enable dev.niuu.ravn.warden.research-warden.service" in joined
@@ -167,11 +176,26 @@ def test_systemd_start_runs_user_unit(tmp_path: Path) -> None:
         },
     )
 
-    with patch("subprocess.run", return_value=_completed()) as run:
+    with patch(
+        "subprocess.run",
+        side_effect=[
+            _completed(),
+            _completed(
+                stdout=(
+                    "LoadState=loaded\n"
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "UnitFileState=enabled\n"
+                )
+            ),
+        ],
+    ) as run:
         result = adapter.start(spec, warden_dir=tmp_path / spec.id)
 
     assert result.runtime_state == "active"
-    assert "start dev.niuu.ravn.warden.research-warden.service" in " ".join(run.call_args.args[0])
+    assert "start dev.niuu.ravn.warden.research-warden.service" in " ".join(
+        run.call_args_list[0].args[0]
+    )
 
 
 def test_systemd_stop_and_uninstall_remove_unit_files(tmp_path: Path) -> None:

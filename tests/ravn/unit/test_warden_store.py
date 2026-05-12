@@ -182,5 +182,6 @@ def test_observe_updates_supervisor_observation(tmp_path):
     observed = store.observe(created.id)
 
     assert observed is not None
+    assert observed.runtime.state == "idle"
     assert observed.supervisor.observation.status == "idle"
     assert observed.supervisor.observation.source == "fake"

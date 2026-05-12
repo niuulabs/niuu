@@ -19,6 +19,8 @@ from ravn.ports.warden_deployer import (
 )
 from ravn.warden.artifacts import (
     error_log_path,
+    local_python_executable,
+    local_start_command,
     log_path,
     manifest_bundle_path,
     render_k8s_bundle,
@@ -26,7 +28,6 @@ from ravn.warden.artifacts import (
     render_systemd_unit,
     runtime_config_path,
     service_label,
-    start_command,
     write_k8s_bundle,
     write_runtime_config,
 )
@@ -59,6 +60,7 @@ class LaunchdWardenDeploymentAdapter(WardenDeploymentPort):
         warden_dir: Path,
         workspace_root: Path | None = None,
     ) -> WardenDeploymentResult:
+        python_executable = local_python_executable()
         warden_dir.mkdir(parents=True, exist_ok=True)
         config_path = write_runtime_config(
             spec,
@@ -74,62 +76,91 @@ class LaunchdWardenDeploymentAdapter(WardenDeploymentPort):
                 working_directory=(workspace_root or Path.cwd()).resolve(),
                 stdout_path=log_path(warden_dir),
                 stderr_path=error_log_path(warden_dir),
+                python_executable=python_executable,
             ),
             encoding="utf-8",
         )
 
-        self._run(self._launchctl_bin, "bootout", self._domain_label(spec.id), check=False)
-        self._run(self._launchctl_bin, "bootstrap", self._domain(), str(service_path))
-        self._run(self._launchctl_bin, "enable", self._domain_label(spec.id))
-
         runtime_state = "idle"
         if spec.autostart:
-            self._run(self._launchctl_bin, "kickstart", "-k", self._domain_label(spec.id))
-            runtime_state = "active"
+            self._run(
+                self._launchctl_bin,
+                "unload",
+                "-w",
+                str(service_path),
+                check=False,
+            )
+            self._run(self._launchctl_bin, "load", "-w", str(service_path))
 
         supervisor = WardenSupervisor(
             installed=True,
             service_label=service_label(spec.id),
             service_file=str(service_path),
             config_file=str(config_path),
-            start_command=start_command(spec, config_path=config_path),
+            start_command=local_start_command(
+                spec,
+                config_path=config_path,
+                python_executable=python_executable,
+            ),
             last_install_at=datetime.now(UTC),
         )
+        if spec.autostart:
+            observed = self.observe(
+                spec.model_copy(update={"supervisor": supervisor}),
+                warden_dir=warden_dir,
+            )
+            supervisor = observed.supervisor
+            runtime_state = _runtime_state_from_observation(
+                observed.supervisor.observation.status
+            )
         return WardenDeploymentResult(supervisor=supervisor, runtime_state=runtime_state)
 
     def start(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
+        python_executable = local_python_executable()
         config_path = Path(
             spec.supervisor.config_file
             or write_runtime_config(spec, warden_dir=warden_dir)
         )
         service_path = Path(spec.supervisor.service_file or self._service_file_path(spec.id))
-        self._run(self._launchctl_bin, "bootout", self._domain_label(spec.id), check=False)
-        self._run(self._launchctl_bin, "bootstrap", self._domain(), str(service_path))
-        self._run(self._launchctl_bin, "enable", self._domain_label(spec.id))
-        self._run(self._launchctl_bin, "kickstart", "-k", self._domain_label(spec.id))
+        self._run(self._launchctl_bin, "unload", "-w", str(service_path), check=False)
+        self._run(self._launchctl_bin, "load", "-w", str(service_path))
         supervisor = spec.supervisor.model_copy(
             update={
                 "installed": True,
                 "service_label": spec.supervisor.service_label or service_label(spec.id),
                 "service_file": str(service_path),
                 "config_file": str(config_path),
-                "start_command": start_command(spec, config_path=config_path),
+                "start_command": local_start_command(
+                    spec,
+                    config_path=config_path,
+                    python_executable=python_executable,
+                ),
             }
         )
-        return WardenDeploymentResult(supervisor=supervisor, runtime_state="active")
+        observed = self.observe(
+            spec.model_copy(update={"supervisor": supervisor}),
+            warden_dir=warden_dir,
+        )
+        return WardenDeploymentResult(
+            supervisor=observed.supervisor,
+            runtime_state=_runtime_state_from_observation(
+                observed.supervisor.observation.status
+            ),
+        )
 
     def stop(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
         del warden_dir
-        self._run(self._launchctl_bin, "bootout", self._domain_label(spec.id), check=False)
+        service_path = Path(spec.supervisor.service_file or self._service_file_path(spec.id))
+        self._run(self._launchctl_bin, "unload", "-w", str(service_path), check=False)
         return WardenDeploymentResult(
             supervisor=spec.supervisor.model_copy(update={"installed": True}),
             runtime_state="idle",
         )
 
     def uninstall(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
-        self._run(self._launchctl_bin, "disable", self._domain_label(spec.id), check=False)
-        self._run(self._launchctl_bin, "bootout", self._domain_label(spec.id), check=False)
-        self._remove_file(Path(spec.supervisor.service_file or self._service_file_path(spec.id)))
+        service_path = Path(spec.supervisor.service_file or self._service_file_path(spec.id))
+        self._run(self._launchctl_bin, "unload", "-w", str(service_path), check=False)
+        self._remove_file(service_path)
         self._remove_file(Path(spec.supervisor.config_file or runtime_config_path(warden_dir)))
         return WardenDeploymentResult(
             supervisor=WardenSupervisor(),
@@ -250,6 +281,7 @@ class SystemdUserWardenDeploymentAdapter(WardenDeploymentPort):
         warden_dir: Path,
         workspace_root: Path | None = None,
     ) -> WardenDeploymentResult:
+        python_executable = local_python_executable()
         warden_dir.mkdir(parents=True, exist_ok=True)
         config_path = write_runtime_config(
             spec,
@@ -263,6 +295,7 @@ class SystemdUserWardenDeploymentAdapter(WardenDeploymentPort):
                 spec,
                 config_path=config_path,
                 working_directory=(workspace_root or Path.cwd()).resolve(),
+                python_executable=python_executable,
             ),
             encoding="utf-8",
         )
@@ -280,12 +313,26 @@ class SystemdUserWardenDeploymentAdapter(WardenDeploymentPort):
             service_label=service_label(spec.id),
             service_file=str(service_path),
             config_file=str(config_path),
-            start_command=start_command(spec, config_path=config_path),
+            start_command=local_start_command(
+                spec,
+                config_path=config_path,
+                python_executable=python_executable,
+            ),
             last_install_at=datetime.now(UTC),
         )
+        if spec.autostart:
+            observed = self.observe(
+                spec.model_copy(update={"supervisor": supervisor}),
+                warden_dir=warden_dir,
+            )
+            supervisor = observed.supervisor
+            runtime_state = _runtime_state_from_observation(
+                observed.supervisor.observation.status
+            )
         return WardenDeploymentResult(supervisor=supervisor, runtime_state=runtime_state)
 
     def start(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
+        python_executable = local_python_executable()
         config_path = Path(
             spec.supervisor.config_file
             or write_runtime_config(spec, warden_dir=warden_dir)
@@ -297,10 +344,23 @@ class SystemdUserWardenDeploymentAdapter(WardenDeploymentPort):
                 "installed": True,
                 "service_label": spec.supervisor.service_label or service_label(spec.id),
                 "config_file": str(config_path),
-                "start_command": start_command(spec, config_path=config_path),
+                "start_command": local_start_command(
+                    spec,
+                    config_path=config_path,
+                    python_executable=python_executable,
+                ),
             }
         )
-        return WardenDeploymentResult(supervisor=supervisor, runtime_state="active")
+        observed = self.observe(
+            spec.model_copy(update={"supervisor": supervisor}),
+            warden_dir=warden_dir,
+        )
+        return WardenDeploymentResult(
+            supervisor=observed.supervisor,
+            runtime_state=_runtime_state_from_observation(
+                observed.supervisor.observation.status
+            ),
+        )
 
     def stop(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
         del warden_dir
@@ -464,6 +524,14 @@ def _now_observation(
         checked_at=datetime.now(UTC),
         fields=fields,
     )
+
+
+def _runtime_state_from_observation(status: str) -> str:
+    if status == "running":
+        return "active"
+    if status == "missing":
+        return "offline"
+    return "idle"
 
 
 class KubernetesApplyWardenDeploymentAdapter(WardenDeploymentPort):

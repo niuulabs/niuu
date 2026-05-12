@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import plistlib
 import shlex
+import sys
 from pathlib import Path
 
 import yaml
@@ -31,6 +32,14 @@ def error_log_path(warden_dir: Path) -> Path:
     return warden_dir / "warden.error.log"
 
 
+def local_python_executable() -> str:
+    """Return the interpreter path used for local supervisor launches."""
+    executable = (sys.executable or "").strip()
+    if executable:
+        return executable
+    return "/usr/bin/python3"
+
+
 def start_command(spec: WardenSpec, *, config_path: Path) -> str:
     """Return the shell-safe command used to launch the daemon."""
     args = ["ravn", "daemon", "--config", str(config_path), "--persona", spec.persona]
@@ -43,6 +52,38 @@ def daemon_program_arguments(spec: WardenSpec, *, config_path: str) -> list[str]
     """Return the argv used to launch a daemonized warden."""
     args = [
         "/usr/bin/env",
+        "ravn",
+        "daemon",
+        "--config",
+        config_path,
+        "--persona",
+        spec.persona,
+    ]
+    if spec.profile:
+        args.extend(["--profile", spec.profile])
+    return args
+
+
+def local_start_command(spec: WardenSpec, *, config_path: Path, python_executable: str) -> str:
+    """Return the explicit local supervisor command used to launch the daemon."""
+    args = local_daemon_program_arguments(
+        spec,
+        config_path=str(config_path),
+        python_executable=python_executable,
+    )
+    return shlex.join(args)
+
+
+def local_daemon_program_arguments(
+    spec: WardenSpec,
+    *,
+    config_path: str,
+    python_executable: str,
+) -> list[str]:
+    """Return explicit argv for launchd/systemd style local supervisor launches."""
+    args = [
+        python_executable,
+        "-m",
         "ravn",
         "daemon",
         "--config",
@@ -142,11 +183,16 @@ def render_launchd_plist(
     working_directory: Path,
     stdout_path: Path,
     stderr_path: Path,
+    python_executable: str,
 ) -> str:
     """Render the launchd plist for one warden."""
     payload = {
         "Label": service_label(spec.id),
-        "ProgramArguments": daemon_program_arguments(spec, config_path=str(config_path)),
+        "ProgramArguments": local_daemon_program_arguments(
+            spec,
+            config_path=str(config_path),
+            python_executable=python_executable,
+        ),
         "RunAtLoad": spec.autostart,
         "KeepAlive": True,
         "WorkingDirectory": str(working_directory),
@@ -161,8 +207,14 @@ def render_systemd_unit(
     *,
     config_path: Path,
     working_directory: Path,
+    python_executable: str,
 ) -> str:
     """Render the systemd user unit for one warden."""
+    exec_start = local_start_command(
+        spec,
+        config_path=config_path,
+        python_executable=python_executable,
+    )
     return "\n".join(
         [
             "[Unit]",
@@ -171,7 +223,7 @@ def render_systemd_unit(
             "[Service]",
             "Type=simple",
             f"WorkingDirectory={working_directory}",
-            f"ExecStart={start_command(spec, config_path=config_path)}",
+            f"ExecStart={exec_start}",
             "Restart=always",
             "",
             "[Install]",
