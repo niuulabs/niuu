@@ -17,8 +17,20 @@ const VERDICT_ICONS: Record<MeshVerdict, typeof CheckCircle> = {
 
 const WRAPPED_OUTCOME_START = /---\s*o\s*u\s*t\s*c\s*o\s*m\s*e\s*---/i;
 const WRAPPED_OUTCOME_END = /---\s*e\s*n\s*d\s*---/i;
-const KEY_VALUE_LINE = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/;
 const SOFT_KEY_FRAGMENT = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+
+function parseKeyValueLine(line: string): { key: string; value: string } | null {
+  const colon = line.indexOf(':');
+  if (colon <= 0) return null;
+
+  const key = line.slice(0, colon).trim();
+  if (!key || !SOFT_KEY_FRAGMENT.test(key)) return null;
+
+  return {
+    key,
+    value: line.slice(colon + 1).trim(),
+  };
+}
 
 function joinSoftWrappedParts(parts: string[], compact = false): string {
   const cleaned = parts.map((part) => part.trim()).filter(Boolean);
@@ -49,7 +61,7 @@ function joinSoftWrappedParts(parts: string[], compact = false): string {
 
 function mergeSoftWrappedKeyLine(lines: string[], startIndex: number): [string, number] {
   const stripped = (lines[startIndex] ?? '').trim();
-  const inlineMatch = KEY_VALUE_LINE.exec(stripped);
+  const inlineMatch = parseKeyValueLine(stripped);
   if (inlineMatch) return [stripped, startIndex + 1];
   if (!SOFT_KEY_FRAGMENT.test(stripped)) return [stripped, startIndex + 1];
 
@@ -59,10 +71,10 @@ function mergeSoftWrappedKeyLine(lines: string[], startIndex: number): [string, 
     const next = (lines[index] ?? '').trim();
     if (!next) break;
 
-    const inline = KEY_VALUE_LINE.exec(next);
+    const inline = parseKeyValueLine(next);
     if (inline) {
-      const mergedKey = `${fragments.join('')}${inline[1]}`;
-      const mergedValue = inline[2]?.trim() ?? '';
+      const mergedKey = `${fragments.join('')}${inline.key}`;
+      const mergedValue = inline.value;
       return [mergedValue ? `${mergedKey}: ${mergedValue}` : `${mergedKey}:`, index + 1];
     }
 
@@ -113,13 +125,13 @@ function normalizeSoftWrappedOutcomeRaw(raw: string): string {
     index = nextIndex;
     if (!merged) continue;
 
-    const match = KEY_VALUE_LINE.exec(merged);
+    const match = parseKeyValueLine(merged);
     if (match) {
       flush();
-      const key = match[1] ?? '';
+      const key = match.key;
       if (!key) continue;
       currentKey = key;
-      const value = match[2]?.trim() ?? '';
+      const value = match.value;
       if (value) scalarParts.push(value);
       continue;
     }

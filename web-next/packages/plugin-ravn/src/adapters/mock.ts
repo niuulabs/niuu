@@ -1374,11 +1374,26 @@ export function createMockBudgetStream(): IBudgetStream {
 }
 
 function slugifyWardenName(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  const normalized = name.trim().toLowerCase();
+  let slug = '';
+  let sawSeparator = false;
+
+  for (const char of normalized) {
+    const code = char.charCodeAt(0);
+    const isLowerAlpha = code >= 97 && code <= 122;
+    const isDigit = code >= 48 && code <= 57;
+
+    if (isLowerAlpha || isDigit) {
+      if (sawSeparator && slug) slug += '-';
+      slug += char;
+      sawSeparator = false;
+      continue;
+    }
+
+    sawSeparator = slug.length > 0;
+  }
+
+  return slug;
 }
 
 /** Create a mock IWardenStore with seeded wardens. */

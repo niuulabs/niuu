@@ -168,8 +168,8 @@ def _resolve_workflow_execution(
         if requested_definition and resolved_definitions:
             logger.warning(
                 "Ignoring requested session definition %s; workflow stages resolved to %s",
-                requested_definition,
-                ", ".join(sorted(resolved_definitions)),
+                _sanitize_log(requested_definition),
+                ", ".join(_sanitize_log(definition) for definition in sorted(resolved_definitions)),
             )
         session_definition = None
 
