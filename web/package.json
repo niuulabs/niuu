@@ -129,7 +129,7 @@
     "@codingame/monaco-vscode-search-result-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-search-service-override": "^28.4.1",
     "@codingame/monaco-vscode-secret-storage-service-override": "^28.4.1",
-    "@codingame/monaco-vscode-share-service-override": "^30.0.0",
+    "@codingame/monaco-vscode-share-service-override": "^31.0.1",
     "@codingame/monaco-vscode-shellscript-default-extension": "^30.0.0",
     "@codingame/monaco-vscode-snippets-service-override": "^30.0.0",
     "@codingame/monaco-vscode-speech-service-override": "^28.4.1",
