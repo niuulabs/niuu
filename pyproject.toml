@@ -50,7 +50,7 @@ k8s = [
 otel = [
     "opentelemetry-api>=1.25",
     "opentelemetry-sdk>=1.41.1",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.25",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.41.1",
 ]
 encryption = [
     "cryptography>=48.0.0",
