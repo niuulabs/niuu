@@ -146,7 +146,7 @@
     "@codingame/monaco-vscode-theme-seti-default-extension": "^28.4.1",
     "@codingame/monaco-vscode-timeline-service-override": "^28.4.1",
     "@codingame/monaco-vscode-typescript-basics-default-extension": "^28.4.1",
-    "@codingame/monaco-vscode-update-service-override": "^28.4.1",
+    "@codingame/monaco-vscode-update-service-override": "^31.0.1",
     "@codingame/monaco-vscode-user-data-profile-service-override": "^28.4.1",
     "@codingame/monaco-vscode-user-data-sync-service-override": "^28.4.1",
     "@codingame/monaco-vscode-view-banner-service-override": "^28.4.1",
