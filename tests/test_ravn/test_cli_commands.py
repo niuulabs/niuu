@@ -9,17 +9,31 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
-from ravn.adapters.personas.loader import PersonaConfig
+from ravn.adapters.personas.loader import PersonaConfig, PersonaExecutorConfig
 from ravn.cli.commands import (
     _chat,
+    _dedupe_preserve_order,
+    _derive_capabilities,
+    _join_mode_to_fan_in,
     _mimir_ingest_event_fields_from_mcp_result,
+    _mimir_mount_name_from_mcp_server_name,
     _mimir_write_event_fields_from_mcp_result,
+    _parse_deployment_kwargs,
     _print_usage,
     _run_daemon,
     _run_turn,
+    _split_workflow_edge_label,
+    _stage_personas,
+    _uses_cli_transport_executor,
+    _uses_cli_transport_runtime,
+    _wire_cron,
+    _workflow_allowed_outcome_topics,
     _workflow_allowed_task_targets,
+    _workflow_event_matches_filters,
+    _workflow_graph,
     _workflow_runtime_for_persona,
     app,
     main,
@@ -163,6 +177,36 @@ class TestMcpMimirIngestEventFields:
         assert fields["source_title"] == "Fallback title"
         assert fields["source_type"] == "conversation"
 
+    def test_returns_none_for_error_invalid_json_or_missing_source_id(self) -> None:
+        assert (
+            _mimir_ingest_event_fields_from_mcp_result(
+                server_name="mimir-test",
+                arguments={},
+                result=ToolResult(tool_call_id="", content="{}", is_error=True),
+            )
+            is None
+        )
+        assert (
+            _mimir_ingest_event_fields_from_mcp_result(
+                server_name="mimir-test",
+                arguments={},
+                result=ToolResult(tool_call_id="", content="not-json", is_error=False),
+            )
+            is None
+        )
+        assert (
+            _mimir_ingest_event_fields_from_mcp_result(
+                server_name="mimir-test",
+                arguments={},
+                result=ToolResult(
+                    tool_call_id="",
+                    content=json.dumps({"title": "x"}),
+                    is_error=False,
+                ),
+            )
+            is None
+        )
+
 
 class TestMcpMimirWriteEventFields:
     def test_parses_page_path_and_mount_from_arguments(self) -> None:
@@ -202,6 +246,68 @@ class TestMcpMimirWriteEventFields:
         assert fields["page_path"] == "research/example.md"
         assert fields["mount_name"] == "tmp-mimir-test"
         assert fields["mount_names"] == ["tmp-mimir-test"]
+
+    def test_write_fields_return_none_when_page_path_cannot_be_resolved(self) -> None:
+        assert (
+            _mimir_write_event_fields_from_mcp_result(
+                server_name="mimir-council-scratch-board",
+                arguments={},
+                result=ToolResult(tool_call_id="", content="", is_error=False),
+            )
+            is None
+        )
+        assert (
+            _mimir_write_event_fields_from_mcp_result(
+                server_name="mimir-council-scratch-board",
+                arguments={"path": "research/example.md"},
+                result=ToolResult(tool_call_id="", content="ignored", is_error=True),
+            )
+            is None
+        )
+
+
+class TestCliTransportHelpers:
+    def test_parse_deployment_kwargs_parses_yaml_scalars(self) -> None:
+        assert _parse_deployment_kwargs(["auto_commit=true", "replicas=2", "name=ravn-dev"]) == {
+            "auto_commit": True,
+            "replicas": 2,
+            "name": "ravn-dev",
+        }
+
+    def test_parse_deployment_kwargs_rejects_invalid_entries(self) -> None:
+        with pytest.raises(Exception):
+            _parse_deployment_kwargs(["missing-separator"])
+
+    def test_mimir_mount_name_from_server_name(self) -> None:
+        assert _mimir_mount_name_from_mcp_server_name("mimir-council-scratch-board") == (
+            "council-scratch-board"
+        )
+        assert _mimir_mount_name_from_mcp_server_name("not-mimir") is None
+
+    def test_uses_cli_transport_runtime_from_environment(self) -> None:
+        with patch.dict(os.environ, {"SKULD__TRANSPORT_ADAPTER": "adapter.path"}, clear=False):
+            assert _uses_cli_transport_runtime() is True
+        with patch.dict(os.environ, {"SKULD__TRANSPORT_ADAPTER": ""}, clear=False):
+            assert _uses_cli_transport_runtime() is False
+
+    def test_uses_cli_transport_executor_prefers_persona_executor(self) -> None:
+        persona = PersonaConfig(
+            name="coder",
+            system_prompt_template="hi",
+            executor=PersonaExecutorConfig(
+                adapter="ravn.adapters.executors.cli.CliTransportExecutor"
+            ),
+        )
+        assert _uses_cli_transport_executor(persona) is True
+
+        non_cli = PersonaConfig(
+            name="coder",
+            system_prompt_template="hi",
+            executor=PersonaExecutorConfig(
+                adapter="ravn.adapters.executors.default.DefaultExecutor"
+            ),
+        )
+        assert _uses_cli_transport_executor(non_cli) is False
 
 
 class TestRunCommand:
@@ -440,6 +546,57 @@ class TestWardenCommands:
         payload = json.loads(result.output)
         assert payload[0]["id"] == "research-warden"
 
+    def test_warden_list_nonempty_renders_summary(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            runner.invoke(
+                app,
+                [
+                    "warden",
+                    "create",
+                    "Research Warden",
+                    "--persona",
+                    "mimir-warden",
+                    "--mount",
+                    "local",
+                    "--write-mount",
+                    "local",
+                ],
+            )
+            result = runner.invoke(app, ["warden", "list"])
+
+        assert result.exit_code == 0
+        assert (
+            "research-warden  persona=mimir-warden  write_mount=local  mounts=local"
+            in result.output
+        )
+
+    def test_warden_show_json(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            result = runner.invoke(app, ["warden", "show", "research-warden", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["id"] == "research-warden"
+        assert payload["name"] == "Research Warden"
+
+    def test_warden_create_json(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            result = runner.invoke(app, ["warden", "create", "Research Warden", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["id"] == "research-warden"
+
     def test_warden_show_missing_exits_nonzero(self, tmp_path: Path) -> None:
         with patch(
             "ravn.warden.build_warden_store",
@@ -449,6 +606,25 @@ class TestWardenCommands:
 
         assert result.exit_code == 1
         assert "Warden not found: missing" in result.output
+
+    def test_warden_create_rejects_invalid_deployment_args(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "warden",
+                    "create",
+                    "Broken Warden",
+                    "--deployment-arg",
+                    "not-a-pair",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "expected key=value" in result.output
 
     def test_warden_install_and_start(self, tmp_path: Path) -> None:
         with patch(
@@ -466,6 +642,24 @@ class TestWardenCommands:
         assert "state: idle" in show_result.output
         assert start_result.exit_code == 0
         assert "Started warden research-warden" in start_result.output
+
+    def test_warden_install_start_stop_uninstall_json(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            runner.invoke(app, ["warden", "create", "Research Warden"])
+            install_result = runner.invoke(app, ["warden", "install", "research-warden", "--json"])
+            start_result = runner.invoke(app, ["warden", "start", "research-warden", "--json"])
+            stop_result = runner.invoke(app, ["warden", "stop", "research-warden", "--json"])
+            uninstall_result = runner.invoke(
+                app, ["warden", "uninstall", "research-warden", "--json"]
+            )
+
+        assert json.loads(install_result.output)["supervisor"]["installed"] is True
+        assert json.loads(start_result.output)["runtime"]["state"] == "active"
+        assert json.loads(stop_result.output)["runtime"]["state"] == "idle"
+        assert json.loads(uninstall_result.output)["runtime"]["state"] == "offline"
 
     def test_warden_stop_and_uninstall(self, tmp_path: Path) -> None:
         with patch(
@@ -550,6 +744,19 @@ class TestWardenCommands:
 
         assert result.exit_code == 1
         assert "Failed to uninstall warden research-warden: uninstall failed" in result.output
+
+    def test_warden_install_and_uninstall_missing_exit_nonzero(self, tmp_path: Path) -> None:
+        with patch(
+            "ravn.warden.build_warden_store",
+            return_value=_build_test_warden_store(tmp_path),
+        ):
+            install_result = runner.invoke(app, ["warden", "install", "missing"])
+            uninstall_result = runner.invoke(app, ["warden", "uninstall", "missing"])
+
+        assert install_result.exit_code == 1
+        assert "Warden not found: missing" in install_result.output
+        assert uninstall_result.exit_code == 1
+        assert "Warden not found: missing" in uninstall_result.output
 
 
 class TestReplMode:
@@ -923,6 +1130,133 @@ class TestWorkflowRuntimeForPersona:
             "reviewer",
             node_id="review-stage",
         ) == {"coordinator"}
+
+    def test_workflow_graph_and_helpers_cover_edge_cases(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "graph": {
+                        "nodes": [
+                            {"id": "stage-a", "kind": "stage", "personaIds": ["reviewer"]},
+                            {
+                                "id": "stage-b",
+                                "kind": "stage",
+                                "stageMembers": [
+                                    {"personaId": "coder"},
+                                    "ignored",
+                                ],
+                            },
+                            "ignored",
+                        ],
+                        "edges": [
+                            {
+                                "id": "edge-1",
+                                "source": "stage-a",
+                                "target": "stage-b",
+                                "label": "review.completed -> code.requested",
+                            },
+                            "ignored",
+                        ],
+                    }
+                }
+            }
+        )
+
+        nodes, edges = _workflow_graph(settings)
+        assert [node["id"] for node in nodes] == ["stage-a", "stage-b"]
+        assert [edge["id"] for edge in edges] == ["edge-1"]
+        invalid_graph_settings = MagicMock()
+        invalid_graph_settings.workflow.graph = []
+        assert _workflow_graph(invalid_graph_settings) == ([], [])
+        assert _split_workflow_edge_label("a -> b") == ("a", "b")
+        assert _split_workflow_edge_label(123) == ("", "")
+        assert _split_workflow_edge_label("missing-arrow") == ("", "")
+        assert _stage_personas(nodes[1]) == {"coder"}
+        assert _dedupe_preserve_order(["a", "", "b", "a", "c", "b"]) == ["a", "b", "c"]
+        assert _join_mode_to_fan_in("all") == "all_must_pass"
+        assert _join_mode_to_fan_in("any") == "any_pass"
+        assert _join_mode_to_fan_in("merge") == "merge"
+
+    def test_workflow_allowed_outcome_topics_and_filters(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "graph": {
+                        "nodes": [{"id": "review-stage", "kind": "stage"}],
+                        "edges": [
+                            {
+                                "id": "edge-1",
+                                "source": "review-stage",
+                                "target": "coder-stage",
+                                "label": "review.completed -> code.requested",
+                            },
+                            {
+                                "id": "edge-2",
+                                "source": "review-stage",
+                                "target": "notify-stage",
+                                "label": "review.changes_requested -> notify.requested",
+                            },
+                        ],
+                    }
+                }
+            }
+        )
+
+        assert _workflow_allowed_outcome_topics(settings, node_id=None) is None
+        assert _workflow_allowed_outcome_topics(settings, node_id="review-stage") == {
+            "review.completed",
+            "review.changes_requested",
+        }
+        assert _workflow_event_matches_filters({}, {}) is True
+        payload = {
+            "source_id": "src_1",
+            "fields": {"mount_names": ["tmp-mimir-test"], "page_path": "research/demo.md"},
+            "outcome": {"verdict": "pass"},
+        }
+        assert _workflow_event_matches_filters(payload, {"source_id": "src_1"}) is True
+        assert _workflow_event_matches_filters(payload, {"mount_names": "tmp-mimir-test"}) is True
+        assert _workflow_event_matches_filters(payload, {"verdict": "pass"}) is True
+        assert _workflow_event_matches_filters(payload, {"page_path": "research/demo.md"}) is True
+        assert _workflow_event_matches_filters(payload, {"mount_names": "missing"}) is False
+        assert _workflow_event_matches_filters(payload, {"verdict": "fail"}) is False
+
+    def test_derive_capabilities_prefers_persona_allowed_tools(self) -> None:
+        settings = Settings()
+        persona = PersonaConfig(
+            name="reviewer",
+            allowed_tools=["mimir", "cascade", "ravn"],
+            forbidden_tools=["cascade"],
+        )
+        assert _derive_capabilities(settings, persona, "default") == ["mimir", "ravn"]
+        assert _derive_capabilities(settings, None, "default") == [
+            "core",
+            "extended",
+            "skill",
+            "platform",
+            "cascade",
+            "mimir",
+        ]
+
+    def test_wire_cron_registers_trigger_and_returns_tools(self, tmp_path: Path) -> None:
+        drive_loop = MagicMock()
+        trigger = MagicMock()
+        store = MagicMock()
+        cron_tools = [MagicMock(name="cron-tool")]
+        initiative = Settings().initiative
+        initiative.queue_journal_path = str(tmp_path / "queue" / "journal.json")
+
+        with (
+            patch("ravn.adapters.triggers.cron.make_cron_trigger", return_value=(trigger, store)),
+            patch("ravn.adapters.tools.cron_tools.build_cron_tools", return_value=cron_tools),
+        ):
+            result = _wire_cron(
+                drive_loop,
+                [{"name": "nightly", "schedule": "0 3 * * *"}],
+                initiative,
+            )
+
+        assert result == cron_tools
+        drive_loop.register_trigger.assert_called_once_with(trigger)
 
 
 class TestDaemonAgentFactory:

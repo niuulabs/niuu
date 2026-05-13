@@ -8,9 +8,46 @@ import respx
 
 import niuu.domain.services.connection_tester as _ct
 
+
+def test_normalise_base_url_canonicalises_scheme_host_port_and_path() -> None:
+    assert (
+        _ct._normalise_base_url(" HTTPS://Example.COM:8443/api/v1/ ")
+        == "https://example.com:8443/api/v1"
+    )
+
+
+def test_normalise_base_url_wraps_ipv6_hosts() -> None:
+    assert _ct._normalise_base_url("http://[::1]:8080/") == "http://[::1]:8080"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("ftp://example.com", "Unsupported URL scheme"),
+        ("http:///missing-host", "no hostname"),
+        ("http://example.com/path?x=1", "query strings"),
+        ("http://example.com/path#frag", "query strings"),
+    ],
+)
+def test_normalise_base_url_rejects_invalid_inputs(url: str, expected: str) -> None:
+    with pytest.raises(ValueError, match=expected):
+        _ct._normalise_base_url(url)
+
+
+def test_resolve_trusted_code_forge_base_url_ignores_invalid_trusted_entries() -> None:
+    assert (
+        _ct._resolve_trusted_code_forge_base_url(
+            "https://trusted-host/api",
+            ("ftp://bad-entry", "https://trusted-host/api/"),
+        )
+        == "https://trusted-host/api"
+    )
+
+
 # ---------------------------------------------------------------------------
 # test_code_forge
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 @respx.mock
@@ -47,9 +84,7 @@ async def test_code_forge_uses_user_id_fallback():
 @pytest.mark.asyncio
 @respx.mock
 async def test_code_forge_uses_authenticated_fallback():
-    respx.get("http://my-server/api/v1/identity/me").mock(
-        return_value=httpx.Response(200, json={})
-    )
+    respx.get("http://my-server/api/v1/identity/me").mock(return_value=httpx.Response(200, json={}))
     result = await _ct.test_code_forge(
         url="http://my-server",
         token="tok",
@@ -133,6 +168,19 @@ async def test_code_forge_rejects_userinfo_in_url():
     assert "userinfo" in result.message
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_code_forge_returns_generic_error_for_unexpected_exception():
+    respx.get("http://my-server/api/v1/identity/me").mock(side_effect=RuntimeError("boom"))
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="tok",
+        trusted_base_urls=("http://my-server",),
+    )
+    assert result.success is False
+    assert result.message == "boom"
+
+
 # ---------------------------------------------------------------------------
 # test_telegram_bot
 # ---------------------------------------------------------------------------
@@ -173,6 +221,19 @@ async def test_telegram_bot_network_error():
     respx.get("https://api.telegram.org/bottok/getMe").mock(side_effect=Exception("network error"))
     result = await _ct.test_telegram_bot(bot_token="tok")
     assert result.success is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_telegram_bot_handles_valid_token_transport_error():
+    token = "123456:ABCdefGHIjklMNOpqrsTUVwxyz"
+    respx.get(f"https://api.telegram.org/bot{token}/getMe").mock(
+        side_effect=RuntimeError("telegram down")
+    )
+    result = await _ct.test_telegram_bot(bot_token=token)
+    assert result.success is False
+    assert result.provider == "telegram"
+    assert result.message == "telegram down"
 
 
 # ---------------------------------------------------------------------------

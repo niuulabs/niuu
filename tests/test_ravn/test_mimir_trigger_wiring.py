@@ -103,3 +103,78 @@ def test_plain_runtime_registers_mimir_background_triggers() -> None:
     assert drive_loop.register_trigger.call_args_list[0].args == (source_trigger,)
     assert drive_loop.register_trigger.call_args_list[1].args == (staleness_trigger,)
     assert drive_loop.register_trigger.call_args_list[2].args == (thread_queue_trigger,)
+
+
+def test_cli_transport_runtime_skips_auxiliary_llm_triggers() -> None:
+    drive_loop = MagicMock()
+    mimir = MagicMock()
+    llm = MagicMock()
+    source_trigger = MagicMock(name="source-trigger")
+    staleness_trigger = MagicMock(name="staleness-trigger")
+    thread_queue_trigger = MagicMock(name="thread-queue-trigger")
+
+    settings = Settings(
+        workflow={"graph": {}},
+        mimir={
+            "path": "/tmp/mimir-test",
+            "source_trigger": {"enabled": True},
+            "staleness_trigger": {"enabled": True},
+        },
+        thread={"enabled": True},
+        wakefulness={"enabled": True},
+    )
+
+    with (
+        patch("ravn.cli.commands._uses_cli_transport_runtime", return_value=True),
+        patch(
+            "ravn.adapters.triggers.mimir_source.MimirSourceTrigger",
+            return_value=source_trigger,
+        ),
+        patch(
+            "ravn.adapters.triggers.mimir_staleness.MimirStalenessTrigger",
+            return_value=staleness_trigger,
+        ),
+        patch(
+            "ravn.adapters.triggers.thread_queue.ThreadQueueTrigger",
+            return_value=thread_queue_trigger,
+        ),
+        patch("ravn.adapters.mimir.usage_log.LogBasedUsageAdapter", return_value=SimpleNamespace()),
+        patch("ravn.adapters.triggers.thread_enricher.ThreadEnricher") as mock_enricher,
+        patch("ravn.adapters.triggers.wakefulness.WakefulnessTrigger") as mock_wakefulness,
+    ):
+        _wire_mimir_triggers(drive_loop, mimir, settings, llm=llm, interaction_tracker=MagicMock())
+
+    mock_enricher.assert_not_called()
+    mock_wakefulness.assert_not_called()
+    assert drive_loop.register_trigger.call_args_list[0].args == (source_trigger,)
+    assert drive_loop.register_trigger.call_args_list[1].args == (staleness_trigger,)
+    assert drive_loop.register_trigger.call_args_list[2].args == (thread_queue_trigger,)
+
+
+def test_wakefulness_without_tracker_is_skipped() -> None:
+    drive_loop = MagicMock()
+    mimir = MagicMock()
+    llm = MagicMock()
+    thread_queue_trigger = MagicMock(name="thread-queue-trigger")
+
+    settings = Settings(
+        workflow={"graph": {}},
+        mimir={
+            "source_trigger": {"enabled": False},
+            "staleness_trigger": {"enabled": False},
+        },
+        thread={"enabled": False},
+        wakefulness={"enabled": True},
+    )
+
+    with (
+        patch(
+            "ravn.adapters.triggers.thread_queue.ThreadQueueTrigger",
+            return_value=thread_queue_trigger,
+        ),
+        patch("ravn.adapters.triggers.wakefulness.WakefulnessTrigger") as mock_wakefulness,
+    ):
+        _wire_mimir_triggers(drive_loop, mimir, settings, llm=llm, interaction_tracker=None)
+
+    mock_wakefulness.assert_not_called()
+    drive_loop.register_trigger.assert_called_once_with(thread_queue_trigger)
