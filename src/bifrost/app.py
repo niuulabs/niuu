@@ -280,8 +280,9 @@ def create_app(config: BifrostConfig) -> FastAPI:
         cache=cache,
         audit=audit,
     )
-    app.include_router(api_router)
+    app.include_router(api_router, prefix="/api/v1/bifrost")
     app.include_router(obs_router)
+    app.include_router(obs_router, prefix="/api/v1/bifrost")
 
     # Expose the audit adapter on app.state so route handlers can log events.
     app.state.audit = audit
