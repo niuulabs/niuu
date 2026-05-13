@@ -110,13 +110,7 @@ export function StructuredLogViewer({
     const query = search.trim().toLowerCase();
     if (!query) return levelFilteredLogs;
     return levelFilteredLogs.filter((line) =>
-      [
-        line.message,
-        line.source,
-        line.participant,
-        line.participantLabel,
-        line.stream ?? '',
-      ]
+      [line.message, line.source, line.participant, line.participantLabel, line.stream ?? '']
         .join(' ')
         .toLowerCase()
         .includes(query),
@@ -162,7 +156,9 @@ export function StructuredLogViewer({
                   onClick={() => setSelectedParticipant('all')}
                 >
                   All
-                  <span className="niuu-ml-2 niuu-text-text-faint">{searchFilteredLogs.length}</span>
+                  <span className="niuu-ml-2 niuu-text-text-faint">
+                    {searchFilteredLogs.length}
+                  </span>
                 </button>
                 {resolvedParticipants.map((participant) => (
                   <button
@@ -215,7 +211,9 @@ export function StructuredLogViewer({
               <button
                 type="button"
                 className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em] niuu-text-text-secondary hover:niuu-text-text-primary"
-                onClick={() => downloadText(downloadFilename, serializeAggregatedLogs(filteredLogs))}
+                onClick={() =>
+                  downloadText(downloadFilename, serializeAggregatedLogs(filteredLogs))
+                }
               >
                 Download
               </button>

@@ -7,17 +7,17 @@ test('/mimir/ravns create form shows real checkboxes, persona select, and no leg
   await page.getByRole('button', { name: /create warden/i }).click();
   await page.getByLabel(/dream cycle cron/i).waitFor({ timeout: 5000 });
 
-  const personaOptions = await page.locator('select[aria-label="Persona"] option').evaluateAll(
-    (options) => options.map((option) => ({ value: option.getAttribute('value') ?? '', text: option.textContent ?? '' })),
-  );
+  const personaOptions = await page
+    .locator('select[aria-label="Persona"] option')
+    .evaluateAll((options) =>
+      options.map((option) => ({
+        value: option.getAttribute('value') ?? '',
+        text: option.textContent ?? '',
+      })),
+    );
 
   const snapshot = await page.evaluate(() => {
-    const targets = [
-      'Read mount local',
-      'Write mount local',
-      'Enable console',
-      'Autostart',
-    ];
+    const targets = ['Read mount local', 'Write mount local', 'Enable console', 'Autostart'];
 
     return targets.map((target) => {
       const input = document.querySelector<HTMLInputElement>(

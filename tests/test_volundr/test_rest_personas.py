@@ -81,8 +81,9 @@ def test_list_returns_builtins(client: TestClient) -> None:
     assert "security-auditor" in names
     assert "postmortem-analyst" in names
     assert "mimir-memory-curator" in names
+    assert "mimir-warden" in names
     assert "coding-agent" not in names
-    assert len(names) == 9
+    assert len(names) == 10
 
 
 def test_list_source_builtin_filter(client: TestClient) -> None:
