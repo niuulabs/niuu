@@ -1,5 +1,4 @@
 {{- if .Values.webNext.enabled }}
-{{- $origin := trimSuffix "/" .Values.webNext.config.publicOrigin -}}
 {{- $sessionOrigin := trimSuffix "/" (default (printf "https://%s" (include "volundr.sessionGateway.hostname" .)) .Values.webNext.config.sessionOrigin) -}}
 {{- $sessionWsOrigin := $sessionOrigin | replace "https://" "wss://" | replace "http://" "ws://" -}}
 apiVersion: v1
@@ -15,17 +14,17 @@ data:
       "plugins":
 {{ toPrettyJson .Values.webNext.config.plugins | nindent 8 }},
       "services": {
-        "identity": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "features": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "tracker": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "audit": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "mimir": { "mode": "http", "baseUrl": {{ printf "%s/mimir" $origin | quote }} },
-        "bifrost": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/bifrost" $origin | quote }} },
-        "ravn": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/ravn" $origin | quote }} },
-        "ravn.personas": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/ravn/personas" $origin | quote }} },
-        "forge": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/forge" $origin | quote }} },
+        "identity": { "mode": "http", "baseUrl": "/api/v1" },
+        "features": { "mode": "http", "baseUrl": "/api/v1" },
+        "tracker": { "mode": "http", "baseUrl": "/api/v1" },
+        "audit": { "mode": "http", "baseUrl": "/api/v1" },
+        "mimir": { "mode": "http", "baseUrl": "/mimir" },
+        "bifrost": { "mode": "http", "baseUrl": "/api/v1/bifrost" },
+        "ravn": { "mode": "http", "baseUrl": "/api/v1/ravn" },
+        "ravn.personas": { "mode": "http", "baseUrl": "/api/v1/ravn/personas" },
+        "forge": { "mode": "http", "baseUrl": "/api/v1/forge" },
         "forge.pty": { "mode": "ws", "wsUrl": {{ printf "%s/s/{sessionId}/session" $sessionWsOrigin | quote }} },
-        "tyr": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/tyr" $origin | quote }} },
+        "tyr": { "mode": "http", "baseUrl": "/api/v1/tyr" },
         "filesystem": { "mode": "http", "baseUrl": {{ $sessionOrigin | quote }} }
       },
       "auth": {
@@ -45,17 +44,17 @@ data:
       "plugins":
 {{ toPrettyJson .Values.webNext.config.plugins | nindent 8 }},
       "services": {
-        "identity": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "features": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "tracker": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "audit": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "mimir": { "mode": "http", "baseUrl": {{ printf "%s/mimir" $origin | quote }} },
-        "bifrost": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/bifrost" $origin | quote }} },
-        "ravn": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/ravn" $origin | quote }} },
-        "ravn.personas": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/ravn/personas" $origin | quote }} },
-        "forge": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/forge" $origin | quote }} },
+        "identity": { "mode": "http", "baseUrl": "/api/v1" },
+        "features": { "mode": "http", "baseUrl": "/api/v1" },
+        "tracker": { "mode": "http", "baseUrl": "/api/v1" },
+        "audit": { "mode": "http", "baseUrl": "/api/v1" },
+        "mimir": { "mode": "http", "baseUrl": "/mimir" },
+        "bifrost": { "mode": "http", "baseUrl": "/api/v1/bifrost" },
+        "ravn": { "mode": "http", "baseUrl": "/api/v1/ravn" },
+        "ravn.personas": { "mode": "http", "baseUrl": "/api/v1/ravn/personas" },
+        "forge": { "mode": "http", "baseUrl": "/api/v1/forge" },
         "forge.pty": { "mode": "ws", "wsUrl": {{ printf "%s/s/{sessionId}/session" $sessionWsOrigin | quote }} },
-        "tyr": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/tyr" $origin | quote }} },
+        "tyr": { "mode": "http", "baseUrl": "/api/v1/tyr" },
         "filesystem": { "mode": "http", "baseUrl": {{ $sessionOrigin | quote }} }
       },
       "auth": {
