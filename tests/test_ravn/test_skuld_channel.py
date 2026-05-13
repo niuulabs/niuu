@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -106,6 +108,40 @@ def test_serialise_ends_with_newline():
     ch = _make_channel()
     line = ch._serialise(RavnEvent.response(_SRC, "hi", _CID, _SID))
     assert line.endswith("\n")
+
+
+def test_serialise_outcome_includes_task_id_from_payload_or_event() -> None:
+    ch = _make_channel()
+    event = RavnEvent(
+        type=RavnEventType.OUTCOME,
+        source=_SRC,
+        payload={"event_type": "review.completed", "task_id": "payload-task"},
+        timestamp=datetime.now(UTC),
+        urgency=0.5,
+        correlation_id=_CID,
+        session_id=_SID,
+    )
+    line = ch._serialise(event)
+    data = json.loads(line.strip())
+    assert data["metadata"]["event_type"] == "review.completed"
+    assert data["metadata"]["task_id"] == "payload-task"
+
+
+def test_serialise_outcome_prefers_event_task_id() -> None:
+    ch = _make_channel()
+    event = RavnEvent(
+        type=RavnEventType.OUTCOME,
+        source=_SRC,
+        payload={"event_type": "review.completed", "task_id": "payload-task"},
+        timestamp=datetime.now(UTC),
+        urgency=0.5,
+        correlation_id=_CID,
+        session_id=_SID,
+        task_id="event-task",
+    )
+    line = ch._serialise(event)
+    data = json.loads(line.strip())
+    assert data["metadata"]["task_id"] == "event-task"
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +304,60 @@ async def test_connect_retries_with_delay():
 
     assert call_count == 2
     assert ch._ws is mock_ws
+
+
+@pytest.mark.asyncio
+async def test_recv_loop_delivers_directed_message_metadata() -> None:
+    ch = _make_channel()
+    handler = AsyncMock()
+    ch.on_directed_message(handler)
+
+    mock_ws = AsyncMock()
+    mock_ws.state = 1
+    mock_ws.recv = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "type": "directed_message",
+                    "content": "hello",
+                    "metadata": {"task_id": "task-1"},
+                }
+            ),
+            asyncio.CancelledError(),
+        ]
+    )
+    ch._ws = mock_ws
+
+    await ch._recv_loop()
+
+    handler.assert_awaited_once_with("hello", {"task_id": "task-1"})
+
+
+@pytest.mark.asyncio
+async def test_recv_loop_ignores_non_dict_metadata() -> None:
+    ch = _make_channel()
+    handler = AsyncMock()
+    ch.on_directed_message(handler)
+
+    mock_ws = AsyncMock()
+    mock_ws.state = 1
+    mock_ws.recv = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "type": "directed_message",
+                    "content": "hello",
+                    "metadata": "not-a-dict",
+                }
+            ),
+            asyncio.CancelledError(),
+        ]
+    )
+    ch._ws = mock_ws
+
+    await ch._recv_loop()
+
+    handler.assert_awaited_once_with("hello", None)
 
 
 @pytest.mark.asyncio

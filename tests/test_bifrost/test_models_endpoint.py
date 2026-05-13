@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 from fastapi.testclient import TestClient
 
 from bifrost.app import create_app
 from bifrost.config import BifrostConfig, ProviderConfig
+from niuu.domain.model_catalog import ProviderHealthState
 
 
 class TestModelsEndpoint:
@@ -216,3 +219,181 @@ class TestInternalCatalogEndpoints:
         vendors = {entry["vendor"] for entry in data}
         assert "anthropic" in vendors
         assert "openai" in vendors
+
+    def test_internal_catalog_model_detail_resolves_alias(self) -> None:
+        config = BifrostConfig(
+            providers={"anthropic": ProviderConfig(models=["claude-sonnet-4-6"])},
+            aliases={"smart": "claude-sonnet-4-6"},
+        )
+        app = create_app(config)
+        with TestClient(app) as client:
+            data = client.get("/api/v1/bifrost/models/smart").json()
+        assert data["id"] == "claude-sonnet-4-6"
+        assert "smart" in data["aliases"]
+
+    def test_internal_catalog_model_detail_returns_404_for_unknown_model(self) -> None:
+        config = BifrostConfig(providers={})
+        app = create_app(config)
+        with TestClient(app) as client:
+            response = client.get("/api/v1/bifrost/models/does-not-exist")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Unknown model: does-not-exist"
+
+    def test_internal_catalog_aliases_list_configured_aliases(self) -> None:
+        config = BifrostConfig(
+            providers={"anthropic": ProviderConfig(models=["claude-sonnet-4-6"])},
+            aliases={"smart": "claude-sonnet-4-6", "fast": "claude-sonnet-4-6"},
+        )
+        app = create_app(config)
+        with TestClient(app) as client:
+            data = client.get("/api/v1/bifrost/aliases").json()
+        assert data == [
+            {"alias": "fast", "target": "claude-sonnet-4-6"},
+            {"alias": "smart", "target": "claude-sonnet-4-6"},
+        ]
+
+    def test_internal_catalog_providers_preserve_configured_provider_details(self) -> None:
+        config = BifrostConfig(
+            providers={
+                "openai": ProviderConfig(
+                    models=["gpt-5.5"],
+                    base_url="https://api.openai.example",
+                    timeout=45.0,
+                    cost_per_token=0.42,
+                )
+            }
+        )
+        app = create_app(config)
+        with TestClient(app) as client:
+            data = client.get("/api/v1/bifrost/providers").json()
+        assert data == [
+            {
+                "key": "openai",
+                "vendor": "openai",
+                "base_url": "https://api.openai.example",
+                "model_ids": ["gpt-5.5"],
+                "timeout_seconds": 45.0,
+                "cost_per_token": 0.42,
+                "state": "unknown",
+                "detail": "",
+            }
+        ]
+
+    def test_internal_catalog_provider_health_reports_probe_results(self) -> None:
+        config = BifrostConfig(
+            providers={
+                "anthropic": ProviderConfig(
+                    models=["claude-sonnet-4-6"],
+                    base_url="https://anthropic.example",
+                ),
+                "openai": ProviderConfig(
+                    models=["gpt-5.5"],
+                    base_url="https://openai.example",
+                ),
+            }
+        )
+        app = create_app(config)
+        with patch(
+            "bifrost.inbound.routes._provider_health_snapshot",
+            new=AsyncMock(
+                return_value=(
+                    {
+                        "anthropic": ProviderHealthState.HEALTHY,
+                        "openai": ProviderHealthState.DEGRADED,
+                    },
+                    {
+                        "anthropic": "HTTP 200",
+                        "openai": "HTTP 503",
+                    },
+                )
+            ),
+        ):
+            with TestClient(app) as client:
+                data = client.get("/api/v1/bifrost/providers/health").json()
+        by_key = {entry["key"]: entry for entry in data}
+        assert by_key["anthropic"]["state"] == "healthy"
+        assert by_key["anthropic"]["detail"] == "HTTP 200"
+        assert by_key["openai"]["state"] == "degraded"
+        assert by_key["openai"]["detail"] == "HTTP 503"
+
+    def test_internal_catalog_provider_health_probes_live_base_urls(self) -> None:
+        config = BifrostConfig(
+            providers={
+                "anthropic": ProviderConfig(
+                    models=["claude-sonnet-4-6"],
+                    base_url="https://anthropic.example",
+                ),
+                "openai": ProviderConfig(
+                    models=["gpt-5.5"],
+                    base_url="https://openai.example",
+                ),
+                "local": ProviderConfig(models=["llama3.2:latest"], base_url=""),
+            }
+        )
+        app = create_app(config)
+
+        class _FakeResponse:
+            def __init__(self, status_code: int) -> None:
+                self.status_code = status_code
+
+        class _FakeAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            async def head(self, url: str) -> _FakeResponse:
+                if "anthropic" in url:
+                    return _FakeResponse(204)
+                if "openai" in url:
+                    return _FakeResponse(503)
+                raise AssertionError(f"unexpected URL {url}")
+
+        with patch("bifrost.inbound.routes.httpx.AsyncClient", return_value=_FakeAsyncClient()):
+            with TestClient(app) as client:
+                data = client.get("/api/v1/bifrost/providers/health").json()
+
+        by_key = {entry["key"]: entry for entry in data}
+        assert by_key["anthropic"]["state"] == "healthy"
+        assert by_key["anthropic"]["detail"] == "HTTP 204"
+        assert by_key["openai"]["state"] == "degraded"
+        assert by_key["openai"]["detail"] == "HTTP 503"
+        assert by_key["local"]["state"] == "unknown"
+        assert by_key["local"]["detail"] == "No base URL configured."
+
+    def test_openai_models_endpoint_skips_disabled_models_and_keeps_aliases(self) -> None:
+        config = BifrostConfig(
+            providers={"anthropic": ProviderConfig(models=["claude-sonnet-4-6"])},
+            aliases={"smart": "claude-sonnet-4-6"},
+            models=[
+                {
+                    "id": "claude-sonnet-4-6",
+                    "name": "Claude Sonnet 4.6",
+                    "vendor": "anthropic",
+                    "enabled": True,
+                },
+                {
+                    "id": "disabled-model",
+                    "name": "Disabled Model",
+                    "vendor": "anthropic",
+                    "enabled": False,
+                },
+            ],
+        )
+        app = create_app(config)
+        with TestClient(app) as client:
+            data = client.get("/api/v1/bifrost/v1/models").json()["data"]
+        ids = {entry["id"] for entry in data}
+        assert "claude-sonnet-4-6" in ids
+        assert "smart" in ids
+        assert "disabled-model" not in ids
+
+    def test_cache_stats_and_reload_keys_endpoints_return_ok(self, client: TestClient) -> None:
+        stats = client.get("/api/v1/bifrost/v1/cache/stats")
+        assert stats.status_code == 200
+        assert "hits" in stats.json()
+
+        reload = client.post("/api/v1/bifrost/admin/reload-keys")
+        assert reload.status_code == 200
+        assert reload.json() == {"status": "ok"}

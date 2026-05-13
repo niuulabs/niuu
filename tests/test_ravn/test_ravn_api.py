@@ -228,6 +228,35 @@ def test_create_warden_persists_deployment_kwargs(tmp_path):
     assert payload["features"]["thread_queue_enabled"] is False
 
 
+def test_create_warden_persists_console_mount_and_schedule_config(tmp_path):
+    store = _store(tmp_path)
+    client = TestClient(create_app(warden_store=store))
+
+    resp = client.post(
+        "/api/v1/ravn/wardens",
+        json={
+            "name": "Console Warden",
+            "profile": "deep-research",
+            "model": "gpt-5.5",
+            "mount_names": ["scratch", "permanent"],
+            "read_mount_names": ["scratch"],
+            "write_mount_names": ["permanent"],
+            "schedules": {"dream_cycle_cron_expression": "*/30 * * * *"},
+            "console": {"enabled": True, "host": "0.0.0.0", "port": 8610, "auth_mode": "token"},
+        },
+    )
+
+    assert resp.status_code == 201
+    payload = resp.json()
+    assert payload["profile"] == "deep-research"
+    assert payload["model"] == "gpt-5.5"
+    assert payload["mimir"]["read_mount_names"] == ["scratch"]
+    assert payload["mimir"]["write_mount_names"] == ["permanent"]
+    assert payload["schedules"]["dream_cycle_cron_expression"] == "*/30 * * * *"
+    assert payload["console"]["enabled"] is True
+    assert payload["console"]["port"] == 8610
+
+
 def test_get_warden_returns_404_when_missing(tmp_path):
     client = TestClient(create_app(warden_store=_store(tmp_path)))
 
@@ -425,6 +454,83 @@ def test_get_warden_logs_includes_dream_summaries_from_mimir_log(tmp_path, monke
     assert any("pages_updated=4" in entry["message"] for entry in payload)
 
 
+def test_get_warden_logs_supports_all_streams_and_parsed_lines(tmp_path):
+    store = _store(tmp_path)
+    created = store.create(WardenSpec(id="", name="Research Warden"))
+    warden_dir = store.warden_dir(created.id)
+    warden_dir.mkdir(parents=True, exist_ok=True)
+    (warden_dir / "warden.log").write_text(
+        "2026-05-12 14:01:20,123 ravn.daemon INFO ravn daemon started.\n",
+        encoding="utf-8",
+    )
+    (warden_dir / "warden.error.log").write_text("plain stderr line\n", encoding="utf-8")
+    client = TestClient(create_app(warden_store=store))
+
+    stdout = client.get(f"/api/v1/ravn/wardens/{created.id}/logs?stream=stdout").json()
+    stderr = client.get(f"/api/v1/ravn/wardens/{created.id}/logs?stream=stderr").json()
+    merged = client.get(f"/api/v1/ravn/wardens/{created.id}/logs?stream=all").json()
+
+    assert stdout[0]["logger"] == "ravn.daemon"
+    assert stdout[0]["level"] == "INFO"
+    assert stderr[0]["source"] == "stderr"
+    assert stderr[0]["message"] == "plain stderr line"
+    assert {entry["source"] for entry in merged} == {"stdout", "stderr"}
+
+
+def test_get_warden_logs_rejects_invalid_stream(tmp_path):
+    store = _store(tmp_path)
+    created = store.create(WardenSpec(id="", name="Research Warden"))
+    client = TestClient(create_app(warden_store=store))
+
+    resp = client.get(f"/api/v1/ravn/wardens/{created.id}/logs?stream=nope")
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "stream must be 'stdout', 'stderr', or 'all'"
+
+
+def test_get_warden_logs_returns_404_when_missing(tmp_path):
+    client = TestClient(create_app(warden_store=_store(tmp_path)))
+
+    resp = client.get("/api/v1/ravn/wardens/missing/logs")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Warden not found"
+
+
+def test_get_warden_activity_returns_merged_entries_and_handles_missing(tmp_path):
+    store = _store(tmp_path)
+    created = store.create(WardenSpec(id="", name="Research Warden"))
+    warden_dir = store.warden_dir(created.id)
+    warden_dir.mkdir(parents=True, exist_ok=True)
+    (warden_dir / "warden.log").write_text(
+        "2026-05-12 14:01:20,123 ravn.daemon INFO stdout line\n",
+        encoding="utf-8",
+    )
+    (warden_dir / "warden.error.log").write_text(
+        "2026-05-12 14:01:21,123 ravn.daemon ERROR stderr line\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(warden_store=store))
+
+    resp = client.get(f"/api/v1/ravn/wardens/{created.id}/activity?limit=10")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert [entry["message"] for entry in payload] == ["stdout line", "stderr line"]
+
+    missing = client.get("/api/v1/ravn/wardens/missing/activity")
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Warden not found"
+
+
+def test_warden_stream_returns_404_when_missing(tmp_path):
+    client = TestClient(create_app(warden_store=_store(tmp_path)))
+
+    resp = client.get("/api/v1/ravn/wardens/missing/stream")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Warden not found"
+
+
 def test_get_warden_includes_last_dream_summary(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     dream_log = tmp_path / ".ravn" / "mimir" / "local" / "wiki" / "log.md"
@@ -484,3 +590,22 @@ def test_get_warden_does_not_borrow_shared_dream_without_state_file(tmp_path, mo
     payload = resp.json()
     assert payload["runtime"]["last_dream"] is None
     assert payload["runtime"]["pages_touched"] == 0
+
+
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        ("/api/v1/ravn/wardens/missing/observe", "post"),
+        ("/api/v1/ravn/wardens/missing/install", "post"),
+        ("/api/v1/ravn/wardens/missing/start", "post"),
+        ("/api/v1/ravn/wardens/missing/stop", "post"),
+        ("/api/v1/ravn/wardens/missing/uninstall", "post"),
+    ],
+)
+def test_missing_warden_mutation_endpoints_return_404(tmp_path, path: str, method: str):
+    client = TestClient(create_app(warden_store=_store(tmp_path)))
+
+    resp = getattr(client, method)(path)
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Warden not found"
