@@ -65,8 +65,78 @@ service:
   port: 80
   # -- Port the container listens on.
   targetPort: 8088
-  # -- Additional service annotations.
+# -- Additional service annotations.
   annotations: {}
+
+# Envoy sidecar proxy (JWT validation, header extraction)
+envoy:
+  # -- Enable Envoy sidecar proxy
+  enabled: false
+  image:
+    # -- Envoy image repository
+    repository: envoyproxy/envoy
+    # -- Envoy image tag
+    tag: "v1.32-latest"
+    # -- Envoy image pull policy
+    pullPolicy: IfNotPresent
+  # -- Envoy listener port (becomes the service target when enabled)
+  port: 8443
+  # -- Envoy admin interface port (localhost only)
+  adminPort: 9901
+  # -- Upstream connect timeout
+  connectTimeout: "0.25s"
+  # -- Upstream request timeout
+  upstreamTimeout: "60s"
+  # -- Resource limits for the Envoy sidecar
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  # -- Header names Envoy sets on upstream requests
+  headerNames:
+    userId: x-auth-user-id
+    email: x-auth-email
+    tenant: x-auth-tenant
+    roles: x-auth-roles
+  # JWT authentication (via Keycloak)
+  jwt:
+    # -- Enable JWT authentication filter
+    enabled: false
+    # -- JWT issuer URL (Keycloak realm)
+    issuer: ""
+    # -- Allowed JWT audiences
+    audiences: []
+    # -- JWKS URI for key retrieval
+    jwksUri: ""
+    # -- JWKS fetch timeout
+    jwksTimeout: "5s"
+    # -- JWKS cache duration in seconds
+    jwksCacheDurationSeconds: 300
+    # -- JWT claim containing tenant ID
+    tenantClaim: "tenant_id"
+    # -- JWT claim containing roles
+    rolesClaim: "resource_access.volundr-api.roles"
+    # -- Keycloak upstream host (for JWKS fetching)
+    keycloakHost: ""
+    # -- Keycloak upstream port
+    keycloakPort: 8080
+    # -- Enable TLS for Keycloak upstream
+    keycloakTls: false
+    # -- Additional JWT claim-to-header mappings
+    extraClaimHeaders: []
+    # -- Path prefixes that bypass JWT validation
+    bypassPrefixes:
+      - /health
+      - /healthz
+      - /readyz
+      - /metrics
+  # -- Extra HTTP filters (inserted before the router filter)
+  extraHttpFilters: []
+  # -- Extra upstream clusters
+  extraClusters: []
 
 # Prometheus metrics scraping configuration.
 metrics:
