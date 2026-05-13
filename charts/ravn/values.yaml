@@ -38,7 +38,7 @@ persistence:
   storageClass: ""
   accessMode: ReadWriteOnce
   size: 1Gi
-  mountPath: /root/.ravn
+  mountPath: /home/niuu/.ravn
 
 envoy:
   enabled: false

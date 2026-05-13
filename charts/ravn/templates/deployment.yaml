@@ -55,7 +55,7 @@ spec:
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | default "info" | quote }}
             - name: RAVN_WARDENS_DIR
-              value: {{ printf "%s/wardens" (.Values.persistence.mountPath | default "/root/.ravn") | quote }}
+              value: {{ printf "%s/wardens" (.Values.persistence.mountPath | default "/home/niuu/.ravn") | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -96,7 +96,7 @@ spec:
           volumeMounts:
             {{- if .Values.persistence.enabled }}
             - name: ravn-data
-              mountPath: {{ .Values.persistence.mountPath | default "/root/.ravn" }}
+              mountPath: {{ .Values.persistence.mountPath | default "/home/niuu/.ravn" }}
             {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
