@@ -3,6 +3,9 @@
 replicaCount: 1
 revisionHistoryLimit: 10
 
+updateStrategy:
+  type: Recreate
+
 image:
   registry: ghcr.io/niuulabs
   repository: niuu
