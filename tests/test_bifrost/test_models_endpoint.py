@@ -172,6 +172,24 @@ class TestModelsEndpointMultiProvider:
 
 
 class TestInternalCatalogEndpoints:
+    def test_internal_catalog_models_also_available_without_public_prefix(self) -> None:
+        config = BifrostConfig(providers={})
+        app = create_app(config)
+        with TestClient(app) as client:
+            data = client.get("/models").json()
+        ids = {entry["id"] for entry in data}
+        assert "claude-sonnet-4-6" in ids
+        assert "gpt-5.5" in ids
+
+    def test_internal_catalog_providers_also_available_without_public_prefix(self) -> None:
+        config = BifrostConfig(providers={})
+        app = create_app(config)
+        with TestClient(app) as client:
+            data = client.get("/providers").json()
+        vendors = {entry["vendor"] for entry in data}
+        assert "anthropic" in vendors
+        assert "openai" in vendors
+
     def test_internal_catalog_models_use_bifrost_owned_catalog_without_providers(self) -> None:
         config = BifrostConfig(providers={})
         app = create_app(config)

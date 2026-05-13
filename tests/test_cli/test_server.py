@@ -515,7 +515,9 @@ class TestRootServerBuildApp:
         assert config_resp.status_code == 200
         assert config_resp.headers["content-type"].startswith("application/json")
         assert config_resp.json()["services"]["forge"]["mode"] == "http"
-        assert config_resp.json()["services"]["forge"]["baseUrl"] == "http://testserver/api/v1/forge"
+        assert (
+            config_resp.json()["services"]["forge"]["baseUrl"] == "http://testserver/api/v1/forge"
+        )
         assert (
             config_resp.json()["services"]["forge.pty"]["wsUrl"]
             == "ws://testserver/s/{sessionId}/session"
@@ -1292,6 +1294,10 @@ class TestRootServerBuildApp:
     def test_build_root_app_mounts_canonical_bifrost_prefixes_via_backend_translation(self) -> None:
         bifrost_app = FastAPI()
 
+        @bifrost_app.get("/models")
+        async def internal_models():
+            return [{"id": "gpt-5.5"}]
+
         @bifrost_app.get("/v1/models")
         async def list_models():
             return {"data": []}
@@ -1327,6 +1333,10 @@ class TestRootServerBuildApp:
                             "/api/v1/bifrost/readyz",
                         ),
                     ),
+                    APIRouteDomain(
+                        name="bifrost-api",
+                        prefixes=("/api/v1/bifrost",),
+                    ),
                 )
 
         registry = PluginRegistry()
@@ -1336,10 +1346,11 @@ class TestRootServerBuildApp:
             registry=registry,
             host="127.0.0.1",
             port=8080,
-            enabled_mounts={"llm-api", "bifrost-observability-api"},
+            enabled_mounts={"llm-api", "bifrost-api", "bifrost-observability-api"},
         )
 
         client = TestClient(app)
+        assert client.get("/api/v1/bifrost/models").json() == [{"id": "gpt-5.5"}]
         assert client.get("/api/v1/bifrost/v1/models").json() == {"data": []}
         assert client.get("/api/v1/bifrost/metrics").json() == {"metrics": "ok"}
         assert client.get("/api/v1/bifrost/healthz").json() == {"status": "ok"}
