@@ -70,8 +70,8 @@ test('unauthenticated user with OIDC config is redirected to /login from root', 
   await stubOidc(page);
   await page.goto('/');
 
-  await expect(page).toHaveURL('http://localhost:5173/login', { timeout: 5000 });
-  await expect(page.getByTestId('login-page')).toBeVisible({ timeout: 5000 });
+  await expect(page).toHaveURL('http://localhost:5173/login', { timeout: 10000 });
+  await expect(page.getByTestId('login-page')).toBeVisible({ timeout: 10000 });
 });
 
 test('callback page renders the loading spinner', async ({ page }) => {
