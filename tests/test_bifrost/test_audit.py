@@ -81,7 +81,7 @@ class TestInboundLayer:
             m.return_value = _make_response()
             with self._client() as client:
                 resp = client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": "gpt-4o",
                         "max_tokens": 100,
@@ -99,7 +99,7 @@ class TestInboundLayer:
             }
         )
         with TestClient(create_app(config)) as client:
-            resp = client.get("/v1/models")
+            resp = client.get("/api/v1/bifrost/v1/models")
         assert resp.status_code == 200
         ids = {m["id"] for m in resp.json()["data"]}
         assert ids == {model.id for model in bifrost_catalog.list_models(config)}
@@ -113,7 +113,7 @@ class TestInboundLayer:
         with patch("bifrost.router.ModelRouter.stream", return_value=_fake_stream(None)):
             with self._client() as client:
                 resp = client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": "gpt-4o",
                         "max_tokens": 100,
@@ -130,7 +130,7 @@ class TestInboundLayer:
             m.return_value = _make_response()
             with self._client() as client:
                 resp = client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": "gpt-4o",
                         "max_tokens": 100,

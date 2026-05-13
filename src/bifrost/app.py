@@ -270,6 +270,10 @@ def create_app(config: BifrostConfig) -> FastAPI:
         response.headers["X-Correlation-ID"] = correlation_id
         return response
 
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+
     api_router = create_router(
         config=config,
         router=router,
