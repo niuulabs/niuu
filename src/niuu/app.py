@@ -869,9 +869,7 @@ class RootServer(Service):
 
         os.environ["NIUU_SERVER_HOST"] = self._host
         os.environ["NIUU_SERVER_PORT"] = str(self._port)
-        os.environ["VOLUNDR__URL"] = (
-            f"http://{_local_service_host(self._host)}:{self._port}"
-        )
+        os.environ["VOLUNDR__URL"] = f"http://{_local_service_host(self._host)}:{self._port}"
 
         app = self._build_app()
         config = uvicorn.Config(
