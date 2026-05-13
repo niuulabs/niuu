@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { RavnsPage } from './RavnsPage';
 import { createMimirMockAdapter } from '../adapters/mock';
@@ -125,6 +125,24 @@ describe('RavnsPage', () => {
     expect(screen.getByTestId('warden-daemon-log')).toBeInTheDocument();
   });
 
+  it('clears a stale selected warden id when the directory no longer contains it', async () => {
+    const setTweak = vi.fn();
+    const empty: IMimirService = {
+      ...createMimirMockAdapter(),
+      mounts: {
+        ...createMimirMockAdapter().mounts,
+        listRavnBindings: async () => [],
+      },
+    };
+
+    wrap(<RavnsPage />, empty, {
+      tweaks: { 'mimir.selectedWardenId': 'missing-warden' },
+      setTweak,
+    });
+    await waitFor(() => expect(screen.getByText(/no wardens found/i)).toBeInTheDocument());
+    expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', '');
+  });
+
   it('shows ravn state labels', async () => {
     wrap(<RavnsPage />);
     await waitFor(() => expect(screen.getAllByTestId('ravn-state').length).toBeGreaterThan(0));
@@ -227,6 +245,56 @@ describe('RavnsPage', () => {
     );
   });
 
+  it('shows observation errors in the selected warden profile', async () => {
+    const failingObserve = createStaticWardenService({
+      id: 'warden-observe-fail',
+      name: 'Observe Fail',
+      persona: 'mimir-warden',
+      profile: '',
+      deployment: 'launchd',
+      deploymentKwargs: {},
+      model: 'claude-sonnet-4-6',
+      mountNames: ['local'],
+      writeMount: 'local',
+      readMountNames: ['local'],
+      writeMountNames: ['local'],
+      categoryScope: [],
+      features: {
+        wakefulnessEnabled: true,
+        dreamCycleEnabled: true,
+        threadQueueEnabled: true,
+        threadEnricherEnabled: true,
+        recapEnabled: true,
+        sourceTriggerEnabled: true,
+        stalenessTriggerEnabled: true,
+      },
+      schedules: {
+        dreamCycleCronExpression: '0 3 * * *',
+        dreamCyclePollIntervalSeconds: 60,
+        sourceTriggerPollIntervalSeconds: 60,
+        stalenessTriggerScheduleHours: 6,
+      },
+      console: { enabled: true, host: '0.0.0.0', port: 8610, authMode: 'noop' },
+      autostart: true,
+      createdAt: '2026-05-11T00:00:00Z',
+      createdBy: 'test',
+      runtime: { state: 'active', pagesTouched: 1, lastDream: null },
+      supervisor: { installed: true },
+    });
+
+    failingObserve.observeWarden = async () => {
+      throw new Error('observe exploded');
+    };
+
+    wrap(
+      <RavnsPage />,
+      undefined,
+      { tweaks: { 'mimir.selectedWardenId': 'warden-observe-fail' } },
+      failingObserve,
+    );
+    await waitFor(() => expect(screen.getByText('observe exploded')).toBeInTheDocument());
+  });
+
   it('profile view shows tools list in hero section', async () => {
     wrap(<RavnsPage />);
     await waitFor(() => expect(screen.getAllByTestId('ravn-item').length).toBeGreaterThan(0));
@@ -281,6 +349,172 @@ describe('RavnsPage', () => {
     fireEvent.click(screen.getAllByTestId('ravn-item')[0]!);
     await waitFor(() => screen.getByTestId('ravn-profile'));
     expect(screen.getByText(/no expertise defined/i)).toBeInTheDocument();
+  });
+
+  it('shows the disabled console copy when no live console port is configured', async () => {
+    const noConsole = createStaticWardenService({
+      id: 'warden-no-console',
+      name: 'No Console',
+      persona: 'mimir-warden',
+      profile: '',
+      deployment: 'launchd',
+      deploymentKwargs: {},
+      model: 'claude-sonnet-4-6',
+      mountNames: ['local'],
+      writeMount: 'local',
+      readMountNames: ['local'],
+      writeMountNames: ['local'],
+      categoryScope: [],
+      features: {
+        wakefulnessEnabled: true,
+        dreamCycleEnabled: true,
+        threadQueueEnabled: true,
+        threadEnricherEnabled: true,
+        recapEnabled: true,
+        sourceTriggerEnabled: true,
+        stalenessTriggerEnabled: true,
+      },
+      schedules: {
+        dreamCycleCronExpression: '0 3 * * *',
+        dreamCyclePollIntervalSeconds: 60,
+        sourceTriggerPollIntervalSeconds: 60,
+        stalenessTriggerScheduleHours: 6,
+      },
+      console: { enabled: false, host: '0.0.0.0', port: 0, authMode: 'noop' },
+      autostart: false,
+      createdAt: '2026-05-11T00:00:00Z',
+      createdBy: 'test',
+      runtime: { state: 'idle', pagesTouched: 0, lastDream: null },
+      supervisor: { installed: true },
+    });
+
+    wrap(
+      <RavnsPage />,
+      undefined,
+      { tweaks: { 'mimir.selectedWardenId': 'warden-no-console' } },
+      noConsole,
+    );
+    await waitFor(() => expect(screen.getByTestId('ravn-profile')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Console' }));
+    expect(
+      screen.getByText(/enable the live console gateway and assign a port to connect here/i),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the live console surface when the warden gateway is enabled', async () => {
+    wrap(<RavnsPage />, undefined, { tweaks: { 'mimir.selectedWardenId': 'ravn-fjolnir' } });
+    await waitFor(() => expect(screen.getByTestId('ravn-profile')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Console' }));
+    expect(screen.getByTestId('warden-live-console')).toBeInTheDocument();
+    expect(screen.getByText(/join the warden's own gateway in-page/i)).toBeInTheDocument();
+  });
+
+  it('surfaces stderr log failures in the merged daemon log viewer', async () => {
+    const stderrFailure = createStaticWardenService({
+      id: 'warden-log-fail',
+      name: 'Log Fail',
+      persona: 'mimir-warden',
+      profile: '',
+      deployment: 'launchd',
+      deploymentKwargs: {},
+      model: 'claude-sonnet-4-6',
+      mountNames: ['local'],
+      writeMount: 'local',
+      readMountNames: ['local'],
+      writeMountNames: ['local'],
+      categoryScope: [],
+      features: {
+        wakefulnessEnabled: true,
+        dreamCycleEnabled: true,
+        threadQueueEnabled: true,
+        threadEnricherEnabled: true,
+        recapEnabled: true,
+        sourceTriggerEnabled: true,
+        stalenessTriggerEnabled: true,
+      },
+      schedules: {
+        dreamCycleCronExpression: '0 3 * * *',
+        dreamCyclePollIntervalSeconds: 60,
+        sourceTriggerPollIntervalSeconds: 60,
+        stalenessTriggerScheduleHours: 6,
+      },
+      console: { enabled: true, host: '0.0.0.0', port: 8610, authMode: 'noop' },
+      autostart: true,
+      createdAt: '2026-05-11T00:00:00Z',
+      createdBy: 'test',
+      runtime: { state: 'active', pagesTouched: 2, lastDream: null },
+      supervisor: { installed: true },
+    });
+
+    stderrFailure.getWardenLogs = async (_id, options) => {
+      if (options?.stream === 'stderr') throw new Error('stderr exploded');
+      return [];
+    };
+
+    wrap(
+      <RavnsPage />,
+      undefined,
+      { tweaks: { 'mimir.selectedWardenId': 'warden-log-fail' } },
+      stderrFailure,
+    );
+    await waitFor(() => expect(screen.getByTestId('ravn-profile')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Logs' }));
+    await waitFor(() => expect(screen.getByText('stderr exploded')).toBeInTheDocument());
+  });
+
+  it('prefers stdout log errors when both daemon streams fail', async () => {
+    const stdoutFailure = createStaticWardenService({
+      id: 'warden-stdout-fail',
+      name: 'Stdout Fail',
+      persona: 'mimir-warden',
+      profile: '',
+      deployment: 'launchd',
+      deploymentKwargs: {},
+      model: 'claude-sonnet-4-6',
+      mountNames: ['local'],
+      writeMount: 'local',
+      readMountNames: ['local'],
+      writeMountNames: ['local'],
+      categoryScope: [],
+      features: {
+        wakefulnessEnabled: true,
+        dreamCycleEnabled: true,
+        threadQueueEnabled: true,
+        threadEnricherEnabled: true,
+        recapEnabled: true,
+        sourceTriggerEnabled: true,
+        stalenessTriggerEnabled: true,
+      },
+      schedules: {
+        dreamCycleCronExpression: '0 3 * * *',
+        dreamCyclePollIntervalSeconds: 60,
+        sourceTriggerPollIntervalSeconds: 60,
+        stalenessTriggerScheduleHours: 6,
+      },
+      console: { enabled: true, host: '0.0.0.0', port: 8610, authMode: 'noop' },
+      autostart: true,
+      createdAt: '2026-05-11T00:00:00Z',
+      createdBy: 'test',
+      runtime: { state: 'active', pagesTouched: 2, lastDream: null },
+      supervisor: { installed: true },
+    });
+
+    stdoutFailure.getWardenLogs = async (_id, options) => {
+      if (options?.stream === 'stdout') throw new Error('stdout exploded');
+      throw new Error('stderr exploded');
+    };
+
+    wrap(
+      <RavnsPage />,
+      undefined,
+      { tweaks: { 'mimir.selectedWardenId': 'warden-stdout-fail' } },
+      stdoutFailure,
+    );
+    await waitFor(() => expect(screen.getByTestId('ravn-profile')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Logs' }));
+    await waitFor(() => expect(screen.getByText('stdout exploded')).toBeInTheDocument());
+    expect(screen.queryByText('stderr exploded')).not.toBeInTheDocument();
   });
 
   it('shows error state when service throws', async () => {

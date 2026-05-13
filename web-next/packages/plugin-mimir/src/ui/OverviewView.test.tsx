@@ -183,6 +183,140 @@ describe('OverviewView', () => {
     expect(neverEls.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('opens a warden from the roster with keyboard controls', async () => {
+    const setTweak = vi.fn();
+    wrap(<OverviewView />, undefined, { tweaks: {}, setTweak });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /open warden ravn-fjolnir/i })).toBeInTheDocument(),
+    );
+
+    const wardenCard = screen.getByRole('button', { name: /open warden ravn-fjolnir/i });
+    fireEvent.keyDown(wardenCard, { key: 'Escape' });
+    expect(setTweak).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(wardenCard, { key: 'Enter' });
+    fireEvent.keyDown(wardenCard, { key: ' ' });
+    expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', 'ravn-fjolnir');
+    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/ravns' });
+  });
+
+  it('shows the empty activity copy when the feed has no items', async () => {
+    const noFeedService: IMimirService = {
+      ...createMimirMockAdapter(),
+      mounts: {
+        ...createMimirMockAdapter().mounts,
+        getRecentWrites: async () => [],
+      },
+    };
+
+    wrap(<OverviewView />, noFeedService);
+    await waitFor(() => expect(screen.getByText('No recent activity.')).toBeInTheDocument());
+  });
+
+  it('hides the wardens section when no wardens are bound to mounts', async () => {
+    const noRavnsService: IMimirService = {
+      ...createMimirMockAdapter(),
+      mounts: {
+        ...createMimirMockAdapter().mounts,
+        listRavnBindings: async () => [],
+      },
+    };
+
+    wrap(<OverviewView />, noRavnsService);
+    await waitFor(() => expect(screen.getByText('Mounts')).toBeInTheDocument());
+    expect(screen.queryByText('Wardens')).not.toBeInTheDocument();
+  });
+
+  it('uses singular copy when exactly one mount is connected', async () => {
+    const singleMountService: IMimirService = {
+      ...createMimirMockAdapter(),
+      mounts: {
+        ...createMimirMockAdapter().mounts,
+        async listMounts() {
+          return [
+            {
+              name: 'solo',
+              role: 'local',
+              host: 'localhost',
+              url: 'http://localhost',
+              priority: 1,
+              categories: null,
+              status: 'healthy',
+              pages: 5,
+              sources: 2,
+              lintIssues: 0,
+              lastWrite: '2026-04-19T00:00:00Z',
+              embedding: 'minilm',
+              sizeKb: 100,
+              desc: 'solo mount',
+            },
+          ];
+        },
+      },
+    };
+
+    wrap(<OverviewView />, singleMountService);
+    await waitFor(() => expect(screen.getByText(/1 instance connected/i)).toBeInTheDocument());
+  });
+
+  it('shows an em dash when no mount has a last-write timestamp', async () => {
+    const noLastWriteService: IMimirService = {
+      ...createMimirMockAdapter(),
+      mounts: {
+        ...createMimirMockAdapter().mounts,
+        async listMounts() {
+          return [
+            {
+              name: 'empty',
+              role: 'local',
+              host: 'localhost',
+              url: 'http://localhost',
+              priority: 1,
+              categories: null,
+              status: 'healthy',
+              pages: 1,
+              sources: 1,
+              lintIssues: 0,
+              lastWrite: '',
+              embedding: 'minilm',
+              sizeKb: 10,
+              desc: 'empty timestamp mount',
+            },
+          ];
+        },
+      },
+    };
+
+    wrap(<OverviewView />, noLastWriteService);
+    await waitFor(() => expect(screen.getByText('last write')).toBeInTheDocument());
+    const lastWriteCard = screen.getByText('last write').closest('.niuu-kpi-card');
+    expect(lastWriteCard).not.toBeNull();
+    expect(within(lastWriteCard as HTMLElement).getByText('—')).toBeInTheDocument();
+  });
+
+  it('uses the fallback styling path for unknown activity kinds', async () => {
+    const unknownKindService: IMimirService = {
+      ...createMimirMockAdapter(),
+      mounts: {
+        ...createMimirMockAdapter().mounts,
+        getRecentWrites: async () => [
+          {
+            id: 'recent-unknown',
+            timestamp: '2026-04-19T00:00:00Z',
+            kind: 'unknown-kind',
+            mount: 'local',
+            ravn: 'ravn-fjolnir',
+            message: 'manual annotation added',
+          },
+        ],
+      },
+    };
+
+    wrap(<OverviewView />, unknownKindService);
+    await waitFor(() => expect(screen.getByText('unknown-kind')).toBeInTheDocument());
+    expect(screen.getByText('unknown-kind').className).toContain('niuu-text-text-secondary');
+  });
+
   it('renders error banner on mount fetch failure', async () => {
     const failService: IMimirService = {
       ...createMimirMockAdapter(),
