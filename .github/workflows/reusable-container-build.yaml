@@ -114,31 +114,8 @@ jobs:
           TAG_PREFIX: ${{ inputs.tag-prefix }}
           PLATFORMS: ${{ inputs.platforms }}
           MANIFEST_TAGS: ${{ inputs.manifest-tags }}
-          DOCKER_CLIENT_TIMEOUT: 300
         run: |
           set -euo pipefail
-
-          retry() {
-            local attempts="$1"
-            shift
-
-            local attempt=1
-            while true; do
-              if "$@"; then
-                return 0
-              fi
-
-              if [ "${attempt}" -ge "${attempts}" ]; then
-                return 1
-              fi
-
-              local sleep_seconds=$((attempt * 10))
-              echo "Command failed on attempt ${attempt}/${attempts}; retrying in ${sleep_seconds}s: $*"
-              sleep "${sleep_seconds}"
-              attempt=$((attempt + 1))
-            done
-          }
-
           # Collect per-platform source tags
           SOURCES=()
           for plat in $(echo "${PLATFORMS}" | jq -r '.[]'); do
@@ -148,8 +125,7 @@ jobs:
 
           for tag in ${MANIFEST_TAGS}; do
             echo "::group::manifest ${IMAGE}:${tag}"
-            docker manifest rm "${IMAGE}:${tag}" >/dev/null 2>&1 || true
-            retry 3 docker manifest create "${IMAGE}:${tag}" "${SOURCES[@]}"
-            retry 3 docker manifest push "${IMAGE}:${tag}"
+            docker manifest create "${IMAGE}:${tag}" "${SOURCES[@]}"
+            docker manifest push "${IMAGE}:${tag}"
             echo "::endgroup::"
           done
