@@ -27,6 +27,7 @@ from cli.server import (
     parse_enabled_mounts,
     resolve_enabled_mounts,
 )
+from niuu.app import _backend_prefix_for_mount
 from niuu.ports.embedded_database import ConnectionInfo
 from niuu.ports.plugin import APIRouteDomain
 from tests.test_cli.conftest import FakePlugin
@@ -176,6 +177,15 @@ class TestRootServerInit:
 
 
 class TestRouteDomainSelection:
+    def test_backend_prefix_for_bifrost_root_catalog_mount(self) -> None:
+        assert _backend_prefix_for_mount("bifrost", "/api/v1/bifrost") == ""
+
+    def test_backend_prefix_for_nested_bifrost_mount(self) -> None:
+        assert _backend_prefix_for_mount("bifrost", "/api/v1/bifrost/v1") == "/v1"
+
+    def test_backend_prefix_for_non_bifrost_mount_is_unchanged(self) -> None:
+        assert _backend_prefix_for_mount("bifrost", "/v1") == "/v1"
+
     def test_available_route_domains_lists_known_domains(self) -> None:
         assert available_route_domains() == {
             "admin-api",
