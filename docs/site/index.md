@@ -10,11 +10,11 @@ hide:
 
 # Niuu
 
-<p class="tagline">The self-hosted platform for AI workspaces, automated workflows, always-on assistants, shared knowledge, and local or cloud AI.</p>
+<p class="tagline">The self-hosted platform for AI workspaces, coordinated AI teams, always-on assistants, shared knowledge, and local or cloud AI.</p>
 
 <div class="hero-pills">
   <span>AI workspaces</span>
-  <span>Automated workflows</span>
+  <span>Coordinated AI teams</span>
   <span>Always-on assistants</span>
   <span>Shared knowledge</span>
   <span>Local &amp; cloud AI</span>
@@ -34,7 +34,7 @@ hide:
 Niuu brings four operating modes into one platform you can run on your own machine, on Kubernetes, or inside your own infrastructure:
 
 - **AI workspaces** for hands-on work with an assistant in a live coding environment
-- **Automated workflows** for implementation, review, security passes, and research
+- **Coordinated AI teams** for implementation, review, security passes, and research
 - **Always-on assistants** that watch for changes, curate knowledge, and keep working over time
 - **Shared model control** that decides what models exist, how they route, and how they execute
 
@@ -48,7 +48,7 @@ The result is a self-hosted system where you can move smoothly between direct op
 
 ### One platform, not disconnected tools
 
-Workspaces, workflows, assistants, and model routing all live in one system with shared auth, shared memory, shared events, and one operator experience.
+Workspaces, AI teams, assistants, and model routing all live in one system with shared auth, shared memory, shared events, and one operator experience.
 
 </div>
 
@@ -72,7 +72,7 @@ Shared knowledge is not an afterthought. It is where research, debate, durable d
 
 ### Multi-model by design
 
-The platform owns the model catalog and routing truth so workflows, workspaces, and assistants can use different models without each subsystem inventing its own rules.
+The platform owns the model catalog and routing truth so AI teams, workspaces, and assistants can use different models without each subsystem inventing its own rules.
 
 </div>
 
@@ -83,7 +83,7 @@ The platform owns the model catalog and routing truth so workflows, workspaces, 
 | Surface | What it is for | Primary services |
 |---|---|---|
 | **Live workspaces** | Live coding, terminal work, review, diffs, and operator-guided execution | `volundr`, `skuld`, `web-next` |
-| **Automated workflows** | Multi-stage autonomous work, review loops, security passes, and research councils | `tyr`, `ravn`, `volundr` |
+| **Coordinated AI teams** | Multi-stage autonomous work, review loops, security passes, research councils, and specialist handoffs | `tyr`, `ravn`, `volundr` |
 | **Always-on assistants** | Long-lived agents that watch sources, curate knowledge, run dream cycles, and stay available for operator interaction | `ravn`, `mimir`, `web-next` |
 | **Shared knowledge** | Scratch boards, research pages, postmortems, ingest, search, and durable knowledge | `mimir`, `ravn` |
 | **Model operations** | Model catalog, aliases, providers, runtime mapping, routing policy, and health | `bifrost` |
@@ -103,9 +103,9 @@ Launch and manage coding workspaces with repos, terminals, diffs, and live conve
 
 <div class="feature" markdown>
 
-### Workflow orchestration
+### Coordinated AI teams
 
-Dispatch typed workflows and raids, including review loops, security passes, and mixed-model research councils.
+Run specialist teams that can split work, review each other, loop through security, and deliberate across multiple models before landing on an answer or a change.
 
 </div>
 
@@ -149,9 +149,9 @@ Run as long-lived assistant daemons that can watch knowledge sources, trigger cu
 
 Use a live workspace when you want a terminal, diffs, and a direct room with the assistant while keeping everything on your own infrastructure.
 
-### 2. Launch autonomous work
+### 2. Launch coordinated work
 
-Use an automated workflow when the work should run as a repeatable flow: coding, review, security, postmortems, or research with multiple models.
+Use a coordinated AI team when the work should move across multiple specialists: coding, review, security, postmortems, or research with several models and structured handoffs.
 
 ### 3. Keep knowledge alive
 
