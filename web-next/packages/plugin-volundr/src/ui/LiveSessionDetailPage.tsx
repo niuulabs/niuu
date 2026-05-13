@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
 import { getAccessToken } from '@niuulabs/query';
 import {
@@ -1200,6 +1201,7 @@ export function LiveSessionDetailPage({
   const [actionBusy, setActionBusy] = useState<'start' | 'stop' | 'delete' | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const volundr = useService<IVolundrService>('volundr');
+  const bifrost = useService<IBifrostService>('bifrost');
   const filesystem = useService<IFileSystemPort>('filesystem');
   const queryClient = useQueryClient();
   const sessionQuery = useSessionDetail(sessionId);
@@ -1219,8 +1221,8 @@ export function LiveSessionDetailPage({
     staleTime: 30_000,
   });
   const modelsQuery = useQuery({
-    queryKey: ['volundr', 'models'],
-    queryFn: () => volundr.getModels(),
+    queryKey: ['bifrost', 'models'],
+    queryFn: () => bifrost.getModelCatalog(),
     staleTime: 30_000,
   });
 

@@ -6,6 +6,7 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
+from bifrost.config import ManagedModelConfig
 from tests.conftest import (
     InMemorySessionRepository,
     InMemoryStatsRepository,
@@ -14,7 +15,6 @@ from tests.conftest import (
 )
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
-from volundr.config import AIModelConfig
 from volundr.domain.models import GitSource, Session, SessionStatus
 from volundr.domain.services import (
     SessionService,
@@ -261,7 +261,7 @@ class TestReportUsageWithPricing:
         token_tracker = InMemoryTokenTracker()
         pricing_provider = HardcodedPricingProvider(
             [
-                AIModelConfig(
+                ManagedModelConfig(
                     id="claude-sonnet-4-20250514",
                     name="Sonnet",
                     cost_per_million_tokens=3.0,

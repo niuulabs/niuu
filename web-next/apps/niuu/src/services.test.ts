@@ -11,6 +11,11 @@ const pluginSdkMocks = vi.hoisted(() => ({
   createMockIdentityService: vi.fn(() => ({ kind: 'mock-identity' })),
 }));
 
+const bifrostMocks = vi.hoisted(() => ({
+  createMockBifrostService: vi.fn(() => ({ kind: 'mock-bifrost' })),
+  buildBifrostHttpAdapter: vi.fn((client) => ({ kind: 'bifrost', client })),
+}));
+
 const tyrMocks = vi.hoisted(() => ({
   createMockTyrService: vi.fn(() => ({ kind: 'mock-tyr' })),
   createMockDispatcherService: vi.fn(() => ({ kind: 'mock-dispatcher' })),
@@ -84,6 +89,7 @@ vi.mock('@niuulabs/query', () => ({
 }));
 vi.mock('@niuulabs/plugin-sdk', () => pluginSdkMocks);
 
+vi.mock('@niuulabs/plugin-bifrost', () => bifrostMocks);
 vi.mock('@niuulabs/plugin-tyr', () => tyrMocks);
 vi.mock('@niuulabs/plugin-ravn', () => ravnMocks);
 vi.mock('@niuulabs/plugin-mimir', () => ({

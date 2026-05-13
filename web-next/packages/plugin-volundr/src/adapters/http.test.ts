@@ -915,7 +915,6 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
 
     // GET methods
     await svc.getFeatures();
-    await svc.getModels();
     await svc.getRepos();
     await svc.getTemplates();
     await svc.getTemplate('tpl-1');

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { VolundrSessionRoute, VolundrArchivedRoute } from './routes';
 import {
   createMockVolundrService,
@@ -74,6 +75,7 @@ function wrap(ui: React.ReactNode) {
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
+          bifrost: createMockBifrostService(),
           volundr: createMockVolundrService(),
           ptyStream: buildPtyStream(),
           filesystem: buildFilesystem(),

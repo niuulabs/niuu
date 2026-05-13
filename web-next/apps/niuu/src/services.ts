@@ -1,3 +1,5 @@
+import { buildBifrostHttpAdapter, createMockBifrostService } from '@niuulabs/plugin-bifrost';
+import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import {
   createMockPersonaStore,
   createMockRavenStream,
@@ -226,6 +228,14 @@ function resolveRepoCatalogStatus(config: Pick<NiuuConfig, 'services'>): Service
 
 function resolveVolundrServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
   return resolveDirectServiceBase(config, 'volundr', 'forge');
+}
+
+function resolveBifrostServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveDirectServiceBase(config, 'bifrost');
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/bifrost` : null;
 }
 
 function resolveForgeStreamWsUrl(config: Pick<NiuuConfig, 'services'>): string | null {
@@ -1077,6 +1087,10 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const mimir = hasHttpBackend(mimirSvc)
     ? buildMimirHttpAdapter(createApiClient(mimirSvc.baseUrl))
     : createMimirMockAdapter();
+  const bifrostBase = resolveBifrostServiceBase(config);
+  const bifrost: IBifrostService = bifrostBase
+    ? buildBifrostHttpAdapter(createApiClient(bifrostBase))
+    : createMockBifrostService();
 
   // ── Völundr request/response ──
   const forgeBase = resolveForgeServiceBase(config);
@@ -1181,6 +1195,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ravn.budget': ravnBudget,
     'ravn.wardens': ravnWardens,
     mimir,
+    bifrost,
     volundr,
     'niuu.repos': repoCatalogService,
     ptyStream,

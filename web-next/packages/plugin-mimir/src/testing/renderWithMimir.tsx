@@ -1,6 +1,7 @@
 import { render, type RenderResult } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PluginCtxProvider, ServicesProvider, type PluginCtx } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { createMockVolundrService, type IVolundrService } from '@niuulabs/plugin-volundr';
 import { createMockPersonaStore } from '../../../plugin-ravn/src/adapters/mock';
 import { createMimirMockAdapter } from '../adapters/mock';
@@ -355,6 +356,7 @@ export function renderWithMimir(
       <PluginCtxProvider value={pluginCtx}>
         <ServicesProvider
           services={{
+            bifrost: createMockBifrostService(),
             mimir: svc,
             'ravn.wardens': ravnWardens,
             'ravn.personas': createMockPersonaStore(),

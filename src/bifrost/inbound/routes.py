@@ -16,10 +16,12 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import bifrost.metrics as _metrics
+from bifrost import catalog as _catalog
 from bifrost.auth import AgentIdentity
 from bifrost.config import AgentPermissions, AuditDetailLevel, BifrostConfig, BudgetGuardrailConfig
 from bifrost.domain.models import RequestLog, TokenUsage
@@ -57,6 +59,7 @@ from bifrost.ports.usage_store import UsageRecord, UsageStore
 from bifrost.pricing import ModelPricing, calculate_cost
 from bifrost.router import ModelRouter, RouterError
 from bifrost.translation.models import AnthropicRequest, AnthropicResponse
+from niuu.domain.model_catalog import ProviderHealthState
 
 logger = logging.getLogger(__name__)
 
@@ -470,21 +473,55 @@ def _enumerate_models(config: BifrostConfig) -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     seen: set[str] = set()
 
-    for provider_name, provider_cfg in config.providers.items():
-        for model_id in provider_cfg.models:
-            if model_id in seen:
-                continue
-            seen.add(model_id)
-            result.append((model_id, provider_name))
-
-    for alias, canonical in config.aliases.items():
-        if alias in seen:
+    for entry in _catalog.list_models(config):
+        if not entry.enabled or entry.id in seen:
             continue
-        seen.add(alias)
-        provider_name = config.provider_for_model(canonical) or "unknown"
-        result.append((alias, provider_name))
+        seen.add(entry.id)
+        result.append((entry.id, entry.vendor or "unknown"))
+
+    for alias in _catalog.list_aliases(config):
+        if alias.alias in seen:
+            continue
+        seen.add(alias.alias)
+        model_entry = _catalog.get_model(config, alias.target)
+        provider_name = model_entry.vendor if model_entry is not None else "unknown"
+        result.append((alias.alias, provider_name))
 
     return result
+
+
+async def _provider_health_snapshot(
+    config: BifrostConfig,
+) -> tuple[dict[str, ProviderHealthState], dict[str, str]]:
+    """Probe configured provider base URLs and classify their current health."""
+    if not config.providers:
+        return {}, {}
+
+    states: dict[str, ProviderHealthState] = {}
+    details: dict[str, str] = {}
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for provider_name in config.providers:
+            base_url = config.effective_base_url(provider_name)
+            if not base_url:
+                states[provider_name] = ProviderHealthState.UNKNOWN
+                details[provider_name] = "No base URL configured."
+                continue
+            try:
+                response = await client.head(base_url)
+            except Exception as exc:  # noqa: BLE001
+                states[provider_name] = ProviderHealthState.UNREACHABLE
+                details[provider_name] = str(exc)
+                continue
+
+            if response.status_code < 500:  # noqa: PLR2004
+                states[provider_name] = ProviderHealthState.HEALTHY
+                details[provider_name] = f"HTTP {response.status_code}"
+                continue
+
+            states[provider_name] = ProviderHealthState.DEGRADED
+            details[provider_name] = f"HTTP {response.status_code}"
+
+    return states, details
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +682,100 @@ def create_router(
     async def health() -> dict:
         return {"status": "ok"}
 
+    @api_router.get("/models")
+    async def list_catalog_models() -> list[dict]:
+        """Return the canonical Bifrost-owned model catalog for platform consumers."""
+        return [
+            {
+                "id": model.id,
+                "name": model.name,
+                "vendor": model.vendor,
+                "provider": model.provider,
+                "tier": model.tier,
+                "color": model.color,
+                "description": model.description,
+                "cost_per_million_tokens": model.cost_per_million_tokens,
+                "vram_required": model.vram_required,
+                "session_definition": model.session_definition,
+                "supports_tools": model.supports_tools,
+                "supports_thinking": model.supports_thinking,
+                "enabled": model.enabled,
+                "aliases": list(model.aliases),
+                "provider_keys": list(model.provider_keys),
+            }
+            for model in _catalog.list_models(config)
+        ]
+
+    @api_router.get("/models/{model_id}")
+    async def get_catalog_model(model_id: str) -> dict:
+        """Return one canonical model entry, resolving aliases on lookup."""
+        model = _catalog.get_model(config, model_id)
+        if model is None:
+            raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+        return {
+            "id": model.id,
+            "name": model.name,
+            "vendor": model.vendor,
+            "provider": model.provider,
+            "tier": model.tier,
+            "color": model.color,
+            "description": model.description,
+            "cost_per_million_tokens": model.cost_per_million_tokens,
+            "vram_required": model.vram_required,
+            "session_definition": model.session_definition,
+            "supports_tools": model.supports_tools,
+            "supports_thinking": model.supports_thinking,
+            "enabled": model.enabled,
+            "aliases": list(model.aliases),
+            "provider_keys": list(model.provider_keys),
+        }
+
+    @api_router.get("/aliases")
+    async def list_catalog_aliases() -> list[dict]:
+        """Return configured model aliases."""
+        return [
+            {"alias": item.alias, "target": item.target} for item in _catalog.list_aliases(config)
+        ]
+
+    @api_router.get("/providers")
+    async def list_catalog_providers() -> list[dict]:
+        """Return configured providers without performing active probes."""
+        return [
+            {
+                "key": provider.key,
+                "vendor": provider.vendor,
+                "base_url": provider.base_url,
+                "model_ids": list(provider.model_ids),
+                "timeout_seconds": provider.timeout_seconds,
+                "cost_per_token": provider.cost_per_token,
+                "state": provider.state,
+                "detail": provider.detail,
+            }
+            for provider in _catalog.list_providers(config)
+        ]
+
+    @api_router.get("/providers/health")
+    async def list_provider_health() -> list[dict]:
+        """Return provider entries plus observed reachability health."""
+        states, details = await _provider_health_snapshot(config)
+        return [
+            {
+                "key": provider.key,
+                "vendor": provider.vendor,
+                "base_url": provider.base_url,
+                "model_ids": list(provider.model_ids),
+                "timeout_seconds": provider.timeout_seconds,
+                "cost_per_token": provider.cost_per_token,
+                "state": provider.state,
+                "detail": provider.detail,
+            }
+            for provider in _catalog.list_providers(
+                config,
+                health_states=states,
+                health_details=details,
+            )
+        ]
+
     @api_router.get("/v1/cache/stats")
     async def cache_stats(raw_request: Request) -> dict:
         """Return aggregate cache statistics.
@@ -693,18 +824,31 @@ def create_router(
         Returns an OpenAI-compatible list response including both canonical
         model IDs and any configured aliases.
         """
-        return {
-            "object": "list",
-            "data": [
+        data: list[dict[str, str]] = []
+        for model in _catalog.list_models(config):
+            if not model.enabled:
+                continue
+            data.append(
                 {
-                    "id": model_id,
+                    "id": model.id,
                     "object": "model",
-                    "owned_by": provider_name,
-                    "display_name": config.aliases.get(model_id, model_id),
+                    "owned_by": model.vendor or "unknown",
+                    "display_name": model.name,
                 }
-                for model_id, provider_name in _enumerate_models(config)
-            ],
-        }
+            )
+
+        for alias in _catalog.list_aliases(config):
+            model = _catalog.get_model(config, alias.target)
+            data.append(
+                {
+                    "id": alias.alias,
+                    "object": "model",
+                    "owned_by": model.vendor if model is not None else "unknown",
+                    "display_name": alias.target,
+                }
+            )
+
+        return {"object": "list", "data": data}
 
     @api_router.post("/v1/messages", response_model=None)
     async def messages(raw_request: Request) -> JSONResponse | StreamingResponse:

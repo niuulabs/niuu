@@ -47,15 +47,6 @@ class IntegrationConnection:
     slug: str = ""  # references IntegrationDefinition.slug
 
 
-@dataclass(frozen=True)
-class AIModelConfig:
-    """Available AI model — shared across Tyr and Volundr."""
-
-    id: str
-    name: str
-    cost_per_million_tokens: float = 0.0
-
-
 class SecretType(StrEnum):
     """Type of stored credential."""
 

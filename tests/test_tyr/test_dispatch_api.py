@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from bifrost.config import BifrostConfig, ManagedModelConfig
 from niuu.domain.models import IntegrationConnection, IntegrationType
 from tyr.api.dispatch import (
     create_dispatch_router,
@@ -24,7 +25,7 @@ from tyr.api.dispatch import (
     resolve_volundr_factory,
 )
 from tyr.api.tracker import resolve_trackers
-from tyr.config import AIModelConfig, AuthConfig, Settings
+from tyr.config import AuthConfig, Settings
 from tyr.config import DispatchConfig as DispatchCfg
 from tyr.domain.models import (
     DispatcherState,
@@ -277,10 +278,20 @@ def _make_settings(**overrides) -> Settings:
             default_system_prompt="Be helpful.",
             default_model="claude-sonnet-4-6",
         ),
-        ai_models=[
-            AIModelConfig(id="claude-sonnet-4-6", name="Sonnet"),
-            AIModelConfig(id="claude-opus-4-6", name="Opus"),
-        ],
+        bifrost=BifrostConfig(
+            models=[
+                ManagedModelConfig(
+                    id="claude-sonnet-4-6",
+                    name="Sonnet",
+                    vendor="anthropic",
+                ),
+                ManagedModelConfig(
+                    id="claude-opus-4-6",
+                    name="Opus",
+                    vendor="anthropic",
+                ),
+            ]
+        ),
         **overrides,
     )
 

@@ -618,7 +618,6 @@ describe('createMockVolundrService — full method sweep', () => {
       workloadConfig: {},
     } as const;
 
-    await svc.getModels();
     await svc.getRepos();
     await svc.getTemplates();
     await svc.getTemplate('t1');

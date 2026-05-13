@@ -24,6 +24,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from bifrost.config import BifrostConfig
 from niuu.config import CorsConfig
 from volundr.config import SessionDefinitionConfig, _default_session_definitions
 
@@ -98,30 +99,6 @@ class CredentialStoreConfig(BaseModel):
     )
     kwargs: dict[str, Any] = Field(default_factory=dict)
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
-
-
-class AIModelConfig(BaseModel):
-    """Available AI model — configured via Helm values.
-
-    Mirrors niuu.domain.models.AIModelConfig but as a pydantic model
-    for settings deserialization.
-    """
-
-    id: str
-    name: str
-    provider: str = Field(
-        default="",
-        description=(
-            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google')."
-        ),
-    )
-    session_definition: str | None = Field(
-        default=None,
-        description=(
-            "Optional session definition/runtime override for this model. When omitted, "
-            "the runtime is resolved from the provider default."
-        ),
-    )
 
 
 class ReviewConfig(BaseModel):
@@ -1065,23 +1042,9 @@ class Settings(BaseSettings):
     cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
+    bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=_default_session_definitions
-    )
-    ai_models: list[AIModelConfig] = Field(
-        default_factory=lambda: [
-            AIModelConfig(id="claude-opus-4-7", name="Opus 4.7", provider="anthropic"),
-            AIModelConfig(id="claude-opus-4-6", name="Opus 4.6", provider="anthropic"),
-            AIModelConfig(
-                id="claude-opus-4-5-20251101", name="Opus 4.5", provider="anthropic",
-            ),
-            AIModelConfig(id="claude-sonnet-4-6", name="Sonnet 4.6", provider="anthropic"),
-            AIModelConfig(
-                id="claude-haiku-4-5-20251001", name="Haiku 4.5", provider="anthropic",
-            ),
-            AIModelConfig(id="gpt-5.5", name="GPT-5.5", provider="openai"),
-            AIModelConfig(id="gpt-5.4", name="GPT-5.4", provider="openai"),
-        ]
     )
     git: GitConfig = Field(default_factory=GitConfig)
     linear: LinearConfig = Field(default_factory=LinearConfig)

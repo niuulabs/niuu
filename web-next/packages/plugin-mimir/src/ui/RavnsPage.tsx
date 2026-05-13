@@ -1,12 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
 import type { Mount } from '@niuulabs/domain';
-import type {
-  IVolundrService,
-  VolundrAggregatedLog,
-  VolundrLogParticipant,
-} from '@niuulabs/plugin-volundr';
+import type { VolundrAggregatedLog, VolundrLogParticipant } from '@niuulabs/plugin-volundr';
 import { StructuredLogViewer, useSkuldChat } from '@niuulabs/plugin-volundr';
 import { StateDot, Chip, SessionChat } from '@niuulabs/ui';
 import {
@@ -1598,7 +1595,7 @@ function RavnProfile({
 
 export function RavnsPage() {
   const ctx = usePluginCtx();
-  const volundr = useService<IVolundrService>('volundr');
+  const bifrost = useService<IBifrostService>('bifrost');
   const mimir = useService<IMimirService>('mimir');
   const personas = useService<PersonaCatalogService>('ravn.personas');
   const { data: wardens, isLoading, isError, error } = useWardenDirectory();
@@ -1621,8 +1618,8 @@ export function RavnsPage() {
   };
   const observedWardenQuery = useObservedWarden(selectedId);
   const modelsQuery = useQuery({
-    queryKey: ['volundr', 'models', 'wardens'],
-    queryFn: () => volundr.getModels(),
+    queryKey: ['bifrost', 'models', 'wardens'],
+    queryFn: () => bifrost.getModelCatalog(),
   });
   const mountsQuery = useQuery({
     queryKey: ['mimir', 'mounts', 'wardens'],

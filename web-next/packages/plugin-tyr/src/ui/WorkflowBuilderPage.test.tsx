@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { WorkflowBuilderPage } from './WorkflowBuilderPage';
 import type { Workflow } from '../domain/workflow';
 
@@ -60,6 +61,7 @@ function wrap(service: Record<string, unknown>) {
       <QueryClientProvider client={client}>
         <ServicesProvider
           services={{
+            bifrost: createMockBifrostService(),
             'ravn.personas': personaService,
             mimir: mimirService,
             volundr: volundrService,

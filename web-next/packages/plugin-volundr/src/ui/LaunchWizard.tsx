@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
+import type { BifrostModel, IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
   BranchSelect,
@@ -25,7 +26,6 @@ import type {
   StoredCredential,
   TrackerIssue,
   VolundrPreset,
-  VolundrModel,
   VolundrWorkspace,
 } from '../models/volundr.model';
 import { parsePresetYaml, serializePresetYaml } from '../utils/presetYaml';
@@ -35,6 +35,13 @@ import { parsePresetYaml, serializePresetYaml } from '../utils/presetYaml';
 // ---------------------------------------------------------------------------
 
 type WizardStep = 'template' | 'source' | 'runtime' | 'confirm' | 'booting';
+
+type RuntimeModelDescriptor = Pick<
+  BifrostModel,
+  'name' | 'provider' | 'vendor' | 'tier' | 'color' | 'vram' | 'sessionDefinition'
+> & {
+  cost?: string | number;
+};
 
 export interface WizardForm {
   templateId: string;
@@ -249,12 +256,12 @@ export function normalizeRepoUrl(url: string): string {
     .replace(/\.git$/, '');
 }
 
-export function pickDefaultModel(models: Record<string, VolundrModel>): string {
+export function pickDefaultModel(models: Record<string, RuntimeModelDescriptor>): string {
   if ('sonnet-primary' in models) return 'sonnet-primary';
   return Object.keys(models)[0] ?? '';
 }
 
-export function formatModelOption(id: string, model?: VolundrModel): string {
+export function formatModelOption(id: string, model?: RuntimeModelDescriptor): string {
   if (!model) return id;
   const parts = [model.name || id, model.provider];
   if (model.tier) parts.push(model.tier);
@@ -877,7 +884,7 @@ export function RuntimeStep({
 }: {
   form: WizardForm;
   update: (patch: Partial<WizardForm>) => void;
-  models: Record<string, VolundrModel>;
+  models: Record<string, RuntimeModelDescriptor>;
   workspaces: VolundrWorkspace[];
   credentials: StoredCredential[];
   integrations: IntegrationConnection[];
@@ -1656,7 +1663,7 @@ export function ConfirmStep({
 }: {
   form: WizardForm;
   templates: Template[];
-  models: Record<string, VolundrModel>;
+  models: Record<string, RuntimeModelDescriptor>;
   integrations: IntegrationConnection[];
   sessionDefinitions: SessionDefinition[];
 }) {
@@ -1895,6 +1902,7 @@ export function BootingStep({ bootStep, progress }: { bootStep: number; progress
 /** 4-step modal wizard for launching new Volundr sessions. */
 export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWizardProps) {
   const volundr = useService<IVolundrService>('volundr');
+  const bifrost = useService<IBifrostService>('bifrost');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1902,7 +1910,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   const allTemplates = useMemo(() => templates.data ?? [], [templates.data]);
   const [repos, setRepos] = useState<RepoRecord[]>([]);
   const [manualBranches, setManualBranches] = useState<string[]>([]);
-  const [models, setModels] = useState<Record<string, VolundrModel>>({});
+  const [models, setModels] = useState<Record<string, RuntimeModelDescriptor>>({});
   const [workspaces, setWorkspaces] = useState<VolundrWorkspace[]>([]);
   const [credentials, setCredentials] = useState<StoredCredential[]>([]);
   const [integrations, setIntegrations] = useState<IntegrationConnection[]>([]);
@@ -1955,7 +1963,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
 
     void Promise.all([
       repoCatalog.getRepos().catch(() => []),
-      volundr.getModels().catch(() => ({})),
+      bifrost.getModelCatalog().catch((): Record<string, BifrostModel> => ({})),
       Promise.all([
         volundr.listWorkspaces('archived').catch(() => []),
         volundr.listWorkspaces('active').catch(() => []),
@@ -1996,7 +2004,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     return () => {
       cancelled = true;
     };
-  }, [open, repoCatalog, volundr]);
+  }, [bifrost, open, repoCatalog, volundr]);
 
   // Update template ID when templates load
   useEffect(() => {

@@ -131,6 +131,7 @@ def _configure_logging(settings: Settings) -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
+
 async def _ensure_telegram_subscription_from_integration(
     pool: object,
     integration_repo: PostgresIntegrationRepository,
@@ -518,7 +519,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     default_session_definition=settings.dispatch.default_session_definition,
                     dispatch_prompt_template=settings.dispatch.dispatch_prompt_template,
                     session_definitions=settings.session_definitions,
-                    configured_models=list(settings.ai_models),
+                    configured_models=list(settings.bifrost.models),
                     live_flock=settings.dispatch.flock,
                 ),
                 sleipnir_publisher=sleipnir_bus,
@@ -660,9 +661,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     integration_repo, credential_store
                 )
                 if bot_token:
-                    logger.info(
-                        "Telegram bot_token resolved from MESSAGING integration"
-                    )
+                    logger.info("Telegram bot_token resolved from MESSAGING integration")
 
             # Bridge the seeded chat_id into notification_subscriptions so the
             # webhook router's inbound auth check passes without any manual

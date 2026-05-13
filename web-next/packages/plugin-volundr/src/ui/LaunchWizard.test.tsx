@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { LaunchWizard } from './LaunchWizard';
 import { createMockTemplateStore, createMockVolundrService } from '../adapters/mock';
 
@@ -18,6 +19,7 @@ function wrap(open = true, onOpenChange = vi.fn(), service = createMockVolundrSe
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
+          bifrost: createMockBifrostService(),
           volundr: service,
           'volundr.templates': templateStore,
           'niuu.repos': { getRepos: service.getRepos.bind(service) },
@@ -122,7 +124,7 @@ describe('LaunchWizard', () => {
         expect.objectContaining({
           name: 'main',
           source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
-          model: 'sonnet-primary',
+          model: 'claude-sonnet-4-6',
           templateName: 'niuu-platform',
           definition: 'skuldClaude',
           taskType: 'skuld-claude',

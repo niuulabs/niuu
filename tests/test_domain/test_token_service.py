@@ -4,9 +4,9 @@ from uuid import uuid4
 
 import pytest
 
+from bifrost.config import ManagedModelConfig
 from tests.conftest import InMemorySessionRepository, InMemoryTokenTracker
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
-from volundr.config import AIModelConfig
 from volundr.domain.models import GitSource, ModelProvider, Session, SessionStatus
 from volundr.domain.services import (
     SessionNotFoundError,
@@ -32,10 +32,14 @@ def pricing_provider() -> HardcodedPricingProvider:
     """Create a pricing provider with test models."""
     return HardcodedPricingProvider(
         [
-            AIModelConfig(
+            ManagedModelConfig(
                 id="claude-sonnet-4-20250514", name="Sonnet", cost_per_million_tokens=3.0
             ),
-            AIModelConfig(id="claude-opus-4-20250514", name="Opus", cost_per_million_tokens=15.0),
+            ManagedModelConfig(
+                id="claude-opus-4-20250514",
+                name="Opus",
+                cost_per_million_tokens=15.0,
+            ),
         ]
     )
 

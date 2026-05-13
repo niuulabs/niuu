@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from volundr.config import AIModelConfig, SessionDefinitionConfig
+    from volundr.config import SessionDefinitionConfig
+
+
+def _model_field(model_config: Any | None, field_name: str) -> str:
+    return str(getattr(model_config, field_name, "") or "").strip()
 
 
 def _find_model_config(
     model_id: str,
     *,
-    configured_models: Iterable[AIModelConfig] | None = None,
-) -> AIModelConfig | None:
+    configured_models: Iterable[Any] | None = None,
+) -> Any | None:
     normalized_model = str(model_id or "").strip()
     if not normalized_model:
         return None
     for config in configured_models or []:
-        if str(getattr(config, "id", "")).strip() == normalized_model:
+        if _model_field(config, "id") == normalized_model:
             return config
     return None
 
@@ -52,7 +56,7 @@ def infer_model_vendor(model_id: str) -> str:
 def vendor_for_model(
     model_id: str,
     *,
-    configured_models: Iterable[AIModelConfig] | None = None,
+    configured_models: Iterable[Any] | None = None,
 ) -> str:
     normalized_model = str(model_id or "").strip()
     if not normalized_model:
@@ -60,7 +64,9 @@ def vendor_for_model(
 
     config = _find_model_config(normalized_model, configured_models=configured_models)
     if config is not None:
-        vendor = normalize_model_vendor(getattr(config, "provider", ""))
+        vendor = normalize_model_vendor(
+            _model_field(config, "vendor") or _model_field(config, "provider")
+        )
         if vendor:
             return vendor
 
@@ -71,14 +77,14 @@ def session_definition_for_model(
     model_id: str,
     *,
     session_definitions: Mapping[str, SessionDefinitionConfig],
-    configured_models: Iterable[AIModelConfig] | None = None,
+    configured_models: Iterable[Any] | None = None,
 ) -> tuple[str | None, str | None]:
     normalized_model = str(model_id or "").strip()
     if not normalized_model:
         return None, "Workflow stages must declare an explicit model."
 
     config = _find_model_config(normalized_model, configured_models=configured_models)
-    model_override = str(getattr(config, "session_definition", "") or "").strip()
+    model_override = _model_field(config, "session_definition")
     if model_override:
         definition = session_definitions.get(model_override)
         if definition is None or not getattr(definition, "enabled", True):
@@ -118,7 +124,7 @@ def session_definition_for_model(
 def vendors_for_models(
     model_ids: Iterable[str],
     *,
-    configured_models: Iterable[AIModelConfig] | None = None,
+    configured_models: Iterable[Any] | None = None,
 ) -> set[str]:
     vendors: set[str] = set()
     for model_id in model_ids:
@@ -132,7 +138,7 @@ def resolve_session_definition_for_models(
     model_ids: Iterable[str],
     *,
     session_definitions: Mapping[str, SessionDefinitionConfig],
-    configured_models: Iterable[AIModelConfig] | None = None,
+    configured_models: Iterable[Any] | None = None,
 ) -> tuple[str | None, str | None]:
     models = [str(model_id).strip() for model_id in model_ids if str(model_id).strip()]
     if not models:
@@ -170,7 +176,7 @@ def validate_session_definition_for_models(
     model_ids: Iterable[str],
     *,
     session_definitions: Mapping[str, SessionDefinitionConfig],
-    configured_models: Iterable[AIModelConfig] | None = None,
+    configured_models: Iterable[Any] | None = None,
 ) -> str | None:
     if not definition_key:
         return "Workflow must declare an explicit session definition/runtime."

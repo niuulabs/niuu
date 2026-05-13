@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import {
   createMockVolundrService,
@@ -56,7 +57,7 @@ const RUNNING_SESSION: VolundrSession = {
   name: 'test-session',
   source: { type: 'git', repo: 'niuulabs/volundr', branch: 'main' },
   status: 'running',
-  model: 'claude-sonnet',
+  model: 'claude-sonnet-4-6',
   lastActive: Date.now() - 60_000,
   messageCount: 10,
   tokensUsed: 5000,
@@ -159,15 +160,6 @@ function buildVolundrService(session: VolundrSession | null = RUNNING_SESSION): 
   return {
     ...base,
     getSession: vi.fn().mockResolvedValue(session),
-    getModels: vi.fn().mockResolvedValue({
-      'claude-sonnet': {
-        name: 'Claude Sonnet',
-        provider: 'cloud',
-        tier: 'balanced',
-        color: '#f59e0b',
-        cost: '$3/MTok',
-      },
-    }),
     getFeatureModules: vi.fn().mockResolvedValue(SESSION_FEATURES),
     getUserFeaturePreferences: vi.fn().mockResolvedValue([]),
     getChronicle: vi.fn().mockResolvedValue(null),
@@ -208,6 +200,7 @@ function wrap(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
+          bifrost: createMockBifrostService(),
           volundr: buildVolundrService(session),
           ptyStream: buildPtyStream(),
           filesystem: buildFilesystem(),
@@ -258,7 +251,7 @@ describe('LiveSessionDetailPage', () => {
     it('shows model label', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Claude Sonnet')).toBeInTheDocument();
+      expect(screen.getByText('Claude Sonnet 4.6')).toBeInTheDocument();
     });
 
     it('shows repo and branch for git source', async () => {
@@ -377,6 +370,7 @@ describe('LiveSessionDetailPage', () => {
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
+              bifrost: createMockBifrostService(),
               volundr: service,
               ptyStream: buildPtyStream(),
               filesystem: buildFilesystem(),
@@ -439,6 +433,7 @@ describe('LiveSessionDetailPage', () => {
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
+              bifrost: createMockBifrostService(),
               volundr: service,
               ptyStream: buildPtyStream(),
               filesystem: buildFilesystem(),
@@ -489,6 +484,7 @@ describe('LiveSessionDetailPage', () => {
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
+              bifrost: createMockBifrostService(),
               volundr: service,
               ptyStream: buildPtyStream(),
               filesystem: buildFilesystem(),

@@ -11,36 +11,6 @@ global:
   image:
     registry: ghcr.io/niuulabs
   domain: niuu.world
-  # Available AI models — propagated to both Tyr and Volundr
-  aiModels:
-    - id: "claude-opus-4-7"
-      name: "Opus 4.7"
-      provider: "anthropic"
-      costPerMillionTokens: 15.00
-    - id: "claude-opus-4-6"
-      name: "Opus 4.6"
-      provider: "anthropic"
-      costPerMillionTokens: 15.00
-    - id: "claude-opus-4-5-20251101"
-      name: "Opus 4.5"
-      provider: "anthropic"
-      costPerMillionTokens: 15.00
-    - id: "claude-sonnet-4-6"
-      name: "Sonnet 4.6"
-      provider: "anthropic"
-      costPerMillionTokens: 3.00
-    - id: "claude-haiku-4-5-20251001"
-      name: "Haiku 4.5"
-      provider: "anthropic"
-      costPerMillionTokens: 1.00
-    - id: "gpt-5.5"
-      name: "GPT-5.5"
-      provider: "openai"
-      costPerMillionTokens: 10.00
-    - id: "gpt-5.4"
-      name: "GPT-5.4"
-      provider: "openai"
-      costPerMillionTokens: 5.00
 
 ingress:
   enabled: false
@@ -58,6 +28,10 @@ ingress:
         service: niuu-shared
       - path: /api/v1/ravn/personas
         service: niuu-shared
+      - path: /api/v1/bifrost
+        service: bifrost
+      - path: /api/v1/ravn
+        service: ravn
       - path: /api/v1/forge
         service: volundr
       - path: /api/v1/users

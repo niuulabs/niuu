@@ -304,8 +304,8 @@ def create_dispatch_router() -> APIRouter:
             default_system_prompt=settings.dispatch.default_system_prompt,
             default_model=settings.dispatch.default_model,
             models=[
-                ModelOption(id=m.id, name=m.name, provider=m.provider)
-                for m in settings.ai_models
+                ModelOption(id=m.id, name=m.name, provider=m.vendor)
+                for m in settings.bifrost.models
             ],
             flock_enabled=flock.enabled,
             flock_default_personas=[

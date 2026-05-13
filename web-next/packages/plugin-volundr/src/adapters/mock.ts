@@ -19,7 +19,6 @@ import type {
   IntegrationConnection,
   ClusterResourceInfo,
   McpServerConfig,
-  VolundrModel,
   VolundrPreset,
   VolundrRepo,
   TrackerIssue,
@@ -180,23 +179,6 @@ const SEED_CREDENTIALS: StoredCredential[] = [
     updatedAt: '3mo ago',
   },
 ];
-
-const SEED_MODELS: Record<string, VolundrModel> = {
-  'sonnet-primary': {
-    name: 'Claude Sonnet',
-    provider: 'cloud',
-    tier: 'balanced',
-    color: '#e7d2b4',
-    cost: '$$$',
-  },
-  'gpt-5-codex': {
-    name: 'GPT-5 Codex',
-    provider: 'cloud',
-    tier: 'execution',
-    color: '#b9d8ff',
-    cost: '$$$',
-  },
-};
 
 const SEED_REPOS: VolundrRepo[] = [
   {
@@ -1302,8 +1284,6 @@ export function createMockVolundrService(): IVolundrService {
       sessions.filter((s) => ['starting', 'provisioning', 'running'].includes(s.status)),
 
     getStats: async () => ({ ...SEED_STATS }),
-
-    getModels: async () => ({ ...SEED_MODELS }),
 
     getRepos: async () => [...SEED_REPOS],
 

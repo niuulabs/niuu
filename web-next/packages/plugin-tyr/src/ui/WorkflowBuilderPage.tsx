@@ -10,10 +10,10 @@
 
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
 import { StateDot, cn } from '@niuulabs/ui';
 import type { Workflow } from '../domain/workflow';
-import type { IVolundrService } from '@niuulabs/plugin-volundr';
 import {
   useWorkflows,
   useCreateWorkflow,
@@ -37,13 +37,13 @@ function formatModelOption(
 }
 
 export function WorkflowBuilderPage() {
-  const volundr = useService<IVolundrService>('volundr');
+  const bifrost = useService<IBifrostService>('bifrost');
   const { data: workflows, isLoading, isError, error } = useWorkflows();
   const { data: personas } = usePersonasBrowser();
   const { data: registryMounts = [] } = useWorkflowRegistryMounts();
   const modelsQuery = useQuery({
-    queryKey: ['volundr', 'models'],
-    queryFn: () => volundr.getModels(),
+    queryKey: ['bifrost', 'models'],
+    queryFn: () => bifrost.getModelCatalog(),
   });
   const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
   const createMutation = useCreateWorkflow();

@@ -18,6 +18,7 @@ from uuid import uuid4
 import pytest
 import yaml
 
+from bifrost.config import ManagedModelConfig
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from tyr.domain.models import (
     Saga,
@@ -31,7 +32,7 @@ from tyr.domain.services.dispatch_service import (
     build_flock_prompt,
 )
 from tyr.ports.volundr import SpawnRequest
-from volundr.config import AIModelConfig, _default_session_definitions
+from volundr.config import _default_session_definitions
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -364,15 +365,15 @@ class TestBuildSpawnRequestFlockEnabled:
         config = _make_flock_config(
             session_definitions=_default_session_definitions(),
             configured_models=[
-                AIModelConfig(
+                ManagedModelConfig(
                     id="claude-sonnet-4-6",
                     name="Claude Sonnet 4.6",
-                    provider="anthropic",
+                    vendor="anthropic",
                 ),
-                AIModelConfig(
+                ManagedModelConfig(
                     id="gpt-5.5",
                     name="GPT-5.5",
-                    provider="openai",
+                    vendor="openai",
                 ),
             ],
         )

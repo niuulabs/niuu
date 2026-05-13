@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { ForgePage } from './ForgePage';
 import {
   createMockVolundrService,
@@ -41,6 +42,7 @@ function wrap(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
+          bifrost: createMockBifrostService(),
           'niuu.repos': repoCatalog,
           volundr: service,
           clusterAdapter,

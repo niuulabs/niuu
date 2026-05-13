@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { SessionsPage } from './SessionsPage';
 import {
   createMockSessionStore,
@@ -56,6 +57,7 @@ function wrap(sessionStore: ISessionStore = createMockSessionStore()) {
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
+          bifrost: createMockBifrostService(),
           volundr: createMockVolundrService(),
           sessionStore,
           ptyStream: createMockPtyStream(),

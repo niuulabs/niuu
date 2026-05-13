@@ -9,7 +9,6 @@ import type {
   VolundrFeatures,
   VolundrSession,
   VolundrStats,
-  VolundrModel,
   VolundrRepo,
   VolundrMessage,
   VolundrLog,
@@ -64,7 +63,6 @@ export interface IVolundrService {
   getSession(id: string): Promise<VolundrSession | null>;
   getActiveSessions(): Promise<VolundrSession[]>;
   getStats(): Promise<VolundrStats>;
-  getModels(): Promise<Record<string, VolundrModel>>;
   getRepos(): Promise<VolundrRepo[]>;
 
   /** Subscribe to live session updates via SSE. Returns an unsubscribe function. */

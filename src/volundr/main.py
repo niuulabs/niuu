@@ -85,6 +85,7 @@ BROADCAST_INTERVAL = 30
 
 logger = logging.getLogger(__name__)
 
+
 def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
     """Create the PodManager adapter from dynamic config."""
     pm_cfg = settings.pod_manager
@@ -305,6 +306,7 @@ def _create_otel_providers(otel_cfg):  # pragma: no cover
 
     return tracer_provider, meter_provider
 
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -441,7 +443,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pass  # Not running via CLI
 
             gateway_adapter = _create_gateway_adapter(settings)
-            pricing_provider = HardcodedPricingProvider(settings.models or None)
+            pricing_provider = HardcodedPricingProvider(list(settings.bifrost.models))
             git_registry = create_git_registry(settings.git)
 
             # Sleipnir integration (optional — enabled via sleipnir.enabled config)
@@ -808,8 +810,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await telegram_ingress.start()
             else:
                 logger.info(
-                    "Volundr Telegram ingress disabled via config "
-                    "(telegram_ingress.enabled=false)"
+                    "Volundr Telegram ingress disabled via config (telegram_ingress.enabled=false)"
                 )
 
             # Reconcile sessions stuck in PROVISIONING after a restart

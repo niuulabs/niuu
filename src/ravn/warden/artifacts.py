@@ -291,7 +291,7 @@ def _runtime_transport_environment(model: str) -> dict[str, str]:
     definition_key, error = session_definition_for_model(
         model,
         session_definitions=settings.session_definitions,
-        configured_models=settings.models,
+        configured_models=settings.bifrost.models,
     )
     if error or not definition_key:
         return {}

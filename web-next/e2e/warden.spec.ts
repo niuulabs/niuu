@@ -42,6 +42,8 @@ test('/mimir/ravns create form shows real checkboxes, persona select, and no leg
   await expect(page.getByLabel('Profile')).toHaveCount(0);
   await expect(page.locator('select[aria-label="Persona"]')).toHaveValue('mimir-warden');
   await expect(page.locator('select[aria-label="Model"] option')).not.toHaveCount(0);
+  await expect(page.locator('select[aria-label="Model"]')).toContainText('Claude Sonnet 4.6');
+  await expect(page.locator('select[aria-label="Model"]')).toContainText('GPT-5.5');
   await expect(page.getByText(/long-lived mimir warden/i)).toBeVisible();
   expect(personaOptions.some((option) => option.value === 'mimir-warden')).toBeTruthy();
   expect(personaOptions.length).toBeGreaterThan(0);

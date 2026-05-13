@@ -1,4 +1,5 @@
 import { createRoute } from '@tanstack/react-router';
+import { bifrostPlugin } from '@niuulabs/plugin-bifrost/plugin';
 import { loginPlugin } from '@niuulabs/plugin-login';
 import { ravnPlugin } from '@niuulabs/plugin-ravn';
 import { mimirPlugin } from '@niuulabs/plugin-mimir';
@@ -35,6 +36,7 @@ const settingsPlugin = definePlugin({
 
 export const plugins: PluginDescriptor[] = [
   loginPlugin,
+  bifrostPlugin,
   volundrPlugin,
   tyrPlugin,
   mimirPlugin,

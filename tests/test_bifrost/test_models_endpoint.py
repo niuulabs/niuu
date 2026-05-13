@@ -42,7 +42,9 @@ class TestModelsEndpoint:
 
     def test_list_models_owned_by_is_provider_name(self, client: TestClient) -> None:
         data = client.get("/v1/models").json()["data"]
-        assert all(m["owned_by"] == "anthropic" for m in data)
+        by_id = {entry["id"]: entry for entry in data}
+        assert by_id["claude-sonnet-4-6"]["owned_by"] == "anthropic"
+        assert by_id["gpt-5.5"]["owned_by"] == "openai"
 
 
 class TestModelsEndpointAliases:
@@ -110,7 +112,10 @@ class TestModelsEndpointAliases:
         app = create_app(config)
         with TestClient(app) as client:
             data = client.get("/v1/models").json()["data"]
-        assert len(data) == 2
+        ids = {entry["id"] for entry in data}
+        assert "claude-sonnet-4-6" in ids
+        assert "claude-opus-4-6" in ids
+        assert "gpt-5.5" in ids
 
 
 class TestModelsEndpointMultiProvider:
@@ -155,10 +160,34 @@ class TestModelsEndpointMultiProvider:
         ids = [m["id"] for m in data]
         assert ids.count("claude-sonnet-4-6") == 1
 
-    def test_empty_providers_returns_empty_data(self) -> None:
+    def test_empty_providers_still_return_canonical_catalog(self) -> None:
         config = BifrostConfig(providers={})
         app = create_app(config)
         with TestClient(app) as client:
             body = client.get("/v1/models").json()
         assert body["object"] == "list"
-        assert body["data"] == []
+        ids = {entry["id"] for entry in body["data"]}
+        assert "claude-sonnet-4-6" in ids
+        assert "gpt-5.5" in ids
+
+
+class TestInternalCatalogEndpoints:
+    def test_internal_catalog_models_use_bifrost_owned_catalog_without_providers(self) -> None:
+        config = BifrostConfig(providers={})
+        app = create_app(config)
+        with TestClient(app) as client:
+            data = client.get("/models").json()
+        ids = {entry["id"] for entry in data}
+        assert "claude-sonnet-4-6" in ids
+        assert "gpt-5.5" in ids
+
+    def test_internal_catalog_providers_are_derived_from_model_vendors_when_unconfigured(
+        self,
+    ) -> None:
+        config = BifrostConfig(providers={})
+        app = create_app(config)
+        with TestClient(app) as client:
+            data = client.get("/providers").json()
+        vendors = {entry["vendor"] for entry in data}
+        assert "anthropic" in vendors
+        assert "openai" in vendors

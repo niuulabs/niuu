@@ -14,6 +14,9 @@ importers:
       '@niuulabs/design-tokens':
         specifier: workspace:*
         version: link:packages/design-tokens
+      '@niuulabs/plugin-bifrost':
+        specifier: workspace:*
+        version: link:packages/plugin-bifrost
       '@niuulabs/plugin-hello':
         specifier: workspace:*
         version: link:packages/plugin-hello
@@ -69,6 +72,9 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.99.1(react@19.2.5)
+      '@tanstack/react-router':
+        specifier: ^1.95.0
+        version: 1.168.23(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@testing-library/jest-dom':
         specifier: ^6.6.3
         version: 6.9.1
@@ -171,6 +177,9 @@ importers:
       '@niuulabs/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@niuulabs/plugin-bifrost':
+        specifier: workspace:*
+        version: link:../../packages/plugin-bifrost
       '@niuulabs/plugin-hello':
         specifier: workspace:*
         version: link:../../packages/plugin-hello
@@ -294,6 +303,52 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
     devDependencies:
+      tsup:
+        specifier: ^8.3.5
+        version: 8.5.1(jiti@1.21.7)(postcss@8.5.10)(typescript@5.9.3)(yaml@2.8.3)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/plugin-bifrost:
+    dependencies:
+      '@niuulabs/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
+      '@niuulabs/query':
+        specifier: workspace:*
+        version: link:../query
+      '@niuulabs/ui':
+        specifier: workspace:*
+        version: link:../ui
+    devDependencies:
+      '@niuulabs/design-tokens':
+        specifier: workspace:*
+        version: link:../design-tokens
+      '@tanstack/react-query':
+        specifier: ^5.62.0
+        version: 5.99.1(react@19.2.5)
+      '@tanstack/react-router':
+        specifier: ^1.95.0
+        version: 1.168.23(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@types/react':
+        specifier: ^19.0.7
+        version: 19.2.14
+      autoprefixer:
+        specifier: ^10.4.20
+        version: 10.5.0(postcss@8.5.10)
+      postcss:
+        specifier: ^8.4.49
+        version: 8.5.10
+      postcss-import:
+        specifier: ^16.1.0
+        version: 16.1.1(postcss@8.5.10)
+      react:
+        specifier: ^19.0.0
+        version: 19.2.5
+      tailwindcss:
+        specifier: ^3.4.17
+        version: 3.4.19(yaml@2.8.3)
       tsup:
         specifier: ^8.3.5
         version: 8.5.1(jiti@1.21.7)(postcss@8.5.10)(typescript@5.9.3)(yaml@2.8.3)

@@ -2,8 +2,8 @@
 
 import pytest
 
+from bifrost.config import ManagedModelConfig
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
-from volundr.config import AIModelConfig
 from volundr.domain.models import ModelProvider
 
 
@@ -11,15 +11,19 @@ class TestHardcodedPricingProvider:
     """Tests for HardcodedPricingProvider."""
 
     @pytest.fixture
-    def configs(self) -> list[AIModelConfig]:
+    def configs(self) -> list[ManagedModelConfig]:
         return [
-            AIModelConfig(id="claude-opus-4-6", name="Opus 4.6", cost_per_million_tokens=15.0),
-            AIModelConfig(
+            ManagedModelConfig(
+                id="claude-opus-4-6",
+                name="Opus 4.6",
+                cost_per_million_tokens=15.0,
+            ),
+            ManagedModelConfig(
                 id="claude-sonnet-4-6",
                 name="Sonnet 4.6",
                 cost_per_million_tokens=3.0,
             ),
-            AIModelConfig(
+            ManagedModelConfig(
                 id="claude-haiku-4-5-20251001",
                 name="Haiku 4.5",
                 cost_per_million_tokens=1.0,
@@ -27,7 +31,7 @@ class TestHardcodedPricingProvider:
         ]
 
     @pytest.fixture
-    def provider(self, configs: list[AIModelConfig]) -> HardcodedPricingProvider:
+    def provider(self, configs: list[ManagedModelConfig]) -> HardcodedPricingProvider:
         return HardcodedPricingProvider(configs)
 
     def test_get_price_cloud_model(self, provider: HardcodedPricingProvider):
@@ -41,23 +45,20 @@ class TestHardcodedPricingProvider:
     def test_get_price_unknown_model_returns_none(self, provider: HardcodedPricingProvider):
         assert provider.get_price("nonexistent-model") is None
 
-    def test_list_models_returns_cloud_and_local(self, provider: HardcodedPricingProvider):
+    def test_list_models_returns_catalog_projection(self, provider: HardcodedPricingProvider):
         models = provider.list_models()
         cloud = [m for m in models if m.provider == ModelProvider.CLOUD]
-        local = [m for m in models if m.provider == ModelProvider.LOCAL]
         assert len(cloud) == 3
-        assert len(local) >= 1
 
     def test_list_models_returns_copy(self, provider: HardcodedPricingProvider):
         models1 = provider.list_models()
         models2 = provider.list_models()
         assert models1 is not models2
 
-    def test_no_config_returns_local_only(self):
+    def test_no_config_returns_empty_catalog(self):
         provider = HardcodedPricingProvider()
         models = provider.list_models()
-        cloud = [m for m in models if m.provider == ModelProvider.CLOUD]
-        assert len(cloud) == 0
+        assert models == []
 
     def test_cloud_models_have_pricing(self, provider: HardcodedPricingProvider):
         models = provider.list_models()

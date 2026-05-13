@@ -17,7 +17,6 @@ import type {
   VolundrSession,
   VolundrStats,
   VolundrFeatures,
-  VolundrModel,
   VolundrRepo,
   VolundrMessage,
   VolundrLog,
@@ -247,18 +246,6 @@ type SharedRepoPayload = {
 };
 
 type SharedRepoResponse = Record<string, SharedRepoPayload[]>;
-
-type ApiModelInfo = {
-  id: string;
-  name: string;
-  provider: VolundrModel['provider'];
-  vendor?: string;
-  tier: VolundrModel['tier'];
-  color: string;
-  cost_per_million_tokens?: number | null;
-  vram_required?: string | null;
-  session_definition?: string | null;
-};
 
 type SessionDefinitionPayload = {
   key: string;
@@ -525,29 +512,6 @@ function normalizeChronicle(payload: ChroniclePayload): SessionChronicle {
     commits: payload.commits,
     tokenBurn: payload.tokenBurn ?? payload.token_burn ?? [],
   };
-}
-
-function normalizeModel(payload: ApiModelInfo): VolundrModel {
-  return {
-    name: payload.name,
-    provider: payload.provider,
-    vendor: payload.vendor,
-    tier: payload.tier,
-    color: payload.color,
-    cost:
-      payload.cost_per_million_tokens != null ? `$${payload.cost_per_million_tokens}/M` : undefined,
-    vram: payload.vram_required ?? undefined,
-    sessionDefinition: payload.session_definition ?? undefined,
-  };
-}
-
-function normalizeModelList(
-  payload: ApiModelInfo[] | Record<string, VolundrModel>,
-): Record<string, VolundrModel> {
-  if (Array.isArray(payload)) {
-    return Object.fromEntries(payload.map((model) => [model.id, normalizeModel(model)]));
-  }
-  return payload;
 }
 
 function normalizeRepo(payload: SharedRepoPayload): VolundrRepo {
@@ -1107,10 +1071,6 @@ export function buildVolundrHttpAdapter(
     getSession: (id) => loadSession(id),
     getActiveSessions: () => loadSessions('/sessions?active=true'),
     getStats: () => loadStats(),
-    getModels: async () =>
-      normalizeModelList(
-        await forgeClient.get<ApiModelInfo[] | Record<string, VolundrModel>>('/models'),
-      ),
     getRepos: async () =>
       normalizeRepoList(
         await (niuuClient ?? forgeClient).get<

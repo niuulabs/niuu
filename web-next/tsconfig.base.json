@@ -24,6 +24,8 @@
       "@niuulabs/design-tokens": ["packages/design-tokens/src/index.ts"],
       "@niuulabs/domain": ["packages/domain/src/index.ts"],
       "@niuulabs/plugin-hello": ["packages/plugin-hello/src/index.tsx"],
+      "@niuulabs/plugin-bifrost": ["packages/plugin-bifrost/src/index.ts"],
+      "@niuulabs/plugin-bifrost/plugin": ["packages/plugin-bifrost/src/plugin.tsx"],
       "@niuulabs/plugin-login": ["packages/plugin-login/src/index.ts"],
       "@niuulabs/plugin-mimir": ["packages/plugin-mimir/src/index.tsx"],
       "@niuulabs/plugin-observatory": ["packages/plugin-observatory/src/index.tsx"],
