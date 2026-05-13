@@ -25,6 +25,17 @@ describe('niuuConfigSchema', () => {
     expect(parsed.services.tyr?.baseUrl).toBe('https://api.niuu.world/tyr');
   });
 
+  it('accepts root-relative service URLs', () => {
+    const parsed = niuuConfigSchema.parse({
+      services: {
+        bifrost: { baseUrl: '/api/v1/bifrost', mode: 'http' },
+        mimir: { baseUrl: '/mimir', mode: 'http' },
+      },
+    });
+    expect(parsed.services.bifrost?.baseUrl).toBe('/api/v1/bifrost');
+    expect(parsed.services.mimir?.baseUrl).toBe('/mimir');
+  });
+
   it('rejects an invalid theme', () => {
     expect(() => niuuConfigSchema.parse({ theme: 'ultraviolet' })).toThrow();
   });

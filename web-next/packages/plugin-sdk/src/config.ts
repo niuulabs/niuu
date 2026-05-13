@@ -1,5 +1,17 @@
 import { z } from 'zod';
 
+const absoluteOrRootRelativeUrlSchema = z.string().refine((value) => {
+  if (value.startsWith('/')) {
+    return true;
+  }
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, 'Invalid url');
+
 export const pluginConfigSchema = z.object({
   enabled: z.boolean().default(true),
   order: z.number().int().nonnegative().default(100),
@@ -8,7 +20,7 @@ export const pluginConfigSchema = z.object({
 
 export const serviceConfigSchema = z
   .object({
-    baseUrl: z.string().url().optional(),
+    baseUrl: absoluteOrRootRelativeUrlSchema.optional(),
     /**
      * Optional WebSocket URL for services with a bidirectional stream
      * component (e.g. Völundr PTY). Accepts ws:// or wss://. When present it
