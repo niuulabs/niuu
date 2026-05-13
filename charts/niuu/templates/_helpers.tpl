@@ -90,6 +90,8 @@ as literal service names to keep the route table extensible.
 {{ include "niuu.componentFullname" (dict "root" $root "name" "bifrost" "values" $root.Values.bifrost) }}
 {{- else if eq $service "mimir-shared" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-shared" "values" (index $root.Values "mimir-shared")) }}
+{{- else if eq $service "ravn" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "ravn" "values" $root.Values.ravn) }}
 {{- else if eq $service "mimir-kanuck" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-kanuck" "values" (index $root.Values "mimir-kanuck")) }}
 {{- else if eq $service "mimir-research" -}}

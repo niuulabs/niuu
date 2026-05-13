@@ -1,0 +1,18 @@
+apiVersion: v2
+name: ravn
+description: "Ravn — agent runtime and warden API"
+type: application
+version: 0.0.0-tyr.159
+appVersion: "0.0.0-tyr.159"
+keywords:
+  - ravn
+  - agents
+  - wardens
+  - ai
+maintainers:
+  - name: Niuu Labs
+    url: https://github.com/niuulabs
+home: https://github.com/niuulabs/volundr
+sources:
+  - https://github.com/niuulabs/volundr
+dependencies: []

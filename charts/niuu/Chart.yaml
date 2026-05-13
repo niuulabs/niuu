@@ -36,6 +36,10 @@ dependencies:
     repository: "file://../mimir"
     condition: mimir-shared.enabled
     alias: mimir-shared
+  - name: ravn
+    version: ">=0.0.0-0"
+    repository: "file://../ravn"
+    condition: ravn.enabled
   - name: mimir
     version: ">=0.0.0-0"
     repository: "file://../mimir"

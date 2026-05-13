@@ -153,6 +153,13 @@ niuu-shared:
 bifrost:
   enabled: true
 
+ravn:
+  enabled: false
+  command:
+    - ravn-api
+  persistence:
+    enabled: false
+
 # Mímir — shared ODIN-wide instance (always enabled)
 mimir-shared:
   enabled: true
