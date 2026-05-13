@@ -405,7 +405,10 @@ class TestRoutesCacheIntegration:
                 with patch("bifrost.router.ModelRouter.complete", new_callable=AsyncMock) as mc:
                     mc.return_value = mock_resp
                     with TestClient(app) as client:
-                        client.post("/api/v1/bifrost/v1/messages", json=_BODY)  # miss — populates cache
+                        client.post(
+                            "/api/v1/bifrost/v1/messages",
+                            json=_BODY,
+                        )  # miss — populates cache
                         client.post("/api/v1/bifrost/v1/messages", json=_BODY)  # hit
 
         records = store._records

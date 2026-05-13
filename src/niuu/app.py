@@ -295,6 +295,12 @@ def _declared_plugin_route_domains(
 
 def _backend_prefix_for_mount(plugin_name: str, public_prefix: str) -> str:
     """Map public mount prefixes to the backend route prefix a plugin actually serves."""
+    if plugin_name == "bifrost":
+        bifrost_prefix = "/api/v1/bifrost"
+        if public_prefix == bifrost_prefix:
+            return ""
+        if public_prefix.startswith(f"{bifrost_prefix}/"):
+            return public_prefix[len(bifrost_prefix) :]
     if plugin_name == "mimir" and public_prefix.startswith("/api/v1/mimir/mcp"):
         return public_prefix.replace("/api/v1/mimir/mcp", "/mcp", 1)
     if plugin_name == "mimir" and public_prefix.startswith("/api/v1/mimir"):

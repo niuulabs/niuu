@@ -284,6 +284,9 @@ def create_app(config: BifrostConfig) -> FastAPI:
         cache=cache,
         audit=audit,
     )
+    # Expose native Bifrost routes for direct service usage and test compatibility,
+    # plus the canonical public prefix used by the unified niuu host and ingress.
+    app.include_router(api_router)
     app.include_router(api_router, prefix="/api/v1/bifrost")
     app.include_router(obs_router)
     app.include_router(obs_router, prefix="/api/v1/bifrost")
