@@ -8,6 +8,11 @@ coverage:
       default:
         target: 70%
         threshold: 5%
+ignore:
+  - ".github/**"
+  - "charts/**"
+  - "containers/**"
+  - "docs/**"
 comment:
   layout: "reach,diff,flags,components"
   behavior: default
