@@ -4,165 +4,155 @@ hide:
   - toc
 ---
 
-<div class="volundr-hero" markdown>
+<div class="niuu-hero" markdown>
 
-# Volundr
+![Niuu knot](images/logo-knot.svg){ .hero-logo width="84" }
 
-<p class="tagline">Self-hosted remote development platform on Kubernetes</p>
+# Niuu
+
+<p class="tagline">The self-hosted platform for AI workspaces, automated workflows, always-on assistants, shared knowledge, and local or cloud AI.</p>
+
+<div class="hero-pills">
+  <span>AI workspaces</span>
+  <span>Automated workflows</span>
+  <span>Always-on assistants</span>
+  <span>Shared knowledge</span>
+  <span>Local &amp; cloud AI</span>
+  <span>Laptop to Kubernetes</span>
+</div>
 
 <div class="hero-buttons">
-  <a href="getting-started/installation/" class="primary">Get started</a>
-  <a href="architecture/overview/" class="secondary">Architecture</a>
-  <a href="api/openapi/" class="secondary">API reference</a>
+  <a href="#what-niuu-is" class="primary">Start here</a>
+  <a href="#platform-map" class="secondary">Platform map</a>
+  <a href="https://github.com/niuulabs/volundr" class="secondary">Repository</a>
 </div>
 
 </div>
 
-<div class="screenshot-full" markdown>
+## What Niuu Is
 
-![Session dashboard](images/dashboard.png)
+Niuu brings four operating modes into one platform you can run on your own machine, on Kubernetes, or inside your own infrastructure:
 
-</div>
+- **AI workspaces** for hands-on work with an assistant in a live coding environment
+- **Automated workflows** for implementation, review, security passes, and research
+- **Always-on assistants** that watch for changes, curate knowledge, and keep working over time
+- **Shared model control** that decides what models exist, how they route, and how they execute
 
-A platform for running managed, isolated AI coding agent sessions on your own Kubernetes cluster. Volundr manages the full lifecycle — spinning up isolated workspaces in Kubernetes pods where developers interact with AI coding agents (like Claude Code) through a browser.
+The result is a self-hosted system where you can move smoothly between direct operator work, autonomous execution, durable memory, and local or third-party models without handing control to an external vendor platform.
 
-## Features
+## Why It Exists
 
 <div class="feature-grid" markdown>
 
 <div class="feature" markdown>
 
-### :material-kubernetes: Isolated sessions
+### One platform, not disconnected tools
 
-Create, start, stop, and archive coding sessions with model selection. Each session gets its own Kubernetes pod with a dedicated workspace PVC and storage quotas.
-
-</div>
-
-<div class="feature" markdown>
-
-### :material-source-branch: Git workflows
-
-Branch creation, PR management, CI status checks, and merge confidence scoring across GitHub and GitLab.
+Workspaces, workflows, assistants, and model routing all live in one system with shared auth, shared memory, shared events, and one operator experience.
 
 </div>
 
 <div class="feature" markdown>
 
-### :material-timeline-text: Chronicles
+### Operators stay in control
 
-Session history with timelines, file diffs, and commit summaries. See exactly what changed and when.
-
-</div>
-
-<div class="feature" markdown>
-
-### :material-shield-lock: Secret injection
-
-Mount secrets into sessions via Infisical, OpenBao/Vault, or in-memory backends. Volundr never sees secret values.
+Humans can inspect, interrupt, redirect, approve, and steer the platform at every layer instead of treating agents like opaque background jobs.
 
 </div>
 
 <div class="feature" markdown>
 
-### :material-account-group: Multi-tenancy & auth
+### Memory is first-class
 
-Hierarchical tenants with roles and quota enforcement. IDP-agnostic OIDC authentication via Envoy, authorization via Cerbos.
+Shared knowledge is not an afterthought. It is where research, debate, durable documentation, and long-lived assistant curation all accumulate.
 
 </div>
 
 <div class="feature" markdown>
 
-### :material-puzzle: Integrations & events
+### Multi-model by design
 
-Issue trackers (Linear, Jira), MCP servers, SSE streaming, and event pipelines to PostgreSQL, RabbitMQ, and OpenTelemetry.
-
-</div>
-
-</div>
-
-## Components
-
-| Component | Role |
-|-----------|------|
-| <span class="component-name">Volundr API</span> | FastAPI/Python backend — session CRUD, workspace provisioning, git integration, secret management, multi-tenant access control |
-| <span class="component-name">Skuld</span> | WebSocket broker — connects the browser UI to AI coding agents running inside session pods |
-| <span class="component-name">Web UI</span> | React web UI — session management, chronicles, diffs, terminal access, and admin |
-
-## Tech stack
-
-FastAPI · asyncpg (raw SQL, no ORM) · React/Vite/CSS Modules · Kubernetes/Helm · OIDC/Cerbos · OpenTelemetry
-
-## See it in action
-
-<div class="screenshot-showcase" markdown>
-
-<div class="showcase-item" markdown>
-
-### Sign in
-
-Volundr uses standard OIDC for authentication and is fully IDP-agnostic — connect Keycloak, Entra ID, Okta, or any compliant provider. Users sign in through your existing identity infrastructure with no vendor lock-in.
-
-![Login](images/login.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Launch a session
-
-The launch wizard walks you through session creation in two steps: pick a workspace template, then configure resources, credentials, and integrations. Templates are fully customisable, letting teams standardise their environments while keeping things flexible.
-
-![Launch wizard](images/launch-wizard.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Chat with the agent
-
-The session dashboard is where you interact with your AI coding agent. Chat back and forth, watch work happen in real time, and switch between tabs for the terminal, code, diffs, and logs — all from the browser.
-
-![Session chat](images/dashboard.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Review changes
-
-The built-in diff viewer gives you a clear view of every file the agent has touched. Review changes inline before committing, catch issues early, and keep full control over what lands in your codebase.
-
-![Session diffs](images/session-diffs.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Browse the timeline
-
-Chronicles capture the full history of a session — every commit, file change, and agent action laid out on a timeline. Scroll back to see exactly what happened and when, making it easy to audit work or pick up where you left off.
-
-![Chronicle timeline](images/chronicle-timeline.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Full workspace access
-
-Each session provides a complete workspace with an integrated terminal and a full VS Code instance running remotely inside the Kubernetes pod. Edit code, install extensions, debug, and run commands — all from the browser, just like you would locally.
-
-![Session workspace](images/session-workspace.png)
+The platform owns the model catalog and routing truth so workflows, workspaces, and assistants can use different models without each subsystem inventing its own rules.
 
 </div>
 
 </div>
 
-## Quick links
+## Platform Map
 
-- [Quick start](getting-started/quick-start.md) — get running in 5 minutes
-- [Installation guide](installation/overview.md) — deployment options and setup
-- [User guide](user-guide/sessions.md) — sessions, templates, chronicles, CLI
-- [Configuration](configuration/overview.md) — adapters, identity, secrets, storage
-- [API reference](api/openapi.md) — interactive OpenAPI documentation
-- [Contributing](contributing/development.md) — development workflow
+| Surface | What it is for | Primary services |
+|---|---|---|
+| **Live workspaces** | Live coding, terminal work, review, diffs, and operator-guided execution | `volundr`, `skuld`, `web-next` |
+| **Automated workflows** | Multi-stage autonomous work, review loops, security passes, and research councils | `tyr`, `ravn`, `volundr` |
+| **Always-on assistants** | Long-lived agents that watch sources, curate knowledge, run dream cycles, and stay available for operator interaction | `ravn`, `mimir`, `web-next` |
+| **Shared knowledge** | Scratch boards, research pages, postmortems, ingest, search, and durable knowledge | `mimir`, `ravn` |
+| **Model operations** | Model catalog, aliases, providers, runtime mapping, routing policy, and health | `bifrost` |
+| **Realtime collaboration** | Live rooms, chat transport, event propagation, and workflow signaling | `skuld`, `sleipnir` |
+
+## What Niuu Does Today
+
+<div class="feature-grid" markdown>
+
+<div class="feature" markdown>
+
+### Live AI workspaces
+
+Launch and manage coding workspaces with repos, terminals, diffs, and live conversation with an assistant.
+
+</div>
+
+<div class="feature" markdown>
+
+### Workflow orchestration
+
+Dispatch typed workflows and raids, including review loops, security passes, and mixed-model research councils.
+
+</div>
+
+<div class="feature" markdown>
+
+### Agent runtime
+
+Provide the agent runtime, personas, tools, drive loops, triggers, and Warden machinery for long-lived intelligence.
+
+</div>
+
+<div class="feature" markdown>
+
+### Shared knowledge
+
+Store raw ingest, scratch discussion, curated memory, research outputs, postmortems, and Warden-maintained knowledge.
+
+</div>
+
+<div class="feature" markdown>
+
+### Model control
+
+Own the model catalog and provider/routing truth so the rest of the platform can ask for a model without duplicating control-plane logic.
+
+</div>
+
+<div class="feature" markdown>
+
+### Always-on assistants
+
+Run as long-lived assistant daemons that can watch knowledge sources, trigger curation, revisit stale documents, and expose a live operator console.
+
+</div>
+
+</div>
+
+## Operator Journeys
+
+### 1. Pair directly with AI
+
+Use a live workspace when you want a terminal, diffs, and a direct room with the assistant while keeping everything on your own infrastructure.
+
+### 2. Launch autonomous work
+
+Use an automated workflow when the work should run as a repeatable flow: coding, review, security, postmortems, or research with multiple models.
+
+### 3. Keep knowledge alive
+
+Use always-on assistants and shared knowledge when the work should keep happening after the workspace closes: source watching, curation, reflection, document refresh, and operator-steerable long-lived agents.

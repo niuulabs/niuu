@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Volundr docs — match the app's dark zinc + orange aesthetic
+   Niuu docs — match the app's dark zinc + orange aesthetic
    ========================================================================== */
 
 /* ---------- Google Fonts ---------- */
@@ -8,11 +8,11 @@
 /* ---------- Palette override (dark / slate) ---------- */
 [data-md-color-scheme="slate"] {
   /* Brand */
-  --md-primary-fg-color:        #f97316;
-  --md-primary-fg-color--light: #fb923c;
-  --md-primary-fg-color--dark:  #ea580c;
-  --md-accent-fg-color:         #06b6d4;
-  --md-accent-fg-color--transparent: rgba(6, 182, 212, 0.1);
+  --md-primary-fg-color:        #0ea5e9;
+  --md-primary-fg-color--light: #38bdf8;
+  --md-primary-fg-color--dark:  #0369a1;
+  --md-accent-fg-color:         #7dd3fc;
+  --md-accent-fg-color--transparent: rgba(56, 189, 248, 0.1);
 
   /* Backgrounds — zinc scale */
   --md-default-bg-color:        #09090b;
@@ -26,11 +26,11 @@
   /* Code */
   --md-code-bg-color:           #18181b;
   --md-code-fg-color:           #e4e4e7;
-  --md-code-hl-color:           rgba(249, 115, 22, 0.15);
+  --md-code-hl-color:           rgba(56, 189, 248, 0.15);
 
   /* Typeset */
   --md-typeset-color:           #fafafa;
-  --md-typeset-a-color:         #f97316;
+  --md-typeset-a-color:         #38bdf8;
 
   /* Footer */
   --md-footer-bg-color:         #09090b;
@@ -50,11 +50,11 @@
 
 /* ---------- Palette override (light / default) ---------- */
 [data-md-color-scheme="default"] {
-  --md-primary-fg-color:        #ea580c;
-  --md-primary-fg-color--light: #f97316;
-  --md-primary-fg-color--dark:  #c2410c;
-  --md-accent-fg-color:         #0891b2;
-  --md-typeset-a-color:         #ea580c;
+  --md-primary-fg-color:        #0ea5e9;
+  --md-primary-fg-color--light: #38bdf8;
+  --md-primary-fg-color--dark:  #0369a1;
+  --md-accent-fg-color:         #0ea5e9;
+  --md-typeset-a-color:         #0ea5e9;
 }
 
 /* ---------- Typography ---------- */
@@ -104,7 +104,7 @@
 
 [data-md-color-scheme="slate"] .md-nav__link--active,
 [data-md-color-scheme="slate"] .md-nav__item--active > .md-nav__link {
-  color: #f97316;
+  color: #7dd3fc;
   font-weight: 500;
 }
 
@@ -151,7 +151,7 @@
 }
 
 .md-typeset a:hover {
-  color: #fb923c;
+  color: #bae6fd;
 }
 
 /* ---------- Code blocks ---------- */
@@ -161,7 +161,7 @@
   border-radius: 6px;
   padding: 0.1em 0.35em;
   font-size: 0.82em;
-  color: #f97316;
+  color: #7dd3fc;
 }
 
 [data-md-color-scheme="slate"] .md-typeset pre {
@@ -183,7 +183,7 @@
 }
 
 [data-md-color-scheme="slate"] .md-clipboard:hover {
-  color: #f97316;
+  color: #38bdf8;
 }
 
 /* ---------- Tables ---------- */
@@ -221,7 +221,7 @@
 }
 
 [data-md-color-scheme="slate"] .md-typeset table:not([class]) tbody tr:hover {
-  background: rgba(249, 115, 22, 0.04);
+  background: rgba(56, 189, 248, 0.05);
 }
 
 /* ---------- Admonitions ---------- */
@@ -270,8 +270,8 @@
 
 [data-md-color-scheme="slate"] .md-typeset .tabbed-labels > .tabbed-label--active,
 [data-md-color-scheme="slate"] .md-typeset .tabbed-labels > label.tabbed-label--active {
-  color: #f97316;
-  border-bottom-color: #f97316;
+  color: #38bdf8;
+  border-bottom-color: #38bdf8;
 }
 
 /* ---------- Footer ---------- */
@@ -306,7 +306,7 @@
 }
 
 [data-md-color-scheme="slate"] .md-nav__link--active {
-  color: #f97316;
+  color: #7dd3fc;
 }
 
 /* ---------- Scrollbar ---------- */
@@ -345,12 +345,25 @@
 }
 
 /* ---------- Hero section (home page) ---------- */
-.md-typeset .volundr-hero {
+.md-typeset .niuu-hero {
   text-align: center;
   padding: 3rem 0 2rem;
 }
 
-.md-typeset .volundr-hero h1 {
+.md-typeset .niuu-hero .hero-logo {
+  width: 84px;
+  margin: 0 auto 1rem;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.md-typeset .niuu-hero .hero-logo:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.md-typeset .niuu-hero h1 {
   font-size: 2.5rem;
   font-weight: 700;
   letter-spacing: -0.035em;
@@ -358,20 +371,46 @@
   margin-bottom: 0.5rem;
 }
 
-.md-typeset .volundr-hero .tagline {
+.md-typeset .niuu-hero .tagline {
   color: #a1a1aa;
   font-size: 1.125rem;
   margin-bottom: 2rem;
 }
 
-.md-typeset .volundr-hero .hero-buttons {
+.md-typeset .niuu-hero .hero-pills {
+  display: flex;
+  gap: 0.65rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 1.75rem;
+}
+
+.md-typeset .niuu-hero .hero-pills span {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.75rem;
+  border-radius: 9999px;
+  border: 1px solid #27272a;
+  background: #18181b;
+  color: #d4d4d8;
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+}
+
+[data-md-color-scheme="default"] .md-typeset .niuu-hero .hero-pills span {
+  background: #f4f4f5;
+  border-color: #e4e4e7;
+  color: #3f3f46;
+}
+
+.md-typeset .niuu-hero .hero-buttons {
   display: flex;
   gap: 0.75rem;
   justify-content: center;
   flex-wrap: wrap;
 }
 
-.md-typeset .volundr-hero .hero-buttons a {
+.md-typeset .niuu-hero .hero-buttons a {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -383,23 +422,23 @@
   transition: all 150ms ease;
 }
 
-.md-typeset .volundr-hero .hero-buttons a.primary {
-  background: #f97316;
-  color: #09090b;
+.md-typeset .niuu-hero .hero-buttons a.primary {
+  background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
+  color: #04131c;
 }
 
-.md-typeset .volundr-hero .hero-buttons a.primary:hover {
-  background: #fb923c;
-  box-shadow: 0 0 20px rgba(249, 115, 22, 0.25);
+.md-typeset .niuu-hero .hero-buttons a.primary:hover {
+  background: linear-gradient(135deg, #7dd3fc 0%, #38bdf8 100%);
+  box-shadow: 0 0 22px rgba(56, 189, 248, 0.28);
 }
 
-.md-typeset .volundr-hero .hero-buttons a.secondary {
+.md-typeset .niuu-hero .hero-buttons a.secondary {
   background: #18181b;
   color: #fafafa;
   border: 1px solid #27272a;
 }
 
-.md-typeset .volundr-hero .hero-buttons a.secondary:hover {
+.md-typeset .niuu-hero .hero-buttons a.secondary:hover {
   background: #27272a;
   border-color: #3f3f46;
 }
@@ -421,7 +460,7 @@
 }
 
 .md-typeset .feature-grid .feature:hover {
-  border-color: #3f3f46;
+  border-color: #334155;
   background: #1c1c20;
 }
 
@@ -509,11 +548,11 @@
   font-size: 1.15rem;
   font-weight: 600;
   margin: 0 0 0.5rem;
-  color: #f97316;
+  color: #38bdf8;
 }
 
 [data-md-color-scheme="default"] .md-typeset .screenshot-showcase .showcase-item h3 {
-  color: #ea580c;
+  color: #0ea5e9;
 }
 
 .md-typeset .screenshot-showcase .showcase-item p {
@@ -534,13 +573,13 @@
 
 /* ---------- Component table badges (home page) ---------- */
 .md-typeset .component-name {
-  color: #f97316;
+  color: #38bdf8;
   font-weight: 600;
 }
 
 /* ---------- Responsive adjustments ---------- */
 @media (max-width: 768px) {
-  .md-typeset .volundr-hero h1 {
+  .md-typeset .niuu-hero h1 {
     font-size: 1.75rem;
   }
 
