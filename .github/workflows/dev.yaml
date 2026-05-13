@@ -357,32 +357,22 @@ jobs:
         run: |
           VERSION="${{ needs.tag.outputs.version }}"
 
-          sed -i "s/^version:.*/version: $VERSION/" charts/skuld/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/skuld/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/volundr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/volundr/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/tyr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/tyr/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu-shared/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu-shared/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/skuld-planner/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/skuld-planner/Chart.yaml
+          for CHART in bifrost ravn skuld volundr tyr niuu-shared niuu skuld-planner; do
+            sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
+            sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
+          done
 
       - name: Package Helm charts
         run: |
+          helm package charts/bifrost -d .helm-packages/
+          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
           helm package charts/tyr -d .helm-packages/
           helm package charts/niuu-shared -d .helm-packages/
-          helm dependency build charts/niuu
+          rm -f charts/niuu/Chart.lock
+          helm dependency update charts/niuu
           helm package charts/niuu -d .helm-packages/
 
       - name: Log in to Container Registry
@@ -394,6 +384,8 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-0*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-planner-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
