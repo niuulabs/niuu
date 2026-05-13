@@ -13,6 +13,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from bifrost import catalog as bifrost_catalog
 from bifrost.app import create_app
 from bifrost.config import BifrostConfig, ProviderConfig, RoutingStrategy
 from bifrost.domain.models import TokenUsage
@@ -90,7 +91,7 @@ class TestInboundLayer:
         assert resp.status_code == 200
 
     def test_models_endpoint_lists_all_models(self):
-        """GET /v1/models returns all configured models."""
+        """GET /v1/models returns the full Bifrost-owned catalog view."""
         config = BifrostConfig(
             providers={
                 "anthropic": ProviderConfig(models=["claude-sonnet-4-6"]),
@@ -101,7 +102,7 @@ class TestInboundLayer:
             resp = client.get("/v1/models")
         assert resp.status_code == 200
         ids = {m["id"] for m in resp.json()["data"]}
-        assert ids == {"claude-sonnet-4-6", "gpt-4o", "gpt-4o-mini"}
+        assert ids == {model.id for model in bifrost_catalog.list_models(config)}
 
     def test_streaming_response_has_non_buffering_headers(self):
         """Streaming response carries cache-control and x-accel-buffering headers."""
