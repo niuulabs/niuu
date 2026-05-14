@@ -31,11 +31,16 @@ def archive_root(
     """Return the archive root for a session."""
     if archive_location == "workspace":
         configured = Path(archive_path) if archive_path else DEFAULT_WORKSPACE_ARCHIVE_DIR
-        return configured.expanduser() if configured.is_absolute() else Path(workspace_dir) / configured
+        if configured.is_absolute():
+            return configured.expanduser()
+        return Path(workspace_dir) / configured
 
     if archive_location == "config":
         configured = Path(archive_path) if archive_path else DEFAULT_CONFIG_ARCHIVE_DIR
-        base = configured.expanduser() if configured.is_absolute() else config_root_dir() / configured
+        if configured.is_absolute():
+            base = configured.expanduser()
+        else:
+            base = config_root_dir() / configured
         if not session_id:
             raise ValueError("session_id is required for config-scoped archives")
         return base / session_id
