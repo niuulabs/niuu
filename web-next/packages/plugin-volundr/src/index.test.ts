@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { volundrPlugin } from './index';
 
 describe('volundrPlugin', () => {
-  it('opens on sessions and keeps Forge at the end of the tab list', () => {
+  it('keeps Forge at the beginning of the tab list while sessions remain the root route', () => {
     expect(volundrPlugin.tabs).toEqual([
+      { id: 'forge', label: 'Forge', path: '/volundr/forge' },
       { id: 'sessions', label: 'Sessions', path: '/volundr' },
       { id: 'templates', label: 'Templates', path: '/volundr/templates' },
       { id: 'credentials', label: 'Credentials', path: '/volundr/credentials' },
       { id: 'clusters', label: 'Clusters', path: '/volundr/clusters' },
-      { id: 'forge', label: 'Forge', path: '/volundr/forge' },
     ]);
   });
 

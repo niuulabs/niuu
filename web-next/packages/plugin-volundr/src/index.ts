@@ -15,11 +15,11 @@ export const volundrPlugin = definePlugin({
   title: 'Völundr',
   subtitle: 'session forge · remote dev pods',
   tabs: [
+    { id: 'forge', label: 'Forge', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr' },
     { id: 'templates', label: 'Templates', path: '/volundr/templates' },
     { id: 'credentials', label: 'Credentials', path: '/volundr/credentials' },
     { id: 'clusters', label: 'Clusters', path: '/volundr/clusters' },
-    { id: 'forge', label: 'Forge', path: '/volundr/forge' },
   ],
   routes: (rootRoute) => [
     createRoute({

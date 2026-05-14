@@ -1,0 +1,115 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="glow" x="0" y="0" width="1200" height="760" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="20" result="blur"/>
+    </filter>
+    <style>
+      .title { font: 700 18px Inter, Arial, sans-serif; fill: #F8FAFC; }
+      .label { font: 600 13px Inter, Arial, sans-serif; fill: #E2E8F0; }
+      .small { font: 500 12px Inter, Arial, sans-serif; fill: #94A3B8; }
+      .tiny { font: 600 11px Inter, Arial, sans-serif; fill: #7DD3FC; letter-spacing: 0.08em; text-transform: uppercase; }
+      .nodeTitle { font: 700 16px Inter, Arial, sans-serif; fill: #F8FAFC; }
+      .nodeSub { font: 500 11px Inter, Arial, sans-serif; fill: #CBD5E1; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="760" rx="28" fill="#0B1120"/>
+  <circle cx="600" cy="385" r="185" fill="#102238" opacity="0.85" filter="url(#glow)"/>
+
+  <!-- top row -->
+  <rect x="120" y="72" width="220" height="100" rx="18" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="230" y="112" text-anchor="middle" class="title">Volundr</text>
+  <text x="230" y="136" text-anchor="middle" class="small">live workspaces</text>
+  <text x="230" y="154" text-anchor="middle" class="small">repos · terminals · diffs · pods</text>
+
+  <rect x="490" y="72" width="220" height="100" rx="18" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="600" y="112" text-anchor="middle" class="title">Tyr</text>
+  <text x="600" y="136" text-anchor="middle" class="small">teams and workflows</text>
+  <text x="600" y="154" text-anchor="middle" class="small">handoffs · reviews · approvals</text>
+
+  <rect x="860" y="72" width="220" height="100" rx="18" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="970" y="112" text-anchor="middle" class="title">Wardens</text>
+  <text x="970" y="136" text-anchor="middle" class="small">long-running assistants</text>
+  <text x="970" y="154" text-anchor="middle" class="small">dream cycles · source watching · console</text>
+
+  <!-- center title -->
+  <rect x="462" y="208" width="276" height="34" rx="17" fill="#0C2532"/>
+  <text x="600" y="230" text-anchor="middle" class="tiny">Ravn is the harness</text>
+
+  <!-- mesh lines -->
+  <path d="M430 350L600 300L770 350L680 485L520 485L430 350Z" stroke="#38BDF8" stroke-width="2.5" stroke-dasharray="8 8" opacity="0.85"/>
+  <path d="M430 350L520 485" stroke="#38BDF8" stroke-width="2.5" opacity="0.85"/>
+  <path d="M770 350L680 485" stroke="#38BDF8" stroke-width="2.5" opacity="0.85"/>
+  <path d="M520 485L680 485" stroke="#38BDF8" stroke-width="2.5" opacity="0.85"/>
+  <text x="600" y="520" text-anchor="middle" class="small">several assistants can work together over shared event streams</text>
+
+  <!-- mesh nodes -->
+  <polygon points="430,294 484,322 484,378 430,406 376,378 376,322" fill="#111827" stroke="#7DD3FC" stroke-width="2.5"/>
+  <text x="430" y="344" text-anchor="middle" class="nodeTitle">Ravn</text>
+  <text x="430" y="364" text-anchor="middle" class="nodeSub">builder</text>
+
+  <polygon points="600,244 654,272 654,328 600,356 546,328 546,272" fill="#111827" stroke="#7DD3FC" stroke-width="2.5"/>
+  <text x="600" y="294" text-anchor="middle" class="nodeTitle">Ravn</text>
+  <text x="600" y="314" text-anchor="middle" class="nodeSub">reviewer</text>
+
+  <polygon points="770,294 824,322 824,378 770,406 716,378 716,322" fill="#111827" stroke="#7DD3FC" stroke-width="2.5"/>
+  <text x="770" y="344" text-anchor="middle" class="nodeTitle">Ravn</text>
+  <text x="770" y="364" text-anchor="middle" class="nodeSub">researcher</text>
+
+  <polygon points="520,429 574,457 574,513 520,541 466,513 466,457" fill="#111827" stroke="#7DD3FC" stroke-width="2.5"/>
+  <text x="520" y="479" text-anchor="middle" class="nodeTitle">Ravn</text>
+  <text x="520" y="499" text-anchor="middle" class="nodeSub">security</text>
+
+  <polygon points="680,429 734,457 734,513 680,541 626,513 626,457" fill="#111827" stroke="#7DD3FC" stroke-width="2.5"/>
+  <text x="680" y="479" text-anchor="middle" class="nodeTitle">Ravn</text>
+  <text x="680" y="499" text-anchor="middle" class="nodeSub">memory</text>
+
+  <!-- left support -->
+  <rect x="72" y="305" width="190" height="52" rx="26" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="167" y="337" text-anchor="middle" class="label">rooms</text>
+
+  <rect x="42" y="372" width="220" height="52" rx="26" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="152" y="404" text-anchor="middle" class="label">directed messages</text>
+
+  <rect x="62" y="439" width="200" height="52" rx="26" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="162" y="471" text-anchor="middle" class="label">help needed</text>
+
+  <path d="M262 331H356" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M262 398H342" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M262 465H358" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- right support -->
+  <rect x="938" y="318" width="190" height="52" rx="26" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="1033" y="350" text-anchor="middle" class="label">CLI runtimes</text>
+
+  <rect x="918" y="385" width="210" height="52" rx="26" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="1023" y="417" text-anchor="middle" class="label">provider APIs</text>
+
+  <rect x="928" y="452" width="200" height="52" rx="26" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="1028" y="484" text-anchor="middle" class="label">mixed models</text>
+
+  <path d="M844 344H938" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M854 411H918" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M842 478H928" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- bottom row -->
+  <rect x="120" y="610" width="220" height="96" rx="18" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="230" y="648" text-anchor="middle" class="title">Mimir</text>
+  <text x="230" y="672" text-anchor="middle" class="small">scratch · research · durable memory</text>
+
+  <rect x="490" y="610" width="220" height="96" rx="18" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="600" y="648" text-anchor="middle" class="title">Skuld + Sleipnir</text>
+  <text x="600" y="672" text-anchor="middle" class="small">live signaling · notifications · event flow</text>
+
+  <rect x="860" y="610" width="220" height="96" rx="18" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="970" y="648" text-anchor="middle" class="title">Bifrost</text>
+  <text x="970" y="672" text-anchor="middle" class="small">models · providers · routing · runtime mapping</text>
+
+  <path d="M430 406C390 520 320 580 250 610" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M600 356V610" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M770 406C810 520 880 580 950 610" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+
+  <path d="M230 172C230 230 330 275 398 308" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M600 172V238" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M970 172C970 230 870 275 802 308" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+</svg>

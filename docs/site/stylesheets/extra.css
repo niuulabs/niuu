@@ -483,6 +483,31 @@
   line-height: 1.5;
 }
 
+.md-typeset .niuu-architecture-diagram {
+  display: block;
+  width: 100%;
+  max-width: 1100px;
+  margin: 1.5rem auto 1rem;
+  border: 1px solid #27272a;
+  border-radius: 22px;
+  background: #0b1120;
+  box-shadow: 0 24px 60px -35px rgba(56, 189, 248, 0.35);
+}
+
+.md-typeset .arch-caption {
+  margin: 0 0 2rem;
+}
+
+.md-typeset .arch-caption ul {
+  margin: 0.4rem 0 0;
+}
+
+[data-md-color-scheme="default"] .md-typeset .niuu-architecture-diagram {
+  border-color: #d4d4d8;
+  background: #f8fafc;
+  box-shadow: 0 24px 60px -35px rgba(14, 165, 233, 0.18);
+}
+
 [data-md-color-scheme="default"] .md-typeset .feature-grid .feature {
   background: #f4f4f5;
   border-color: #e4e4e7;

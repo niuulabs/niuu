@@ -10,11 +10,11 @@ hide:
 
 # Niuu
 
-<p class="tagline">The self-hosted platform for AI workspaces, coordinated AI teams, always-on assistants, shared knowledge, and local or cloud AI.</p>
+<p class="tagline">The self-hosted platform for AI workspaces, custom AI teams, always-on assistants, shared knowledge, and local or cloud AI.</p>
 
 <div class="hero-pills">
   <span>AI workspaces</span>
-  <span>Coordinated AI teams</span>
+  <span>Custom AI teams</span>
   <span>Always-on assistants</span>
   <span>Shared knowledge</span>
   <span>Local &amp; cloud AI</span>
@@ -33,10 +33,10 @@ hide:
 
 Niuu brings four operating modes into one platform you can run on your own machine, on Kubernetes, or inside your own infrastructure:
 
-- **AI workspaces** for hands-on work with an assistant in a live coding environment
-- **Coordinated AI teams** for implementation, review, security passes, and research
-- **Always-on assistants** that watch for changes, curate knowledge, and keep working over time
-- **Shared model control** that decides what models exist, how they route, and how they execute
+- **AI workspaces** for hands-on work with one assistant or several assistants working together in a live coding environment
+- **Custom AI teams** you can design, launch, and steer for coding, research, operations, and your own multi-step flows
+- **Always-on assistants** that monitor sources, revisit knowledge, refresh documents, and stay available for live operator guidance
+- **Local and cloud AI** managed in one place, including what models are available, where they run, and when they are used
 
 The result is a self-hosted system where you can move smoothly between direct operator work, autonomous execution, durable memory, and local or third-party models without handing control to an external vendor platform.
 
@@ -70,26 +70,29 @@ Shared knowledge is not an afterthought. It is where research, debate, durable d
 
 <div class="feature" markdown>
 
-### Multi-model by design
+### Local and cloud AI from one place
 
-The platform owns the model catalog and routing truth so AI teams, workspaces, and assistants can use different models without each subsystem inventing its own rules.
-
-</div>
+Choose which models are available, whether work stays local or uses third-party providers, and how the rest of the platform can use them without every tool inventing its own rules.
 
 </div>
 
-## Platform Map
+</div>
 
-| Surface | What it is for | Primary services |
-|---|---|---|
-| **Live workspaces** | Live coding, terminal work, review, diffs, and operator-guided execution | `volundr`, `skuld`, `web-next` |
-| **Coordinated AI teams** | Multi-stage autonomous work, review loops, security passes, research councils, and specialist handoffs | `tyr`, `ravn`, `volundr` |
-| **Always-on assistants** | Long-lived agents that watch sources, curate knowledge, run dream cycles, and stay available for operator interaction | `ravn`, `mimir`, `web-next` |
-| **Shared knowledge** | Scratch boards, research pages, postmortems, ingest, search, and durable knowledge | `mimir`, `ravn` |
-| **Model operations** | Model catalog, aliases, providers, runtime mapping, routing policy, and health | `bifrost` |
-| **Realtime collaboration** | Live rooms, chat transport, event propagation, and workflow signaling | `skuld`, `sleipnir` |
+## How Niuu Operates
 
-## What Niuu Does Today
+![Niuu architecture](images/niuu-architecture.svg){ .niuu-architecture-diagram }
+
+<div class="arch-caption" markdown>
+
+- **Volundr** is where humans work directly.
+- **Tyr** coordinates specialist teams and review loops.
+- **Ravn** is the harness for one assistant or a connected team of assistants.
+- **Mimir** keeps shared memory alive.
+- **Bifrost** decides what models are available and where they run.
+
+</div>
+
+## What Niuu Lets You Build
 
 <div class="feature-grid" markdown>
 
@@ -97,23 +100,23 @@ The platform owns the model catalog and routing truth so AI teams, workspaces, a
 
 ### Live AI workspaces
 
-Launch and manage coding workspaces with repos, terminals, diffs, and live conversation with an assistant.
+Launch and manage coding workspaces with repos, terminals, diffs, and live conversation with one assistant or several assistants working together.
 
 </div>
 
 <div class="feature" markdown>
 
-### Coordinated AI teams
+### Build and run AI teams
 
-Run specialist teams that can split work, review each other, loop through security, and deliberate across multiple models before landing on an answer or a change.
+Compose your own specialist teams for, for example, coding, review, security, research, approvals, retries, and whatever stage logic your process needs.
 
 </div>
 
 <div class="feature" markdown>
 
-### Agent runtime
+### Ravn is the harness
 
-Provide the agent runtime, personas, tools, drive loops, triggers, and Warden machinery for long-lived intelligence.
+Use one runtime layer for personas, tools, triggers, human escalation, live comms, and long-lived assistants, while connecting to models through CLI transports or provider APIs.
 
 </div>
 
@@ -127,17 +130,25 @@ Store raw ingest, scratch discussion, curated memory, research outputs, postmort
 
 <div class="feature" markdown>
 
-### Model control
+### Manage local and cloud AI
 
-Own the model catalog and provider/routing truth so the rest of the platform can ask for a model without duplicating control-plane logic.
+Decide which models are available, which providers back them, whether work stays local or goes to third parties, and how the rest of the platform chooses between them.
 
 </div>
 
 <div class="feature" markdown>
 
-### Always-on assistants
+### Run assistants that stay alive
 
-Run as long-lived assistant daemons that can watch knowledge sources, trigger curation, revisit stale documents, and expose a live operator console.
+Run assistants that keep working after the interactive session ends: watching sources, refreshing stale documents, curating knowledge, running scheduled reflection, and staying reachable through a live operator console.
+
+</div>
+
+<div class="feature" markdown>
+
+### Human guidance stays in the loop
+
+Let assistants and teams raise help-needed events, send directed messages, pause for operator input, and resume without losing context.
 
 </div>
 
@@ -147,12 +158,12 @@ Run as long-lived assistant daemons that can watch knowledge sources, trigger cu
 
 ### 1. Pair directly with AI
 
-Use a live workspace when you want a terminal, diffs, and a direct room with the assistant while keeping everything on your own infrastructure.
+Use a live workspace when you want a terminal, diffs, and a direct room with one assistant or several assistants working together while keeping everything on your own infrastructure.
 
 ### 2. Launch coordinated work
 
-Use a coordinated AI team when the work should move across multiple specialists: coding, review, security, postmortems, or research with several models and structured handoffs.
+Use an AI team when the work should move across multiple specialists, approvals, reviews, or custom stages you define for your own process.
 
 ### 3. Keep knowledge alive
 
-Use always-on assistants and shared knowledge when the work should keep happening after the workspace closes: source watching, curation, reflection, document refresh, and operator-steerable long-lived agents.
+Use always-on assistants and shared knowledge when the work should keep happening after the workspace closes: source monitoring, document refresh, ongoing curation, scheduled reflection, and long-lived assistants you can still steer directly.
