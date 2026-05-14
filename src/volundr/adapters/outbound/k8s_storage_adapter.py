@@ -413,6 +413,10 @@ class K8sStorageAdapter(StoragePort):
                 return None
             raise
 
+    def resolve_session_workspace_path(self, session_id: str) -> str | None:
+        """Return the mounted workspace path for a session when locally accessible."""
+        return f"{self._workspace_mount_path.rstrip('/')}/{session_id}/workspace"
+
     async def close(self) -> None:
         """Close the Kubernetes API client."""
         if self._api_client is not None:

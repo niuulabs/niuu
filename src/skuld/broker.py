@@ -42,7 +42,6 @@ from skuld.channels import (
 )
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.config import SkuldSettings
-from skuld.log_aggregate import aggregate_workspace_logs
 from skuld.room_bridge import RoomBridge
 from skuld.room_mesh_bridge import RoomMeshBridge
 from skuld.service_manager import (
@@ -53,6 +52,8 @@ from skuld.service_manager import (
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.catalog import ravn_session_ended
 from sleipnir.ports.events import SleipnirPublisher
+from volundr.log_aggregate import aggregate_workspace_logs
+from volundr.session_archive import write_session_archive
 
 # ---------------------------------------------------------------------------
 # In-memory log buffer (Part 2: Pod Log Retrieval)
@@ -967,6 +968,7 @@ class Broker:
 
         # Report chronicle BEFORE stopping the transport (CLI must be alive)
         await self._report_chronicle()
+        await self._write_workspace_archive()
 
         # Stop room mesh bridge before mesh adapter
         if self._room_mesh_bridge is not None:
@@ -2285,6 +2287,32 @@ class Broker:
             )
         except Exception:
             logger.warning("Failed to report chronicle", exc_info=True)
+
+    async def _write_workspace_archive(self) -> None:
+        """Write a workspace-backed archive snapshot for stopped-session reads."""
+        try:
+            transcript_payload = {
+                "turns": [asdict(turn) for turn in self._conversation_turns],
+                "is_active": False,
+                "last_activity": "",
+            }
+            aggregated_logs = aggregate_workspace_logs(
+                self.workspace_dir,
+                lines=5000,
+                level="DEBUG",
+            )
+            workspace_slug = self.workspace_dir.replace("/", "-")
+            event_source_dir = Path.home() / ".claude" / "projects" / workspace_slug
+            write_session_archive(
+                session_id=self.session_id,
+                workspace_dir=self.workspace_dir,
+                transcript_payload=transcript_payload,
+                aggregated_logs=aggregated_logs,
+                event_source_dir=event_source_dir,
+            )
+            logger.info("Workspace archive written for session %s", self.session_id)
+        except Exception:
+            logger.warning("Failed to write workspace archive", exc_info=True)
 
     async def _init_telegram_channel(self) -> None:
         """Initialize and register a Telegram channel if configured."""

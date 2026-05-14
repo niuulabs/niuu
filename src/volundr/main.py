@@ -85,6 +85,7 @@ from volundr.domain.services import (
     PresetService,
     PromptService,
     RepoService,
+    SessionArchiveService,
     SessionService,
     StatsService,
     TenantService,
@@ -802,6 +803,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 broadcaster=broadcaster,
                 timeline_repository=timeline_repository,
             )
+            archive_service = SessionArchiveService(
+                session_service,
+                storage_adapter,
+                chronicle_service=chronicle_service,
+            )
+            app.state.archive_service = archive_service
 
             # Create profile and template services (providers already created above)
             profile_service = ForgeProfileService(profile_provider, session_repository=repository)
@@ -825,6 +832,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 broadcaster=broadcaster,
                 repo_service=repo_service,
                 chronicle_service=chronicle_service,
+                archive_service=archive_service,
             )
             app.include_router(router)
             forge_router = create_router(
@@ -835,6 +843,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 broadcaster=broadcaster,
                 repo_service=repo_service,
                 chronicle_service=chronicle_service,
+                archive_service=archive_service,
                 prefix="/api/v1/forge",
             )
             app.include_router(forge_router)

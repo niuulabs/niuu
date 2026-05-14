@@ -188,3 +188,7 @@ class InMemoryStorageAdapter(StoragePort):
         if entry is None:
             return None
         return self._entry_to_workspace(session_id, entry)
+
+    def resolve_session_workspace_path(self, session_id: str) -> str | None:
+        """Return the mounted workspace path for a session."""
+        return f"{self._workspace_mount_path.rstrip('/')}/{session_id}/workspace"

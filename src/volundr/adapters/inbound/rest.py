@@ -12,10 +12,9 @@ from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from skuld.log_aggregate import aggregate_workspace_logs
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.domain.models import (
     Chronicle,
@@ -49,6 +48,7 @@ from volundr.domain.services import (
     RepoService,
     RepoValidationError,
     SessionAccessDeniedError,
+    SessionArchiveNotAvailableError,
     SessionNotFoundError,
     SessionNotRunningError,
     SessionService,
@@ -917,6 +917,7 @@ def create_router(
     broadcaster: EventBroadcaster | None = None,
     repo_service: RepoService | None = None,
     chronicle_service: ChronicleService | None = None,
+    archive_service=None,
     *,
     prefix: str = "/api/v1/volundr",
 ) -> APIRouter:
@@ -929,6 +930,7 @@ def create_router(
         pricing_provider=pricing_provider,
         repo_service=repo_service,
         chronicle_service=chronicle_service,
+        archive_service=archive_service,
     )
 
     async def _optional_principal(request: Request) -> Principal | None:
@@ -1665,69 +1667,58 @@ def create_router(
             description="Case-insensitive text filter applied to participant, source, and message",
         ),
     ) -> dict:
-        """Proxy aggregated broker + flock logs from a running session pod."""
-        try:
-            session, base_url = await forge.get_session_proxy_target(session_id)
-        except LookupError:
+        """Return aggregated logs from a live session or stopped-session workspace."""
+        session = await forge.get_session(session_id)
+        if session is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session {session_id} has no active endpoint",
+
+        try:
+            if session.chat_endpoint:
+                _, base_url = await forge.get_session_proxy_target(session_id)
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(
+                        f"{base_url}/api/logs/aggregate",
+                        params={
+                            "lines": lines,
+                            "level": level,
+                            "participants": participants,
+                            "query": query,
+                        },
+                    )
+                    response.raise_for_status()
+                    return response.json()
+        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.info(
+                "Falling back to workspace logs for session %s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
             )
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{base_url}/api/logs/aggregate",
-                    params={
-                        "lines": lines,
-                        "level": level,
-                        "participants": participants,
-                        "query": query,
-                    },
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == status.HTTP_404_NOT_FOUND:
-                workspace_dir = _workspace_dir_from_code_endpoint(session.code_endpoint)
-                if workspace_dir is not None:
-                    requested_participants = (
-                        {item.strip() for item in participants.split(",") if item.strip()}
-                        if participants
-                        else None
-                    )
-                    payload = aggregate_workspace_logs(
-                        workspace_dir,
-                        lines=lines,
-                        level=level,
-                        participants=requested_participants,
-                        query=query,
-                    )
-                    payload["session_id"] = str(session.id)
-                    return payload
-            logger.warning(
-                "Aggregate log proxy failed for session %s: %s",
-                _sanitize_log(session_id),
-                e,
+            requested_participants = (
+                {item.strip() for item in participants.split(",") if item.strip()}
+                if participants
+                else None
             )
+            return await forge.get_aggregated_logs(
+                session_id,
+                lines=lines,
+                level=level,
+                participants=requested_participants,
+                query=query,
+            )
+        except SessionArchiveNotAvailableError as e:
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to fetch aggregate logs from session pod: {e.response.status_code}",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
             )
-        except httpx.RequestError as e:
-            logger.warning(
-                "Aggregate log proxy connection failed for session %s: %s",
-                _sanitize_log(session_id),
-                e,
-            )
+        except RuntimeError as e:
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Could not connect to session pod: {e}",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
             )
 
     @router.post(
@@ -1817,48 +1808,153 @@ def create_router(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
     ) -> dict:
-        """Proxy conversation history retrieval from a running session pod."""
+        """Return conversation history from a live session or stopped-session workspace."""
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+
         try:
-            _, base_url = await forge.get_session_proxy_target(session_id)
+            if session.chat_endpoint:
+                _, base_url = await forge.get_session_proxy_target(session_id)
+
+                headers = {}
+                auth = request.headers.get("authorization")
+                if auth:
+                    headers["Authorization"] = auth
+
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(
+                        f"{base_url}/api/conversation/history",
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                    return response.json()
+        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.info(
+                "Falling back to workspace transcript for session %s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
+            )
+
+        try:
+            return await forge.get_transcript(session_id)
+        except SessionArchiveNotAvailableError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+
+    @router.get(
+        "/sessions/{session_id}/transcript",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+    )
+    async def get_session_transcript(
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Return the persisted session transcript directly from workspace storage."""
+        try:
+            return await forge.get_transcript(session_id)
         except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        except ValueError:
+        except SessionArchiveNotAvailableError as e:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session {session_id} has no active endpoint",
+                detail=str(e),
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
             )
 
-        # Forward the caller's auth to the session pod
-        headers = {}
-        auth = request.headers.get("authorization")
-        if auth:
-            headers["Authorization"] = auth
-
+    @router.get(
+        "/sessions/{session_id}/transcript/download",
+        tags=["Sessions"],
+        responses={
+            400: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+    )
+    async def download_session_transcript(
+        session_id: UUID = Path(description="Unique session identifier"),
+        format: str = Query(default="md", pattern="^(md|json)$"),
+    ) -> FileResponse:
+        """Download the persisted transcript as Markdown or JSON."""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{base_url}/api/conversation/history",
-                    headers=headers,
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as e:
+            path = await forge.get_transcript_download_path(session_id, format)
+        except LookupError:
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to fetch conversation from session pod: {e.response.status_code}",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
             )
-        except httpx.RequestError as e:
+        except SessionArchiveNotAvailableError as e:
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Could not connect to session pod: {e}",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
             )
-
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+
+        media_type = "text/markdown; charset=utf-8" if format == "md" else "application/json"
+        filename = f"session-{session_id}-transcript.{format}"
+        return FileResponse(path, media_type=media_type, filename=filename)
+
+    @router.get(
+        "/sessions/{session_id}/archive",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+    )
+    async def get_session_archive_manifest(
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Return the workspace-backed archive manifest for a session."""
+        try:
+            return await forge.get_archive_manifest(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except SessionArchiveNotAvailableError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e),
             )
 
