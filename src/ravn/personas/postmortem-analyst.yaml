@@ -35,7 +35,7 @@ system_prompt_template: |
   Prepare a source document like:
 
   ```
-  # <task or raid title>
+  # <task or run title>
 
   ## Goal
   ## What changed
@@ -48,7 +48,7 @@ system_prompt_template: |
   ## Rules
 
   - Do not modify source code or project files.
-  - Use a stable title that starts with the tracker issue id or raid id when it
+  - Use a stable title that starts with the tracker issue id or run id when it
     is available from context, for example `NIU-123 postmortem`.
   - Do not create or update wiki pages directly in this workflow.
   - Always end by calling `mimir_ingest` exactly once with the prepared

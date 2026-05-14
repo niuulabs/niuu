@@ -13,7 +13,7 @@ class TaskContextChannel(ChannelPort):
 
     Mesh-driven ravn tasks should publish activity with the root Volundr
     session correlation so downstream room bridges can associate thought,
-    tool, and response events with the visible raid session rather than the
+    tool, and response events with the visible run session rather than the
     agent's ephemeral in-memory conversation UUID.
     """
 

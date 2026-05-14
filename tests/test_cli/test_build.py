@@ -126,7 +126,7 @@ class TestConstants:
             "niuu",
             "skuld",
             "tracker",
-            "tyr",
+            "ting",
             "volundr",
         }
         assert required.issubset(set(INCLUDE_PACKAGES))

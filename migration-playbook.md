@@ -74,7 +74,7 @@ Goal:
 Work:
 
 - run end-to-end cluster smoke with the unified `niuu` image
-- exercise `volundr`, `tyr`, `mimir`, and `bifrost` command selection in-chart
+- exercise `volundr`, `ting`, `mimir`, and `bifrost` command selection in-chart
 - verify auth, route inventory, and canonical browser flows
 
 Success criteria:
@@ -99,7 +99,7 @@ Success criteria:
 - the default browser flow uses live APIs only
 - subscriptions and refresh behavior are honest
 
-### Wave 3: Tyr -> Volundr -> Skuld -> Flokk daily-driver pass
+### Wave 3: Ting -> Volundr -> Skuld -> Flokk daily-driver pass
 
 Goal:
 
@@ -109,7 +109,7 @@ Work:
 
 - verify one real task path from intent to running flock
 - tighten the approval and escalation surfaces
-- keep orchestration ownership clear between Tyr, Volundr, Skuld, and Ravn
+- keep orchestration ownership clear between Ting, Volundr, Skuld, and Ravn
 
 Success criteria:
 

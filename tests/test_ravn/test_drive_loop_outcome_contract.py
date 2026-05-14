@@ -239,7 +239,7 @@ files_changed: 2
 
         task = _make_agent_task(task_id="task-no-verdict")
         task.session_id = "sess-no-verdict"
-        task.workflow_node_id = "raid-coder"
+        task.workflow_node_id = "run-coder"
         response_text = "Implemented and pushed the requested proof artifact."
 
         await dl._emit_mesh_outcome_event(task, response_text, success=True)
@@ -276,7 +276,7 @@ files_changed: 2
 
         task = _make_agent_task(task_id="task-curation")
         task.session_id = "sess-curation"
-        task.workflow_node_id = "raid-memory-curator"
+        task.workflow_node_id = "run-memory-curator"
         response_text = "Curated the ingested memory source into canonical wiki knowledge."
 
         await dl._emit_mesh_outcome_event(task, response_text, success=True)
@@ -314,7 +314,7 @@ files_changed: 2
 
         task = _make_agent_task(task_id="task-curation-field-schema")
         task.session_id = "sess-curation-field-schema"
-        task.workflow_node_id = "raid-memory-curator"
+        task.workflow_node_id = "run-memory-curator"
         response_text = "Curated the ingested memory source into canonical wiki knowledge."
 
         await dl._emit_mesh_outcome_event(task, response_text, success=True)
@@ -583,7 +583,7 @@ end---
         task = _make_agent_task(task_id="task-789")
         task.session_id = "sess-789"
         task.root_correlation_id = "root-789"
-        task.workflow_node_id = "raid-coordinator-start"
+        task.workflow_node_id = "run-coordinator-start"
         response_text = """\
 ---outcome---
 verdict: approve

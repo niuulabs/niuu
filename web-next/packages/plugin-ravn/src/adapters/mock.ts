@@ -481,7 +481,7 @@ const SEED_WARDENS: WardenSummary[] = [
     writeMount: 'shared',
     readMountNames: ['shared', 'forge'],
     writeMountNames: ['shared'],
-    categoryScope: ['sagas', 'raids'],
+    categoryScope: ['sagas', 'runs'],
     features: DEFAULT_WARDEN_FEATURES,
     schedules: DEFAULT_WARDEN_SCHEDULES,
     console: DEFAULT_WARDEN_CONSOLE,
@@ -507,9 +507,9 @@ const SEED_WARDENS: WardenSummary[] = [
     operator: {
       rune: 'ᛊ',
       role: 'index',
-      bio: 'Indexes saga histories and raid outcomes into long-term knowledge',
-      expertise: ['sagas', 'raids'],
-      tools: ['mimir', 'tyr'],
+      bio: 'Indexes saga histories and run outcomes into long-term knowledge',
+      expertise: ['sagas', 'runs'],
+      tools: ['mimir', 'ting'],
     },
   },
   {

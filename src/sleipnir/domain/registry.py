@@ -6,7 +6,7 @@ strings throughout the codebase. Import the constant, not the string literal.
 Organised by namespace:
 
 - ``RAVN_*`` — Ravn agent events
-- ``TYR_*``  — Tyr autonomous dispatcher events
+- ``TING_*``  — Ting autonomous dispatcher events
 - ``VOLUNDR_*`` — Volundr platform events
 - ``BIFROST_*`` — Bifrost gateway events
 - ``SYSTEM_*`` — Infrastructure and lifecycle events
@@ -68,65 +68,65 @@ RAVN_SESSION_ENDED: str = "ravn.session.ended"
 RAVN_TASK_COMPLETED: str = "ravn.task.completed"
 
 # ---------------------------------------------------------------------------
-# tyr — Tyr autonomous dispatcher events
+# ting — Ting autonomous dispatcher events
 # ---------------------------------------------------------------------------
 
 #: A new task was queued in the dispatcher.
-TYR_TASK_QUEUED: str = "tyr.task.queued"
+TING_TASK_QUEUED: str = "ting.task.queued"
 
 #: The dispatcher started executing a task.
-TYR_TASK_STARTED: str = "tyr.task.started"
+TING_TASK_STARTED: str = "ting.task.started"
 
 #: A task completed successfully.
-TYR_TASK_COMPLETE: str = "tyr.task.complete"
+TING_TASK_COMPLETE: str = "ting.task.complete"
 
 #: A task failed.
-TYR_TASK_FAILED: str = "tyr.task.failed"
+TING_TASK_FAILED: str = "ting.task.failed"
 
 #: A task was cancelled before completion.
-TYR_TASK_CANCELLED: str = "tyr.task.cancelled"
+TING_TASK_CANCELLED: str = "ting.task.cancelled"
 
 #: A Saga (long-running multi-step task) was created.
-TYR_SAGA_CREATED: str = "tyr.saga.created"
+TING_SAGA_CREATED: str = "ting.saga.created"
 
 #: A Saga advanced to the next step.
-TYR_SAGA_STEP: str = "tyr.saga.step"
+TING_SAGA_STEP: str = "ting.saga.step"
 
 #: A Saga completed all steps.
-TYR_SAGA_COMPLETE: str = "tyr.saga.complete"
+TING_SAGA_COMPLETE: str = "ting.saga.complete"
 
 #: A Saga failed and was rolled back.
-TYR_SAGA_FAILED: str = "tyr.saga.failed"
+TING_SAGA_FAILED: str = "ting.saga.failed"
 
 #: A dispatcher session started.
-TYR_SESSION_START: str = "tyr.session.start"
+TING_SESSION_START: str = "ting.session.start"
 
 #: A dispatcher session ended.
-TYR_SESSION_END: str = "tyr.session.end"
+TING_SESSION_END: str = "ting.session.end"
 
-#: A raid was created.
-TYR_RAID_CREATED: str = "tyr.raid.created"
+#: A run was created.
+TING_RUN_CREATED: str = "ting.run.created"
 
-#: A raid changed state (submitted, running, waiting_review, done, failed, etc.).
-TYR_RAID_STATE_CHANGED: str = "tyr.raid.state_changed"
+#: A run changed state (submitted, running, waiting_review, done, failed, etc.).
+TING_RUN_STATE_CHANGED: str = "ting.run.state_changed"
 
-#: A raid completed successfully.
-TYR_RAID_COMPLETED: str = "tyr.raid.completed"
+#: A run completed successfully.
+TING_RUN_COMPLETED: str = "ting.run.completed"
 
-#: A raid failed.
-TYR_RAID_FAILED: str = "tyr.raid.failed"
+#: A run failed.
+TING_RUN_FAILED: str = "ting.run.failed"
 
 #: The autonomous dispatcher state was updated.
-TYR_DISPATCHER_STATE: str = "tyr.dispatcher.state"
+TING_DISPATCHER_STATE: str = "ting.dispatcher.state"
 
 #: A notification was sent to a channel.
-TYR_NOTIFICATION_SENT: str = "tyr.notification.sent"
+TING_NOTIFICATION_SENT: str = "ting.notification.sent"
 
-#: A Saga completed all phases (distinct from TYR_SAGA_COMPLETE for consistency with catalog).
-TYR_SAGA_COMPLETED: str = "tyr.saga.completed"
+#: A Saga completed all phases (distinct from TING_SAGA_COMPLETE for consistency with catalog).
+TING_SAGA_COMPLETED: str = "ting.saga.completed"
 
-#: A raid requires human approval before it can proceed.
-TYR_RAID_NEEDS_APPROVAL: str = "tyr.raid.needs_approval"
+#: A run requires human approval before it can proceed.
+TING_RUN_NEEDS_APPROVAL: str = "ting.run.needs_approval"
 
 # ---------------------------------------------------------------------------
 # skuld — Skuld broker events (session pod activity)

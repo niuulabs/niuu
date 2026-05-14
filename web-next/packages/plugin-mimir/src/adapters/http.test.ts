@@ -184,15 +184,15 @@ describe('buildMimirHttpAdapter', () => {
     it('derives structured zones from compiled truth markdown when the backend omits zones', async () => {
       const client = makeClient({
         get: vi.fn().mockResolvedValue({
-          path: 'raids/NIU-912-postmortem.md',
+          path: 'runs/NIU-912-postmortem.md',
           title: 'NIU-912 Postmortem',
           summary: 'Summary',
-          category: 'raids',
+          category: 'runs',
           updated_at: '2026-05-10T14:03:29.614843+00:00',
           source_ids: ['src-1'],
           content: `## Compiled Truth
 
-**Raid**: test
+**Run**: test
 
 ### What was done
 
@@ -207,7 +207,7 @@ describe('buildMimirHttpAdapter', () => {
       });
 
       const result = await buildMimirHttpAdapter(client).pages.getPage(
-        'raids/NIU-912-postmortem.md',
+        'runs/NIU-912-postmortem.md',
       );
 
       expect(result?.zones).toEqual([

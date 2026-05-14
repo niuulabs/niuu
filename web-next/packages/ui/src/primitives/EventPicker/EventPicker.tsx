@@ -22,7 +22,7 @@ export interface EventPickerProps {
 /**
  * EventPicker — combobox over EventCatalog entries.
  *
- * Promoted to @niuulabs/ui because Tyr's WorkflowBuilder will need it too.
+ * Promoted to @niuulabs/ui because Ting's WorkflowBuilder will need it too.
  * Built here in NIU-673 (Ravn personas page).
  */
 export function EventPicker({

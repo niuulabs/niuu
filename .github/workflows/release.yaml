@@ -391,7 +391,7 @@ jobs:
         run: |
           VERSION="${{ needs.version.outputs.version }}"
 
-          for CHART in bifrost ravn skuld volundr tyr skuld-planner niuu-shared niuu; do
+          for CHART in bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -406,7 +406,7 @@ jobs:
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
-          helm package charts/tyr -d .helm-packages/
+          helm package charts/ting -d .helm-packages/
           helm package charts/niuu-shared -d .helm-packages/
           rm -f charts/niuu/Chart.lock
           helm dependency update charts/niuu
@@ -426,7 +426,7 @@ jobs:
           helm push .helm-packages/skuld-0*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-planner-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/tyr-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-0*.tgz ${{ env.CHART_REPO }}
 

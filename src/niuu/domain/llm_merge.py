@@ -1,4 +1,4 @@
-"""LLM config merge utilities shared by Volundr and Tyr.
+"""LLM config merge utilities shared by Volundr and Ting.
 
 Merge semantics (three layers, last wins):
   1. PersonaConfig.llm defaults

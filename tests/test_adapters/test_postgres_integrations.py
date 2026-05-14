@@ -119,6 +119,8 @@ class TestSaveConnection:
         call_sql = pool.execute.call_args[0][0]
         assert "INSERT INTO integration_connections" in call_sql
         assert "ON CONFLICT (id) DO UPDATE" in call_sql
+        assert "adapter = EXCLUDED.adapter" in call_sql
+        assert "integration_type = EXCLUDED.integration_type" in call_sql
 
     async def test_save_passes_correct_params(self):
         repo, pool = _make_repo()

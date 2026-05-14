@@ -72,7 +72,7 @@ def flock_template():
             "mimir": {"hosted_url": "https://mimir.niuu.internal/api/v1"},
             "sleipnir": {
                 "publish_urls": [
-                    "http://tyr:8080/sleipnir/events",
+                    "http://ting:8080/sleipnir/events",
                     "http://volundr:8000/sleipnir/events",
                 ]
             },
@@ -89,7 +89,7 @@ def flock_profile():
             "personas": ["coordinator", "reviewer"],
             "mesh": {"transport": "nng"},
             "mimir": {},
-            "sleipnir": {"publish_urls": ["http://tyr:8080/sleipnir/events"]},
+            "sleipnir": {"publish_urls": ["http://ting:8080/sleipnir/events"]},
         },
     )
 
@@ -306,7 +306,7 @@ class TestContributorOutput:
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
         assert env_names["SKULD__MESH__CONSUMES_EVENT_TYPES"] == "[]"
         assert env_names["SKULD__WORKFLOW_TRIGGER__ENABLED"] == "true"
-        assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "raid.requested"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "run.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "dispatch-root"
 
     async def test_mimir_volume_not_added_without_explicit_local(self, session, flock_template):
@@ -363,7 +363,7 @@ class TestContributorOutput:
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
         assert "SLEIPNIR_PUBLISH_URLS" in env_names
-        assert "tyr:8080" in env_names["SLEIPNIR_PUBLISH_URLS"]
+        assert "ting:8080" in env_names["SLEIPNIR_PUBLISH_URLS"]
 
     async def test_sleipnir_publish_urls_in_ravn_env(self, session, flock_template):
         provider = MagicMock()
@@ -1487,7 +1487,7 @@ class TestPerPersonaLLMOverrides:
             workload_config={
                 "personas": [
                     {"name": "reviewer", "consumes_event_types": ["review.requested"]},
-                    {"name": "raid-executor"},
+                    {"name": "run-executor"},
                 ],
             },
         )

@@ -12,9 +12,9 @@ global:
     # -- Global image tag override
     tag: ""
 
-# Session configuration (set by Tyr at deployment time)
+# Session configuration (set by Ting at deployment time)
 session:
-  # -- Session identifier (UUID, set by Tyr)
+  # -- Session identifier (UUID, set by Ting)
   id: ""
   # -- Human-readable session name
   name: ""

@@ -52,7 +52,7 @@ Self-hosted AI-native development platform. Provisions ephemeral coding sessions
     ┌──────────────────────────────────┘
     │  Autonomous Agents
     │  ┌──────┐   ┌──────┐
-    │  │ Tyr  │   │ Ravn │
+    │  │ Ting  │   │ Ravn │
     │  │(saga)│   │(agent│
     │  └──────┘   │frame)│
     │             └──────┘
@@ -69,7 +69,7 @@ Self-hosted AI-native development platform. Provisions ephemeral coding sessions
 | **Volundr** | Core API — session lifecycle, workspace provisioning, git workflows, multi-tenancy, event pipeline |
 | **Skuld** | WebSocket broker connecting the browser to AI coding agents inside session pods |
 | **Web UI** | React frontend — session management, chronicles, diffs, terminal access, admin |
-| **Tyr** | Saga coordinator — decomposes GitHub/Linear issues into typed tasks and dispatches autonomous coding agents |
+| **Ting** | Saga coordinator — decomposes GitHub/Linear issues into typed tasks and dispatches autonomous coding agents |
 | **Ravn** | Agent framework — long-running AI agents with personas, memory, wakefulness triggers, and dream cycles |
 | **Bifröst** | Multi-provider LLM gateway — OpenAI-compatible API with failover, cost-optimised and latency-optimised routing |
 | **Mimir** | Knowledge and context system — structured memory for agents, thread enrichment, and RAG over project history |
@@ -91,8 +91,8 @@ Chat traffic flows directly from the browser to Skuld inside the session pod —
 
 ### AI Agents
 
-- **Tyr saga dispatch** — decomposes issues from GitHub or Linear into typed tasks (feat, fix, refactor, test) and spawns coding agents for each
-- **Raid planning** — multi-agent coordination where sub-agents work on decomposed tasks in parallel
+- **Ting saga dispatch** — decomposes issues from GitHub or Linear into typed tasks (feat, fix, refactor, test) and spawns coding agents for each
+- **Run planning** — multi-agent coordination where sub-agents work on decomposed tasks in parallel
 - **Ravn personas** — configurable agent identities with tone, expertise, and behaviour profiles
 - **Dream cycles** — background reflection and knowledge consolidation for long-running Ravn agents
 - **Wakefulness triggers** — schedule or event-driven agent activation
@@ -132,7 +132,7 @@ uv sync --all-extras --dev
 # Copy and edit configs
 cp config.yaml.example config.yaml
 cp bifrost.yaml.example bifrost.yaml    # optional: LLM gateway
-cp tyr.yaml.example tyr.yaml            # optional: saga coordinator
+cp ting.yaml.example ting.yaml            # optional: saga coordinator
 
 # Start the Volundr API
 uv run volundr
@@ -142,7 +142,7 @@ uv run uvicorn volundr.main:app --reload --port 8080
 
 # Start other services (each in its own terminal)
 uv run bifrost --config bifrost.yaml
-uv run tyr --config tyr.yaml
+uv run ting --config ting.yaml
 ```
 
 The Volundr API serves at `http://localhost:8080`. Interactive docs at `/docs`.
@@ -171,7 +171,7 @@ Each service loads config from YAML with environment variable overrides using `_
 |---------|------------|
 | Volundr | `config.yaml` or `/etc/volundr/config.yaml` |
 | Bifröst | `bifrost.yaml` |
-| Tyr | `tyr.yaml` |
+| Ting | `ting.yaml` |
 | Ravn | `ravn.yaml` |
 
 ```bash
@@ -212,7 +212,7 @@ helm install volundr ./charts/volundr -n niuu \
 helm install bifrost ./charts/bifrost -n niuu
 
 # Saga coordinator
-helm install tyr ./charts/tyr -n niuu
+helm install ting ./charts/ting -n niuu
 ```
 
 See the [deployment guide](https://niuulabs.github.io/volundr/deployment/) for Helm values, migrations, and production setup.

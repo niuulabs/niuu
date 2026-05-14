@@ -21,58 +21,58 @@ class TestSessionArtifactsNewFields:
         assert artifacts.structured_outcome is None
         assert artifacts.outcome_valid is False
         assert artifacts.saga_id is None
-        assert artifacts.raid_id is None
+        assert artifacts.run_id is None
         assert artifacts.total_tokens == 0
 
-    def test_explicit_saga_and_raid(self):
-        artifacts = SessionArtifacts(saga_id="saga-1", raid_id="raid-1")
+    def test_explicit_saga_and_run(self):
+        artifacts = SessionArtifacts(saga_id="saga-1", run_id="run-1")
         assert artifacts.saga_id == "saga-1"
-        assert artifacts.raid_id == "raid-1"
+        assert artifacts.run_id == "run-1"
 
 
 # ---------------------------------------------------------------------------
-# SkuldSessionConfig saga/raid fields
+# SkuldSessionConfig saga/run fields
 # ---------------------------------------------------------------------------
 
 
-class TestSkuldSessionConfigSagaRaid:
+class TestSkuldSessionConfigSagaRun:
     def test_defaults_to_none(self):
         cfg = SkuldSessionConfig()
         assert cfg.saga_id is None
-        assert cfg.raid_id is None
+        assert cfg.run_id is None
 
     def test_can_be_set(self):
-        cfg = SkuldSessionConfig(saga_id="s1", raid_id="r1")
+        cfg = SkuldSessionConfig(saga_id="s1", run_id="r1")
         assert cfg.saga_id == "s1"
-        assert cfg.raid_id == "r1"
+        assert cfg.run_id == "r1"
 
 
 # ---------------------------------------------------------------------------
-# Broker initialization wires saga/raid into artifacts
+# Broker initialization wires saga/run into artifacts
 # ---------------------------------------------------------------------------
 
 
-class TestBrokerSagaRaidInit:
-    def test_saga_and_raid_stored_in_artifacts(self, tmp_path):
+class TestBrokerSagaRunInit:
+    def test_saga_and_run_stored_in_artifacts(self, tmp_path):
         settings = SkuldSettings(
             session={
                 "id": "sess-1",
                 "workspace_dir": str(tmp_path),
                 "saga_id": "s-42",
-                "raid_id": "r-99",
+                "run_id": "r-99",
             },
         )
         b = Broker(settings=settings)
         assert b._artifacts.saga_id == "s-42"
-        assert b._artifacts.raid_id == "r-99"
+        assert b._artifacts.run_id == "r-99"
 
-    def test_no_saga_raid_when_not_configured(self, tmp_path):
+    def test_no_saga_run_when_not_configured(self, tmp_path):
         settings = SkuldSettings(
             session={"id": "sess-2", "workspace_dir": str(tmp_path)},
         )
         b = Broker(settings=settings)
         assert b._artifacts.saga_id is None
-        assert b._artifacts.raid_id is None
+        assert b._artifacts.run_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@ class TestEmitSessionEndedEvent:
         }
         b._artifacts.outcome_valid = True
         b._artifacts.saga_id = "saga-abc"
-        b._artifacts.raid_id = "raid-xyz"
+        b._artifacts.run_id = "run-xyz"
 
         async with EventCapture(bus, [RAVN_SESSION_ENDED]) as capture:
             await b._emit_session_ended_event()
@@ -232,7 +232,7 @@ class TestEmitSessionEndedEvent:
         assert evt.payload["tests_passing"] is True
         assert evt.payload["summary"] == "Ready to merge"
         assert evt.payload["files_changed"] == ["src/app.py"]
-        assert evt.payload["raid_id"] == "raid-xyz"
+        assert evt.payload["run_id"] == "run-xyz"
         assert evt.payload["saga_id"] == "saga-abc"
         assert evt.correlation_id == "sess-e"
 
@@ -252,10 +252,10 @@ class TestEmitSessionEndedEvent:
         assert evt.payload["outcome"] == "PARTIAL"
         assert "structured_outcome" not in evt.payload
         assert "files_changed" not in evt.payload
-        assert "raid_id" not in evt.payload
+        assert "run_id" not in evt.payload
         assert "saga_id" not in evt.payload
 
-    async def test_event_emitted_without_saga_raid(self, tmp_path):
+    async def test_event_emitted_without_saga_run(self, tmp_path):
         bus = InProcessBus()
         settings = SkuldSettings(
             session={"id": "sess-plain", "workspace_dir": str(tmp_path)},
@@ -270,7 +270,7 @@ class TestEmitSessionEndedEvent:
 
         assert len(capture.events) == 1
         evt = capture.events[0]
-        assert "raid_id" not in evt.payload
+        assert "run_id" not in evt.payload
         assert "saga_id" not in evt.payload
 
     async def test_publish_failure_is_swallowed(self, tmp_path):
@@ -312,7 +312,7 @@ class TestSessionCompletionE2E:
                 "id": "e2e-session",
                 "workspace_dir": str(tmp_path),
                 "saga_id": "saga-1",
-                "raid_id": "raid-1",
+                "run_id": "run-1",
             },
         )
         b = Broker(settings=settings, sleipnir_publisher=bus)
@@ -349,7 +349,7 @@ class TestSessionCompletionE2E:
         events = [e for e in capture.events if e.event_type == RAVN_SESSION_ENDED]
         assert len(events) == 1
         evt = events[0]
-        assert evt.payload["raid_id"] == "raid-1"
+        assert evt.payload["run_id"] == "run-1"
         assert evt.payload["saga_id"] == "saga-1"
         assert evt.payload["structured_outcome"]["verdict"] == "fail"
         assert evt.payload["verdict"] == "fail"
@@ -364,7 +364,7 @@ class TestSessionCompletionE2E:
                 "id": "e2e-no-outcome",
                 "workspace_dir": str(tmp_path),
                 "saga_id": "saga-2",
-                "raid_id": "raid-2",
+                "run_id": "run-2",
             },
         )
         b = Broker(settings=settings, sleipnir_publisher=bus)
@@ -391,7 +391,7 @@ class TestSessionCompletionE2E:
         evt = events[0]
         assert evt.payload["outcome"] == "PARTIAL"
         assert "structured_outcome" not in evt.payload
-        assert evt.payload["raid_id"] == "raid-2"
+        assert evt.payload["run_id"] == "run-2"
 
     async def test_total_tokens_accumulated_across_turns(self, tmp_path):
         """Verify total_tokens in artifacts is accumulated from multiple result events."""

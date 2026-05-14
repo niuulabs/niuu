@@ -82,19 +82,19 @@ elsewhere.
 ```mermaid
 graph BT
     Volundr["volundr"] --> Niuu["niuu (shared)"]
-    Tyr["tyr"] --> Niuu
+    Ting["ting"] --> Niuu
     Ravn["ravn"] --- Ravn
 ```
 
 | Rule | Description |
 |------|-------------|
-| `tyr` cannot import from `volundr` | Strictly forbidden. |
-| `volundr` cannot import from `tyr` | Strictly forbidden. |
+| `ting` cannot import from `volundr` | Strictly forbidden. |
+| `volundr` cannot import from `ting` | Strictly forbidden. |
 | Both import from `niuu` | Shared code (models, ports, adapters). |
 | `niuu` imports from neither | No reverse dependencies. |
 | `ravn` is independent | Separate agent framework. |
 
-Extract to `niuu` when both Volundr and Tyr need the same interface.
+Extract to `niuu` when both Volundr and Ting need the same interface.
 
 ## Agent Loop
 

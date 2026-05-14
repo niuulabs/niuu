@@ -67,7 +67,7 @@ jobs:
         chart:
           - charts/skuld
           - charts/volundr
-          - charts/tyr
+          - charts/ting
           - charts/niuu-shared
           - charts/niuu
     steps:

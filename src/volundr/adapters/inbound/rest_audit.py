@@ -94,7 +94,7 @@ def _build_audit_router(
         event_type: str | None = Query(
             default=None,
             description=(
-                "Glob pattern for event type (e.g. ``ravn.*``, ``tyr.task.*``). "
+                "Glob pattern for event type (e.g. ``ravn.*``, ``ting.task.*``). "
                 "Omit to match all event types."
             ),
             examples=["ravn.*"],
@@ -120,7 +120,7 @@ def _build_audit_router(
         ),
         service: str | None = Query(
             default=None,
-            description="Filter to events from a service prefix (e.g. ``ravn``, ``tyr``).",
+            description="Filter to events from a service prefix (e.g. ``ravn``, ``ting``).",
         ),
         limit: int = Query(
             default=_DEFAULT_LIMIT,
@@ -133,7 +133,7 @@ def _build_audit_router(
 
         Returns events in reverse-chronological order (newest first).
         Supports glob-style ``event_type`` patterns such as ``ravn.*`` or
-        ``tyr.task.*``.
+        ``ting.task.*``.
         """
         if deprecated and canonical_prefix is not None:
             warn_on_legacy_route(

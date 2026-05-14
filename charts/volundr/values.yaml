@@ -1262,7 +1262,7 @@ webNext:
       volundr:
         enabled: true
         order: 2
-      tyr:
+      ting:
         enabled: true
         order: 3
       mimir:

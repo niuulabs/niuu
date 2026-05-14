@@ -392,7 +392,7 @@ class TestStartupError:
     """Tests for StartupError exception."""
 
     def test_startup_error_attributes(self) -> None:
-        err = StartupError("tyr", "connection refused")
-        assert err.service_name == "tyr"
-        assert "tyr" in str(err)
+        err = StartupError("ting", "connection refused")
+        assert err.service_name == "ting"
+        assert "ting" in str(err)
         assert "connection refused" in str(err)

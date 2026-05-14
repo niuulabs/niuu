@@ -25,11 +25,11 @@ class TestPermissionsForAgent:
     def test_exact_match_takes_priority_over_glob(self):
         cfg = self._cfg(
             {
-                "tyr": AgentPermissions(allowed_models=["best"]),
-                "tyr-*": AgentPermissions(allowed_models=["fast"]),
+                "ting": AgentPermissions(allowed_models=["best"]),
+                "ting-*": AgentPermissions(allowed_models=["fast"]),
             }
         )
-        perms = cfg.permissions_for_agent("tyr")
+        perms = cfg.permissions_for_agent("ting")
         assert perms.allowed_models == ["best"]
 
     def test_glob_pattern_matches_prefix_wildcard(self):
@@ -58,12 +58,12 @@ class TestPermissionsForAgent:
     def test_first_glob_match_wins(self):
         cfg = self._cfg(
             {
-                "tyr-*": AgentPermissions(allowed_models=["best"]),
-                "tyr-worker-*": AgentPermissions(allowed_models=["fast"]),
+                "ting-*": AgentPermissions(allowed_models=["best"]),
+                "ting-worker-*": AgentPermissions(allowed_models=["fast"]),
             }
         )
-        # tyr-* matches first
-        perms = cfg.permissions_for_agent("tyr-worker-1")
+        # ting-* matches first
+        perms = cfg.permissions_for_agent("ting-worker-1")
         assert perms.allowed_models == ["best"]
 
 

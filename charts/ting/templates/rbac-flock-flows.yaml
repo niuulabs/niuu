@@ -1,0 +1,28 @@
+{{- if and .Values.flockFlows.enabled (eq .Values.flockFlows.adapter "ting.adapters.flows.configmap.KubernetesConfigMapFlockFlowProvider") }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ting.fullname" . }}-flock-flows
+  labels:
+    {{- include "ting.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ include "ting.fullname" . }}-flock-flows]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "ting.fullname" . }}-flock-flows
+  labels:
+    {{- include "ting.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "ting.fullname" . }}-flock-flows
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ting.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

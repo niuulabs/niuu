@@ -38,7 +38,7 @@ _BUILTIN_NAMES: frozenset[str] = frozenset(
         "planning-agent",
         "produce-recap",
         "qa-agent",
-        "raid-executor",
+        "run-executor",
         "reporter",
         "research-agent",
         "research-and-distill",

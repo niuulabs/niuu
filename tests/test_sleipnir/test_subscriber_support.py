@@ -86,7 +86,7 @@ async def test_dispatch_skips_non_matching_subscription():
     async def handler(evt: SleipnirEvent) -> None:
         received.append(evt)
 
-    sub, _ = _make_sub(["tyr.*"], handler)
+    sub, _ = _make_sub(["ting.*"], handler)
     try:
         event = make_event(event_type="ravn.tool.complete")
         await dispatch_to_subscriptions(
@@ -174,7 +174,7 @@ async def test_dispatch_star_pattern_matches_all_namespaces():
     """'*' pattern dispatches events from any namespace."""
     received_types: list[str] = []
     all_done = asyncio.Event()
-    target = ["ravn.tool.complete", "tyr.task.started", "volundr.pr.opened"]
+    target = ["ravn.tool.complete", "ting.task.started", "volundr.pr.opened"]
 
     async def handler(evt: SleipnirEvent) -> None:
         received_types.append(evt.event_type)

@@ -4,7 +4,7 @@ import { loginPlugin } from '@niuulabs/plugin-login';
 import { ravnPlugin } from '@niuulabs/plugin-ravn';
 import { mimirPlugin } from '@niuulabs/plugin-mimir';
 import { observatoryPlugin } from '@niuulabs/plugin-observatory';
-import { tyrPlugin } from '@niuulabs/plugin-tyr';
+import { tingPlugin } from '@niuulabs/plugin-ting';
 import { volundrPlugin } from '@niuulabs/plugin-volundr';
 import { definePlugin, type PluginDescriptor } from '@niuulabs/plugin-sdk';
 import { SettingsPage } from './SettingsPage';
@@ -38,7 +38,7 @@ export const plugins: PluginDescriptor[] = [
   loginPlugin,
   bifrostPlugin,
   volundrPlugin,
-  tyrPlugin,
+  tingPlugin,
   mimirPlugin,
   ravnPlugin,
   observatoryPlugin,

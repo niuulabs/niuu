@@ -135,7 +135,7 @@ _PLUGIN_API_PREFIXES: dict[str, list[str]] = {
     "credentials": ["/api/v1/credentials"],
     "integrations": ["/api/v1/integrations"],
     "tracker": ["/api/v1/tracker"],
-    "tyr": ["/api/v1/tyr"],
+    "ting": ["/api/v1/ting"],
     "niuu": ["/api/v1/niuu"],
 }
 
@@ -164,23 +164,23 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "ravn-trigger-api": "ravn",
     "llm-api": "bifrost",
     "catalog-api": "volundr",
-    "dispatch-api": "tyr",
-    "event-api": "tyr",
-    "review-api": "tyr",
+    "dispatch-api": "ting",
+    "event-api": "ting",
+    "review-api": "ting",
     "session-api": "volundr",
-    "saga-api": "tyr",
-    "settings-api": "tyr",
+    "saga-api": "ting",
+    "settings-api": "ting",
     "tenancy-api": "identity",
     "tracker-api": "tracker",
-    "tracker-intake-api": "tyr",
+    "tracker-intake-api": "ting",
     "tokens-api": "identity",
-    "tyr-channel-api": "tyr",
-    "workflow-api": "tyr",
+    "ting-channel-api": "ting",
+    "workflow-api": "ting",
     "workspace-api": "volundr",
-    "tyr-api": "tyr",
+    "ting-api": "ting",
 }
 _LEGACY_PLUGIN_DOMAIN_NAMES: dict[str, str] = {
-    "tyr": "tyr-api",
+    "ting": "ting-api",
     "niuu": "niuu-api",
 }
 
@@ -819,8 +819,9 @@ def build_root_app(
         from starlette.responses import HTMLResponse
 
         @root.get("/{path:path}", include_in_schema=False)
-        async def spa_fallback(path: str) -> HTMLResponse:
-            del path
+        async def spa_fallback(path: str) -> HTMLResponse | JSONResponse:
+            if path.startswith("api/"):
+                return JSONResponse({"detail": "Not found"}, status_code=404)
             return HTMLResponse(content=index_html)
 
         logger.info("Serving web UI from %s", dist)
@@ -913,7 +914,7 @@ class RootServer(Service):
         try:
             import asyncpg
 
-            from cli.resources import migration_dir
+            from cli.resources import migration_dir, ordered_migration_files
 
             info = self._embedded_db._connection_info
             conn = await asyncpg.connect(
@@ -923,13 +924,13 @@ class RootServer(Service):
                 database=info.dbname,
             )
             try:
-                for variant in ("volundr", "tyr"):
+                for variant in ("volundr", "ting"):
                     try:
                         mig_dir = migration_dir(variant)
                     except FileNotFoundError:
                         logger.debug("No migrations found for %s", variant)
                         continue
-                    sql_files = sorted(mig_dir.glob("*.up.sql"))
+                    sql_files = ordered_migration_files(mig_dir)
                     applied = 0
                     for sql_file in sql_files:
                         sql = sql_file.read_text()

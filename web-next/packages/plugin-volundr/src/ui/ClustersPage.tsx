@@ -141,7 +141,7 @@ const CLUSTER_PRESENTATION: Record<string, ClusterPresentation> = {
         connectionType: null,
       },
       {
-        id: 'tyr-raid-cohesion',
+        id: 'ting-run-cohesion',
         status: 'idle',
         cpuLabel: '0.3c',
         memoryLabel: '3.2Gi',

@@ -58,7 +58,7 @@ sleipnir:
   transport: webhook
   webhook:
     publish_urls:
-      - http://tyr:8080/sleipnir/events
+      - http://ting:8080/sleipnir/events
       - http://volundr:8000/sleipnir/events
     listen_port: 8090
 ```
@@ -106,7 +106,7 @@ sleipnir:
     stream_prefix: sleipnir
 ```
 
-One Redis stream per namespace (e.g. `sleipnir:ravn`, `sleipnir:tyr`).
+One Redis stream per namespace (e.g. `sleipnir:ravn`, `sleipnir:ting`).
 Consumer groups for load distribution and optional replay from offset on
 startup.  Requires `pip install redis[hiredis]`.
 

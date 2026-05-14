@@ -9,7 +9,7 @@ Groups
 ``core``      — file, git, bash, web_fetch, todo, ask_user, terminal
 ``extended``  — web_search, introspection, memory search, session search
 ``skill``     — skill_list, skill_run  (conditional on settings.skill.enabled)
-``platform``  — volundr/tyr platform tools  (conditional on gateway.platform.enabled)
+``platform``  — volundr/ting platform tools  (conditional on gateway.platform.enabled)
 ``cascade``   — marker group; cascade tools are wired externally via build_cascade_tools()
 
 Runtime context keys
@@ -316,8 +316,8 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "pat_token": s.gateway.platform.pat_token,
         },
     ),
-    "tyr_saga": BuiltinToolDef(
-        adapter="ravn.adapters.tools.platform_tools.TyrSagaTool",
+    "ting_saga": BuiltinToolDef(
+        adapter="ravn.adapters.tools.platform_tools.TingSagaTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
         kwargs_fn=lambda s, ctx: {

@@ -13,16 +13,16 @@ describe('niuuConfigSchema', () => {
     const parsed = niuuConfigSchema.parse({
       theme: 'ice',
       plugins: {
-        tyr: { enabled: true, order: 4 },
+        ting: { enabled: true, order: 4 },
         volundr: { enabled: false, order: 5, reason: 'k8s not provisioned' },
       },
       services: {
-        tyr: { baseUrl: 'https://api.niuu.world/tyr', mode: 'http' },
+        ting: { baseUrl: 'https://api.niuu.world/ting', mode: 'http' },
       },
     });
-    expect(parsed.plugins.tyr?.enabled).toBe(true);
+    expect(parsed.plugins.ting?.enabled).toBe(true);
     expect(parsed.plugins.volundr?.enabled).toBe(false);
-    expect(parsed.services.tyr?.baseUrl).toBe('https://api.niuu.world/tyr');
+    expect(parsed.services.ting?.baseUrl).toBe('https://api.niuu.world/ting');
   });
 
   it('accepts root-relative service URLs', () => {

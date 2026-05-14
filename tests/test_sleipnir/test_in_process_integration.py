@@ -89,12 +89,12 @@ async def test_contract_multiple_subscribers_receive_independently():
 
 # ---------------------------------------------------------------------------
 # 3. glob pattern 'ravn.*' matches 'ravn.tool.complete',
-#    does not match 'tyr.raid.complete'
+#    does not match 'ting.run.complete'
 # ---------------------------------------------------------------------------
 
 
 async def test_contract_glob_ravn_star_matches_and_rejects():
-    """Contract: 'ravn.*' matches ravn.tool.complete; rejects tyr.raid.complete."""
+    """Contract: 'ravn.*' matches ravn.tool.complete; rejects ting.run.complete."""
     bus = InProcessBus()
     received_types: list[str] = []
 
@@ -103,7 +103,7 @@ async def test_contract_glob_ravn_star_matches_and_rejects():
 
     await bus.subscribe(["ravn.*"], handler)
     await bus.publish(make_event(event_type="ravn.tool.complete", event_id="e1"))
-    await bus.publish(make_event(event_type="tyr.raid.complete", event_id="e2"))
+    await bus.publish(make_event(event_type="ting.run.complete", event_id="e2"))
     await bus.flush()
 
     assert received_types == ["ravn.tool.complete"]
@@ -126,7 +126,7 @@ async def test_contract_glob_star_matches_all_event_types():
 
     event_types = [
         "ravn.tool.complete",
-        "tyr.task.started",
+        "ting.task.started",
         "volundr.pr.opened",
         "bifrost.connection.open",
         "system.health.ping",

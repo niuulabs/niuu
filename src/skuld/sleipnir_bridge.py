@@ -2,7 +2,7 @@
 
 Skuld subscribes to the Sleipnir event bus and forwards relevant events to
 the browser via the :class:`~skuld.channels.ChannelRegistry`.  This decouples
-the browser from direct service coupling — Volundr, Tyr, and Ravn all publish
+the browser from direct service coupling — Volundr, Ting, and Ravn all publish
 to Sleipnir; Skuld bridges the resulting stream to the WebSocket.
 
 Filtering rules
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_PATTERNS: list[str] = [
     "ravn.*",
     "volundr.*",
-    "tyr.*",
+    "ting.*",
     "system.health.*",
 ]
 

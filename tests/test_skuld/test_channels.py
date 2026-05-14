@@ -373,8 +373,8 @@ class TestFormatTelegramEvent:
         assert result == "Nested hello"
 
     def test_user_confirmed_event(self):
-        event = {"type": "user_confirmed", "content": "Kick off the raid"}
-        assert format_telegram_event(event) == "[prompt] Kick off the raid"
+        event = {"type": "user_confirmed", "content": "Kick off the run"}
+        assert format_telegram_event(event) == "[prompt] Kick off the run"
 
     def test_user_confirmed_external_source_skipped(self):
         event = {

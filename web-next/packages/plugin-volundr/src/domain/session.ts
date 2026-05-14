@@ -49,7 +49,7 @@ export interface Session {
   ravnId: string;
   personaName: string;
   sagaId?: string;
-  raidId?: string;
+  runId?: string;
   templateId: string;
   clusterId: string;
   state: SessionState;

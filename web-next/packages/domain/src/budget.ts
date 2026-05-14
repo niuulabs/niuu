@@ -7,7 +7,7 @@ import { z } from 'zod';
  * Budget view all live in Ravn and read from `BudgetStream`).
  *
  * **Consumed by:**
- * - `plugin-tyr` — dispatch feasibility check refuses to dispatch when
+ * - `plugin-ting` — dispatch feasibility check refuses to dispatch when
  *   `spentUsd >= capUsd`.
  * - `plugin-observatory` — topology canvas shows a budget health dot on
  *   raven nodes that exceed `warnAt`.

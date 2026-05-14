@@ -204,7 +204,7 @@ test('registry page renders entity type list', async ({ page }) => {
   await expect(page.getByText('Registry').first()).toBeVisible();
   await expect(page.getByText('Realm').first()).toBeVisible({ timeout: 5000 });
   await expect(page.getByText('Cluster').first()).toBeVisible({ timeout: 5000 });
-  await expect(page.getByText('Raid').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText('Run').first()).toBeVisible({ timeout: 5000 });
 });
 
 test('registry: Types tab is active by default', async ({ page }) => {

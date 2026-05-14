@@ -105,7 +105,7 @@ Approval data is stored in `.ravn/approvals.json` within the project.
 
 ## Personal Access Tokens (PATs)
 
-For service-to-service authentication (e.g., Tyr calling Volundr), Ravn
+For service-to-service authentication (e.g., Ting calling Volundr), Ravn
 supports Personal Access Tokens. PATs are long-lived JWTs signed with the
 same symmetric key that Envoy validates.
 

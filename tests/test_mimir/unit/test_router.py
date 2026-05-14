@@ -154,7 +154,7 @@ def client_with_compiled_truth_page(tmp_path: Path) -> TestClient:
     tc.put(
         "/mimir/page",
         json={
-            "path": "raids/NIU-912-postmortem.md",
+            "path": "runs/NIU-912-postmortem.md",
             "content": (
                 "---\n"
                 "type: topic\n"
@@ -163,7 +163,7 @@ def client_with_compiled_truth_page(tmp_path: Path) -> TestClient:
                 f"source_ids: [{source_id}]\n"
                 "---\n\n"
                 "# NIU-912 Postmortem\n\n"
-                "Curated raid summary.\n\n"
+                "Curated run summary.\n\n"
                 "## Compiled Truth\n\n"
                 "### Key Facts\n"
                 "- Step 1 proof artifact was present.\n"
@@ -384,7 +384,7 @@ def test_read_page_found(client_with_page: TestClient) -> None:
 def test_read_page_returns_explicit_zones(client_with_compiled_truth_page: TestClient) -> None:
     resp = client_with_compiled_truth_page.get(
         "/mimir/page",
-        params={"path": "raids/NIU-912-postmortem.md"},
+        params={"path": "runs/NIU-912-postmortem.md"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -435,7 +435,7 @@ def test_read_page_falls_back_to_assessment_for_legacy_compiled_truth(
     tc.put(
         "/mimir/page",
         json={
-            "path": "raids/legacy-postmortem.md",
+            "path": "runs/legacy-postmortem.md",
             "content": (
                 "# Legacy Postmortem\n\n"
                 "## Compiled Truth\n\n"
@@ -447,7 +447,7 @@ def test_read_page_falls_back_to_assessment_for_legacy_compiled_truth(
         },
     )
 
-    resp = tc.get("/mimir/page", params={"path": "raids/legacy-postmortem.md"})
+    resp = tc.get("/mimir/page", params={"path": "runs/legacy-postmortem.md"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["zones"] == [

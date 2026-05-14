@@ -1,0 +1,1043 @@
+- name: Ting Run Flow
+  description: Default Ting to Volundr ravn_flock workflow using the legacy Volundr personas.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: dispatch-root
+        kind: trigger
+        label: Dispatch run
+        source: ting dispatch
+        dispatchEvent: code.requested
+        position:
+          x: 96
+          y: 144
+      - id: run-coder
+        kind: stage
+        label: Implement code
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+            model: claude-sonnet-4-6
+        position:
+          x: 336
+          y: 144
+      - id: run-reviewer
+        kind: stage
+        label: Review changes
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 25
+            model: claude-sonnet-4-6
+        position:
+          x: 576
+          y: 144
+      - id: run-complete
+        kind: end
+        label: Run complete
+        joinMode: all
+        completionEvent: ravn.task.completed
+        completionRules:
+          requireGitCommit: true
+          requireGitPush: true
+        position:
+          x: 816
+          y: 152
+    edges:
+      - id: edge-dispatch-to-coder
+        source: dispatch-root
+        target: run-coder
+        label: code.requested -> code.requested
+      - id: edge-coder-to-reviewer
+        source: run-coder
+        target: run-reviewer
+        label: code.changed -> code.changed
+      - id: edge-reviewer-to-coder
+        source: run-reviewer
+        target: run-coder
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-reviewer-to-end
+        source: run-reviewer
+        target: run-complete
+        label: review.completed -> review.completed
+- name: Ting Run Flow + Security
+  description: Ting to Volundr ravn_flock workflow with parallel review and security audit.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: dispatch-root
+        kind: trigger
+        label: Dispatch run
+        source: ting dispatch
+        dispatchEvent: code.requested
+        position:
+          x: 96
+          y: 192
+      - id: run-coder
+        kind: stage
+        label: Implement code
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+            model: claude-sonnet-4-6
+        position:
+          x: 336
+          y: 192
+      - id: run-reviewer
+        kind: stage
+        label: Review changes
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 25
+            model: claude-sonnet-4-6
+        position:
+          x: 576
+          y: 104
+      - id: run-security
+        kind: stage
+        label: Security review
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: security-auditor
+            budget: 25
+            model: claude-sonnet-4-6
+        position:
+          x: 576
+          y: 280
+      - id: run-complete
+        kind: end
+        label: Run complete
+        joinMode: all
+        completionEvent: ravn.task.completed
+        completionRules:
+          requireGitCommit: true
+          requireGitPush: true
+        position:
+          x: 816
+          y: 200
+    edges:
+      - id: edge-dispatch-to-coder
+        source: dispatch-root
+        target: run-coder
+        label: code.requested -> code.requested
+      - id: edge-coder-to-reviewer
+        source: run-coder
+        target: run-reviewer
+        label: code.changed -> code.changed
+      - id: edge-coder-to-security
+        source: run-coder
+        target: run-security
+        label: code.changed -> code.changed
+      - id: edge-reviewer-to-coder
+        source: run-reviewer
+        target: run-coder
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-security-to-coder
+        source: run-security
+        target: run-coder
+        label: security.changes_requested -> security.changes_requested
+      - id: edge-reviewer-to-end
+        source: run-reviewer
+        target: run-complete
+        label: review.completed -> review.completed
+      - id: edge-security-to-end
+        source: run-security
+        target: run-complete
+        label: security.completed -> security.completed
+- name: Ting Run Flow + Security + Postmortem Memory
+  description: Ting to Volundr ravn_flock workflow with parallel review, security audit, and a post-mortem memory write to shared Mimir.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: dispatch-root
+        kind: trigger
+        label: Dispatch run
+        source: ting dispatch
+        dispatchEvent: code.requested
+        position:
+          x: 96
+          y: 248
+      - id: run-coder
+        kind: stage
+        label: Implement code
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+            model: claude-sonnet-4-6
+        position:
+          x: 320
+          y: 248
+      - id: run-reviewer
+        kind: stage
+        label: Review changes
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 25
+            model: claude-sonnet-4-6
+        position:
+          x: 560
+          y: 152
+      - id: run-security
+        kind: stage
+        label: Security review
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: security-auditor
+            budget: 25
+            model: claude-sonnet-4-6
+        position:
+          x: 560
+          y: 344
+      - id: run-memory
+        kind: resource
+        label: Shared Mimir Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir-test
+        path: /tmp/mimir-test
+        role: shared
+        categories: [memory, postmortem]
+        position:
+          x: 560
+          y: 472
+      - id: run-postmortem
+        kind: stage
+        label: Capture post-mortem
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: postmortem-analyst
+            budget: 18
+            model: claude-sonnet-4-6
+        position:
+          x: 816
+          y: 248
+      - id: run-complete
+        kind: end
+        label: Run complete
+        joinMode: all
+        completionEvent: ravn.task.completed
+        position:
+          x: 1064
+          y: 248
+    edges:
+      - id: edge-dispatch-to-coder
+        source: dispatch-root
+        target: run-coder
+        label: code.requested -> code.requested
+      - id: edge-coder-to-reviewer
+        source: run-coder
+        target: run-reviewer
+        label: code.changed -> code.changed
+      - id: edge-coder-to-security
+        source: run-coder
+        target: run-security
+        label: code.changed -> code.changed
+      - id: edge-reviewer-to-coder
+        source: run-reviewer
+        target: run-coder
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-security-to-coder
+        source: run-security
+        target: run-coder
+        label: security.changes_requested -> security.changes_requested
+      - id: edge-reviewer-to-postmortem
+        source: run-reviewer
+        target: run-postmortem
+        label: review.completed -> review.completed
+      - id: edge-security-to-postmortem
+        source: run-security
+        target: run-postmortem
+        label: security.completed -> security.completed
+      - id: edge-postmortem-to-end
+        source: run-postmortem
+        target: run-complete
+        label: mimir.source.ingested -> mimir.source.ingested
+    resourceBindings:
+      - id: binding-memory-workflow
+        resourceNodeId: run-memory
+        targetType: workflow
+        targetId: ting-run-flow-security-postmortem-memory
+        access: read_write
+        writePrefixes: [postmortems/]
+        readPriority: 1
+- name: Ting Run Flow + Security + Memory Curation
+  description: Ting to Volundr ravn_flock workflow with parallel review, security, post-mortem ingest, and visible Mimir curation.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: dispatch-root
+        kind: trigger
+        label: Dispatch run
+        source: ting dispatch
+        dispatchEvent: code.requested
+        position:
+          x: 96
+          y: 264
+      - id: run-coder
+        kind: stage
+        label: Implement code
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+            model: gpt-5.5
+        position:
+          x: 320
+          y: 264
+      - id: run-reviewer
+        kind: stage
+        label: Review changes
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 25
+            model: gpt-5.5
+        position:
+          x: 560
+          y: 160
+      - id: run-security
+        kind: stage
+        label: Security review
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: security-auditor
+            budget: 25
+            model: gpt-5.5
+        position:
+          x: 560
+          y: 352
+      - id: run-memory
+        kind: resource
+        label: Shared Mimir Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir-test
+        path: /tmp/mimir-test
+        role: shared
+        categories: [memory, postmortem]
+        position:
+          x: 560
+          y: 488
+      - id: run-postmortem
+        kind: stage
+        label: Capture post-mortem
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: postmortem-analyst
+            budget: 18
+            model: gpt-5.5
+        position:
+          x: 816
+          y: 232
+      - id: run-memory-curator
+        kind: stage
+        label: Curate shared memory
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: mimir-memory-curator
+            budget: 20
+            model: gpt-5.5
+            consumesEventTypes: [mimir.source.ingested]
+            eventFilters:
+              mount_names: tmp-mimir-test
+        position:
+          x: 1064
+          y: 232
+      - id: run-complete
+        kind: end
+        label: Run complete
+        joinMode: all
+        completionEvent: ravn.task.completed
+        position:
+          x: 1320
+          y: 232
+    edges:
+      - id: edge-dispatch-to-coder
+        source: dispatch-root
+        target: run-coder
+        label: code.requested -> code.requested
+      - id: edge-coder-to-reviewer
+        source: run-coder
+        target: run-reviewer
+        label: code.changed -> code.changed
+      - id: edge-coder-to-security
+        source: run-coder
+        target: run-security
+        label: code.changed -> code.changed
+      - id: edge-reviewer-to-coder
+        source: run-reviewer
+        target: run-coder
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-security-to-coder
+        source: run-security
+        target: run-coder
+        label: security.changes_requested -> security.changes_requested
+      - id: edge-reviewer-to-postmortem
+        source: run-reviewer
+        target: run-postmortem
+        label: review.completed -> review.completed
+      - id: edge-security-to-postmortem
+        source: run-security
+        target: run-postmortem
+        label: security.completed -> security.completed
+      - id: edge-postmortem-to-memory-curator
+        source: run-postmortem
+        target: run-memory-curator
+        label: mimir.source.ingested -> mimir.source.ingested
+      - id: edge-memory-curator-to-end
+        source: run-memory-curator
+        target: run-complete
+        label: mimir.curated -> mimir.curated
+    resourceBindings:
+      - id: binding-memory-workflow
+        resourceNodeId: run-memory
+        targetType: workflow
+        targetId: ting-run-flow-security-memory-curation
+        access: read_write
+        writePrefixes: [postmortems/]
+        readPriority: 1
+- name: Research Council
+  description: Repo-less LLM council workflow with two independent seats, anonymous review, and final durable research publication.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: research-request
+        kind: trigger
+        label: Start research council
+        source: user research
+        dispatchEvent: research.requested
+        position:
+          x: 96
+          y: 248
+      - id: research-scratch
+        kind: resource
+        label: Council Scratch Board
+        resourceType: mimir
+        bindingMode: ephemeral_local
+        role: local
+        categories: [research, council, scratch]
+        position:
+          x: 304
+          y: 520
+      - id: research-memory
+        kind: resource
+        label: Permanent Research Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir-test
+        path: /tmp/mimir-test
+        role: shared
+        categories: [research, memory]
+        position:
+          x: 560
+          y: 520
+      - id: chair-brief
+        kind: stage
+        label: Brief the council
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-chair
+            budget: 18
+            model: claude-sonnet-4-6
+            consumesEventTypes: [research.requested]
+        position:
+          x: 304
+          y: 248
+      - id: member-a-opinion
+        kind: stage
+        label: Seat A first opinion
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-a
+            budget: 16
+            model: claude-sonnet-4-6
+            consumesEventTypes: [council.briefed]
+        position:
+          x: 560
+          y: 160
+      - id: member-b-opinion
+        kind: stage
+        label: Seat B first opinion
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-b
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [council.briefed]
+        position:
+          x: 560
+          y: 336
+      - id: chair-review-packet
+        kind: stage
+        label: Build anonymized review packet
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: council-chair
+            budget: 18
+            model: claude-sonnet-4-6
+            consumesEventTypes:
+              - council.a.opinion.submitted
+              - council.b.opinion.submitted
+        position:
+          x: 816
+          y: 248
+      - id: member-a-review
+        kind: stage
+        label: Seat A review packet
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-a
+            budget: 16
+            model: claude-sonnet-4-6
+            consumesEventTypes: [council.review.requested]
+        position:
+          x: 1072
+          y: 160
+      - id: member-b-review
+        kind: stage
+        label: Seat B review packet
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-b
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [council.review.requested]
+        position:
+          x: 1072
+          y: 336
+      - id: chair-synthesis
+        kind: stage
+        label: Synthesize final decision
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: council-chair
+            budget: 18
+            model: claude-sonnet-4-6
+            consumesEventTypes:
+              - council.a.review.submitted
+              - council.b.review.submitted
+        position:
+          x: 1328
+          y: 248
+      - id: research-complete
+        kind: end
+        label: Research complete
+        joinMode: all
+        completionEvent: research.completed
+        position:
+          x: 1584
+          y: 248
+    edges:
+      - id: edge-research-request-to-chair
+        source: research-request
+        target: chair-brief
+        label: research.requested -> research.requested
+      - id: edge-chair-to-seat-a
+        source: chair-brief
+        target: member-a-opinion
+        label: council.briefed -> council.briefed
+      - id: edge-chair-to-seat-b
+        source: chair-brief
+        target: member-b-opinion
+        label: council.briefed -> council.briefed
+      - id: edge-seat-a-opinion-to-chair
+        source: member-a-opinion
+        target: chair-review-packet
+        label: council.a.opinion.submitted -> council.a.opinion.submitted
+      - id: edge-seat-b-opinion-to-chair
+        source: member-b-opinion
+        target: chair-review-packet
+        label: council.b.opinion.submitted -> council.b.opinion.submitted
+      - id: edge-chair-packet-to-seat-a
+        source: chair-review-packet
+        target: member-a-review
+        label: council.review.requested -> council.review.requested
+      - id: edge-chair-packet-to-seat-b
+        source: chair-review-packet
+        target: member-b-review
+        label: council.review.requested -> council.review.requested
+      - id: edge-seat-a-review-to-chair
+        source: member-a-review
+        target: chair-synthesis
+        label: council.a.review.submitted -> council.a.review.submitted
+      - id: edge-seat-b-review-to-chair
+        source: member-b-review
+        target: chair-synthesis
+        label: council.b.review.submitted -> council.b.review.submitted
+      - id: edge-chair-synthesis-to-end
+        source: chair-synthesis
+        target: research-complete
+        label: research.completed -> research.completed
+    resourceBindings:
+      - id: binding-research-scratch
+        resourceNodeId: research-scratch
+        targetType: workflow
+        targetId: research-council
+        access: read_write
+        writePrefixes: [council/]
+        readPriority: 1
+      - id: binding-research-memory
+        resourceNodeId: research-memory
+        targetType: workflow
+        targetId: research-council
+        access: read_write
+        writePrefixes: [research/]
+        readPriority: 2
+- name: Research Council + Third Seat
+  description: Repo-less LLM council workflow with three independent seats, anonymous review, and final durable research publication.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: research-request
+        kind: trigger
+        label: Start research council
+        source: user research
+        dispatchEvent: research.requested
+        position:
+          x: 96
+          y: 264
+      - id: research-scratch
+        kind: resource
+        label: Council Scratch Board
+        resourceType: mimir
+        bindingMode: ephemeral_local
+        role: local
+        categories: [research, council, scratch]
+        position:
+          x: 304
+          y: 560
+      - id: research-memory
+        kind: resource
+        label: Permanent Research Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir-test
+        path: /tmp/mimir-test
+        role: shared
+        categories: [research, memory]
+        position:
+          x: 560
+          y: 560
+      - id: chair-brief
+        kind: stage
+        label: Brief the council
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-chair
+            budget: 18
+            model: claude-sonnet-4-6
+            consumesEventTypes: [research.requested]
+        position:
+          x: 304
+          y: 264
+      - id: member-a-opinion
+        kind: stage
+        label: Seat A first opinion
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-a
+            budget: 16
+            model: claude-sonnet-4-6
+            consumesEventTypes: [council.briefed]
+        position:
+          x: 560
+          y: 104
+      - id: member-b-opinion
+        kind: stage
+        label: Seat B first opinion
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-b
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [council.briefed]
+        position:
+          x: 560
+          y: 264
+      - id: member-c-opinion
+        kind: stage
+        label: Seat C first opinion
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-c
+            budget: 16
+            model: claude-haiku-4-5-20251001
+            consumesEventTypes: [council.briefed]
+        position:
+          x: 560
+          y: 424
+      - id: chair-review-packet
+        kind: stage
+        label: Build anonymized review packet
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: council-chair
+            budget: 18
+            model: claude-sonnet-4-6
+            consumesEventTypes:
+              - council.a.opinion.submitted
+              - council.b.opinion.submitted
+              - council.c.opinion.submitted
+        position:
+          x: 848
+          y: 264
+      - id: member-a-review
+        kind: stage
+        label: Seat A review packet
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-a
+            budget: 16
+            model: claude-sonnet-4-6
+            consumesEventTypes: [council.review.requested]
+        position:
+          x: 1120
+          y: 104
+      - id: member-b-review
+        kind: stage
+        label: Seat B review packet
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-b
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [council.review.requested]
+        position:
+          x: 1120
+          y: 264
+      - id: member-c-review
+        kind: stage
+        label: Seat C review packet
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-c
+            budget: 16
+            model: claude-haiku-4-5-20251001
+            consumesEventTypes: [council.review.requested]
+        position:
+          x: 1120
+          y: 424
+      - id: chair-synthesis
+        kind: stage
+        label: Synthesize final decision
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: council-chair
+            budget: 18
+            model: claude-sonnet-4-6
+            consumesEventTypes:
+              - council.a.review.submitted
+              - council.b.review.submitted
+              - council.c.review.submitted
+        position:
+          x: 1392
+          y: 264
+      - id: research-complete
+        kind: end
+        label: Research complete
+        joinMode: all
+        completionEvent: research.completed
+        position:
+          x: 1664
+          y: 264
+    edges:
+      - id: edge-research-request-to-chair
+        source: research-request
+        target: chair-brief
+        label: research.requested -> research.requested
+      - id: edge-chair-to-seat-a
+        source: chair-brief
+        target: member-a-opinion
+        label: council.briefed -> council.briefed
+      - id: edge-chair-to-seat-b
+        source: chair-brief
+        target: member-b-opinion
+        label: council.briefed -> council.briefed
+      - id: edge-chair-to-seat-c
+        source: chair-brief
+        target: member-c-opinion
+        label: council.briefed -> council.briefed
+      - id: edge-seat-a-opinion-to-chair
+        source: member-a-opinion
+        target: chair-review-packet
+        label: council.a.opinion.submitted -> council.a.opinion.submitted
+      - id: edge-seat-b-opinion-to-chair
+        source: member-b-opinion
+        target: chair-review-packet
+        label: council.b.opinion.submitted -> council.b.opinion.submitted
+      - id: edge-seat-c-opinion-to-chair
+        source: member-c-opinion
+        target: chair-review-packet
+        label: council.c.opinion.submitted -> council.c.opinion.submitted
+      - id: edge-chair-packet-to-seat-a
+        source: chair-review-packet
+        target: member-a-review
+        label: council.review.requested -> council.review.requested
+      - id: edge-chair-packet-to-seat-b
+        source: chair-review-packet
+        target: member-b-review
+        label: council.review.requested -> council.review.requested
+      - id: edge-chair-packet-to-seat-c
+        source: chair-review-packet
+        target: member-c-review
+        label: council.review.requested -> council.review.requested
+      - id: edge-seat-a-review-to-chair
+        source: member-a-review
+        target: chair-synthesis
+        label: council.a.review.submitted -> council.a.review.submitted
+      - id: edge-seat-b-review-to-chair
+        source: member-b-review
+        target: chair-synthesis
+        label: council.b.review.submitted -> council.b.review.submitted
+      - id: edge-seat-c-review-to-chair
+        source: member-c-review
+        target: chair-synthesis
+        label: council.c.review.submitted -> council.c.review.submitted
+      - id: edge-chair-synthesis-to-end
+        source: chair-synthesis
+        target: research-complete
+        label: research.completed -> research.completed
+    resourceBindings:
+      - id: binding-research-scratch
+        resourceNodeId: research-scratch
+        targetType: workflow
+        targetId: research-council-third-seat
+        access: read_write
+        writePrefixes: [council/]
+        readPriority: 1
+      - id: binding-research-memory
+        resourceNodeId: research-memory
+        targetType: workflow
+        targetId: research-council-third-seat
+        access: read_write
+        writePrefixes: [research/]
+        readPriority: 2
+- name: Research Council + Human Input
+  description: Repo-less LLM council workflow that can pause on chair escalation and resume from a directed human reply before publishing durable research memory.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: research-request
+        kind: trigger
+        label: Start research council
+        source: user research
+        dispatchEvent: research.requested
+        position:
+          x: 96
+          y: 248
+      - id: research-scratch
+        kind: resource
+        label: Council Scratch Board
+        resourceType: mimir
+        bindingMode: ephemeral_local
+        role: local
+        categories: [research, council, scratch]
+        position:
+          x: 304
+          y: 520
+      - id: research-memory
+        kind: resource
+        label: Permanent Research Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir-test
+        path: /tmp/mimir-test
+        role: shared
+        categories: [research, memory]
+        position:
+          x: 560
+          y: 520
+      - id: chair-brief
+        kind: stage
+        label: Brief the council
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-chair
+            budget: 18
+            model: claude-sonnet-4-6
+            consumesEventTypes: [research.requested]
+        position:
+          x: 304
+          y: 248
+      - id: member-a-opinion
+        kind: stage
+        label: Seat A first opinion
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-a
+            budget: 16
+            model: claude-sonnet-4-6
+            consumesEventTypes: [council.briefed]
+        position:
+          x: 560
+          y: 160
+      - id: member-b-opinion
+        kind: stage
+        label: Seat B first opinion
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-b
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [council.briefed]
+        position:
+          x: 560
+          y: 336
+      - id: chair-review-packet
+        kind: stage
+        label: Build anonymized review packet
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: council-chair
+            budget: 18
+            model: claude-sonnet-4-6
+            consumesEventTypes:
+              - council.a.opinion.submitted
+              - council.b.opinion.submitted
+        position:
+          x: 816
+          y: 248
+      - id: member-a-review
+        kind: stage
+        label: Seat A review packet
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-a
+            budget: 16
+            model: claude-sonnet-4-6
+            consumesEventTypes: [council.review.requested]
+        position:
+          x: 1072
+          y: 160
+      - id: member-b-review
+        kind: stage
+        label: Seat B review packet
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: council-member-b
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [council.review.requested]
+        position:
+          x: 1072
+          y: 336
+      - id: chair-synthesis
+        kind: stage
+        label: Synthesize or ask operator
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: council-chair
+            budget: 18
+            model: claude-sonnet-4-6
+            consumesEventTypes:
+              - council.a.review.submitted
+              - council.b.review.submitted
+        position:
+          x: 1328
+          y: 248
+      - id: research-complete
+        kind: end
+        label: Research complete
+        joinMode: all
+        completionEvent: research.completed
+        position:
+          x: 1584
+          y: 248
+    edges:
+      - id: edge-research-request-to-chair
+        source: research-request
+        target: chair-brief
+        label: research.requested -> research.requested
+      - id: edge-chair-to-seat-a
+        source: chair-brief
+        target: member-a-opinion
+        label: council.briefed -> council.briefed
+      - id: edge-chair-to-seat-b
+        source: chair-brief
+        target: member-b-opinion
+        label: council.briefed -> council.briefed
+      - id: edge-seat-a-opinion-to-chair
+        source: member-a-opinion
+        target: chair-review-packet
+        label: council.a.opinion.submitted -> council.a.opinion.submitted
+      - id: edge-seat-b-opinion-to-chair
+        source: member-b-opinion
+        target: chair-review-packet
+        label: council.b.opinion.submitted -> council.b.opinion.submitted
+      - id: edge-chair-packet-to-seat-a
+        source: chair-review-packet
+        target: member-a-review
+        label: council.review.requested -> council.review.requested
+      - id: edge-chair-packet-to-seat-b
+        source: chair-review-packet
+        target: member-b-review
+        label: council.review.requested -> council.review.requested
+      - id: edge-seat-a-review-to-chair
+        source: member-a-review
+        target: chair-synthesis
+        label: council.a.review.submitted -> council.a.review.submitted
+      - id: edge-seat-b-review-to-chair
+        source: member-b-review
+        target: chair-synthesis
+        label: council.b.review.submitted -> council.b.review.submitted
+      - id: edge-chair-synthesis-to-end
+        source: chair-synthesis
+        target: research-complete
+        label: research.completed -> research.completed
+    resourceBindings:
+      - id: binding-research-scratch
+        resourceNodeId: research-scratch
+        targetType: workflow
+        targetId: research-council-human-input
+        access: read_write
+        writePrefixes: [council/]
+        readPriority: 1
+      - id: binding-research-memory
+        resourceNodeId: research-memory
+        targetType: workflow
+        targetId: research-council-human-input
+        access: read_write
+        writePrefixes: [research/]
+        readPriority: 2

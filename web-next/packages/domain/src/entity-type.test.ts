@@ -73,7 +73,7 @@ const ravenEntityType = {
   rune: 'ᚱ',
   shape: 'ring',
   color: '--brand-400',
-  description: 'An autonomous agent dispatched to complete a raid.',
+  description: 'An autonomous agent dispatched to complete a run.',
   parentTypes: ['cluster'],
   canContain: [],
 } as const;

@@ -25,4 +25,3 @@ class ModelCatalogPort(ABC):
     @abstractmethod
     async def list_providers(self) -> list[ManagedProvider]:
         """Return all configured providers plus derived health state."""
-

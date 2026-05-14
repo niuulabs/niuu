@@ -1,4 +1,4 @@
-"""Tests for Ravn platform tools (volundr_session, volundr_git, tyr_saga, tracker_issue)."""
+"""Tests for Ravn platform tools (volundr_session, volundr_git, ting_saga, tracker_issue)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import respx
 
 from ravn.adapters.tools.platform_tools import (
     TrackerIssueTool,
-    TyrSagaTool,
+    TingSagaTool,
     VolundrGitTool,
     VolundrSessionTool,
 )
@@ -223,16 +223,16 @@ class TestVolundrGitTool:
 
 
 # ===========================================================================
-# TyrSagaTool
+# TingSagaTool
 # ===========================================================================
 
 
-class TestTyrSagaTool:
+class TestTingSagaTool:
     def setup_method(self):
-        self.tool = TyrSagaTool(base_url=BASE_URL)
+        self.tool = TingSagaTool(base_url=BASE_URL)
 
     def test_name(self):
-        assert self.tool.name == "tyr_saga"
+        assert self.tool.name == "ting_saga"
 
     def test_required_permission(self):
         assert self.tool.required_permission == "platform:api"
@@ -240,14 +240,14 @@ class TestTyrSagaTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_list_sagas(self):
-        respx.get(f"{BASE_URL}/api/v1/tyr/sagas").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE_URL}/api/v1/ting/sagas").mock(return_value=httpx.Response(200, json=[]))
         result = await self.tool.execute({"action": "list"})
         assert not result.is_error
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_commit_saga(self):
-        respx.post(f"{BASE_URL}/api/v1/tyr/sagas/commit").mock(
+        respx.post(f"{BASE_URL}/api/v1/ting/sagas/commit").mock(
             return_value=httpx.Response(200, json={"id": "saga-1"})
         )
         result = await self.tool.execute(
@@ -257,7 +257,7 @@ class TestTyrSagaTool:
                 "slug": "my-saga",
                 "repos": ["org/repo"],
                 "base_branch": "main",
-                "phases": [{"name": "phase-1", "raids": [{"name": "raid-1"}]}],
+                "phases": [{"name": "phase-1", "runs": [{"name": "run-1"}]}],
             }
         )
         assert not result.is_error
@@ -272,7 +272,7 @@ class TestTyrSagaTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_dispatch_saga(self):
-        respx.post(f"{BASE_URL}/api/v1/tyr/dispatch/approve").mock(
+        respx.post(f"{BASE_URL}/api/v1/ting/dispatch/approve").mock(
             return_value=httpx.Response(200, json={"dispatched": 1})
         )
         result = await self.tool.execute(
@@ -293,7 +293,7 @@ class TestTyrSagaTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_get_saga(self):
-        respx.get(f"{BASE_URL}/api/v1/tyr/sagas/saga-1").mock(
+        respx.get(f"{BASE_URL}/api/v1/ting/sagas/saga-1").mock(
             return_value=httpx.Response(200, json={"id": "saga-1", "status": "ACTIVE"})
         )
         result = await self.tool.execute({"action": "get", "saga_id": "saga-1"})
@@ -303,11 +303,11 @@ class TestTyrSagaTool:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_list_raids(self):
-        respx.get(f"{BASE_URL}/api/v1/tyr/raids/active").mock(
+    async def test_list_runs(self):
+        respx.get(f"{BASE_URL}/api/v1/ting/runs/active").mock(
             return_value=httpx.Response(200, json=[])
         )
-        result = await self.tool.execute({"action": "raids"})
+        result = await self.tool.execute({"action": "runs"})
         assert not result.is_error
 
     @pytest.mark.asyncio

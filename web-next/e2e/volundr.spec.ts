@@ -30,15 +30,15 @@ test('volundr rail icon is visible and links to the page', async ({ page }) => {
 });
 
 test('navigating back from /volundr preserves the shell', async ({ page }) => {
-  await page.goto('/tyr');
-  await expect(page.getByRole('heading', { name: 'Tyr' })).toBeVisible({ timeout: 5_000 });
+  await page.goto('/ting');
+  await expect(page.getByRole('heading', { name: 'Ting' })).toBeVisible({ timeout: 5_000 });
 
   await page.goto('/volundr');
   await expect(page.getByTestId('sessions-page')).toBeVisible({ timeout: 8_000 });
 
   await page.goBack();
-  await expect(page).toHaveURL(/\/tyr$/);
-  await expect(page.getByRole('heading', { name: 'Tyr' })).toBeVisible({ timeout: 5_000 });
+  await expect(page).toHaveURL(/\/ting$/);
+  await expect(page.getByRole('heading', { name: 'Ting' })).toBeVisible({ timeout: 5_000 });
 });
 
 // ---------------------------------------------------------------------------

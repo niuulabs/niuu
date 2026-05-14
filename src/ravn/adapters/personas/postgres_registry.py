@@ -102,8 +102,8 @@ _BUILTIN_METADATA: dict[str, dict[str, str]] = {
     "decomposer": {
         "role": "plan",
         "color": "var(--color-accent-cyan)",
-        "summary": "Breaks goals into structured plans and raids.",
-        "description": "Breaks goals into structured plans and raids.",
+        "summary": "Breaks goals into structured plans and runs.",
+        "description": "Breaks goals into structured plans and runs.",
     },
     "draft-a-note": {
         "role": "write",
@@ -167,11 +167,11 @@ _BUILTIN_METADATA: dict[str, dict[str, str]] = {
         "summary": "Runs test suites and validates code quality.",
         "description": "Runs test suites and validates code quality.",
     },
-    "raid-executor": {
+    "run-executor": {
         "role": "build",
         "color": "var(--color-accent-indigo)",
-        "summary": "Executes raid tasks against prepared work items.",
-        "description": "Executes raid tasks against prepared work items.",
+        "summary": "Executes run tasks against prepared work items.",
+        "description": "Executes run tasks against prepared work items.",
     },
     "reporter": {
         "role": "report",

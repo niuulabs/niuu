@@ -122,7 +122,8 @@ def filter_internal_blocks(
         content = (
             message.get("content")
             if isinstance(message, dict) and isinstance(message.get("content"), list)
-            else event.get("content") if isinstance(event.get("content"), list)
+            else event.get("content")
+            if isinstance(event.get("content"), list)
             else None
         )
         if content is None:
@@ -475,14 +476,14 @@ def _render_inline_telegram_html(text: str) -> str:
         if text.startswith("**", cursor):
             end = text.find("**", cursor + 2)
             if end != -1:
-                parts.append(f"<b>{_render_inline_telegram_html(text[cursor + 2:end])}</b>")
+                parts.append(f"<b>{_render_inline_telegram_html(text[cursor + 2 : end])}</b>")
                 cursor = end + 2
                 continue
 
         if text[cursor] == "`":
             end = text.find("`", cursor + 1)
             if end != -1:
-                code = html.escape(text[cursor + 1:end])
+                code = html.escape(text[cursor + 1 : end])
                 parts.append(f"<code>{code}</code>")
                 cursor = end + 1
                 continue
@@ -492,8 +493,8 @@ def _render_inline_telegram_html(text: str) -> str:
             if label_end != -1 and label_end + 1 < len(text) and text[label_end + 1] == "(":
                 url_end = text.find(")", label_end + 2)
                 if url_end != -1:
-                    label = html.escape(text[cursor + 1:label_end])
-                    href = html.escape(text[label_end + 2:url_end], quote=True)
+                    label = html.escape(text[cursor + 1 : label_end])
+                    href = html.escape(text[label_end + 2 : url_end], quote=True)
                     parts.append(f'<a href="{href}">{label}</a>')
                     cursor = url_end + 1
                     continue

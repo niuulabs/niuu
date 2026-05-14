@@ -1,17 +1,17 @@
-"""Async API client for Volundr and Tyr services."""
+"""Async API client for Volundr and Ting services."""
 
 from cli.api.client import APIClient
-from cli.api.tyr import DispatchResult, RaidInfo, SagaInfo, TyrAPI
+from cli.api.ting import DispatchResult, RunInfo, SagaInfo, TingAPI
 from cli.api.volundr import ActivityEvent, SessionInfo, TimelineEntry, VolundrAPI
 
 __all__ = [
     "APIClient",
     "ActivityEvent",
     "DispatchResult",
-    "RaidInfo",
+    "RunInfo",
     "SagaInfo",
     "SessionInfo",
     "TimelineEntry",
-    "TyrAPI",
+    "TingAPI",
     "VolundrAPI",
 ]

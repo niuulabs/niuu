@@ -1,6 +1,6 @@
 """Shared Pydantic models for integration REST endpoints.
 
-Used by both Tyr and Volundr integration routers.
+Used by both Ting and Volundr integration routers.
 """
 
 from __future__ import annotations

@@ -1,0 +1,488 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ting.fullname" . }}-migrations
+  labels:
+    {{- include "ting.labels" . | nindent 4 }}
+data:
+  000001_initial_schema.down.sql: |
+    -- Rollback initial schema for ting saga coordinator
+    
+    DROP TABLE IF EXISTS confidence_events;
+    DROP TABLE IF EXISTS dispatcher_state;
+    DROP TABLE IF EXISTS runs;
+    DROP TABLE IF EXISTS phases;
+    DROP TABLE IF EXISTS sagas;
+
+  000001_initial_schema.up.sql: |
+    -- Initial schema for ting saga coordinator
+    
+    CREATE TABLE IF NOT EXISTS sagas (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tracker_id    TEXT NOT NULL,
+        tracker_type  TEXT NOT NULL,
+        slug          TEXT NOT NULL UNIQUE,
+        name          TEXT NOT NULL,
+        repos         TEXT[] NOT NULL DEFAULT '{}',
+        confidence    FLOAT DEFAULT 0,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+    
+    CREATE TABLE IF NOT EXISTS phases (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        saga_id       UUID NOT NULL REFERENCES sagas(id),
+        tracker_id    TEXT NOT NULL,
+        number        INT NOT NULL,
+        name          TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'GATED',
+        confidence    FLOAT DEFAULT 0
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_phases_saga_id ON phases(saga_id);
+    
+    CREATE TABLE IF NOT EXISTS runs (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        phase_id      UUID NOT NULL REFERENCES phases(id),
+        tracker_id    TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        declared_files TEXT[],
+        estimate_hours FLOAT,
+        status        TEXT NOT NULL DEFAULT 'PENDING',
+        confidence    FLOAT DEFAULT 0,
+        session_id    TEXT,
+        branch        TEXT,
+        chronicle_summary TEXT,
+        retry_count   INT DEFAULT 0,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_runs_phase_id ON runs(phase_id);
+    CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
+    
+    CREATE TABLE IF NOT EXISTS confidence_events (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id       UUID NOT NULL REFERENCES runs(id),
+        event_type    TEXT NOT NULL,
+        delta         FLOAT NOT NULL,
+        score_after   FLOAT NOT NULL,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_confidence_events_run_id ON confidence_events(run_id);
+    
+    CREATE TABLE IF NOT EXISTS dispatcher_state (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        running       BOOL DEFAULT TRUE,
+        threshold     FLOAT DEFAULT 0.75,
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+
+  000002_integration_connections.down.sql: |
+    DROP TABLE IF EXISTS integration_connections;
+
+  000002_integration_connections.up.sql: |
+    -- Integration connections (shared table used by niuu adapters)
+    
+    CREATE TABLE IF NOT EXISTS integration_connections (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id VARCHAR(255) NOT NULL,
+        integration_type VARCHAR(50) NOT NULL,
+        adapter VARCHAR(500) NOT NULL,
+        credential_name VARCHAR(253) NOT NULL,
+        config JSONB NOT NULL DEFAULT '{}',
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        slug VARCHAR(100) NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_integration_connections_user
+        ON integration_connections(user_id, integration_type);
+
+  000003_saga_repos_array.down.sql: |
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS repo TEXT NOT NULL DEFAULT '';
+    UPDATE sagas SET repo = repos[1] WHERE array_length(repos, 1) > 0;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS repos;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS name;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS status;
+
+  000003_saga_repos_array.up.sql: |
+    -- Fix sagas table: ensure repos array, name, and status columns exist.
+    -- The initial schema may already have these columns; this migration is
+    -- idempotent for both old and new initial schemas.
+    
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS repos TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ACTIVE';
+    
+    -- Migrate existing data from singular repo column (only if it exists).
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'sagas' AND column_name = 'repo'
+        ) THEN
+            UPDATE sagas SET repos = ARRAY[repo] WHERE repo IS NOT NULL AND repo != '';
+        END IF;
+    END $$;
+    
+    ALTER TABLE sagas DROP COLUMN IF EXISTS repo;
+
+  000004_owner_id_sagas.down.sql: |
+    -- Revert owner_id on sagas, restore user_id on integration_connections
+    
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'integration_connections' AND column_name = 'owner_id'
+        ) THEN
+            ALTER TABLE integration_connections RENAME COLUMN owner_id TO user_id;
+        END IF;
+    END $$;
+    
+    DROP INDEX IF EXISTS idx_sagas_owner_id;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS owner_id;
+
+  000004_owner_id_sagas.up.sql: |
+    -- Add owner_id to sagas, rename user_id→owner_id on integration_connections
+    
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT 'default';
+    CREATE INDEX IF NOT EXISTS idx_sagas_owner_id ON sagas(owner_id);
+    
+    -- Align with Volundr convention (sessions.owner_id, workspaces FK, etc.)
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'integration_connections' AND column_name = 'user_id'
+        ) THEN
+            ALTER TABLE integration_connections RENAME COLUMN user_id TO owner_id;
+        END IF;
+    END $$;
+
+  000005_dispatcher_owner.down.sql: |
+    -- Revert per-user dispatcher state
+    
+    DROP INDEX IF EXISTS idx_dispatcher_state_owner;
+    ALTER TABLE dispatcher_state DROP COLUMN IF EXISTS max_concurrent_runs;
+    ALTER TABLE dispatcher_state DROP COLUMN IF EXISTS owner_id;
+
+  000005_dispatcher_owner.up.sql: |
+    -- Per-user dispatcher state: owner_id + max_concurrent_runs
+    
+    ALTER TABLE dispatcher_state ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE dispatcher_state ADD COLUMN IF NOT EXISTS max_concurrent_runs INT NOT NULL DEFAULT 3;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatcher_state_owner ON dispatcher_state(owner_id);
+
+  000006_run_pr_fields.down.sql: |
+    -- Revert PR tracking fields on runs
+    
+    DROP INDEX IF EXISTS idx_runs_session_id;
+    ALTER TABLE runs DROP COLUMN IF EXISTS pr_id;
+    ALTER TABLE runs DROP COLUMN IF EXISTS pr_url;
+
+  000006_run_pr_fields.up.sql: |
+    -- PR tracking fields on runs
+    
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_url TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_id  TEXT;
+    CREATE INDEX IF NOT EXISTS idx_runs_session_id ON runs(session_id)
+        WHERE session_id IS NOT NULL;
+
+  000007_notification_subscriptions.down.sql: |
+    -- Revert notification subscriptions
+    
+    DROP TABLE IF EXISTS notification_subscriptions;
+
+  000007_notification_subscriptions.up.sql: |
+    -- Notification subscriptions table
+    
+    CREATE TABLE IF NOT EXISTS notification_subscriptions (
+        id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+        owner_id   TEXT        NOT NULL,
+        channel    TEXT        NOT NULL,
+        config     JSONB       NOT NULL DEFAULT '{}',
+        enabled    BOOLEAN     NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_notification_subs_owner
+        ON notification_subscriptions(owner_id);
+
+  000008_personal_access_tokens.down.sql: |
+    DROP TABLE IF EXISTS personal_access_tokens;
+
+  000008_personal_access_tokens.up.sql: |
+    -- Personal access tokens for Ting API callers (e.g. Telegram bot, ODIN/Móði)
+    -- owner_id is the IDP sub claim from Envoy headers, treated as an opaque string.
+    -- NOTE: Unlike Volundr's PAT table, there is no FK on owner_id because Ting does
+    -- not own a users table. owner_id is validated at the application layer via the
+    -- IDP subject claim propagated through Envoy.
+    
+    CREATE TABLE IF NOT EXISTS personal_access_tokens (
+        id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+        owner_id     TEXT        NOT NULL,
+        name         TEXT        NOT NULL,
+        token_hash   TEXT        NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at   TIMESTAMPTZ,
+        last_used_at TIMESTAMPTZ
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_pats_owner_id ON personal_access_tokens(owner_id);
+
+  000009_pat_unique_owner_name.down.sql: |
+    DROP INDEX IF EXISTS idx_pats_owner_name;
+
+  000009_pat_unique_owner_name.up.sql: |
+    -- Enforce one PAT name per owner
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pats_owner_name ON personal_access_tokens(owner_id, name);
+
+  000010_saga_base_branch.down.sql: |
+    ALTER TABLE sagas DROP COLUMN IF EXISTS base_branch;
+
+  000010_saga_base_branch.up.sql: |
+    -- Add base_branch column to sagas
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS base_branch TEXT NOT NULL DEFAULT 'main';
+
+  000011_runs_reason_column.down.sql: |
+    ALTER TABLE runs DROP COLUMN IF EXISTS reason;
+
+  000011_runs_reason_column.up.sql: |
+    -- Add reason column to runs for reject context
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS reason TEXT;
+
+  000012_run_description.down.sql: |
+    ALTER TABLE runs DROP COLUMN IF EXISTS acceptance_criteria;
+    ALTER TABLE runs DROP COLUMN IF EXISTS description;
+
+  000012_run_description.up.sql: |
+    -- Add description and acceptance_criteria columns to runs for NativeAdapter
+    
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS acceptance_criteria TEXT[] NOT NULL DEFAULT '{}';
+
+  000013_runs_status_index.down.sql: |
+    DROP INDEX IF EXISTS idx_runs_status;
+
+  000013_runs_status_index.up.sql: |
+    CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status);
+
+  000014_run_pr_columns.down.sql: |
+    DROP INDEX IF EXISTS idx_runs_session_id;
+    ALTER TABLE runs DROP COLUMN IF EXISTS pr_id;
+    ALTER TABLE runs DROP COLUMN IF EXISTS pr_url;
+
+  000014_run_pr_columns.up.sql: |
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_url TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_id TEXT;
+    CREATE INDEX IF NOT EXISTS idx_runs_session_id ON runs(session_id) WHERE session_id IS NOT NULL;
+
+  000015_session_messages.down.sql: |
+    DROP TABLE IF EXISTS session_messages;
+
+  000015_session_messages.up.sql: |
+    CREATE TABLE IF NOT EXISTS session_messages (
+        id          UUID PRIMARY KEY,
+        run_id     UUID NOT NULL REFERENCES runs(id),
+        session_id  TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        sender      TEXT NOT NULL DEFAULT 'user',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_session_messages_run_id
+        ON session_messages (run_id);
+    
+    CREATE INDEX IF NOT EXISTS idx_session_messages_session_id
+        ON session_messages (session_id);
+
+  000016_run_progress.down.sql: |
+    DROP TABLE IF EXISTS run_session_messages;
+    DROP TABLE IF EXISTS run_confidence_events;
+    DROP TABLE IF EXISTS run_progress;
+    
+    -- Restore the dispatched_sessions table that migration 000016 up dropped.
+    CREATE TABLE IF NOT EXISTS dispatched_sessions (
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id        TEXT NOT NULL UNIQUE,
+        owner_id          TEXT NOT NULL,
+        saga_id           UUID NOT NULL,
+        tracker_issue_id  TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'running',
+        created_at        TIMESTAMPTZ DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_dispatched_sessions_status ON dispatched_sessions(status);
+    CREATE INDEX IF NOT EXISTS idx_dispatched_sessions_owner  ON dispatched_sessions(owner_id);
+
+  000016_run_progress.up.sql: |
+    -- Unified run progress tracking for all tracker adapters.
+    -- LinearAdapter stores progress alongside Linear API issue data.
+    -- NativeAdapter uses the existing runs table (no change needed).
+    
+    DROP TABLE IF EXISTS dispatched_sessions;
+    
+    CREATE TABLE IF NOT EXISTS run_progress (
+        tracker_id          TEXT PRIMARY KEY,
+        run_id             UUID NOT NULL DEFAULT gen_random_uuid(),
+        owner_id            TEXT,
+        phase_tracker_id    TEXT,
+        saga_tracker_id     TEXT,
+        status              TEXT NOT NULL DEFAULT 'PENDING',
+        session_id          TEXT,
+        confidence          FLOAT DEFAULT 0,
+        pr_url              TEXT,
+        pr_id               TEXT,
+        retry_count         INT DEFAULT 0,
+        reason              TEXT,
+        chronicle_summary   TEXT,
+        updated_at          TIMESTAMPTZ DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_run_progress_status ON run_progress(status);
+    CREATE INDEX IF NOT EXISTS idx_run_progress_session ON run_progress(session_id) WHERE session_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_run_progress_run_id ON run_progress(run_id);
+    CREATE INDEX IF NOT EXISTS idx_run_progress_phase ON run_progress(phase_tracker_id) WHERE phase_tracker_id IS NOT NULL;
+    
+    CREATE TABLE IF NOT EXISTS run_confidence_events (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id     UUID NOT NULL,
+        tracker_id  TEXT NOT NULL,
+        event_type  TEXT NOT NULL,
+        delta       FLOAT NOT NULL,
+        score_after FLOAT NOT NULL,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_run_confidence_events_tracker ON run_confidence_events(tracker_id);
+    
+    CREATE TABLE IF NOT EXISTS run_session_messages (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id     UUID NOT NULL,
+        tracker_id  TEXT NOT NULL,
+        session_id  TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        sender      TEXT NOT NULL DEFAULT 'user',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_run_session_messages_tracker ON run_session_messages(tracker_id);
+    CREATE INDEX IF NOT EXISTS idx_run_session_messages_session ON run_session_messages(session_id);
+
+  000017_run_depends_on.down.sql: |
+    -- Remove depends_on column from run_progress and runs.
+    
+    ALTER TABLE run_progress DROP COLUMN IF EXISTS depends_on;
+    ALTER TABLE runs DROP COLUMN IF EXISTS depends_on;
+
+  000017_run_depends_on.up.sql: |
+    -- Add depends_on column to run_progress for inter-run dependency tracking.
+    -- Values are run names (not IDs) within the same saga.
+    
+    ALTER TABLE run_progress ADD COLUMN IF NOT EXISTS depends_on TEXT[] DEFAULT '{}';
+    
+    -- Also add to the runs table used by NativeAdapter.
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS depends_on TEXT[] DEFAULT '{}';
+
+  000018_run_reviewer_session.down.sql: |
+    DROP INDEX IF EXISTS idx_runs_reviewer_session;
+    ALTER TABLE runs DROP COLUMN IF EXISTS review_round;
+    ALTER TABLE runs DROP COLUMN IF EXISTS reviewer_session_id;
+    ALTER TABLE run_progress DROP COLUMN IF EXISTS review_round;
+    ALTER TABLE run_progress DROP COLUMN IF EXISTS reviewer_session_id;
+
+  000018_run_reviewer_session.up.sql: |
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS reviewer_session_id TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS review_round INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS idx_runs_reviewer_session ON runs (reviewer_session_id) WHERE reviewer_session_id IS NOT NULL;
+    
+    ALTER TABLE run_progress ADD COLUMN IF NOT EXISTS reviewer_session_id TEXT;
+    ALTER TABLE run_progress ADD COLUMN IF NOT EXISTS review_round INTEGER NOT NULL DEFAULT 0;
+
+  000019_run_identifier_url.up.sql: |
+    -- Add identifier and url columns to runs for tracker display.
+    
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS identifier TEXT NOT NULL DEFAULT '';
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS url TEXT NOT NULL DEFAULT '';
+
+  000020_saga_feature_branch.down.sql: |
+    ALTER TABLE sagas DROP COLUMN IF EXISTS feature_branch;
+
+  000020_saga_feature_branch.up.sql: |
+    -- Add feature_branch column to sagas (used by dispatch to set working branch)
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS feature_branch TEXT NOT NULL DEFAULT 'main';
+
+  000021_dispatcher_auto_continue.down.sql: |
+    ALTER TABLE dispatcher_state DROP COLUMN IF EXISTS auto_continue;
+
+  000021_dispatcher_auto_continue.up.sql: |
+    ALTER TABLE dispatcher_state ADD COLUMN IF NOT EXISTS auto_continue BOOLEAN NOT NULL DEFAULT FALSE;
+
+  000022_run_structured_outcome.down.sql: |
+    -- Rollback: remove structured_outcome and outcome_event_type from runs
+    
+    ALTER TABLE runs DROP COLUMN IF EXISTS structured_outcome;
+    ALTER TABLE runs DROP COLUMN IF EXISTS outcome_event_type;
+
+  000022_run_structured_outcome.up.sql: |
+    -- Migration: add structured_outcome and outcome_event_type to runs
+    -- Stores the parsed outcome block from a completed Ravn session.
+    
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS structured_outcome JSONB;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS outcome_event_type TEXT;
+
+  000023_workflows.down.sql: |
+    DROP INDEX IF EXISTS idx_workflows_name;
+    DROP INDEX IF EXISTS idx_workflows_owner_updated_at;
+    DROP INDEX IF EXISTS idx_workflows_scope_updated_at;
+    DROP TABLE IF EXISTS workflows;
+
+  000023_workflows.up.sql: |
+    -- Persisted workflow catalog for Ting workflow definitions.
+    
+    CREATE TABLE IF NOT EXISTS workflows (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        version TEXT NOT NULL DEFAULT 'draft',
+        scope TEXT NOT NULL DEFAULT 'user',
+        owner_id TEXT,
+        definition_yaml TEXT,
+        graph_json JSONB NOT NULL DEFAULT '{"nodes": [], "edges": []}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT workflows_scope_check CHECK (scope IN ('system', 'user')),
+        CONSTRAINT workflows_owner_check CHECK (
+            (scope = 'system' AND owner_id IS NULL)
+            OR (scope = 'user' AND owner_id IS NOT NULL)
+        )
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_workflows_scope_updated_at
+        ON workflows(scope, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_workflows_owner_updated_at
+        ON workflows(owner_id, updated_at DESC)
+        WHERE owner_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_workflows_name
+        ON workflows(name);
+
+  000024_saga_workflows.down.sql: |
+    DROP INDEX IF EXISTS idx_sagas_workflow_id;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS workflow_snapshot;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS workflow_version;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS workflow_id;
+
+  000024_saga_workflows.up.sql: |
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS workflow_id UUID;
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS workflow_version TEXT;
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS workflow_snapshot JSONB;
+    
+    CREATE INDEX IF NOT EXISTS idx_sagas_workflow_id
+        ON sagas(workflow_id)
+        WHERE workflow_id IS NOT NULL;
+
+{{- end }}

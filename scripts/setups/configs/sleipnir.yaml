@@ -5,12 +5,12 @@
 # What you get:
 #   - All daemon features (gateway, drive loop, triggers)
 #   - Sleipnir pub/sub: every RavnEvent published to RabbitMQ topic exchange
-#   - Other systems (Valkyrie, Tyr, monitoring) consume events without coupling
+#   - Other systems (Valkyrie, Ting, monitoring) consume events without coupling
 #   - Task dispatch: `ravn listen` instances pick up work from the exchange
 #   - Agent ID auto-detected from hostname (or set explicitly)
 #
 # Architecture:
-#   ravn daemon ──publish──► RabbitMQ (ravn.events) ──consume──► Tyr / Valkyrie
+#   ravn daemon ──publish──► RabbitMQ (ravn.events) ──consume──► Ting / Valkyrie
 #                                                   ──consume──► ravn listen
 #                                                   ──consume──► Grafana / alerts
 #

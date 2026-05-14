@@ -18,9 +18,9 @@ describe('TopbarChip', () => {
 
   it('uses custom testId when provided', () => {
     render(
-      <TopbarChip kind="dim" icon="◈" label="threshold 0.70" testId="tyr-chip-threshold-0.70" />,
+      <TopbarChip kind="dim" icon="◈" label="threshold 0.70" testId="ting-chip-threshold-0.70" />,
     );
-    expect(screen.getByTestId('tyr-chip-threshold-0.70')).toBeInTheDocument();
+    expect(screen.getByTestId('ting-chip-threshold-0.70')).toBeInTheDocument();
   });
 
   it('applies kind-specific CSS class', () => {

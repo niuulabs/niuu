@@ -1,4 +1,5 @@
 import type { Topology, TopologyNode } from '../../domain';
+import { humanizeObservatoryText } from '../displayLabels';
 import './Minimap.css';
 
 const MINIMAP_W = 160;
@@ -79,7 +80,7 @@ export function Minimap({ topology, selectedNodeId = null }: MinimapProps) {
               stroke={isSelected ? 'var(--color-text-primary)' : 'none'}
               strokeWidth={1.5}
               data-node-id={node.id}
-              aria-label={node.label}
+              aria-label={humanizeObservatoryText(node.label)}
             />
           );
         })}

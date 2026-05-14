@@ -1,8 +1,8 @@
 # Runs on every push to feat/* branches. Publish-only:
 # 1. Builds all container images tagged with the feature name
-#    (e.g. feat/tyr-ui -> tag "tyr-ui")
+#    (e.g. feat/ting-ui -> tag "ting-ui")
 # 2. Packages Helm charts as 0.0.0-<feature>.<N> prerelease versions
-#    (e.g. 0.0.0-tyr-ui.3)
+#    (e.g. 0.0.0-ting-ui.3)
 #
 # Test/lint for feature branches lives in ci.yaml on pull_request events —
 # every niu-*/feat PR runs them there. Pushing directly to feat/* without a
@@ -43,7 +43,7 @@ jobs:
         id: tag
         run: |
           # Strip "feat/" prefix -> use remainder as tag
-          # e.g. feat/tyr-ui -> tyr-ui, feat/auth/oidc -> auth-oidc
+          # e.g. feat/ting-ui -> ting-ui, feat/auth/oidc -> auth-oidc
           RAW="${GITHUB_REF_NAME#feat/}"
           # Replace slashes with dashes for valid Docker tag
           TAG="${RAW//\//-}"
@@ -107,13 +107,13 @@ jobs:
           VERSION="${{ needs.meta.outputs.chart_version }}"
           TAG="${{ needs.meta.outputs.tag }}"
 
-          for CHART in bifrost ravn skuld volundr tyr niuu-shared niuu; do
+          for CHART in bifrost ravn skuld volundr ting niuu-shared niuu; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
 
           # Point image tags to the feature tag so the chart deploys feature images
-          for CHART in bifrost ravn skuld volundr tyr; do
+          for CHART in bifrost ravn skuld volundr ting; do
             if [ -f "charts/${CHART}/values.yaml" ]; then
               sed -i "s/^  tag:.*/  tag: \"${TAG}\"/" "charts/${CHART}/values.yaml" || true
             fi
@@ -125,7 +125,7 @@ jobs:
           helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
-          helm package charts/tyr -d .helm-packages/
+          helm package charts/ting -d .helm-packages/
           helm package charts/niuu-shared -d .helm-packages/
           rm -f charts/niuu/Chart.lock
           helm dependency update charts/niuu
@@ -144,6 +144,6 @@ jobs:
           helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/tyr-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-0*.tgz ${{ env.CHART_REPO }}

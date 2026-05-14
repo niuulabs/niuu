@@ -151,9 +151,7 @@ class TaskCreateTool(ToolPort):
         allow_spawn = bool(input.get("spawn", False))
         required_caps: list[str] = input.get("required_caps") or []
         current_task = (
-            self._drive_loop.current_task()
-            if hasattr(self._drive_loop, "current_task")
-            else None
+            self._drive_loop.current_task() if hasattr(self._drive_loop, "current_task") else None
         )
         resolved_allowed_target_personas = (
             self._allowed_target_resolver() if self._allowed_target_resolver is not None else None

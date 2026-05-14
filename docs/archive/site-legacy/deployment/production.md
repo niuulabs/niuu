@@ -2,13 +2,13 @@
 
 ## Required
 
-- [ ] PostgreSQL database provisioned and accessible (databases: `volundr`, `tyr`)
-- [ ] Database migrations applied (both Volundr and Tyr)
+- [ ] PostgreSQL database provisioned and accessible (databases: `volundr`, `ting`)
+- [ ] Database migrations applied (both Volundr and Ting)
 - [ ] `DATABASE__PASSWORD` set via Kubernetes secret
-- [ ] Ingress configured with TLS (shared domain for Volundr, Tyr, and web UI)
+- [ ] Ingress configured with TLS (shared domain for Volundr, Ting, and web UI)
 - [ ] Identity adapter set to `EnvoyHeaderIdentityAdapter` (not AllowAll)
 - [ ] Authorization adapter set to `CerbosAuthorizationAdapter` or `SimpleRoleAuthorizationAdapter`
-- [ ] Envoy sidecar enabled with JWT config pointing at Keycloak (both Volundr and Tyr)
+- [ ] Envoy sidecar enabled with JWT config pointing at Keycloak (both Volundr and Ting)
 - [ ] Credential store configured (Infisical or Vault) if tracker integrations are needed
 
 For the full prerequisites checklist, see the

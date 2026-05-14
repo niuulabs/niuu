@@ -82,8 +82,8 @@ as literal service names to keep the route table extensible.
 {{ printf "%s-web" (include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr)) }}
 {{- else if eq $service "volundr-web-next" -}}
 {{ printf "%s-web-next" (include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr)) }}
-{{- else if eq $service "tyr" -}}
-{{ include "niuu.componentFullname" (dict "root" $root "name" "tyr" "values" $root.Values.tyr) }}
+{{- else if eq $service "ting" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "ting" "values" $root.Values.ting) }}
 {{- else if eq $service "niuu-shared" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "niuu-shared" "values" (index $root.Values "niuu-shared")) }}
 {{- else if eq $service "bifrost" -}}

@@ -1,7 +1,7 @@
 """Platform tools — Ravn tools for interacting with the Niuu platform.
 
 These tools let the Ravn agent create/manage Forge sessions, perform git
-operations, decompose work into Tyr sagas, and track issues via the shared
+operations, decompose work into Ting sagas, and track issues via the shared
 tracker routes.
 
 All tools use the mounted platform APIs rather than direct imports,
@@ -432,21 +432,21 @@ class VolundrGitTool(ToolPort):
 
 
 # ---------------------------------------------------------------------------
-# tyr_saga
+# ting_saga
 # ---------------------------------------------------------------------------
 
 
-class TyrSagaTool(ToolPort):
-    """Decompose specs and manage Tyr sagas.
+class TingSagaTool(ToolPort):
+    """Decompose specs and manage Ting sagas.
 
     Actions:
     - ``list``     — list active sagas.
     - ``get``      — get saga details (requires ``saga_id``).
     - ``commit``   — commit a fully structured saga (requires ``name``, ``slug``,
                      ``repos``, ``base_branch``, ``phases``).
-    - ``dispatch`` — dispatch saga raids for execution (requires ``items`` array).
+    - ``dispatch`` — dispatch saga runs for execution (requires ``items`` array).
     - ``delete``   — delete a saga (requires ``saga_id``).
-    - ``raids``    — list active raids across all sagas.
+    - ``runs``    — list active runs across all sagas.
     """
 
     def __init__(
@@ -461,15 +461,15 @@ class TyrSagaTool(ToolPort):
 
     @property
     def name(self) -> str:
-        return "tyr_saga"
+        return "ting_saga"
 
     @property
     def description(self) -> str:
         return (
-            "Manage Tyr sagas and raids: list, get (saga_id), "
+            "Manage Ting sagas and runs: list, get (saga_id), "
             "commit (name + slug + repos + base_branch + phases), "
             "dispatch (items array with saga_id + issue_id + repo), "
-            "delete (saga_id), raids (list active raids)."
+            "delete (saga_id), runs (list active runs)."
         )
 
     @property
@@ -479,7 +479,7 @@ class TyrSagaTool(ToolPort):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "get", "commit", "dispatch", "delete", "raids"],
+                    "enum": ["list", "get", "commit", "dispatch", "delete", "runs"],
                     "description": "Operation to perform.",
                 },
                 "saga_id": {
@@ -513,7 +513,7 @@ class TyrSagaTool(ToolPort):
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
-                            "raids": {
+                            "runs": {
                                 "type": "array",
                                 "items": {
                                     "type": "object",
@@ -533,9 +533,9 @@ class TyrSagaTool(ToolPort):
                                 },
                             },
                         },
-                        "required": ["name", "raids"],
+                        "required": ["name", "runs"],
                     },
-                    "description": "Phase/raid structure (required for commit).",
+                    "description": "Phase/run structure (required for commit).",
                 },
                 "items": {
                     "type": "array",
@@ -576,14 +576,14 @@ class TyrSagaTool(ToolPort):
                     return await self._dispatch(client, input)
                 case "delete":
                     return await self._delete(client, input.get("saga_id", ""))
-                case "raids":
-                    return await self._raids(client)
+                case "runs":
+                    return await self._runs(client)
                 case _:
                     return _err(f"Unknown action: {action!r}")
 
     async def _list(self, client: httpx.AsyncClient) -> ToolResult:
         try:
-            resp = await client.get("/api/v1/tyr/sagas")
+            resp = await client.get("/api/v1/ting/sagas")
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
@@ -593,7 +593,7 @@ class TyrSagaTool(ToolPort):
         if not saga_id:
             return _err("saga_id is required for get action")
         try:
-            resp = await client.get(f"/api/v1/tyr/sagas/{saga_id}")
+            resp = await client.get(f"/api/v1/ting/sagas/{saga_id}")
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
@@ -617,7 +617,7 @@ class TyrSagaTool(ToolPort):
         if desc := input.get("description"):
             body["description"] = desc
         try:
-            resp = await client.post("/api/v1/tyr/sagas/commit", json=body)
+            resp = await client.post("/api/v1/ting/sagas/commit", json=body)
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
@@ -631,7 +631,7 @@ class TyrSagaTool(ToolPort):
         if model := input.get("model"):
             body["model"] = model
         try:
-            resp = await client.post("/api/v1/tyr/dispatch/approve", json=body)
+            resp = await client.post("/api/v1/ting/dispatch/approve", json=body)
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
@@ -641,19 +641,19 @@ class TyrSagaTool(ToolPort):
         if not saga_id:
             return _err("saga_id is required for delete action")
         try:
-            resp = await client.delete(f"/api/v1/tyr/sagas/{saga_id}")
+            resp = await client.delete(f"/api/v1/ting/sagas/{saga_id}")
             resp.raise_for_status()
             return _ok({"saga_id": saga_id, "status": "deleted"})
         except Exception as exc:
             return _err(f"Failed to delete saga {saga_id}: {exc}")
 
-    async def _raids(self, client: httpx.AsyncClient) -> ToolResult:
+    async def _runs(self, client: httpx.AsyncClient) -> ToolResult:
         try:
-            resp = await client.get("/api/v1/tyr/raids/active")
+            resp = await client.get("/api/v1/ting/runs/active")
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
-            return _err(f"Failed to list active raids: {exc}")
+            return _err(f"Failed to list active runs: {exc}")
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
   "name": "niuu-consumer-app",
   "private": true,
   "version": "0.0.0",
-  "description": "Standalone consumer app — proves @niuulabs/plugin-tyr installs and renders externally",
+  "description": "Standalone consumer app — proves @niuulabs/plugin-ting installs and renders externally",
   "type": "module",
   "scripts": {
     "dev": "vite --port 5200",
@@ -14,7 +14,7 @@
     "@niuulabs/design-tokens": ">=0.0.1",
     "@niuulabs/domain": ">=0.0.1",
     "@niuulabs/plugin-sdk": ">=0.0.1",
-    "@niuulabs/plugin-tyr": ">=0.0.1",
+    "@niuulabs/plugin-ting": ">=0.0.1",
     "@niuulabs/query": ">=0.0.1",
     "@niuulabs/shell": ">=0.0.1",
     "@niuulabs/ui": ">=0.0.1",

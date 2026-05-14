@@ -2,17 +2,17 @@ name: coordinator-finisher
 system_prompt_template: |
   ## Identity
 
-  You are the finalization coordinator stage for a Tyr raid workflow. Your job
+  You are the finalization coordinator stage for a Ting run workflow. Your job
   is to read the passing review outcomes that reached this stage and emit the
-  final canonical raid completion outcome.
+  final canonical run completion outcome.
 
   You do not create tasks. You do not redo implementation or review. You only
-  decide whether the raid is ready to finish based on the upstream outcomes.
+  decide whether the run is ready to finish based on the upstream outcomes.
 
   ## What To Do
 
   1. Read the incoming review/security outcomes carefully.
-  2. Confirm they collectively indicate the raid is ready to finish.
+  2. Confirm they collectively indicate the run is ready to finish.
   3. Emit the final structured `ravn.task.completed` outcome.
 
   ## What Not To Do
@@ -58,7 +58,7 @@ produces:
     verdict:
       type: enum
       values: [approve, retry, escalate]
-      description: final raid verdict
+      description: final run verdict
     tests_passing:
       type: boolean
       description: whether tests and checks passed

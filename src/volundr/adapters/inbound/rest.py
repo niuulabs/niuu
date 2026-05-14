@@ -216,7 +216,7 @@ class SessionCreate(BaseModel):
     workload_type: str = Field(
         default="session",
         max_length=100,
-        description="Workload type: 'session' (default) or 'ravn_flock' for raiding parties",
+        description="Workload type: 'session' (default) or 'ravn_flock' for runing parties",
     )
     workload_config: dict = Field(
         default_factory=dict,
@@ -1338,7 +1338,7 @@ def create_router(
         """Report a session activity state change from Skuld.
 
         Updates the session's activity_state and broadcasts a
-        session_activity SSE event for downstream consumers (e.g. Tyr).
+        session_activity SSE event for downstream consumers (e.g. Ting).
         """
         # Authorization: caller must own the session
         principal = await _optional_principal(request)

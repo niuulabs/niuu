@@ -105,7 +105,7 @@ web-next/
 │   ├── shell/       # Shell layout and chrome
 │   ├── ui/          # Shared UI primitives
 │   ├── auth/        # Authentication/runtime config
-│   └── plugin-*/    # Domain plugins (Volundr, Tyr, Ravn, Mimir, ...)
+│   └── plugin-*/    # Domain plugins (Volundr, Ting, Ravn, Mimir, ...)
 └── e2e/             # Playwright coverage for the integrated app
 ```
 

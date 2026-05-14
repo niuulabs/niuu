@@ -50,12 +50,12 @@ class TestPrintStatus:
         assert "FAILED" in captured.out
 
     def test_stopping_prints_name(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _print_status("tyr", ServiceState.STOPPING)
+        _print_status("ting", ServiceState.STOPPING)
         captured = capsys.readouterr()
-        assert "Stopping tyr" in captured.out
+        assert "Stopping ting" in captured.out
 
     def test_stopped_prints_done(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _print_status("tyr", ServiceState.STOPPED)
+        _print_status("ting", ServiceState.STOPPED)
         captured = capsys.readouterr()
         assert "done" in captured.out
 
@@ -114,12 +114,12 @@ class TestResolveEnabledServices:
     def test_uses_plugin_defaults(self) -> None:
         service_defs = {
             "volundr": _stub_service_def("volundr", default_enabled=True),
-            "tyr": _stub_service_def("tyr", default_enabled=True),
+            "ting": _stub_service_def("ting", default_enabled=True),
             "skuld": _stub_service_def("skuld", default_enabled=False),
         }
         enabled = _resolve_enabled_services(service_defs, CLISettings(), False, {})
         assert "volundr" in enabled
-        assert "tyr" in enabled
+        assert "ting" in enabled
         assert "skuld" not in enabled
 
     def test_config_override_enables(self) -> None:
@@ -154,10 +154,10 @@ class TestResolveEnabledServices:
 
     def test_cli_flag_false_overrides_config(self) -> None:
         service_defs = {
-            "tyr": _stub_service_def("tyr", default_enabled=True),
+            "ting": _stub_service_def("ting", default_enabled=True),
         }
-        enabled = _resolve_enabled_services(service_defs, CLISettings(), False, {"tyr": False})
-        assert "tyr" not in enabled
+        enabled = _resolve_enabled_services(service_defs, CLISettings(), False, {"ting": False})
+        assert "ting" not in enabled
 
     def test_cli_flag_none_does_not_override(self) -> None:
         service_defs = {
@@ -177,11 +177,11 @@ class TestResolveEnabledServices:
 
     def test_start_all_ignores_no_flags(self) -> None:
         service_defs = {
-            "tyr": _stub_service_def("tyr", default_enabled=True),
+            "ting": _stub_service_def("ting", default_enabled=True),
         }
-        # --all overrides even --no-tyr
-        enabled = _resolve_enabled_services(service_defs, CLISettings(), True, {"tyr": False})
-        assert "tyr" in enabled
+        # --all overrides even --no-ting
+        enabled = _resolve_enabled_services(service_defs, CLISettings(), True, {"ting": False})
+        assert "ting" in enabled
 
 
 class TestStartup:
@@ -263,7 +263,7 @@ class TestStartup:
 
     async def test_startup_service_failure(self) -> None:
         manager = MagicMock()
-        manager.start_all = AsyncMock(side_effect=StartupError("tyr", "health check failed"))
+        manager.start_all = AsyncMock(side_effect=StartupError("ting", "health check failed"))
         settings = CLISettings()
 
         with pytest.raises(click.exceptions.Exit):
@@ -281,7 +281,7 @@ class TestStartup:
         manager.start_all = AsyncMock()
         manager._registry = MagicMock()
         settings = CLISettings()
-        enabled = {"volundr", "tyr"}
+        enabled = {"volundr", "ting"}
         mounts = {"niuu-api", "runtime-config"}
 
         mock_server = AsyncMock()

@@ -45,12 +45,12 @@ const TYPE_PRIORITY: Record<string, number> = {
   realm: 1,
   cluster: 2,
   host: 3,
-  tyr: 4,
+  ting: 4,
   bifrost: 5,
   volundr: 6,
   ravn_long: 7,
-  ravn_raid: 8,
-  raid: 9,
+  ravn_run: 8,
+  run: 9,
   service: 10,
   model: 11,
 };
@@ -67,7 +67,7 @@ function sortedNodes(nodes: TopologyNode[]): TopologyNode[] {
 
 function nodeExtent(node: TopologyNode): number {
   if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H) + 18;
-  if (node.typeId === 'raid') return 72;
+  if (node.typeId === 'run') return 72;
   return (NODE_SIZE[node.typeId] ?? 8) + 18;
 }
 
@@ -102,7 +102,7 @@ const CLUSTER_SERVICE_SLOT_ANGLES: Partial<Record<string, number>> = {
   niuu: (-3 * Math.PI) / 4,
   volundr: Math.PI,
   mimir: (3 * Math.PI) / 4,
-  tyr: Math.PI / 2,
+  ting: Math.PI / 2,
   bifrost: Math.PI / 4,
   ravn: 0,
 };
@@ -188,7 +188,7 @@ function placeArcChildren(
 }
 
 function clusterServiceRole(node: TopologyNode): string | null {
-  if (node.typeId === 'mimir' || node.typeId === 'tyr' || node.typeId === 'bifrost' || node.typeId === 'volundr') {
+  if (node.typeId === 'mimir' || node.typeId === 'ting' || node.typeId === 'bifrost' || node.typeId === 'volundr') {
     return node.typeId;
   }
   if (node.typeId === 'service' && node.svcType) {
@@ -200,15 +200,15 @@ function clusterServiceRole(node: TopologyNode): string | null {
 function clusterPartitions(children: TopologyNode[]) {
   const core: TopologyNode[] = [];
   const ravens: TopologyNode[] = [];
-  const raids: TopologyNode[] = [];
+  const runs: TopologyNode[] = [];
   const generic: TopologyNode[] = [];
 
   for (const child of children) {
-    if (child.typeId === 'raid') {
-      raids.push(child);
+    if (child.typeId === 'run') {
+      runs.push(child);
       continue;
     }
-    if (child.typeId === 'ravn_long' || child.typeId === 'ravn_raid') {
+    if (child.typeId === 'ravn_long' || child.typeId === 'ravn_run') {
       ravens.push(child);
       continue;
     }
@@ -219,7 +219,7 @@ function clusterPartitions(children: TopologyNode[]) {
     generic.push(child);
   }
 
-  return { core, ravens, raids, generic };
+  return { core, ravens, runs, generic };
 }
 
 function placeClusterCoreChildren(
@@ -275,12 +275,12 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
   const realmNodes = sortedNodes(nodes.filter((node) => node.typeId === 'realm'));
   const clusterNodes = sortedNodes(nodes.filter((node) => node.typeId === 'cluster'));
   const hostNodes = sortedNodes(nodes.filter((node) => node.typeId === 'host'));
-  const raidNodes = sortedNodes(nodes.filter((node) => node.typeId === 'raid'));
+  const runNodes = sortedNodes(nodes.filter((node) => node.typeId === 'run'));
   for (const node of clusterNodes) {
     const children = (childrenByParent.get(node.id) ?? []).filter(
       (child) => child.typeId !== 'host' && child.typeId !== 'cluster',
     );
-    const { core, ravens, raids, generic } = clusterPartitions(children);
+    const { core, ravens, runs, generic } = clusterPartitions(children);
     const coreExtent =
       core.length === 0 ? 0 : LAYOUT.CLUSTER_CORE_ORBIT + maxNodeExtent(core) + 34;
     const ravenExtent =
@@ -298,20 +298,20 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
             0,
             maxNodeExtent(ravens) + 30,
           );
-    const raidExtent =
-      raids.length === 0
+    const runExtent =
+      runs.length === 0
         ? 0
         : containerRadius(
-            raids,
+            runs,
             {
-              baseRadius: LAYOUT.CLUSTER_RAID_ORBIT,
-              radialStep: LAYOUT.CLUSTER_RAID_STEP,
-              minSpacing: Math.max(132, maxNodeExtent(raids) * 1.9),
+              baseRadius: LAYOUT.CLUSTER_RUN_ORBIT,
+              radialStep: LAYOUT.CLUSTER_RUN_STEP,
+              minSpacing: Math.max(132, maxNodeExtent(runs) * 1.9),
               arcCenter: Math.PI / 2,
               arcSpan: Math.PI * 0.96,
             },
             0,
-            maxNodeExtent(raids) + 34,
+            maxNodeExtent(runs) + 34,
           );
     const genericExtent =
       generic.length === 0
@@ -334,7 +334,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
         LAYOUT.CLUSTER_INNER_RADIUS,
         coreExtent,
         ravenExtent,
-        raidExtent,
+        runExtent,
         genericExtent,
       ),
     );
@@ -523,7 +523,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
     const children = (childrenByParent.get(cluster.id) ?? []).filter(
       (child) => child.typeId !== 'host' && child.typeId !== 'cluster',
     );
-    const { core, ravens, raids, generic } = clusterPartitions(children);
+    const { core, ravens, runs, generic } = clusterPartitions(children);
 
     const corePlacements = placeClusterCoreChildren(core, positions.get(cluster.id));
     for (const child of core) {
@@ -543,15 +543,15 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
       if (pos) positions.set(child.id, pos);
     }
 
-    const raidPlacements = placeArcChildren(raids, positions.get(cluster.id), {
-      baseRadius: LAYOUT.CLUSTER_RAID_ORBIT,
-      radialStep: LAYOUT.CLUSTER_RAID_STEP,
-      minSpacing: Math.max(132, maxNodeExtent(raids) * 1.9),
+    const runPlacements = placeArcChildren(runs, positions.get(cluster.id), {
+      baseRadius: LAYOUT.CLUSTER_RUN_ORBIT,
+      radialStep: LAYOUT.CLUSTER_RUN_STEP,
+      minSpacing: Math.max(132, maxNodeExtent(runs) * 1.9),
       arcCenter: Math.PI / 2,
       arcSpan: Math.PI * 0.96,
     });
-    for (const child of raids) {
-      const pos = raidPlacements.get(child.id);
+    for (const child of runs) {
+      const pos = runPlacements.get(child.id);
       if (pos) positions.set(child.id, pos);
     }
 
@@ -583,11 +583,11 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
     }
   }
 
-  for (const raid of raidNodes) {
-    const children = childrenByParent.get(raid.id) ?? [];
-    const placements = placeArcChildren(children, positions.get(raid.id), {
-      baseRadius: LAYOUT.RAID_CHILD_ORBIT,
-      radialStep: LAYOUT.RAID_CHILD_STEP,
+  for (const run of runNodes) {
+    const children = childrenByParent.get(run.id) ?? [];
+    const placements = placeArcChildren(children, positions.get(run.id), {
+      baseRadius: LAYOUT.RUN_CHILD_ORBIT,
+      radialStep: LAYOUT.RUN_CHILD_STEP,
       minSpacing: Math.max(64, maxNodeExtent(children) * 1.7),
       arcCenter: Math.PI / 2,
       arcSpan: Math.PI * 1.75,
@@ -600,7 +600,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
 
   for (const node of sortedNodes(nodes)) {
     if (!positions.has(node.id)) continue;
-    if (node.typeId === 'realm' || node.typeId === 'cluster' || node.typeId === 'host' || node.typeId === 'raid' || node.typeId === 'mimir') {
+    if (node.typeId === 'realm' || node.typeId === 'cluster' || node.typeId === 'host' || node.typeId === 'run' || node.typeId === 'mimir') {
       continue;
     }
     const children = (childrenByParent.get(node.id) ?? []).filter((child) => !positions.has(child.id));

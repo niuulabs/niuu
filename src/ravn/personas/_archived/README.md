@@ -1,9 +1,9 @@
 These personas are intentionally archived from the active built-in set.
 
 Why:
-- they are legacy, unvalidated, or not yet proven in the current Tyr workflow path
+- they are legacy, unvalidated, or not yet proven in the current Ting workflow path
 - the active built-in surface is intentionally limited to the personas validated by
-  `/Users/jozefvaneenbergen/git/niuu/software/volundr/src/tyr/system_workflows.yaml`
+  `/Users/jozefvaneenbergen/git/niuu/software/volundr/src/ting/system_workflows.yaml`
 
 Current active built-ins:
 - `coder`

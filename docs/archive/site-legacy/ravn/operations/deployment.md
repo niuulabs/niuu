@@ -100,7 +100,7 @@ checkpoint:
 
 Ravn does not have its own Helm chart. In Kubernetes, deploy it as a
 standalone binary (Nuitka build) or container with a `ravn.yaml` ConfigMap.
-The platform charts (`charts/volundr`, `charts/tyr`, `charts/bifrost`,
+The platform charts (`charts/volundr`, `charts/ting`, `charts/bifrost`,
 `charts/mimir`, etc.) handle their respective services.
 
 ## Docker

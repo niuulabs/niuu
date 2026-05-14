@@ -3981,7 +3981,7 @@ def web(
 ) -> None:
     """Start the standalone Ravn web UI with persona management.
 
-    Spins up a lightweight FastAPI + web UI server — no Volundr, Tyr, or
+    Spins up a lightweight FastAPI + web UI server — no Volundr, Ting, or
     PostgreSQL required.  Personas are loaded from the filesystem.
 
     \b

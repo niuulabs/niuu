@@ -16,23 +16,23 @@ const bifrostMocks = vi.hoisted(() => ({
   buildBifrostHttpAdapter: vi.fn((client) => ({ kind: 'bifrost', client })),
 }));
 
-const tyrMocks = vi.hoisted(() => ({
-  createMockTyrService: vi.fn(() => ({ kind: 'mock-tyr' })),
+const tingMocks = vi.hoisted(() => ({
+  createMockTingService: vi.fn(() => ({ kind: 'mock-ting' })),
   createMockDispatcherService: vi.fn(() => ({ kind: 'mock-dispatcher' })),
-  createMockTyrSessionService: vi.fn(() => ({ kind: 'mock-sessions' })),
+  createMockTingSessionService: vi.fn(() => ({ kind: 'mock-sessions' })),
   createMockTrackerService: vi.fn(() => ({ kind: 'mock-tracker' })),
   createMockWorkflowService: vi.fn(() => ({ kind: 'mock-workflows' })),
   createMockDispatchBus: vi.fn(() => ({ kind: 'mock-dispatch' })),
-  createMockTyrSettingsService: vi.fn(() => ({ kind: 'mock-settings' })),
+  createMockTingSettingsService: vi.fn(() => ({ kind: 'mock-settings' })),
   createMockAuditLogService: vi.fn(() => ({ kind: 'mock-audit' })),
-  buildTyrHttpAdapter: vi.fn((client) => ({ kind: 'tyr', client })),
+  buildTingHttpAdapter: vi.fn((client) => ({ kind: 'ting', client })),
   buildDispatcherHttpAdapter: vi.fn((client) => ({ kind: 'dispatcher', client })),
-  buildTyrSessionHttpAdapter: vi.fn((client) => ({ kind: 'sessions', client })),
+  buildTingSessionHttpAdapter: vi.fn((client) => ({ kind: 'sessions', client })),
   buildTrackerHttpAdapter: vi.fn((client) => ({ kind: 'tracker', client })),
   buildWorkflowHttpAdapter: vi.fn((client) => ({ kind: 'workflows', client })),
   buildDispatchBusHttpAdapter: vi.fn((client) => ({ kind: 'dispatch', client })),
-  buildTyrSettingsHttpAdapter: vi.fn((client) => ({ kind: 'settings', client })),
-  buildTyrAuditLogHttpAdapter: vi.fn((client) => ({ kind: 'audit', client })),
+  buildTingSettingsHttpAdapter: vi.fn((client) => ({ kind: 'settings', client })),
+  buildTingAuditLogHttpAdapter: vi.fn((client) => ({ kind: 'audit', client })),
 }));
 
 const ravnMocks = vi.hoisted(() => ({
@@ -90,7 +90,7 @@ vi.mock('@niuulabs/query', () => ({
 vi.mock('@niuulabs/plugin-sdk', () => pluginSdkMocks);
 
 vi.mock('@niuulabs/plugin-bifrost', () => bifrostMocks);
-vi.mock('@niuulabs/plugin-tyr', () => tyrMocks);
+vi.mock('@niuulabs/plugin-ting', () => tingMocks);
 vi.mock('@niuulabs/plugin-ravn', () => ravnMocks);
 vi.mock('@niuulabs/plugin-mimir', () => ({
   createMimirMockAdapter: vi.fn(() => ({})),
@@ -114,8 +114,8 @@ import {
 } from './services';
 
 describe('toSharedApiBase', () => {
-  it('strips a trailing Tyr service suffix', () => {
-    expect(toSharedApiBase('http://localhost:8080/api/v1/tyr')).toBe(
+  it('strips a trailing Ting service suffix', () => {
+    expect(toSharedApiBase('http://localhost:8080/api/v1/ting')).toBe(
       'http://localhost:8080/api/v1',
     );
   });
@@ -152,18 +152,18 @@ describe('toHostPtyWsUrl', () => {
 });
 
 describe('resolveSharedApiBase', () => {
-  it('prefers the Tyr shared base when Tyr is live', () => {
+  it('prefers the Ting shared base when Ting is live', () => {
     expect(
       resolveSharedApiBase({
         services: {
-          tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
+          ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
           volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
         },
       } as any),
     ).toBe('http://localhost:8080/api/v1');
   });
 
-  it('falls back to the canonical Forge shared base when Tyr is not live', () => {
+  it('falls back to the canonical Forge shared base when Ting is not live', () => {
     expect(
       resolveSharedApiBase({
         services: {
@@ -173,7 +173,7 @@ describe('resolveSharedApiBase', () => {
     ).toBe('http://localhost:8080/api/v1');
   });
 
-  it('falls back to the Volundr shared base when Tyr is not live', () => {
+  it('falls back to the Volundr shared base when Ting is not live', () => {
     expect(
       resolveSharedApiBase({
         services: {
@@ -183,11 +183,11 @@ describe('resolveSharedApiBase', () => {
     ).toBe('http://localhost:8080/api/v1');
   });
 
-  it('returns null when neither Tyr nor Volundr is live', () => {
+  it('returns null when neither Ting nor Volundr is live', () => {
     expect(
       resolveSharedApiBase({
         services: {
-          tyr: { mode: 'mock' },
+          ting: { mode: 'mock' },
           volundr: { mode: 'mock' },
         },
       } as any),
@@ -202,7 +202,7 @@ describe('resolveCanonicalServiceBase', () => {
         {
           services: {
             features: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/features' },
-            tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
+            ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
           },
         } as any,
         'features',
@@ -252,17 +252,17 @@ describe('resolveSettingsServiceBase', () => {
     ).toBe('http://localhost:8080/api/v1/identity');
   });
 
-  it('resolves tyr settings from the normalized tyr base', () => {
+  it('resolves ting settings from the normalized ting base', () => {
     expect(
       resolveSettingsServiceBase(
         {
           services: {
-            'tyr.settings': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr/settings' },
+            'ting.settings': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting/settings' },
           },
         } as any,
-        'tyr',
+        'ting',
       ),
-    ).toBe('http://localhost:8080/api/v1/tyr');
+    ).toBe('http://localhost:8080/api/v1/ting');
   });
 
   it('resolves ravn settings from the grouped ravn base', () => {
@@ -333,40 +333,40 @@ describe('buildServices live base selection', () => {
     );
   });
 
-  it('normalizes explicit Tyr sub-service bases back to /api/v1/tyr', () => {
+  it('normalizes explicit Ting sub-service bases back to /api/v1/ting', () => {
     buildServices({
       services: {
-        tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
-        'tyr.dispatcher': {
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+        'ting.dispatcher': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/tyr/dispatcher',
+          baseUrl: 'http://localhost:8080/api/v1/ting/dispatcher',
         },
-        'tyr.sessions': {
+        'ting.sessions': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/tyr/sessions',
+          baseUrl: 'http://localhost:8080/api/v1/ting/sessions',
         },
-        'tyr.dispatch': {
+        'ting.dispatch': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/tyr/dispatch',
+          baseUrl: 'http://localhost:8080/api/v1/ting/dispatch',
         },
-        'tyr.settings': {
+        'ting.settings': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/tyr/settings',
+          baseUrl: 'http://localhost:8080/api/v1/ting/settings',
         },
       },
     } as any);
 
-    expect(tyrMocks.buildDispatcherHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildDispatcherHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
-    expect(tyrMocks.buildTyrSessionHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildTingSessionHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
-    expect(tyrMocks.buildDispatchBusHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildDispatchBusHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
-    expect(tyrMocks.buildTyrSettingsHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildTingSettingsHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
   });
 });
@@ -375,7 +375,7 @@ describe('shared domain helpers', () => {
   it('builds shared feature catalog and identity services from the canonical shared base', () => {
     const config = {
       services: {
-        tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
       },
     } as any;
 
@@ -400,7 +400,7 @@ describe('shared domain helpers', () => {
       services: {
         features: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/features' },
         identity: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/identity' },
-        tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
       },
     } as any;
 
@@ -417,7 +417,7 @@ describe('shared domain helpers', () => {
   it('falls back to mock shared services when no shared api base exists', () => {
     const config = {
       services: {
-        tyr: { mode: 'mock' },
+        ting: { mode: 'mock' },
         volundr: { mode: 'mock' },
       },
     } as any;
@@ -501,7 +501,7 @@ describe('buildServiceBackendStatus', () => {
   it('reports mock-only workflow and filesystem surfaces explicitly', () => {
     const status = buildServiceBackendStatus({ services: {} } as any);
 
-    expect(status['tyr.workflows']).toEqual({
+    expect(status['ting.workflows']).toEqual({
       mode: 'mock',
       transport: 'mock',
       target: null,
@@ -599,7 +599,7 @@ describe('buildServiceBackendStatus', () => {
   it('resolves niuu.repos against the shared niuu route instead of forge or volundr', () => {
     const status = buildServiceBackendStatus({
       services: {
-        tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
       },
     } as any);
 
@@ -617,22 +617,22 @@ describe('buildServices', () => {
     vi.clearAllMocks();
   });
 
-  it('builds Tyr tracker and audit services against the shared api base', () => {
+  it('builds Ting tracker and audit services against the shared api base', () => {
     const services = buildServices({
       theme: 'ice',
       plugins: {},
       services: {
-        tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
       },
     } as any);
 
-    expect(tyrMocks.buildTyrHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildTingHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
-    expect(tyrMocks.buildTrackerHttpAdapter).toHaveBeenCalledWith({
+    expect(tingMocks.buildTrackerHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1',
     });
-    expect(tyrMocks.buildTyrAuditLogHttpAdapter).toHaveBeenCalledWith({
+    expect(tingMocks.buildTingAuditLogHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1',
     });
     expect(services.features).toEqual({
@@ -643,8 +643,8 @@ describe('buildServices', () => {
       kind: 'identity',
       client: { basePath: 'http://localhost:8080/api/v1' },
     });
-    expect((services['tyr.tracker'] as any).kind).toBe('tracker');
-    expect((services['tyr.audit'] as any).kind).toBe('audit');
+    expect((services['ting.tracker'] as any).kind).toBe('tracker');
+    expect((services['ting.audit'] as any).kind).toBe('audit');
   });
 
   it('prefers explicit tracker and audit domain configs over the derived shared base', () => {
@@ -654,65 +654,65 @@ describe('buildServices', () => {
       services: {
         tracker: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tracker' },
         audit: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/audit' },
-        tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
       },
     } as any);
 
-    expect(tyrMocks.buildTrackerHttpAdapter).toHaveBeenCalledWith({
+    expect(tingMocks.buildTrackerHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/tracker',
     });
-    expect(tyrMocks.buildTyrAuditLogHttpAdapter).toHaveBeenCalledWith({
+    expect(tingMocks.buildTingAuditLogHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/audit',
     });
   });
 
-  it('normalizes explicit Tyr subdomain configs back to the shared Tyr base', () => {
+  it('normalizes explicit Ting subdomain configs back to the shared Ting base', () => {
     buildServices({
       theme: 'ice',
       plugins: {},
       services: {
-        tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
-        'tyr.dispatcher': {
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+        'ting.dispatcher': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/tyr/dispatcher',
+          baseUrl: 'http://localhost:8080/api/v1/ting/dispatcher',
         },
-        'tyr.sessions': {
+        'ting.sessions': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/tyr/sessions',
+          baseUrl: 'http://localhost:8080/api/v1/ting/sessions',
         },
-        'tyr.dispatch': {
+        'ting.dispatch': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/tyr/dispatch',
+          baseUrl: 'http://localhost:8080/api/v1/ting/dispatch',
         },
-        'tyr.settings': {
+        'ting.settings': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/tyr/settings',
+          baseUrl: 'http://localhost:8080/api/v1/ting/settings',
         },
-        'tyr.workflows': {
+        'ting.workflows': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/tyr/workflows',
+          baseUrl: 'http://localhost:8080/api/v1/ting/workflows',
         },
       },
     } as any);
 
-    expect(tyrMocks.buildDispatcherHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildDispatcherHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
-    expect(tyrMocks.buildTyrSessionHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildTingSessionHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
-    expect(tyrMocks.buildDispatchBusHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildDispatchBusHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
-    expect(tyrMocks.buildTyrSettingsHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildTingSettingsHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
-    expect(tyrMocks.buildWorkflowHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tyr',
+    expect(tingMocks.buildWorkflowHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
     });
   });
 
-  it('falls back to the Volundr host when Tyr is not live', () => {
+  it('falls back to the Volundr host when Ting is not live', () => {
     buildServices({
       theme: 'ice',
       plugins: {},
@@ -721,10 +721,10 @@ describe('buildServices', () => {
       },
     } as any);
 
-    expect(tyrMocks.buildTrackerHttpAdapter).toHaveBeenCalledWith({
+    expect(tingMocks.buildTrackerHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1',
     });
-    expect(tyrMocks.buildTyrAuditLogHttpAdapter).toHaveBeenCalledWith({
+    expect(tingMocks.buildTingAuditLogHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1',
     });
   });
@@ -738,10 +738,10 @@ describe('buildServices', () => {
       },
     } as any);
 
-    expect(tyrMocks.buildTrackerHttpAdapter).toHaveBeenCalledWith({
+    expect(tingMocks.buildTrackerHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1',
     });
-    expect(tyrMocks.buildTyrAuditLogHttpAdapter).toHaveBeenCalledWith({
+    expect(tingMocks.buildTingAuditLogHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1',
     });
     expect(pluginSdkMocks.buildFeatureCatalogAdapter).toHaveBeenCalledWith({
@@ -760,7 +760,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        tyr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/tyr' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
       },
     } as any);
 

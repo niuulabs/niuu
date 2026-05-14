@@ -31,10 +31,10 @@ async def test_discovery_materializes_local_platform_graph() -> None:
         },
         "/api/v1/ravn/status": {"healthy": True},
         "/api/v1/ravn/wardens": [{"id": "w1", "name": "Watcher", "persona": "memory"}],
-        "/api/v1/tyr/health": {"status": "ok"},
-        "/api/v1/tyr/raids/summary": {"queued": 1, "running": 2},
-        "/api/v1/tyr/raids/active": [
-            {"tracker_id": "raid-1", "identifier": "RAID-1", "title": "Patch", "status": "running"}
+        "/api/v1/ting/health": {"status": "ok"},
+        "/api/v1/ting/runs/summary": {"queued": 1, "running": 2},
+        "/api/v1/ting/runs/active": [
+            {"tracker_id": "run-1", "identifier": "RUN-1", "title": "Patch", "status": "running"}
         ],
         "/api/v1/mimir/stats": {"page_count": 42, "healthy": True},
         "/api/v1/mimir/mounts": [{"name": "shared", "kind": "local"}],
@@ -53,7 +53,7 @@ async def test_discovery_materializes_local_platform_graph() -> None:
     assert "realm" in type_ids
     assert "cluster" in type_ids
     assert "volundr" in type_ids
-    assert "tyr" in type_ids
+    assert "ting" in type_ids
     assert "mimir" in type_ids
     assert "bifrost" in type_ids
     assert "ravn_long" in type_ids
@@ -62,7 +62,7 @@ async def test_discovery_materializes_local_platform_graph() -> None:
     mimir = next(node for node in topology["nodes"] if node["id"] == "service:mimir")
     assert mimir["mountCount"] == 1
     assert mimir["mounts"] == ["shared"]
-    assert any(event["type"] == "RAID" for event in events)
+    assert any(event["type"] == "RUN" for event in events)
 
 
 @pytest.mark.asyncio
@@ -84,9 +84,9 @@ async def test_discovery_uses_http_transport_and_cache(monkeypatch) -> None:
         "/api/v1/forge/resources": {"nodes": []},
         "/api/v1/ravn/status": {"healthy": False},
         "/api/v1/ravn/wardens": [],
-        "/api/v1/tyr/health": {"status": "ok"},
-        "/api/v1/tyr/raids/summary": {"queued": 0},
-        "/api/v1/tyr/raids/active": [],
+        "/api/v1/ting/health": {"status": "ok"},
+        "/api/v1/ting/runs/summary": {"queued": 0},
+        "/api/v1/ting/runs/active": [],
         "/api/v1/mimir/stats": {"page_count": "7"},
         "/api/v1/mimir/mounts": [],
         "/api/v1/bifrost/providers/health": [{"vendor": "openai", "state": "degraded"}],

@@ -366,7 +366,7 @@ personas:
 ### Verify the ConfigMap content
 
 ```bash
-kubectl get configmap flock-flows -n tyr \
+kubectl get configmap flock-flows -n ting \
   -o jsonpath='{.data.flows\.yaml}' | grep -A5 "name: reviewer"
 ```
 

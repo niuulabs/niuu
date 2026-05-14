@@ -12,7 +12,7 @@ export interface PluginTab {
   rune?: string;
   /**
    * Route path for this tab. Defaults to `/${pluginId}/${id}`.
-   * Use this to map a tab to the plugin root (e.g. `path: '/tyr'` for dashboard).
+   * Use this to map a tab to the plugin root (e.g. `path: '/ting'` for dashboard).
    */
   path?: string;
   /** Optional count badge rendered next to the tab label. */

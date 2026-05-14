@@ -3,10 +3,10 @@ import { fieldTypeSchema } from './event-catalog';
 
 /**
  * Canonical roles a Persona may fulfil in a workflow.
- * Used by the role→shape mapping in PersonaAvatar (Ravn, Tyr).
+ * Used by the role→shape mapping in PersonaAvatar (Ravn, Ting).
  *
  * Owner: **Ravn** (`plugin-ravn`).
- * Consumed by: **Tyr** (workflow DAG, dispatch), **Mimir** (write-routing).
+ * Consumed by: **Ting** (workflow DAG, dispatch), **Mimir** (write-routing).
  */
 export const personaRoleSchema = z.enum([
   'arbiter',
@@ -33,7 +33,7 @@ export type PersonaRole = z.infer<typeof personaRoleSchema>;
 /**
  * LLM configuration attached to a Persona.
  *
- * Owner: **Ravn**. Consumed by: **Tyr** (dispatch feasibility check).
+ * Owner: **Ravn**. Consumed by: **Ting** (dispatch feasibility check).
  */
 export const llmConfigSchema = z.object({
   /** Short human-readable model alias (e.g. "claude-sonnet-4-6"). */
@@ -52,7 +52,7 @@ export type LlmConfig = z.infer<typeof llmConfigSchema>;
  * A single event this Persona subscribes to, plus optional inject catalog
  * entries to slot into the prompt and a producer-trust threshold.
  *
- * Owner: **Ravn**. Consumed by: **Tyr** (fan-in wiring).
+ * Owner: **Ravn**. Consumed by: **Ting** (fan-in wiring).
  */
 export const consumedEventSchema = z.object({
   /** Event name, matches an entry in EventCatalog. */
@@ -68,7 +68,7 @@ export type ConsumedEvent = z.infer<typeof consumedEventSchema>;
 /**
  * The single event this Persona emits on completion.
  *
- * Owner: **Ravn**. Consumed by: **Tyr** (fan-in wiring), **Observatory** (graph).
+ * Owner: **Ravn**. Consumed by: **Ting** (fan-in wiring), **Observatory** (graph).
  */
 export const producedEventSchema = z.object({
   /** Event name, must exist in EventCatalog or be created there. */
@@ -119,7 +119,7 @@ export type WeightedScoreParams = z.infer<typeof weightedScoreParamsSchema>;
  * - `first_wins`    — first producer wins, rest discarded.
  * - `weighted_score`— producers return numeric scores, arbiter averages by weight.
  *
- * Owner: **Ravn**. Consumed by: **Tyr** (fan-in plumbing).
+ * Owner: **Ravn**. Consumed by: **Ting** (fan-in plumbing).
  */
 export const fanInStrategySchema = z.discriminatedUnion('strategy', [
   z.object({
@@ -163,7 +163,7 @@ export type FanInStrategy = z.infer<typeof fanInStrategySchema>;
  * `volundr/src/ravn/personas/*.yaml`).
  *
  * **Consumed by:**
- * - `plugin-tyr` — workflow DAG nodes reference personas by name; dispatch
+ * - `plugin-ting` — workflow DAG nodes reference personas by name; dispatch
  *   checks LLM alias + confidence thresholds.
  * - `plugin-mimir` — write-routing + ravn-binding screens show the persona
  *   name, role, and mimirWriteRouting field.

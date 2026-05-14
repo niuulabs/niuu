@@ -15,23 +15,23 @@ import {
   buildRavnWardenAdapter,
 } from '@niuulabs/plugin-ravn';
 import {
-  createMockTyrService,
+  createMockTingService,
   createMockDispatcherService,
-  createMockTyrSessionService,
+  createMockTingSessionService,
   createMockTrackerService,
   createMockWorkflowService,
   createMockDispatchBus,
-  createMockTyrSettingsService,
+  createMockTingSettingsService,
   createMockAuditLogService,
-  buildTyrHttpAdapter,
+  buildTingHttpAdapter,
   buildDispatcherHttpAdapter,
-  buildTyrSessionHttpAdapter,
+  buildTingSessionHttpAdapter,
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
   buildDispatchBusHttpAdapter,
-  buildTyrSettingsHttpAdapter,
-  buildTyrAuditLogHttpAdapter,
-} from '@niuulabs/plugin-tyr';
+  buildTingSettingsHttpAdapter,
+  buildTingAuditLogHttpAdapter,
+} from '@niuulabs/plugin-ting';
 import { createMimirMockAdapter, buildMimirHttpAdapter } from '@niuulabs/plugin-mimir';
 import {
   createMockRegistryRepository,
@@ -154,7 +154,7 @@ function resolveDirectServiceStatus(
 }
 
 export function toSharedApiBase(baseUrl: string): string {
-  return baseUrl.replace(/\/(?:tyr|forge)\/?$/, '');
+  return baseUrl.replace(/\/(?:ting|forge)\/?$/, '');
 }
 
 export function toHostBase(baseUrl: string): string {
@@ -169,8 +169,8 @@ export function toHostPtyWsUrl(baseUrl: string): string {
 }
 
 export function resolveSharedApiBase(config: Pick<NiuuConfig, 'services'>): string | null {
-  const tyrSvc = config.services['tyr'];
-  if (hasHttpBackend(tyrSvc)) return toSharedApiBase(tyrSvc.baseUrl);
+  const tingSvc = config.services['ting'];
+  if (hasHttpBackend(tingSvc)) return toSharedApiBase(tingSvc.baseUrl);
 
   const forgeSvc = config.services['forge'];
   if (hasHttpBackend(forgeSvc)) return toSharedApiBase(forgeSvc.baseUrl);
@@ -258,29 +258,29 @@ function resolveFilesystemBase(config: Pick<NiuuConfig, 'services'>): string | n
   return forgeBase ? toHostBase(forgeBase) : null;
 }
 
-function resolveTyrServiceBase(
+function resolveTingServiceBase(
   config: Pick<NiuuConfig, 'services'>,
   serviceKey:
-    | 'tyr'
-    | 'tyr.dispatcher'
-    | 'tyr.sessions'
-    | 'tyr.dispatch'
-    | 'tyr.settings'
-    | 'tyr.workflows',
+    | 'ting'
+    | 'ting.dispatcher'
+    | 'ting.sessions'
+    | 'ting.dispatch'
+    | 'ting.settings'
+    | 'ting.workflows',
 ): string | null {
   const explicitBase = resolveDirectServiceBase(config, serviceKey);
-  if (!explicitBase) return resolveDirectServiceBase(config, 'tyr');
+  if (!explicitBase) return resolveDirectServiceBase(config, 'ting');
 
   switch (serviceKey) {
-    case 'tyr.dispatcher':
+    case 'ting.dispatcher':
       return explicitBase.replace(/\/dispatcher\/?$/, '');
-    case 'tyr.sessions':
+    case 'ting.sessions':
       return explicitBase.replace(/\/sessions\/?$/, '');
-    case 'tyr.dispatch':
+    case 'ting.dispatch':
       return explicitBase.replace(/\/dispatch\/?$/, '');
-    case 'tyr.settings':
+    case 'ting.settings':
       return explicitBase.replace(/\/settings\/?$/, '');
-    case 'tyr.workflows':
+    case 'ting.workflows':
       return explicitBase.replace(/\/workflows\/?$/, '');
     default:
       return explicitBase;
@@ -309,13 +309,13 @@ function resolveObservatoryServiceBase(
 
 export function resolveSettingsServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  providerId: 'identity' | 'tyr' | 'volundr' | 'mimir' | 'ravn' | 'observatory',
+  providerId: 'identity' | 'ting' | 'volundr' | 'mimir' | 'ravn' | 'observatory',
 ): string | null {
   switch (providerId) {
     case 'identity':
       return resolveCanonicalServiceBase(config, 'identity');
-    case 'tyr':
-      return resolveTyrServiceBase(config, 'tyr.settings');
+    case 'ting':
+      return resolveTingServiceBase(config, 'ting.settings');
     case 'volundr':
       return resolveVolundrServiceBase(config);
     case 'mimir':
@@ -503,14 +503,14 @@ export function buildServiceBackendStatus(
             }
           : forgePtyStatus,
     'forge.metrics': resolveDirectServiceStatus(config, 'http', 'forge.metrics', 'volundr.metrics'),
-    tyr: resolveDirectServiceStatus(config, 'http', 'tyr'),
-    'tyr.dispatcher': resolveDirectServiceStatus(config, 'http', 'tyr.dispatcher', 'tyr'),
-    'tyr.sessions': resolveDirectServiceStatus(config, 'http', 'tyr.sessions', 'tyr'),
-    'tyr.dispatch': resolveDirectServiceStatus(config, 'http', 'tyr.dispatch', 'tyr'),
-    'tyr.settings': resolveDirectServiceStatus(config, 'http', 'tyr.settings', 'tyr'),
-    'tyr.tracker': resolveCanonicalServiceStatus(config, 'tracker'),
-    'tyr.audit': resolveCanonicalServiceStatus(config, 'audit'),
-    'tyr.workflows': resolveDirectServiceStatus(config, 'http', 'tyr.workflows', 'tyr'),
+    ting: resolveDirectServiceStatus(config, 'http', 'ting'),
+    'ting.dispatcher': resolveDirectServiceStatus(config, 'http', 'ting.dispatcher', 'ting'),
+    'ting.sessions': resolveDirectServiceStatus(config, 'http', 'ting.sessions', 'ting'),
+    'ting.dispatch': resolveDirectServiceStatus(config, 'http', 'ting.dispatch', 'ting'),
+    'ting.settings': resolveDirectServiceStatus(config, 'http', 'ting.settings', 'ting'),
+    'ting.tracker': resolveCanonicalServiceStatus(config, 'tracker'),
+    'ting.audit': resolveCanonicalServiceStatus(config, 'audit'),
+    'ting.workflows': resolveDirectServiceStatus(config, 'http', 'ting.workflows', 'ting'),
     filesystem: (() => {
       const explicit = resolveDirectServiceStatus(config, 'http', 'filesystem');
       if (explicit.mode === 'live') return explicit;
@@ -1139,30 +1139,30 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const featureCatalogService = buildSharedFeatureCatalogService(config);
   const identityService = buildSharedIdentityService(config);
 
-  // ── Tyr ──
-  const tyrBase = resolveTyrServiceBase(config, 'tyr');
-  const tyrClient = tyrBase ? createApiClient(tyrBase) : null;
-  const dispatcherBase = resolveTyrServiceBase(config, 'tyr.dispatcher');
+  // ── Ting ──
+  const tingBase = resolveTingServiceBase(config, 'ting');
+  const tingClient = tingBase ? createApiClient(tingBase) : null;
+  const dispatcherBase = resolveTingServiceBase(config, 'ting.dispatcher');
   const dispatcherClient = dispatcherBase ? createApiClient(dispatcherBase) : null;
-  const tyrSessionsBase = resolveTyrServiceBase(config, 'tyr.sessions');
-  const tyrSessionsClient = tyrSessionsBase ? createApiClient(tyrSessionsBase) : null;
-  const dispatchBase = resolveTyrServiceBase(config, 'tyr.dispatch');
+  const tingSessionsBase = resolveTingServiceBase(config, 'ting.sessions');
+  const tingSessionsClient = tingSessionsBase ? createApiClient(tingSessionsBase) : null;
+  const dispatchBase = resolveTingServiceBase(config, 'ting.dispatch');
   const dispatchClient = dispatchBase ? createApiClient(dispatchBase) : null;
-  const tyrSettingsBase = resolveTyrServiceBase(config, 'tyr.settings');
-  const tyrSettingsClient = tyrSettingsBase ? createApiClient(tyrSettingsBase) : null;
+  const tingSettingsBase = resolveTingServiceBase(config, 'ting.settings');
+  const tingSettingsClient = tingSettingsBase ? createApiClient(tingSettingsBase) : null;
   const trackerBase = resolveCanonicalServiceBase(config, 'tracker');
   const trackerClient = trackerBase ? createApiClient(trackerBase) : null;
   const auditBase = resolveCanonicalServiceBase(config, 'audit');
   const auditClient = auditBase ? createApiClient(auditBase) : null;
-  const workflowBase = resolveTyrServiceBase(config, 'tyr.workflows');
+  const workflowBase = resolveTingServiceBase(config, 'ting.workflows');
   const workflowClient = workflowBase ? createApiClient(workflowBase) : null;
-  const tyrService = tyrClient ? buildTyrHttpAdapter(tyrClient) : createMockTyrService();
+  const tingService = tingClient ? buildTingHttpAdapter(tingClient) : createMockTingService();
   const dispatcherService = dispatcherClient
     ? buildDispatcherHttpAdapter(dispatcherClient)
     : createMockDispatcherService();
-  const tyrSessionService = tyrSessionsClient
-    ? buildTyrSessionHttpAdapter(tyrSessionsClient)
-    : createMockTyrSessionService();
+  const tingSessionService = tingSessionsClient
+    ? buildTingSessionHttpAdapter(tingSessionsClient)
+    : createMockTingSessionService();
   const trackerService = trackerClient
     ? buildTrackerHttpAdapter(trackerClient)
     : createMockTrackerService();
@@ -1172,22 +1172,22 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const dispatchBus = dispatchClient
     ? buildDispatchBusHttpAdapter(dispatchClient)
     : createMockDispatchBus();
-  const tyrSettingsService = tyrSettingsClient
-    ? buildTyrSettingsHttpAdapter(tyrSettingsClient)
-    : createMockTyrSettingsService();
-  const tyrAuditLogService = auditClient
-    ? buildTyrAuditLogHttpAdapter(auditClient)
+  const tingSettingsService = tingSettingsClient
+    ? buildTingSettingsHttpAdapter(tingSettingsClient)
+    : createMockTingSettingsService();
+  const tingAuditLogService = auditClient
+    ? buildTingAuditLogHttpAdapter(auditClient)
     : createMockAuditLogService();
 
   return {
-    tyr: tyrService,
-    'tyr.dispatcher': dispatcherService,
-    'tyr.sessions': tyrSessionService,
-    'tyr.tracker': trackerService,
-    'tyr.workflows': workflowService,
-    'tyr.dispatch': dispatchBus,
-    'tyr.settings': tyrSettingsService,
-    'tyr.audit': tyrAuditLogService,
+    ting: tingService,
+    'ting.dispatcher': dispatcherService,
+    'ting.sessions': tingSessionService,
+    'ting.tracker': trackerService,
+    'ting.workflows': workflowService,
+    'ting.dispatch': dispatchBus,
+    'ting.settings': tingSettingsService,
+    'ting.audit': tingAuditLogService,
     'ravn.personas': ravnPersonas,
     'ravn.ravens': ravnRavens,
     'ravn.sessions': ravnSessions,

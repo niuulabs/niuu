@@ -145,8 +145,8 @@ def test_subjects_exact_match():
 
 def test_subjects_multiple_patterns():
     """Multiple exact patterns → multiple NATS subjects."""
-    result = _nats_subjects_for_patterns(["ravn.tool.complete", "tyr.task.started"], "sleipnir")
-    assert result == ["sleipnir.ravn.tool.complete", "sleipnir.tyr.task.started"]
+    result = _nats_subjects_for_patterns(["ravn.tool.complete", "ting.task.started"], "sleipnir")
+    assert result == ["sleipnir.ravn.tool.complete", "sleipnir.ting.task.started"]
 
 
 def test_subjects_complex_wildcard_falls_back_to_all():
@@ -580,10 +580,10 @@ async def test_subscriber_on_message_drops_pattern_mismatch(mock_nats):
     sub = NatsSubscriber()
     await sub.start()
     received: list[SleipnirEvent] = []
-    await sub.subscribe(["tyr.*"], lambda evt: received.append(evt))
+    await sub.subscribe(["ting.*"], lambda evt: received.append(evt))
 
     on_message = js.subscribe.call_args[1]["cb"]
-    event = make_event(event_type="ravn.tool.complete")  # won't match "tyr.*"
+    event = make_event(event_type="ravn.tool.complete")  # won't match "ting.*"
     mock_msg = MagicMock()
     mock_msg.data = serialize(event)
     mock_msg.ack = AsyncMock()

@@ -1,6 +1,6 @@
 """Plugin port — shared ABCs for the niuu CLI plugin system.
 
-These live in niuu so that both volundr and tyr can implement
+These live in niuu so that both volundr and ting can implement
 ServicePlugin without importing from cli (which would create a
 bidirectional dependency).
 """
@@ -84,7 +84,7 @@ class APIRouteDomain:
 class ServicePlugin(ABC):
     """Base class for niuu CLI plugins.
 
-    Each package (volundr, tyr, etc.) implements this to register its
+    Each package (volundr, ting, etc.) implements this to register its
     commands, services, API clients, and TUI pages.
     """
 

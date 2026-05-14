@@ -3,7 +3,7 @@
 The Skuld broker receives raw NDJSON lines from the Claude Code CLI.
 :class:`RavnPublisher` inspects each line and emits structured
 :data:`ravn.*` events onto the Sleipnir bus so that downstream services
-(Tyr activity tracking, Volundr token accounting, analytics) can react
+(Ting activity tracking, Volundr token accounting, analytics) can react
 without parsing raw NDJSON.
 
 Supported mappings

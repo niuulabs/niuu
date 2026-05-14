@@ -395,7 +395,7 @@ class TestIntegrationEndpoints:
             id="conn-bool",
             owner_id="user-1",
             integration_type="messaging",
-            adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+            adapter="ting.adapters.telegram_notification.TelegramNotificationAdapter",
             credential_name="telegram-main",
             config={"notify_only": True},
             enabled=True,

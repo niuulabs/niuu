@@ -1,7 +1,7 @@
 # Niuu AI Platform — umbrella chart values
 #
 # Global values propagate to all subcharts:
-#   global.image.registry    → volundr.image, volundr.web.image, tyr.image
+#   global.image.registry    → volundr.image, volundr.web.image, ting.image
 #   global.image.tag         → all image tags
 #   global.imagePullSecrets  → all pod specs
 #   global.domain            → ingress/gateway hostname generation
@@ -52,12 +52,12 @@ ingress:
         service: volundr
       - path: /api/v1/tracker/repo-mappings
         service: volundr
-      - path: /api/v1/tyr
-        service: tyr
+      - path: /api/v1/ting
+        service: ting
       - path: /api/v1/tracker/projects
-        service: tyr
+        service: ting
       - path: /api/v1/tracker/import
-        service: tyr
+        service: ting
       - path: /api/v1/niuu
         service: niuu-shared
       - path: /api/v1
@@ -104,7 +104,7 @@ volundr:
     ingress:
       enabled: false
 
-tyr:
+ting:
   enabled: true
   ingress:
     enabled: false

@@ -75,7 +75,7 @@ def _connection(
         id=str(uuid4()),
         owner_id=owner_id,
         integration_type=IntegrationType.MESSAGING,
-        adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+        adapter="ting.adapters.telegram_notification.TelegramNotificationAdapter",
         credential_name=credential_name,
         config={},
         enabled=enabled,

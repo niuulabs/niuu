@@ -125,10 +125,10 @@ describe('ENTITY_RUNES', () => {
       'cluster',
       'host',
       'ravn_long',
-      'ravn_raid',
+      'ravn_run',
       'skuld',
       'valkyrie',
-      'tyr',
+      'ting',
       'bifrost',
       'volundr',
       'mimir',
@@ -137,7 +137,7 @@ describe('ENTITY_RUNES', () => {
       'printer',
       'vaettir',
       'beacon',
-      'raid',
+      'run',
     ] as const;
     for (const kind of expected) {
       expect(ENTITY_RUNES).toHaveProperty(kind);
@@ -157,7 +157,7 @@ describe('SERVICE_RUNES', () => {
 
   it('maps canonical system names to their glyphs', () => {
     expect(SERVICE_RUNES.volundr).toBe('ᚲ');
-    expect(SERVICE_RUNES.tyr).toBe('ᛃ');
+    expect(SERVICE_RUNES.ting).toBe('✦');
     expect(SERVICE_RUNES.ravn).toBe('ᚱ');
     expect(SERVICE_RUNES.mimir).toBe('ᛗ');
     expect(SERVICE_RUNES.bifrost).toBe('ᚨ');

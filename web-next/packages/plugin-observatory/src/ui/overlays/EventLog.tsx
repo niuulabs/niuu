@@ -1,12 +1,13 @@
 import { useRef, useEffect } from 'react';
 import type { ObservatoryEvent, ObservatoryEventType } from '../../domain';
+import { humanizeObservatoryEventType, humanizeObservatoryText } from '../displayLabels';
 import './EventLog.css';
 
 /** Short display tag for each event type (matches web2 column). */
 const TYPE_CLASS: Record<ObservatoryEventType, string> = {
-  RAID: 'obs-event-log__type--raid',
+  RUN: 'obs-event-log__type--run',
   RAVN: 'obs-event-log__type--ravn',
-  TYR: 'obs-event-log__type--tyr',
+  TING: 'obs-event-log__type--ting',
   MIMIR: 'obs-event-log__type--mimir',
   BIFROST: 'obs-event-log__type--bifrost',
 };
@@ -41,9 +42,11 @@ export function EventLog({ events, 'data-testid': testId }: EventLogProps) {
               data-testid={`event-${ev.id}`}
             >
               <span className="obs-event-log__ts">{ev.time}</span>
-              <span className={`obs-event-log__type ${TYPE_CLASS[ev.type] ?? ''}`}>{ev.type}</span>
-              <span className="obs-event-log__subject">{ev.subject}</span>
-              <span className="obs-event-log__body">{ev.body}</span>
+              <span className={`obs-event-log__type ${TYPE_CLASS[ev.type] ?? ''}`}>
+                {humanizeObservatoryEventType(ev.type)}
+              </span>
+              <span className="obs-event-log__subject">{humanizeObservatoryText(ev.subject)}</span>
+              <span className="obs-event-log__body">{humanizeObservatoryText(ev.body)}</span>
             </div>
           ))
         )}

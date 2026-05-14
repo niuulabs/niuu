@@ -30,7 +30,7 @@ async def test_seed_configured_integrations_stores_credential_and_connection() -
                 SeededIntegrationConnectionConfig(
                     owner_id="dev-user",
                     integration_type=IntegrationType.MESSAGING,
-                    adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+                    adapter="ting.adapters.telegram_notification.TelegramNotificationAdapter",
                     credential_name="telegram-main",
                     slug="telegram",
                     enabled=True,
@@ -62,7 +62,7 @@ async def test_seed_configured_integrations_stores_credential_and_connection() -
         owner_type="user",
         owner_id="dev-user",
         integration_type="messaging",
-        adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+        adapter="ting.adapters.telegram_notification.TelegramNotificationAdapter",
         credential_name="telegram-main",
         slug="telegram",
     )
@@ -81,7 +81,7 @@ def test_seeded_integration_connection_id_is_stable() -> None:
         owner_type="user",
         owner_id="dev-user",
         integration_type="messaging",
-        adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+        adapter="ting.adapters.telegram_notification.TelegramNotificationAdapter",
         credential_name="telegram-main",
         slug="telegram",
     )
@@ -89,7 +89,7 @@ def test_seeded_integration_connection_id_is_stable() -> None:
         owner_type="user",
         owner_id="dev-user",
         integration_type="messaging",
-        adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+        adapter="ting.adapters.telegram_notification.TelegramNotificationAdapter",
         credential_name="telegram-main",
         slug="telegram",
     )
@@ -193,7 +193,7 @@ def test_has_seeded_linear_integration_detects_slug_adapter_and_false_case() -> 
                 SeededIntegrationConnectionConfig(
                     owner_id="dev-user",
                     integration_type=IntegrationType.MESSAGING,
-                    adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+                    adapter="ting.adapters.telegram_notification.TelegramNotificationAdapter",
                     credential_name="telegram-main",
                     slug="telegram",
                 )

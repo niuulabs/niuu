@@ -26,7 +26,7 @@ concurrency:
 jobs:
   # ---------------------------------------------------------------------------
   # Python — lint + unit tests. Delegated to reusable workflow.
-  # Includes volundr, tyr, AND ravn — previously ravn was missing here.
+  # Includes volundr, ting, AND ravn — previously ravn was missing here.
   # ---------------------------------------------------------------------------
   python:
     name: Python
@@ -74,8 +74,8 @@ jobs:
           uv run pytest tests/integration/volundr/ -v --tb=short -m integration \
             --override-ini="addopts="
 
-  python-integration-test-tyr:
-    name: "Python: Integration Test Tyr"
+  python-integration-test-ting:
+    name: "Python: Integration Test Ting"
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -109,7 +109,7 @@ jobs:
           TEST_DATABASE_PASSWORD: volundr_test
           TEST_DATABASE_NAME: volundr_test
         run: |
-          uv run pytest tests/integration/tyr/ -v --tb=short -m integration \
+          uv run pytest tests/integration/ting/ -v --tb=short -m integration \
             --override-ini="addopts="
 
   # ---------------------------------------------------------------------------
@@ -357,7 +357,7 @@ jobs:
         run: |
           VERSION="${{ needs.tag.outputs.version }}"
 
-          for CHART in bifrost ravn skuld volundr tyr niuu-shared niuu skuld-planner; do
+          for CHART in bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -369,7 +369,7 @@ jobs:
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
-          helm package charts/tyr -d .helm-packages/
+          helm package charts/ting -d .helm-packages/
           helm package charts/niuu-shared -d .helm-packages/
           rm -f charts/niuu/Chart.lock
           helm dependency update charts/niuu
@@ -389,7 +389,7 @@ jobs:
           helm push .helm-packages/skuld-0*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-planner-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/tyr-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-0*.tgz ${{ env.CHART_REPO }}
 

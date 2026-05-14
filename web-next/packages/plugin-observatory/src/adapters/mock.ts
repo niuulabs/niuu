@@ -42,7 +42,7 @@ const SEED_REGISTRY: Registry = {
       color: 'ice-200',
       size: 14,
       border: 'dashed',
-      canContain: ['service', 'raid', 'tyr', 'bifrost', 'volundr', 'valkyrie', 'mimir'],
+      canContain: ['service', 'run', 'ting', 'bifrost', 'volundr', 'valkyrie', 'mimir'],
       parentTypes: ['realm'],
       category: 'topology',
       description:
@@ -99,8 +99,8 @@ const SEED_REGISTRY: Registry = {
       ],
     },
     {
-      id: 'ravn_raid',
-      label: 'Raid Ravn',
+      id: 'ravn_run',
+      label: 'Run Ravn',
       rune: 'ᚲ',
       icon: 'bird',
       shape: 'triangle',
@@ -108,9 +108,9 @@ const SEED_REGISTRY: Registry = {
       size: 8,
       border: 'solid',
       canContain: [],
-      parentTypes: ['raid'],
+      parentTypes: ['run'],
       category: 'agent',
-      description: 'Ephemeral raven conscripted into a raid. Coord, Reviewer, or Scholar role.',
+      description: 'Ephemeral raven conscripted into a run. Coord, Reviewer, or Scholar role.',
       fields: [
         { key: 'role', label: 'Role', type: 'select', options: ['coord', 'reviewer', 'scholar'] },
         { key: 'confidence', label: 'Confidence', type: 'number' },
@@ -126,9 +126,9 @@ const SEED_REGISTRY: Registry = {
       size: 9,
       border: 'solid',
       canContain: [],
-      parentTypes: ['raid', 'cluster'],
+      parentTypes: ['run', 'cluster'],
       category: 'agent',
-      description: 'WebSocket broker — pair-bonded to a raid for chat fan-out.',
+      description: 'WebSocket broker — pair-bonded to a run for chat fan-out.',
       fields: [],
     },
     {
@@ -156,9 +156,9 @@ const SEED_REGISTRY: Registry = {
       ],
     },
     {
-      id: 'tyr',
-      label: 'Týr',
-      rune: 'ᛃ',
+      id: 'ting',
+      label: 'Ting',
+      rune: '✦',
       icon: 'git-branch',
       shape: 'square',
       color: 'brand',
@@ -168,10 +168,10 @@ const SEED_REGISTRY: Registry = {
       parentTypes: ['cluster', 'realm'],
       category: 'coordinator',
       description:
-        'Saga / raid orchestrator. One per cluster; dispatches raids to coordinate work across Völundrs.',
+        'Saga / run orchestrator. One per cluster; dispatches runs to coordinate work across Völundrs.',
       fields: [
         { key: 'activeSagas', label: 'Active sagas', type: 'number' },
-        { key: 'pendingRaids', label: 'Pending raids', type: 'number' },
+        { key: 'pendingRuns', label: 'Pending runs', type: 'number' },
         { key: 'mode', label: 'Mode', type: 'select', options: ['active', 'standby'] },
       ],
     },
@@ -208,7 +208,7 @@ const SEED_REGISTRY: Registry = {
       parentTypes: ['cluster', 'realm'],
       category: 'coordinator',
       description:
-        'Session forge — spawns and manages remote development pods. Directly connected to Týrs.',
+        'Session forge — spawns and manages remote development pods. Directly connected to Tings.',
       fields: [
         { key: 'activeSessions', label: 'Active', type: 'number' },
         { key: 'maxSessions', label: 'Max', type: 'number' },
@@ -339,19 +339,19 @@ const SEED_REGISTRY: Registry = {
       fields: [],
     },
     {
-      id: 'raid',
-      label: 'Raid',
+      id: 'run',
+      label: 'Run',
       rune: 'ᚷ',
       icon: 'users',
       shape: 'halo',
       color: 'brand',
       size: 50,
       border: 'dashed',
-      canContain: ['ravn_raid', 'skuld'],
+      canContain: ['ravn_run', 'skuld'],
       parentTypes: ['cluster'],
       category: 'composite',
       description:
-        'Ephemeral flock — ravens dispatched by a Týr to execute a saga. Forms, works, dissolves.',
+        'Ephemeral flock — ravns dispatched by Ting to execute a saga. Forms, works, dissolves.',
       fields: [
         { key: 'purpose', label: 'Purpose', type: 'string' },
         {
@@ -416,16 +416,16 @@ const SEED_NODES: TopologyNode[] = [
     activity: 'idle',
   },
   {
-    id: 'tyr-0',
-    typeId: 'tyr',
-    label: 'tyr-0',
+    id: 'ting-0',
+    typeId: 'ting',
+    label: 'ting-0',
     parentId: 'cluster-valaskjalf',
     status: 'healthy',
     zone: 'asgard',
     cluster: 'valaskjalf',
     mode: 'active',
     activeSagas: 3,
-    pendingRaids: 2,
+    pendingRuns: 2,
     activity: 'thinking',
   },
   {
@@ -464,9 +464,9 @@ const SEED_NODES: TopologyNode[] = [
     activity: 'reading',
   },
   {
-    id: 'raid-0',
-    typeId: 'raid',
-    label: 'raid-omega',
+    id: 'run-0',
+    typeId: 'run',
+    label: 'run-omega',
     parentId: 'cluster-valaskjalf',
     status: 'observing',
     zone: 'asgard',
@@ -505,15 +505,15 @@ const SEED_NODES: TopologyNode[] = [
 
 const SEED_EDGES: TopologyEdge[] = [
   // solid: direct coordinator link
-  { id: 'e-tyr-volundr', sourceId: 'tyr-0', targetId: 'volundr-0', kind: 'solid' },
-  // dashed-anim: active raid dispatch
-  { id: 'e-tyr-raid', sourceId: 'tyr-0', targetId: 'raid-0', kind: 'dashed-anim' },
+  { id: 'e-ting-volundr', sourceId: 'ting-0', targetId: 'volundr-0', kind: 'solid' },
+  // dashed-anim: active run dispatch
+  { id: 'e-ting-run', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-anim' },
   // dashed-long: raven async memory access
   { id: 'e-huginn-mimir', sourceId: 'ravn-huginn', targetId: 'mimir-0', kind: 'dashed-long' },
   // soft: bifrost references mimir for cache
   { id: 'e-bifrost-mimir', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'soft' },
-  // raid: inter-raven coordination within the raid
-  { id: 'e-raid-huginn', sourceId: 'raid-0', targetId: 'ravn-huginn', kind: 'raid' },
+  // run: inter-raven coordination within the run
+  { id: 'e-run-huginn', sourceId: 'run-0', targetId: 'ravn-huginn', kind: 'run' },
 ];
 
 const SEED_TOPOLOGY: Topology = {
@@ -528,16 +528,16 @@ const SEED_EVENTS: ObservatoryEvent[] = [
   {
     id: 'ev-1',
     time: '00:00:01',
-    type: 'RAID',
-    subject: 'raid-omega',
-    body: 'tyr dispatched raid · "refactor bifrost rule engine"',
+    type: 'RUN',
+    subject: 'run-omega',
+    body: 'ting dispatched run · "refactor bifrost rule engine"',
   },
   {
     id: 'ev-2',
     time: '00:00:05',
     type: 'RAVN',
     subject: 'huginn',
-    body: 'huginn joined raid-omega as coord',
+    body: 'huginn joined run-omega as coord',
   },
   {
     id: 'ev-3',

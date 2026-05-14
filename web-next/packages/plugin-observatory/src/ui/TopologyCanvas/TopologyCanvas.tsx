@@ -191,7 +191,7 @@ export function TopologyCanvas({
       if (node.typeId === 'host') {
         if (Math.abs(wx - p.x) < HOST_HALF_W && Math.abs(wy - p.y) < HOST_HALF_H) return node.id;
       } else {
-        const r = HIT_RADIUS[node.typeId] ?? HIT_RADIUS['tyr']!;
+        const r = HIT_RADIUS[node.typeId] ?? HIT_RADIUS['ting']!;
         if ((wx - p.x) ** 2 + (wy - p.y) ** 2 < r * r) return node.id;
       }
     }

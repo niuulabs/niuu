@@ -590,7 +590,7 @@
           "Sessions"
         ],
         "summary": "Report Activity",
-        "description": "Report a session activity state change from Skuld.\n\nUpdates the session's activity_state and broadcasts a\nsession_activity SSE event for downstream consumers (e.g. Tyr).",
+        "description": "Report a session activity state change from Skuld.\n\nUpdates the session's activity_state and broadcasts a\nsession_activity SSE event for downstream consumers (e.g. Ting).",
         "operationId": "report_activity_api_v1_forge_sessions__session_id__activity_post",
         "parameters": [
           {
@@ -9748,7 +9748,7 @@
             "type": "string",
             "maxLength": 100,
             "title": "Workload Type",
-            "description": "Workload type: 'session' (default) or 'ravn_flock' for raiding parties",
+            "description": "Workload type: 'session' (default) or 'ravn_flock' for runing parties",
             "default": "session"
           },
           "workload_config": {

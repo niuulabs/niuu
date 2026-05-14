@@ -341,7 +341,7 @@ class AgentTask:
     task_id: str  # "task_{hex_timestamp}_{counter}" — unique, stable
     title: str
     initiative_context: str  # the synthetic "message" given to the agent
-    triggered_by: str  # "cron:morning_check", "event:tyr.raid.stalled"
+    triggered_by: str  # "cron:morning_check", "event:ting.run.stalled"
     output_mode: OutputMode
     persona: str | None = None
     priority: int = 10  # lower = higher priority

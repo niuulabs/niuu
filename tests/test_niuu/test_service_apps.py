@@ -255,7 +255,7 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
                 SeededIntegrationConnectionConfig(
                     owner_id="dev-user",
                     integration_type="messaging",
-                    adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+                    adapter="ting.adapters.telegram_notification.TelegramNotificationAdapter",
                     credential_name="telegram-main",
                     slug="telegram",
                 )

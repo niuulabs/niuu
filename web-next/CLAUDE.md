@@ -30,18 +30,18 @@ we re-enable the other suites. Until then, green CI = `web-next` tests green.
 
 ### 1. Every plugin is its own publishable package
 
-A consumer must be able to `npm install @niuulabs/plugin-tyr` and embed Tyr in their
+A consumer must be able to `npm install @niuulabs/plugin-ting` and embed Ting in their
 own page without pulling in the rest of Niuu. This is the primary design constraint.
 Everything else flows from it.
 
 ```tsx
-// A third-party app using only Tyr:
+// A third-party app using only Ting:
 import { Shell } from '@niuulabs/shell';
 import { ConfigProvider, ServicesProvider, FeatureCatalogProvider } from '@niuulabs/plugin-sdk';
 import { ThemeProvider } from '@niuulabs/design-tokens';
 import { createQueryClient } from '@niuulabs/query';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { tyrPlugin, type ITyrService } from '@niuulabs/plugin-tyr';
+import { tingPlugin, type ITingService } from '@niuulabs/plugin-ting';
 import '@niuulabs/design-tokens/tokens.css';
 import '@niuulabs/ui/styles.css';
 import '@niuulabs/shell/styles.css';
@@ -49,9 +49,9 @@ import '@niuulabs/shell/styles.css';
 <ConfigProvider endpoint="/config.json" fallback={<Loading />}>
   <ThemeProvider theme="ice">
     <QueryClientProvider client={createQueryClient()}>
-      <ServicesProvider services={{ tyr: myTyrAdapter }}>
+      <ServicesProvider services={{ ting: myTingAdapter }}>
         <FeatureCatalogProvider>
-          <Shell plugins={[tyrPlugin]} />
+          <Shell plugins={[tingPlugin]} />
         </FeatureCatalogProvider>
       </ServicesProvider>
     </QueryClientProvider>
@@ -87,14 +87,14 @@ Components get services from `useService<T>(key)`. The consumer wires adapters i
 `<ServicesProvider>`. **Plugins never import concrete service implementations.**
 
 ```ts
-// inside plugin-tyr:
-const tyr = useService<ITyrService>('tyr'); // contract only
+// inside plugin-ting:
+const ting = useService<ITingService>('ting'); // contract only
 ```
 
 ```ts
 // inside apps/niuu/src/services.ts:
-import { buildTyrApiAdapter } from '@niuulabs/plugin-tyr/adapters/http';
-const services = { tyr: buildTyrApiAdapter(config.services.tyr) };
+import { buildTingApiAdapter } from '@niuulabs/plugin-ting/adapters/http';
+const services = { ting: buildTingApiAdapter(config.services.ting) };
 ```
 
 Tests and Storybook supply mock adapters. Adapter swap = zero component changes.
@@ -106,8 +106,8 @@ Query is the client cache on top. Every API call looks like:
 
 ```ts
 export function useSagas() {
-  const tyr = useService<ITyrService>('tyr');
-  return useQuery({ queryKey: ['tyr', 'sagas'], queryFn: () => tyr.getSagas() });
+  const ting = useService<ITingService>('ting');
+  return useQuery({ queryKey: ['ting', 'sagas'], queryFn: () => ting.getSagas() });
 }
 ```
 
@@ -181,7 +181,7 @@ Known sources we'll copy (not exhaustive — see individual tickets):
 | `src/auth/*`                                  | `@niuulabs/auth`                | NIU-651 |
 | `src/modules/mimir/api/*`                     | `@niuulabs/plugin-mimir`        | NIU-667 |
 | `src/modules/ravn/api/*`                      | `@niuulabs/plugin-ravn`         | NIU-671 |
-| `src/modules/tyr/{ports,adapters,models}/*`   | `@niuulabs/plugin-tyr`          | NIU-679 |
+| `src/modules/ting/{ports,adapters,models}/*`   | `@niuulabs/plugin-ting`          | NIU-679 |
 | `src/modules/volundr/{ports,adapters,models}` | `@niuulabs/plugin-volundr`      | NIU-675 |
 | `src/modules/shared/components/SessionChat/`  | `@niuulabs/ui/chat`             | NIU-660 |
 
@@ -193,7 +193,7 @@ Nothing else should be dragged across — and especially no UI components outsid
 | Live in `@niuulabs/ui`                             | Live in a specific plugin             |
 | -------------------------------------------------- | ------------------------------------- |
 | Used by 2+ plugins                                 | Used by only one plugin               |
-| Design-system primitives (Chip, StateDot)          | WorkflowBuilder (tyr), RaidMesh (tyr) |
+| Design-system primitives (Chip, StateDot)          | WorkflowBuilder (ting), RunMesh (ting) |
 | Cross-plugin composites (PersonaAvatar, MountChip) | TopologyCanvas (observatory)          |
 | Layout/overlay/form/data primitives                | TemplateEditor (volundr)              |
 
@@ -372,11 +372,11 @@ See `packages/plugin-sdk/src/config.ts` for the Zod schema. Example:
   "theme": "ice",
   "plugins": {
     "observatory": { "enabled": true, "order": 1 },
-    "tyr": { "enabled": true, "order": 4 },
+    "ting": { "enabled": true, "order": 4 },
     "volundr": { "enabled": false, "order": 5, "reason": "k8s not provisioned" }
   },
   "services": {
-    "tyr": { "baseUrl": "https://api.niuu.world/tyr", "mode": "http" },
+    "ting": { "baseUrl": "https://api.niuu.world/ting", "mode": "http" },
     "volundr": { "baseUrl": "https://api.niuu.world/volundr", "mode": "http" }
   },
   "auth": {
@@ -415,7 +415,7 @@ Edit `apps/niuu/public/config.json` and refresh the browser. No rebuild.
 ## Common pitfalls
 
 - **Don't import from `adapters/` in components.** Components depend on `ports/`
-  through DI. If you see `import { buildTyrAdapter } from '../adapters/...'` inside
+  through DI. If you see `import { buildTingAdapter } from '../adapters/...'` inside
   `ui/`, that's a bug.
 - **Don't hard-code plugin IDs in the shell.** Shell reads `plugins` prop + config.
 - **Don't hard-code colors.** Use Tailwind classes backed by tokens

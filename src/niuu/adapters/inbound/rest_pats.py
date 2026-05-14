@@ -1,6 +1,6 @@
 """Shared FastAPI REST adapter for personal access token management.
 
-Both Tyr and Volundr mount this router, each passing their own
+Both Ting and Volundr mount this router, each passing their own
 ``extract_principal`` auth dependency.
 """
 

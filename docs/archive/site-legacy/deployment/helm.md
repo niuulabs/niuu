@@ -2,9 +2,9 @@
 
 Volundr ships three Helm charts, plus an umbrella chart:
 
-- `charts/niuu/` — umbrella chart that deploys Volundr and Tyr together
+- `charts/niuu/` — umbrella chart that deploys Volundr and Ting together
 - `charts/volundr/` — the API server and optional web UI
-- `charts/tyr/` — the saga coordinator for multi-repo campaigns
+- `charts/ting/` — the saga coordinator for multi-repo campaigns
 - `charts/skuld/` — the WebSocket broker (deployed per-session by the pod manager)
 
 For full infrastructure prerequisites, see the

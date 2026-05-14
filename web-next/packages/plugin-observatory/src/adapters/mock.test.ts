@@ -26,7 +26,7 @@ describe('createMockRegistryRepository', () => {
     expect(ids).toContain('realm');
     expect(ids).toContain('cluster');
     expect(ids).toContain('host');
-    expect(ids).toContain('raid');
+    expect(ids).toContain('run');
   });
 
   it('every entity type has required fields', async () => {
@@ -64,7 +64,7 @@ describe('createMockRegistryRepository', () => {
     expect(kinds.has('dashed-anim')).toBe(true);
     expect(kinds.has('dashed-long')).toBe(true);
     expect(kinds.has('soft')).toBe(true);
-    expect(kinds.has('raid')).toBe(true);
+    expect(kinds.has('run')).toBe(true);
   });
 });
 
@@ -78,14 +78,14 @@ describe('createMockTopologyStream', () => {
     expect(typeof snapshot!.timestamp).toBe('string');
   });
 
-  it('topology includes realm, cluster, host, and raid nodes', () => {
+  it('topology includes realm, cluster, host, and run nodes', () => {
     const stream = createMockTopologyStream();
     const { nodes } = stream.getSnapshot()!;
     const typeIds = new Set(nodes.map((n) => n.typeId));
     expect(typeIds.has('realm')).toBe(true);
     expect(typeIds.has('cluster')).toBe(true);
     expect(typeIds.has('host')).toBe(true);
-    expect(typeIds.has('raid')).toBe(true);
+    expect(typeIds.has('run')).toBe(true);
   });
 
   it('every node has required base fields', () => {
@@ -99,14 +99,14 @@ describe('createMockTopologyStream', () => {
     }
   });
 
-  it('tyr node has kind-specific fields', () => {
+  it('ting node has kind-specific fields', () => {
     const stream = createMockTopologyStream();
     const { nodes } = stream.getSnapshot()!;
-    const tyr = nodes.find((n) => n.typeId === 'tyr');
-    expect(tyr).toBeDefined();
-    expect(tyr!.mode).toBe('active');
-    expect(tyr!.activeSagas).toBeGreaterThanOrEqual(0);
-    expect(tyr!.pendingRaids).toBeGreaterThanOrEqual(0);
+    const ting = nodes.find((n) => n.typeId === 'ting');
+    expect(ting).toBeDefined();
+    expect(ting!.mode).toBe('active');
+    expect(ting!.activeSagas).toBeGreaterThanOrEqual(0);
+    expect(ting!.pendingRuns).toBeGreaterThanOrEqual(0);
   });
 
   it('bifrost node has kind-specific fields', () => {
@@ -195,7 +195,7 @@ describe('createMockEventStream', () => {
       expect(ev.type).toBeTruthy();
       expect(ev.subject).toBeTruthy();
       expect(ev.body).toBeTruthy();
-      expect(['RAID', 'RAVN', 'TYR', 'MIMIR', 'BIFROST']).toContain(ev.type);
+      expect(['RUN', 'RAVN', 'TING', 'MIMIR', 'BIFROST']).toContain(ev.type);
     });
   });
 

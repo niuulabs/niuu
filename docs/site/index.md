@@ -85,7 +85,7 @@ Choose which models are available, whether work stays local or uses third-party 
 <div class="arch-caption" markdown>
 
 - **Volundr** is where humans work directly.
-- **Tyr** coordinates specialist teams and review loops.
+- **Ting** coordinates specialist teams and review loops.
 - **Ravn** is the harness for one assistant or a connected team of assistants.
 - **Mimir** keeps shared memory alive.
 - **Bifrost** decides what models are available and where they run.

@@ -186,8 +186,8 @@ jobs:
           uv run pytest tests/integration/volundr/ -v --tb=short -m integration \
             --override-ini="addopts="
 
-  python-integration-test-tyr:
-    name: "Python: Integration Test Tyr"
+  python-integration-test-ting:
+    name: "Python: Integration Test Ting"
     needs: changes
     if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
@@ -223,7 +223,7 @@ jobs:
           TEST_DATABASE_PASSWORD: volundr_test
           TEST_DATABASE_NAME: volundr_test
         run: |
-          uv run pytest tests/integration/tyr/ -v --tb=short -m integration \
+          uv run pytest tests/integration/ting/ -v --tb=short -m integration \
             --override-ini="addopts="
 
   python-integration-test-sleipnir:
@@ -579,7 +579,7 @@ jobs:
             --set auth.postgresPassword=test \
             --set auth.database=volundr \
             --set primary.persistence.enabled=false \
-            --set primary.initdb.scripts."init\.sql"="CREATE DATABASE tyr;" \
+            --set primary.initdb.scripts."init\.sql"="CREATE DATABASE ting;" \
             --wait --timeout 120s
 
       - name: Create registry pull secret in kind
@@ -598,10 +598,10 @@ jobs:
             --set image.tag="pr-${{ github.event.number }}" \
             --wait --timeout 120s
 
-      - name: Install Tyr chart
+      - name: Install Ting chart
         run: |
-          helm install tyr charts/tyr/ \
-            -f charts/tyr/ci-values.yaml \
+          helm install ting charts/ting/ \
+            -f charts/ting/ci-values.yaml \
             --set global.imagePullSecrets[0]=ghcr-pull-secret \
             --set image.tag="pr-${{ github.event.number }}" \
             --wait --timeout 120s
@@ -617,8 +617,8 @@ jobs:
       - name: Verify Volundr pods are ready
         run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=volundr --timeout=60s
 
-      - name: Verify Tyr pods are ready
-        run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=tyr --timeout=60s
+      - name: Verify Ting pods are ready
+        run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=ting --timeout=60s
 
       - name: Verify Skuld pods are ready
         run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=skuld --timeout=60s
@@ -631,9 +631,9 @@ jobs:
           curl -sf http://localhost:8080/health
           kill $PF_PID || true
 
-      - name: Health check Tyr
+      - name: Health check Ting
         run: |
-          kubectl port-forward svc/tyr 8081:80 &
+          kubectl port-forward svc/ting 8081:80 &
           PF_PID=$!
           sleep 3
           curl -sf http://localhost:8081/health
@@ -657,8 +657,8 @@ jobs:
         run: |
           echo "=== Volundr logs ==="
           kubectl logs -l app.kubernetes.io/name=volundr --tail=50 || true
-          echo "=== Tyr logs ==="
-          kubectl logs -l app.kubernetes.io/name=tyr --tail=50 || true
+          echo "=== Ting logs ==="
+          kubectl logs -l app.kubernetes.io/name=ting --tail=50 || true
           echo "=== Skuld logs ==="
           kubectl logs -l app.kubernetes.io/name=skuld --all-containers --tail=50 || true
           echo "=== Events ==="
@@ -717,7 +717,7 @@ jobs:
         run: |
           VERSION="0.0.0-pr.${{ github.event.number }}"
 
-          for CHART in bifrost ravn skuld volundr tyr niuu-shared niuu; do
+          for CHART in bifrost ravn skuld volundr ting niuu-shared niuu; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -728,7 +728,7 @@ jobs:
           helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
-          helm package charts/tyr -d .helm-packages/
+          helm package charts/ting -d .helm-packages/
           helm package charts/niuu-shared -d .helm-packages/
           rm -f charts/niuu/Chart.lock
           helm dependency update charts/niuu
@@ -747,7 +747,7 @@ jobs:
           helm push .helm-packages/ravn-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/skuld-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/volundr-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
-          helm push .helm-packages/tyr-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          helm push .helm-packages/ting-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/niuu-shared-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/niuu-0*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
 

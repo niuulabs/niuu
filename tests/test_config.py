@@ -754,7 +754,7 @@ integrations:
           api_key: linear-foobar
     - owner_id: dev-user
       integration_type: messaging
-      adapter: tyr.adapters.telegram_notification.TelegramNotificationAdapter
+      adapter: ting.adapters.telegram_notification.TelegramNotificationAdapter
       credential_name: telegram-main
       slug: telegram
       enabled: true
@@ -789,7 +789,7 @@ integrations:
         assert isinstance(seed, SeededIntegrationConnectionConfig)
         assert seed.owner_id == "dev-user"
         assert seed.integration_type == IntegrationType.MESSAGING
-        assert seed.adapter == "tyr.adapters.telegram_notification.TelegramNotificationAdapter"
+        assert seed.adapter == "ting.adapters.telegram_notification.TelegramNotificationAdapter"
         assert seed.credential_name == "telegram-main"
         assert seed.slug == "telegram"
         assert seed.config == {"notify_only": True}

@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from niuu.config import CorsConfig, GitConfig
 from niuu.main import create_app as create_niuu_app
 from niuu.service_settings import Settings as NiuuSharedSettings
-from tyr.config import Settings as TyrSettings
-from tyr.main import create_app as create_tyr_app
+from ting.config import Settings as TingSettings
+from ting.main import create_app as create_ting_app
 from volundr.config import Settings as VolundrSettings
 from volundr.main import create_app as create_volundr_app
 
@@ -53,9 +53,9 @@ class TestServiceCorsWiring:
         assert options["allow_origins"] == ["https://ui.example.com"]
         assert options["allow_credentials"] is False
 
-    def test_tyr_uses_settings_cors(self) -> None:
-        app = create_tyr_app(
-            TyrSettings(
+    def test_ting_uses_settings_cors(self) -> None:
+        app = create_ting_app(
+            TingSettings(
                 cors=CorsConfig(
                     allowed_origins=["https://ui.example.com"],
                     allow_credentials=False,

@@ -32,9 +32,9 @@ importers:
       '@niuulabs/plugin-ravn':
         specifier: workspace:*
         version: link:packages/plugin-ravn
-      '@niuulabs/plugin-tyr':
+      '@niuulabs/plugin-ting':
         specifier: workspace:*
-        version: link:packages/plugin-tyr
+        version: link:packages/plugin-ting
       '@niuulabs/plugin-volundr':
         specifier: workspace:*
         version: link:packages/plugin-volundr
@@ -198,9 +198,9 @@ importers:
       '@niuulabs/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
-      '@niuulabs/plugin-tyr':
+      '@niuulabs/plugin-ting':
         specifier: workspace:*
-        version: link:../../packages/plugin-tyr
+        version: link:../../packages/plugin-ting
       '@niuulabs/plugin-volundr':
         specifier: workspace:*
         version: link:../../packages/plugin-volundr
@@ -602,7 +602,7 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
-  packages/plugin-tyr:
+  packages/plugin-ting:
     dependencies:
       '@niuulabs/domain':
         specifier: workspace:*

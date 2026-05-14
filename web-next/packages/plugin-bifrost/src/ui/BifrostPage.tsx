@@ -439,7 +439,7 @@ export function BifrostPage({ defaultTab = 'overview' }: { defaultTab?: BifrostT
             </h1>
             <p className="niuu-m-0 niuu-mt-2 niuu-max-w-3xl niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
               Bifröst owns the platform’s model catalog, provider health, aliases, and runtime
-              hints. Volundr, Tyr, Wardens, and future Valkyries should all select from this
+              hints. Volundr, Ting, Wardens, and future Valkyries should all select from this
               inventory instead of carrying private model lists.
             </p>
           </div>

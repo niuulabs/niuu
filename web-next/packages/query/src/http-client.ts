@@ -2,7 +2,7 @@
  * HTTP Client Factory
  *
  * Creates API clients scoped to a specific backend base path.
- * Each service has its own client: /api/v1/forge, /api/v1/tyr, etc.
+ * Each service has its own client: /api/v1/forge, /api/v1/ting, etc.
  */
 
 export interface ApiError {

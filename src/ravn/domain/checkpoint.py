@@ -22,7 +22,7 @@ class InterruptReason(StrEnum):
     SIGINT = "sigint"
     SIGTERM = "sigterm"
     BUDGET_EXHAUSTED = "budget_exhausted"
-    TYR_CANCEL = "tyr_cancel"
+    TING_CANCEL = "ting_cancel"
 
 
 @dataclass

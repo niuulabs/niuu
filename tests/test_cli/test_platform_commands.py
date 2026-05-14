@@ -71,10 +71,10 @@ class TestCollectServiceDefinitions:
     def test_collects_from_plugins_with_register_service(self) -> None:
         registry = PluginRegistry()
         registry.register(_ServicePlugin(_make_svc_def("volundr")))
-        registry.register(_ServicePlugin(_make_svc_def("tyr")))
+        registry.register(_ServicePlugin(_make_svc_def("ting")))
         defs = _collect_service_definitions(registry)
         assert "volundr" in defs
-        assert "tyr" in defs
+        assert "ting" in defs
 
     def test_skips_plugins_without_register_service(self) -> None:
         registry = PluginRegistry()
@@ -97,12 +97,12 @@ class TestResolveEnabledServices:
     def test_default_enabled_only(self) -> None:
         service_defs = {
             "volundr": _make_svc_def("volundr", default_enabled=True),
-            "tyr": _make_svc_def("tyr", default_enabled=True),
+            "ting": _make_svc_def("ting", default_enabled=True),
             "skuld": _make_svc_def("skuld", default_enabled=False),
         }
         enabled = _resolve_enabled_services(service_defs, CLISettings(), False, {})
         assert "volundr" in enabled
-        assert "tyr" in enabled
+        assert "ting" in enabled
         assert "skuld" not in enabled
 
     def test_cli_flag_adds_disabled_service(self) -> None:
@@ -114,10 +114,10 @@ class TestResolveEnabledServices:
 
     def test_cli_flag_removes_enabled_service(self) -> None:
         service_defs = {
-            "tyr": _make_svc_def("tyr", default_enabled=True),
+            "ting": _make_svc_def("ting", default_enabled=True),
         }
-        enabled = _resolve_enabled_services(service_defs, CLISettings(), False, {"tyr": False})
-        assert "tyr" not in enabled
+        enabled = _resolve_enabled_services(service_defs, CLISettings(), False, {"ting": False})
+        assert "ting" not in enabled
 
     def test_start_all_enables_everything(self) -> None:
         service_defs = {
@@ -134,30 +134,30 @@ class TestResolveEnabledServices:
         assert "skuld" in enabled
 
     def test_config_override_disables(self) -> None:
-        service_defs = {"tyr": _make_svc_def("tyr", default_enabled=True)}
-        settings = CLISettings(service_overrides={"tyr": PerServiceConfig(enabled=False)})
+        service_defs = {"ting": _make_svc_def("ting", default_enabled=True)}
+        settings = CLISettings(service_overrides={"ting": PerServiceConfig(enabled=False)})
         enabled = _resolve_enabled_services(service_defs, settings, False, {})
-        assert "tyr" not in enabled
+        assert "ting" not in enabled
 
     def test_cli_flag_wins_over_config_override(self) -> None:
         """CLI flag has the highest priority."""
-        service_defs = {"tyr": _make_svc_def("tyr", default_enabled=False)}
-        settings = CLISettings(service_overrides={"tyr": PerServiceConfig(enabled=False)})
-        enabled = _resolve_enabled_services(service_defs, settings, False, {"tyr": True})
-        assert "tyr" in enabled
+        service_defs = {"ting": _make_svc_def("ting", default_enabled=False)}
+        settings = CLISettings(service_overrides={"ting": PerServiceConfig(enabled=False)})
+        enabled = _resolve_enabled_services(service_defs, settings, False, {"ting": True})
+        assert "ting" in enabled
 
     def test_start_all_overrides_no_flags(self) -> None:
         """--all takes highest precedence even when --no-service is set."""
-        service_defs = {"tyr": _make_svc_def("tyr", default_enabled=True)}
-        enabled = _resolve_enabled_services(service_defs, CLISettings(), True, {"tyr": False})
-        assert "tyr" in enabled
+        service_defs = {"ting": _make_svc_def("ting", default_enabled=True)}
+        enabled = _resolve_enabled_services(service_defs, CLISettings(), True, {"ting": False})
+        assert "ting" in enabled
 
 
 class TestDynamicUpCallback:
     def test_up_callback_has_service_flags(self) -> None:
         service_defs = {
             "volundr": _make_svc_def("volundr"),
-            "tyr": _make_svc_def("tyr"),
+            "ting": _make_svc_def("ting"),
         }
         manager = MagicMock()
         settings = CLISettings()
@@ -167,7 +167,7 @@ class TestDynamicUpCallback:
 
         sig = inspect.signature(up_fn)
         assert "volundr" in sig.parameters
-        assert "tyr" in sig.parameters
+        assert "ting" in sig.parameters
         assert "skip_preflight" in sig.parameters
         assert "all" in sig.parameters
         assert "host_profile" in sig.parameters
@@ -428,20 +428,20 @@ class TestCreatePlatformCommands:
 
 
 class TestDependencyResolutionViaEnabledServices:
-    async def test_tyr_dep_pulls_in_volundr(self) -> None:
+    async def test_ting_dep_pulls_in_volundr(self) -> None:
         registry = PluginRegistry()
         registry.register(_ServicePlugin(_make_svc_def("volundr")))
-        registry.register(_ServicePlugin(_make_svc_def("tyr", depends_on=["volundr"])))
+        registry.register(_ServicePlugin(_make_svc_def("ting", depends_on=["volundr"])))
         manager = ServiceManager(
             registry=registry,
             health_check_interval=0.01,
             health_check_timeout=0.5,
             health_check_max_retries=1,
         )
-        order = manager.resolve_start_order(enabled_services={"tyr"})
+        order = manager.resolve_start_order(enabled_services={"ting"})
         assert "volundr" in order
-        assert "tyr" in order
-        assert order.index("volundr") < order.index("tyr")
+        assert "ting" in order
+        assert order.index("volundr") < order.index("ting")
 
 
 class TestBuildPreflightConfig:

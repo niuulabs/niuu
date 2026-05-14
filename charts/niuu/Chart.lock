@@ -1,13 +1,13 @@
 dependencies:
 - name: volundr
   repository: file://../volundr
-  version: 0.0.0-tyr.159
-- name: tyr
-  repository: file://../tyr
-  version: 0.0.0-tyr.159
+  version: 0.0.0-ting.159
+- name: ting
+  repository: file://../ting
+  version: 0.0.0-ting.159
 - name: niuu-shared
   repository: file://../niuu-shared
-  version: 0.0.0-tyr.243
+  version: 0.0.0-ting.243
 - name: bifrost
   repository: file://../bifrost
   version: 0.0.0
@@ -16,12 +16,12 @@ dependencies:
   version: 0.0.0
 - name: ravn
   repository: file://../ravn
-  version: 0.0.0-tyr.159
+  version: 0.0.0-ting.159
 - name: mimir
   repository: file://../mimir
   version: 0.0.0
 - name: mimir
   repository: file://../mimir
   version: 0.0.0
-digest: sha256:81ae8794cb9bbd127f375c232fa170a9e9abf3927e739aaceeed4ce460e80aa7
-generated: "2026-05-13T06:38:28.150635-04:00"
+digest: sha256:d44d010ba76f18657da9cf1ac484aa09fe7ecd4d394b356b9a8930d230db21fd
+generated: "2026-05-14T07:13:02.765401-04:00"

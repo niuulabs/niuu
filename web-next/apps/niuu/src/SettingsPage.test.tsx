@@ -7,7 +7,7 @@ import { SettingsPage } from './SettingsPage';
 
 const routerMocks = vi.hoisted(() => ({
   navigate: vi.fn(),
-  params: { providerId: 'tyr', sectionId: 'general' },
+  params: { providerId: 'ting', sectionId: 'general' },
 }));
 
 vi.mock('@tanstack/react-router', () => ({
@@ -20,11 +20,11 @@ vi.mock('@tanstack/react-router', () => ({
   useRouter: () => ({ navigate: routerMocks.navigate }),
 }));
 
-vi.mock('@niuulabs/plugin-tyr', () => ({
-  tyrMountedSettingsProvider: {
-    id: 'tyr',
-    pluginId: 'tyr',
-    title: 'Tyr',
+vi.mock('@niuulabs/plugin-ting', () => ({
+  tingMountedSettingsProvider: {
+    id: 'ting',
+    pluginId: 'ting',
+    title: 'Ting',
     subtitle: 'saga coordinator settings',
     scope: 'service',
     defaultSectionId: 'general',
@@ -33,7 +33,7 @@ vi.mock('@niuulabs/plugin-tyr', () => ({
         id: 'general',
         label: 'General',
         description: 'Core service bindings for the saga coordinator',
-        render: () => <div>Tyr General Mounted</div>,
+        render: () => <div>Ting General Mounted</div>,
       },
     ],
   },
@@ -46,7 +46,7 @@ function wrap(children: ReactNode) {
       value={{
         theme: 'ice',
         plugins: {
-          tyr: { enabled: true, order: 2 },
+          ting: { enabled: true, order: 2 },
         },
         services: {},
       }}
@@ -57,13 +57,13 @@ function wrap(children: ReactNode) {
 }
 
 describe('SettingsPage', () => {
-  it('renders the mounted local provider section for Tyr', () => {
+  it('renders the mounted local provider section for Ting', () => {
     wrap(<SettingsPage />);
 
     expect(screen.getByRole('navigation', { name: 'Settings providers' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Tyr' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Tyr Settings' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Ting' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'General' })).toBeTruthy();
-    expect(screen.getByText('Tyr General Mounted')).toBeTruthy();
+    expect(screen.getByText('Ting General Mounted')).toBeTruthy();
   });
 });

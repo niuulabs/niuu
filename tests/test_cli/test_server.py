@@ -138,14 +138,14 @@ class TestPrefixRestoreApp:
         async def fake_app(scope, receive, send):
             received_scope.update(scope)
 
-        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/tyr")
+        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/ting")
         scope = {
             "type": "websocket",
             "path": "/ws",
             "raw_path": b"/ws",
         }
         await wrapper(scope, AsyncMock(), AsyncMock())
-        assert received_scope["path"] == "/api/v1/tyr/ws"
+        assert received_scope["path"] == "/api/v1/ting/ws"
 
     @pytest.mark.asyncio
     async def test_passes_lifespan_unchanged(self) -> None:
@@ -251,10 +251,10 @@ class TestRouteDomainSelection:
             "tracker-api",
             "tracker-intake-api",
             "tokens-api",
-            "tyr-channel-api",
+            "ting-channel-api",
             "workflow-api",
             "workspace-api",
-            "tyr-api",
+            "ting-api",
             "skuld-proxy",
             "runtime-config",
             "web-ui",
@@ -332,7 +332,7 @@ class TestRouteDomainSelection:
                     ),
                 )
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
@@ -343,14 +343,14 @@ class TestRouteDomainSelection:
 
         registry = PluginRegistry()
         registry.register(VolundrPlugin(name="volundr"))
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
         inventory = collect_route_inventory(registry=registry, enabled_mounts={"tracker-api"})
         assert inventory == (
             MountedRouteDomain(
                 name="tracker-api",
                 prefixes=("/api/v1/tracker/projects", "/api/v1/tracker/issues"),
                 source="plugin",
-                plugin_name="tyr,volundr",
+                plugin_name="ting,volundr",
             ),
         )
 
@@ -549,6 +549,10 @@ class TestRootServerBuildApp:
         resp = client.get("/dashboard")
         assert resp.status_code == 200
         assert b"SPA" in resp.content
+
+        api_resp = client.get("/api/v1/not-a-real-service/ping")
+        assert api_resp.status_code == 404
+        assert api_resp.json() == {"detail": "Not found"}
 
         config_resp = client.get("/config.live.json")
         assert config_resp.status_code == 200
@@ -803,15 +807,15 @@ class TestRootServerBuildApp:
         async def volundr_ping():
             return {"pong": "volundr"}
 
-        tyr_app = FastAPI()
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tracker/projects")
+        @ting_app.get("/api/v1/tracker/projects")
         async def tracker_projects():
             return [{"id": "proj-1"}]
 
-        @tyr_app.get("/api/v1/tyr/ping")
-        async def tyr_ping():
-            return {"pong": "tyr"}
+        @ting_app.get("/api/v1/ting/ping")
+        async def ting_ping():
+            return {"pong": "ting"}
 
         class VolundrPlugin(FakePlugin):
             def create_api_app(self):
@@ -825,9 +829,9 @@ class TestRootServerBuildApp:
                     ),
                 )
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
@@ -839,7 +843,7 @@ class TestRootServerBuildApp:
 
         registry = PluginRegistry()
         registry.register(VolundrPlugin(name="volundr"))
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -852,7 +856,7 @@ class TestRootServerBuildApp:
         assert client.get("/api/v1/tracker/issues").status_code == 200
         assert client.get("/api/v1/tracker/projects").status_code == 200
         assert client.get("/api/v1/forge/ping").status_code == 404
-        assert client.get("/api/v1/tyr/ping").status_code == 404
+        assert client.get("/api/v1/ting/ping").status_code == 404
         assert client.get("/config.json").status_code == 404
         assert client.get("/s/example/health").status_code == 404
 
@@ -867,14 +871,14 @@ class TestRootServerBuildApp:
         async def legacy_audit():
             return [{"id": "volundr-legacy"}]
 
-        tyr_app = FastAPI()
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tyr/audit")
-        async def tyr_audit():
-            return [{"id": "tyr-audit"}]
+        @ting_app.get("/api/v1/ting/audit")
+        async def ting_audit():
+            return [{"id": "ting-audit"}]
 
-        @tyr_app.get("/api/v1/tyr/sagas")
-        async def tyr_sagas():
+        @ting_app.get("/api/v1/ting/sagas")
+        async def ting_sagas():
             return [{"id": "saga-1"}]
 
         class VolundrPlugin(FakePlugin):
@@ -889,21 +893,21 @@ class TestRootServerBuildApp:
                     ),
                 )
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
                         name="saga-api",
-                        prefixes=("/api/v1/tyr/sagas",),
+                        prefixes=("/api/v1/ting/sagas",),
                     ),
                 )
 
         registry = PluginRegistry()
         registry.register(VolundrPlugin(name="volundr"))
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -915,8 +919,8 @@ class TestRootServerBuildApp:
         client = TestClient(app)
         assert client.get("/api/v1/audit").status_code == 200
         assert client.get("/audit").status_code == 200
-        assert client.get("/api/v1/tyr/audit").status_code == 404
-        assert client.get("/api/v1/tyr/sagas").status_code == 404
+        assert client.get("/api/v1/ting/audit").status_code == 404
+        assert client.get("/api/v1/ting/sagas").status_code == 404
 
     def test_build_root_app_can_mount_admin_slice_without_tenancy(self) -> None:
         volundr_app = FastAPI()
@@ -1062,34 +1066,34 @@ class TestRootServerBuildApp:
         assert client.get("/api/v1/forge/sessions/ping").status_code == 404
 
     def test_build_root_app_can_mount_saga_slice_without_dispatch_slice(self) -> None:
-        tyr_app = FastAPI()
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tyr/sagas/ping")
+        @ting_app.get("/api/v1/ting/sagas/ping")
         async def saga_ping():
             return {"pong": "saga"}
 
-        @tyr_app.get("/api/v1/tyr/dispatch/ping")
+        @ting_app.get("/api/v1/ting/dispatch/ping")
         async def dispatch_ping():
             return {"pong": "dispatch"}
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
                         name="saga-api",
-                        prefixes=("/api/v1/tyr/sagas",),
+                        prefixes=("/api/v1/ting/sagas",),
                     ),
                     APIRouteDomain(
                         name="dispatch-api",
-                        prefixes=("/api/v1/tyr/dispatch",),
+                        prefixes=("/api/v1/ting/dispatch",),
                     ),
                 )
 
         registry = PluginRegistry()
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -1099,38 +1103,38 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/tyr/sagas/ping").status_code == 200
-        assert client.get("/api/v1/tyr/dispatch/ping").status_code == 404
+        assert client.get("/api/v1/ting/sagas/ping").status_code == 200
+        assert client.get("/api/v1/ting/dispatch/ping").status_code == 404
 
     def test_build_root_app_can_mount_review_slice_without_saga_slice(self) -> None:
-        tyr_app = FastAPI()
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tyr/raids/ping")
-        async def raid_ping():
+        @ting_app.get("/api/v1/ting/runs/ping")
+        async def run_ping():
             return {"pong": "review"}
 
-        @tyr_app.get("/api/v1/tyr/sagas/ping")
+        @ting_app.get("/api/v1/ting/sagas/ping")
         async def saga_ping():
             return {"pong": "saga"}
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
                         name="review-api",
-                        prefixes=("/api/v1/tyr/raids",),
+                        prefixes=("/api/v1/ting/runs",),
                     ),
                     APIRouteDomain(
                         name="saga-api",
-                        prefixes=("/api/v1/tyr/sagas",),
+                        prefixes=("/api/v1/ting/sagas",),
                     ),
                 )
 
         registry = PluginRegistry()
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -1140,8 +1144,8 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/tyr/raids/ping").status_code == 200
-        assert client.get("/api/v1/tyr/sagas/ping").status_code == 404
+        assert client.get("/api/v1/ting/runs/ping").status_code == 200
+        assert client.get("/api/v1/ting/sagas/ping").status_code == 404
 
     def test_build_root_app_can_mount_credentials_slice(self) -> None:
         volundr_app = FastAPI()
@@ -1241,39 +1245,39 @@ class TestRootServerBuildApp:
         assert client.get("/api/v1/integrations/oauth/linear/start").status_code == 200
         assert client.get("/api/v1/forge/repos").status_code == 404
 
-    def test_build_root_app_can_mount_tyr_settings_without_workflow_routes(self) -> None:
-        tyr_app = FastAPI()
+    def test_build_root_app_can_mount_ting_settings_without_workflow_routes(self) -> None:
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tyr/settings/flock")
+        @ting_app.get("/api/v1/ting/settings/flock")
         async def flock_settings():
             return {"route": "settings"}
 
-        @tyr_app.get("/api/v1/tyr/flock")
+        @ting_app.get("/api/v1/ting/flock")
         async def flock_workflow():
             return {"route": "workflow"}
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
                         name="settings-api",
-                        prefixes=("/api/v1/tyr/settings",),
+                        prefixes=("/api/v1/ting/settings",),
                     ),
                     APIRouteDomain(
                         name="workflow-api",
                         prefixes=(
-                            "/api/v1/tyr/flock",
-                            "/api/v1/tyr/flock_flows",
-                            "/api/v1/tyr/pipelines",
+                            "/api/v1/ting/flock",
+                            "/api/v1/ting/flock_flows",
+                            "/api/v1/ting/pipelines",
                         ),
                     ),
                 )
 
         registry = PluginRegistry()
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -1283,8 +1287,8 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/tyr/settings/flock").status_code == 200
-        assert client.get("/api/v1/tyr/flock").status_code == 404
+        assert client.get("/api/v1/ting/settings/flock").status_code == 200
+        assert client.get("/api/v1/ting/flock").status_code == 404
 
     def test_build_root_app_mounts_canonical_mimir_prefixes_via_backend_translation(self) -> None:
         mimir_app = FastAPI()
@@ -1617,15 +1621,18 @@ class TestRootServerRunMigrations:
         vol_dir.mkdir()
         (vol_dir / "000001_init.up.sql").write_text("CREATE TABLE IF NOT EXISTS t1 (id INT);")
 
-        tyr_dir = tmp_path / "tyr"
-        tyr_dir.mkdir()
-        (tyr_dir / "000001_init.up.sql").write_text("CREATE TABLE IF NOT EXISTS t2 (id INT);")
+        ting_dir = tmp_path / "ting"
+        ting_dir.mkdir()
+        (ting_dir / "000001_init.up.sql").write_text("CREATE TABLE IF NOT EXISTS t2 (id INT);")
+        (ting_dir / "000025_legacy_schema_compat.up.sql").write_text(
+            "CREATE TABLE IF NOT EXISTS t0 (id INT);"
+        )
 
         def mock_migration_dir(variant):
             if variant == "volundr":
                 return vol_dir
-            if variant == "tyr":
-                return tyr_dir
+            if variant == "ting":
+                return ting_dir
             raise FileNotFoundError
 
         mock_conn = AsyncMock()
@@ -1636,7 +1643,13 @@ class TestRootServerRunMigrations:
         ):
             await server._run_migrations()
 
-        assert mock_conn.execute.await_count == 2
+        assert mock_conn.execute.await_count == 3
+        executed_sql = [call.args[0] for call in mock_conn.execute.await_args_list]
+        assert executed_sql == [
+            "CREATE TABLE IF NOT EXISTS t1 (id INT);",
+            "CREATE TABLE IF NOT EXISTS t0 (id INT);",
+            "CREATE TABLE IF NOT EXISTS t2 (id INT);",
+        ]
         mock_conn.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1832,7 +1845,7 @@ class TestPluginApiPrefixes:
 
     def test_has_expected_plugins(self) -> None:
         assert "volundr" in _PLUGIN_API_PREFIXES
-        assert "tyr" in _PLUGIN_API_PREFIXES
+        assert "ting" in _PLUGIN_API_PREFIXES
         assert "niuu" in _PLUGIN_API_PREFIXES
 
     def test_prefixes_start_with_api(self) -> None:

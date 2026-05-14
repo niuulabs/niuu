@@ -55,7 +55,7 @@ class TestCLICommandTransportInit:
         t = CLICommandTransport(
             command="/usr/bin/curl",
             args=["-s", "-X", "POST"],
-            subscribe=["ravn.*", "tyr.*"],
+            subscribe=["ravn.*", "ting.*"],
             pass_event_as="env",
             event_arg_name="--payload",
             timeout_s=60,
@@ -63,7 +63,7 @@ class TestCLICommandTransportInit:
         )
         assert t._command == "/usr/bin/curl"
         assert t._args == ["-s", "-X", "POST"]
-        assert t._subscribe_patterns == ["ravn.*", "tyr.*"]
+        assert t._subscribe_patterns == ["ravn.*", "ting.*"]
         assert t._pass_event_as == "env"
         assert t._event_arg_name == "--payload"
         assert t._timeout_s == 60
@@ -102,8 +102,8 @@ class TestCLICommandTransportInit:
 
 class TestSubscribePatterns:
     def test_returns_configured_patterns(self):
-        t = _make_transport(subscribe=["ravn.*", "tyr.*"])
-        assert t.subscribe_patterns == ["ravn.*", "tyr.*"]
+        t = _make_transport(subscribe=["ravn.*", "ting.*"])
+        assert t.subscribe_patterns == ["ravn.*", "ting.*"]
 
     def test_returns_copy(self):
         t = _make_transport(subscribe=["ravn.*"])
@@ -148,7 +148,7 @@ class TestSubscribePort:
     async def test_multiple_subscriptions_tracked(self):
         t = _make_transport()
         s1 = await t.subscribe(["ravn.*"], _NOOP)
-        s2 = await t.subscribe(["tyr.*"], _NOOP)
+        s2 = await t.subscribe(["ting.*"], _NOOP)
         assert len(t._subscriptions) == 2
         await s1.unsubscribe()
         await s2.unsubscribe()
@@ -190,7 +190,7 @@ class TestHandleDispatch:
         t._run_command = _capture  # type: ignore[method-assign]
 
         sub = await t.subscribe(["ravn.*"], _NOOP)
-        await t.handle(make_event(event_type="tyr.saga.created"))
+        await t.handle(make_event(event_type="ting.saga.created"))
         await asyncio.sleep(0.05)
 
         assert received == []
@@ -370,9 +370,9 @@ class TestRunCommand:
             pass_event_as="arg",
             event_arg_name="--event",
         )
-        event = make_event(event_type="tyr.saga.created")
+        event = make_event(event_type="ting.saga.created")
         await t._run_command(event)
-        assert out.read_text() == "tyr.saga.created"
+        assert out.read_text() == "ting.saga.created"
 
     async def test_zero_exit_logged_at_debug(self, caplog):
         t = CLICommandTransport(
@@ -518,7 +518,7 @@ class TestHandleToCommandIntegration:
             pass_event_as="stdin",
         )
         sub = await t.subscribe(["ravn.*"], _NOOP)
-        await t.handle(make_event(event_type="tyr.saga.created"))
+        await t.handle(make_event(event_type="ting.saga.created"))
         await asyncio.sleep(0.05)
         assert not out.exists()
         await sub.unsubscribe()
@@ -535,7 +535,7 @@ class TestHandleToCommandIntegration:
             pass_event_as="stdin",
         )
         sub = await t.subscribe(["*"], _NOOP)
-        await t.handle(make_event(event_type="tyr.saga.created"))
+        await t.handle(make_event(event_type="ting.saga.created"))
         await sub._queue.join()
-        assert out.read_text() == "tyr.saga.created"
+        assert out.read_text() == "ting.saga.created"
         await sub.unsubscribe()

@@ -16,7 +16,7 @@ gap-analysis document.
   - `/api/v1/tracker/*`
   - `/api/v1/audit/*`
   - `/api/v1/tokens/*`
-  - Tyr, Mimir, Ravn, and Bifrost stay in their own namespaces
+  - Ting, Mimir, Ravn, and Bifrost stay in their own namespaces
 - shared platform domains are extracted into top-level packages and plugins
 - extracted domains are `niuu`-facing instead of importing `volundr` directly
 - the Python control plane now ships as one `niuu` image with command-selected
@@ -47,19 +47,19 @@ These are now separate top-level domains:
 - `tracker`
 - `audit`
 
-### Intentional Tyr-owned edge surfaces
+### Intentional Ting-owned edge surfaces
 
 These are the two remaining route groups that look shared but are still
-intentionally Tyr-owned:
+intentionally Ting-owned:
 
 - `tracker-intake-api`
   - `/api/v1/tracker/projects`
   - `/api/v1/tracker/import`
   - this is project intake for saga creation, not generic tracker state
-- `tyr-channel-api`
-  - `/api/v1/tyr/integrations`
-  - `/api/v1/tyr/telegram`
-  - this is Tyr operator-channel wiring, not generic platform integrations
+- `ting-channel-api`
+  - `/api/v1/ting/integrations`
+  - `/api/v1/ting/telegram`
+  - this is Ting operator-channel wiring, not generic platform integrations
 
 ## What Is Still Outstanding
 
@@ -76,7 +76,7 @@ The browser golden path still needs a harder truth pass:
 - fewer silent fallbacks
 - real SSE/event behavior where the UI still leans on mock-like behavior
 
-### 3. Tyr / Volundr / Skuld / Flokk daily-driver path
+### 3. Ting / Volundr / Skuld / Flokk daily-driver path
 
 The execution spine needs one dogfood-quality flow that feels like one system
 instead of multiple tools stitched together.
@@ -104,7 +104,7 @@ frontend concept.
 
 1. End-to-end smoke on the unified `niuu` image.
 2. Forge truth-path cleanup for the browser shell.
-3. One real Tyr -> Volundr -> Skuld -> Flokk dogfood flow.
+3. One real Ting -> Volundr -> Skuld -> Flokk dogfood flow.
 4. Ravn and Mimir parity/verification passes.
 5. Observatory and attention-surface work.
 

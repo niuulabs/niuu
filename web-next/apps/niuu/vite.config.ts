@@ -52,12 +52,12 @@ const workspaceAlias = [
     replacement: resolve(__dirname, '../../packages/plugin-ravn/dist/index.css'),
   },
   {
-    find: '@niuulabs/plugin-tyr/styles.css',
-    replacement: resolve(__dirname, '../../packages/plugin-tyr/dist/styles.css'),
+    find: '@niuulabs/plugin-ting/styles.css',
+    replacement: resolve(__dirname, '../../packages/plugin-ting/dist/styles.css'),
   },
   {
-    find: '@niuulabs/plugin-tyr/index.css',
-    replacement: resolve(__dirname, '../../packages/plugin-tyr/dist/index.css'),
+    find: '@niuulabs/plugin-ting/index.css',
+    replacement: resolve(__dirname, '../../packages/plugin-ting/dist/index.css'),
   },
   {
     find: '@niuulabs/plugin-volundr/styles.css',
@@ -108,8 +108,8 @@ const workspaceAlias = [
     replacement: resolve(__dirname, '../../packages/plugin-sdk/src/index.ts'),
   },
   {
-    find: '@niuulabs/plugin-tyr',
-    replacement: resolve(__dirname, '../../packages/plugin-tyr/src/index.ts'),
+    find: '@niuulabs/plugin-ting',
+    replacement: resolve(__dirname, '../../packages/plugin-ting/src/index.ts'),
   },
   {
     find: '@niuulabs/plugin-volundr',

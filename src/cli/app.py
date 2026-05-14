@@ -8,7 +8,7 @@ New command tree (NIU-405):
   Workflow (registered by plugins at top level):
     sessions list|create|stop|delete
     sagas    list|create|dispatch
-    raids    active|approve|reject|retry
+    runs    active|approve|reject|retry
 
   Identity:
     login / logout / whoami

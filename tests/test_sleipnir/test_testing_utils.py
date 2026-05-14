@@ -31,7 +31,7 @@ async def test_event_capture_ignores_non_matching_events():
     bus = InProcessBus()
 
     async with EventCapture(bus, ["ravn.*"]) as capture:
-        await bus.publish(make_event(event_type="tyr.saga.created"))
+        await bus.publish(make_event(event_type="ting.saga.created"))
         await bus.flush()
 
     assert capture.events == []
@@ -96,7 +96,7 @@ async def test_event_capture_global_wildcard():
     bus = InProcessBus()
 
     async with EventCapture(bus, ["*"]) as capture:
-        for et in ["ravn.tool.complete", "tyr.saga.created", "volundr.pr.opened"]:
+        for et in ["ravn.tool.complete", "ting.saga.created", "volundr.pr.opened"]:
             await bus.publish(make_event(event_type=et))
         await bus.flush()
 
@@ -140,12 +140,12 @@ async def test_wait_for_event_global_wildcard():
 
     async def publisher():
         await asyncio.sleep(0)
-        await bus.publish(make_event(event_type="tyr.saga.created"))
+        await bus.publish(make_event(event_type="ting.saga.created"))
 
     asyncio.create_task(publisher())
     event = await wait_for_event(bus, "*")
 
-    assert event.event_type == "tyr.saga.created"
+    assert event.event_type == "ting.saga.created"
 
 
 async def test_wait_for_event_timeout_raises():

@@ -72,11 +72,11 @@ export const LAYOUT = {
   /** Extra orbit added for additional raven bands. */
   CLUSTER_RAVEN_STEP: 70,
 
-  /** Base orbit for raids within a cluster. */
-  CLUSTER_RAID_ORBIT: 274,
+  /** Base orbit for runs within a cluster. */
+  CLUSTER_RUN_ORBIT: 274,
 
-  /** Extra orbit added for additional raid bands. */
-  CLUSTER_RAID_STEP: 82,
+  /** Extra orbit added for additional run bands. */
+  CLUSTER_RUN_STEP: 82,
 
   /** Base orbit for uncategorized cluster children. */
   CLUSTER_GENERIC_ORBIT: 212,
@@ -90,11 +90,11 @@ export const LAYOUT = {
   /** Extra orbit added for additional host child bands. */
   HOST_CHILD_STEP: 56,
 
-  /** Base orbit for child nodes around a raid. */
-  RAID_CHILD_ORBIT: 72,
+  /** Base orbit for child nodes around a run. */
+  RUN_CHILD_ORBIT: 72,
 
-  /** Extra orbit added for additional raid child bands. */
-  RAID_CHILD_STEP: 52,
+  /** Extra orbit added for additional run child bands. */
+  RUN_CHILD_STEP: 52,
 
   /** Radial scatter applied when placing generic nodes near a parent. */
   NODE_SCATTER_DIST: 96,
@@ -109,12 +109,12 @@ export const LAYOUT = {
 /** Per-typeId hit radius for click / hover detection (world units). */
 export const HIT_RADIUS: Record<string, number> = {
   mimir: 42,
-  tyr: 18,
+  ting: 18,
   bifrost: 16,
   volundr: 16,
   valkyrie: 12,
   ravn_long: 12,
-  ravn_raid: 9,
+  ravn_run: 9,
   skuld: 9,
   host: 24,
   service: 7,
@@ -122,18 +122,18 @@ export const HIT_RADIUS: Record<string, number> = {
   printer: 9,
   vaettir: 9,
   beacon: 6,
-  raid: 50,
+  run: 50,
 };
 
 /** Per-typeId visual size (radius / half-side) for rendering. */
 export const NODE_SIZE: Record<string, number> = {
   mimir: 42,
-  tyr: 11,
+  ting: 11,
   bifrost: 10,
   volundr: 13,
   valkyrie: 10,
   ravn_long: 9,
-  ravn_raid: 6,
+  ravn_run: 6,
   skuld: 7,
   host: 8,
   service: 4,
@@ -159,7 +159,7 @@ export const MIMIR_RUNES = [
   'ᚹ',
   'ᚾ',
   'ᛁ',
-  'ᛃ',
+  '✦',
   'ᛈ',
   'ᛒ',
   'ᛖ',

@@ -48,6 +48,7 @@ def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
+
 _SIGNATURE_HEADER = "X-Ravn-Signature"
 _TIMESTAMP_HEADER = "X-Ravn-Timestamp"
 _PEER_ID_HEADER = "X-Ravn-Peer-Id"

@@ -72,4 +72,3 @@ class ManagedProvider:
     cost_per_token: float = 0.0
     state: ProviderHealthState = ProviderHealthState.UNKNOWN
     detail: str = ""
-

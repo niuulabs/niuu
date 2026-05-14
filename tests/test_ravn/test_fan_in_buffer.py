@@ -114,11 +114,11 @@ class TestAllMustPassStrategy:
         assert first is None
 
         second = buf.try_accept_consumer(
-            event_type="raid.requested",
+            event_type="run.requested",
             event_payload={"persona": "dispatch-root", "outcome": {"verdict": "pass"}},
             root_correlation_id="root1",
             persona_name="coordinator",
-            consumes_event_types=["raid.requested"],
+            consumes_event_types=["run.requested"],
             strategy="merge",
             consumer_key="coordinator-start",
         )

@@ -916,7 +916,7 @@ class BifrostConfig(BaseModel):
         Examples of supported patterns::
 
             volundr-session-*   # matches volundr-session-abc, volundr-session-xyz
-            tyr                 # exact match
+            ting                 # exact match
             claude-code         # exact match
         """
         # Exact match takes priority.

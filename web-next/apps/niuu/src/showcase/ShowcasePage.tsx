@@ -115,7 +115,7 @@ export function ShowcasePage() {
         <ErrorState
           icon="⚠️"
           title="Could not load dispatches"
-          message="The Tyr service returned a 503. Check your connection and retry."
+          message="The Ting service returned a 503. Check your connection and retry."
           action={
             <button className="showcase-action-btn showcase-action-btn--secondary">Retry</button>
           }

@@ -56,7 +56,7 @@ export type {
   Realm,
   Cluster,
   Host,
-  Raid,
+  Run,
   ObservatoryEventType,
   ObservatoryEvent,
 } from './domain';

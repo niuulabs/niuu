@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Publish a ravn.task.completed event to Tyr via Sleipnir webhook.
+"""Publish a ravn.task.completed event to Ting via Sleipnir webhook.
 
 Simulates the event that a ravn flock coordinator publishes after completing
-a raid. Use this to test the Tyr → ReviewEngine → auto-approve/retry/escalate
+a run. Use this to test the Ting → ReviewEngine → auto-approve/retry/escalate
 flow without running a full flock.
 
 Usage:
     # Approve verdict (happy path)
     uv run scripts/test-flock-outcome.py \
-        --tyr-url http://localhost:8081 \
+        --ting-url http://localhost:8081 \
         --session-id sess-001 \
         --verdict approve \
         --tests-passing true \
@@ -22,14 +22,14 @@ Usage:
     uv run scripts/test-flock-outcome.py \
         --verdict escalate --tests-passing false --scope-adherence 0.50
 
-    # Custom session (must match a raid's session_id in Tyr)
+    # Custom session (must match a run's session_id in Ting)
     uv run scripts/test-flock-outcome.py \
         --session-id "volundr-session-abc123" \
         --verdict approve
 
 Prerequisites:
-    - Tyr running with ravn_outcome.enabled=true and sleipnir.enabled=true
-    - A raid in RUNNING state with the matching session_id in Tyr's tracker
+    - Ting running with ravn_outcome.enabled=true and sleipnir.enabled=true
+    - A run in RUNNING state with the matching session_id in Ting's tracker
 """
 
 from __future__ import annotations
@@ -81,16 +81,16 @@ def build_event(
         "urgency": 0.8,
         "domain": "code",
         "timestamp": datetime.now(UTC).isoformat(),
-        "correlation_id": session_id,  # Must match raid.session_id in Tyr
+        "correlation_id": session_id,  # Must match run.session_id in Ting
         "causation_id": None,
         "tenant_id": None,
         "ttl": None,
     }
 
 
-async def publish(tyr_url: str, event: dict) -> bool:
-    """POST the event to Tyr's Sleipnir webhook endpoint."""
-    endpoint = f"{tyr_url}/sleipnir/events"
+async def publish(ting_url: str, event: dict) -> bool:
+    """POST the event to Ting's Sleipnir webhook endpoint."""
+    endpoint = f"{ting_url}/sleipnir/events"
 
     print(f"Publishing to: {endpoint}")
     print(f"Correlation ID (session_id): {event['correlation_id']}")
@@ -110,14 +110,14 @@ async def publish(tyr_url: str, event: dict) -> bool:
                 print(f"Body: {resp.text}")
 
             if resp.status_code in (200, 202, 204):
-                print("\nSUCCESS: Event accepted by Tyr")
+                print("\nSUCCESS: Event accepted by Ting")
                 return True
 
             print(f"\nWARNING: Unexpected status code {resp.status_code}")
             return False
     except httpx.ConnectError:
-        print(f"\nERROR: Cannot connect to {tyr_url}")
-        print("  Is Tyr running? Check: curl http://localhost:8081/api/v1/tyr/dispatcher")
+        print(f"\nERROR: Cannot connect to {ting_url}")
+        print("  Is Ting running? Check: curl http://localhost:8081/api/v1/ting/dispatcher")
         return False
     except Exception as e:
         print(f"\nERROR: {e}")
@@ -136,7 +136,7 @@ def parse_bool(val: str) -> bool | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Publish ravn.task.completed event to Tyr",
+        description="Publish ravn.task.completed event to Ting",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -154,14 +154,14 @@ Examples:
 """,
     )
     parser.add_argument(
-        "--tyr-url",
+        "--ting-url",
         default="http://localhost:8080",
-        help="Tyr base URL (default: http://localhost:8081)",
+        help="Ting base URL (default: http://localhost:8081)",
     )
     parser.add_argument(
         "--session-id",
         default=f"flock-e2e-{datetime.now(UTC).strftime('%H%M%S')}",
-        help="Volundr session ID (must match a raid's session_id in Tyr)",
+        help="Volundr session ID (must match a run's session_id in Ting)",
     )
     parser.add_argument(
         "--verdict",
@@ -203,7 +203,7 @@ Examples:
         pr_url=args.pr_url,
     )
 
-    success = asyncio.run(publish(args.tyr_url, event))
+    success = asyncio.run(publish(args.ting_url, event))
     sys.exit(0 if success else 1)
 
 

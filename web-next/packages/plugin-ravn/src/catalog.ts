@@ -21,7 +21,7 @@ export const PERSONA_ROLE_ORDER: PersonaRole[] = [
   'report',
   'review',
   'write',
-  // Legacy roles — kept for backward compatibility with Tyr / Observatory
+  // Legacy roles — kept for backward compatibility with Ting / Observatory
   'audit',
   'gate',
   'index',

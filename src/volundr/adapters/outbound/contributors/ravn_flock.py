@@ -1,4 +1,4 @@
-"""RavnFlockContributor — pod spec builder for raiding party (flock) pods.
+"""RavnFlockContributor — pod spec builder for runing party (flock) pods.
 
 When workload_type == "ravn_flock", this contributor replaces the default
 single-CLI layout with:
@@ -530,15 +530,15 @@ def _default_flock_trigger_config(
         for persona in persona_dicts
         if isinstance(persona, dict)
     }
-    if not {"raid-executor", "coordinator"} & persona_names:
+    if not {"run-executor", "coordinator"} & persona_names:
         return None
 
     return {
         "enabled": "true",
         "node_id": "dispatch-root",
-        "label": "Dispatch raid",
-        "source": "tyr dispatch",
-        "event_type": "raid.requested",
+        "label": "Dispatch run",
+        "source": "ting dispatch",
+        "event_type": "run.requested",
     }
 
 

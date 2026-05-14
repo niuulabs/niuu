@@ -6,7 +6,7 @@ This guide explains how to configure, author, and operate the **flock compositio
 
 ## Overview
 
-A **flock flow** (`FlockFlowConfig`) is a named, reusable persona composition that can be referenced by a pipeline template instead of repeating persona lists inline. When a pipeline dispatches a stage, Tyr:
+A **flock flow** (`FlockFlowConfig`) is a named, reusable persona composition that can be referenced by a pipeline template instead of repeating persona lists inline. When a pipeline dispatches a stage, Ting:
 
 1. Looks up the named flow via the configured `FlockFlowProvider`.
 2. Applies any per-stage `persona_overrides` on top of the flow's persona entries.
@@ -135,7 +135,7 @@ personaSource:
 
 ## FlockFlow provider configuration
 
-The flock flow store is also pluggable. Select the adapter in your Helm values or Tyr config:
+The flock flow store is also pluggable. Select the adapter in your Helm values or Ting config:
 
 ### ConfigFlockFlowProvider (in-process / testing)
 
@@ -143,7 +143,7 @@ Stores flows in memory. Zero persistence — flows are lost on restart. Use only
 
 ```yaml
 flockFlows:
-  adapter: tyr.adapters.flows.config.ConfigFlockFlowProvider
+  adapter: ting.adapters.flows.config.ConfigFlockFlowProvider
 ```
 
 ### KubernetesConfigMapFlockFlowProvider (recommended for Kubernetes)
@@ -152,12 +152,12 @@ Reads and writes flows from a ConfigMap in the cluster.
 
 ```yaml
 flockFlows:
-  adapter: tyr.adapters.flows.configmap.KubernetesConfigMapFlockFlowProvider
-  namespace: tyr
+  adapter: ting.adapters.flows.configmap.KubernetesConfigMapFlockFlowProvider
+  namespace: ting
   configmap_name: flock-flows
 ```
 
-Ensure the Tyr ServiceAccount has `get`, `patch`, `update`, and `watch` on ConfigMaps in the target namespace (see `charts/volundr/templates/rbac.yaml`).
+Ensure the Ting ServiceAccount has `get`, `patch`, `update`, and `watch` on ConfigMaps in the target namespace (see `charts/volundr/templates/rbac.yaml`).
 
 ---
 

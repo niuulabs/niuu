@@ -18,8 +18,8 @@
   --obs-edge-anim: rgba(125, 211, 252, 0.9);
   --obs-edge-long: rgba(147, 197, 253, 0.7);
   --obs-edge-soft: rgba(224, 242, 254, 0.55);
-  --obs-edge-raid: rgba(125, 211, 252, 0.9);
-  --obs-edge-raid-line: rgba(125, 211, 252, 0.6);
+  --obs-edge-run: rgba(125, 211, 252, 0.9);
+  --obs-edge-run-line: rgba(125, 211, 252, 0.6);
 }
 
 .obs-conn-legend__item {
@@ -67,10 +67,10 @@
   stroke-width: 0.9;
   stroke-linecap: round;
 }
-.obs-conn-legend__edge--raid-node {
-  fill: var(--obs-edge-raid);
+.obs-conn-legend__edge--run-node {
+  fill: var(--obs-edge-run);
 }
-.obs-conn-legend__edge--raid-line {
-  stroke: var(--obs-edge-raid-line);
+.obs-conn-legend__edge--run-line {
+  stroke: var(--obs-edge-run-line);
   stroke-width: 1;
 }

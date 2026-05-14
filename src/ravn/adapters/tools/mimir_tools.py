@@ -467,9 +467,7 @@ class MimirWriteTool(ToolPort):
 
         page = parse_compiled_truth_page(content)
         source_ids = [
-            stripped_id
-            for source_id in page.source_ids
-            if (stripped_id := str(source_id).strip())
+            stripped_id for source_id in page.source_ids if (stripped_id := str(source_id).strip())
         ]
         if not source_ids:
             return (

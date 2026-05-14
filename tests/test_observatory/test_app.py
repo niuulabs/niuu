@@ -40,8 +40,8 @@ class _FakeDiscoveryService:
             {
                 "id": "ev-1",
                 "time": "12:00:00",
-                "type": "TYR",
-                "subject": "raid summary",
+                "type": "TING",
+                "subject": "run summary",
                 "body": "queued=1",
             }
         ]
@@ -68,8 +68,8 @@ class _SequenceDiscoveryService:
             {
                 "id": "ev-1",
                 "time": "12:00:00",
-                "type": "TYR",
-                "subject": "raid summary",
+                "type": "TING",
+                "subject": "run summary",
                 "body": "queued=1",
             }
         ]
@@ -172,8 +172,8 @@ class TestObservatoryApp:
     def test_events_stream_aliases_return_events(self) -> None:
         first_chunk = asyncio.run(anext(_events_stream(_FakeDiscoveryService())))
         payload = _extract_sse_payload(first_chunk)
-        assert payload["type"] == "TYR"
-        assert payload["subject"] == "raid summary"
+        assert payload["type"] == "TING"
+        assert payload["subject"] == "run summary"
         assert payload["body"] == "queued=1"
 
     def test_topology_stream_emits_keepalive_when_timestamp_is_unchanged(self, monkeypatch) -> None:

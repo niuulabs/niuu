@@ -235,7 +235,7 @@ class SessionArtifacts:
     structured_outcome: dict[str, Any] | None = None
     outcome_valid: bool = False
     saga_id: str | None = None
-    raid_id: str | None = None
+    run_id: str | None = None
     git_commit_count: int = 0
     git_push_count: int = 0
     _known_files: set[str] = field(default_factory=set)
@@ -514,9 +514,7 @@ def _workflow_terminal_nodes(graph: dict[str, Any] | None) -> list[WorkflowTermi
                 require_git_commit=bool(
                     (node.get("completionRules") or {}).get("requireGitCommit")
                 ),
-                require_git_push=bool(
-                    (node.get("completionRules") or {}).get("requireGitPush")
-                ),
+                require_git_push=bool((node.get("completionRules") or {}).get("requireGitPush")),
             )
         )
 
@@ -634,9 +632,7 @@ def _workflow_terminal_requirements_satisfied(
     commit_ok = artifacts.git_commit_count > 0
     push_ok = artifacts.git_push_count > 0
     if git_checkpoint is not None:
-        checkpoint_commit_ok, checkpoint_push_ok = _git_workspace_checkpoint_status(
-            git_checkpoint
-        )
+        checkpoint_commit_ok, checkpoint_push_ok = _git_workspace_checkpoint_status(git_checkpoint)
         commit_ok = commit_ok or checkpoint_commit_ok
         push_ok = push_ok or checkpoint_push_ok
 
@@ -780,7 +776,7 @@ class Broker:
         self._sleipnir_publisher: SleipnirPublisher = sleipnir_publisher or InProcessBus()
         self._artifacts = SessionArtifacts(
             saga_id=self._settings.session.saga_id,
-            raid_id=self._settings.session.raid_id,
+            run_id=self._settings.session.run_id,
         )
         self._flock_completion_reported = False
         self._session_start_reported = False
@@ -1075,7 +1071,7 @@ class Broker:
         return bool(self._has_workflow_trigger() and self._settings.room.enabled)
 
     async def _publish_workflow_trigger(self) -> None:
-        """Publish the initial Tyr task into the flock as a mesh outcome event."""
+        """Publish the initial Ting task into the flock as a mesh outcome event."""
         if self._mesh_adapter is None or not self._has_workflow_trigger():
             return
 
@@ -1175,17 +1171,13 @@ class Broker:
             t.role == "user" and t.content == prompt for t in self._conversation_turns
         ):
             turn_id = str(uuid.uuid4())
-            self._append_turn(
-                ConversationTurn(id=turn_id, role="user", content=prompt)
-            )
+            self._append_turn(ConversationTurn(id=turn_id, role="user", content=prompt))
             try:
                 await self._channels.broadcast(
                     {"type": "user_confirmed", "id": turn_id, "content": prompt}
                 )
             except Exception:
-                logger.debug(
-                    "Initial-prompt user_confirmed broadcast failed", exc_info=True
-                )
+                logger.debug("Initial-prompt user_confirmed broadcast failed", exc_info=True)
 
         try:
             await self._transport.start()
@@ -1458,7 +1450,7 @@ class Broker:
         peer_id: str,
         frame: dict[str, Any],
     ) -> None:
-        """Publish a canonical help-needed event so Tyr can request human input."""
+        """Publish a canonical help-needed event so Ting can request human input."""
         payload = self._build_peer_help_needed_payload(peer_id, frame)
         if payload is None:
             return
@@ -1477,10 +1469,10 @@ class Broker:
         try:
             await self._sleipnir_publisher.publish(event)
             logger.info(
-                "Peer help-needed event emitted: peer=%s session=%s raid=%s",
+                "Peer help-needed event emitted: peer=%s session=%s run=%s",
                 peer_id,
                 session_id or "-",
-                self._artifacts.raid_id or "-",
+                self._artifacts.run_id or "-",
             )
         except Exception:
             logger.warning("Failed to emit peer help-needed event", exc_info=True)
@@ -1522,8 +1514,8 @@ class Broker:
         attempted = data.get("attempted")
         if isinstance(attempted, list):
             payload["attempted"] = [str(item) for item in attempted if str(item).strip()]
-        if self._artifacts.raid_id:
-            payload["raid_id"] = self._artifacts.raid_id
+        if self._artifacts.run_id:
+            payload["run_id"] = self._artifacts.run_id
         if self._artifacts.saga_id:
             payload["saga_id"] = self._artifacts.saga_id
         return payload
@@ -1666,7 +1658,7 @@ class Broker:
     ) -> None:
         """Report authoritative flock completion through Volundr activity metadata.
 
-        Local multi-peer workflows already flow through Skuld -> Volundr SSE -> Tyr.
+        Local multi-peer workflows already flow through Skuld -> Volundr SSE -> Ting.
         Use that existing path for ravn_flock completion instead of relying on an
         out-of-process Sleipnir transport during co-hosted development runs.
         """
@@ -1746,10 +1738,10 @@ class Broker:
 
         participant = self._room_bridge.participants.get(watch.peer_id)
         peer_name = (
-            participant.display_name
-            or participant.persona
-            or watch.peer_id
-        ) if participant is not None else watch.peer_id
+            (participant.display_name or participant.persona or watch.peer_id)
+            if participant is not None
+            else watch.peer_id
+        )
         status_hint = (
             "while waiting on a tool result"
             if watch.last_status == "tool_executing"
@@ -2233,9 +2225,7 @@ class Broker:
                     name=f"transport-send-{msg_id}",
                 )
 
-    async def _safe_transport_send(
-        self, transport: object, message: str
-    ) -> None:
+    async def _safe_transport_send(self, transport: object, message: str) -> None:
         """Wrap transport.send_message so background-task failures are surfaced.
 
         Used by the fire-and-forget path in ``_dispatch_browser_message`` —
@@ -2249,13 +2239,9 @@ class Broker:
         except Exception as exc:
             logger.exception("Transport send_message failed in background task")
             try:
-                await self._channels.broadcast(
-                    {"type": "error", "content": str(exc)}
-                )
+                await self._channels.broadcast({"type": "error", "content": str(exc)})
             except Exception:
-                logger.debug(
-                    "Failed to broadcast transport error to channels", exc_info=True
-                )
+                logger.debug("Failed to broadcast transport error to channels", exc_info=True)
 
     async def handle_human_room_message(
         self,
@@ -2779,10 +2765,10 @@ class Broker:
             logger.warning("Failed to extract outcome block from transcript", exc_info=True)
 
     async def _emit_session_ended_event(self) -> None:
-        """Emit ravn.session.ended via Sleipnir with structured outcome and saga/raid context.
+        """Emit ravn.session.ended via Sleipnir with structured outcome and saga/run context.
 
         Always emits the event — even when outcome extraction failed — so that
-        downstream Tyr pipeline executors receive session completion signals.
+        downstream Ting pipeline executors receive session completion signals.
         """
         outcome_str = "SUCCESS" if self._artifacts.outcome_valid else "PARTIAL"
         source = f"ravn:{self.session_id}"
@@ -2813,17 +2799,17 @@ class Broker:
                         event.payload[key] = self._artifacts.structured_outcome[key]
             if self._artifacts.files_changed:
                 event.payload["files_changed"] = list(self._artifacts.files_changed)
-            if self._artifacts.raid_id:
-                event.payload["raid_id"] = self._artifacts.raid_id
+            if self._artifacts.run_id:
+                event.payload["run_id"] = self._artifacts.run_id
             if self._artifacts.saga_id:
                 event.payload["saga_id"] = self._artifacts.saga_id
             await self._sleipnir_publisher.publish(event)
             logger.info(
-                "Session ended event emitted: session=%s outcome=%s saga=%s raid=%s",
+                "Session ended event emitted: session=%s outcome=%s saga=%s run=%s",
                 self.session_id,
                 outcome_str,
                 self._artifacts.saga_id,
-                self._artifacts.raid_id,
+                self._artifacts.run_id,
             )
         except Exception:
             logger.warning("Failed to emit session ended event", exc_info=True)
@@ -2936,7 +2922,7 @@ class Broker:
         never raises.
 
         Also extracts the outcome block from the session transcript and emits
-        the ``ravn.session.ended`` Sleipnir event so Tyr can track raid completion.
+        the ``ravn.session.ended`` Sleipnir event so Ting can track run completion.
         """
         self._extract_and_store_outcome()
         await self._emit_session_ended_event()

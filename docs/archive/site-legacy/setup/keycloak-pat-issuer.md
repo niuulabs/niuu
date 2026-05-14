@@ -139,12 +139,12 @@ kubectl create secret generic volundr-pat-issuer \
   --from-literal=client-secret="<client-secret>"
 ```
 
-## 7. Configure Volundr and Tyr
+## 7. Configure Volundr and Ting
 
 ### Helm Values
 
 ```yaml
-# Both volundr and tyr sections:
+# Both volundr and ting sections:
 pat:
   token_issuer_adapter: "niuu.adapters.keycloak_token_issuer.KeycloakTokenIssuer"
   token_issuer_kwargs:

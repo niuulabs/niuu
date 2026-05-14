@@ -25,7 +25,7 @@ const TEST_TOPOLOGY: Topology = {
       parentId: 'realm-asgard',
       status: 'healthy',
     },
-    { id: 'tyr-0', typeId: 'tyr', label: 'tyr-0', parentId: 'cluster-vk', status: 'healthy' },
+    { id: 'ting-0', typeId: 'ting', label: 'ting-0', parentId: 'cluster-vk', status: 'healthy' },
     {
       id: 'bifrost-0',
       typeId: 'bifrost',
@@ -41,9 +41,9 @@ const TEST_TOPOLOGY: Topology = {
       status: 'healthy',
     },
     {
-      id: 'raid-0',
-      typeId: 'raid',
-      label: 'raid-omega',
+      id: 'run-0',
+      typeId: 'run',
+      label: 'run-omega',
       parentId: 'cluster-vk',
       status: 'observing',
     },
@@ -56,11 +56,11 @@ const TEST_TOPOLOGY: Topology = {
     },
   ],
   edges: [
-    { id: 'e1', sourceId: 'tyr-0', targetId: 'volundr-0', kind: 'solid' },
-    { id: 'e2', sourceId: 'tyr-0', targetId: 'raid-0', kind: 'dashed-anim' },
+    { id: 'e1', sourceId: 'ting-0', targetId: 'volundr-0', kind: 'solid' },
+    { id: 'e2', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-anim' },
     { id: 'e3', sourceId: 'ravn-huginn', targetId: 'mimir-0', kind: 'dashed-long' },
     { id: 'e4', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'soft' },
-    { id: 'e5', sourceId: 'raid-0', targetId: 'ravn-huginn', kind: 'raid' },
+    { id: 'e5', sourceId: 'run-0', targetId: 'ravn-huginn', kind: 'run' },
   ],
 };
 
@@ -325,7 +325,7 @@ describe('computeLayout', () => {
     expect(bifrost.y).toBeGreaterThan(cluster.y);
   });
 
-  it('separates core services, wardens, and raids into distinct cluster bands', () => {
+  it('separates core services, wardens, and runs into distinct cluster bands', () => {
     const topology: Topology = {
       timestamp: '2026-04-19T00:00:00Z',
       nodes: [
@@ -346,9 +346,9 @@ describe('computeLayout', () => {
           svcType: 'ravn',
         },
         {
-          id: 'service-tyr',
-          typeId: 'tyr',
-          label: 'Tyr',
+          id: 'service-ting',
+          typeId: 'ting',
+          label: 'Ting',
           parentId: 'cluster-platform',
           status: 'healthy',
         },
@@ -360,9 +360,9 @@ describe('computeLayout', () => {
           status: 'idle',
         },
         {
-          id: 'raid-a',
-          typeId: 'raid',
-          label: 'Raid A',
+          id: 'run-a',
+          typeId: 'run',
+          label: 'Run A',
           parentId: 'cluster-platform',
           status: 'observing',
         },
@@ -374,8 +374,8 @@ describe('computeLayout', () => {
     const cluster = positions.get('cluster-platform')!;
     const ravn = positions.get('service-ravn')!;
     const warden = positions.get('warden-a')!;
-    const tyr = positions.get('service-tyr')!;
-    const raid = positions.get('raid-a')!;
+    const ting = positions.get('service-ting')!;
+    const run = positions.get('run-a')!;
 
     expect(Math.hypot(ravn.x - cluster.x, ravn.y - cluster.y)).toBeCloseTo(
       LAYOUT.CLUSTER_CORE_ORBIT,
@@ -384,12 +384,12 @@ describe('computeLayout', () => {
     expect(Math.hypot(warden.x - cluster.x, warden.y - cluster.y)).toBeGreaterThanOrEqual(
       LAYOUT.CLUSTER_RAVEN_ORBIT,
     );
-    expect(Math.hypot(raid.x - cluster.x, raid.y - cluster.y)).toBeGreaterThanOrEqual(
-      LAYOUT.CLUSTER_RAID_ORBIT,
+    expect(Math.hypot(run.x - cluster.x, run.y - cluster.y)).toBeGreaterThanOrEqual(
+      LAYOUT.CLUSTER_RUN_ORBIT,
     );
     expect(ravn.x).toBeGreaterThan(cluster.x);
     expect(warden.x).toBeGreaterThan(ravn.x);
-    expect(raid.y).toBeGreaterThan(tyr.y);
+    expect(run.y).toBeGreaterThan(ting.y);
   });
 
   it('groups generic service children into a real orbit instead of fallback overlap scatter', () => {

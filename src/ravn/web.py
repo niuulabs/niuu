@@ -1,7 +1,7 @@
 """Standalone Ravn web server.
 
 Spins up a lightweight FastAPI app serving the Ravn API (personas, agent
-status) and the web UI static files.  No Volundr, Tyr, or PostgreSQL
+status) and the web UI static files.  No Volundr, Ting, or PostgreSQL
 required — persona storage is filesystem-based (YAML in ~/.ravn/personas/).
 
 Usage::

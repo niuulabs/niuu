@@ -3,7 +3,7 @@ import { z } from 'zod';
 /**
  * Schema field type strings used in event payload definitions.
  *
- * Owner: **Ravn**. Consumed by: **Tyr** (workflow validation), **Observatory** (graph).
+ * Owner: **Ravn**. Consumed by: **Ting** (workflow validation), **Observatory** (graph).
  */
 export const fieldTypeSchema = z.enum(['string', 'number', 'boolean', 'object', 'array', 'any']);
 
@@ -16,7 +16,7 @@ export type FieldType = z.infer<typeof fieldTypeSchema>;
  * Ravn Personas form via EventPicker + SchemaEditor).
  *
  * **Consumed by:**
- * - `plugin-tyr` — WorkflowBuilder validates that every `consumes` edge has a
+ * - `plugin-ting` — WorkflowBuilder validates that every `consumes` edge has a
  *   matching producer; fan-in wiring reads the event name.
  * - `plugin-observatory` — Events view renders the produces/consumes graph.
  */
@@ -42,7 +42,7 @@ export type EventSpec = z.infer<typeof eventSpecSchema>;
  * created inline; the catalog grows as personas are edited).
  *
  * **Consumed by:**
- * - `plugin-tyr` — every workflow node's `produces` / `consumes` wiring is
+ * - `plugin-ting` — every workflow node's `produces` / `consumes` wiring is
  *   validated against this catalog.
  * - `plugin-observatory` — Events view renders the full catalog as a graph.
  * - `plugin-mimir` — ravn-bindings screen labels consumed events.

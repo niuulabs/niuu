@@ -1,6 +1,0 @@
--- PR tracking fields on raids
-
-ALTER TABLE raids ADD COLUMN IF NOT EXISTS pr_url TEXT;
-ALTER TABLE raids ADD COLUMN IF NOT EXISTS pr_id  TEXT;
-CREATE INDEX IF NOT EXISTS idx_raids_session_id ON raids(session_id)
-    WHERE session_id IS NOT NULL;

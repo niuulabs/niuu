@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cli.resources import migration_dir, web_dist_dir
+from cli.resources import migration_dir, ordered_migration_files, web_dist_dir
 
 
 def _mock_traversable(mock_files):
@@ -60,9 +60,9 @@ class TestMigrationDir:
         assert result.is_dir()
         assert any(result.glob("*.up.sql"))
 
-    def test_tyr_variant(self):
-        """migration_dir('tyr') returns a directory containing tyr migrations."""
-        result = migration_dir("tyr")
+    def test_ting_variant(self):
+        """migration_dir('ting') returns a directory containing ting migrations."""
+        result = migration_dir("ting")
         assert result.is_dir()
         assert any(result.glob("*.up.sql"))
 
@@ -81,3 +81,18 @@ class TestMigrationDir:
                     mock_path_cls.return_value.is_dir.return_value = False
                     with pytest.raises(FileNotFoundError, match="Migration files not found"):
                         migration_dir("volundr")
+
+
+class TestOrderedMigrationFiles:
+    def test_prioritizes_legacy_compatibility_first(self, tmp_path: Path) -> None:
+        (tmp_path / "000001_initial_schema.up.sql").write_text("-- init")
+        (tmp_path / "000025_legacy_schema_compat.up.sql").write_text("-- compat")
+        (tmp_path / "000016_run_progress.up.sql").write_text("-- progress")
+
+        ordered = [path.name for path in ordered_migration_files(tmp_path)]
+
+        assert ordered == [
+            "000025_legacy_schema_compat.up.sql",
+            "000001_initial_schema.up.sql",
+            "000016_run_progress.up.sql",
+        ]

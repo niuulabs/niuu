@@ -2,7 +2,7 @@
  * Consumer E2E — proves the composability loop externally.
  *
  * This app is NOT part of the web-next pnpm workspace. It installs
- * @niuulabs/plugin-tyr (and its transitive niuu deps) from tarballs
+ * @niuulabs/plugin-ting (and its transitive niuu deps) from tarballs
  * produced by `pnpm pack`, simulating a third-party consumer installing
  * from GitHub Packages.
  *
@@ -18,20 +18,20 @@ test('consumer app loads and shell renders', async ({ page }) => {
   await expect(page.locator('#root')).not.toBeEmpty();
 });
 
-test('plugin-tyr nav item is visible after config loads', async ({ page }) => {
+test('plugin-ting nav item is visible after config loads', async ({ page }) => {
   await page.goto('/');
-  // Wait for the Tyr plugin rune / nav label to appear in the rail
-  // The shell renders the plugin title from tyrPlugin.title = 'Tyr'
-  await expect(page.getByText('Tyr').first()).toBeVisible({ timeout: 10_000 });
+  // Wait for the Ting plugin rune / nav label to appear in the rail
+  // The shell renders the plugin title from tingPlugin.title = 'Ting'
+  await expect(page.getByText('Ting').first()).toBeVisible({ timeout: 10_000 });
 });
 
-test('navigating to /tyr renders the Tyr page', async ({ page }) => {
-  await page.goto('/tyr');
-  // The TyrPage renders inside the Shell; the route resolves
-  // and something from the Tyr UI is visible
+test('navigating to /ting renders the Ting page', async ({ page }) => {
+  await page.goto('/ting');
+  // The TingPage renders inside the Shell; the route resolves
+  // and something from the Ting UI is visible
   await expect(page.locator('#root')).not.toBeEmpty();
-  // Wait for the Tyr nav item to confirm the shell is mounted
-  await expect(page.getByText('Tyr').first()).toBeVisible({ timeout: 10_000 });
+  // Wait for the Ting nav item to confirm the shell is mounted
+  await expect(page.getByText('Ting').first()).toBeVisible({ timeout: 10_000 });
 });
 
 test('plugin CSS is applied — shell has background colour', async ({ page }) => {

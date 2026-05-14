@@ -17,7 +17,7 @@ export type PersonaShapeKind =
  * Deterministic role → shape mapping. Every call with the same role returns
  * the same shape — this is contractually guaranteed and tested.
  *
- * Exported so Tyr, Observatory, and other consumers can derive the shape
+ * Exported so Ting, Observatory, and other consumers can derive the shape
  * without rendering the full avatar.
  */
 export const PERSONA_ROLE_SHAPE: Record<PersonaRole, PersonaShapeKind> = {

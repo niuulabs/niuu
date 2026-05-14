@@ -132,7 +132,7 @@ class ServerConfig(BaseModel):
     )
     port: int = Field(
         default=8080,
-        description="Single port for all services (Volundr, Tyr, Web UI).",
+        description="Single port for all services (Volundr, Ting, Web UI).",
     )
 
 

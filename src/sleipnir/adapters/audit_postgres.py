@@ -158,7 +158,7 @@ def _build_query(q: AuditQuery) -> tuple[str, list]:
 def _is_simple_prefix_pattern(pattern: str) -> bool:
     """Return True if *pattern* is a simple ``prefix.*`` style glob.
 
-    Examples that qualify: ``"ravn.*"``, ``"tyr.task.*"``.
+    Examples that qualify: ``"ravn.*"``, ``"ting.task.*"``.
     Examples that do NOT: ``"*"`` (bare wildcard), ``"ravn.*.complete"``,
     ``"ravn.?ool.*"``.
     """

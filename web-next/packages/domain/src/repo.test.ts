@@ -35,9 +35,9 @@ describe('normalizeRepoCatalogResponse', () => {
       {
         provider: 'github',
         org: 'niuulabs',
-        name: 'tyr',
-        cloneUrl: 'https://github.com/niuulabs/tyr.git',
-        url: 'https://github.com/niuulabs/tyr',
+        name: 'ting',
+        cloneUrl: 'https://github.com/niuulabs/ting.git',
+        url: 'https://github.com/niuulabs/ting',
         defaultBranch: 'main',
         branches: ['main'],
       },

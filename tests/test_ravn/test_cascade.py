@@ -406,7 +406,7 @@ class TestTaskCreateTool:
         parent = _make_agent_task("parent-task")
         parent.session_id = "sess-123"
         parent.root_correlation_id = "root-123"
-        parent.workflow_node_id = "raid-coordinator-start"
+        parent.workflow_node_id = "run-coordinator-start"
         token = dl._current_task_var.set(parent)
         try:
             tool = TaskCreateTool(drive_loop=dl, allowed_target_personas={"coder"})
@@ -428,7 +428,7 @@ class TestTaskCreateTool:
         parent = _make_agent_task("parent-task")
         parent.session_id = "sess-123"
         parent.root_correlation_id = "root-123"
-        parent.workflow_node_id = "raid-coordinator-start"
+        parent.workflow_node_id = "run-coordinator-start"
         token = dl._current_task_var.set(parent)
         try:
             tool = TaskCreateTool(drive_loop=dl, allowed_target_personas={"coder"})
@@ -450,7 +450,7 @@ class TestTaskCreateTool:
     async def test_requires_explicit_persona_within_workflow_node(self):
         dl = _make_drive_loop()
         parent = _make_agent_task("parent-task")
-        parent.workflow_node_id = "raid-coordinator-start"
+        parent.workflow_node_id = "run-coordinator-start"
         token = dl._current_task_var.set(parent)
         try:
             tool = TaskCreateTool(drive_loop=dl, allowed_target_personas={"coder"})

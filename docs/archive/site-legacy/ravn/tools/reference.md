@@ -10,7 +10,7 @@ dynamically based on the active profile, persona, and configuration.
 | `core` | Yes | File, git, bash, web fetch, terminal, todo, ask user |
 | `extended` | Default profile | Introspection, memory search, web search |
 | `skill` | If `skill.enabled` | Skill discovery and execution |
-| `platform` | If `gateway.platform.enabled` | Volundr/Tyr integration |
+| `platform` | If `gateway.platform.enabled` | Volundr/Ting integration |
 | `mimir` | If `mimir.enabled` | Knowledge base tools |
 | `cascade` | If `cascade.enabled` in daemon | Distributed task delegation |
 
@@ -92,8 +92,8 @@ Available when `gateway.platform.enabled` is `true`.
 |------|-----------|-------------|
 | `volundr_session` | `platform:api` | Manage Volundr sessions: list, create, stop, delete. |
 | `volundr_git` | `platform:api` | Git operations via Volundr platform API. |
-| `tyr_saga` | `platform:api` | Decompose work into Tyr sagas (distributed task breakdowns). |
-| `tracker_issue` | `platform:api` | Manage issues via Tyr tracker adapters (Linear, GitHub Issues, etc.). |
+| `ting_saga` | `platform:api` | Decompose work into Ting sagas (distributed task breakdowns). |
+| `tracker_issue` | `platform:api` | Manage issues via Ting tracker adapters (Linear, GitHub Issues, etc.). |
 
 ## Mímir Tools
 

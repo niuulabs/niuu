@@ -8,11 +8,11 @@ interface LegendEntry {
 
 /** Labels match the web2 prototype connection legend exactly. */
 const EDGE_LEGEND: LegendEntry[] = [
-  { kind: 'solid', label: 'Týr → Völundr' },
-  { kind: 'dashed-anim', label: 'Týr ⇝ raid coord' },
+  { kind: 'solid', label: 'Ting → Völundr' },
+  { kind: 'dashed-anim', label: 'Ting ⇝ run coord' },
   { kind: 'dashed-long', label: 'Bifröst → ext. model' },
   { kind: 'soft', label: 'ravn → Mímir' },
-  { kind: 'raid', label: 'raid cohesion' },
+  { kind: 'run', label: 'run cohesion' },
 ];
 
 export function ConnectionLegend() {
@@ -65,12 +65,12 @@ function EdgeLine({ kind }: { kind: EdgeKind }) {
     return <line {...base} className="obs-conn-legend__edge--soft" />;
   }
 
-  // raid — dots + line
+  // run — dots + line
   return (
     <g>
-      <circle cx={8} cy={y} r={3} className="obs-conn-legend__edge--raid-node" />
-      <circle cx={28} cy={y} r={3} className="obs-conn-legend__edge--raid-node" />
-      <line x1={11} y1={y} x2={25} y2={y} className="obs-conn-legend__edge--raid-line" />
+      <circle cx={8} cy={y} r={3} className="obs-conn-legend__edge--run-node" />
+      <circle cx={28} cy={y} r={3} className="obs-conn-legend__edge--run-node" />
+      <line x1={11} y1={y} x2={25} y2={y} className="obs-conn-legend__edge--run-line" />
     </g>
   );
 }

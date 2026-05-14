@@ -1,6 +1,6 @@
 # Deployment Prerequisites and Infrastructure Requirements
 
-This guide documents every infrastructure dependency for deploying Tyr, Volundr, and the
+This guide documents every infrastructure dependency for deploying Ting, Volundr, and the
 niuu umbrella chart. Follow the prerequisites checklist before your first `helm install`
 to avoid the most common failure modes.
 
@@ -10,7 +10,7 @@ to avoid the most common failure modes.
 
 ### Shared Infrastructure
 
-- [ ] **PostgreSQL cluster** accessible from the deployment namespace (two databases: `volundr`, `tyr`)
+- [ ] **PostgreSQL cluster** accessible from the deployment namespace (two databases: `volundr`, `ting`)
 - [ ] **Keycloak 26+** (or compatible OIDC provider) with `token-exchange` feature enabled
 - [ ] **Ingress controller** installed (NGINX, Traefik, or HAProxy) with a single domain for all services
 - [ ] **TLS certificate** for the shared domain (wildcard or SAN covering the base domain)
@@ -21,9 +21,9 @@ to avoid the most common failure modes.
 | Secret Name | Keys | Used By | Purpose |
 |---|---|---|---|
 | `volundr-db` | `username`, `password` | Volundr | PostgreSQL credentials |
-| `tyr-db` | `username`, `password` | Tyr | PostgreSQL credentials |
-| `volundr-pat-issuer` | `client-secret` | Volundr, Tyr | Keycloak PAT issuer client secret |
-| `infisical-auth` | `client-id`, `client-secret` | Volundr, Tyr | Infisical Universal Auth (if using Infisical) |
+| `ting-db` | `username`, `password` | Ting | PostgreSQL credentials |
+| `volundr-pat-issuer` | `client-secret` | Volundr, Ting | Keycloak PAT issuer client secret |
+| `infisical-auth` | `client-id`, `client-secret` | Volundr, Ting | Infisical Universal Auth (if using Infisical) |
 | `github-token` | `token` | Volundr | GitHub API token for repo access |
 
 > Create secrets before deploying. Use ExternalSecrets or Sealed Secrets for production —
@@ -44,7 +44,7 @@ Refer to [keycloak-pat-issuer.md](keycloak-pat-issuer.md) for the full walkthrou
 
 ## Domain Routing
 
-All three ingresses — Volundr API, Tyr API, and Volundr Web — **must share the same host**.
+All three ingresses — Volundr API, Ting API, and Volundr Web — **must share the same host**.
 The ingress controller routes by path prefix:
 
 | Path | Service | Chart |
@@ -52,7 +52,7 @@ The ingress controller routes by path prefix:
 | `/api/v1/*` | Volundr API | `charts/volundr` |
 | `/api/v1/users/*` | Volundr API | `charts/volundr` |
 | `/api/v1/niuu/*` | Volundr API | `charts/volundr` |
-| `/api/v1/tyr/*` | Tyr API | `charts/tyr` |
+| `/api/v1/ting/*` | Ting API | `charts/ting` |
 | `/` (catch-all) | Volundr Web UI | `charts/volundr` (web subchart) |
 
 ### Example Ingress Values
@@ -95,14 +95,14 @@ volundr:
           hosts:
             - niuu.example.com
 
-tyr:
+ting:
   ingress:
     enabled: true
     className: nginx
     hosts:
       - host: niuu.example.com
         paths:
-          - path: /api/v1/tyr
+          - path: /api/v1/ting
             pathType: Prefix
     tls:
       - secretName: niuu-tls
@@ -124,7 +124,7 @@ global:
   image:
     registry: ghcr.io/niuulabs  # shared image registry
   domain: niuu.example.com       # base domain for ingress hostnames
-  aiModels:                      # propagated to both Tyr and Volundr
+  aiModels:                      # propagated to both Ting and Volundr
     - id: "claude-opus-4-6"
       name: "Opus 4.6"
       costPerMillionTokens: 15.00
@@ -138,8 +138,8 @@ global:
 volundr:
   enabled: true   # deploy Volundr subchart
 
-tyr:
-  enabled: true   # deploy Tyr subchart
+ting:
+  enabled: true   # deploy Ting subchart
 ```
 
 ### Volundr Subchart (`charts/volundr`)
@@ -255,16 +255,16 @@ storage:
     size: 1Gi
 ```
 
-### Tyr Subchart (`charts/tyr`)
+### Ting Subchart (`charts/ting`)
 
 #### Database
 
-Tyr uses a **separate database** from Volundr on the same PostgreSQL cluster:
+Ting uses a **separate database** from Volundr on the same PostgreSQL cluster:
 
 ```yaml
 database:
-  name: tyr
-  existingSecret: "tyr-db"
+  name: ting
+  existingSecret: "ting-db"
   userKey: username
   passwordKey: password
   minPoolSize: 2
@@ -277,13 +277,13 @@ database:
 
 #### Envoy Sidecar
 
-Same configuration pattern as Volundr but with Tyr-specific roles claim.
+Same configuration pattern as Volundr but with Ting-specific roles claim.
 
-> **Why `audiences: [volundr-api]` for both Volundr and Tyr?** Both services
+> **Why `audiences: [volundr-api]` for both Volundr and Ting?** Both services
 > share the same Keycloak realm and accept the same user JWTs. The `volundr-api`
-> audience is configured once in the IDP and used by all backend services. Tyr
+> audience is configured once in the IDP and used by all backend services. Ting
 > differentiates authorization via the `rolesClaim` (which reads from
-> `resource_access.tyr.roles` instead of `resource_access.volundr.roles`), not
+> `resource_access.ting.roles` instead of `resource_access.volundr.roles`), not
 > via a separate audience.
 
 ```yaml
@@ -297,7 +297,7 @@ envoy:
     jwksUri: "https://keycloak.example.com/realms/volundr/protocol/openid-connect/certs"
     keycloakHost: "keycloak.default.svc.cluster.local"
     keycloakPort: 8080
-    rolesClaim: "resource_access.tyr.roles"
+    rolesClaim: "resource_access.ting.roles"
     bypassPrefixes:
       - /health
 ```
@@ -321,18 +321,18 @@ credentialStore:
 
 #### Volundr Connection
 
-Tyr calls Volundr for autonomous dispatch. The default assumes in-cluster DNS:
+Ting calls Volundr for autonomous dispatch. The default assumes in-cluster DNS:
 
 ```yaml
 volundr:
   url: "http://volundr:8000"
 ```
 
-See [connecting-tyr-to-volundr.md](connecting-tyr-to-volundr.md) for PAT setup.
+See [connecting-ting-to-volundr.md](connecting-ting-to-volundr.md) for PAT setup.
 
 #### PAT Signing Key
 
-For development without Keycloak, Tyr signs PATs locally with a symmetric key.
+For development without Keycloak, Ting signs PATs locally with a symmetric key.
 In production, use the `KeycloakTokenIssuer` instead (see `keycloak-pat-issuer.md`):
 
 ```yaml
@@ -345,7 +345,7 @@ auth:
 
 ## Database Migrations
 
-Both Volundr and Tyr run migrations via an init container using the
+Both Volundr and Ting run migrations via an init container using the
 [`migrate`](https://github.com/golang-migrate/migrate) tool.
 
 ### How It Works
@@ -405,8 +405,8 @@ directly:
 # Volundr migrations
 ls migrations/*.up.sql | wc -l
 
-# Tyr migrations
-ls migrations/tyr/*.up.sql | wc -l
+# Ting migrations
+ls migrations/ting/*.up.sql | wc -l
 ```
 
 Or query the database:
@@ -485,7 +485,7 @@ kubectl exec -it <postgres-pod> -- psql -U postgres -d volundr \
   -c "REASSIGN OWNED BY postgres TO volundr;"
 ```
 
-### 4. Tyr Cannot Dispatch Sessions to Volundr
+### 4. Ting Cannot Dispatch Sessions to Volundr
 
 **Cause:** No PAT stored in the credential store, or Volundr URL is wrong.
 
@@ -493,9 +493,9 @@ kubectl exec -it <postgres-pod> -- psql -U postgres -d volundr \
 
 **Fix:**
 
-1. Verify `tyr.volundr.url` resolves from inside the cluster.
-2. Create a PAT in Volundr and store it as a Tyr integration connection
-   (see [connecting-tyr-to-volundr.md](connecting-tyr-to-volundr.md)).
+1. Verify `ting.volundr.url` resolves from inside the cluster.
+2. Create a PAT in Volundr and store it as a Ting integration connection
+   (see [connecting-ting-to-volundr.md](connecting-ting-to-volundr.md)).
 3. Ensure the credential store is a production adapter (not `MemoryCredentialStore`).
 
 ### 5. JWKS Fetch Fails (Envoy Startup)
@@ -538,11 +538,11 @@ Ensure the `volundr-web` client in Keycloak has the correct redirect URIs
 
 ## Shared Dependencies Summary
 
-Both Volundr and Tyr require these shared infrastructure components:
+Both Volundr and Ting require these shared infrastructure components:
 
 | Component | Shared? | Notes |
 |---|---|---|
-| PostgreSQL cluster | Yes | Separate databases (`volundr`, `tyr`) on the same cluster |
+| PostgreSQL cluster | Yes | Separate databases (`volundr`, `ting`) on the same cluster |
 | Keycloak realm | Yes | Same realm, same JWKS endpoint |
 | Credential store | Yes | Same Infisical/Vault backend and project |
 | Ingress controller | Yes | Same host, path-based routing |
@@ -562,8 +562,8 @@ kubectl create secret generic volundr-db -n volundr \
   --from-literal=username=volundr \
   --from-literal=password='<db-password>'
 
-kubectl create secret generic tyr-db -n volundr \
-  --from-literal=username=tyr \
+kubectl create secret generic ting-db -n volundr \
+  --from-literal=username=ting \
   --from-literal=password='<db-password>'
 
 kubectl create secret generic volundr-pat-issuer -n volundr \

@@ -21,7 +21,7 @@ export default defineConfig({
         'packages/plugin-observatory/src/index.tsx',
       ),
       '@niuulabs/plugin-ravn': resolve(__dirname, 'packages/plugin-ravn/src/index.ts'),
-      '@niuulabs/plugin-tyr': resolve(__dirname, 'packages/plugin-tyr/src/index.ts'),
+      '@niuulabs/plugin-ting': resolve(__dirname, 'packages/plugin-ting/src/index.ts'),
       '@niuulabs/plugin-volundr': resolve(__dirname, 'packages/plugin-volundr/src/index.ts'),
       '@niuulabs/plugin-login': resolve(__dirname, 'packages/plugin-login/src/index.ts'),
       '@niuulabs/plugin-sdk': resolve(__dirname, 'packages/plugin-sdk/src/index.ts'),

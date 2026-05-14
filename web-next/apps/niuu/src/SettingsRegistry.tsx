@@ -5,7 +5,7 @@ import {
   type NiuuConfig,
   type SettingsScope,
 } from '@niuulabs/plugin-sdk';
-import { tyrMountedSettingsProvider } from '@niuulabs/plugin-tyr';
+import { tingMountedSettingsProvider } from '@niuulabs/plugin-ting';
 import { resolveSettingsServiceBase } from './services';
 
 export interface RemoteSettingsOption {
@@ -54,7 +54,7 @@ export type MountedSettingsProvider =
       defaultSectionId?: string;
     };
 
-const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [tyrMountedSettingsProvider];
+const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [tingMountedSettingsProvider];
 
 const REMOTE_PROVIDER_DEFS = [
   {

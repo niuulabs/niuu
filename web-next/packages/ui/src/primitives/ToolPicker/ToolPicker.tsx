@@ -32,7 +32,7 @@ export interface ToolPickerProps {
  * ToolPicker — Dialog with tool list grouped by provider group.
  * Destructive tools are flagged with a red indicator.
  *
- * Promoted to @niuulabs/ui because Tyr's WorkflowBuilder will need it too.
+ * Promoted to @niuulabs/ui because Ting's WorkflowBuilder will need it too.
  * Built here in NIU-673 (Ravn personas page).
  */
 export function ToolPicker({

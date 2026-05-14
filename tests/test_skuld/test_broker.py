@@ -571,7 +571,7 @@ class TestBroker:
         broker_under_test._room_bridge.participants = {
             "flock-council-chair": MagicMock(persona="council-chair")
         }
-        broker_under_test._artifacts.raid_id = "raid-human-1"
+        broker_under_test._artifacts.run_id = "run-human-1"
         broker_under_test._artifacts.saga_id = "saga-human-1"
 
         async with EventCapture(bus, ["ravn.help.needed"]) as capture:
@@ -607,7 +607,7 @@ class TestBroker:
         assert event.correlation_id == "test-session-123"
         assert event.payload["session_id"] == "test-session-123"
         assert event.payload["persona"] == "council-chair"
-        assert event.payload["raid_id"] == "raid-human-1"
+        assert event.payload["run_id"] == "run-human-1"
         assert event.payload["saga_id"] == "saga-human-1"
         assert event.payload["reason"] == "needs_feedback"
 
@@ -698,7 +698,7 @@ class TestBroker:
                 "graph": {
                     "nodes": [
                         {
-                            "id": "raid-complete",
+                            "id": "run-complete",
                             "kind": "end",
                             "joinMode": "all",
                             "completionEvent": "ravn.task.completed",
@@ -708,13 +708,13 @@ class TestBroker:
                         {
                             "id": "e-review",
                             "source": "review-stage",
-                            "target": "raid-complete",
+                            "target": "run-complete",
                             "label": "review.completed -> review.completed",
                         },
                         {
                             "id": "e-security",
                             "source": "security-stage",
-                            "target": "raid-complete",
+                            "target": "run-complete",
                             "label": "security.completed -> security.completed",
                         },
                     ],
@@ -786,7 +786,7 @@ class TestBroker:
                 "graph": {
                     "nodes": [
                         {
-                            "id": "raid-complete",
+                            "id": "run-complete",
                             "kind": "end",
                             "joinMode": "all",
                             "completionEvent": "ravn.task.completed",
@@ -800,13 +800,13 @@ class TestBroker:
                         {
                             "id": "e-review",
                             "source": "review-stage",
-                            "target": "raid-complete",
+                            "target": "run-complete",
                             "label": "review.completed -> review.completed",
                         },
                         {
                             "id": "e-security",
                             "source": "security-stage",
-                            "target": "raid-complete",
+                            "target": "run-complete",
                             "label": "security.completed -> security.completed",
                         },
                     ],
@@ -875,7 +875,7 @@ class TestBroker:
                 "graph": {
                     "nodes": [
                         {
-                            "id": "raid-complete",
+                            "id": "run-complete",
                             "kind": "end",
                             "joinMode": "all",
                             "completionEvent": "ravn.task.completed",
@@ -889,13 +889,13 @@ class TestBroker:
                         {
                             "id": "e-review",
                             "source": "review-stage",
-                            "target": "raid-complete",
+                            "target": "run-complete",
                             "label": "review.completed -> review.completed",
                         },
                         {
                             "id": "e-security",
                             "source": "security-stage",
-                            "target": "raid-complete",
+                            "target": "run-complete",
                             "label": "security.completed -> security.completed",
                         },
                     ],

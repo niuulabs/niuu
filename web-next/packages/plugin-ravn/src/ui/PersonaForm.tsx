@@ -581,7 +581,7 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
         {/* Fan-in */}
         <Section
           title="Fan-in"
-          subtitle="How Týr combines this persona's output with others emitting the same event."
+          subtitle="How Ting combines this persona's output with others emitting the same event."
         >
           <div className="rv-fanin-grid" data-testid="fanin-cards">
             {FAN_IN_STRATEGIES.map((s) => {

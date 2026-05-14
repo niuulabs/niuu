@@ -1015,14 +1015,14 @@ class TestWorkflowRuntimeForPersona:
                             {
                                 "id": "coordinator-start",
                                 "kind": "stage",
-                                "label": "Coordinate raid",
+                                "label": "Coordinate run",
                                 "stageMembers": [{"personaId": "coordinator"}],
                                 "joinMode": "any",
                             },
                             {
                                 "id": "coordinator-finish",
                                 "kind": "stage",
-                                "label": "Finalize raid",
+                                "label": "Finalize run",
                                 "stageMembers": [{"personaId": "coordinator"}],
                                 "joinMode": "all",
                             },
@@ -1032,7 +1032,7 @@ class TestWorkflowRuntimeForPersona:
                                 "id": "e1",
                                 "source": "dispatch-root",
                                 "target": "coordinator-start",
-                                "label": "raid.requested -> raid.requested",
+                                "label": "run.requested -> run.requested",
                             },
                             {
                                 "id": "e2",
@@ -1055,18 +1055,18 @@ class TestWorkflowRuntimeForPersona:
         runtime = _workflow_runtime_for_persona(settings, "coordinator")
 
         assert runtime is not None
-        assert runtime["event_types"] == ["raid.requested", "review.passed", "security.passed"]
+        assert runtime["event_types"] == ["run.requested", "review.passed", "security.passed"]
         assert runtime["fan_in_strategy"] == "merge"
         assert runtime["consumer_groups"] == [
             {
                 "id": "coordinator-start",
-                "label": "Coordinate raid",
-                "event_types": ["raid.requested"],
+                "label": "Coordinate run",
+                "event_types": ["run.requested"],
                 "fan_in_strategy": "merge",
             },
             {
                 "id": "coordinator-finish",
-                "label": "Finalize raid",
+                "label": "Finalize run",
                 "event_types": ["review.passed", "security.passed"],
                 "fan_in_strategy": "all_must_pass",
             },

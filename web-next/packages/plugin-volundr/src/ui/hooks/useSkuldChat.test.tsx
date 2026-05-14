@@ -348,7 +348,7 @@ describe('useSkuldChat', () => {
             {
               id: 'turn-1',
               role: 'user',
-              content: 'Kick off the raid.',
+              content: 'Kick off the run.',
               created_at: '2026-05-01T10:18:36.889091+00:00',
             },
           ],
@@ -358,7 +358,7 @@ describe('useSkuldChat', () => {
 
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
     expect(result.current.messages).toHaveLength(1);
-    expect(result.current.messages[0]?.content).toBe('Kick off the raid.');
+    expect(result.current.messages[0]?.content).toBe('Kick off the run.');
   });
 
   it('hydrates fetched assistant history with a synthesized Skuld participant when metadata is absent', async () => {

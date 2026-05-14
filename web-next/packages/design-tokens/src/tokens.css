@@ -78,7 +78,7 @@
   --color-brand: var(--brand-500);
 
   /* ── Brand aliases (color-brand-N → brand-N) ────────────
-   * web2 Tyr styles use `--color-brand-N`; web-next uses `--brand-N`.
+   * web2 Ting styles use `--color-brand-N`; web-next uses `--brand-N`.
    * These aliases let web2 references resolve without renaming.
    * ────────────────────────────────────────────────────── */
   --color-brand-100: var(--brand-100);
@@ -206,7 +206,7 @@
 
   /* ── Ice utility tokens ────────────────────────────────
    * Semi-transparent panel backgrounds and glow effects used
-   * across Observatory, Mimir, Ravn, and Tyr overlays.
+   * across Observatory, Mimir, Ravn, and Ting overlays.
    * ────────────────────────────────────────────────────── */
   --ice-panel: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
   --ice-panel-solid: var(--color-bg-secondary);

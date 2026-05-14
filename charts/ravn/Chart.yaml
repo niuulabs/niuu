@@ -2,8 +2,8 @@ apiVersion: v2
 name: ravn
 description: "Ravn — agent runtime and warden API"
 type: application
-version: 0.0.0-tyr.159
-appVersion: "0.0.0-tyr.159"
+version: 0.0.0-ting.159
+appVersion: "0.0.0-ting.159"
 keywords:
   - ravn
   - agents

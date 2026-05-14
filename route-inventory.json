@@ -58,19 +58,19 @@
   {
     "name": "dispatch-api",
     "prefixes": [
-      "/api/v1/tyr/dispatch",
-      "/api/v1/tyr/dispatcher"
+      "/api/v1/ting/dispatch",
+      "/api/v1/ting/dispatcher"
     ],
     "source": "plugin",
-    "plugin": "tyr"
+    "plugin": "ting"
   },
   {
     "name": "event-api",
     "prefixes": [
-      "/api/v1/tyr/events"
+      "/api/v1/ting/events"
     ],
     "source": "plugin",
-    "plugin": "tyr"
+    "plugin": "ting"
   },
   {
     "name": "features-api",
@@ -248,11 +248,11 @@
   {
     "name": "review-api",
     "prefixes": [
-      "/api/v1/tyr/raids",
-      "/api/v1/tyr/sessions"
+      "/api/v1/ting/runs",
+      "/api/v1/ting/sessions"
     ],
     "source": "plugin",
-    "plugin": "tyr"
+    "plugin": "ting"
   },
   {
     "name": "runtime-config",
@@ -265,10 +265,10 @@
   {
     "name": "saga-api",
     "prefixes": [
-      "/api/v1/tyr/sagas"
+      "/api/v1/ting/sagas"
     ],
     "source": "plugin",
-    "plugin": "tyr"
+    "plugin": "ting"
   },
   {
     "name": "session-api",
@@ -283,10 +283,10 @@
   {
     "name": "settings-api",
     "prefixes": [
-      "/api/v1/tyr/settings"
+      "/api/v1/ting/settings"
     ],
     "source": "plugin",
-    "plugin": "tyr"
+    "plugin": "ting"
   },
   {
     "name": "skuld-proxy",
@@ -331,24 +331,24 @@
       "/api/v1/tracker/import"
     ],
     "source": "plugin",
-    "plugin": "tyr"
+    "plugin": "ting"
   },
   {
-    "name": "tyr-api",
+    "name": "ting-api",
     "prefixes": [
-      "/api/v1/tyr"
+      "/api/v1/ting"
     ],
     "source": "plugin",
-    "plugin": "tyr"
+    "plugin": "ting"
   },
   {
-    "name": "tyr-channel-api",
+    "name": "ting-channel-api",
     "prefixes": [
-      "/api/v1/tyr/integrations",
-      "/api/v1/tyr/telegram"
+      "/api/v1/ting/integrations",
+      "/api/v1/ting/telegram"
     ],
     "source": "plugin",
-    "plugin": "tyr"
+    "plugin": "ting"
   },
   {
     "name": "web-ui",
@@ -365,12 +365,12 @@
   {
     "name": "workflow-api",
     "prefixes": [
-      "/api/v1/tyr/flock",
-      "/api/v1/tyr/flock_flows",
-      "/api/v1/tyr/pipelines"
+      "/api/v1/ting/flock",
+      "/api/v1/ting/flock_flows",
+      "/api/v1/ting/pipelines"
     ],
     "source": "plugin",
-    "plugin": "tyr"
+    "plugin": "ting"
   },
   {
     "name": "workspace-api",

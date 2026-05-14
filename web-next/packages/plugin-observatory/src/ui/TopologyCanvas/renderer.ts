@@ -6,6 +6,7 @@
  */
 
 import type { Topology, TopologyNode, TopologyEdge, EdgeKind } from '../../domain';
+import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
 import { NODE_SIZE, MIMIR_RUNES, LAYOUT } from './config';
@@ -14,7 +15,7 @@ import { NODE_SIZE, MIMIR_RUNES, LAYOUT } from './config';
 // These map directly to the ice-theme brand ramp used in the prototype.
 const C = {
   ice: [186, 230, 253] as const, // brand-300
-  frost: [125, 211, 252] as const, // active / raid
+  frost: [125, 211, 252] as const, // active / run
   moon: [224, 242, 254] as const, // Mímir / long ravens
   indigo: [147, 197, 253] as const, // Bifröst / skuld
   slate: [148, 163, 184] as const, // muted labels
@@ -30,8 +31,8 @@ function rgba([r, g, b]: readonly [number, number, number], a: number): string {
 
 function nodeColour(typeId: string): readonly [number, number, number] {
   switch (typeId) {
-    case 'tyr':
-    case 'ravn_raid':
+    case 'ting':
+    case 'ravn_run':
       return C.frost;
     case 'bifrost':
     case 'skuld':
@@ -45,7 +46,7 @@ function nodeColour(typeId: string): readonly [number, number, number] {
     case 'model':
       return C.model;
     case 'service':
-    case 'raid':
+    case 'run':
       return C.ice;
     case 'printer':
     case 'vaettir':
@@ -59,7 +60,7 @@ function nodeColour(typeId: string): readonly [number, number, number] {
 
 function identityRune(typeId: string): string {
   const map: Record<string, string> = {
-    tyr: 'ᛃ',
+    ting: '✦',
     bifrost: 'ᚨ',
     volundr: 'ᚲ',
     mimir: 'ᛗ',
@@ -121,7 +122,7 @@ export function drawZones(
         ctx.fillStyle = rgba(C.ice, 0.78);
         ctx.font = '600 13px Inter, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(node.label.toUpperCase(), cx, cy - r - 8);
+        ctx.fillText(humanizeObservatoryText(node.label).toUpperCase(), cx, cy - r - 8);
       } else {
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
         g.addColorStop(0, 'rgba(40,58,88,0.22)');
@@ -142,7 +143,7 @@ export function drawZones(
         ctx.fillStyle = rgba(C.ice, 0.58);
         ctx.font = '10px "JetBrains Mono", monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(`⎔ ${node.label}`, cx, cy - r - 4);
+        ctx.fillText(`⎔ ${humanizeObservatoryText(node.label)}`, cx, cy - r - 4);
       }
     }
   }
@@ -162,7 +163,7 @@ function nodeEdgeRadius(node: TopologyNode | undefined): number {
   if (!node) return 8;
   if (node.typeId === 'mimir') return LAYOUT.MIMIR_RADIUS;
   if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H);
-  if (node.typeId === 'raid') return 50;
+  if (node.typeId === 'run') return 50;
   return (NODE_SIZE[node.typeId] ?? 6) + 3;
 }
 
@@ -212,7 +213,7 @@ function drawEdge(
 
   switch (kind) {
     case 'solid':
-      // Solid cyan — Týr → Völundr coordinator links.
+      // Solid cyan — Ting → Völundr coordinator links.
       ctx.strokeStyle = rgba(C.indigo, 0.42);
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
@@ -220,7 +221,7 @@ function drawEdge(
       break;
 
     case 'dashed-anim':
-      // Animated dashes — Týr → raid dispatch channel.
+      // Animated dashes — Ting → run dispatch channel.
       ctx.strokeStyle = rgba(C.frost, 0.48);
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 5]);
@@ -245,8 +246,8 @@ function drawEdge(
       bend = 20;
       break;
 
-    case 'raid':
-      // Frost — inter-raven cohesion within a raid.
+    case 'run':
+      // Frost — inter-raven cohesion within a run.
       ctx.strokeStyle = rgba(C.frost, 0.38);
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
@@ -351,7 +352,7 @@ function drawHost(
   ctx.fillStyle = rgba(C.moon, 0.78);
   ctx.font = '600 10px Inter, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(node.label, x + 8, y + 14);
+  ctx.fillText(humanizeObservatoryText(node.label), x + 8, y + 14);
 
   ctx.restore();
 }
@@ -426,7 +427,7 @@ function drawShape(
   const a = rgba(col, 0.92);
 
   switch (typeId) {
-    case 'tyr':
+    case 'ting':
     case 'volundr':
       ctx.fillStyle = a;
       ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
@@ -458,7 +459,7 @@ function drawShape(
       ctx.fill();
       return;
 
-    case 'ravn_raid':
+    case 'ravn_run':
       ctx.fillStyle = rgba(col, 0.9);
       ctx.beginPath();
       ctx.moveTo(cx, cy - size);
@@ -520,7 +521,7 @@ function drawShape(
       return;
 
     default:
-      // service, model, raid, …
+      // service, model, run, …
       ctx.fillStyle = rgba(col, 0.85);
       ctx.beginPath();
       ctx.arc(cx, cy, size, 0, Math.PI * 2);
@@ -574,14 +575,14 @@ export function drawNode(
 
   // Label below node for key types and hovered nodes
   const showLabel =
-    ['tyr', 'bifrost', 'volundr', 'valkyrie', 'ravn_long'].includes(node.typeId) ||
+    ['ting', 'bifrost', 'volundr', 'valkyrie', 'ravn_long'].includes(node.typeId) ||
     (node.typeId === 'service' && ['observatory', 'niuu', 'ravn'].includes(node.svcType ?? '')) ||
     hovered;
   if (showLabel) {
     ctx.fillStyle = rgba(C.moon, hovered ? 0.95 : 0.75);
     ctx.font = `${hovered ? 600 : 500} 10px Inter, sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText(node.label, x, y + size + 13);
+    ctx.fillText(humanizeObservatoryText(node.label), x, y + size + 13);
   }
 }
 

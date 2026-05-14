@@ -133,7 +133,7 @@ function PodEntry({
 }) {
   const ageLabel = relTime(new Date(session.lastActivityAt ?? session.startedAt).getTime());
   const primaryLabel = session.personaName || session.id;
-  const trackerLabel = session.sagaId ?? session.raidId ?? session.ravnId;
+  const trackerLabel = session.sagaId ?? session.runId ?? session.ravnId;
   const previewLabel = session.preview;
   const sourceParts =
     previewLabel && looksLikeRepoLabel(previewLabel) ? compactSourceParts(previewLabel) : null;

@@ -18,8 +18,8 @@ test('navigating away from /volundr and back preserves the shell', async ({ page
   await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
   await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
 
-  await page.goto('/tyr');
-  await expect(page.getByRole('heading', { name: 'Tyr' })).toBeVisible({ timeout: 5000 });
+  await page.goto('/ting');
+  await expect(page.getByRole('heading', { name: 'Ting' })).toBeVisible({ timeout: 5000 });
 
   await page.goBack();
   await expect(page).toHaveURL(/\/volundr$/);

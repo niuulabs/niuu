@@ -25,7 +25,7 @@ data:
         "ravn.personas": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/ravn/personas" $origin | quote }} },
         "forge": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/forge" $origin | quote }} },
         "forge.pty": { "mode": "ws", "wsUrl": {{ printf "%s/s/{sessionId}/session" $sessionWsOrigin | quote }} },
-        "tyr": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/tyr" $origin | quote }} },
+        "ting": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/ting" $origin | quote }} },
         "filesystem": { "mode": "http", "baseUrl": {{ $sessionOrigin | quote }} }
       },
       "auth": {
@@ -55,7 +55,7 @@ data:
         "ravn.personas": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/ravn/personas" $origin | quote }} },
         "forge": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/forge" $origin | quote }} },
         "forge.pty": { "mode": "ws", "wsUrl": {{ printf "%s/s/{sessionId}/session" $sessionWsOrigin | quote }} },
-        "tyr": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/tyr" $origin | quote }} },
+        "ting": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/ting" $origin | quote }} },
         "filesystem": { "mode": "http", "baseUrl": {{ $sessionOrigin | quote }} }
       },
       "auth": {

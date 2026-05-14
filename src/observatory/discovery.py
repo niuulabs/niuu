@@ -151,9 +151,9 @@ class ObservatoryDiscoveryService:
             forge_resources = await self._safe_fetch(fetch, "/api/v1/forge/resources")
             ravn_status = await self._safe_fetch(fetch, "/api/v1/ravn/status")
             ravn_wardens = await self._safe_fetch(fetch, "/api/v1/ravn/wardens")
-            tyr_health = await self._safe_fetch(fetch, "/api/v1/tyr/health")
-            tyr_summary = await self._safe_fetch(fetch, "/api/v1/tyr/raids/summary")
-            tyr_active = await self._safe_fetch(fetch, "/api/v1/tyr/raids/active")
+            ting_health = await self._safe_fetch(fetch, "/api/v1/ting/health")
+            ting_summary = await self._safe_fetch(fetch, "/api/v1/ting/runs/summary")
+            ting_active = await self._safe_fetch(fetch, "/api/v1/ting/runs/active")
             mimir_stats = await self._safe_fetch(fetch, "/api/v1/mimir/stats")
             mimir_mounts = await self._safe_fetch(fetch, "/api/v1/mimir/mounts")
             bifrost_providers = await self._safe_fetch(fetch, "/api/v1/bifrost/providers/health")
@@ -174,9 +174,9 @@ class ObservatoryDiscoveryService:
                     forge_resources,
                     ravn_status,
                     ravn_wardens,
-                    tyr_health,
-                    tyr_summary,
-                    tyr_active,
+                    ting_health,
+                    ting_summary,
+                    ting_active,
                     mimir_stats,
                     mimir_mounts,
                     bifrost_providers,
@@ -186,9 +186,9 @@ class ObservatoryDiscoveryService:
                     self._safe_fetch(client_fetch, "/api/v1/forge/resources"),
                     self._safe_fetch(client_fetch, "/api/v1/ravn/status"),
                     self._safe_fetch(client_fetch, "/api/v1/ravn/wardens"),
-                    self._safe_fetch(client_fetch, "/api/v1/tyr/health"),
-                    self._safe_fetch(client_fetch, "/api/v1/tyr/raids/summary"),
-                    self._safe_fetch(client_fetch, "/api/v1/tyr/raids/active"),
+                    self._safe_fetch(client_fetch, "/api/v1/ting/health"),
+                    self._safe_fetch(client_fetch, "/api/v1/ting/runs/summary"),
+                    self._safe_fetch(client_fetch, "/api/v1/ting/runs/active"),
                     self._safe_fetch(client_fetch, "/api/v1/mimir/stats"),
                     self._safe_fetch(client_fetch, "/api/v1/mimir/mounts"),
                     self._safe_fetch(client_fetch, "/api/v1/bifrost/providers/health"),
@@ -350,61 +350,61 @@ class ObservatoryDiscoveryService:
                         }
                     )
 
-        if isinstance(tyr_summary, dict) or isinstance(tyr_health, dict):
+        if isinstance(ting_summary, dict) or isinstance(ting_health, dict):
             active_sagas = 0
-            pending_raids = 0
-            if isinstance(tyr_summary, dict):
+            pending_runs = 0
+            if isinstance(ting_summary, dict):
                 active_sagas = sum(
                     _safe_int(count)
-                    for status_name, count in tyr_summary.items()
+                    for status_name, count in ting_summary.items()
                     if status_name not in {"done", "completed", "closed"}
                 )
-                pending_raids = _safe_int(tyr_summary.get("queued")) + _safe_int(
-                    tyr_summary.get("pending")
+                pending_runs = _safe_int(ting_summary.get("queued")) + _safe_int(
+                    ting_summary.get("pending")
                 )
             nodes.append(
                 {
-                    "id": "service:tyr",
-                    "typeId": "tyr",
-                    "label": "Týr",
+                    "id": "service:ting",
+                    "typeId": "ting",
+                    "label": "Ting",
                     "parentId": cluster_id,
-                    "status": _node_status((tyr_summary is not None) or (tyr_health is not None)),
+                    "status": _node_status((ting_summary is not None) or (ting_health is not None)),
                     "mode": "active",
                     "activeSagas": active_sagas,
-                    "pendingRaids": pending_raids,
+                    "pendingRuns": pending_runs,
                 }
             )
             edges.append(
                 {
-                    "id": "edge:observatory-tyr",
+                    "id": "edge:observatory-ting",
                     "sourceId": "service:observatory",
-                    "targetId": "service:tyr",
+                    "targetId": "service:ting",
                     "kind": "soft",
                 }
             )
-            if isinstance(tyr_active, list):
-                for raid in tyr_active:
-                    if not isinstance(raid, dict):
+            if isinstance(ting_active, list):
+                for run in ting_active:
+                    if not isinstance(run, dict):
                         continue
-                    raid_id = str(raid.get("tracker_id") or raid.get("identifier") or "raid")
-                    node_id = f"raid:{_slug(raid_id)}"
+                    run_id = str(run.get("tracker_id") or run.get("identifier") or "run")
+                    node_id = f"run:{_slug(run_id)}"
                     nodes.append(
                         {
                             "id": node_id,
-                            "typeId": "raid",
-                            "label": str(raid.get("title") or raid.get("identifier") or raid_id),
+                            "typeId": "run",
+                            "label": str(run.get("title") or run.get("identifier") or run_id),
                             "parentId": cluster_id,
                             "status": "observing",
-                            "state": str(raid.get("status") or "unknown"),
-                            "confidence": float(raid.get("confidence") or 0.0),
+                            "state": str(run.get("status") or "unknown"),
+                            "confidence": float(run.get("confidence") or 0.0),
                         }
                     )
                     edges.append(
                         {
-                            "id": f"edge:tyr:{node_id}",
-                            "sourceId": "service:tyr",
+                            "id": f"edge:ting:{node_id}",
+                            "sourceId": "service:ting",
                             "targetId": node_id,
-                            "kind": "raid",
+                            "kind": "run",
                         }
                     )
 
@@ -512,8 +512,8 @@ class ObservatoryDiscoveryService:
             self._build_events(
                 now=now,
                 ravn_wardens=ravn_wardens,
-                tyr_summary=tyr_summary,
-                tyr_active=tyr_active,
+                ting_summary=ting_summary,
+                ting_active=ting_active,
                 mimir_stats=mimir_stats,
                 mimir_mounts=mimir_mounts,
                 bifrost_providers=bifrost_providers,
@@ -534,41 +534,41 @@ class ObservatoryDiscoveryService:
         *,
         now: datetime,
         ravn_wardens: Any,
-        tyr_summary: Any,
-        tyr_active: Any,
+        ting_summary: Any,
+        ting_active: Any,
         mimir_stats: Any,
         mimir_mounts: Any,
         bifrost_providers: Any,
     ) -> list[dict[str, str]]:
         stamp = _hhmmss(now)
         events: list[dict[str, str]] = []
-        if isinstance(tyr_active, list) and tyr_active:
-            first = tyr_active[0] if isinstance(tyr_active[0], dict) else {}
-            active_raid_key = str(
+        if isinstance(ting_active, list) and ting_active:
+            first = ting_active[0] if isinstance(ting_active[0], dict) else {}
+            active_run_key = str(
                 first.get("tracker_id") or first.get("identifier") or "active"
             )
             events.append(
                 {
-                    "id": f"raid:{_slug(active_raid_key)}",
+                    "id": f"run:{_slug(active_run_key)}",
                     "time": stamp,
-                    "type": "RAID",
+                    "type": "RUN",
                     "subject": str(
-                        first.get("identifier") or first.get("tracker_id") or "active raid"
+                        first.get("identifier") or first.get("tracker_id") or "active run"
                     ),
                     "body": str(first.get("status") or "active"),
                 }
             )
-        elif isinstance(tyr_summary, dict):
+        elif isinstance(ting_summary, dict):
             events.append(
                 {
-                    "id": "raid:summary",
+                    "id": "run:summary",
                     "time": stamp,
-                    "type": "TYR",
-                    "subject": "raid summary",
+                    "type": "TING",
+                    "subject": "run summary",
                     "body": ", ".join(
-                        f"{name}={_safe_int(count)}" for name, count in sorted(tyr_summary.items())
+                        f"{name}={_safe_int(count)}" for name, count in sorted(ting_summary.items())
                     )
-                    or "no visible raids",
+                    or "no visible runs",
                 }
             )
         if isinstance(ravn_wardens, list):

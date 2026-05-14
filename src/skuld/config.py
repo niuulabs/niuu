@@ -177,7 +177,7 @@ class SkuldSessionConfig(BaseModel):
     system_prompt: str = Field(default="")
     initial_prompt: str = Field(default="")
     saga_id: str | None = Field(default=None)
-    raid_id: str | None = Field(default=None)
+    run_id: str | None = Field(default=None)
 
 
 class SkuldSettings(BaseSettings):

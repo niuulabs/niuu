@@ -1,0 +1,19 @@
+apiVersion: v2
+name: ting
+description: "Ting — saga coordinator for multi-repo campaign orchestration"
+type: application
+version: 0.0.0-ting.159
+appVersion: "0.0.0-ting.159"
+keywords:
+  - ting
+  - saga
+  - coordinator
+  - ai
+  - kubernetes
+maintainers:
+  - name: Niuu Labs
+    url: https://github.com/niuulabs
+home: https://github.com/niuulabs/volundr
+sources:
+  - https://github.com/niuulabs/volundr
+dependencies: []

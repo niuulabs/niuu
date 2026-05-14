@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@niuulabs/plugin-tyr', () => ({
-  tyrMountedSettingsProvider: {
-    id: 'tyr',
-    pluginId: 'tyr',
-    title: 'Tyr',
+vi.mock('@niuulabs/plugin-ting', () => ({
+  tingMountedSettingsProvider: {
+    id: 'ting',
+    pluginId: 'ting',
+    title: 'Ting',
     subtitle: 'saga coordinator settings',
     scope: 'service',
     defaultSectionId: 'general',
@@ -22,12 +22,12 @@ vi.mock('@niuulabs/plugin-tyr', () => ({
 import { buildMountedSettingsProviders } from './SettingsRegistry';
 
 describe('buildMountedSettingsProviders', () => {
-  it('includes local tyr settings and remote providers for enabled plugins', () => {
+  it('includes local ting settings and remote providers for enabled plugins', () => {
     const providers = buildMountedSettingsProviders({
       theme: 'ice',
       plugins: {
         login: { enabled: true, order: 0 },
-        tyr: { enabled: true, order: 2 },
+        ting: { enabled: true, order: 2 },
         ravn: { enabled: true, order: 4 },
       },
       services: {
@@ -36,7 +36,7 @@ describe('buildMountedSettingsProviders', () => {
       },
     });
 
-    expect(providers.map((provider) => provider.id)).toEqual(['identity', 'tyr', 'ravn']);
+    expect(providers.map((provider) => provider.id)).toEqual(['identity', 'ting', 'ravn']);
     expect(providers[0]).toMatchObject({
       source: 'remote',
       id: 'identity',
@@ -44,7 +44,7 @@ describe('buildMountedSettingsProviders', () => {
     });
     expect(providers[1]).toMatchObject({
       source: 'local',
-      id: 'tyr',
+      id: 'ting',
     });
     expect(providers[2]).toMatchObject({
       source: 'remote',
@@ -57,7 +57,7 @@ describe('buildMountedSettingsProviders', () => {
     const providers = buildMountedSettingsProviders({
       theme: 'ice',
       plugins: {
-        tyr: { enabled: false, order: 2 },
+        ting: { enabled: false, order: 2 },
         ravn: { enabled: false, order: 4 },
       },
       services: {},

@@ -1,6 +1,6 @@
 name: review-arbiter
 system_prompt_template: |
-  You are Tyr's review arbiter. Given a raid's acceptance criteria, PR diff,
+  You are Ting's review arbiter. Given a run's acceptance criteria, PR diff,
   CI status, and confidence signals, decide: approve, retry, or escalate.
 
   Consider nuance that binary rules cannot capture:
@@ -22,17 +22,17 @@ system_prompt_template: |
 
   ## Verdict meanings
 
-  - **approve**: Raid is ready to merge. CI passes, no blocking issues.
-  - **retry**: Raid has fixable issues. Send back for another attempt.
-  - **escalate**: Raid needs human judgment. Issues are ambiguous or blocking.
+  - **approve**: Run is ready to merge. CI passes, no blocking issues.
+  - **retry**: Run has fixable issues. Send back for another attempt.
+  - **escalate**: Run needs human judgment. Issues are ambiguous or blocking.
 
   ## Your task
 
   Read the context carefully. Weigh the signals. Produce a verdict with a
-  clear, concise reason so that Tyr can act on it.
+  clear, concise reason so that Ting can act on it.
 
 produces:
-  event_type: "tyr.review.decided"
+  event_type: "ting.review.decided"
   schema:
     verdict:
       type: enum

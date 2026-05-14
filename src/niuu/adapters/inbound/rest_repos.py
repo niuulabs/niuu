@@ -1,6 +1,6 @@
 """Shared repos REST endpoint — /api/v1/niuu/repos.
 
-Serves repository listings for all services (Volundr, Tyr, etc.).
+Serves repository listings for all services (Volundr, Ting, etc.).
 The RepoService is injected by the hosting application.
 """
 

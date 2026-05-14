@@ -1053,8 +1053,8 @@ def _default_feature_modules() -> list[FeatureModuleConfig]:
             order=30,
         ),
         FeatureModuleConfig(
-            key="tyr-connections",
-            label="Tyr Connections",
+            key="ting-connections",
+            label="Ting Connections",
             icon="Compass",
             scope="user",
             default_enabled=True,
@@ -1178,8 +1178,8 @@ class TelegramIngressConfig(BaseModel):
     Volundr's TelegramIngressService runs ``getUpdates`` long-polling on every
     enabled MESSAGING integration to route inbound Telegram messages into
     Skuld session rooms. Telegram allows only one active poller per bot
-    token, so this conflicts with Tyr's polling shim (``telegram.polling``)
-    when both target the same bot. Disable here when Tyr's shim is the
+    token, so this conflicts with Ting's polling shim (``telegram.polling``)
+    when both target the same bot. Disable here when Ting's shim is the
     intended consumer (``./start-dev`` solo dev). Defaults to True for
     backwards compatibility with deployed environments that rely on the
     in-session reply feature.

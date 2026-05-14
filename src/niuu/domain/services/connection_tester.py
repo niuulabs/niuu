@@ -1,7 +1,7 @@
 """Shared connection testing for integration types.
 
 Tests connections by calling the appropriate health/identity endpoints.
-Used by both Tyr and Volundr integration management APIs.
+Used by both Ting and Volundr integration management APIs.
 """
 
 from __future__ import annotations

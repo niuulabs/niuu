@@ -1,6 +1,6 @@
 """Nuitka build configuration for the Niuu single-binary distribution.
 
-Compiles all Python packages (cli, niuu, volundr, tyr, skuld) plus
+Compiles all Python packages (cli, niuu, volundr, ting, skuld) plus
 bundled web UI assets, migration SQL files, and PostgreSQL binaries
 into a single portable ``--onefile`` binary.
 
@@ -36,7 +36,7 @@ INCLUDE_PACKAGES = [
     "niuu",
     "tracker",
     "volundr",
-    "tyr",
+    "ting",
     "skuld",
     # FastAPI / uvicorn ecosystem (dynamically imported)
     "uvicorn",
@@ -66,8 +66,8 @@ DATA_DIR_MAPPINGS = [
     (REPO_ROOT / "src" / "cli" / "web" / "dist", "cli/web/dist"),
     # Volundr migrations
     (REPO_ROOT / "src" / "cli" / "migrations" / "volundr", "cli/migrations/volundr"),
-    # Tyr migrations
-    (REPO_ROOT / "src" / "cli" / "migrations" / "tyr", "cli/migrations/tyr"),
+    # Ting migrations
+    (REPO_ROOT / "src" / "cli" / "migrations" / "ting", "cli/migrations/ting"),
     # PostgreSQL binaries built from source
     (REPO_ROOT / "build" / "pginstall", "niuu/pginstall"),
 ]

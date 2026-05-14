@@ -197,6 +197,7 @@ def _parse_outcome_for_persona(
             )
     return parse_outcome_block(response_text)
 
+
 # Type alias for the mesh RPC handler callable
 MeshRpcHandler = Callable[[dict], Awaitable[dict]]
 
@@ -284,10 +285,7 @@ class FanInBuffer:
         # - any_pass strategy (alternate triggers / OR semantics)
         # - single event type
         # - no fan-in contributors registered (solo persona in the flock)
-        if (
-            strategy in {"merge", "any_pass"}
-            or len(consumes_event_types) <= 1
-        ):
+        if strategy in {"merge", "any_pass"} or len(consumes_event_types) <= 1:
             return _FanInResult(
                 consumer_key=consumer_key or persona_name,
                 persona_name=persona_name,
@@ -1258,7 +1256,7 @@ class DriveLoop:
 
         This keeps tool-originated workflow events on the same mesh/Skuld path
         as persona outcomes, which makes them visible to downstream subscribers,
-        room/session timelines, and Tyr's outer orchestration without inventing
+        room/session timelines, and Ting's outer orchestration without inventing
         a second signaling mechanism.
         """
         if not event_type:
@@ -1339,7 +1337,7 @@ class DriveLoop:
 
         Canonical outcome events always keep the persona's declared
         ``produces.event_type``. Those canonical outcomes are what we bubble up
-        to Skuld/Volundr/Tyr so session history and higher-level orchestration
+        to Skuld/Volundr/Ting so session history and higher-level orchestration
         see a stable contract.
 
         Verdict-specific aliases from ``event_type_map`` remain valid, but they

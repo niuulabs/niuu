@@ -39,7 +39,7 @@ jobs:
       - name: Lint leaf charts
         if: inputs.run_lint
         run: |
-          for chart in skuld volundr tyr skuld-planner niuu-shared; do
+          for chart in skuld volundr ting skuld-planner niuu-shared; do
             echo "::group::helm lint $chart"
             helm lint "charts/${chart}/"
             echo "::endgroup::"

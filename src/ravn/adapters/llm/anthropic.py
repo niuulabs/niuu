@@ -1,7 +1,7 @@
 """AnthropicAdapter — LLMPort implementation using the Anthropic Messages API.
 
 Uses httpx for HTTP, following the project pattern established in
-tyr/adapters/bifrost.py.  Implements streaming (SSE), tool calling,
+ting/adapters/bifrost.py.  Implements streaming (SSE), tool calling,
 prompt caching (cache_control: ephemeral on system prompt), and
 transient-error retries.
 """

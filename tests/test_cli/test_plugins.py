@@ -1,4 +1,4 @@
-"""Tests for volundr.plugin, tyr.plugin, and the plugin registry."""
+"""Tests for volundr.plugin, ting.plugin, and the plugin registry."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from observatory.plugin import ObservatoryPlugin
 from personas.plugin import PersonasPlugin
 from ravn.plugin import RavnPlugin
 from tracker.plugin import TrackerPlugin
-from tyr.plugin import TyrPlugin
+from ting.plugin import TingPlugin
 from volundr.plugin import VolundrPlugin
 
 runner = CliRunner()
@@ -276,40 +276,40 @@ class TestVolundrDomainPlugins:
         )
 
 
-class TestTyrPlugin:
+class TestTingPlugin:
     def test_name(self) -> None:
-        plugin = TyrPlugin()
-        assert plugin.name == "tyr"
+        plugin = TingPlugin()
+        assert plugin.name == "ting"
 
     def test_description(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         desc = plugin.description.lower()
         assert "saga" in desc or "coordinator" in desc
 
     def test_register_service_returns_definition(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         svc_def = plugin.register_service()
         assert isinstance(svc_def, ServiceDefinition)
-        assert svc_def.name == "tyr"
+        assert svc_def.name == "ting"
         assert svc_def.default_enabled is True
 
     def test_register_service_depends_on_volundr(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         svc_def = plugin.register_service()
         assert svc_def is not None
         assert "volundr" in svc_def.depends_on
 
     def test_depends_on_volundr_via_service_definition(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         assert "volundr" in plugin.depends_on()
 
     def test_create_service_returns_service(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         svc = plugin.create_service()
         assert svc is not None
 
     def test_api_route_domains_declared(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         route_domains = plugin.api_route_domains()
         assert route_domains
         assert [route_domain.name for route_domain in route_domains] == [
@@ -319,52 +319,52 @@ class TestTyrPlugin:
             "dispatch-api",
             "workflow-api",
             "settings-api",
-            "tyr-channel-api",
+            "ting-channel-api",
             "event-api",
-            "tyr-api",
+            "ting-api",
         ]
         assert route_domains[0].prefixes == ("/api/v1/tracker/projects", "/api/v1/tracker/import")
         assert route_domains[4].prefixes == (
-            "/api/v1/tyr/flock",
-            "/api/v1/tyr/flock_flows",
-            "/api/v1/tyr/pipelines",
+            "/api/v1/ting/flock",
+            "/api/v1/ting/flock_flows",
+            "/api/v1/ting/pipelines",
         )
-        assert route_domains[5].prefixes == ("/api/v1/tyr/settings",)
+        assert route_domains[5].prefixes == ("/api/v1/ting/settings",)
 
     def test_registers_sagas_group(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         app = typer.Typer()
         plugin.register_commands(app)
         group_names = [g.name for g in app.registered_groups]
         assert "sagas" in group_names
 
-    def test_registers_raids_group(self) -> None:
-        plugin = TyrPlugin()
+    def test_registers_runs_group(self) -> None:
+        plugin = TingPlugin()
         app = typer.Typer()
         plugin.register_commands(app)
         group_names = [g.name for g in app.registered_groups]
-        assert "raids" in group_names
+        assert "runs" in group_names
 
     @respx.mock
     def test_sagas_list_command(self) -> None:
-        respx.get(f"{BASE}/api/v1/tyr/sagas").mock(return_value=httpx.Response(200, json=[]))
-        plugin = TyrPlugin()
+        respx.get(f"{BASE}/api/v1/ting/sagas").mock(return_value=httpx.Response(200, json=[]))
+        plugin = TingPlugin()
         app = typer.Typer(no_args_is_help=False)
         plugin.register_commands(app)
         result = runner.invoke(app, ["sagas", "list"])
         assert result.exit_code == 0
 
     @respx.mock
-    def test_raids_active_command(self) -> None:
-        respx.get(f"{BASE}/api/v1/tyr/raids/active").mock(return_value=httpx.Response(200, json=[]))
-        plugin = TyrPlugin()
+    def test_runs_active_command(self) -> None:
+        respx.get(f"{BASE}/api/v1/ting/runs/active").mock(return_value=httpx.Response(200, json=[]))
+        plugin = TingPlugin()
         app = typer.Typer(no_args_is_help=False)
         plugin.register_commands(app)
-        result = runner.invoke(app, ["raids", "active"])
+        result = runner.invoke(app, ["runs", "active"])
         assert result.exit_code == 0
 
     def test_api_client_returns_instance(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         client = plugin.create_api_client()
         assert client is not None
 
@@ -690,7 +690,8 @@ class TestObservatoryPlugin:
         plugin = ObservatoryPlugin()
         sentinel = object()
 
-        def fake_create_app():
+        def fake_create_app(**kwargs):
+            assert kwargs == {"discovery_service": None}
             return sentinel
 
         monkeypatch.setattr("observatory.app.create_app", fake_create_app)
@@ -727,9 +728,9 @@ class TestPluginDiscovery:
     def test_both_plugins_register(self) -> None:
         registry = PluginRegistry()
         registry.register(VolundrPlugin())
-        registry.register(TyrPlugin())
+        registry.register(TingPlugin())
         assert "volundr" in registry.plugins
-        assert "tyr" in registry.plugins
+        assert "ting" in registry.plugins
 
     def test_ravn_plugin_registers(self) -> None:
         registry = PluginRegistry()
@@ -737,15 +738,15 @@ class TestPluginDiscovery:
         assert "ravn" in registry.plugins
 
     def test_dependency_order(self) -> None:
-        """Tyr depends on volundr — verify start order."""
+        """Ting depends on volundr — verify start order."""
         from cli.services.manager import ServiceManager
 
         registry = PluginRegistry()
         registry.register(VolundrPlugin())
-        registry.register(TyrPlugin())
+        registry.register(TingPlugin())
         manager = ServiceManager(registry=registry)
         order = manager.resolve_start_order()
-        assert order.index("volundr") < order.index("tyr")
+        assert order.index("volundr") < order.index("ting")
 
     def test_plugin_without_register_service_works(self) -> None:
         """A plugin that does not implement register_service() still works."""

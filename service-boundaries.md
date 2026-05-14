@@ -104,7 +104,7 @@ It owns:
 
 - `/api/v1/integrations/*`
 
-This is the domain for reusable external connector setup, not Tyr- or
+This is the domain for reusable external connector setup, not Ting- or
 Forge-specific orchestration.
 
 ### `tracker`
@@ -126,22 +126,22 @@ It owns:
 - `/api/v1/audit`
 - `/api/v1/audit/events`
 
-### `tyr`
+### `ting`
 
-`tyr` owns planning, review, dispatch, workflow execution, and operator control.
+`ting` owns planning, review, dispatch, workflow execution, and operator control.
 
 It owns:
 
-- `/api/v1/tyr/sagas`
-- `/api/v1/tyr/raids`
-- `/api/v1/tyr/sessions`
-- `/api/v1/tyr/dispatch`
-- `/api/v1/tyr/dispatcher`
-- `/api/v1/tyr/events`
-- `/api/v1/tyr/flock`
-- `/api/v1/tyr/flock_flows`
-- `/api/v1/tyr/pipelines`
-- `/api/v1/tyr/settings`
+- `/api/v1/ting/sagas`
+- `/api/v1/ting/runs`
+- `/api/v1/ting/sessions`
+- `/api/v1/ting/dispatch`
+- `/api/v1/ting/dispatcher`
+- `/api/v1/ting/events`
+- `/api/v1/ting/flock`
+- `/api/v1/ting/flock_flows`
+- `/api/v1/ting/pipelines`
+- `/api/v1/ting/settings`
 
 ### `mimir`
 
@@ -159,10 +159,10 @@ surfaces.
 
 `skuld` remains the room/session mediation layer, not a generic REST domain.
 
-## Intentional Tyr-Owned Edge Surfaces
+## Intentional Ting-Owned Edge Surfaces
 
 Two remaining public route groups can look like boundary leakage if you only
-read the path names. They are intentional Tyr edges.
+read the path names. They are intentional Ting edges.
 
 ### `tracker-intake-api`
 
@@ -171,36 +171,36 @@ Prefixes:
 - `/api/v1/tracker/projects`
 - `/api/v1/tracker/import`
 
-Why Tyr owns them:
+Why Ting owns them:
 
 - they are not generic tracker state
 - they are intake routes for browsing external tracker projects in order to
-  create Tyr saga state
-- `/import` writes into Tyr-owned workflow objects
+  create Ting saga state
+- `/import` writes into Ting-owned workflow objects
 
 Rule:
 
 - generic tracker browsing/search/mapping stays in `tracker`
-- project intake that exists to create or shape Tyr work may stay in `tyr`
+- project intake that exists to create or shape Ting work may stay in `ting`
 
-### `tyr-channel-api`
+### `ting-channel-api`
 
 Prefixes:
 
-- `/api/v1/tyr/integrations`
-- `/api/v1/tyr/telegram`
+- `/api/v1/ting/integrations`
+- `/api/v1/ting/telegram`
 
-Why Tyr owns them:
+Why Ting owns them:
 
-- they are operator-channel routes for Tyr-specific control and notification
+- they are operator-channel routes for Ting-specific control and notification
   flows
-- Telegram webhook/setup is a Tyr ingress channel, not a generic platform
+- Telegram webhook/setup is a Ting ingress channel, not a generic platform
   integration
 
 Rule:
 
 - reusable OAuth and connector management stays in `integrations`
-- channels whose purpose is to steer or notify Tyr may stay in `tyr`
+- channels whose purpose is to steer or notify Ting may stay in `ting`
 
 ## Rules Going Forward
 
@@ -250,4 +250,4 @@ These are the real remaining gaps after the boundary cleanup:
 - The unified `niuu` image path still needs full end-to-end runtime smoke in a
   cluster.
 - The daily-driver experience still needs a stronger single front door on top
-  of Tyr -> Volundr -> Skuld -> Flokk.
+  of Ting -> Volundr -> Skuld -> Flokk.

@@ -74,22 +74,22 @@ class VolundrSessionFailedPayload:
 
 
 @dataclass(frozen=True)
-class TyrSagaCreatedPayload:
+class TingSagaCreatedPayload:
     saga_id: str
     template: str
     trigger_event: str
 
 
 @dataclass(frozen=True)
-class TyrSagaCompletedPayload:
+class TingSagaCompletedPayload:
     saga_id: str
     outcome: str
     phases_completed: int
 
 
 @dataclass(frozen=True)
-class TyrRaidNeedsApprovalPayload:
-    raid_id: str
+class TingRunNeedsApprovalPayload:
+    run_id: str
     saga_id: str
     description: str
 
@@ -296,7 +296,7 @@ def volundr_session_failed(
     )
 
 
-def tyr_saga_created(
+def ting_saga_created(
     *,
     saga_id: str,
     template: str,
@@ -304,18 +304,18 @@ def tyr_saga_created(
     source: str,
     correlation_id: str | None = None,
 ) -> SleipnirEvent:
-    """Emit when a new Tyr saga is created."""
+    """Emit when a new Ting saga is created."""
     return SleipnirEvent(
-        event_type=registry.TYR_SAGA_CREATED,
+        event_type=registry.TING_SAGA_CREATED,
         source=source,
         payload=dataclasses.asdict(
-            TyrSagaCreatedPayload(
+            TingSagaCreatedPayload(
                 saga_id=saga_id,
                 template=template,
                 trigger_event=trigger_event,
             )
         ),
-        summary=f"Tyr saga created: {saga_id} template={template}",
+        summary=f"Ting saga created: {saga_id} template={template}",
         urgency=0.3,
         domain="code",
         timestamp=datetime.now(UTC),
@@ -323,7 +323,7 @@ def tyr_saga_created(
     )
 
 
-def tyr_saga_completed(
+def ting_saga_completed(
     *,
     saga_id: str,
     outcome: str,
@@ -331,18 +331,18 @@ def tyr_saga_completed(
     source: str,
     correlation_id: str | None = None,
 ) -> SleipnirEvent:
-    """Emit when a Tyr saga finishes all phases."""
+    """Emit when a Ting saga finishes all phases."""
     return SleipnirEvent(
-        event_type=registry.TYR_SAGA_COMPLETED,
+        event_type=registry.TING_SAGA_COMPLETED,
         source=source,
         payload=dataclasses.asdict(
-            TyrSagaCompletedPayload(
+            TingSagaCompletedPayload(
                 saga_id=saga_id,
                 outcome=outcome,
                 phases_completed=phases_completed,
             )
         ),
-        summary=f"Tyr saga completed: {saga_id} outcome={outcome} phases={phases_completed}",
+        summary=f"Ting saga completed: {saga_id} outcome={outcome} phases={phases_completed}",
         urgency=0.4,
         domain="code",
         timestamp=datetime.now(UTC),
@@ -350,30 +350,30 @@ def tyr_saga_completed(
     )
 
 
-def tyr_raid_needs_approval(
+def ting_run_needs_approval(
     *,
-    raid_id: str,
+    run_id: str,
     saga_id: str,
     description: str,
     source: str,
     correlation_id: str | None = None,
 ) -> SleipnirEvent:
-    """Emit when a Tyr raid requires human approval before proceeding."""
+    """Emit when a Ting run requires human approval before proceeding."""
     return SleipnirEvent(
-        event_type=registry.TYR_RAID_NEEDS_APPROVAL,
+        event_type=registry.TING_RUN_NEEDS_APPROVAL,
         source=source,
         payload=dataclasses.asdict(
-            TyrRaidNeedsApprovalPayload(
-                raid_id=raid_id,
+            TingRunNeedsApprovalPayload(
+                run_id=run_id,
                 saga_id=saga_id,
                 description=description,
             )
         ),
-        summary=f"Raid needs approval: {raid_id} — {description[:80]}",
+        summary=f"Run needs approval: {run_id} — {description[:80]}",
         urgency=0.8,
         domain="code",
         timestamp=datetime.now(UTC),
-        correlation_id=correlation_id or raid_id,
+        correlation_id=correlation_id or run_id,
     )
 
 

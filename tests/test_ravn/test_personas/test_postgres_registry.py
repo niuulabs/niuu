@@ -80,9 +80,9 @@ class _BuiltinLoader:
             )
         }
         self._archived = {
-            "raid-executor": PersonaConfig(
-                name="raid-executor",
-                system_prompt_template="Archived raid executor.",
+            "run-executor": PersonaConfig(
+                name="run-executor",
+                system_prompt_template="Archived run executor.",
                 allowed_tools=["task_create"],
                 permission_mode="workspace-write",
                 iteration_budget=40,
@@ -134,14 +134,14 @@ class TestListPersonas:
         registry, pool = _make_registry()
         pool.fetch.return_value = [
             _mock_row(
-                name="raid-executor",
+                name="run-executor",
                 config_json={
-                    "name": "raid-executor",
+                    "name": "run-executor",
                     "role": "build",
                     "letter": "R",
                     "color": "var(--color-accent-indigo)",
-                    "summary": "Legacy raid executor",
-                    "description": "Legacy raid executor",
+                    "summary": "Legacy run executor",
+                    "description": "Legacy run executor",
                     "system_prompt_template": "Legacy prompt.",
                     "allowed_tools": ["task_create"],
                     "forbidden_tools": [],
@@ -154,7 +154,7 @@ class TestListPersonas:
                     "llm_temperature": None,
                     "produces_event_type": "ravn.task.completed",
                     "produces_schema": {},
-                    "consumes_events": [{"name": "raid.requested"}],
+                    "consumes_events": [{"name": "run.requested"}],
                     "fan_in_strategy": "merge",
                     "fan_in_params": {},
                     "mimir_write_routing": None,
@@ -170,14 +170,14 @@ class TestListPersonas:
         registry, pool = _make_registry()
         pool.fetch.return_value = [
             _mock_row(
-                name="raid-executor",
+                name="run-executor",
                 config_json={
-                    "name": "raid-executor",
+                    "name": "run-executor",
                     "role": "build",
                     "letter": "R",
                     "color": "var(--color-accent-indigo)",
-                    "summary": "Legacy raid executor",
-                    "description": "Legacy raid executor",
+                    "summary": "Legacy run executor",
+                    "description": "Legacy run executor",
                     "system_prompt_template": "Legacy prompt.",
                     "allowed_tools": ["task_create"],
                     "forbidden_tools": [],
@@ -190,7 +190,7 @@ class TestListPersonas:
                     "llm_temperature": None,
                     "produces_event_type": "ravn.task.completed",
                     "produces_schema": {},
-                    "consumes_events": [{"name": "raid.requested"}],
+                    "consumes_events": [{"name": "run.requested"}],
                     "fan_in_strategy": "merge",
                     "fan_in_params": {},
                     "mimir_write_routing": None,
@@ -198,7 +198,7 @@ class TestListPersonas:
             )
         ]
 
-        result = await registry.get_persona("user-1", "raid-executor")
+        result = await registry.get_persona("user-1", "run-executor")
 
         assert result is not None
         assert result.is_builtin is True
