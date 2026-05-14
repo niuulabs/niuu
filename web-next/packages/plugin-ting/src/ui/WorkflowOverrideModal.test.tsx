@@ -145,7 +145,9 @@ describe('WorkflowOverrideModal', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const Wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={{ 'ting.workflows': neverService }}>{children}</ServicesProvider>
+        <ServicesProvider services={{ 'ting.workflows': neverService }}>
+          {children}
+        </ServicesProvider>
       </QueryClientProvider>
     );
 

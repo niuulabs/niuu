@@ -181,7 +181,7 @@ Known sources we'll copy (not exhaustive — see individual tickets):
 | `src/auth/*`                                  | `@niuulabs/auth`                | NIU-651 |
 | `src/modules/mimir/api/*`                     | `@niuulabs/plugin-mimir`        | NIU-667 |
 | `src/modules/ravn/api/*`                      | `@niuulabs/plugin-ravn`         | NIU-671 |
-| `src/modules/ting/{ports,adapters,models}/*`   | `@niuulabs/plugin-ting`          | NIU-679 |
+| `src/modules/ting/{ports,adapters,models}/*`  | `@niuulabs/plugin-ting`         | NIU-679 |
 | `src/modules/volundr/{ports,adapters,models}` | `@niuulabs/plugin-volundr`      | NIU-675 |
 | `src/modules/shared/components/SessionChat/`  | `@niuulabs/ui/chat`             | NIU-660 |
 
@@ -190,12 +190,12 @@ Nothing else should be dragged across — and especially no UI components outsid
 
 ### 9. Module boundaries — what goes where
 
-| Live in `@niuulabs/ui`                             | Live in a specific plugin             |
-| -------------------------------------------------- | ------------------------------------- |
-| Used by 2+ plugins                                 | Used by only one plugin               |
+| Live in `@niuulabs/ui`                             | Live in a specific plugin              |
+| -------------------------------------------------- | -------------------------------------- |
+| Used by 2+ plugins                                 | Used by only one plugin                |
 | Design-system primitives (Chip, StateDot)          | WorkflowBuilder (ting), RunMesh (ting) |
-| Cross-plugin composites (PersonaAvatar, MountChip) | TopologyCanvas (observatory)          |
-| Layout/overlay/form/data primitives                | TemplateEditor (volundr)              |
+| Cross-plugin composites (PersonaAvatar, MountChip) | TopologyCanvas (observatory)           |
+| Layout/overlay/form/data primitives                | TemplateEditor (volundr)               |
 
 **Promotion rule:** start plugin-local, promote to `@niuulabs/ui` as soon as a second
 plugin needs it. Cheap to move.

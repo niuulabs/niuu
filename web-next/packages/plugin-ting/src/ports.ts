@@ -136,11 +136,7 @@ export interface ITingService {
   getSaga(id: string): Promise<Saga | null>;
   getPhases(sagaId: string): Promise<Phase[]>;
   listRunMessages(runId: string): Promise<RunSessionMessage[]>;
-  sendRunMessage(
-    runId: string,
-    content: string,
-    targetPeerId?: string,
-  ): Promise<RunSessionMessage>;
+  sendRunMessage(runId: string, content: string, targetPeerId?: string): Promise<RunSessionMessage>;
   createSaga(spec: string, repo: string): Promise<Saga>;
   commitSaga(request: CommitSagaRequest): Promise<Saga>;
   decompose(spec: string, repo: string): Promise<Phase[]>;

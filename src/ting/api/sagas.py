@@ -1073,7 +1073,12 @@ def create_sagas_router() -> APIRouter:
                 await git.create_branch(repo, feature_branch, base=body.base_branch)
             except Exception:
                 msg = f"Failed to create branch '{feature_branch}' in {_sanitize_log(repo)}"
-                logger.warning(msg, exc_info=True)
+                logger.warning(
+                    "Failed to create branch %s in %s",
+                    _sanitize_log(feature_branch),
+                    _sanitize_log(repo),
+                    exc_info=True,
+                )
                 warnings.append(msg)
 
         # 5. Attach planning transcript as a document (best-effort)
@@ -1108,7 +1113,11 @@ def create_sagas_router() -> APIRouter:
                 await dispatch_service.try_auto_continue(principal.user_id, saga.tracker_id)
             except Exception:
                 msg = f"Failed to kick off initial dispatch for saga '{_sanitize_log(body.slug)}'"
-                logger.warning(msg, exc_info=True)
+                logger.warning(
+                    "Failed to kick off initial dispatch for saga %s",
+                    _sanitize_log(body.slug),
+                    exc_info=True,
+                )
                 warnings.append(msg)
 
         return CommittedSagaResponse(

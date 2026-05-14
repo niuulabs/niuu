@@ -68,7 +68,7 @@ from typing import Any
 import yaml
 
 # Regex matching {event.field_name} placeholders in template strings.
-_EVENT_PLACEHOLDER_RE = re.compile(r"\{event\.([^}]+)\}")
+_EVENT_PLACEHOLDER_RE = re.compile(r"\{event\.([A-Za-z0-9_]+)\}")
 
 
 # ---------------------------------------------------------------------------

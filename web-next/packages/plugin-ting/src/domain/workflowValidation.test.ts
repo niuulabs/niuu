@@ -221,10 +221,7 @@ describe('validateWorkflowFull — confidence_underset', () => {
   });
 
   it('does NOT report confidence_underset for a fully mapped workflow', () => {
-    const nodes = [
-      makeStage('s1', { runId: 'run-123' }),
-      makeStage('s2', { runId: 'run-456' }),
-    ];
+    const nodes = [makeStage('s1', { runId: 'run-123' }), makeStage('s2', { runId: 'run-456' })];
     const issues = validateWorkflowFull(makeWorkflow(nodes, []));
     expect(issues.filter((i) => i.kind === 'confidence_underset')).toHaveLength(0);
   });

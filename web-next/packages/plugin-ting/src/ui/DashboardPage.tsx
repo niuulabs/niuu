@@ -157,7 +157,10 @@ function DashboardContent() {
     <div className="ting-dash">
       {/* ── Dispatcher stats bar ──────────────────── */}
       {dispatcherState && (
-        <div className="ting-dash__topbar-stats ting-dash__full" data-testid="ting-dispatcher-stats">
+        <div
+          className="ting-dash__topbar-stats ting-dash__full"
+          data-testid="ting-dispatcher-stats"
+        >
           <span className="ting-dash__stat">
             dispatcher <strong>{dispatcherState.running ? 'on' : 'off'}</strong>
           </span>

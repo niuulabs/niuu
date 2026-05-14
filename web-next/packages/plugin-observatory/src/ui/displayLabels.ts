@@ -1,16 +1,19 @@
 export function humanizeObservatoryText(value: string): string {
   return value
-    .replace(/Ting/g, 'Ting')
-    .replace(/TING/g, 'TING')
-    .replace(/Ting/g, 'Ting')
-    .replace(/ting/g, 'ting')
-    .replace(/Runs/g, 'Runs')
-    .replace(/runs/g, 'runs')
-    .replace(/Run/g, 'Run')
-    .replace(/run/g, 'run');
+    .replace(/Týr/g, 'Ting')
+    .replace(/\bTyr\b/g, 'Ting')
+    .replace(/\bTYR\b/g, 'TING')
+    .replace(/\btyr\b/g, 'ting')
+    .replace(/ᛃ/g, '✦')
+    .replace(/\bRaids\b/g, 'Runs')
+    .replace(/\braids\b/g, 'runs')
+    .replace(/\bRaid\b/g, 'Run')
+    .replace(/\braid\b/g, 'run');
 }
 
 export function humanizeObservatoryEventType(value: string): string {
+  if (value === 'TYR') return 'TING';
+  if (value === 'RAID') return 'RUN';
   if (value === 'TING') return 'TING';
   if (value === 'RUN') return 'RUN';
   return value;

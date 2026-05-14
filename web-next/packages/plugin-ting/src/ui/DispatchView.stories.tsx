@@ -91,7 +91,11 @@ function storyWrapper(
     return (
       <QueryClientProvider client={client}>
         <ServicesProvider
-          services={{ ting, 'ting.dispatcher': dispatcher, 'ting.dispatch': createMockDispatchBus() }}
+          services={{
+            ting,
+            'ting.dispatcher': dispatcher,
+            'ting.dispatch': createMockDispatchBus(),
+          }}
         >
           {children}
         </ServicesProvider>

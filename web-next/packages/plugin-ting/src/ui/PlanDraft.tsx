@@ -146,11 +146,7 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
                   {run.name}
                 </span>
                 <span className="niuu-text-xs niuu-text-text-muted niuu-font-mono">
-                  {[
-                    run.phase,
-                    run.persona,
-                    run.estimateHours ? `est ${run.estimateHours}h` : null,
-                  ]
+                  {[run.phase, run.persona, run.estimateHours ? `est ${run.estimateHours}h` : null]
                     .filter(Boolean)
                     .join(' · ')}
                   {!run.phase &&

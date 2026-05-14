@@ -257,7 +257,10 @@ describe('resolveSettingsServiceBase', () => {
       resolveSettingsServiceBase(
         {
           services: {
-            'ting.settings': { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting/settings' },
+            'ting.settings': {
+              mode: 'http',
+              baseUrl: 'http://localhost:8080/api/v1/ting/settings',
+            },
           },
         } as any,
         'ting',

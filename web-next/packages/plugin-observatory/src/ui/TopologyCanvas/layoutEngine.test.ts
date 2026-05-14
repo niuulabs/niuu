@@ -122,10 +122,7 @@ describe('computeLayout', () => {
   it('places realms on the computed outer orbit from origin', () => {
     const positions = computeLayout(TEST_TOPOLOGY);
     const realmPos = positions.get('realm-asgard')!;
-    const expectedBase = Math.max(
-      560,
-      (realmPos.zoneRadius ?? LAYOUT.REALM_INNER_RADIUS) + 260,
-    );
+    const expectedBase = Math.max(560, (realmPos.zoneRadius ?? LAYOUT.REALM_INNER_RADIUS) + 260);
     for (const node of TEST_TOPOLOGY.nodes) {
       if (node.typeId !== 'realm') continue;
       const pos = positions.get(node.id)!;
@@ -236,8 +233,10 @@ describe('computeLayout', () => {
       edges: [],
     };
     const positions = computeLayout(dense);
-    expect((positions.get('cluster-a')?.zoneRadius ?? 0)).toBeGreaterThan(LAYOUT.CLUSTER_INNER_RADIUS);
-    expect((positions.get('realm-a')?.zoneRadius ?? 0)).toBeGreaterThan(LAYOUT.REALM_INNER_RADIUS);
+    expect(positions.get('cluster-a')?.zoneRadius ?? 0).toBeGreaterThan(
+      LAYOUT.CLUSTER_INNER_RADIUS,
+    );
+    expect(positions.get('realm-a')?.zoneRadius ?? 0).toBeGreaterThan(LAYOUT.REALM_INNER_RADIUS);
   });
 
   it('computes bounds that fully enclose the rendered topology', () => {

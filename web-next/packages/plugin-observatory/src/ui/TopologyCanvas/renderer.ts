@@ -262,7 +262,9 @@ function drawEdge(
   const ny = vx / length;
   const sign = edgeHash(edge.id) % 2 === 0 ? 1 : -1;
   const sameParent =
-    srcNode?.parentId != null && srcNode.parentId === dstNode?.parentId && srcNode.parentId !== null;
+    srcNode?.parentId != null &&
+    srcNode.parentId === dstNode?.parentId &&
+    srcNode.parentId !== null;
   const directParentChild = srcNode?.id === dstNode?.parentId || dstNode?.id === srcNode?.parentId;
   const offset = Math.min(
     bend * (sameParent ? 1.2 : 1) * (directParentChild ? 0.7 : 1),
@@ -270,8 +272,7 @@ function drawEdge(
   );
   const midX = (start.x + end.x) / 2;
   const midY = (start.y + end.y) / 2;
-  const parentPos =
-    sameParent && srcNode?.parentId ? positions.get(srcNode.parentId) : undefined;
+  const parentPos = sameParent && srcNode?.parentId ? positions.get(srcNode.parentId) : undefined;
   let cx = midX + nx * offset * sign;
   let cy = midY + ny * offset * sign;
 

@@ -188,7 +188,12 @@ function placeArcChildren(
 }
 
 function clusterServiceRole(node: TopologyNode): string | null {
-  if (node.typeId === 'mimir' || node.typeId === 'ting' || node.typeId === 'bifrost' || node.typeId === 'volundr') {
+  if (
+    node.typeId === 'mimir' ||
+    node.typeId === 'ting' ||
+    node.typeId === 'bifrost' ||
+    node.typeId === 'volundr'
+  ) {
     return node.typeId;
   }
   if (node.typeId === 'service' && node.svcType) {
@@ -281,8 +286,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
       (child) => child.typeId !== 'host' && child.typeId !== 'cluster',
     );
     const { core, ravens, runs, generic } = clusterPartitions(children);
-    const coreExtent =
-      core.length === 0 ? 0 : LAYOUT.CLUSTER_CORE_ORBIT + maxNodeExtent(core) + 34;
+    const coreExtent = core.length === 0 ? 0 : LAYOUT.CLUSTER_CORE_ORBIT + maxNodeExtent(core) + 34;
     const ravenExtent =
       ravens.length === 0
         ? 0
@@ -330,13 +334,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
           );
     clusterRadii.set(
       node.id,
-      Math.max(
-        LAYOUT.CLUSTER_INNER_RADIUS,
-        coreExtent,
-        ravenExtent,
-        runExtent,
-        genericExtent,
-      ),
+      Math.max(LAYOUT.CLUSTER_INNER_RADIUS, coreExtent, ravenExtent, runExtent, genericExtent),
     );
   }
 
@@ -415,7 +413,10 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
   }
 
   for (const node of nodes) {
-    if (node.typeId === 'mimir' && (!node.parentId || !nodes.some((candidate) => candidate.id === node.parentId))) {
+    if (
+      node.typeId === 'mimir' &&
+      (!node.parentId || !nodes.some((candidate) => candidate.id === node.parentId))
+    ) {
       positions.set(node.id, { x: 0, y: 0 });
     }
   }
@@ -436,13 +437,17 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
     const realmRingBase = Math.max(560, largestRealmRadius + 260);
     const realmRingStep = Math.max(260, largestRealmRadius * 0.9);
     const realmSpacing = Math.max(360, largestRealmRadius * 1.75);
-    const realmPlacements = placeArcChildren(realmNodes, { x: 0, y: 0 }, {
-      baseRadius: realmRingBase,
-      radialStep: realmRingStep,
-      minSpacing: realmSpacing,
-      arcCenter: Math.PI / 2,
-      arcSpan: Math.PI * 1.92,
-    });
+    const realmPlacements = placeArcChildren(
+      realmNodes,
+      { x: 0, y: 0 },
+      {
+        baseRadius: realmRingBase,
+        radialStep: realmRingStep,
+        minSpacing: realmSpacing,
+        arcCenter: Math.PI / 2,
+        arcSpan: Math.PI * 1.92,
+      },
+    );
     for (const node of realmNodes) {
       const pos = realmPlacements.get(node.id);
       if (!pos) continue;
@@ -454,7 +459,9 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
   }
 
   for (const realm of realmNodes) {
-    const clusters = (childrenByParent.get(realm.id) ?? []).filter((child) => child.typeId === 'cluster');
+    const clusters = (childrenByParent.get(realm.id) ?? []).filter(
+      (child) => child.typeId === 'cluster',
+    );
     const parentPos = positions.get(realm.id);
     if (clusters.length === 1 && parentPos) {
       const onlyCluster = clusters[0]!;
@@ -569,7 +576,9 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
   }
 
   for (const host of hostNodes) {
-    const children = (childrenByParent.get(host.id) ?? []).filter((child) => child.typeId !== 'host');
+    const children = (childrenByParent.get(host.id) ?? []).filter(
+      (child) => child.typeId !== 'host',
+    );
     const placements = placeArcChildren(children, positions.get(host.id), {
       baseRadius: LAYOUT.HOST_CHILD_ORBIT,
       radialStep: LAYOUT.HOST_CHILD_STEP,
@@ -600,10 +609,18 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
 
   for (const node of sortedNodes(nodes)) {
     if (!positions.has(node.id)) continue;
-    if (node.typeId === 'realm' || node.typeId === 'cluster' || node.typeId === 'host' || node.typeId === 'run' || node.typeId === 'mimir') {
+    if (
+      node.typeId === 'realm' ||
+      node.typeId === 'cluster' ||
+      node.typeId === 'host' ||
+      node.typeId === 'run' ||
+      node.typeId === 'mimir'
+    ) {
       continue;
     }
-    const children = (childrenByParent.get(node.id) ?? []).filter((child) => !positions.has(child.id));
+    const children = (childrenByParent.get(node.id) ?? []).filter(
+      (child) => !positions.has(child.id),
+    );
     if (children.length === 0) continue;
     const placements = placeArcChildren(children, positions.get(node.id), {
       baseRadius: Math.max(132, nodeExtent(node) + 72),

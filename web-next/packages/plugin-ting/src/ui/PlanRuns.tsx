@@ -48,8 +48,8 @@ export function PlanRuns({ error, onBack }: PlanRunsProps) {
           Ravns are mapping the work…
         </h2>
         <p className="niuu-text-sm niuu-text-text-secondary niuu-text-center niuu-max-w-xs">
-          The planning ravn is decomposing your goal into phases and runs. This usually takes a
-          few seconds.
+          The planning ravn is decomposing your goal into phases and runs. This usually takes a few
+          seconds.
         </p>
       </div>
 

@@ -32,10 +32,10 @@ pnpm exec playwright show-report
 
 | Date           | Pass/Total | Key changes                                                                                                         |
 | -------------- | ---------- | ------------------------------------------------------------------------------------------------------------------- |
-| Apr 20 (start) | 0/35       | App was blank (broken plugin-ting export). Tests had wrong selectors.                                                |
+| Apr 20 (start) | 0/35       | App was blank (broken plugin-ting export). Tests had wrong selectors.                                               |
 | Apr 20 (mid)   | 33/33      | Fixed app render, test selectors, but baselines were self-referential (not web2)                                    |
 | Apr 20 (late)  | 10/33      | Switched baselines to web2 screenshots. Real comparison.                                                            |
-| Apr 21 (early) | 16/33      | Ting subnav route-awareness, Mimir /pages + /sources routes added                                                    |
+| Apr 21 (early) | 16/33      | Ting subnav route-awareness, Mimir /pages + /sources routes added                                                   |
 | Apr 21 (mid)   | 15/33      | Fixed 27 missing CSS imports in @niuulabs/ui (KpiCard, Table, etc.). Ravn overview regressed slightly from new CSS. |
 
 ## Root causes found and fixed

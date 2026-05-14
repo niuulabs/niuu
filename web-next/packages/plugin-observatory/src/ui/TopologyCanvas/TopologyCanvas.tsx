@@ -108,7 +108,9 @@ export function TopologyCanvas({
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       sizeRef.current = { w: width, h: height };
-      setViewportSize((prev) => (prev.w === width && prev.h === height ? prev : { w: width, h: height }));
+      setViewportSize((prev) =>
+        prev.w === width && prev.h === height ? prev : { w: width, h: height },
+      );
     };
 
     apply(canvas.clientWidth, canvas.clientHeight);
