@@ -53,7 +53,6 @@ from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.catalog import ravn_session_ended
 from sleipnir.ports.events import SleipnirPublisher
 from volundr.log_aggregate import aggregate_workspace_logs
-from volundr.session_archive import write_session_archive
 
 # ---------------------------------------------------------------------------
 # In-memory log buffer (Part 2: Pod Log Retrieval)
@@ -468,6 +467,8 @@ class Broker:
         self.session_id = self._settings.session.id
         self.model = self._settings.session.model
         self.workspace_dir = self._settings.workspace_path
+        archive_store_cls = import_class(self._settings.archive_store.adapter)
+        self._archive_store = archive_store_cls(**self._settings.archive_store.kwargs)
         self.volundr_api_url = self._settings.volundr_api_url
         self._transport: CLITransport | None = None
         self.service_manager: ServiceManager | None = None
@@ -2303,7 +2304,7 @@ class Broker:
             )
             workspace_slug = self.workspace_dir.replace("/", "-")
             event_source_dir = Path.home() / ".claude" / "projects" / workspace_slug
-            write_session_archive(
+            self._archive_store.write_archive(
                 session_id=self.session_id,
                 workspace_dir=self.workspace_dir,
                 transcript_payload=transcript_payload,

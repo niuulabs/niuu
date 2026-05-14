@@ -259,6 +259,16 @@ def _create_storage_adapter(settings: Settings) -> "StoragePort":  # noqa: F821
     return instance
 
 
+def _create_archive_store(settings: Settings) -> "ArchiveStorePort":  # noqa: F821
+    """Create the ArchiveStorePort adapter from dynamic config."""
+    as_cfg = settings.archive_store
+    cls = import_class(as_cfg.adapter)
+    kwargs = _resolve_secret_kwargs(as_cfg.kwargs, as_cfg.secret_kwargs_env)
+    instance = cls(**kwargs)
+    logger.info("Archive store: %s", as_cfg.adapter.rsplit(".", 1)[-1])
+    return instance
+
+
 def _create_contributors(
     settings: Settings,
     **ports: object,
@@ -803,9 +813,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 broadcaster=broadcaster,
                 timeline_repository=timeline_repository,
             )
+            archive_store = _create_archive_store(settings)
             archive_service = SessionArchiveService(
                 session_service,
                 storage_adapter,
+                archive_store,
                 chronicle_service=chronicle_service,
             )
             app.state.archive_service = archive_service

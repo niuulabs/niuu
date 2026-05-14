@@ -13,6 +13,7 @@ from tests.conftest import (
     InMemoryTimelineRepository,
     MockPodManager,
 )
+from volundr.adapters.outbound.archive_store import FileSystemArchiveStore
 from volundr.adapters.outbound.local_storage_adapter import LocalStorageAdapter
 from volundr.domain.models import Session, SessionStatus, TimelineEvent, TimelineEventType
 from volundr.domain.services import ChronicleService, SessionArchiveService, SessionService
@@ -39,6 +40,11 @@ def session_service(session_repository):
 
 
 @pytest.fixture
+def archive_store():
+    return FileSystemArchiveStore()
+
+
+@pytest.fixture
 def chronicle_service(session_service):
     return ChronicleService(
         InMemoryChronicleRepository(),
@@ -52,6 +58,7 @@ async def test_session_archive_service_reads_transcript_and_logs(
     storage,
     session_repository,
     session_service,
+    archive_store,
 ):
     session = Session(
         name="archive-me",
@@ -74,7 +81,7 @@ async def test_session_archive_service_reads_transcript_and_logs(
         encoding="utf-8",
     )
 
-    archive_service = SessionArchiveService(session_service, storage)
+    archive_service = SessionArchiveService(session_service, storage, archive_store)
     transcript = await archive_service.get_transcript(session.id)
     logs = await archive_service.get_logs(session.id)
 
@@ -89,6 +96,7 @@ async def test_session_archive_service_builds_archive_with_chronicle_and_timelin
     session_repository,
     session_service,
     chronicle_service,
+    archive_store,
 ):
     session = Session(
         name="archive-me",
@@ -128,6 +136,7 @@ async def test_session_archive_service_builds_archive_with_chronicle_and_timelin
     archive_service = SessionArchiveService(
         session_service,
         storage,
+        archive_store,
         chronicle_service=chronicle_service,
     )
     manifest = await archive_service.build_archive(session.id, force=True)
@@ -147,7 +156,11 @@ async def test_session_archive_service_builds_archive_with_chronicle_and_timelin
 
 
 @pytest.mark.asyncio
-async def test_session_archive_service_uses_file_endpoint_fallback(tmp_path, session_repository):
+async def test_session_archive_service_uses_file_endpoint_fallback(
+    tmp_path,
+    session_repository,
+    archive_store,
+):
     workspace = tmp_path / "external-workspace"
     (workspace / ".skuld").mkdir(parents=True, exist_ok=True)
     session = Session(
@@ -175,7 +188,7 @@ async def test_session_archive_service_uses_file_endpoint_fallback(tmp_path, ses
         pod_manager=MockPodManager(),
         validate_repos=False,
     )
-    archive_service = SessionArchiveService(session_service, EmptyStorage())
+    archive_service = SessionArchiveService(session_service, EmptyStorage(), archive_store)
 
     transcript = await archive_service.get_transcript(session.id)
 
@@ -187,6 +200,7 @@ async def test_session_archive_service_manifest_download_and_error_paths(
     storage,
     session_repository,
     session_service,
+    archive_store,
 ):
     session = Session(
         name="manifest-check",
@@ -204,7 +218,7 @@ async def test_session_archive_service_manifest_download_and_error_paths(
         encoding="utf-8",
     )
 
-    archive_service = SessionArchiveService(session_service, storage)
+    archive_service = SessionArchiveService(session_service, storage, archive_store)
     manifest = await archive_service.get_archive_manifest(session.id)
     download_path = await archive_service.get_transcript_download_path(session.id, "json")
 
@@ -216,7 +230,10 @@ async def test_session_archive_service_manifest_download_and_error_paths(
 
 
 @pytest.mark.asyncio
-async def test_session_archive_service_raises_when_workspace_unavailable(session_repository):
+async def test_session_archive_service_raises_when_workspace_unavailable(
+    session_repository,
+    archive_store,
+):
     session = Session(
         name="missing-workspace",
         model="claude-sonnet-4",
@@ -236,7 +253,7 @@ async def test_session_archive_service_raises_when_workspace_unavailable(session
         pod_manager=MockPodManager(),
         validate_repos=False,
     )
-    archive_service = SessionArchiveService(session_service, MissingStorage())
+    archive_service = SessionArchiveService(session_service, MissingStorage(), archive_store)
 
     with pytest.raises(SessionArchiveNotAvailableError, match="No accessible workspace path"):
         await archive_service.get_archive_manifest(session.id)
@@ -251,6 +268,7 @@ async def test_session_archive_service_uses_workspace_metadata_fallback(
     session_repository,
     session_service,
     chronicle_service,
+    archive_store,
 ):
     session = Session(
         name="workspace-metadata",
@@ -278,6 +296,7 @@ async def test_session_archive_service_uses_workspace_metadata_fallback(
     archive_service = SessionArchiveService(
         session_service,
         WorkspaceOnlyStorage(),
+        archive_store,
         chronicle_service=chronicle_service,
     )
 
@@ -287,3 +306,42 @@ async def test_session_archive_service_uses_workspace_metadata_fallback(
     assert transcript["turns"][0]["content"] == "meta path"
     assert manifest["artifacts"]["chronicle"] is None
     assert manifest["artifacts"]["timeline"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_archive_service_can_use_config_scoped_archive_root(
+    tmp_path,
+    monkeypatch,
+    storage,
+    session_repository,
+    session_service,
+):
+    monkeypatch.setenv("NIUU_HOME", str(tmp_path / ".niuu"))
+    session = Session(
+        name="config-archive",
+        model="claude-sonnet-4",
+        status=SessionStatus.STOPPED,
+    )
+    await session_repository.create(session)
+    await storage.create_session_workspace(str(session.id), user_id="u1", tenant_id="t1")
+    workspace_path = storage.resolve_session_workspace_path(str(session.id))
+    assert workspace_path is not None
+    workspace = Path(workspace_path)
+    (workspace / ".skuld").mkdir(parents=True, exist_ok=True)
+    (workspace / ".skuld" / f"conversation_{session.id}.json").write_text(
+        json.dumps({"turns": [{"id": "1", "role": "assistant", "content": "config root"}]}),
+        encoding="utf-8",
+    )
+
+    archive_service = SessionArchiveService(
+        session_service,
+        storage,
+        FileSystemArchiveStore(location="config", path="archives-store"),
+    )
+
+    manifest = await archive_service.build_archive(session.id, force=True)
+    archive_root = await archive_service.get_archive_root(session.id)
+
+    assert manifest["location"] == "config"
+    assert archive_root == tmp_path / ".niuu" / "archives-store" / str(session.id)
+    assert (archive_root / "transcript.json").exists()
