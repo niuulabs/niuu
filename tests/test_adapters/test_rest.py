@@ -735,6 +735,81 @@ class TestSessionLogAggregationProxy:
         assert response.status_code == 200
         assert response.json()["turns"][0]["content"] == "from workspace"
 
+    @pytest.mark.asyncio
+    async def test_get_session_logs_aggregate_returns_503_without_archive_or_file_workspace(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            "https://workspace.example.com/session",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/logs/aggregate")
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/volundr/sessions/{session.id}/logs/aggregate")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Session archive service not available"
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_returns_503_without_archive_or_file_workspace(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            "https://workspace.example.com/session",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request(
+            "GET",
+            f"http://localhost:8080/s/{session.id}/api/conversation/history",
+        )
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Session archive service not available"
+
 
 class TestFeatureFlags:
     """Tests for GET /api/v1/volundr/feature-flags."""

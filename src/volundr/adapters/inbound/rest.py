@@ -1753,7 +1753,10 @@ def create_router(
             )
             if fallback is not None:
                 return fallback
-            raise
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Session archive service not available",
+            ) from None
         except SessionArchiveNotAvailableError as e:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1889,7 +1892,10 @@ def create_router(
             fallback = _fallback_workspace_transcript(session)
             if fallback is not None:
                 return fallback
-            raise
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Session archive service not available",
+            ) from None
         except SessionArchiveNotAvailableError as e:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
