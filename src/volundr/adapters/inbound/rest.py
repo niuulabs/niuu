@@ -56,6 +56,8 @@ from volundr.domain.services import (
     StatsService,
     TokenService,
 )
+from volundr.log_aggregate import aggregate_workspace_logs
+from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,37 @@ def _workspace_dir_from_code_endpoint(code_endpoint: str | None) -> FilePath | N
         return None
     path = FilePath(parsed.path)
     return path if path.exists() else None
+
+
+def _fallback_workspace_logs(
+    session: Session,
+    *,
+    lines: int,
+    level: str,
+    participants: set[str] | None,
+    query: str,
+) -> dict | None:
+    """Read logs directly from a local file:// workspace when available."""
+    workspace_dir = _workspace_dir_from_code_endpoint(session.code_endpoint)
+    if workspace_dir is None:
+        return None
+    payload = aggregate_workspace_logs(
+        workspace_dir,
+        lines=lines,
+        level=level,
+        participants=participants,
+        query=query,
+    )
+    payload["session_id"] = str(session.id)
+    return payload
+
+
+def _fallback_workspace_transcript(session: Session) -> dict | None:
+    """Read the persisted transcript directly from a local file:// workspace."""
+    workspace_dir = _workspace_dir_from_code_endpoint(session.code_endpoint)
+    if workspace_dir is None:
+        return None
+    return load_workspace_transcript(workspace_dir, str(session.id))
 
 
 _RFC1123_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -1710,6 +1743,17 @@ def create_router(
                 participants=requested_participants,
                 query=query,
             )
+        except RuntimeError:
+            fallback = _fallback_workspace_logs(
+                session,
+                lines=lines,
+                level=level,
+                participants=requested_participants,
+                query=query,
+            )
+            if fallback is not None:
+                return fallback
+            raise
         except SessionArchiveNotAvailableError as e:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1841,6 +1885,11 @@ def create_router(
 
         try:
             return await forge.get_transcript(session_id)
+        except RuntimeError:
+            fallback = _fallback_workspace_transcript(session)
+            if fallback is not None:
+                return fallback
+            raise
         except SessionArchiveNotAvailableError as e:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

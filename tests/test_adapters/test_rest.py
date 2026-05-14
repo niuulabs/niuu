@@ -690,6 +690,51 @@ class TestSessionLogAggregationProxy:
         }
         assert [line["participant"] for line in data["lines"]] == ["skuld", "coder"]
 
+    @pytest.mark.asyncio
+    async def test_get_conversation_falls_back_to_local_workspace_without_archive_service(
+        self,
+        client: TestClient,
+        service: SessionService,
+        tmp_path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        transcript_dir = workspace / ".skuld"
+        transcript_dir.mkdir(parents=True)
+
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        (transcript_dir / f"conversation_{session.id}.json").write_text(
+            '{"turns":[{"id":"1","role":"assistant","content":"from workspace"}]}',
+            encoding="utf-8",
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file://{workspace}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/conversation")
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+
+        assert response.status_code == 200
+        assert response.json()["turns"][0]["content"] == "from workspace"
+
 
 class TestFeatureFlags:
     """Tests for GET /api/v1/volundr/feature-flags."""
