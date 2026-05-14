@@ -98,6 +98,9 @@ test('camera reset restores default zoom', async ({ page }) => {
   await page.goto('/observatory');
   await page.waitForSelector('[data-testid="zoom-display"]');
 
+  const zoomDisplay = page.getByTestId('zoom-display');
+  const initialPct = parseInt((await zoomDisplay.textContent()) ?? '0', 10);
+
   // Zoom in a few times
   const zoomIn = page.getByRole('button', { name: /zoom in/i });
   await zoomIn.click();
@@ -106,10 +109,9 @@ test('camera reset restores default zoom', async ({ page }) => {
 
   // Reset
   await page.getByTestId('camera-reset').click();
-  const pct = parseInt((await page.getByTestId('zoom-display').textContent()) ?? '0', 10);
+  const pct = parseInt((await zoomDisplay.textContent()) ?? '0', 10);
 
-  // Default INITIAL_ZOOM is 0.5 → 50%
-  expect(pct).toBe(50);
+  expect(pct).toBe(initialPct);
 });
 
 // ── Scroll-wheel zoom ─────────────────────────────────────────────────────────

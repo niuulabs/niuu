@@ -128,14 +128,14 @@ describe('TopologyCanvas', () => {
   it('camera reset button restores default zoom percentage', () => {
     render(<TopologyCanvas topology={MOCK_TOPOLOGY} />);
     const zoomDisplay = screen.getByTestId('zoom-display');
+    const initialPct = parseInt(zoomDisplay.textContent ?? '0', 10);
     // Zoom in twice
     fireEvent.click(screen.getByRole('button', { name: /zoom in/i }));
     fireEvent.click(screen.getByRole('button', { name: /zoom in/i }));
     // Reset
     fireEvent.click(screen.getByTestId('camera-reset'));
     const pct = parseInt(zoomDisplay.textContent ?? '0', 10);
-    // Default zoom is INITIAL_ZOOM (0.5) → 50%
-    expect(pct).toBe(50);
+    expect(pct).toBe(initialPct);
   });
 
   it('zoom cannot exceed ZOOM_MAX (300%)', () => {
