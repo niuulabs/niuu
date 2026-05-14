@@ -57,24 +57,28 @@ const makeRegistry = (): Registry => ({
 
 describe('useRegistryEditor', () => {
   it('initialises selectedId to the first type', () => {
-    const { result } = renderHook(() => useRegistryEditor(makeRegistry()));
+    const registry = makeRegistry();
+    const { result } = renderHook(() => useRegistryEditor(registry));
     expect(result.current.selectedId).toBe('realm');
   });
 
   it('select() updates selectedId', () => {
-    const { result } = renderHook(() => useRegistryEditor(makeRegistry()));
+    const registry = makeRegistry();
+    const { result } = renderHook(() => useRegistryEditor(registry));
     act(() => result.current.select('cluster'));
     expect(result.current.selectedId).toBe('cluster');
   });
 
   it('select(null) clears selectedId', () => {
-    const { result } = renderHook(() => useRegistryEditor(makeRegistry()));
+    const registry = makeRegistry();
+    const { result } = renderHook(() => useRegistryEditor(registry));
     act(() => result.current.select(null));
     expect(result.current.selectedId).toBeNull();
   });
 
   it('tryReparent performs a valid reparent and returns true', () => {
-    const { result } = renderHook(() => useRegistryEditor(makeRegistry()));
+    const registry = makeRegistry();
+    const { result } = renderHook(() => useRegistryEditor(registry));
     let success: boolean;
     act(() => {
       success = result.current.tryReparent('host', 'realm');
@@ -87,14 +91,16 @@ describe('useRegistryEditor', () => {
   });
 
   it('tryReparent bumps version after a valid move', () => {
-    const { result } = renderHook(() => useRegistryEditor(makeRegistry()));
+    const registry = makeRegistry();
+    const { result } = renderHook(() => useRegistryEditor(registry));
     const before = result.current.registry.version;
     act(() => result.current.tryReparent('host', 'realm'));
     expect(result.current.registry.version).toBe(before + 1);
   });
 
   it('tryReparent returns false and does not change registry when childId === newParentId', () => {
-    const { result } = renderHook(() => useRegistryEditor(makeRegistry()));
+    const registry = makeRegistry();
+    const { result } = renderHook(() => useRegistryEditor(registry));
     const before = JSON.stringify(result.current.registry);
     let success: boolean;
     act(() => {
@@ -106,7 +112,8 @@ describe('useRegistryEditor', () => {
 
   it('tryReparent returns false when the move would create a cycle', () => {
     // realm → cluster → host; moving realm under host would be a cycle
-    const { result } = renderHook(() => useRegistryEditor(makeRegistry()));
+    const registry = makeRegistry();
+    const { result } = renderHook(() => useRegistryEditor(registry));
     const before = JSON.stringify(result.current.registry);
     let success: boolean;
     act(() => {
@@ -117,7 +124,8 @@ describe('useRegistryEditor', () => {
   });
 
   it('deleteType removes the type and containment references', () => {
-    const { result } = renderHook(() => useRegistryEditor(makeRegistry()));
+    const registry = makeRegistry();
+    const { result } = renderHook(() => useRegistryEditor(registry));
     act(() => result.current.deleteType('cluster'));
     const ids = result.current.registry.types.map((item) => item.id);
     expect(ids).not.toContain('cluster');

@@ -45,4 +45,27 @@ describe('normalizeRepoCatalogResponse', () => {
 
     expect(normalizeRepoCatalogResponse(repos)).toEqual(repos);
   });
+
+  it('normalizes flat shared payload arrays with fallback defaults', () => {
+    expect(
+      normalizeRepoCatalogResponse([
+        {
+          provider: 'github',
+          org: 'niuulabs',
+          name: 'bifrost',
+          url: 'https://github.com/niuulabs/bifrost',
+        },
+      ]),
+    ).toEqual([
+      {
+        provider: 'github',
+        org: 'niuulabs',
+        name: 'bifrost',
+        cloneUrl: 'https://github.com/niuulabs/bifrost.git',
+        url: 'https://github.com/niuulabs/bifrost',
+        defaultBranch: 'main',
+        branches: [],
+      },
+    ]);
+  });
 });
