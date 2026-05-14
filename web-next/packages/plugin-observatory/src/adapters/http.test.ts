@@ -27,10 +27,10 @@ const topologyB: Topology = {
 
 const event1: ObservatoryEvent = {
   id: 'e1',
-  timestamp: '2026-01-01T00:00:00Z',
-  severity: 'info',
-  sourceId: 'n1',
-  message: 'online',
+  time: '00:00:00',
+  type: 'TYR',
+  subject: 'n1',
+  body: 'online',
 };
 
 function fakeClient(registry: Registry): ApiClient {
@@ -76,6 +76,32 @@ describe('buildObservatoryRegistryHttpAdapter', () => {
     const adapter = buildObservatoryRegistryHttpAdapter(fakeClient(emptyRegistry));
     const result = await adapter.getRegistry();
     expect(result).toEqual(emptyRegistry);
+  });
+
+  it('persists the registry with PUT /registry', async () => {
+    const saved: Registry[] = [];
+    const client: ApiClient = {
+      async get<T>(): Promise<T> {
+        throw new Error('not used');
+      },
+      async post<T>(): Promise<T> {
+        throw new Error('not used');
+      },
+      async put<T>(_endpoint: string, body: unknown): Promise<T> {
+        saved.push(body as Registry);
+        return body as T;
+      },
+      async patch<T>(): Promise<T> {
+        throw new Error('not used');
+      },
+      async delete<T>(): Promise<T> {
+        throw new Error('not used');
+      },
+    };
+    const adapter = buildObservatoryRegistryHttpAdapter(client);
+    const result = await adapter.saveRegistry(emptyRegistry);
+    expect(result).toEqual(emptyRegistry);
+    expect(saved).toEqual([emptyRegistry]);
   });
 });
 

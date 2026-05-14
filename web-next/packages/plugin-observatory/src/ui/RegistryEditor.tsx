@@ -69,9 +69,16 @@ interface TypePreviewDrawerProps {
   registry: Registry;
   onClose: () => void;
   onUpdate: (id: string, patch: Partial<EntityType>) => void;
+  onDelete: (id: string) => void;
 }
 
-function TypePreviewDrawer({ type, registry, onClose, onUpdate }: TypePreviewDrawerProps) {
+function TypePreviewDrawer({
+  type,
+  registry,
+  onClose,
+  onUpdate,
+  onDelete,
+}: TypePreviewDrawerProps) {
   const allTypeIds = registry.types.map((t) => t.id).filter((id) => id !== type.id);
   return (
     <div
@@ -366,6 +373,16 @@ function TypePreviewDrawer({ type, registry, onClose, onUpdate }: TypePreviewDra
         >
           + add field
         </button>
+
+        <div className="niuu-pt-4 niuu-mt-2 niuu-border-t niuu-border-border-subtle">
+          <button
+            type="button"
+            onClick={() => onDelete(type.id)}
+            className="niuu-py-2 niuu-px-3 niuu-bg-bg-secondary niuu-text-critical niuu-border niuu-border-border niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs"
+          >
+            Delete type
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -672,16 +689,34 @@ function JsonTab({ registry }: JsonTabProps) {
 
 export interface RegistryEditorProps {
   registry: Registry;
+  onSave: (registry: Registry) => Promise<Registry>;
+  isSaving?: boolean;
+  saveError?: string | null;
 }
 
-export function RegistryEditor({ registry: initialRegistry }: RegistryEditorProps) {
+export function RegistryEditor({
+  registry: initialRegistry,
+  onSave,
+  isSaving = false,
+  saveError = null,
+}: RegistryEditorProps) {
   const [activeTab, setActiveTab] = useState<TabId>('types');
   const [search, setSearch] = useState('');
-  const { registry, selectedId, select, tryReparent, updateType, createType } =
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const { registry, selectedId, select, tryReparent, updateType, createType, deleteType } =
     useRegistryEditor(initialRegistry);
+  const isDirty = useMemo(
+    () => JSON.stringify(registry) !== JSON.stringify(initialRegistry),
+    [initialRegistry, registry],
+  );
 
   const selectedType = registry.types.find((t) => t.id === selectedId) ?? null;
   const showDrawer = selectedType !== null && activeTab !== 'json';
+
+  const handleSave = async () => {
+    await onSave(registry);
+    setSaveMessage(`saved ${new Date().toLocaleTimeString()}`);
+  };
 
   return (
     <div
@@ -694,18 +729,39 @@ export function RegistryEditor({ registry: initialRegistry }: RegistryEditorProp
         <div className="niuu-py-4 niuu-px-6 niuu-border-b niuu-border-border-subtle niuu-shrink-0">
           <div className="niuu-flex niuu-items-baseline niuu-justify-between niuu-mb-1">
             <h2 className="niuu-m-0 niuu-text-xl niuu-font-bold">Entity type registry</h2>
-            <span className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
-              rev <strong className="niuu-text-text-secondary">{registry.version}</strong>
-              {' · '}
-              {registry.types.length} types
-              {' · '}
-              updated {formatDate(registry.updatedAt)}
-            </span>
+            <div className="niuu-flex niuu-items-center niuu-gap-3">
+              <span className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+                rev <strong className="niuu-text-text-secondary">{registry.version}</strong>
+                {' · '}
+                {registry.types.length} types
+                {' · '}
+                updated {formatDate(registry.updatedAt)}
+              </span>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={!isDirty || isSaving}
+                className="niuu-py-1 niuu-px-3 niuu-bg-brand niuu-text-bg-primary niuu-border niuu-border-brand niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs niuu-whitespace-nowrap disabled:niuu-opacity-50 disabled:niuu-cursor-default"
+              >
+                {isSaving ? 'saving…' : 'save'}
+              </button>
+            </div>
           </div>
           <p className="niuu-m-0 niuu-text-text-secondary niuu-text-sm niuu-max-w-[64ch]">
             Every node that appears in the Observatory canvas is an instance of one of these types.
             Edit a type here and the canvas re-renders.
           </p>
+          <div className="niuu-mt-2 niuu-text-xs niuu-font-mono niuu-text-text-muted">
+            {saveError ? (
+              <span className="niuu-text-critical">{saveError}</span>
+            ) : isSaving ? (
+              <span>saving registry…</span>
+            ) : isDirty ? (
+              <span>unsaved changes</span>
+            ) : (
+              <span>{saveMessage ?? 'saved'}</span>
+            )}
+          </div>
         </div>
 
         {/* Tabs */}
@@ -777,6 +833,7 @@ export function RegistryEditor({ registry: initialRegistry }: RegistryEditorProp
           registry={registry}
           onClose={() => select(null)}
           onUpdate={updateType}
+          onDelete={deleteType}
         />
       )}
     </div>

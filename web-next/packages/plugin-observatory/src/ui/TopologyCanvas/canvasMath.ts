@@ -16,6 +16,13 @@ export interface Camera {
   zoom: number;
 }
 
+export interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
 /** Clamp zoom to the [ZOOM_MIN, ZOOM_MAX] range. */
 export function clampZoom(zoom: number): number {
   return Math.max(CANVAS.ZOOM_MIN, Math.min(CANVAS.ZOOM_MAX, zoom));
@@ -113,4 +120,26 @@ export function applyKeyPan(cam: Camera, key: string, step: number): Camera {
 /** Build a default camera centred on the world origin. */
 export function defaultCamera(): Camera {
   return { x: 0, y: 0, zoom: CANVAS.INITIAL_ZOOM };
+}
+
+/** Fit the camera to a world-space bounding box with pixel padding. */
+export function fitCameraToBounds(
+  bounds: Bounds | null,
+  viewW: number,
+  viewH: number,
+  padding = 96,
+): Camera {
+  if (!bounds || viewW <= 0 || viewH <= 0) return defaultCamera();
+
+  const width = Math.max(bounds.maxX - bounds.minX, 1);
+  const height = Math.max(bounds.maxY - bounds.minY, 1);
+  const usableW = Math.max(viewW - padding * 2, 1);
+  const usableH = Math.max(viewH - padding * 2, 1);
+  const zoom = clampZoom(Math.min(usableW / width, usableH / height));
+
+  return {
+    x: (bounds.minX + bounds.maxX) / 2,
+    y: (bounds.minY + bounds.maxY) / 2,
+    zoom,
+  };
 }

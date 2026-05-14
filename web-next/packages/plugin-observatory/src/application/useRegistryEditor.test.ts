@@ -115,4 +115,17 @@ describe('useRegistryEditor', () => {
     expect(success!).toBe(false);
     expect(JSON.stringify(result.current.registry)).toBe(before);
   });
+
+  it('deleteType removes the type and containment references', () => {
+    const { result } = renderHook(() => useRegistryEditor(makeRegistry()));
+    act(() => result.current.deleteType('cluster'));
+    const ids = result.current.registry.types.map((item) => item.id);
+    expect(ids).not.toContain('cluster');
+    expect(result.current.registry.types.find((item) => item.id === 'realm')?.canContain).toEqual(
+      [],
+    );
+    expect(result.current.registry.types.find((item) => item.id === 'host')?.parentTypes).toEqual(
+      [],
+    );
+  });
 });

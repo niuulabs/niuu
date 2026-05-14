@@ -73,7 +73,7 @@ const SEED_REGISTRY: Registry = {
 // ── Render helpers ────────────────────────────────────────────────────────────
 
 function renderEditor(registry = SEED_REGISTRY) {
-  return render(<RegistryEditor registry={registry} />);
+  return render(<RegistryEditor registry={registry} onSave={async (next) => next} />);
 }
 
 // ── Types tab ─────────────────────────────────────────────────────────────────
@@ -107,6 +107,13 @@ describe('RegistryEditor — Types tab', () => {
     expect(screen.getByText(/rev/)).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText(/4 types/)).toBeInTheDocument();
+  });
+
+  it('shows unsaved changes after an edit', () => {
+    renderEditor();
+    fireEvent.click(screen.getByTestId('type-row-cluster'));
+    fireEvent.change(screen.getByTestId('edit-label'), { target: { value: 'Cluster Prime' } });
+    expect(screen.getByText(/unsaved changes/i)).toBeInTheDocument();
   });
 
   it('opens the preview drawer when a type row is clicked', () => {
@@ -197,6 +204,14 @@ describe('RegistryEditor — JSON tab', () => {
     fireEvent.click(screen.getByTestId('tab-json'));
     expect(screen.getByTestId('copy-json-btn')).toBeInTheDocument();
     expect(screen.getByTestId('copy-json-btn')).toHaveTextContent('copy');
+  });
+
+  it('deletes a type from the JSON view', () => {
+    renderEditor();
+    fireEvent.click(screen.getByTestId('type-row-device'));
+    fireEvent.click(screen.getByText('Delete type'));
+    fireEvent.click(screen.getByTestId('tab-json'));
+    expect(screen.getByTestId('json-output').textContent).not.toContain('"device"');
   });
 
   it('does not render the preview drawer in JSON tab', () => {

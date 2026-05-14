@@ -179,21 +179,6 @@ const FULL_TOPOLOGY: Topology = {
       parentId: 'realm-midgard',
       status: 'healthy',
     },
-    // Sub-Mímirs
-    {
-      id: 'mimir-code',
-      typeId: 'mimir_sub',
-      label: 'mímir/code',
-      parentId: 'mimir-0',
-      status: 'healthy',
-    },
-    {
-      id: 'mimir-ops',
-      typeId: 'mimir_sub',
-      label: 'mímir/ops',
-      parentId: 'mimir-0',
-      status: 'healthy',
-    },
   ],
   edges: [
     // solid: coordinator links

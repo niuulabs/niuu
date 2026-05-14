@@ -47,6 +47,7 @@ function KindProperties({ node }: { node: TopologyNode }) {
       'tyr',
       'bifrost',
       'volundr',
+      'mimir',
       'ravn_long',
       'valkyrie',
       'host',
@@ -95,6 +96,22 @@ function KindProperties({ node }: { node: TopologyNode }) {
             <dd>
               {node.activeSessions ?? 0} / {node.maxSessions ?? 0}
             </dd>
+          </>
+        )}
+        {kind === 'mimir' && (
+          <>
+            <dt>pages</dt>
+            <dd>{node.pages ?? 0}</dd>
+            <dt>writes</dt>
+            <dd>{node.writes ?? 0}</dd>
+            <dt>mounts</dt>
+            <dd>{node.mountCount ?? node.mounts?.length ?? 0}</dd>
+            {node.mounts && node.mounts.length > 0 && (
+              <>
+                <dt>surface</dt>
+                <dd className="obs-entity-drawer__plain">{node.mounts.join(', ')}</dd>
+              </>
+            )}
           </>
         )}
         {kind === 'ravn_long' && (

@@ -27,7 +27,7 @@ from cli.server import (
     parse_enabled_mounts,
     resolve_enabled_mounts,
 )
-from niuu.app import _backend_prefix_for_mount
+from niuu.app import _backend_prefix_for_mount, _create_plugin_api_app, _plugin_api_base_url
 from niuu.ports.embedded_database import ConnectionInfo
 from niuu.ports.plugin import APIRouteDomain
 from tests.test_cli.conftest import FakePlugin
@@ -69,6 +69,35 @@ class TestSkuldPortRegistry:
         )
         reg = SkuldPortRegistry(state_file=state_file)
         assert reg.get_port("sess-1") == 9100
+
+
+class TestPluginApiAppCreation:
+    def test_plugin_api_base_url_uses_configured_host(self) -> None:
+        assert _plugin_api_base_url("192.168.1.106", 8080) == "http://192.168.1.106:8080"
+        assert _plugin_api_base_url("0.0.0.0", 18080) == "http://127.0.0.1:18080"
+
+    def test_create_plugin_api_app_passes_base_url_to_opt_in_plugins(self) -> None:
+        captured: dict[str, str] = {}
+
+        class PluginWithBaseUrl:
+            def create_api_app(self, *, base_url: str):
+                captured["base_url"] = base_url
+                return object()
+
+        _create_plugin_api_app(PluginWithBaseUrl(), base_url="http://platform.test:8080")
+        assert captured["base_url"] == "http://platform.test:8080"
+
+    def test_create_plugin_api_app_leaves_legacy_plugins_untouched(self) -> None:
+        called = False
+
+        class LegacyPlugin:
+            def create_api_app(self):
+                nonlocal called
+                called = True
+                return object()
+
+        _create_plugin_api_app(LegacyPlugin(), base_url="http://platform.test:8080")
+        assert called is True
 
 
 class TestGetSkuldRegistry:
@@ -1677,6 +1706,29 @@ class TestRootServerStartEmbeddedDb:
         assert os.environ["DATABASE__PORT"] == "5433"
         assert os.environ["DATABASE__USER"] == "testuser"
         assert os.environ["DATABASE__NAME"] == "testdb"
+
+    @pytest.mark.asyncio
+    async def test_respects_pgdata_env_override(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+
+        mock_db = AsyncMock()
+        mock_db.start = AsyncMock(
+            return_value=ConnectionInfo(
+                host="localhost", port=5433, dbname="testdb", user="testuser"
+            )
+        )
+
+        with (
+            patch.dict(os.environ, {"NIUU_PGDATA_DIR": "/tmp/niuu-observatory-pg"}, clear=False),
+            patch(
+                "niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase",
+                return_value=mock_db,
+            ),
+        ):
+            await server._start_embedded_db()
+
+        mock_db.start.assert_awaited_once_with("/tmp/niuu-observatory-pg")
 
 
 class TestRootServerLifespan:

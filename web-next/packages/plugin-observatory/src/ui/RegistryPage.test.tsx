@@ -52,6 +52,9 @@ describe('RegistryPage', () => {
       getRegistry: async () => {
         throw new Error('registry unavailable');
       },
+      saveRegistry: async () => {
+        throw new Error('registry unavailable');
+      },
     };
     wrap(<RegistryPage />, failingRepo);
     await waitFor(() => expect(screen.getByText('registry unavailable')).toBeInTheDocument());

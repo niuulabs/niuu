@@ -28,25 +28,79 @@ export const CANVAS = {
 
 export const LAYOUT = {
   /** Distance from origin to the centre of each realm circle. */
-  REALM_RING_RADIUS: 700,
+  REALM_RING_RADIUS: 920,
+
+  /** Extra outward spacing when many realms need multiple bands. */
+  REALM_RING_STEP: 340,
 
   /** Visual radius drawn for realm circles. */
-  REALM_INNER_RADIUS: 240,
+  REALM_INNER_RADIUS: 320,
 
-  /** Distance from a realm centre to a cluster centre inside it. */
-  CLUSTER_RING_DIST: 120,
+  /** Base orbit for clusters inside a realm. */
+  REALM_CLUSTER_ORBIT: 180,
+
+  /** Extra orbit added for additional cluster bands inside a realm. */
+  REALM_CLUSTER_STEP: 170,
+
+  /** Base orbit for direct realm devices/services. */
+  REALM_DEVICE_ORBIT: 126,
+
+  /** Extra orbit added for additional realm device bands. */
+  REALM_DEVICE_STEP: 120,
+
+  /** Base orbit for hosts inside a realm. */
+  REALM_HOST_ORBIT: 290,
+
+  /** Extra orbit added for additional host bands. */
+  REALM_HOST_STEP: 136,
 
   /** Visual radius drawn for cluster circles. */
-  CLUSTER_INNER_RADIUS: 90,
+  CLUSTER_INNER_RADIUS: 138,
 
-  /** Distance from a realm centre to a host rounded-rect. */
-  HOST_RING_DIST: 200,
+  /** Base orbit for child nodes inside a cluster. */
+  CLUSTER_CHILD_ORBIT: 132,
 
-  /** Orbit radius for sub-Mímir nodes around the primary Mímir. */
-  SUB_MIMIR_RING: 160,
+  /** Extra orbit added for additional cluster child bands. */
+  CLUSTER_CHILD_STEP: 84,
+
+  /** Stable orbit for the named core services inside a cluster. */
+  CLUSTER_CORE_ORBIT: 148,
+
+  /** Base orbit for wardens and ravens within a cluster. */
+  CLUSTER_RAVEN_ORBIT: 248,
+
+  /** Extra orbit added for additional raven bands. */
+  CLUSTER_RAVEN_STEP: 70,
+
+  /** Base orbit for raids within a cluster. */
+  CLUSTER_RAID_ORBIT: 274,
+
+  /** Extra orbit added for additional raid bands. */
+  CLUSTER_RAID_STEP: 82,
+
+  /** Base orbit for uncategorized cluster children. */
+  CLUSTER_GENERIC_ORBIT: 212,
+
+  /** Extra orbit added for additional generic cluster child bands. */
+  CLUSTER_GENERIC_STEP: 72,
+
+  /** Base orbit for child nodes around a host. */
+  HOST_CHILD_ORBIT: 86,
+
+  /** Extra orbit added for additional host child bands. */
+  HOST_CHILD_STEP: 56,
+
+  /** Base orbit for child nodes around a raid. */
+  RAID_CHILD_ORBIT: 72,
+
+  /** Extra orbit added for additional raid child bands. */
+  RAID_CHILD_STEP: 52,
 
   /** Radial scatter applied when placing generic nodes near a parent. */
-  NODE_SCATTER_DIST: 60,
+  NODE_SCATTER_DIST: 96,
+
+  /** Extra scatter added for additional generic-node bands. */
+  NODE_SCATTER_STEP: 64,
 
   /** Pixel radius of the Mímir glyph circle. */
   MIMIR_RADIUS: 42,
@@ -87,7 +141,6 @@ export const NODE_SIZE: Record<string, number> = {
   printer: 7,
   vaettir: 7,
   beacon: 4,
-  mimir_sub: 18,
 };
 
 /**

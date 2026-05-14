@@ -38,15 +38,20 @@ class ObservatoryPlugin(ServicePlugin):
             description="Observatory registry and live streams",
             factory=_ObservatoryStub,
             default_enabled=True,
+            depends_on=["postgres"],
         )
 
     def create_service(self) -> Service:
         return self.register_service().factory()
 
-    def create_api_app(self) -> Any:
+    def create_api_app(self, *, base_url: str | None = None) -> Any:
         from observatory.app import create_app
+        from observatory.discovery import ObservatoryDiscoveryService
 
-        return create_app()
+        discovery_service = (
+            ObservatoryDiscoveryService(base_url=base_url) if base_url is not None else None
+        )
+        return create_app(discovery_service=discovery_service)
 
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (

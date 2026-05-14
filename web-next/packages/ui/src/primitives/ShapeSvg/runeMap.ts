@@ -37,7 +37,6 @@ export const ENTITY_RUNES = {
   bifrost: 'ᚨ',
   volundr: 'ᚲ',
   mimir: 'ᛗ',
-  mimir_sub: 'ᛗ',
   service: 'ᛦ',
   model: 'ᛖ',
   printer: 'ᛈ',

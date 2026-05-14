@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket
@@ -102,6 +103,28 @@ def _local_service_host(host: str) -> str:
     if normalized in {"0.0.0.0", "::", "[::]"}:
         return "127.0.0.1"
     return normalized
+
+
+def _plugin_api_base_url(host: str, port: int) -> str:
+    """Return the intra-stack base URL used by host-mounted plugin apps."""
+    return f"http://{_local_service_host(host)}:{port}"
+
+
+def _create_plugin_api_app(plugin: Service, *, base_url: str) -> Any:
+    """Create a plugin API app, passing root context to opt-in plugins only."""
+    factory = plugin.create_api_app
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return factory()
+
+    accepts_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if accepts_kwargs or "base_url" in signature.parameters:
+        return factory(base_url=base_url)
+    return factory()
 
 
 _PLUGIN_API_PREFIXES: dict[str, list[str]] = {
@@ -463,6 +486,7 @@ def build_root_app(
     skuld_registry: SkuldPortRegistry | None = None,
 ) -> FastAPI:
     """Build the root FastAPI app that hosts selected route domains."""
+    plugin_api_base_url = _plugin_api_base_url(host, port)
     active_mounts = resolve_enabled_mounts(
         host_profile,
         enabled_mounts,
@@ -497,7 +521,7 @@ def build_root_app(
             if shared_key and shared_key in shared_api_apps:
                 sub_app = shared_api_apps[shared_key]
             else:
-                sub_app = plugin.create_api_app()
+                sub_app = _create_plugin_api_app(plugin, base_url=plugin_api_base_url)
                 if shared_key and sub_app is not None:
                     shared_api_apps[shared_key] = sub_app
             if sub_app is None:
@@ -834,7 +858,7 @@ class RootServer(Service):
         """Start embedded PostgreSQL and set env vars for sub-apps."""
         from niuu.adapters.embedded_postgres import EmbeddedPostgresDatabase
 
-        data_dir = str(Path.home() / ".niuu" / "pgdata")
+        data_dir = os.environ.get("NIUU_PGDATA_DIR") or str(Path.home() / ".niuu" / "pgdata")
         db = EmbeddedPostgresDatabase()
         info = await db.start(data_dir)
         self._embedded_db = db

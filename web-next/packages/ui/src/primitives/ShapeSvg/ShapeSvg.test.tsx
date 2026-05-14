@@ -132,7 +132,6 @@ describe('ENTITY_RUNES', () => {
       'bifrost',
       'volundr',
       'mimir',
-      'mimir_sub',
       'service',
       'model',
       'printer',

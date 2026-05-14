@@ -48,13 +48,6 @@ const NODES: TopologyNode[] = [
   { id: 'svc-0', typeId: 'service', label: 'grafana', parentId: null, status: 'healthy' },
   { id: 'model-0', typeId: 'model', label: 'claude', parentId: null, status: 'healthy' },
   { id: 'raid-0', typeId: 'raid', label: 'raid-0', parentId: null, status: 'observing' },
-  {
-    id: 'mimir-sub-0',
-    typeId: 'mimir_sub',
-    label: 'mímir/code',
-    parentId: 'mimir-0',
-    status: 'healthy',
-  },
 ];
 
 const TOPOLOGY: Topology = {
@@ -148,6 +141,7 @@ describe('drawEdges', () => {
     drawEdges(ctx, TOPOLOGY, POSITIONS, 0);
     // At least one beginPath per edge
     expect((ctx.beginPath as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    expect((ctx.quadraticCurveTo as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
   });
 
   it('handles edges with missing source position gracefully', () => {
@@ -218,7 +212,6 @@ describe('drawNode', () => {
     'service',
     'model',
     'raid',
-    'mimir_sub',
     'unknown-type',
   ];
 

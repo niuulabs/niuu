@@ -1,9 +1,21 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useService } from '@niuulabs/plugin-sdk';
 import { Rune, StateDot } from '@niuulabs/ui';
 import { useRegistry } from '../application/useRegistry';
+import type { Registry } from '../domain';
+import type { IRegistryRepository } from '../ports';
 import { RegistryEditor } from './RegistryEditor';
 
 export function RegistryPage() {
+  const repo = useService<IRegistryRepository>('observatory.registry');
+  const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useRegistry();
+  const saveMutation = useMutation({
+    mutationFn: (registry: Registry) => repo.saveRegistry(registry),
+    onSuccess: (saved) => {
+      queryClient.setQueryData(['observatory', 'registry'], saved);
+    },
+  });
 
   return (
     <div className="niuu-flex niuu-flex-col niuu-h-full">
@@ -32,7 +44,14 @@ export function RegistryPage() {
           </div>
         )}
 
-        {data && <RegistryEditor registry={data} />}
+        {data && (
+          <RegistryEditor
+            registry={data}
+            onSave={(registry) => saveMutation.mutateAsync(registry)}
+            isSaving={saveMutation.isPending}
+            saveError={saveMutation.error instanceof Error ? saveMutation.error.message : null}
+          />
+        )}
       </div>
     </div>
   );

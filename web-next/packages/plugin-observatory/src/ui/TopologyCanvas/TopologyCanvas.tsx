@@ -6,9 +6,10 @@ import {
   applyScrollZoom,
   applyKeyPan,
   defaultCamera,
+  fitCameraToBounds,
   type Camera,
 } from './canvasMath';
-import { computeLayout, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
+import { computeLayout, computeLayoutBounds, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
 import { drawStars, drawZones, drawEdges, drawNode, drawMimir, drawMinimap } from './renderer';
 import { CANVAS, HIT_RADIUS } from './config';
 import './TopologyCanvas.css';
@@ -54,6 +55,9 @@ export function TopologyCanvas({
   const minimapRef = useRef<HTMLCanvasElement>(null);
   const sizeRef = useRef({ w: 0, h: 0 });
   const camRef = useRef<Camera>(defaultCamera());
+  const userAdjustedCameraRef = useRef(false);
+  const lastTopologySignatureRef = useRef('');
+  const lastFitKeyRef = useRef('');
   const dragRef = useRef<DragState>({
     active: false,
     startX: 0,
@@ -62,14 +66,33 @@ export function TopologyCanvas({
   });
   const hoveredIdRef = useRef<string | null>(null);
   const [zoomPct, setZoomPct] = useState(Math.round(CANVAS.INITIAL_ZOOM * 100));
+  const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
 
   // Compute layout whenever topology changes (memoised — pure function)
   const positions = useMemo(() => (topology ? computeLayout(topology) : new Map()), [topology]);
+  const topologySignature = useMemo(() => {
+    if (!topology) return 'empty';
+    return topology.nodes
+      .map((node) => `${node.id}:${node.parentId ?? ''}:${node.typeId}`)
+      .sort()
+      .join('|');
+  }, [topology]);
 
   // Stable reference to drawing data so the rAF loop always reads fresh values
   // without being re-subscribed on every state tick.
   const drawRef = useRef({ topology, positions, hoveredId: null as string | null });
   drawRef.current = { topology, positions, hoveredId: hoveredIdRef.current };
+
+  const fitCamera = useCallback(() => {
+    if (!topology) {
+      camRef.current = defaultCamera();
+      setZoomPct(Math.round(camRef.current.zoom * 100));
+      return;
+    }
+    const bounds = computeLayoutBounds(topology, positions);
+    camRef.current = fitCameraToBounds(bounds, sizeRef.current.w, sizeRef.current.h, 86);
+    setZoomPct(Math.round(camRef.current.zoom * 100));
+  }, [positions, topology]);
 
   // ── Canvas sizing ───────────────────────────────────────────────────────────
 
@@ -85,6 +108,7 @@ export function TopologyCanvas({
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       sizeRef.current = { w: width, h: height };
+      setViewportSize((prev) => (prev.w === width && prev.h === height ? prev : { w: width, h: height }));
     };
 
     apply(canvas.clientWidth, canvas.clientHeight);
@@ -95,6 +119,21 @@ export function TopologyCanvas({
     ro.observe(canvas);
     return () => ro.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!viewportSize.w || !viewportSize.h) return;
+
+    if (lastTopologySignatureRef.current !== topologySignature) {
+      userAdjustedCameraRef.current = false;
+      lastTopologySignatureRef.current = topologySignature;
+    }
+
+    const fitKey = `${topologySignature}:${viewportSize.w}x${viewportSize.h}`;
+    if (!userAdjustedCameraRef.current && lastFitKeyRef.current !== fitKey) {
+      fitCamera();
+      lastFitKeyRef.current = fitKey;
+    }
+  }, [fitCamera, topologySignature, viewportSize.h, viewportSize.w]);
 
   // ── Scroll-wheel zoom ───────────────────────────────────────────────────────
 
@@ -109,6 +148,7 @@ export function TopologyCanvas({
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
       camRef.current = applyScrollZoom(camRef.current, e.deltaY, mx, my, w, h);
+      userAdjustedCameraRef.current = true;
       setZoomPct(Math.round(camRef.current.zoom * 100));
     };
 
@@ -127,6 +167,7 @@ export function TopologyCanvas({
       if (!panKeys.includes(e.key)) return;
       e.preventDefault();
       camRef.current = applyKeyPan(camRef.current, e.key, CANVAS.PAN_KEY_STEP);
+      userAdjustedCameraRef.current = true;
     };
 
     canvas.addEventListener('keydown', onKeyDown);
@@ -171,6 +212,7 @@ export function TopologyCanvas({
         const dy = sy - drag.startY;
         const { x, y } = applyDragPan(drag.startCam, dx, dy);
         camRef.current = { ...camRef.current, x, y };
+        userAdjustedCameraRef.current = true;
         canvasRef.current!.style.cursor = 'grabbing';
         return;
       }
@@ -232,24 +274,27 @@ export function TopologyCanvas({
       x: fx * CANVAS.WORLD_W - CANVAS.WORLD_W / 2,
       y: fy * CANVAS.WORLD_H - CANVAS.WORLD_H / 2,
     };
+    userAdjustedCameraRef.current = true;
   }, []);
 
   // ── Camera controls ─────────────────────────────────────────────────────────
 
   const zoomIn = useCallback(() => {
     camRef.current = { ...camRef.current, zoom: clampZoom(camRef.current.zoom * CANVAS.ZOOM_STEP) };
+    userAdjustedCameraRef.current = true;
     setZoomPct(Math.round(camRef.current.zoom * 100));
   }, []);
 
   const zoomOut = useCallback(() => {
     camRef.current = { ...camRef.current, zoom: clampZoom(camRef.current.zoom / CANVAS.ZOOM_STEP) };
+    userAdjustedCameraRef.current = true;
     setZoomPct(Math.round(camRef.current.zoom * 100));
   }, []);
 
   const resetCamera = useCallback(() => {
-    camRef.current = defaultCamera();
-    setZoomPct(Math.round(defaultCamera().zoom * 100));
-  }, []);
+    userAdjustedCameraRef.current = false;
+    fitCamera();
+  }, [fitCamera]);
 
   // ── Animation loop ──────────────────────────────────────────────────────────
 
@@ -312,7 +357,7 @@ export function TopologyCanvas({
         for (const node of topo.nodes) {
           if (node.typeId !== 'mimir') continue;
           const p = pos.get(node.id);
-          if (p) drawMimir(ctx, p, now, 1, node.label.toUpperCase());
+          if (p) drawMimir(ctx, p, now, node.parentId ? 0.8 : 1, node.label.toUpperCase());
         }
       }
 

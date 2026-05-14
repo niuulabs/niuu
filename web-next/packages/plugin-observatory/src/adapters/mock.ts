@@ -223,7 +223,7 @@ const SEED_REGISTRY: Registry = {
       color: 'ice-100',
       size: 42,
       border: 'solid',
-      canContain: ['mimir_sub'],
+      canContain: [],
       parentTypes: ['cluster', 'realm'],
       category: 'knowledge',
       description:
@@ -231,22 +231,8 @@ const SEED_REGISTRY: Registry = {
       fields: [
         { key: 'pages', label: 'Pages', type: 'number' },
         { key: 'writes', label: 'Writes', type: 'number' },
+        { key: 'mountCount', label: 'Mounts', type: 'number' },
       ],
-    },
-    {
-      id: 'mimir_sub',
-      label: 'Sub-Mímir',
-      rune: 'ᛗ',
-      icon: 'book-marked',
-      shape: 'mimir-small',
-      color: 'ice-200',
-      size: 18,
-      border: 'solid',
-      canContain: [],
-      parentTypes: ['mimir'],
-      category: 'knowledge',
-      description: 'Domain-scoped Mímir — code, ops, lore. Sits in orbit around the primary Mímir.',
-      fields: [{ key: 'purpose', label: 'Purpose', type: 'string' }],
     },
     {
       id: 'service',
@@ -579,10 +565,15 @@ const SEED_EVENTS: ObservatoryEvent[] = [
 // ── Factory functions ─────────────────────────────────────────────────────────
 
 export function createMockRegistryRepository(): IRegistryRepository {
+  let current = structuredClone(SEED_REGISTRY);
   return {
     async getRegistry(): Promise<Registry> {
       await new Promise<void>((r) => setTimeout(r, 50));
-      return SEED_REGISTRY;
+      return structuredClone(current);
+    },
+    async saveRegistry(registry: Registry): Promise<Registry> {
+      current = structuredClone(registry);
+      return structuredClone(current);
     },
   };
 }

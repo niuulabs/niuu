@@ -99,6 +99,12 @@ export interface TopologyNode {
   activeSessions?: number;
   maxSessions?: number;
 
+  // ── mimir ─────────────────────────────────────────────────────────────────
+  pages?: number;
+  writes?: number;
+  mountCount?: number;
+  mounts?: string[];
+
   // ── ravn_long ─────────────────────────────────────────────────────────────
   persona?: string;
   specialty?: string;

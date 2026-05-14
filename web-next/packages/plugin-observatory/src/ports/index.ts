@@ -6,6 +6,7 @@ import type { Registry, Topology, ObservatoryEvent } from '../domain';
  */
 export interface IRegistryRepository {
   getRegistry(): Promise<Registry>;
+  saveRegistry(registry: Registry): Promise<Registry>;
 }
 
 /** Callback signature for topology snapshot updates. */

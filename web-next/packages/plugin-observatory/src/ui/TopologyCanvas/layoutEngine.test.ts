@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hashAngle, computeLayout, zoneRadius } from './layoutEngine';
+import { hashAngle, computeLayout, computeLayoutBounds, zoneRadius } from './layoutEngine';
 import { LAYOUT } from './config';
 import type { Topology } from '../../domain';
 
@@ -119,22 +119,27 @@ describe('computeLayout', () => {
     expect(mimiPos!.y).toBe(0);
   });
 
-  it('places realms at exactly REALM_RING_RADIUS from origin', () => {
+  it('places realms on the computed outer orbit from origin', () => {
     const positions = computeLayout(TEST_TOPOLOGY);
+    const realmPos = positions.get('realm-asgard')!;
+    const expectedBase = Math.max(
+      560,
+      (realmPos.zoneRadius ?? LAYOUT.REALM_INNER_RADIUS) + 260,
+    );
     for (const node of TEST_TOPOLOGY.nodes) {
       if (node.typeId !== 'realm') continue;
       const pos = positions.get(node.id)!;
       const dist = Math.hypot(pos.x, pos.y);
-      expect(dist).toBeCloseTo(LAYOUT.REALM_RING_RADIUS, 5);
+      expect(dist).toBeGreaterThanOrEqual(expectedBase - 0.01);
     }
   });
 
-  it('places clusters near their parent realm (within double CLUSTER_RING_DIST)', () => {
+  it('keeps a single cluster centered within its realm to reduce wasted space', () => {
     const positions = computeLayout(TEST_TOPOLOGY);
     const clusterPos = positions.get('cluster-vk')!;
     const parentPos = positions.get('realm-asgard')!;
     const dist = Math.hypot(clusterPos.x - parentPos.x, clusterPos.y - parentPos.y);
-    expect(dist).toBeCloseTo(LAYOUT.CLUSTER_RING_DIST, 5);
+    expect(dist).toBeCloseTo(0);
   });
 
   it('places hosts near their parent realm', () => {
@@ -142,7 +147,7 @@ describe('computeLayout', () => {
     const hostPos = positions.get('host-mjolnir')!;
     const parentPos = positions.get('realm-asgard')!;
     const dist = Math.hypot(hostPos.x - parentPos.x, hostPos.y - parentPos.y);
-    expect(dist).toBeCloseTo(LAYOUT.HOST_RING_DIST, 5);
+    expect(dist).toBeGreaterThanOrEqual(LAYOUT.REALM_HOST_ORBIT);
   });
 
   it('places different realms at different positions', () => {
@@ -193,33 +198,9 @@ describe('computeLayout', () => {
     };
     const positions = computeLayout(orphan);
     const pos = positions.get('orphan-svc')!;
-    // Falls back to anchor at (0,0), so should be at scatter distance from origin
+    // Falls back to anchor at (0,0), so should be outside the scatter floor.
     const dist = Math.hypot(pos.x, pos.y);
-    expect(dist).toBeCloseTo(LAYOUT.NODE_SCATTER_DIST, 5);
-  });
-
-  it('places mimir_sub nodes at exactly SUB_MIMIR_RING from the primary Mímir', () => {
-    const topology: Topology = {
-      timestamp: '2026-04-19T00:00:00Z',
-      nodes: [
-        { id: 'mimir-0', typeId: 'mimir', label: 'mímir-0', parentId: null, status: 'healthy' },
-        {
-          id: 'mimir-sub-0',
-          typeId: 'mimir_sub',
-          label: 'mímir/code',
-          parentId: 'mimir-0',
-          status: 'healthy',
-        },
-      ],
-      edges: [],
-    };
-    const positions = computeLayout(topology);
-    const mimiPos = positions.get('mimir-0')!;
-    const subPos = positions.get('mimir-sub-0')!;
-    expect(mimiPos).toBeDefined();
-    expect(subPos).toBeDefined();
-    const dist = Math.hypot(subPos.x - mimiPos.x, subPos.y - mimiPos.y);
-    expect(dist).toBeCloseTo(LAYOUT.SUB_MIMIR_RING, 5);
+    expect(dist).toBeGreaterThanOrEqual(LAYOUT.NODE_SCATTER_DIST);
   });
 
   it('realm positions do not depend on node array order', () => {
@@ -235,6 +216,218 @@ describe('computeLayout', () => {
     const a2 = posReversed.get('realm-asgard')!;
     expect(a1.x).toBeCloseTo(a2.x);
     expect(a1.y).toBeCloseTo(a2.y);
+  });
+
+  it('grows cluster and realm container radii as child counts increase', () => {
+    const dense: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'mimir-0', typeId: 'mimir', label: 'm', parentId: null, status: 'healthy' },
+        { id: 'realm-a', typeId: 'realm', label: 'a', parentId: null, status: 'healthy' },
+        { id: 'cluster-a', typeId: 'cluster', label: 'c', parentId: 'realm-a', status: 'healthy' },
+        ...Array.from({ length: 10 }, (_, index) => ({
+          id: `svc-${index}`,
+          typeId: 'service' as const,
+          label: `svc-${index}`,
+          parentId: 'cluster-a',
+          status: 'healthy' as const,
+        })),
+      ],
+      edges: [],
+    };
+    const positions = computeLayout(dense);
+    expect((positions.get('cluster-a')?.zoneRadius ?? 0)).toBeGreaterThan(LAYOUT.CLUSTER_INNER_RADIUS);
+    expect((positions.get('realm-a')?.zoneRadius ?? 0)).toBeGreaterThan(LAYOUT.REALM_INNER_RADIUS);
+  });
+
+  it('computes bounds that fully enclose the rendered topology', () => {
+    const positions = computeLayout(TEST_TOPOLOGY);
+    const bounds = computeLayoutBounds(TEST_TOPOLOGY, positions);
+    expect(bounds).not.toBeNull();
+    expect(bounds!.minX).toBeLessThan(bounds!.maxX);
+    expect(bounds!.minY).toBeLessThan(bounds!.maxY);
+  });
+
+  it('centers a single realm and its only cluster so local maps are not pushed to the edge', () => {
+    const localTopology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-local', typeId: 'realm', label: 'local', parentId: null, status: 'healthy' },
+        {
+          id: 'cluster-platform',
+          typeId: 'cluster',
+          label: 'platform',
+          parentId: 'realm-local',
+          status: 'healthy',
+        },
+        {
+          id: 'mimir-platform',
+          typeId: 'mimir',
+          label: 'Mimir',
+          parentId: 'cluster-platform',
+          status: 'healthy',
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(localTopology);
+    expect(positions.get('realm-local')).toMatchObject({ x: 0, y: 0 });
+    expect(positions.get('cluster-platform')).toMatchObject({ x: 0, y: 0 });
+    const mimir = positions.get('mimir-platform')!;
+    expect(Math.hypot(mimir.x, mimir.y)).toBeGreaterThanOrEqual(LAYOUT.CLUSTER_CORE_ORBIT);
+  });
+
+  it('treats a cluster-local Mimir as a first-class cluster service instead of the global center', () => {
+    const localTopology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-local', typeId: 'realm', label: 'local', parentId: null, status: 'healthy' },
+        {
+          id: 'cluster-platform',
+          typeId: 'cluster',
+          label: 'platform',
+          parentId: 'realm-local',
+          status: 'healthy',
+        },
+        {
+          id: 'mimir-platform',
+          typeId: 'mimir',
+          label: 'Mimir',
+          parentId: 'cluster-platform',
+          status: 'healthy',
+        },
+        {
+          id: 'service-bifrost',
+          typeId: 'bifrost',
+          label: 'Bifrost',
+          parentId: 'cluster-platform',
+          status: 'healthy',
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(localTopology);
+    const cluster = positions.get('cluster-platform')!;
+    const mimir = positions.get('mimir-platform')!;
+    const bifrost = positions.get('service-bifrost')!;
+
+    expect(Math.hypot(mimir.x - cluster.x, mimir.y - cluster.y)).toBeGreaterThanOrEqual(
+      LAYOUT.CLUSTER_CORE_ORBIT,
+    );
+    expect(Math.hypot(bifrost.x - cluster.x, bifrost.y - cluster.y)).toBeGreaterThanOrEqual(
+      LAYOUT.CLUSTER_CORE_ORBIT,
+    );
+    expect(mimir.x).toBeLessThan(cluster.x);
+    expect(mimir.y).toBeGreaterThan(cluster.y);
+    expect(bifrost.x).toBeGreaterThan(cluster.x);
+    expect(bifrost.y).toBeGreaterThan(cluster.y);
+  });
+
+  it('separates core services, wardens, and raids into distinct cluster bands', () => {
+    const topology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-local', typeId: 'realm', label: 'local', parentId: null, status: 'healthy' },
+        {
+          id: 'cluster-platform',
+          typeId: 'cluster',
+          label: 'platform',
+          parentId: 'realm-local',
+          status: 'healthy',
+        },
+        {
+          id: 'service-ravn',
+          typeId: 'service',
+          label: 'Ravn',
+          parentId: 'cluster-platform',
+          status: 'healthy',
+          svcType: 'ravn',
+        },
+        {
+          id: 'service-tyr',
+          typeId: 'tyr',
+          label: 'Tyr',
+          parentId: 'cluster-platform',
+          status: 'healthy',
+        },
+        {
+          id: 'warden-a',
+          typeId: 'ravn_long',
+          label: 'Warden A',
+          parentId: 'cluster-platform',
+          status: 'idle',
+        },
+        {
+          id: 'raid-a',
+          typeId: 'raid',
+          label: 'Raid A',
+          parentId: 'cluster-platform',
+          status: 'observing',
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+    const cluster = positions.get('cluster-platform')!;
+    const ravn = positions.get('service-ravn')!;
+    const warden = positions.get('warden-a')!;
+    const tyr = positions.get('service-tyr')!;
+    const raid = positions.get('raid-a')!;
+
+    expect(Math.hypot(ravn.x - cluster.x, ravn.y - cluster.y)).toBeCloseTo(
+      LAYOUT.CLUSTER_CORE_ORBIT,
+      6,
+    );
+    expect(Math.hypot(warden.x - cluster.x, warden.y - cluster.y)).toBeGreaterThanOrEqual(
+      LAYOUT.CLUSTER_RAVEN_ORBIT,
+    );
+    expect(Math.hypot(raid.x - cluster.x, raid.y - cluster.y)).toBeGreaterThanOrEqual(
+      LAYOUT.CLUSTER_RAID_ORBIT,
+    );
+    expect(ravn.x).toBeGreaterThan(cluster.x);
+    expect(warden.x).toBeGreaterThan(ravn.x);
+    expect(raid.y).toBeGreaterThan(tyr.y);
+  });
+
+  it('groups generic service children into a real orbit instead of fallback overlap scatter', () => {
+    const topology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-local', typeId: 'realm', label: 'local', parentId: null, status: 'healthy' },
+        {
+          id: 'cluster-platform',
+          typeId: 'cluster',
+          label: 'platform',
+          parentId: 'realm-local',
+          status: 'healthy',
+        },
+        {
+          id: 'service-bifrost',
+          typeId: 'bifrost',
+          label: 'Bifrost',
+          parentId: 'cluster-platform',
+          status: 'healthy',
+        },
+        ...Array.from({ length: 5 }, (_, index) => ({
+          id: `model-${index}`,
+          typeId: 'model' as const,
+          label: `model-${index}`,
+          parentId: 'service-bifrost',
+          status: 'healthy' as const,
+        })),
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+    const bifrost = positions.get('service-bifrost')!;
+    for (let index = 0; index < 5; index += 1) {
+      const model = positions.get(`model-${index}`)!;
+      expect(Math.hypot(model.x - bifrost.x, model.y - bifrost.y)).toBeGreaterThanOrEqual(104);
+    }
   });
 });
 

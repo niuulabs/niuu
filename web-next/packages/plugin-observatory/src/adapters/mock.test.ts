@@ -43,6 +43,17 @@ describe('createMockRegistryRepository', () => {
     }
   });
 
+  it('persists registry replacements in memory', async () => {
+    const repo = createMockRegistryRepository();
+    const registry = await repo.getRegistry();
+    const saved = await repo.saveRegistry({
+      ...registry,
+      types: registry.types.slice(0, 1),
+    });
+    expect(saved.types).toHaveLength(1);
+    expect((await repo.getRegistry()).types).toHaveLength(1);
+  });
+
   it('covers all 5 edge kinds across entity types', async () => {
     // Verify the topology stream edges include all 5 kinds
     const stream = createMockTopologyStream();
