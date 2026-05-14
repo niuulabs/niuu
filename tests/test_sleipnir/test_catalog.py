@@ -204,7 +204,7 @@ def test_ting_run_needs_approval_high_urgency():
         description="PR ready for review",
         source="ting",
     )
-    assert evt.event_type == registry.TING_RAID_NEEDS_APPROVAL
+    assert evt.event_type == registry.TING_RUN_NEEDS_APPROVAL
     assert evt.urgency >= 0.7
     assert evt.payload["run_id"] == "run-1"
     assert "PR ready" in evt.summary
@@ -347,7 +347,7 @@ async def test_integration_all_catalog_events_subscribed_via_wildcard():
         registry.VOLUNDR_SESSION_FAILED,
         registry.TING_SAGA_CREATED,
         registry.TING_SAGA_COMPLETED,
-        registry.TING_RAID_NEEDS_APPROVAL,
+        registry.TING_RUN_NEEDS_APPROVAL,
         registry.BIFROST_BUDGET_DEGRADED,
         registry.MIMIR_PAGE_WRITTEN,
         registry.MIMIR_DREAM_COMPLETED,

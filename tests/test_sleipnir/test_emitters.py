@@ -355,7 +355,7 @@ class TestActivitySubscriberEmitter:
         await sub._handle_completion(run, tracker, volundr, "owner-1", evaluation)
 
         assert pub.publish.called
-        assert _published_event_type(pub) == registry.TING_RAID_NEEDS_APPROVAL
+        assert _published_event_type(pub) == registry.TING_RUN_NEEDS_APPROVAL
         evt = pub.publish.call_args[0][0]
         assert evt.payload["run_id"] == "LIN-42"
 

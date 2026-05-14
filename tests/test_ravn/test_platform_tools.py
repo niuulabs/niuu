@@ -9,8 +9,8 @@ import pytest
 import respx
 
 from ravn.adapters.tools.platform_tools import (
-    TrackerIssueTool,
     TingSagaTool,
+    TrackerIssueTool,
     VolundrGitTool,
     VolundrSessionTool,
 )

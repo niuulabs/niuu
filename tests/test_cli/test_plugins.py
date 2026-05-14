@@ -21,8 +21,8 @@ from niuu.ports.plugin import APIRouteDomain, ServiceDefinition
 from observatory.plugin import ObservatoryPlugin
 from personas.plugin import PersonasPlugin
 from ravn.plugin import RavnPlugin
-from tracker.plugin import TrackerPlugin
 from ting.plugin import TingPlugin
+from tracker.plugin import TrackerPlugin
 from volundr.plugin import VolundrPlugin
 
 runner = CliRunner()
