@@ -2,6 +2,8 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 
+const isCi = Boolean(process.env.CI);
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -31,6 +33,8 @@ export default defineConfig({
     },
   },
   test: {
+    maxWorkers: isCi ? 2 : undefined,
+    minWorkers: isCi ? 1 : undefined,
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
@@ -38,7 +42,7 @@ export default defineConfig({
     exclude: ['**/node_modules/**', '**/dist/**', 'e2e/**'],
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'html', 'lcov'],
+      reporter: isCi ? ['text', 'lcov'] : ['text', 'html', 'lcov'],
       include: ['packages/*/src/**/*.{ts,tsx}'],
       exclude: [
         '**/*.stories.tsx',
