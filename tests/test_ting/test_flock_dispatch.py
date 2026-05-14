@@ -669,7 +669,7 @@ class TestBuildFlockPrompt:
         prompt = build_flock_prompt(
             issue, "org/repo", "feat/x", mimir_hosted_url="https://mimir.example.com"
         )
-        assert "mimir.example.com" in prompt
+        assert "Prior knowledge is available via Mimir at: https://mimir.example.com" in prompt
 
     def test_no_mimir_reference_when_url_empty(self) -> None:
         issue = _make_issue()
