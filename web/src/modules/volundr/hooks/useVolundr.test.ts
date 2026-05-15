@@ -35,6 +35,7 @@ vi.mock('@/modules/volundr/adapters', () => ({
     deleteSession: vi.fn(),
     connectSession: vi.fn(),
     archiveSession: vi.fn(),
+    archiveStoppedSessions: vi.fn(),
     restoreSession: vi.fn(),
     listArchivedSessions: vi.fn(),
     getMessages: vi.fn(),
@@ -120,6 +121,7 @@ describe('useVolundr', () => {
     vi.mocked(volundrService.getAvailableSecrets).mockResolvedValue([]);
     vi.mocked(volundrService.getPresets).mockResolvedValue([]);
     vi.mocked(volundrService.listArchivedSessions).mockResolvedValue([]);
+    vi.mocked(volundrService.archiveStoppedSessions).mockResolvedValue([]);
     vi.mocked(volundrService.getSession).mockResolvedValue(mockSessions[0]);
   });
 
@@ -1193,7 +1195,28 @@ describe('useVolundr', () => {
       expect(volundrService.restoreSession).toHaveBeenCalledWith('archived-001');
     });
 
+    it('should archive a selected batch of sessions and refresh the archive list', async () => {
+      vi.mocked(volundrService.listArchivedSessions).mockResolvedValue([
+        { ...mockSessions[1], status: 'archived', archivedAt: new Date() },
+      ]);
+
+      const { result } = renderHook(() => useVolundr());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      await act(async () => {
+        await result.current.archiveSessions(['session-002']);
+      });
+
+      expect(volundrService.archiveSession).toHaveBeenCalledWith('session-002');
+      expect(result.current.sessions.find(s => s.id === 'session-002')).toBeUndefined();
+      expect(result.current.archivedSessions).toHaveLength(1);
+    });
+
     it('should archive all stopped sessions', async () => {
+      vi.mocked(volundrService.archiveStoppedSessions).mockResolvedValue(['session-002']);
       vi.mocked(volundrService.listArchivedSessions).mockResolvedValue([
         { ...mockSessions[1], status: 'archived', archivedAt: new Date() },
       ]);
@@ -1208,8 +1231,7 @@ describe('useVolundr', () => {
         await result.current.archiveAllStopped();
       });
 
-      // session-002 was 'stopped', should have been archived
-      expect(volundrService.archiveSession).toHaveBeenCalledWith('session-002');
+      expect(volundrService.archiveStoppedSessions).toHaveBeenCalled();
       // Only running sessions remain
       expect(result.current.sessions.every(s => s.status !== 'stopped')).toBe(true);
     });

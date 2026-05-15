@@ -415,6 +415,16 @@ export class MockVolundrService implements IVolundrService {
     this.notifySubscribers();
   }
 
+  async archiveStoppedSessions(): Promise<string[]> {
+    const stoppedIds = this.sessions
+      .filter(session => session.status === 'stopped')
+      .map(session => session.id);
+    for (const sessionId of stoppedIds) {
+      await this.archiveSession(sessionId);
+    }
+    return stoppedIds;
+  }
+
   async listArchivedSessions(): Promise<VolundrSession[]> {
     return this.archivedSessions.map(s => ({ ...s }));
   }

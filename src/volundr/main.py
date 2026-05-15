@@ -793,6 +793,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 provisioning_timeout=settings.provisioning.timeout_seconds,
                 provisioning_initial_delay=settings.provisioning.initial_delay_seconds,
                 integration_repo=integration_repo,
+                storage=storage_adapter,
                 communication_route_repository=communication_route_repository,
                 session_communication_port=session_room_port,
             )

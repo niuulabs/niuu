@@ -37,6 +37,8 @@ const SCROLL_LOCK_MS = 500;
 interface SessionChatProps {
   /** WebSocket URL for the chat — e.g. wss://host/session */
   url: string | null;
+  /** Optional REST endpoint for loading persisted conversation history */
+  historyEndpoint?: string | null;
   /** Optional class name for the outer wrapper */
   className?: string;
   /** Called when the visible message count changes */
@@ -56,6 +58,7 @@ const THINKING_PRESETS = [
 
 export function SessionChat({
   url,
+  historyEndpoint = null,
   className,
   onMessageCountChange,
   sessionHost = null,
@@ -80,7 +83,7 @@ export function SessionChat({
     clearMessages,
     availableCommands,
     capabilities,
-  } = useSkuldChat(url);
+  } = useSkuldChat(url, { historyEndpoint, cacheKey: historyEndpoint ?? url });
 
   const {
     isRoomMode,
@@ -539,7 +542,6 @@ export function SessionChat({
                     <RotateCcwIcon className={styles.controlIcon} />
                   </button>
                 )}
-
               </div>
             </div>
           )}

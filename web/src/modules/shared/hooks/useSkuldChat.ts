@@ -212,6 +212,10 @@ interface UseSkuldChatOptions {
   onConnect?: () => void;
   /** Called when the WebSocket disconnects */
   onDisconnect?: () => void;
+  /** Optional REST endpoint for loading persisted conversation history */
+  historyEndpoint?: string | null;
+  /** Optional storage key for persisted chat state */
+  cacheKey?: string | null;
 }
 
 interface ConversationTurn {
@@ -389,7 +393,12 @@ export function useSkuldChat(
   url: string | null,
   options: UseSkuldChatOptions = {}
 ): UseSkuldChatReturn {
-  const { onConnect, onDisconnect } = options;
+  const {
+    onConnect,
+    onDisconnect,
+    historyEndpoint = null,
+    cacheKey = historyEndpoint ?? url,
+  } = options;
 
   const {
     getMessages,
@@ -400,8 +409,8 @@ export function useSkuldChat(
   } = useChatStore();
 
   const [messages, setMessages] = useState<SkuldChatMessage[]>(() => {
-    if (!url) return [];
-    return getMessages(url);
+    if (!cacheKey) return [];
+    return getMessages(cacheKey);
   });
   const [participants, setParticipants] = useState<Map<string, RoomParticipant>>(new Map());
   const participantsRef = useRef<Map<string, RoomParticipant>>(participants);
@@ -418,8 +427,8 @@ export function useSkuldChat(
   }
   const internalStreamsRef = useRef<Map<string, InternalStreamState>>(new Map());
   const [meshEvents, setMeshEvents] = useState<MeshEvent[]>(() => {
-    if (!url) return [];
-    return getStoredMeshEvents(url);
+    if (!cacheKey) return [];
+    return getStoredMeshEvents(cacheKey);
   });
   const [agentEvents, setAgentEvents] = useState<Map<string, AgentInternalEvent[]>>(new Map());
   const [connected, setConnected] = useState(false);
@@ -427,22 +436,35 @@ export function useSkuldChat(
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [availableCommands, setAvailableCommands] = useState<SlashCommand[]>([]);
   const [capabilities, setCapabilities] = useState<TransportCapabilities>(DEFAULT_CAPABILITIES);
-  // Track which URL we've loaded history for. When the URL changes,
-  // historyLoadedForUrl will no longer match, triggering a re-fetch.
-  const [historyLoadedForUrl, setHistoryLoadedForUrl] = useState<string | null>(null);
-  const historyLoaded = historyLoadedForUrl === url;
+  // Track which chat key we've loaded history for. When the URL or fallback
+  // REST endpoint changes, historyLoadedForKey will no longer match.
+  const [historyLoadedForKey, setHistoryLoadedForKey] = useState<string | null>(null);
+  const historyLoaded = historyLoadedForKey === cacheKey;
 
   // Fetch conversation history from server on mount/reconnect
   useEffect(() => {
-    if (!url || historyLoaded) return;
+    if (!cacheKey || historyLoaded) return;
 
-    const httpBase = wsUrlToHttpBase(url);
-    if (!httpBase) {
+    const resolvedHistoryUrl =
+      historyEndpoint ??
+      (() => {
+        if (!url) {
+          return null;
+        }
+        const httpBase = wsUrlToHttpBase(url);
+        if (!httpBase) {
+          return null;
+        }
+        const base = httpBase.endsWith('/') ? httpBase : `${httpBase}/`;
+        return new URL('api/conversation/history', base).href;
+      })();
+
+    if (!resolvedHistoryUrl) {
       // Cannot derive HTTP URL — schedule fallback to sessionStorage
       const timer = setTimeout(() => {
-        const cached = getMessages(url);
+        const cached = getMessages(cacheKey);
         if (cached.length) setMessages(cached);
-        setHistoryLoadedForUrl(url);
+        setHistoryLoadedForKey(cacheKey);
       }, 0);
       return () => clearTimeout(timer);
     }
@@ -455,9 +477,7 @@ export function useSkuldChat(
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const base = httpBase.endsWith('/') ? httpBase : `${httpBase}/`;
-    const historyUrl = new URL('api/conversation/history', base);
-    fetch(historyUrl.href, { headers })
+    fetch(resolvedHistoryUrl, { headers })
       .then(res => res.json())
       .then(data => {
         if (cancelled) return;
@@ -487,32 +507,32 @@ export function useSkuldChat(
           return merged;
         });
         if (isActive) setIsRunning(true);
-        setHistoryLoadedForUrl(url);
+        setHistoryLoadedForKey(cacheKey);
       })
       .catch(() => {
         if (cancelled) return;
         // Fallback to sessionStorage cache
-        const cached = getMessages(url);
+        const cached = getMessages(cacheKey);
         if (cached.length) setMessages(cached);
-        setHistoryLoadedForUrl(url);
+        setHistoryLoadedForKey(cacheKey);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [url, historyLoaded, getMessages]);
+  }, [cacheKey, getMessages, historyEndpoint, historyLoaded, url]);
 
   // Persist messages to Zustand sessionStorage store on every change
   useEffect(() => {
-    if (!url) return;
-    persistMessages(url, messages);
-  }, [url, messages, persistMessages]);
+    if (!cacheKey) return;
+    persistMessages(cacheKey, messages);
+  }, [cacheKey, messages, persistMessages]);
 
   // Persist mesh events alongside messages
   useEffect(() => {
-    if (!url) return;
-    persistMeshEvents(url, meshEvents);
-  }, [url, meshEvents, persistMeshEvents]);
+    if (!cacheKey) return;
+    persistMeshEvents(cacheKey, meshEvents);
+  }, [cacheKey, meshEvents, persistMeshEvents]);
 
   // Streaming state refs (not in React state to avoid render churn)
   const streamingIdRef = useRef<string | null>(null);
@@ -1536,8 +1556,8 @@ export function useSkuldChat(
     resetStreamingRefs();
     setIsRunning(false);
     internalStreamsRef.current.clear();
-    if (url) clearSession(url);
-  }, [resetStreamingRefs, url, clearSession]);
+    if (cacheKey) clearSession(cacheKey);
+  }, [cacheKey, resetStreamingRefs, clearSession]);
 
   const stableMessages = useMemo(() => messages, [messages]);
   const stableParticipants = useMemo(

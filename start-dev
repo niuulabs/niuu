@@ -271,13 +271,38 @@ if [[ "${UI_VARIANT}" == "old" ]]; then
 else
   HOST_PROFILE="full"
 fi
+export ROOT_DIR PLATFORM_LOG PLATFORM_PID_FILE UI_VARIANT HOST_PROFILE
 
 echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (host-profile=${HOST_PROFILE})..."
-nohup env PYTHONUNBUFFERED=1 \
-  NIUU_WEB_UI="${UI_VARIANT}" \
-  uv run niuu platform up --skip-preflight --host-profile "${HOST_PROFILE}" \
-  >"${PLATFORM_LOG}" 2>&1 &
-echo $! > "${PLATFORM_PID_FILE}"
+python3 - <<'PY'
+import os
+import subprocess
+
+root = os.environ["ROOT_DIR"]
+log_path = os.environ["PLATFORM_LOG"]
+pid_path = os.environ["PLATFORM_PID_FILE"]
+ui_variant = os.environ["UI_VARIANT"]
+host_profile = os.environ["HOST_PROFILE"]
+
+env = os.environ.copy()
+env["PYTHONUNBUFFERED"] = "1"
+env["NIUU_WEB_UI"] = ui_variant
+
+with open(log_path, "ab", buffering=0) as log_file, open(os.devnull, "rb") as devnull:
+    process = subprocess.Popen(
+        ["uv", "run", "niuu", "platform", "up", "--skip-preflight", "--host-profile", host_profile],
+        cwd=root,
+        env=env,
+        stdin=devnull,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+with open(pid_path, "w", encoding="utf-8") as pid_file:
+    pid_file.write(str(process.pid))
+PY
 wait_for_platform "$(cat "${PLATFORM_PID_FILE}")" "${PLATFORM_URL}"
 
 trap - ERR

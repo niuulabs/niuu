@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from volundr.domain.models import LocalMountSource
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
@@ -59,6 +60,11 @@ class SessionArchiveService:
                 path = Path(parsed.path)
                 if path.exists():
                     return path
+
+        if isinstance(session.source, LocalMountSource) and session.source.local_path:
+            path = Path(session.source.local_path)
+            if path.exists():
+                return path
 
         workspace = await self._storage.get_workspace_by_session(str(session_id))
         if workspace is not None:

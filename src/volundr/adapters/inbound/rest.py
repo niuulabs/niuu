@@ -22,6 +22,7 @@ from volundr.domain.models import (
     CleanupTarget,
     GitProviderType,
     GitSource,
+    LocalMountSource,
     Model,
     ModelProvider,
     ModelTier,
@@ -107,6 +108,17 @@ def _workspace_dir_from_code_endpoint(code_endpoint: str | None) -> FilePath | N
     return path if path.exists() else None
 
 
+def _workspace_dir_from_session(session: Session) -> FilePath | None:
+    """Resolve a local workspace path from session metadata when possible."""
+    workspace_dir = _workspace_dir_from_code_endpoint(session.code_endpoint)
+    if workspace_dir is not None:
+        return workspace_dir
+    if isinstance(session.source, LocalMountSource) and session.source.local_path:
+        path = FilePath(session.source.local_path)
+        return path if path.exists() else None
+    return None
+
+
 def _fallback_workspace_logs(
     session: Session,
     *,
@@ -116,7 +128,7 @@ def _fallback_workspace_logs(
     query: str,
 ) -> dict | None:
     """Read logs directly from a local file:// workspace when available."""
-    workspace_dir = _workspace_dir_from_code_endpoint(session.code_endpoint)
+    workspace_dir = _workspace_dir_from_session(session)
     if workspace_dir is None:
         return None
     payload = aggregate_workspace_logs(
@@ -132,7 +144,7 @@ def _fallback_workspace_logs(
 
 def _fallback_workspace_transcript(session: Session) -> dict | None:
     """Read the persisted transcript directly from a local file:// workspace."""
-    workspace_dir = _workspace_dir_from_code_endpoint(session.code_endpoint)
+    workspace_dir = _workspace_dir_from_session(session)
     if workspace_dir is None:
         return None
     return load_workspace_transcript(workspace_dir, str(session.id))
@@ -1743,7 +1755,7 @@ def create_router(
                 participants=requested_participants,
                 query=query,
             )
-        except RuntimeError:
+        except RuntimeError as e:
             fallback = _fallback_workspace_logs(
                 session,
                 lines=lines,
@@ -1755,18 +1767,8 @@ def create_router(
                 return fallback
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Session archive service not available",
+                detail=str(e) or "Session archive service not available",
             ) from None
-        except SessionArchiveNotAvailableError as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(e),
-            )
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
 
     @router.post(
         "/sessions/{session_id}/messages",
@@ -1821,12 +1823,15 @@ def create_router(
             sep = "&" if "?" in ws_url else "?"
             ws_url = f"{ws_url}{sep}access_token={token}"
 
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        connect_kwargs: dict[str, object] = {"open_timeout": 10}
+        if ws_url.startswith("wss://"):
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            connect_kwargs["ssl"] = ssl_ctx
 
         try:
-            async with connect(ws_url, ssl=ssl_ctx, open_timeout=10) as ws:
+            async with connect(ws_url, **connect_kwargs) as ws:
                 # Drain any pending messages from the server
                 try:
                     while True:
@@ -1888,24 +1893,14 @@ def create_router(
 
         try:
             return await forge.get_transcript(session_id)
-        except RuntimeError:
+        except RuntimeError as e:
             fallback = _fallback_workspace_transcript(session)
             if fallback is not None:
                 return fallback
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Session archive service not available",
+                detail=str(e) or "Session archive service not available",
             ) from None
-        except SessionArchiveNotAvailableError as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(e),
-            )
-        except RuntimeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(e),
-            )
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

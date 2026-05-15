@@ -1722,6 +1722,49 @@ describe('useSkuldChat', () => {
       vi.unstubAllGlobals();
     });
 
+    it('loads history from the provided REST endpoint when websocket URL is unavailable', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            turns: [
+              {
+                id: 'turn-1',
+                role: 'assistant',
+                content: 'Archived answer',
+                parts: [],
+                created_at: '2026-05-15T12:00:00Z',
+                metadata: {},
+              },
+            ],
+            is_active: false,
+            last_activity: '',
+          }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      setupMock();
+      const { result } = renderHook(() =>
+        useSkuldChat(null, {
+          historyEndpoint: '/api/v1/volundr/sessions/test-session/conversation',
+          cacheKey: '/api/v1/volundr/sessions/test-session/conversation',
+        })
+      );
+
+      await vi.waitFor(() => {
+        expect(result.current.historyLoaded).toBe(true);
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/v1/volundr/sessions/test-session/conversation',
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+      expect(result.current.messages).toHaveLength(1);
+      expect(result.current.messages[0].content).toBe('Archived answer');
+
+      vi.unstubAllGlobals();
+    });
+
     it('falls back to sessionStorage on fetch failure', async () => {
       const fetchMock = vi.fn().mockRejectedValue(new Error('Network error'));
       vi.stubGlobal('fetch', fetchMock);
@@ -1748,6 +1791,22 @@ describe('useSkuldChat', () => {
       expect(result.current.messages[0].content).toBe('Cached message');
 
       vi.unstubAllGlobals();
+    });
+
+    it('clears cached history with the configured cache key', () => {
+      const { storeMock } = setupMock();
+      const { result } = renderHook(() =>
+        useSkuldChat(null, {
+          historyEndpoint: '/api/v1/volundr/sessions/test-session/conversation',
+          cacheKey: '/api/v1/volundr/sessions/test-session/conversation',
+        })
+      );
+
+      act(() => result.current.clearMessages());
+
+      expect(storeMock.clearSession).toHaveBeenCalledWith(
+        '/api/v1/volundr/sessions/test-session/conversation'
+      );
     });
 
     it('resets historyLoaded on session URL change', async () => {

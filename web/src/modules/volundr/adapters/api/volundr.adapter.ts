@@ -51,8 +51,12 @@ import type {
   ApiRepoInfo,
   ApiReposResponse,
   ApiStatsResponse,
+  ApiConversationResponse,
+  ApiConversationTurn,
   ApiMessageResponse,
   ApiMessageCreate,
+  ApiAggregateLogsResponse,
+  ApiAggregateLogLine,
   ApiLogResponse,
   ApiChronicleResponse,
   ApiTemplateResponse,
@@ -299,6 +303,23 @@ function transformMessage(apiMsg: ApiMessageResponse): VolundrMessage {
   };
 }
 
+function transformConversationTurn(
+  sessionId: string,
+  turn: ApiConversationTurn
+): VolundrMessage | null {
+  if (turn.role !== 'user' && turn.role !== 'assistant') {
+    return null;
+  }
+
+  return {
+    id: turn.id,
+    sessionId,
+    role: turn.role,
+    content: turn.content,
+    timestamp: new Date(turn.created_at).getTime(),
+  };
+}
+
 /**
  * Transform API log response to UI model
  */
@@ -310,6 +331,30 @@ function transformLog(apiLog: ApiLogResponse): VolundrLog {
     level: apiLog.level,
     source: apiLog.source,
     message: apiLog.message,
+  };
+}
+
+function transformAggregateLogLine(
+  sessionId: string,
+  line: ApiAggregateLogLine,
+  index: number
+): VolundrLog {
+  const rawLevel = line.level.toLowerCase();
+
+  return {
+    id: line.id ?? `log-${sessionId}-${index}`,
+    sessionId,
+    timestamp:
+      typeof line.timestamp === 'number'
+        ? line.timestamp < 1e12
+          ? line.timestamp * 1000
+          : line.timestamp
+        : new Date(line.timestamp).getTime(),
+    level: ['debug', 'info', 'warn', 'error'].includes(rawLevel)
+      ? (rawLevel as VolundrLog['level'])
+      : 'info',
+    source: line.source ?? line.logger ?? 'session',
+    message: line.message,
   };
 }
 
@@ -928,7 +973,7 @@ export class ApiVolundrService implements IVolundrService {
   }
 
   async archiveSession(sessionId: string): Promise<void> {
-    await api.post(`/sessions/${sessionId}/archive`);
+    await api.patch(`/sessions/${sessionId}/archive`, {});
     this.cachedSessions = this.cachedSessions.filter(s => s.id !== sessionId);
     this.notifySessionSubscribers();
   }
@@ -937,14 +982,28 @@ export class ApiVolundrService implements IVolundrService {
     await api.post(`/sessions/${sessionId}/restore`);
   }
 
+  async archiveStoppedSessions(): Promise<string[]> {
+    const archivedIds = await api.post<string[]>('/sessions/archive-stopped');
+    if (archivedIds.length === 0) {
+      return archivedIds;
+    }
+
+    const archivedIdSet = new Set(archivedIds);
+    this.cachedSessions = this.cachedSessions.filter(session => !archivedIdSet.has(session.id));
+    this.notifySessionSubscribers();
+    return archivedIds;
+  }
+
   async listArchivedSessions(): Promise<VolundrSession[]> {
     const response = await api.get<ApiSessionResponse[]>('/sessions?status=archived');
     return response.map(transformSession);
   }
 
   async getMessages(sessionId: string): Promise<VolundrMessage[]> {
-    const response = await api.get<ApiMessageResponse[]>(`/sessions/${sessionId}/messages`);
-    return response.map(transformMessage);
+    const response = await api.get<ApiConversationResponse>(`/sessions/${sessionId}/conversation`);
+    return response.turns
+      .map(turn => transformConversationTurn(sessionId, turn))
+      .filter((message): message is VolundrMessage => message !== null);
   }
 
   async sendMessage(sessionId: string, content: string): Promise<VolundrMessage> {
@@ -973,8 +1032,10 @@ export class ApiVolundrService implements IVolundrService {
   }
 
   async getLogs(sessionId: string, limit = 100): Promise<VolundrLog[]> {
-    const response = await api.get<ApiLogResponse[]>(`/sessions/${sessionId}/logs?limit=${limit}`);
-    return response.map(transformLog);
+    const response = await api.get<ApiAggregateLogsResponse>(
+      `/sessions/${sessionId}/logs/aggregate?lines=${limit}`
+    );
+    return response.lines.map((line, index) => transformAggregateLogLine(sessionId, line, index));
   }
 
   subscribeLogs(sessionId: string, callback: (log: VolundrLog) => void): () => void {

@@ -11,7 +11,7 @@ from tests.conftest import InMemorySessionRepository, MockPodManager
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.archive_store import FileSystemArchiveStore
 from volundr.adapters.outbound.local_storage_adapter import LocalStorageAdapter
-from volundr.domain.models import Session, SessionStatus
+from volundr.domain.models import LocalMountSource, Session, SessionStatus
 from volundr.domain.services import SessionArchiveService, SessionService
 
 
@@ -110,3 +110,42 @@ async def test_download_transcript_builds_archive_and_returns_markdown(
     assert response.status_code == 200
     assert response.text.startswith("# Session Transcript")
     assert "hello from archive" in response.text
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_falls_back_to_local_mount_source_without_storage(
+    repository,
+    session_service,
+    tmp_path,
+):
+    workspace = tmp_path / "local-mount-rest"
+    (workspace / ".skuld").mkdir(parents=True, exist_ok=True)
+    session = Session(
+        name="local-mount-rest",
+        status=SessionStatus.STOPPED,
+        source=LocalMountSource(local_path=str(workspace)),
+    )
+    await repository.create(session)
+    (workspace / ".skuld" / f"conversation_{session.id}.json").write_text(
+        json.dumps({"turns": [{"id": "1", "role": "assistant", "content": "rest mount"}]}),
+        encoding="utf-8",
+    )
+
+    class MissingStorage:
+        def resolve_session_workspace_path(self, _session_id: str) -> str | None:
+            return None
+
+        async def get_workspace_by_session(self, _session_id: str):
+            return None
+
+    archive_service = SessionArchiveService(
+        session_service,
+        MissingStorage(),
+        FileSystemArchiveStore(),
+    )
+    client = TestClient(build_app(session_service, archive_service))
+
+    response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+
+    assert response.status_code == 200
+    assert response.json()["turns"][0]["content"] == "rest mount"

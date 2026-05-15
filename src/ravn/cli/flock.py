@@ -302,7 +302,7 @@ def _write_node_config(
 # Edit as needed. Re-run init with --force to regenerate from defaults.
 
 llm:
-  model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+  model: Qwen/Qwen3.6-35B-A3B-FP8
   max_tokens: 8192
   timeout: 300.0
   provider:

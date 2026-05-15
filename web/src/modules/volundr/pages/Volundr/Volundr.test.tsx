@@ -77,8 +77,21 @@ vi.mock('@/modules/volundr/components/SessionTerminal', () => ({
 }));
 
 vi.mock('@/modules/shared/components/SessionChat', () => ({
-  SessionChat: ({ url, className }: { url: string | null; className?: string }) => (
-    <div data-testid="session-chat" data-url={url ?? ''} className={className}>
+  SessionChat: ({
+    url,
+    historyEndpoint,
+    className,
+  }: {
+    url: string | null;
+    historyEndpoint?: string | null;
+    className?: string;
+  }) => (
+    <div
+      data-testid="session-chat"
+      data-url={url ?? ''}
+      data-history-endpoint={historyEndpoint ?? ''}
+      className={className}
+    >
       Mock Chat
     </div>
   ),
@@ -385,6 +398,7 @@ describe('VolundrPage', () => {
   const getMessages = vi.fn();
   const sendMessage = vi.fn();
   const getLogs = vi.fn();
+  const archiveSessions = vi.fn();
   const openCodeServer = vi.fn();
   const getCodeServerUrl = vi.fn();
   const getChronicle = vi.fn();
@@ -421,6 +435,7 @@ describe('VolundrPage', () => {
     resumeSession,
     deleteSession,
     archiveSession: vi.fn().mockResolvedValue(undefined),
+    archiveSessions,
     restoreSession: vi.fn().mockResolvedValue(undefined),
     archivedSessions: [],
     archiveAllStopped: vi.fn().mockResolvedValue(undefined),
@@ -451,6 +466,7 @@ describe('VolundrPage', () => {
     getMessages.mockResolvedValue(undefined);
     sendMessage.mockResolvedValue(mockMessages[1]);
     getLogs.mockResolvedValue(undefined);
+    archiveSessions.mockResolvedValue(undefined);
     openCodeServer.mockResolvedValue(undefined);
     getCodeServerUrl.mockResolvedValue('https://code.skuld.local/forge-7f3a2b1c');
   });
@@ -779,7 +795,7 @@ describe('VolundrPage', () => {
       expect(chat.getAttribute('data-url')).toContain('session-abc.volundr.local/session');
     });
 
-    it('shows empty state for chat when session is not running', () => {
+    it('renders SessionChat for stopped session history', () => {
       vi.mocked(useVolundr).mockReturnValue(
         createMockHookReturn({
           sessions: [mockSessions[1]], // stopped
@@ -793,7 +809,12 @@ describe('VolundrPage', () => {
         </MemoryRouter>
       );
 
-      expect(screen.getByText('Start the session to chat')).toBeInTheDocument();
+      const chat = screen.getByTestId('session-chat');
+      expect(chat).toBeInTheDocument();
+      expect(chat).toHaveAttribute(
+        'data-history-endpoint',
+        '/api/v1/volundr/sessions/forge-2c5d9e7b/conversation'
+      );
     });
   });
 
@@ -1146,7 +1167,7 @@ describe('VolundrPage', () => {
 
   // Test for session not running
   describe('Session not running', () => {
-    it('shows empty state for chat when session is stopped', () => {
+    it('keeps chat history accessible when session is stopped', () => {
       vi.mocked(useVolundr).mockReturnValue(
         createMockHookReturn({
           sessions: [mockSessions[1]], // stopped session
@@ -1160,7 +1181,8 @@ describe('VolundrPage', () => {
         </MemoryRouter>
       );
 
-      expect(screen.getByText('Start the session to chat')).toBeInTheDocument();
+      expect(screen.getByTestId('session-chat')).toBeInTheDocument();
+      expect(screen.queryByText('Start the session to chat')).not.toBeInTheDocument();
     });
 
     it('shows empty state for terminal when session is stopped', () => {
@@ -1439,8 +1461,8 @@ describe('VolundrPage', () => {
       });
     });
 
-    it('shows confirmation when archiving a running session', async () => {
-      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    it('archives a running session immediately without confirmation', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm');
       const archiveSession = vi.fn().mockResolvedValue(undefined);
       vi.mocked(useVolundr).mockReturnValue(
         createMockHookReturn({
@@ -1456,22 +1478,21 @@ describe('VolundrPage', () => {
 
       const archiveButton = screen.getByTitle('Archive session');
       fireEvent.click(archiveButton);
-
-      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('still running'));
 
       await waitFor(() => {
         expect(archiveSession).toHaveBeenCalledWith('forge-7f3a2b1c');
       });
 
+      expect(confirmSpy).not.toHaveBeenCalled();
       confirmSpy.mockRestore();
     });
 
-    it('does not archive running session when confirmation is cancelled', async () => {
-      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-      const archiveSession = vi.fn().mockResolvedValue(undefined);
+    it('archives selected stopped sessions without confirmation', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm');
+      const archiveSessions = vi.fn().mockResolvedValue(undefined);
       vi.mocked(useVolundr).mockReturnValue(
         createMockHookReturn({
-          archiveSession,
+          archiveSessions,
         })
       );
 
@@ -1481,13 +1502,31 @@ describe('VolundrPage', () => {
         </MemoryRouter>
       );
 
-      const archiveButton = screen.getByTitle('Archive session');
-      fireEvent.click(archiveButton);
+      fireEvent.click(screen.getByLabelText('Select nalir-truenas-adapter for archive'));
+      fireEvent.click(screen.getByText('Archive Selected (1)'));
 
-      expect(confirmSpy).toHaveBeenCalled();
-      expect(archiveSession).not.toHaveBeenCalled();
+      await waitFor(() => {
+        expect(archiveSessions).toHaveBeenCalledWith(['forge-2c5d9e7b']);
+      });
 
+      expect(confirmSpy).not.toHaveBeenCalled();
       confirmSpy.mockRestore();
+    });
+
+    it('selects stopped sessions for batch archiving from the sidebar', async () => {
+      vi.mocked(useVolundr).mockReturnValue(createMockHookReturn());
+
+      render(
+        <MemoryRouter>
+          <VolundrPage />
+        </MemoryRouter>
+      );
+
+      const checkbox = screen.getByLabelText('Select nalir-truenas-adapter for archive');
+      fireEvent.click(checkbox);
+
+      expect(screen.getByText('Archive Selected (1)')).toBeInTheDocument();
+      expect(screen.getByText('Clear Visible Selection (1)')).toBeInTheDocument();
     });
 
     it('renders archived section with toggle', () => {
@@ -1633,11 +1672,6 @@ describe('VolundrPage', () => {
     });
 
     it('shows Archive All Stopped button when there are stopped sessions', () => {
-      // Make archived section expanded
-      vi.mocked(useLocalStorage).mockImplementation(() => {
-        return [false, vi.fn()];
-      });
-
       vi.mocked(useVolundr).mockReturnValue(createMockHookReturn());
 
       render(
@@ -1650,14 +1684,8 @@ describe('VolundrPage', () => {
       expect(screen.getByText('Archive All Stopped (1)')).toBeInTheDocument();
     });
 
-    it('calls archiveAllStopped when Archive All Stopped is clicked and confirmed', async () => {
-      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
-      // Make archived section expanded
-      vi.mocked(useLocalStorage).mockImplementation(() => {
-        return [false, vi.fn()];
-      });
-
+    it('calls archiveAllStopped when Archive All Stopped is clicked', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm');
       const archiveAllStopped = vi.fn().mockResolvedValue(undefined);
       vi.mocked(useVolundr).mockReturnValue(
         createMockHookReturn({
@@ -1677,34 +1705,7 @@ describe('VolundrPage', () => {
         expect(archiveAllStopped).toHaveBeenCalled();
       });
 
-      confirmSpy.mockRestore();
-    });
-
-    it('does not call archiveAllStopped when confirmation is cancelled', async () => {
-      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-
-      // Make archived section expanded
-      vi.mocked(useLocalStorage).mockImplementation(() => {
-        return [false, vi.fn()];
-      });
-
-      const archiveAllStopped = vi.fn().mockResolvedValue(undefined);
-      vi.mocked(useVolundr).mockReturnValue(
-        createMockHookReturn({
-          archiveAllStopped,
-        })
-      );
-
-      render(
-        <MemoryRouter>
-          <VolundrPage />
-        </MemoryRouter>
-      );
-
-      fireEvent.click(screen.getByText('Archive All Stopped (1)'));
-
-      expect(archiveAllStopped).not.toHaveBeenCalled();
-
+      expect(confirmSpy).not.toHaveBeenCalled();
       confirmSpy.mockRestore();
     });
   });
