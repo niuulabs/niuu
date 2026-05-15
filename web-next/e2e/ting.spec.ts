@@ -5,9 +5,9 @@ test('ting dashboard renders with dispatcher stats and KPI cards', async ({ page
 
   await expect(page.getByRole('heading', { name: 'Ting' })).toBeVisible();
   await expect(page.getByTestId('ting-dispatcher-stats')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByText('Active sagas')).toBeVisible();
-  await expect(page.getByText('Active runs')).toBeVisible();
-  await expect(page.getByText('Merged · 24h')).toBeVisible();
+  await expect(page.locator('.ting-kpi__label', { hasText: 'Active sagas' }).first()).toBeVisible();
+  await expect(page.locator('.ting-kpi__label', { hasText: 'Active runs' }).first()).toBeVisible();
+  await expect(page.locator('.ting-kpi__label', { hasText: 'Merged · 24h' }).first()).toBeVisible();
 });
 
 test('sagas route renders search, filters, and actions', async ({ page }) => {
@@ -28,7 +28,7 @@ test('saga detail route shows phase content', async ({ page }) => {
 
   await expect(page.getByText(/Phase 1/i).first()).toBeVisible({ timeout: 5000 });
   await expect(page.getByLabel('Stage progress')).toBeVisible();
-  await expect(page.getByLabel('Confidence drift')).toBeVisible();
+  await expect(page.getByLabel('Confidence signals')).toBeVisible();
 });
 
 test('dispatch route renders queue and rules surfaces', async ({ page }) => {
