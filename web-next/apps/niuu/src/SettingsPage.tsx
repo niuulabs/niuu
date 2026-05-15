@@ -1,10 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  useMutation,
-  useQueries,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, useRouter } from '@tanstack/react-router';
 import { createApiClient } from '@niuulabs/query';
 import { cn } from '@niuulabs/ui';
@@ -126,7 +121,9 @@ function formatFieldValue(field: RemoteSettingsField, value: unknown): string {
   return String(value);
 }
 
-function normalizeSections(schema: RemoteSettingsProviderSchema | null): NormalizedSettingsSection[] {
+function normalizeSections(
+  schema: RemoteSettingsProviderSchema | null,
+): NormalizedSettingsSection[] {
   return (schema?.sections ?? []).map((section) => ({
     ...section,
     resources: section.resources ?? [],
@@ -150,7 +147,8 @@ function normalizeTokenRow(token: PersonalAccessTokenRecord | CreatePersonalAcce
   return {
     id: token.id,
     name: token.name,
-    createdAt: (token as { createdAt?: string; created_at?: string }).createdAt ??
+    createdAt:
+      (token as { createdAt?: string; created_at?: string }).createdAt ??
       (token as { createdAt?: string; created_at?: string }).created_at ??
       '',
     lastUsedAt:
@@ -191,7 +189,9 @@ function formatTimestamp(value?: string | null): string {
   }).format(date);
 }
 
-function buildInitialResourceValues(schema: IntegrationCatalogSchema | undefined): Record<string, string> {
+function buildInitialResourceValues(
+  schema: IntegrationCatalogSchema | undefined,
+): Record<string, string> {
   return Object.fromEntries(
     Object.entries(schema?.properties ?? {}).map(([key, property]) => {
       const defaultValue = property.default;
@@ -446,9 +446,9 @@ function TokensResourceCard({
   const tokensQuery = useQuery({
     queryKey: ['settings-resource', providerId, resource.id, 'tokens'],
     queryFn: async () => {
-      const rows = await client.get<Array<PersonalAccessTokenRecord | CreatePersonalAccessTokenResult>>(
-        resource.listPath,
-      );
+      const rows = await client.get<
+        Array<PersonalAccessTokenRecord | CreatePersonalAccessTokenResult>
+      >(resource.listPath);
       return rows.map(normalizeTokenRow);
     },
   });
@@ -654,7 +654,8 @@ function IntegrationsResourceCard({
   }, [catalogQuery.data, selectedId]);
 
   const credentialSchema = useMemo(
-    () => normalizeCatalogSchema(selectedEntry?.credentialSchema ?? selectedEntry?.credential_schema),
+    () =>
+      normalizeCatalogSchema(selectedEntry?.credentialSchema ?? selectedEntry?.credential_schema),
     [selectedEntry],
   );
   const configSchema = useMemo(
@@ -887,8 +888,8 @@ function IntegrationsResourceCard({
                   {(integration.slug ?? integration.integrationType).replace(/_/g, ' ')}
                 </div>
                 <div className="settings-resource__row-meta">
-                  {formatIntegrationType(integration.integrationType)} · {integration.credentialName}{' '}
-                  · {integration.enabled ? 'enabled' : 'disabled'}
+                  {formatIntegrationType(integration.integrationType)} ·{' '}
+                  {integration.credentialName} · {integration.enabled ? 'enabled' : 'disabled'}
                 </div>
               </div>
               <button
