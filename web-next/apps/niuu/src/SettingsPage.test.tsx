@@ -269,7 +269,7 @@ describe('SettingsPage', () => {
   });
 
   it('renders the missing-provider state when a service base URL is not configured', async () => {
-    routerMocks.params = { providerId: 'ting', sectionId: undefined };
+    routerMocks.params = { providerId: 'ting', sectionId: '' };
 
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -309,7 +309,7 @@ describe('SettingsPage', () => {
   });
 
   it('renders the schema error state when a mounted provider fails to load', async () => {
-    routerMocks.params = { providerId: 'identity', sectionId: undefined };
+    routerMocks.params = { providerId: 'identity', sectionId: '' };
     apiMocks.get.mockRejectedValueOnce(new Error('boom'));
 
     wrap(<SettingsPage />);
