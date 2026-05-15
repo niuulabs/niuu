@@ -575,12 +575,24 @@ jobs:
       - name: Install Postgres in cluster
         run: |
           helm repo add bitnami https://charts.bitnami.com/bitnami
-          helm install pg bitnami/postgresql \
-            --set auth.postgresPassword=test \
-            --set auth.database=volundr \
-            --set primary.persistence.enabled=false \
-            --set primary.initdb.scripts."init\.sql"="CREATE DATABASE ting;" \
-            --wait --timeout 120s
+          helm repo update
+          for attempt in 1 2 3; do
+            if helm install pg bitnami/postgresql \
+              --set auth.postgresPassword=test \
+              --set auth.database=volundr \
+              --set primary.persistence.enabled=false \
+              --set primary.initdb.scripts."init\.sql"="CREATE DATABASE ting;" \
+              --wait --timeout 120s; then
+              exit 0
+            fi
+            helm uninstall pg --ignore-not-found || true
+            if [ "$attempt" -eq 3 ]; then
+              echo "Postgres bootstrap failed after ${attempt} attempts."
+              exit 1
+            fi
+            echo "Retrying Postgres bootstrap after transient Helm/chart fetch failure..."
+            sleep 10
+          done
 
       - name: Create registry pull secret in kind
         run: |

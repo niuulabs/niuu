@@ -15,6 +15,29 @@ import type {
 const EMPTY_ALIASES: BifrostAlias[] = [];
 const EMPTY_MODELS: BifrostModel[] = [];
 const EMPTY_PROVIDERS: BifrostProvider[] = [];
+const EMPTY_USAGE: BifrostUsageResponse = {
+  summary: {
+    totalRequests: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCacheReadTokens: 0,
+    totalCacheWriteTokens: 0,
+    totalReasoningTokens: 0,
+    totalCostUsd: 0,
+    byModel: {},
+    byProvider: {},
+  },
+  records: [],
+};
+const EMPTY_CACHE: BifrostCacheStats = {
+  hits: 0,
+  misses: 0,
+  hitRate: 0,
+  savedTokens: 0,
+  savedInputTokens: 0,
+  savedOutputTokens: 0,
+  entries: 0,
+};
 
 type BifrostTab = 'overview' | 'models' | 'providers' | 'usage';
 
@@ -271,11 +294,9 @@ function ProvidersTab({ providers }: { providers: BifrostProvider[] }) {
             </div>
             <HealthPill state={provider.state} />
           </div>
-          {provider.detail ? (
-            <p className="niuu-m-0 niuu-mt-3 niuu-text-sm niuu-text-text-secondary">
-              {provider.detail}
-            </p>
-          ) : null}
+          <p className="niuu-m-0 niuu-mt-3 niuu-text-sm niuu-text-text-secondary">
+            {provider.detail}
+          </p>
           <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-mt-4">
             <div className="niuu-rounded-lg niuu-bg-bg-tertiary niuu-p-3">
               <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
@@ -400,8 +421,8 @@ export function BifrostPage({ defaultTab = 'overview' }: { defaultTab?: BifrostT
   const models = modelsQuery.data ?? EMPTY_MODELS;
   const providers = providersQuery.data ?? EMPTY_PROVIDERS;
   const aliases = aliasesQuery.data ?? EMPTY_ALIASES;
-  const usage = usageQuery.data;
-  const cache = cacheQuery.data;
+  const usage = usageQuery.data ?? EMPTY_USAGE;
+  const cache = cacheQuery.data ?? EMPTY_CACHE;
 
   const loading =
     modelsQuery.isLoading ||
@@ -462,7 +483,7 @@ export function BifrostPage({ defaultTab = 'overview' }: { defaultTab?: BifrostT
         <div className="niuu-rounded-xl niuu-border niuu-border-critical niuu-bg-critical-bg niuu-p-6 niuu-text-critical">
           {error instanceof Error ? error.message : 'Failed to load Bifröst'}
         </div>
-      ) : activeTab === 'overview' && usage && cache ? (
+      ) : activeTab === 'overview' ? (
         <OverviewTab
           models={models}
           providers={providers}
@@ -481,9 +502,9 @@ export function BifrostPage({ defaultTab = 'overview' }: { defaultTab?: BifrostT
               `${formatInteger(providerCounts.get(provider.key) ?? provider.modelIds.length)} models routed through this provider.`,
           }))}
         />
-      ) : usage ? (
+      ) : (
         <UsageTab usage={usage} />
-      ) : null}
+      )}
     </div>
   );
 }
