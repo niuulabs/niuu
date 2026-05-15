@@ -43,6 +43,13 @@ class TestAdminSettings:
         assert data["sections"][0]["path"] == "/admin/settings"
         assert data["sections"][0]["saveLabel"] == "Save storage settings"
 
+    def test_get_canonical_settings_schema_alias(self, client: TestClient) -> None:
+        response = client.get("/api/v1/forge/settings")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["title"] == "Forge"
+        assert data["sections"][0]["id"] == "storage"
+
     def test_get_settings(self, client: TestClient) -> None:
         response = client.get("/api/v1/forge/admin/settings")
         assert response.status_code == 200

@@ -62,7 +62,7 @@ test('ting plan matches web2', async ({ page }) => {
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 test('ting settings matches web2', async ({ page }) => {
-  await page.goto('/ting/settings');
+  await page.goto('/settings/ting');
   await page.waitForLoadState('networkidle');
   await expect(page).toHaveScreenshot('ting-settings.png');
 });

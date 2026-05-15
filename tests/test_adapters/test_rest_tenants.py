@@ -89,6 +89,8 @@ class TestGetMe:
         assert data["scope"] == "user"
         assert data["sections"][0]["id"] == "profile"
         assert any(field["key"] == "email" for field in data["sections"][0]["fields"])
+        assert data["sections"][1]["id"] == "tokens"
+        assert data["sections"][1]["resources"][0]["type"] == "tokens"
 
 
 class TestListTenants:

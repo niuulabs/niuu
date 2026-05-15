@@ -25,6 +25,24 @@ def _make_client() -> TestClient:
 
 
 class TestSettingsAPI:
+    def test_get_settings_schema_returns_canonical_sections(self) -> None:
+        client = _make_client()
+
+        response = client.get("/api/v1/ting/settings")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["title"] == "Ting"
+        assert [section["id"] for section in body["sections"]] == [
+            "general",
+            "dispatch",
+            "flock",
+            "notifications",
+            "integrations",
+        ]
+        assert body["sections"][1]["path"] == "/settings/dispatch"
+        assert body["sections"][-1]["resources"][0]["type"] == "integrations"
+
     def test_get_flock_settings_returns_defaults(self) -> None:
         client = _make_client()
 

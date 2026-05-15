@@ -67,11 +67,13 @@ describe('TingTopbar', () => {
     });
   });
 
-  it('shows settings breadcrumb on settings routes', async () => {
+  it('keeps dispatcher stats even on legacy settings paths', async () => {
     mockPathname = '/ting/settings/personas';
     render(<TingTopbar />, { wrapper: wrap(createMockDispatcherService()) });
-    // SettingsTopbar renders "← Ting" button
-    expect(screen.getByLabelText('Back to Ting')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('ting-topbar')).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText('Back to Ting')).not.toBeInTheDocument();
   });
 
   it('shows loading state when data is pending', () => {

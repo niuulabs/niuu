@@ -309,11 +309,14 @@ function resolveObservatoryServiceBase(
 
 export function resolveSettingsServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  providerId: 'identity' | 'ting' | 'volundr' | 'mimir' | 'ravn' | 'observatory',
+  providerId: 'identity' | 'ting' | 'volundr' | 'mimir' | 'ravn' | 'observatory' | 'bifrost',
 ): string | null {
   switch (providerId) {
-    case 'identity':
-      return resolveCanonicalServiceBase(config, 'identity');
+    case 'identity': {
+      const base = resolveCanonicalServiceBase(config, 'identity');
+      if (!base) return null;
+      return /\/identity\/?$/.test(base) ? base : `${base.replace(/\/$/, '')}/identity`;
+    }
     case 'ting':
       return resolveTingServiceBase(config, 'ting.settings');
     case 'volundr':
@@ -324,6 +327,8 @@ export function resolveSettingsServiceBase(
       return resolveDirectServiceBase(config, 'ravn');
     case 'observatory':
       return resolveDirectServiceBase(config, 'observatory');
+    case 'bifrost':
+      return resolveBifrostServiceBase(config);
     default:
       return null;
   }

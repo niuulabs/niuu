@@ -101,7 +101,7 @@ class TestVolundrPlugin:
             "git-api",
         ]
         domains = {route_domain.name: route_domain.prefixes for route_domain in route_domains}
-        assert domains["admin-api"] == ("/api/v1/forge/admin",)
+        assert domains["admin-api"] == ("/api/v1/forge/admin", "/api/v1/forge/settings")
         assert domains["forge-api"][:3] == (
             "/api/v1/forge/sessions",
             "/api/v1/forge/chronicles",

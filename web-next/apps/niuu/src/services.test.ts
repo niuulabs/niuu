@@ -252,6 +252,19 @@ describe('resolveSettingsServiceBase', () => {
     ).toBe('http://localhost:8080/api/v1/identity');
   });
 
+  it('derives identity settings from the shared API root when needed', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            identity: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1' },
+          },
+        } as any,
+        'identity',
+      ),
+    ).toBe('http://localhost:8080/api/v1/identity');
+  });
+
   it('resolves ting settings from the normalized ting base', () => {
     expect(
       resolveSettingsServiceBase(
@@ -279,6 +292,19 @@ describe('resolveSettingsServiceBase', () => {
         'ravn',
       ),
     ).toBe('http://localhost:8080/api/v1/ravn');
+  });
+
+  it('resolves bifrost settings from the grouped bifrost base', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            bifrost: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/bifrost' },
+          },
+        } as any,
+        'bifrost',
+      ),
+    ).toBe('http://localhost:8080/api/v1/bifrost');
   });
 });
 

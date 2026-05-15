@@ -5,7 +5,6 @@ import {
   type NiuuConfig,
   type SettingsScope,
 } from '@niuulabs/plugin-sdk';
-import { tingMountedSettingsProvider } from '@niuulabs/plugin-ting';
 import { resolveSettingsServiceBase } from './services';
 
 export interface RemoteSettingsOption {
@@ -25,6 +24,34 @@ export interface RemoteSettingsField {
   options?: RemoteSettingsOption[];
 }
 
+export interface RemoteSettingsTokensResource {
+  id: string;
+  type: 'tokens';
+  label: string;
+  description?: string;
+  writable?: boolean;
+  listPath: string;
+  createPath: string;
+  deletePath: string;
+}
+
+export interface RemoteSettingsIntegrationsResource {
+  id: string;
+  type: 'integrations';
+  label: string;
+  description?: string;
+  writable?: boolean;
+  listPath: string;
+  catalogPath: string;
+  createPath: string;
+  deletePath: string;
+  credentialCreatePath: string;
+}
+
+export type RemoteSettingsResource =
+  | RemoteSettingsTokensResource
+  | RemoteSettingsIntegrationsResource;
+
 export interface RemoteSettingsSectionSchema {
   id: string;
   label: string;
@@ -32,6 +59,7 @@ export interface RemoteSettingsSectionSchema {
   path?: string;
   saveLabel?: string;
   fields: RemoteSettingsField[];
+  resources?: RemoteSettingsResource[];
 }
 
 export interface RemoteSettingsProviderSchema {
@@ -54,7 +82,7 @@ export type MountedSettingsProvider =
       defaultSectionId?: string;
     };
 
-const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [tingMountedSettingsProvider];
+const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [];
 
 const REMOTE_PROVIDER_DEFS = [
   {
@@ -74,12 +102,28 @@ const REMOTE_PROVIDER_DEFS = [
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'volundr'),
   },
   {
+    id: 'ting',
+    pluginId: 'ting',
+    title: 'Ting',
+    subtitle: 'saga coordinator settings',
+    scope: 'service' as const,
+    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'ting'),
+  },
+  {
     id: 'mimir',
     pluginId: 'mimir',
     title: 'Mimir',
     subtitle: 'knowledge system settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'mimir'),
+  },
+  {
+    id: 'bifrost',
+    pluginId: 'bifrost',
+    title: 'Bifrost',
+    subtitle: 'model catalog and routing settings',
+    scope: 'service' as const,
+    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'bifrost'),
   },
   {
     id: 'ravn',

@@ -67,26 +67,7 @@ def create_admin_settings_router() -> APIRouter:
     """Create the Forge admin settings router."""
     router = APIRouter(prefix="/api/v1/forge", tags=["Admin Settings"])
 
-    @router.get("/admin/settings", response_model=AdminSettingsResponse)
-    async def get_admin_settings(
-        request: Request,
-        _: Principal = Depends(require_role("volundr:admin")),
-    ):
-        """Get admin settings (admin only)."""
-        settings = request.app.state.admin_settings
-        storage = settings.get("storage", {})
-        return AdminSettingsResponse(
-            storage=AdminStorageSettings(
-                home_enabled=storage.get("home_enabled", True),
-                file_manager_enabled=storage.get("file_manager_enabled", True),
-            ),
-        )
-
-    @router.get("/admin/settings/schema", response_model=SettingsProviderSchema)
-    async def get_mounted_settings_schema(
-        request: Request,
-        _: Principal = Depends(require_role("volundr:admin")),
-    ) -> SettingsProviderSchema:
+    def _build_mounted_settings_schema(request: Request) -> SettingsProviderSchema:
         settings = request.app.state.admin_settings
         storage = settings.get("storage", {})
         return SettingsProviderSchema(
@@ -121,6 +102,36 @@ def create_admin_settings_router() -> APIRouter:
                 )
             ],
         )
+
+    @router.get("/admin/settings", response_model=AdminSettingsResponse)
+    async def get_admin_settings(
+        request: Request,
+        _: Principal = Depends(require_role("volundr:admin")),
+    ):
+        """Get admin settings (admin only)."""
+        settings = request.app.state.admin_settings
+        storage = settings.get("storage", {})
+        return AdminSettingsResponse(
+            storage=AdminStorageSettings(
+                home_enabled=storage.get("home_enabled", True),
+                file_manager_enabled=storage.get("file_manager_enabled", True),
+            ),
+        )
+
+    @router.get("/admin/settings/schema", response_model=SettingsProviderSchema)
+    async def get_mounted_settings_schema(
+        request: Request,
+        _: Principal = Depends(require_role("volundr:admin")),
+    ) -> SettingsProviderSchema:
+        return _build_mounted_settings_schema(request)
+
+    @router.get("/settings", response_model=SettingsProviderSchema)
+    async def get_settings_schema(
+        request: Request,
+        _: Principal = Depends(require_role("volundr:admin")),
+    ) -> SettingsProviderSchema:
+        """Return the canonical mounted settings schema for the unified settings shell."""
+        return _build_mounted_settings_schema(request)
 
     @router.patch("/admin/settings", response_model=AdminSettingsResponse)
     @router.put("/admin/settings", response_model=AdminSettingsResponse)
