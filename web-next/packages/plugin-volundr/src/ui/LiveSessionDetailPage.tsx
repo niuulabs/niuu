@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -884,6 +884,9 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
     () => (chatEndpoint ? wsUrlToHttpBase(chatEndpoint) : null),
     [chatEndpoint],
   );
+  const mountedRef = useRef(true);
+  const filesAbortRef = useRef<AbortController | null>(null);
+  const diffAbortRef = useRef<AbortController | null>(null);
   const [files, setFiles] = useState<SessionFile[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [diff, setDiff] = useState<DiffData | null>(null);
@@ -892,37 +895,62 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [diffBase, setDiffBaseState] = useState<DiffBase>('last-commit');
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      filesAbortRef.current?.abort();
+      diffAbortRef.current?.abort();
+    };
+  }, []);
+
   const fetchFiles = useCallback(async () => {
+    filesAbortRef.current?.abort();
     if (!apiBase) {
-      setFiles([]);
+      if (mountedRef.current) {
+        setFiles([]);
+        setFilesLoading(false);
+      }
       return;
     }
+    const controller = new AbortController();
+    filesAbortRef.current = controller;
     setFilesLoading(true);
     try {
       const params = new URLSearchParams({ base: diffBase });
       const response = await fetch(`${apiBase}/api/diff/files?${params}`, {
         headers: authHeaders(),
+        signal: controller.signal,
       });
       if (!response.ok) {
         throw new Error(`Failed to fetch diff files: ${response.status}`);
       }
       const data = (await response.json()) as { files?: SessionFile[] };
+      if (!mountedRef.current || filesAbortRef.current !== controller) return;
       setFiles(data.files ?? []);
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (!mountedRef.current || filesAbortRef.current !== controller) return;
       setFiles([]);
     } finally {
-      setFilesLoading(false);
+      if (mountedRef.current && filesAbortRef.current === controller) {
+        filesAbortRef.current = null;
+        setFilesLoading(false);
+      }
     }
   }, [apiBase, diffBase]);
 
   const selectFile = useCallback(
     async (filePath: string) => {
+      diffAbortRef.current?.abort();
       if (!apiBase) {
         setSelectedFile(filePath);
         setDiff(null);
         setDiffError(new Error('No session endpoint available'));
         return;
       }
+      const controller = new AbortController();
+      diffAbortRef.current = controller;
       setSelectedFile(filePath);
       setDiffLoading(true);
       setDiffError(null);
@@ -930,16 +958,23 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
         const params = new URLSearchParams({ file: filePath, base: diffBase });
         const response = await fetch(`${apiBase}/api/diff?${params}`, {
           headers: authHeaders(),
+          signal: controller.signal,
         });
         if (!response.ok) {
           throw new Error(`Failed to fetch diff: ${response.status}`);
         }
+        if (!mountedRef.current || diffAbortRef.current !== controller) return;
         setDiff((await response.json()) as DiffData);
       } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        if (!mountedRef.current || diffAbortRef.current !== controller) return;
         setDiff(null);
         setDiffError(error instanceof Error ? error : new Error('Failed to fetch diff'));
       } finally {
-        setDiffLoading(false);
+        if (mountedRef.current && diffAbortRef.current === controller) {
+          diffAbortRef.current = null;
+          setDiffLoading(false);
+        }
       }
     },
     [apiBase, diffBase],
