@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from typer.testing import CliRunner
 
 from ravn.adapters.personas.loader import PersonaConfig
-from ravn.cli.flock import NodeDef, _write_node_config
 from ravn.cli.commands import (
     _chat,
     _print_usage,
@@ -20,6 +19,7 @@ from ravn.cli.commands import (
     app,
     main,
 )
+from ravn.cli.flock import NodeDef, _write_node_config
 from ravn.config import Settings
 from ravn.domain.models import (
     StreamEvent,

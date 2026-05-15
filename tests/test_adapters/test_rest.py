@@ -1,7 +1,6 @@
 """Tests for the REST adapter."""
 
 import asyncio
-
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -11,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.domain.models import Principal
 from tests.conftest import (
     InMemoryPricingProvider,
     InMemorySessionRepository,
@@ -29,7 +29,6 @@ from volundr.adapters.inbound.rest import (
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session, SessionStatus
 from volundr.domain.services import RepoService, SessionService, StatsService
-from niuu.domain.models import Principal
 
 
 @pytest.fixture
@@ -603,10 +602,10 @@ class TestSessionMessages:
                 ws = self.ws
 
                 class _Ctx:
-                    async def __aenter__(self_inner) -> _FakeWebSocket:
+                    async def __aenter__(self) -> _FakeWebSocket:
                         return ws
 
-                    async def __aexit__(self_inner, exc_type, exc, tb) -> bool:
+                    async def __aexit__(self, exc_type, exc, tb) -> bool:
                         return False
 
                 return _Ctx()
