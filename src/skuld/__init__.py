@@ -9,7 +9,12 @@ from skuld.channels import (
     WebSocketChannel,
 )
 from skuld.config import SkuldSettings, TelegramConfig
-from skuld.transport import SdkWebSocketTransport, SubprocessTransport
+
+try:
+    from skuld.transport import SdkWebSocketTransport, SubprocessTransport
+except ModuleNotFoundError:  # pragma: no cover - optional runtime dependency path
+    SdkWebSocketTransport = None  # type: ignore[assignment]
+    SubprocessTransport = None  # type: ignore[assignment]
 
 __all__ = [
     "Broker",

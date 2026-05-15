@@ -57,7 +57,7 @@ import type {
   FeatureModule,
   UserFeaturePreference,
 } from '@/modules/volundr/models';
-import { isSessionBooting, isSessionActive } from '@/modules/volundr/models';
+import { isSessionBooting } from '@/modules/volundr/models';
 import { resolveIcon } from '@/modules/icons';
 import { formatTokens, cn } from '@/utils';
 import { getRepo, getBranch, getSourceLabel, isGitSource } from '@/utils/source';
@@ -87,6 +87,7 @@ export function VolundrPage() {
     startSession,
     deleteSession,
     archiveSession,
+    archiveSessions,
     restoreSession: restoreArchivedSession,
     archivedSessions,
     archiveAllStopped,
@@ -215,6 +216,7 @@ export function VolundrPage() {
     'volundr-archived-collapsed',
     true
   );
+  const [selectedArchiveSessionIds, setSelectedArchiveSessionIds] = useState<string[]>([]);
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
@@ -271,6 +273,9 @@ export function VolundrPage() {
   // Gateway-routed sessions include a path prefix: /s/{session-id}/api/session
   const sessionHost = effectiveSelectedSession?.hostname ?? null;
   const chatEndpoint = effectiveSelectedSession?.chatEndpoint ?? null;
+  const conversationEndpoint = effectiveSelectedSession
+    ? `/api/v1/volundr/sessions/${encodeURIComponent(effectiveSelectedSession.id)}/conversation`
+    : null;
   const isRunning = effectiveSelectedSession?.status === 'running';
 
   const {
@@ -488,6 +493,22 @@ export function VolundrPage() {
     return true;
   });
 
+  const visibleStoppedSessionIds = filteredSessions
+    .filter(session => session.status === 'stopped')
+    .map(session => session.id);
+  const allVisibleStoppedSelected =
+    visibleStoppedSessionIds.length > 0 &&
+    visibleStoppedSessionIds.every(sessionId => selectedArchiveSessionIds.includes(sessionId));
+  const selectedArchiveCount = selectedArchiveSessionIds.length;
+
+  useEffect(() => {
+    setSelectedArchiveSessionIds(prev =>
+      prev.filter(sessionId =>
+        sessions.some(session => session.id === sessionId && session.status === 'stopped')
+      )
+    );
+  }, [sessions]);
+
   const tabs = useMemo(() => {
     const prefMap = new Map(panelPrefs.map(p => [p.featureKey, p]));
 
@@ -574,15 +595,6 @@ export function VolundrPage() {
       return;
     }
 
-    if (isSessionActive(effectiveSelectedSession.status)) {
-      const confirmed = window.confirm(
-        `"${effectiveSelectedSession.name}" is still running. This will stop the session first and then archive it. Continue?`
-      );
-      if (!confirmed) {
-        return;
-      }
-    }
-
     await archiveSession(effectiveSelectedSession.id);
     setSelectedSession(null);
   };
@@ -597,16 +609,45 @@ export function VolundrPage() {
       return;
     }
 
-    const confirmed = window.confirm(
-      `Archive ${stoppedCount} stopped session${stoppedCount > 1 ? 's' : ''}?`
+    await archiveAllStopped();
+    setSelectedArchiveSessionIds([]);
+    setSelectedSession(null);
+  };
+
+  const handleToggleArchiveSelection = useCallback((sessionId: string) => {
+    setSelectedArchiveSessionIds(prev =>
+      prev.includes(sessionId) ? prev.filter(id => id !== sessionId) : [...prev, sessionId]
     );
-    if (!confirmed) {
+  }, []);
+
+  const handleToggleVisibleStoppedSelection = useCallback(() => {
+    if (visibleStoppedSessionIds.length === 0) {
       return;
     }
 
-    await archiveAllStopped();
-    setSelectedSession(null);
-  };
+    const visibleStoppedIdSet = new Set(visibleStoppedSessionIds);
+    setSelectedArchiveSessionIds(prev => {
+      if (allVisibleStoppedSelected) {
+        return prev.filter(id => !visibleStoppedIdSet.has(id));
+      }
+      return Array.from(new Set([...prev, ...visibleStoppedSessionIds]));
+    });
+  }, [allVisibleStoppedSelected, visibleStoppedSessionIds]);
+
+  const handleArchiveSelectedSessions = useCallback(async () => {
+    if (selectedArchiveSessionIds.length === 0) {
+      return;
+    }
+
+    await archiveSessions(selectedArchiveSessionIds);
+    if (
+      effectiveSelectedSession &&
+      selectedArchiveSessionIds.includes(effectiveSelectedSession.id)
+    ) {
+      setSelectedSession(null);
+    }
+    setSelectedArchiveSessionIds([]);
+  }, [archiveSessions, effectiveSelectedSession, selectedArchiveSessionIds]);
 
   const stoppedSessionCount = sessions.filter(s => s.status === 'stopped').length;
 
@@ -798,6 +839,9 @@ export function VolundrPage() {
                   key={session.id}
                   className={cn(
                     styles.sessionCardWrapper,
+                    session.status === 'stopped' &&
+                      selectedArchiveSessionIds.includes(session.id) &&
+                      styles.sessionCardWrapperArchivable,
                     effectiveSelectedSession?.id === session.id && styles.selected
                   )}
                   onClick={() => {
@@ -805,21 +849,70 @@ export function VolundrPage() {
                     setMobileSidebarOpen(false);
                   }}
                 >
-                  <SessionCard
-                    session={
-                      liveChatCount !== null && effectiveSelectedSession?.id === session.id
-                        ? { ...session, messageCount: liveChatCount }
-                        : session
-                    }
-                    model={models[session.model]}
-                    compact={compactCards}
-                  />
+                  <div className={styles.sessionCardRow}>
+                    {session.status === 'stopped' && (
+                      <label
+                        className={styles.sessionCardSelection}
+                        onClick={event => event.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          className={styles.sessionCardCheckbox}
+                          checked={selectedArchiveSessionIds.includes(session.id)}
+                          onChange={() => handleToggleArchiveSelection(session.id)}
+                          aria-label={`Select ${session.name} for archive`}
+                        />
+                      </label>
+                    )}
+                    <SessionCard
+                      session={
+                        liveChatCount !== null && effectiveSelectedSession?.id === session.id
+                          ? { ...session, messageCount: liveChatCount }
+                          : session
+                      }
+                      model={models[session.model]}
+                      compact={compactCards}
+                    />
+                  </div>
                 </div>
               )}
             />
           </div>
 
-          {/* Archive all stopped + archived section */}
+          {(stoppedSessionCount > 0 || selectedArchiveCount > 0) && (
+            <div className={styles.archiveActionsBar}>
+              {visibleStoppedSessionIds.length > 0 && (
+                <button
+                  type="button"
+                  className={styles.archiveActionButton}
+                  onClick={handleToggleVisibleStoppedSelection}
+                >
+                  {allVisibleStoppedSelected
+                    ? `Clear Visible Selection (${visibleStoppedSessionIds.length})`
+                    : `Select Visible Stopped (${visibleStoppedSessionIds.length})`}
+                </button>
+              )}
+              <button
+                type="button"
+                className={styles.archiveActionButton}
+                onClick={handleArchiveSelectedSessions}
+                disabled={selectedArchiveCount === 0}
+              >
+                Archive Selected ({selectedArchiveCount})
+              </button>
+              {stoppedSessionCount > 0 && (
+                <button
+                  type="button"
+                  className={styles.archiveActionButton}
+                  onClick={handleArchiveAllStopped}
+                >
+                  Archive All Stopped ({stoppedSessionCount})
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Archived section */}
           <div className={styles.archivedSection}>
             <div
               className={styles.archivedToggle}
@@ -848,18 +941,6 @@ export function VolundrPage() {
 
             {!archivedCollapsed && (
               <div className={styles.archivedContent}>
-                {stoppedSessionCount > 0 && (
-                  <div className={styles.archivedItem}>
-                    <button
-                      type="button"
-                      className={styles.archiveAllButton}
-                      onClick={handleArchiveAllStopped}
-                    >
-                      <Archive className={styles.archiveAllButtonIcon} />
-                      Archive All Stopped ({stoppedSessionCount})
-                    </button>
-                  </div>
-                )}
                 {archivedSessions.map(session => (
                   <div key={session.id} className={styles.archivedItem}>
                     <div className={styles.archivedItemInfo}>
@@ -1153,17 +1234,18 @@ export function VolundrPage() {
           {/* Tab content */}
           <div className={styles.tabContent}>
             {activeTab === 'chat' &&
-              (isSessionReady ? (
+              (isSessionBooting(effectiveSelectedSession.status) ||
+              (isRunning && !connectionVerified) ? (
+                <SessionStartingIndicator className={styles.tabPanel} />
+              ) : conversationEndpoint ? (
                 <SessionChat
                   url={chatWsUrl}
+                  historyEndpoint={conversationEndpoint}
                   className={styles.tabPanel}
                   onMessageCountChange={handleChatMessageCount}
                   sessionHost={sessionHost}
                   chatEndpoint={chatEndpoint}
                 />
-              ) : isSessionBooting(effectiveSelectedSession.status) ||
-                (isRunning && !connectionVerified) ? (
-                <SessionStartingIndicator className={styles.tabPanel} />
               ) : (
                 <div className={styles.emptyState}>
                   <MessageSquare className={styles.emptyIcon} />

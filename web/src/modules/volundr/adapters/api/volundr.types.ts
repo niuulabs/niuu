@@ -14,7 +14,8 @@ export type ApiSessionStatus =
   | 'running'
   | 'stopping'
   | 'stopped'
-  | 'failed';
+  | 'failed'
+  | 'archived';
 
 /**
  * Session response from API
@@ -224,6 +225,20 @@ export interface ApiMessageCreate {
   content: string;
 }
 
+export interface ApiConversationTurn {
+  id: string;
+  role: string;
+  content: string;
+  created_at: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface ApiConversationResponse {
+  turns: ApiConversationTurn[];
+  is_active: boolean;
+  last_activity: string;
+}
+
 /**
  * Log entry from API
  */
@@ -234,6 +249,20 @@ export interface ApiLogResponse {
   level: 'debug' | 'info' | 'warn' | 'error';
   source: string;
   message: string;
+}
+
+export interface ApiAggregateLogLine {
+  id?: string;
+  timestamp: string | number;
+  level: string;
+  source?: string;
+  logger?: string;
+  message: string;
+}
+
+export interface ApiAggregateLogsResponse {
+  session_id: string;
+  lines: ApiAggregateLogLine[];
 }
 
 /**

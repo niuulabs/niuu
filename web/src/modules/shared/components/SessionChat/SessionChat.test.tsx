@@ -143,6 +143,7 @@ function mockSkuldChat(overrides: Partial<ReturnType<typeof useSkuldChat>> = {})
     sendSetModel: vi.fn(),
     sendSetMaxThinkingTokens: vi.fn(),
     sendRewindFiles: vi.fn(),
+    sendSetInternalVisibility: vi.fn(),
     clearMessages: vi.fn(),
   };
   vi.mocked(useSkuldChat).mockReturnValue({ ...defaults, ...overrides });
@@ -220,14 +221,35 @@ describe('SessionChat', () => {
     mockSkuldChat();
     render(<SessionChat url="wss://my-host/session" />);
 
-    expect(useSkuldChat).toHaveBeenCalledWith('wss://my-host/session');
+    expect(useSkuldChat).toHaveBeenCalledWith('wss://my-host/session', {
+      historyEndpoint: null,
+      cacheKey: 'wss://my-host/session',
+    });
   });
 
   it('passes null url to useSkuldChat', () => {
     mockSkuldChat();
     render(<SessionChat url={null} />);
 
-    expect(useSkuldChat).toHaveBeenCalledWith(null);
+    expect(useSkuldChat).toHaveBeenCalledWith(null, {
+      historyEndpoint: null,
+      cacheKey: null,
+    });
+  });
+
+  it('passes history endpoint through to useSkuldChat', () => {
+    mockSkuldChat();
+    render(
+      <SessionChat
+        url={null}
+        historyEndpoint="/api/v1/volundr/sessions/test-session/conversation"
+      />
+    );
+
+    expect(useSkuldChat).toHaveBeenCalledWith(null, {
+      historyEndpoint: '/api/v1/volundr/sessions/test-session/conversation',
+      cacheKey: '/api/v1/volundr/sessions/test-session/conversation',
+    });
   });
 
   it('renders the chat input', () => {
@@ -1223,11 +1245,11 @@ describe('SessionChat', () => {
     expect(screen.getByTestId('internal-toggle')).toBeInTheDocument();
   });
 
-  it('does not show internal toggle when not in room mode', () => {
+  it('shows toolbar internal toggle even when not in room mode', () => {
     mockSkuldChat({ connected: true, participants: new Map() });
     render(<SessionChat url="wss://test/session" />);
 
-    expect(screen.queryByTestId('internal-toggle')).not.toBeInTheDocument();
+    expect(screen.getByTestId('internal-toggle')).toBeInTheDocument();
   });
 
   // ── MeshSidebar visibility ───────────────────────────────────

@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -926,6 +927,68 @@ class StoragePort(ABC):
     ) -> Workspace | None:
         """Get the workspace PVC for a session. Returns None if not found."""
         return None
+
+    def resolve_session_workspace_path(self, session_id: str) -> str | None:
+        """Resolve the local filesystem path for a session workspace if accessible.
+
+        Returns ``None`` when the storage backend does not expose the workspace
+        on the current host filesystem.
+        """
+        return None
+
+
+class ArchiveStorePort(ABC):
+    """Port for persisted session transcript/log archives."""
+
+    @abstractmethod
+    def load_manifest(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path,
+    ) -> dict[str, Any] | None:
+        """Load an archive manifest if one has already been materialized."""
+
+    @abstractmethod
+    def write_archive(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path,
+        transcript_payload: dict[str, Any],
+        aggregated_logs: dict[str, Any],
+        chronicle_payload: dict[str, Any] | None = None,
+        timeline_payload: dict[str, Any] | None = None,
+        event_source_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Materialize an archive snapshot and return its manifest."""
+
+    @abstractmethod
+    def transcript_json_path(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path,
+    ) -> Path:
+        """Return the local JSON transcript artifact path."""
+
+    @abstractmethod
+    def transcript_markdown_path(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path,
+    ) -> Path:
+        """Return the local Markdown transcript artifact path."""
+
+    @abstractmethod
+    def archive_root(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path,
+    ) -> Path:
+        """Return the root directory for a session archive."""
 
 
 class GatewayPort(ABC):

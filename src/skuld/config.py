@@ -154,6 +154,16 @@ class SkuldSessionConfig(BaseModel):
     raid_id: str | None = Field(default=None)
 
 
+class ArchiveStoreConfig(BaseModel):
+    """Dynamic archive store adapter configuration."""
+
+    adapter: str = Field(
+        default="volundr.adapters.outbound.archive_store.FileSystemArchiveStore",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
 class SkuldSettings(BaseSettings):
     """Skuld broker settings.
 
@@ -192,6 +202,7 @@ class SkuldSettings(BaseSettings):
     service_user_id: str = Field(default="skuld-broker")
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")
+    archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     chronicle_watcher_enabled: bool = Field(default=True)
     chronicle_watcher_debounce_ms: int = Field(default=500)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB

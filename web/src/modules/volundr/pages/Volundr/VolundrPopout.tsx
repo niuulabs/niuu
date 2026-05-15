@@ -69,6 +69,9 @@ export function VolundrPopout() {
 
   const sessionHost = session?.hostname ?? null;
   const sessionChatEndpoint = session?.chatEndpoint ?? null;
+  const conversationEndpoint = session
+    ? `/api/v1/volundr/sessions/${encodeURIComponent(session.id)}/conversation`
+    : null;
   const isRunning = session?.status === 'running';
 
   // Track whether the WebSocket has been verified as connectable.
@@ -255,15 +258,16 @@ export function VolundrPopout() {
             </div>
           )
         ) : tabType === 'chat' ? (
-          isSessionReady ? (
+          isSessionBooting(session.status) || (isRunning && !connectionVerified) ? (
+            <SessionStartingIndicator className={styles.fullPanel} />
+          ) : conversationEndpoint ? (
             <SessionChat
               url={chatWsUrl}
+              historyEndpoint={conversationEndpoint}
               className={styles.fullPanel}
               sessionHost={sessionHost}
               chatEndpoint={sessionChatEndpoint}
             />
-          ) : isSessionBooting(session.status) || (isRunning && !connectionVerified) ? (
-            <SessionStartingIndicator className={styles.fullPanel} />
           ) : (
             <div className={styles.emptyState}>
               <Hammer className={styles.emptyIcon} />

@@ -2732,30 +2732,26 @@ describe('ApiVolundrService', () => {
   });
 
   describe('getMessages', () => {
-    it('returns transformed messages', async () => {
+    it('returns transformed messages from conversation history', async () => {
       mockFetch.mockReturnValueOnce(
-        mockResponse([
-          {
-            id: 'msg-1',
-            session_id: 'sess-1',
-            role: 'user',
-            content: 'Hello',
-            created_at: '2024-01-15T10:00:00Z',
-            tokens_in: 10,
-            tokens_out: null,
-            latency_ms: null,
-          },
-          {
-            id: 'msg-2',
-            session_id: 'sess-1',
-            role: 'assistant',
-            content: 'Hi there',
-            created_at: '2024-01-15T10:00:01Z',
-            tokens_in: null,
-            tokens_out: 50,
-            latency_ms: 1200,
-          },
-        ])
+        mockResponse({
+          turns: [
+            {
+              id: 'msg-1',
+              role: 'user',
+              content: 'Hello',
+              created_at: '2024-01-15T10:00:00Z',
+            },
+            {
+              id: 'msg-2',
+              role: 'assistant',
+              content: 'Hi there',
+              created_at: '2024-01-15T10:00:01Z',
+            },
+          ],
+          is_active: false,
+          last_activity: '',
+        })
       );
 
       const messages = await service.getMessages('sess-1');
@@ -2766,14 +2762,40 @@ describe('ApiVolundrService', () => {
         sessionId: 'sess-1',
         role: 'user',
         content: 'Hello',
-        tokensIn: 10,
-        tokensOut: undefined,
-        latency: undefined,
       });
       expect(messages[1]).toMatchObject({
-        tokensOut: 50,
-        latency: 1200,
+        id: 'msg-2',
+        role: 'assistant',
+        content: 'Hi there',
       });
+    });
+
+    it('ignores non-chat turns in conversation history', async () => {
+      mockFetch.mockReturnValueOnce(
+        mockResponse({
+          turns: [
+            {
+              id: 'msg-1',
+              role: 'user',
+              content: 'Hello',
+              created_at: '2024-01-15T10:00:00Z',
+            },
+            {
+              id: 'sys-1',
+              role: 'system',
+              content: 'internal note',
+              created_at: '2024-01-15T10:00:01Z',
+            },
+          ],
+          is_active: false,
+          last_activity: '',
+        })
+      );
+
+      const messages = await service.getMessages('sess-1');
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0].id).toBe('msg-1');
     });
   });
 
@@ -2801,18 +2823,20 @@ describe('ApiVolundrService', () => {
   });
 
   describe('getLogs', () => {
-    it('returns transformed logs with default limit', async () => {
+    it('returns transformed aggregate logs with default limit', async () => {
       mockFetch.mockReturnValueOnce(
-        mockResponse([
-          {
-            id: 'log-1',
-            session_id: 'sess-1',
-            timestamp: '2024-01-15T10:00:00Z',
-            level: 'info',
-            source: 'agent',
-            message: 'Processing started',
-          },
-        ])
+        mockResponse({
+          session_id: 'sess-1',
+          lines: [
+            {
+              id: 'log-1',
+              timestamp: '2024-01-15T10:00:00Z',
+              level: 'INFO',
+              source: 'agent',
+              message: 'Processing started',
+            },
+          ],
+        })
       );
 
       const logs = await service.getLogs('sess-1');
@@ -2828,13 +2852,27 @@ describe('ApiVolundrService', () => {
     });
 
     it('accepts custom limit', async () => {
-      mockFetch.mockReturnValueOnce(mockResponse([]));
+      mockFetch.mockReturnValueOnce(mockResponse({ session_id: 'sess-1', lines: [] }));
 
       await service.getLogs('sess-1', 50);
 
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('limit=50'),
+        expect.stringContaining('lines=50'),
         expect.any(Object)
+      );
+    });
+  });
+
+  describe('archiveStoppedSessions', () => {
+    it('calls the bulk archive endpoint and returns archived ids', async () => {
+      mockFetch.mockReturnValueOnce(mockResponse(['sess-2', 'sess-3']));
+
+      const archivedIds = await service.archiveStoppedSessions();
+
+      expect(archivedIds).toEqual(['sess-2', 'sess-3']);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/sessions/archive-stopped'),
+        expect.objectContaining({ method: 'POST' })
       );
     });
   });
@@ -2886,7 +2924,7 @@ describe('ApiVolundrService', () => {
 
       expect(mockFetch).toHaveBeenLastCalledWith(
         expect.stringContaining(`/sessions/${mockApiSession.id}/archive`),
-        expect.objectContaining({ method: 'POST' })
+        expect.objectContaining({ method: 'PATCH', body: '{}' })
       );
     });
   });

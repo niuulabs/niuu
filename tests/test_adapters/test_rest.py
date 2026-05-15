@@ -1,5 +1,6 @@
 """Tests for the REST adapter."""
 
+import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -9,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.domain.models import Principal
 from tests.conftest import (
     InMemoryPricingProvider,
     InMemorySessionRepository,
@@ -570,6 +572,81 @@ class TestStopSession:
         assert "cannot stop" in response.json()["detail"].lower()
 
 
+class TestSessionMessages:
+    """Tests for POST /api/v1/volundr/sessions/{id}/messages."""
+
+    def test_send_message_uses_plain_ws_without_ssl(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+    ) -> None:
+        """ws:// chat endpoints should not receive an SSL context."""
+
+        class _FakeWebSocket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            async def recv(self) -> str:
+                raise TimeoutError
+
+            async def send(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        class _FakeConnect:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, object]]] = []
+                self.ws = _FakeWebSocket()
+
+            def __call__(self, url: str, **kwargs: object):
+                self.calls.append((url, kwargs))
+                ws = self.ws
+
+                class _Ctx:
+                    async def __aenter__(self) -> _FakeWebSocket:
+                        return ws
+
+                    async def __aexit__(self, exc_type, exc, tb) -> bool:
+                        return False
+
+                return _Ctx()
+
+        session = Session(
+            id=uuid4(),
+            name="message-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/message-session/session",
+        )
+        asyncio.run(repository.create(session))
+
+        fake_connect = _FakeConnect()
+        with (
+            patch("websockets.asyncio.client.connect", new=fake_connect),
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+        ):
+            response = client.post(
+                f"/api/v1/volundr/sessions/{session.id}/messages",
+                json={"content": "hello from rest"},
+            )
+
+        assert response.status_code == 200
+        assert fake_connect.calls == [
+            ("ws://localhost:8080/s/message-session/session", {"open_timeout": 10})
+        ]
+        assert fake_connect.ws.sent == ['{"type": "user", "content": "hello from rest"}']
+
+
 class TestSessionLogAggregationProxy:
     """Tests for aggregated session log proxy endpoints."""
 
@@ -689,6 +766,126 @@ class TestSessionLogAggregationProxy:
             "coder",
         }
         assert [line["participant"] for line in data["lines"]] == ["skuld", "coder"]
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_falls_back_to_local_workspace_without_archive_service(
+        self,
+        client: TestClient,
+        service: SessionService,
+        tmp_path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        transcript_dir = workspace / ".skuld"
+        transcript_dir.mkdir(parents=True)
+
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        (transcript_dir / f"conversation_{session.id}.json").write_text(
+            '{"turns":[{"id":"1","role":"assistant","content":"from workspace"}]}',
+            encoding="utf-8",
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file://{workspace}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/conversation")
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+
+        assert response.status_code == 200
+        assert response.json()["turns"][0]["content"] == "from workspace"
+
+    @pytest.mark.asyncio
+    async def test_get_session_logs_aggregate_returns_503_without_archive_or_file_workspace(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            "https://workspace.example.com/session",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/logs/aggregate")
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/volundr/sessions/{session.id}/logs/aggregate")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Session archive service not available"
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_returns_503_without_archive_or_file_workspace(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            "https://workspace.example.com/session",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request(
+            "GET",
+            f"http://localhost:8080/s/{session.id}/api/conversation/history",
+        )
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Session archive service not available"
 
 
 class TestFeatureFlags:

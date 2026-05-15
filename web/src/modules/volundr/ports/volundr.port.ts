@@ -221,6 +221,11 @@ export interface IVolundrService {
   restoreSession(sessionId: string): Promise<void>;
 
   /**
+   * Archive every stopped session and return the archived ids
+   */
+  archiveStoppedSessions(): Promise<string[]>;
+
+  /**
    * List all archived sessions
    */
   listArchivedSessions(): Promise<VolundrSession[]>;

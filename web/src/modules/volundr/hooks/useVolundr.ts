@@ -54,6 +54,7 @@ interface UseVolundrResult {
   resumeSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string, cleanup?: string[]) => Promise<void>;
   archiveSession: (sessionId: string) => Promise<void>;
+  archiveSessions: (sessionIds: string[]) => Promise<void>;
   restoreSession: (sessionId: string) => Promise<void>;
   archivedSessions: VolundrSession[];
   archiveAllStopped: () => Promise<void>;
@@ -269,6 +270,18 @@ export function useVolundr(): UseVolundrResult {
     setArchivedSessions(archived);
   }, []);
 
+  const archiveSessions = useCallback(async (sessionIds: string[]) => {
+    if (sessionIds.length === 0) {
+      return;
+    }
+
+    await Promise.all(sessionIds.map(sessionId => volundrService.archiveSession(sessionId)));
+    const archivedIdSet = new Set(sessionIds);
+    setSessions(prev => prev.filter(session => !archivedIdSet.has(session.id)));
+    const archived = await volundrService.listArchivedSessions();
+    setArchivedSessions(archived);
+  }, []);
+
   const restoreSession = useCallback(async (sessionId: string) => {
     await volundrService.restoreSession(sessionId);
     const [updatedSessions, updatedArchived] = await Promise.all([
@@ -280,14 +293,16 @@ export function useVolundr(): UseVolundrResult {
   }, []);
 
   const archiveAllStopped = useCallback(async () => {
-    const stopped = sessions.filter(s => s.status === 'stopped');
-    for (const s of stopped) {
-      await volundrService.archiveSession(s.id);
+    const archivedIds = await volundrService.archiveStoppedSessions();
+    if (archivedIds.length === 0) {
+      return;
     }
-    setSessions(prev => prev.filter(s => s.status !== 'stopped'));
+
+    const archivedIdSet = new Set(archivedIds);
+    setSessions(prev => prev.filter(session => !archivedIdSet.has(session.id)));
     const archived = await volundrService.listArchivedSessions();
     setArchivedSessions(archived);
-  }, [sessions]);
+  }, []);
 
   const saveTemplate = useCallback(async (template: VolundrTemplate) => {
     const saved = await volundrService.saveTemplate(template);
@@ -507,6 +522,7 @@ export function useVolundr(): UseVolundrResult {
     resumeSession,
     deleteSession,
     archiveSession,
+    archiveSessions,
     restoreSession,
     archivedSessions,
     archiveAllStopped,
