@@ -24,6 +24,7 @@ theme:
         name: Switch to dark mode
   font: false
   logo: images/logo-knot.svg
+  favicon: images/logo-knot.svg
   icon:
     repo: fontawesome/brands/github
   features:
