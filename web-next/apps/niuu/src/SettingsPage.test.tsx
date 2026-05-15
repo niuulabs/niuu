@@ -267,4 +267,59 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('combobox')).toBeTruthy();
     expect(screen.getByDisplayValue('telegram-credential')).toBeTruthy();
   });
+
+  it('renders the missing-provider state when a service base URL is not configured', async () => {
+    routerMocks.params = { providerId: 'ting', sectionId: undefined };
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+
+    render(
+      <ConfigProvider
+        value={{
+          theme: 'ice',
+          plugins: {
+            ting: { enabled: true, order: 2 },
+          },
+          services: {},
+        }}
+      >
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage />
+        </QueryClientProvider>
+      </ConfigProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
+    expect(
+      screen.getByText(
+        'This service does not have a live settings endpoint configured in the current host profile.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        'No service base URL is configured for this provider in the active app profile.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('renders the schema error state when a mounted provider fails to load', async () => {
+    routerMocks.params = { providerId: 'identity', sectionId: undefined };
+    apiMocks.get.mockRejectedValueOnce(new Error('boom'));
+
+    wrap(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: 'You Settings' })).toBeTruthy();
+    expect(
+      await screen.findByText(
+        'This service responded, but its settings schema could not be loaded.',
+      ),
+    ).toBeTruthy();
+    expect(await screen.findByText('Expected endpoint:')).toBeTruthy();
+  });
 });

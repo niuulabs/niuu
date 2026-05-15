@@ -39,4 +39,14 @@ describe('niuuConfigSchema', () => {
   it('rejects an invalid theme', () => {
     expect(() => niuuConfigSchema.parse({ theme: 'ultraviolet' })).toThrow();
   });
+
+  it('rejects an invalid service URL', () => {
+    expect(() =>
+      niuuConfigSchema.parse({
+        services: {
+          bifrost: { baseUrl: 'not-a-url', mode: 'http' },
+        },
+      }),
+    ).toThrow('Invalid url');
+  });
 });
