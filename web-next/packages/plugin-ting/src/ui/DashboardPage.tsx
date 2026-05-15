@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useQueries } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
@@ -14,14 +14,26 @@ import {
   useToast,
 } from '@niuulabs/ui';
 import type { BadgeStatus } from '@niuulabs/ui';
-import type { ITingService, Phase } from '../ports';
-import type { Saga, RunStatus } from '../domain/saga';
+import type { ITingService, Phase, IDispatcherService, DispatcherActivityEvent } from '../ports';
+import type { Saga, Run, RunStatus } from '../domain/saga';
 import { useSagas } from './useSagas';
 import { useDispatcherState } from './useDispatcherState';
 import { RunMeshCanvas } from './RunMeshCanvas';
 import './DashboardPage.css';
 
 type PipeCell = { status: 'ok' | 'run' | 'warn' | 'crit' | 'gate' | 'pend'; label: string };
+type FeedRow = {
+  id: string;
+  timestamp: string;
+  state: 'merged' | 'failed' | 'running' | 'review';
+  summary: string;
+  subject: string;
+  sagaId?: string;
+};
+
+const ACTIVE_RUN_STATUSES = new Set<RunStatus>(['running', 'review', 'escalated']);
+const TERMINAL_RUN_STATUSES = new Set<RunStatus>(['merged', 'failed']);
+const HOURS_IN_WINDOW = 24;
 
 function runStatusToCell(s: RunStatus): PipeCell['status'] {
   const map: Record<RunStatus, PipeCell['status']> = {
@@ -42,7 +54,6 @@ function sagaPipe(phases: Phase[]): PipeCell[] {
   );
 }
 
-/** Derive the dominant badge status for a saga from its runs. */
 function deriveSagaBadge(phases: Phase[]): BadgeStatus {
   const runs = phases.flatMap((p) => p.runs);
   if (runs.some((r) => r.status === 'failed')) return 'failed';
@@ -51,61 +62,141 @@ function deriveSagaBadge(phases: Phase[]): BadgeStatus {
   return 'running';
 }
 
-/** Deterministic mock throughput data (24 hours). */
-function mockThroughput(): number[] {
-  return Array.from({ length: 24 }, (_, i) => Math.round(4 + 3 * Math.sin(i / 3) + 2));
+function bucketRunsByHour(runs: Run[], predicate: (run: Run) => boolean): number[] {
+  const now = Date.now();
+  const start = now - HOURS_IN_WINDOW * 60 * 60 * 1000;
+  const series = Array.from({ length: HOURS_IN_WINDOW }, () => 0);
+
+  for (const run of runs) {
+    if (!predicate(run)) continue;
+    const timestamp = Date.parse(run.updatedAt);
+    if (!Number.isFinite(timestamp) || timestamp < start || timestamp > now) continue;
+    const hourIndex = Math.min(
+      HOURS_IN_WINDOW - 1,
+      Math.max(0, Math.floor((timestamp - start) / (60 * 60 * 1000))),
+    );
+    series[hourIndex] = (series[hourIndex] ?? 0) + 1;
+  }
+
+  return series;
 }
 
-/** Deterministic mock confidence trend data (24 hours). */
-function mockConfidence(): number[] {
-  return Array.from({ length: 24 }, (_, i) => 0.6 + 0.3 * Math.sin(i / 5) + 0.02);
+function formatRelativeTime(timestamp: string): string {
+  const ageMs = Date.now() - Date.parse(timestamp);
+  const ageSeconds = Math.max(0, Math.floor(ageMs / 1000));
+  if (ageSeconds < 60) return `${ageSeconds}s ago`;
+  const ageMinutes = Math.floor(ageSeconds / 60);
+  if (ageMinutes < 60) return `${ageMinutes}m ago`;
+  const ageHours = Math.floor(ageMinutes / 60);
+  if (ageHours < 24) return `${ageHours}h ago`;
+  const ageDays = Math.floor(ageHours / 24);
+  return `${ageDays}d ago`;
 }
 
-/** Mock event feed entries — matches web2 spec. */
-const FEED = [
-  {
-    t: '12s ago',
-    subject: 'NIU-214.2',
-    body: 'coding-agent → code.changed (run-42aa)',
-    kind: 'run' as const,
-  },
-  {
-    t: '18s ago',
-    subject: 'NIU-199.2',
-    body: 'qa-agent → qa.completed verdict=pass',
-    kind: 'ok' as const,
-  },
-  {
-    t: '34s ago',
-    subject: 'NIU-183.4',
-    body: 'reviewer → review.completed needs_changes',
-    kind: 'warn' as const,
-  },
-  {
-    t: '1m ago',
-    subject: 'NIU-088.1',
-    body: 'saga published: saga.completed',
-    kind: 'ok' as const,
-  },
-  {
-    t: '2m ago',
-    subject: 'NIU-148.2',
-    body: 'coding-agent → run.attempted verdict=fail',
-    kind: 'crit' as const,
-  },
-  {
-    t: '2m ago',
-    subject: 'NIU-214.3',
-    body: 'review-arbiter → review.arbitrated pending',
-    kind: 'warn' as const,
-  },
-];
+function activitySubject(event: DispatcherActivityEvent): string {
+  const trackerId = event.data.tracker_id;
+  if (typeof trackerId === 'string' && trackerId.trim()) return trackerId;
+  const sagaName = event.data.name;
+  if (typeof sagaName === 'string' && sagaName.trim()) return sagaName;
+  const sagaId = event.data.saga_id;
+  if (typeof sagaId === 'string' && sagaId.trim()) return sagaId;
+  return event.event;
+}
 
-function feedKindToState(kind: string) {
-  if (kind === 'ok') return 'merged' as const;
-  if (kind === 'run') return 'running' as const;
-  if (kind === 'crit') return 'failed' as const;
+function activityState(event: DispatcherActivityEvent) {
+  if (event.event === 'saga.completed') return 'merged' as const;
+  if (event.event === 'saga.failed') return 'failed' as const;
+  if (event.event === 'confidence.updated') return 'review' as const;
+
+  const status = String(event.data.status ?? '').toLowerCase();
+  if (status === 'merged') return 'merged' as const;
+  if (status === 'failed') return 'failed' as const;
+  if (status === 'running') return 'running' as const;
   return 'review' as const;
+}
+
+function activitySummary(event: DispatcherActivityEvent): string {
+  if (event.event === 'confidence.updated') {
+    const eventType = String(event.data.event_type ?? 'confidence.updated').replace(/_/g, ' ');
+    const delta = typeof event.data.delta === 'number' ? event.data.delta : null;
+    const scoreAfter =
+      typeof event.data.score_after === 'number' ? Number(event.data.score_after) : null;
+    const parts = [eventType];
+    if (delta !== null) parts.push(`${delta >= 0 ? '+' : ''}${delta.toFixed(2)}`);
+    if (scoreAfter !== null) parts.push(`→ ${scoreAfter.toFixed(2)}`);
+    return parts.join(' · ');
+  }
+
+  if (event.event === 'run.state_changed') {
+    const status = String(event.data.status ?? 'updated').toLowerCase();
+    const action = String(event.data.action ?? '')
+      .trim()
+      .replace(/_/g, ' ');
+    return action ? `${status} · ${action}` : status;
+  }
+
+  if (event.event.startsWith('saga.')) {
+    return event.event.replace(/^saga\./, '').replace(/\./g, ' ');
+  }
+
+  return event.event.replace(/\./g, ' ');
+}
+
+function linkedSagaForEvent(sagas: Saga[], event: DispatcherActivityEvent): Saga | undefined {
+  const trackerId = typeof event.data.tracker_id === 'string' ? event.data.tracker_id : '';
+  if (trackerId) {
+    const match = sagas.find(
+      (saga) => trackerId === saga.trackerId || trackerId.startsWith(`${saga.trackerId}.`),
+    );
+    if (match) return match;
+  }
+
+  const sagaTrackerId = typeof event.data.saga_id === 'string' ? event.data.saga_id : '';
+  if (sagaTrackerId) {
+    return sagas.find((saga) => saga.trackerId === sagaTrackerId || saga.id === sagaTrackerId);
+  }
+
+  return undefined;
+}
+
+function sagaState(saga: Saga, latestRun?: Run): FeedRow['state'] {
+  if (latestRun) {
+    if (latestRun.status === 'merged') return 'merged';
+    if (latestRun.status === 'failed') return 'failed';
+    if (latestRun.status === 'running') return 'running';
+    return 'review';
+  }
+
+  if (saga.status === 'complete') return 'merged';
+  if (saga.status === 'failed') return 'failed';
+  return 'running';
+}
+
+function fallbackFeedRows(sagas: Saga[], phasesBySagaId: Map<string, Phase[]>): FeedRow[] {
+  return sagas
+    .map((saga) => {
+      const phases = phasesBySagaId.get(saga.id) ?? [];
+      const latestRun = phases
+        .flatMap((phase) => phase.runs)
+        .slice()
+        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+      const timestamp = latestRun?.updatedAt ?? saga.createdAt;
+      const summary = latestRun
+        ? `${latestRun.status} · ${latestRun.name}`
+        : saga.phaseSummary.total > 0
+          ? `${saga.phaseSummary.completed}/${saga.phaseSummary.total} stages committed`
+          : 'created · awaiting decomposition';
+      return {
+        id: `fallback-${saga.id}`,
+        timestamp,
+        state: sagaState(saga, latestRun),
+        summary,
+        subject: saga.trackerId,
+        sagaId: saga.id,
+      } satisfies FeedRow;
+    })
+    .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
+    .slice(0, 6);
 }
 
 export function DashboardPage() {
@@ -119,8 +210,13 @@ export function DashboardPage() {
 function DashboardContent() {
   const navigate = useNavigate();
   const ting = useService<ITingService>('ting');
+  const dispatcher = useService<IDispatcherService>('ting.dispatcher');
   const { data: sagas, isLoading, isError, error } = useSagas();
   const { data: dispatcherState } = useDispatcherState();
+  const { data: activityEvents = [] } = useQuery({
+    queryKey: ['ting', 'dispatcher', 'activity', 20],
+    queryFn: () => dispatcher.getActivityLog(20),
+  });
   const { toast } = useToast();
 
   const phaseQueries = useQueries({
@@ -130,16 +226,74 @@ function DashboardContent() {
     })),
   });
 
-  const allRuns = phaseQueries.flatMap((q) => q.data ?? []).flatMap((p) => p.runs);
+  const allRuns = useMemo(
+    () => phaseQueries.flatMap((q) => q.data ?? []).flatMap((phase) => phase.runs),
+    [phaseQueries],
+  );
+  const phasesBySagaId = useMemo(
+    () =>
+      new Map(
+        phaseQueries
+          .flatMap((query) => query.data ?? [])
+          .reduce<Array<[string, Phase[]]>>((pairs, phase) => {
+            const existing = pairs.find(([sagaId]) => sagaId === phase.sagaId);
+            if (existing) {
+              existing[1].push(phase);
+            } else {
+              pairs.push([phase.sagaId, [phase]]);
+            }
+            return pairs;
+          }, []),
+      ),
+    [phaseQueries],
+  );
   const runningRuns = allRuns.filter((r) => r.status === 'running').length;
   const reviewRuns = allRuns.filter((r) => r.status === 'review').length;
-
+  const activeRuns = allRuns.filter((r) => ACTIVE_RUN_STATUSES.has(r.status));
   const activeSagas = (sagas ?? []).filter((s) => s.status === 'active');
 
-  const throughput = useMemo(mockThroughput, []);
-  const confidence = useMemo(mockConfidence, []);
-  const throughputTotal = throughput.reduce((a, b) => a + b, 0);
-  const latestConfidence = Math.round((confidence.at(-1) ?? 0) * 100);
+  const merged24h = useMemo(
+    () => bucketRunsByHour(allRuns, (run) => run.status === 'merged'),
+    [allRuns],
+  );
+  const completed24h = useMemo(
+    () => bucketRunsByHour(allRuns, (run) => TERMINAL_RUN_STATUSES.has(run.status)),
+    [allRuns],
+  );
+  const active24h = useMemo(
+    () => bucketRunsByHour(allRuns, (run) => ACTIVE_RUN_STATUSES.has(run.status)),
+    [allRuns],
+  );
+
+  const merged24hCount = merged24h.reduce((sum, value) => sum + value, 0);
+  const completed24hCount = completed24h.reduce((sum, value) => sum + value, 0);
+  const active24hUpdates = active24h.reduce((sum, value) => sum + value, 0);
+  const averageConfidence = activeSagas.length
+    ? Math.round(activeSagas.reduce((sum, saga) => sum + saga.confidence, 0) / activeSagas.length)
+    : 0;
+  const lowConfidenceCount = activeSagas.filter((saga) => saga.confidence < 50).length;
+  const escalatedRuns = allRuns.filter((run) => run.status === 'escalated').length;
+  const freshestRunUpdate = allRuns
+    .map((run) => Date.parse(run.updatedAt))
+    .filter(Number.isFinite)
+    .sort((left, right) => right - left)[0];
+
+  const feed = useMemo<FeedRow[]>(() => {
+    if (activityEvents.length > 0) {
+      return [...activityEvents]
+        .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
+        .slice(0, 6)
+        .map((event) => ({
+          id: event.id,
+          timestamp: event.timestamp,
+          state: activityState(event),
+          summary: activitySummary(event),
+          subject: activitySubject(event),
+          sagaId: linkedSagaForEvent(sagas ?? [], event)?.id,
+        }));
+    }
+    return fallbackFeedRows(sagas ?? [], phasesBySagaId);
+  }, [activityEvents, phasesBySagaId, sagas]);
 
   if (isLoading) return <LoadingState label="Loading dashboard…" />;
   if (isError)
@@ -155,7 +309,6 @@ function DashboardContent() {
 
   return (
     <div className="ting-dash">
-      {/* ── Dispatcher stats bar ──────────────────── */}
       {dispatcherState && (
         <div
           className="ting-dash__topbar-stats ting-dash__full"
@@ -166,7 +319,7 @@ function DashboardContent() {
           </span>
           <span className="ting-dash__stat-sep" aria-hidden="true" />
           <span className="ting-dash__stat">
-            threshold <strong>{(dispatcherState.threshold / 100).toFixed(2)}</strong>
+            threshold <strong>{dispatcherState.threshold.toFixed(2)}</strong>
           </span>
           <span className="ting-dash__stat-sep" aria-hidden="true" />
           <span className="ting-dash__stat">
@@ -178,7 +331,6 @@ function DashboardContent() {
         </div>
       )}
 
-      {/* ── KPI cards (4 columns) ─────────────────── */}
       <div className="ting-kpi ting-kpi--accent">
         <div className="ting-kpi__label">Active sagas</div>
         <div className="ting-kpi__val">
@@ -187,7 +339,7 @@ function DashboardContent() {
         </div>
         <div className="ting-kpi__sub">
           <StateDot state="running" pulse />
-          dispatched this hour: <span>{runningRuns + reviewRuns}</span>
+          current runs: <span>{activeRuns.length}</span>
         </div>
       </div>
 
@@ -197,12 +349,10 @@ function DashboardContent() {
           {runningRuns}
           <span className="ting-kpi__unit">running</span>
         </div>
-        <Sparkline
-          values={throughput.map((v) => v / Math.max(...throughput))}
-          id="throughput"
-          width={220}
-          className="ting-kpi__spark"
-        />
+        <div className="ting-kpi__sub">
+          <span>review queue: {reviewRuns}</span>
+          <span>24h updates: {active24hUpdates}</span>
+        </div>
       </div>
 
       <div
@@ -214,23 +364,23 @@ function DashboardContent() {
         <div className="ting-kpi__val">{reviewRuns}</div>
         <div className="ting-kpi__sub">
           <span style={{ color: 'var(--brand-300)' }}>
-            {allRuns.filter((r) => r.status === 'escalated').length} escalated · oldest 18m
+            {escalatedRuns} escalated · newest{' '}
+            {freshestRunUpdate
+              ? formatRelativeTime(new Date(freshestRunUpdate).toISOString())
+              : '—'}
           </span>
         </div>
       </div>
 
       <div className="ting-kpi">
         <div className="ting-kpi__label">Merged · 24h</div>
-        <div className="ting-kpi__val">{allRuns.filter((r) => r.status === 'merged').length}</div>
-        <Sparkline
-          values={[2, 3, 3, 4, 5, 6, 7, 9, 10, 11, 11, 12].map((v) => v / 12)}
-          id="merged"
-          width={220}
-          className="ting-kpi__spark"
-        />
+        <div className="ting-kpi__val">
+          {merged24hCount}
+          <span className="ting-kpi__unit">runs</span>
+        </div>
+        <Sparkline values={merged24h} id="merged" width={220} className="ting-kpi__spark" />
       </div>
 
-      {/* ── Saga stream ───────────────────────────── */}
       <div className="ting-dash__row-title">
         <h2>Saga stream</h2>
         <button className="ting-btn" type="button" onClick={handleViewAll}>
@@ -238,8 +388,8 @@ function DashboardContent() {
         </button>
       </div>
 
-      {activeSagas.slice(0, 4).map((saga, i) => {
-        const phases = phaseQueries[i]?.data ?? [];
+      {activeSagas.slice(0, 4).map((saga, index) => {
+        const phases = phaseQueries[index]?.data ?? [];
         const cells = sagaPipe(phases);
         return (
           <div
@@ -248,7 +398,7 @@ function DashboardContent() {
             role="button"
             tabIndex={0}
             onClick={() => openSaga(saga)}
-            onKeyDown={(e) => e.key === 'Enter' && openSaga(saga)}
+            onKeyDown={(event) => event.key === 'Enter' && openSaga(saga)}
           >
             <div>
               <div className="ting-saga-card__name">{saga.name}</div>
@@ -278,7 +428,6 @@ function DashboardContent() {
         );
       })}
 
-      {/* ── Live flock ────────────────────────────── */}
       <div className="ting-dash__row-title">
         <h2>Live flock</h2>
         <span className="ting-eyebrow">sleipnir events · last 5m</span>
@@ -297,45 +446,47 @@ function DashboardContent() {
         />
       </div>
 
-      {/* ── Event feed ────────────────────────────── */}
       <div className="ting-dash__wide">
         <div className="ting-sec-head">
           <span className="ting-sec-head__title">Event feed</span>
           <span className="ting-eyebrow" style={{ fontFamily: 'var(--font-mono)' }}>
-            sleipnir:*
+            dispatcher log · run updates
           </span>
         </div>
-        <div className="ting-run-feed">
-          {FEED.map((f, i) => {
-            const parentSaga = (sagas ?? []).find((s) => f.subject.startsWith(s.trackerId));
-            return (
-              <div key={i} className="ting-feed-row">
-                <StateDot state={feedKindToState(f.kind)} />
-                <span className="ting-feed-row__time">{f.t}</span>
-                <span>{f.body}</span>
-                <span className="ting-feed-row__subject">{f.subject}</span>
+        {feed.length === 0 ? (
+          <div className="ting-run-feed ting-run-feed--empty">
+            No recent Ting activity yet. Run state changes and saga events will show up here once
+            the dispatcher or review flow emits them.
+          </div>
+        ) : (
+          <div className="ting-run-feed">
+            {feed.map((entry) => (
+              <div key={entry.id} className="ting-feed-row">
+                <StateDot state={entry.state} />
+                <span className="ting-feed-row__time">{formatRelativeTime(entry.timestamp)}</span>
+                <span>{entry.summary}</span>
+                <span className="ting-feed-row__subject">{entry.subject}</span>
                 <button
                   className="ting-feed-row__link"
                   type="button"
-                  disabled={!parentSaga}
-                  title={parentSaga ? `Open ${parentSaga.trackerId}` : 'No linked saga'}
+                  disabled={!entry.sagaId}
+                  title={entry.sagaId ? `Open ${entry.subject}` : 'No linked saga'}
                   onClick={() =>
-                    parentSaga &&
+                    entry.sagaId &&
                     void navigate({
                       to: '/ting/sagas/$sagaId',
-                      params: { sagaId: parentSaga.id },
+                      params: { sagaId: entry.sagaId },
                     })
                   }
                 >
                   ↗
                 </button>
               </div>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* ── Throughput ────────────────────────────── */}
       <div className="ting-dash__row-title">
         <h2>Throughput</h2>
       </div>
@@ -346,11 +497,11 @@ function DashboardContent() {
           className="ting-kpi__val"
           style={{ fontSize: 18, display: 'flex', alignItems: 'baseline', gap: 8 }}
         >
-          {throughputTotal}
+          {completed24hCount}
           <span className="ting-kpi__unit">· 24h</span>
         </div>
         <Sparkline
-          values={throughput.map((v) => v / Math.max(...throughput))}
+          values={completed24h}
           id="throughput-full"
           width={520}
           height={60}
@@ -359,17 +510,31 @@ function DashboardContent() {
       </div>
 
       <div className="ting-kpi ting-dash__wide">
-        <div className="ting-kpi__label">Saga confidence</div>
-        <div className="ting-kpi__val" style={{ fontSize: 18 }}>
-          {latestConfidence}%<span className="ting-kpi__unit">· now</span>
+        <div className="ting-kpi__label">Confidence overview</div>
+        <div
+          className="ting-kpi__val"
+          style={{ fontSize: 18, display: 'flex', alignItems: 'baseline', gap: 8 }}
+        >
+          {averageConfidence}%<span className="ting-kpi__unit">average active saga confidence</span>
         </div>
-        <Sparkline
-          values={confidence}
-          id="confidence-full"
-          width={520}
-          height={60}
-          className="ting-kpi__spark ting-kpi__spark--wide"
-        />
+        <div className="ting-kpi__stats-grid">
+          <div className="ting-kpi__stat-chip">
+            <span className="ting-kpi__stat-chip-label">active sagas</span>
+            <strong>{activeSagas.length}</strong>
+          </div>
+          <div className="ting-kpi__stat-chip">
+            <span className="ting-kpi__stat-chip-label">low confidence</span>
+            <strong>{lowConfidenceCount}</strong>
+          </div>
+          <div className="ting-kpi__stat-chip">
+            <span className="ting-kpi__stat-chip-label">review queue</span>
+            <strong>{reviewRuns}</strong>
+          </div>
+          <div className="ting-kpi__stat-chip">
+            <span className="ting-kpi__stat-chip-label">escalated</span>
+            <strong>{escalatedRuns}</strong>
+          </div>
+        </div>
       </div>
     </div>
   );

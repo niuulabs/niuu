@@ -87,10 +87,11 @@
 .ting-kpi__spark {
   display: block;
   margin-top: 12px;
-  max-width: 100%;
+  width: 100%;
+  height: 28px;
 }
 .ting-kpi__spark--wide {
-  min-width: 100%;
+  height: 60px;
 }
 .ting-kpi--accent {
   border-color: color-mix(in srgb, var(--color-brand) 25%, transparent);
@@ -200,6 +201,15 @@
   flex-direction: column;
   gap: 6px;
 }
+.ting-run-feed--empty {
+  padding: 14px 16px;
+  background: var(--color-bg-secondary);
+  border: 1px dashed var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+}
 .ting-feed-row {
   display: grid;
   grid-template-columns: 10px auto 1fr auto auto;
@@ -247,6 +257,35 @@
 .ting-feed-row__link:disabled {
   cursor: default;
   opacity: 0.3;
+}
+
+.ting-kpi__stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-top: 14px;
+}
+
+.ting-kpi__stat-chip {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-bg-secondary) 92%, black);
+}
+
+.ting-kpi__stat-chip-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.ting-kpi__stat-chip strong {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--color-text-primary);
 }
 
 /* ── Button helpers ────────────────────────────── */

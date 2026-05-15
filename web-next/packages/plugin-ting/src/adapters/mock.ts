@@ -17,6 +17,7 @@ import type {
   DispatchResult,
   ITingSettingsService,
   IAuditLogService,
+  DispatcherActivityEvent,
   CommitSagaRequest,
   PlanSession,
   ExtractedStructure,
@@ -1292,6 +1293,52 @@ export function createMockTingService(): ITingService {
 export function createMockDispatcherService(): IDispatcherService {
   let state: DispatcherState = { ...SEED_DISPATCHER_STATE };
   const log: string[] = ['[mock] Dispatcher initialized'];
+  const activityLog: DispatcherActivityEvent[] = [
+    {
+      id: 'evt-1',
+      event: 'run.state_changed',
+      ownerId: 'dev-user',
+      timestamp: '2026-01-20T14:04:00Z',
+      data: {
+        tracker_id: 'NIU-214.2',
+        status: 'running',
+        action: 'dispatch',
+      },
+    },
+    {
+      id: 'evt-2',
+      event: 'confidence.updated',
+      ownerId: 'dev-user',
+      timestamp: '2026-01-20T14:01:00Z',
+      data: {
+        tracker_id: 'NIU-199.2',
+        event_type: 'ci_pass',
+        delta: 0.1,
+        score_after: 0.87,
+      },
+    },
+    {
+      id: 'evt-3',
+      event: 'run.state_changed',
+      ownerId: 'dev-user',
+      timestamp: '2026-01-20T13:58:00Z',
+      data: {
+        tracker_id: 'NIU-183.4',
+        status: 'review',
+        action: 'review_requested',
+      },
+    },
+    {
+      id: 'evt-4',
+      event: 'saga.completed',
+      ownerId: 'dev-user',
+      timestamp: '2026-01-20T13:52:00Z',
+      data: {
+        saga_id: '00000000-0000-0000-0000-000000000001',
+        name: 'Auth Rewrite',
+      },
+    },
+  ];
 
   return {
     async getState() {
@@ -1313,6 +1360,10 @@ export function createMockDispatcherService(): IDispatcherService {
 
     async getLog() {
       return [...log];
+    },
+
+    async getActivityLog(limit = 100) {
+      return activityLog.slice(0, limit);
     },
   };
 }

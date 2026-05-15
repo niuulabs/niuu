@@ -459,7 +459,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
             onClear={saga.workflowId ? () => handleAssignWorkflow(null) : undefined}
           />
           <StageProgressRail phases={allPhases} />
-          <ConfidenceDriftCard sagaId={saga.id} confidence={saga.confidence} />
+          <ConfidenceDriftCard confidence={saga.confidence} phases={phases ?? []} />
         </div>
       </div>
       {showWorkflowModal && (

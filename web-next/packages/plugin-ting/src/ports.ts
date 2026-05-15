@@ -160,6 +160,15 @@ export interface IDispatcherService {
   setThreshold(threshold: number): Promise<void>;
   setAutoContinue(autoContinue: boolean): Promise<void>;
   getLog(): Promise<string[]>;
+  getActivityLog(limit?: number): Promise<DispatcherActivityEvent[]>;
+}
+
+export interface DispatcherActivityEvent {
+  id: string;
+  event: string;
+  data: Record<string, unknown>;
+  ownerId: string;
+  timestamp: string;
 }
 
 // ---------------------------------------------------------------------------

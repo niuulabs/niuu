@@ -14,6 +14,7 @@ import { useRouterState } from '@tanstack/react-router';
 import { TopbarChip } from '@niuulabs/ui';
 import { useDispatcherState } from './useDispatcherState';
 import { SettingsTopbar } from './settings/SettingsTopbar';
+import { formatThreshold } from './thresholdDisplay';
 
 function DispatcherStats() {
   const { data: state } = useDispatcherState();
@@ -26,7 +27,7 @@ function DispatcherStats() {
     );
   }
 
-  const thresholdDisplay = (state.threshold / 100).toFixed(2);
+  const thresholdDisplay = formatThreshold(state.threshold);
 
   return (
     <div className="niuu-flex niuu-items-center niuu-gap-2" data-testid="ting-topbar">

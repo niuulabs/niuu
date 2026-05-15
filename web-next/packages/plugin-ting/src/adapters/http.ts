@@ -25,6 +25,7 @@ import type {
   IWorkflowService,
   ITingSettingsService,
   IAuditLogService,
+  DispatcherActivityEvent,
   CommitSagaRequest,
   PlanSession,
   ExtractedStructure,
@@ -111,6 +112,19 @@ interface RawDispatcherState {
   max_concurrent_runs: number;
   auto_continue: boolean;
   updated_at: string;
+}
+
+interface RawDispatcherActivityEvent {
+  id: string;
+  event: string;
+  data: Record<string, unknown>;
+  owner_id: string;
+  timestamp: string;
+}
+
+interface RawDispatcherActivityLog {
+  events: RawDispatcherActivityEvent[];
+  total: number;
 }
 
 interface RawSessionInfo {
@@ -331,6 +345,16 @@ function toSessionInfo(raw: RawSessionInfo): SessionInfo {
     runName: raw.run_name,
     sagaName: raw.saga_name,
     clusterName: raw.cluster_name,
+  };
+}
+
+function toDispatcherActivityEvent(raw: RawDispatcherActivityEvent): DispatcherActivityEvent {
+  return {
+    id: raw.id,
+    event: raw.event,
+    data: raw.data,
+    ownerId: raw.owner_id,
+    timestamp: raw.timestamp,
   };
 }
 
@@ -654,6 +678,11 @@ export function buildDispatcherHttpAdapter(client: ApiClient): IDispatcherServic
 
     async getLog() {
       return client.get<string[]>('/dispatcher/log');
+    },
+
+    async getActivityLog(limit = 100) {
+      const raw = await client.get<RawDispatcherActivityLog>(`/dispatcher/log?limit=${limit}`);
+      return raw.events.map(toDispatcherActivityEvent);
     },
   };
 }

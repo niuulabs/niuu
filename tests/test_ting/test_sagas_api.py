@@ -100,7 +100,7 @@ def _dev_settings() -> MagicMock:
     """Create mock settings with anonymous dev enabled for test apps."""
     s = MagicMock()
     s.auth = AuthConfig(allow_anonymous_dev=True)
-    s.dispatch.flock.default_workflow_name = "Ting Run Flow"
+    s.dispatch.flock.default_workflow_name = "Ting Run Flow + Security + Memory Curation"
     return s
 
 
@@ -550,12 +550,12 @@ class TestAssignWorkflow:
     ) -> None:
         workflow = WorkflowDefinition(
             id=uuid4(),
-            name="Ting Run Flow",
+            name="Ting Run Flow + Security + Memory Curation",
             description="",
             version="1.0.0",
             scope=WorkflowScope.SYSTEM,
             owner_id=None,
-            definition_yaml="name: Ting Run Flow",
+            definition_yaml="name: Ting Run Flow + Security + Memory Curation",
             graph={
                 "nodes": [
                     {

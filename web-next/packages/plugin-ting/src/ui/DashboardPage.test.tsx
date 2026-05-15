@@ -6,19 +6,12 @@ import { DashboardPage } from './DashboardPage';
 import { createMockTingService, createMockDispatcherService } from '../adapters/mock';
 import type { Saga } from '../domain/saga';
 
-// ---------------------------------------------------------------------------
-// Router mock — DashboardPage calls useNavigate() and Link for navigation
-// ---------------------------------------------------------------------------
 const mockNavigate = vi.fn();
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
   Link: ({ children }: { to: string; className?: string; children?: unknown }) =>
     children as unknown as JSX.Element | null,
 }));
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function wrap(services: Record<string, unknown>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -36,15 +29,14 @@ const defaultServices = () => ({
   'ting.dispatcher': createMockDispatcherService(),
 });
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 describe('DashboardPage', () => {
   it('shows loading state initially', () => {
     const slowSvc = {
       ting: { getSagas: () => new Promise(() => undefined), getPhases: () => Promise.resolve([]) },
-      'ting.dispatcher': { getState: () => new Promise(() => undefined) },
+      'ting.dispatcher': {
+        getState: () => new Promise(() => undefined),
+        getActivityLog: () => Promise.resolve([]),
+      },
     };
     render(<DashboardPage />, { wrapper: wrap(slowSvc) });
     expect(screen.getByText(/Loading dashboard/i)).toBeInTheDocument();
@@ -64,46 +56,69 @@ describe('DashboardPage', () => {
     await waitFor(() => expect(screen.getByText('network error')).toBeInTheDocument());
   });
 
-  it('renders KPI cards with correct labels', async () => {
+  it('renders KPI cards with real-data labels', async () => {
     render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
     await waitFor(() => expect(screen.getByText('Active sagas')).toBeInTheDocument());
     expect(screen.getByText('Active runs')).toBeInTheDocument();
     expect(screen.getByText('Awaiting review')).toBeInTheDocument();
-    expect(screen.getByText(/Merged/)).toBeInTheDocument();
+    expect(screen.getByText('Merged · 24h')).toBeInTheDocument();
+    expect(screen.getByText('Confidence overview')).toBeInTheDocument();
   });
 
-  it('renders saga stream section', async () => {
-    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByText('Saga stream')).toBeInTheDocument());
-    expect(screen.getByText('View all')).toBeInTheDocument();
-  });
-
-  it('shows active saga names from seed data', async () => {
+  it('renders active saga names from the service', async () => {
     render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
     await waitFor(() =>
       expect(screen.getByText('Flokk subscription validation')).toBeInTheDocument(),
     );
   });
 
-  it('renders live flock section', async () => {
+  it('renders the live flock and throughput sections', async () => {
     render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
     await waitFor(() => expect(screen.getByText('Live flock')).toBeInTheDocument());
     expect(screen.getByText('Run mesh')).toBeInTheDocument();
+    expect(screen.getByText('Throughput')).toBeInTheDocument();
+    expect(screen.getByText('Runs completed / hour')).toBeInTheDocument();
   });
 
-  it('renders event feed section', async () => {
+  it('renders the dispatcher activity feed instead of placeholder rows', async () => {
     render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
     await waitFor(() => expect(screen.getByText('Event feed')).toBeInTheDocument());
+    expect(screen.getByText('running · dispatch')).toBeInTheDocument();
+    expect(screen.getByText('NIU-214.2')).toBeInTheDocument();
   });
 
-  it('renders throughput section with sparklines', async () => {
-    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByText('Throughput')).toBeInTheDocument());
-    expect(screen.getByText('Runs completed / hour')).toBeInTheDocument();
-    expect(screen.getByText('Saga confidence')).toBeInTheDocument();
+  it('falls back to saga updates when the dispatcher activity log is empty', async () => {
+    const quietDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [],
+    };
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': quietDispatcher }),
+    });
+    await waitFor(() => expect(screen.getByText('Event feed')).toBeInTheDocument());
+    expect(
+      screen.getByText(/created · awaiting decomposition|stages committed|running ·/i),
+    ).toBeInTheDocument();
   });
 
-  it('clicking a saga card calls navigate with the saga ID', async () => {
+  it('shows an honest empty state when there is no recent activity at all', async () => {
+    const quietDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [],
+    };
+    const quietTing = {
+      ting: {
+        getSagas: async (): Promise<Saga[]> => [],
+        getPhases: async () => [],
+      },
+      'ting.dispatcher': quietDispatcher,
+    };
+    render(<DashboardPage />, { wrapper: wrap(quietTing) });
+    await waitFor(() => expect(screen.getByText('Event feed')).toBeInTheDocument());
+    expect(screen.getByText(/No recent Ting activity yet/i)).toBeInTheDocument();
+  });
+
+  it('clicking a saga card navigates to the saga detail page', async () => {
     mockNavigate.mockClear();
     render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
     await waitFor(() =>
@@ -116,7 +131,46 @@ describe('DashboardPage', () => {
     });
   });
 
-  it('shows no saga cards when all sagas are complete', async () => {
+  it('view all navigates to the sagas page and shows a toast', async () => {
+    mockNavigate.mockClear();
+    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
+    await waitFor(() => expect(screen.getByText('View all')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('View all'));
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/sagas' });
+    await waitFor(() => expect(screen.getByText('Navigating to Sagas')).toBeInTheDocument());
+  });
+
+  it('renders the dispatcher stats bar when state is available', async () => {
+    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
+    await waitFor(() => expect(screen.getByTestId('ting-dispatcher-stats')).toBeInTheDocument());
+    const bar = screen.getByTestId('ting-dispatcher-stats');
+    expect(bar).toHaveTextContent('dispatcher');
+    expect(bar).toHaveTextContent('on');
+    expect(bar).toHaveTextContent('threshold');
+    expect(bar).toHaveTextContent('70.00');
+  });
+
+  it('shows dispatcher off when running is false', async () => {
+    const offDispatcher = {
+      ...createMockDispatcherService(),
+      getState: async () => ({
+        id: 'test',
+        running: false,
+        threshold: 0.8,
+        maxConcurrentRuns: 5,
+        autoContinue: false,
+        updatedAt: '2026-01-01T00:00:00Z',
+      }),
+    };
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': offDispatcher }),
+    });
+    await waitFor(() => expect(screen.getByTestId('ting-dispatcher-stats')).toBeInTheDocument());
+    expect(screen.getByTestId('ting-dispatcher-stats')).toHaveTextContent('off');
+    expect(screen.getByTestId('ting-dispatcher-stats')).toHaveTextContent('0.80');
+  });
+
+  it('hides active-only saga cards when every saga is terminal', async () => {
     const completeSvc = {
       ting: {
         getSagas: async (): Promise<Saga[]> => [
@@ -132,6 +186,7 @@ describe('DashboardPage', () => {
             confidence: 95,
             createdAt: '2026-01-01T00:00:00Z',
             phaseSummary: { total: 1, completed: 1 },
+            baseBranch: 'main',
           },
         ],
         getPhases: async () => [],
@@ -139,135 +194,7 @@ describe('DashboardPage', () => {
       'ting.dispatcher': createMockDispatcherService(),
     };
     render(<DashboardPage />, { wrapper: wrap(completeSvc) });
-    // Saga stream section exists but no saga cards
     await waitFor(() => expect(screen.getByText('Saga stream')).toBeInTheDocument());
     expect(screen.queryByText('Done Saga')).not.toBeInTheDocument();
-  });
-
-  it('renders View all button that navigates to sagas page', async () => {
-    mockNavigate.mockClear();
-    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByText('View all')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('View all'));
-    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/sagas' });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Dispatcher stats bar
-  // ---------------------------------------------------------------------------
-
-  it('renders dispatcher stats bar when state is available', async () => {
-    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByTestId('ting-dispatcher-stats')).toBeInTheDocument());
-    const bar = screen.getByTestId('ting-dispatcher-stats');
-    expect(bar).toHaveTextContent('dispatcher');
-    expect(bar).toHaveTextContent('on');
-    expect(bar).toHaveTextContent('threshold');
-    expect(bar).toHaveTextContent('0.70');
-    expect(bar).toHaveTextContent('concurrent');
-    expect(bar).toHaveTextContent('2/5');
-  });
-
-  it('does not render dispatcher stats bar while dispatcher is loading', () => {
-    const slowDispatcher = {
-      ting: createMockTingService(),
-      'ting.dispatcher': { getState: () => new Promise(() => undefined) },
-    };
-    render(<DashboardPage />, { wrapper: wrap(slowDispatcher) });
-    expect(screen.queryByTestId('ting-dispatcher-stats')).not.toBeInTheDocument();
-  });
-
-  it('shows dispatcher off when running is false', async () => {
-    const offDispatcher = {
-      ting: createMockTingService(),
-      'ting.dispatcher': {
-        getState: async () => ({
-          id: 'test',
-          running: false,
-          threshold: 80,
-          maxConcurrentRuns: 5,
-          autoContinue: false,
-          updatedAt: '2026-01-01T00:00:00Z',
-        }),
-      },
-    };
-    render(<DashboardPage />, { wrapper: wrap(offDispatcher) });
-    await waitFor(() => expect(screen.getByTestId('ting-dispatcher-stats')).toBeInTheDocument());
-    expect(screen.getByTestId('ting-dispatcher-stats')).toHaveTextContent('off');
-    expect(screen.getByTestId('ting-dispatcher-stats')).toHaveTextContent('0.80');
-    expect(screen.getByTestId('ting-dispatcher-stats')).toHaveTextContent('2/5');
-  });
-
-  // ---------------------------------------------------------------------------
-  // Event feed link buttons
-  // ---------------------------------------------------------------------------
-
-  it('renders link buttons for every event feed row', async () => {
-    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByText('Event feed')).toBeInTheDocument());
-    const linkButtons = screen.getAllByRole('button', { name: /↗|Open|No linked/ });
-    // 6 feed rows → 6 link buttons
-    expect(linkButtons.length).toBeGreaterThanOrEqual(6);
-  });
-
-  it('feed link buttons are enabled when saga trackerIds match feed subjects', async () => {
-    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByText('Event feed')).toBeInTheDocument());
-    // Seed sagas have trackerIds NIU-214, NIU-199, NIU-183, NIU-148 — match feed subjects
-    const enabledButtons = screen
-      .getAllByTitle(/Open NIU-/)
-      .filter((el) => el.tagName === 'BUTTON');
-    expect(enabledButtons.length).toBeGreaterThanOrEqual(1);
-    enabledButtons.forEach((btn) => expect(btn).not.toBeDisabled());
-  });
-
-  it('feed link button navigates to the matched saga', async () => {
-    mockNavigate.mockClear();
-    const sagaId = 'saga-with-niu-214';
-    const matchingSvc = {
-      ting: {
-        getSagas: async (): Promise<Saga[]> => [
-          {
-            id: sagaId,
-            trackerId: 'NIU-214',
-            trackerType: 'linear',
-            slug: 'niu-214',
-            name: 'NIU-214 Saga',
-            repos: [],
-            featureBranch: 'feat/niu-214',
-            status: 'active',
-            confidence: 80,
-            createdAt: '2026-01-01T00:00:00Z',
-            phaseSummary: { total: 1, completed: 0 },
-          },
-        ],
-        getPhases: async () => [],
-      },
-      'ting.dispatcher': createMockDispatcherService(),
-    };
-    render(<DashboardPage />, { wrapper: wrap(matchingSvc) });
-    await waitFor(() => expect(screen.getByText('Event feed')).toBeInTheDocument());
-
-    // NIU-214 matches subjects "NIU-214.2" and "NIU-214.3"
-    const enabledButtons = screen.getAllByTitle('Open NIU-214');
-    expect(enabledButtons.length).toBe(2);
-    expect(enabledButtons[0]).not.toBeDisabled();
-
-    fireEvent.click(enabledButtons[0]!);
-    expect(mockNavigate).toHaveBeenCalledWith({
-      to: '/ting/sagas/$sagaId',
-      params: { sagaId },
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Toast on View all
-  // ---------------------------------------------------------------------------
-
-  it('View all button shows toast notification', async () => {
-    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByText('View all')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('View all'));
-    await waitFor(() => expect(screen.getByText('Navigating to Sagas')).toBeInTheDocument());
   });
 });

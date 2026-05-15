@@ -298,7 +298,7 @@ class TestBuildSpawnRequestFlockEnabled:
         item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo-a")
         workflow_snapshot = {
             "workflow_id": str(uuid4()),
-            "name": "Ting Run Flow + Security",
+            "name": "Ting Run Flow + Security + Memory Curation",
             "version": "1.0.0",
             "graph": {
                 "nodes": [

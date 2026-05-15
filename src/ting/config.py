@@ -460,7 +460,7 @@ class FlockConfig(BaseModel):
         ),
     )
     default_workflow_name: str = Field(
-        default="Ting Run Flow",
+        default="Ting Run Flow + Security + Memory Curation",
         description=(
             "System Ting workflow automatically assigned to flock-enabled sagas "
             "when no explicit workflow is selected."

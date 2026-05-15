@@ -148,7 +148,7 @@ describe('SagaDetailPage', () => {
       expect(screen.getByRole('region', { name: /workflow/i })).toBeInTheDocument(),
     );
     expect(screen.getByRole('region', { name: /stage progress/i })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: /confidence drift/i })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: /confidence signals/i })).toBeInTheDocument();
   });
 
   it('shows empty state when saga has no phases', async () => {

@@ -61,17 +61,28 @@ async def seed_system_workflows(
     *,
     path: Path = BUNDLED_SYSTEM_WORKFLOWS_PATH,
 ) -> list[WorkflowDefinition]:
-    """Upsert bundled system workflows into the workflow catalog."""
+    """Upsert bundled system workflows into the workflow catalog.
+
+    The bundled YAML is the source of truth for system workflows. Any older
+    system workflow rows that are no longer present in the bundle, or duplicate
+    rows left behind by earlier seeds, are removed during this pass.
+    """
     seeds = load_system_workflows(path)
+    existing = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
+    seed_by_id = {workflow.id: workflow for workflow in seeds}
+
+    for workflow in existing:
+        if workflow.id not in seed_by_id:
+            await repo.delete_workflow(workflow.id)
+
     if not seeds:
         return []
 
-    existing = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
-    existing_by_name = {workflow.name: workflow for workflow in existing}
+    existing_by_id = {workflow.id: workflow for workflow in existing}
 
     saved: list[WorkflowDefinition] = []
     for seed in seeds:
-        current = existing_by_name.get(seed.name)
+        current = existing_by_id.get(seed.id)
         if current is not None:
             seed = replace(
                 seed,

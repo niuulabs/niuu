@@ -1,74 +1,108 @@
-import { Sparkline } from '@niuulabs/ui';
-
-const HISTORY_COUNT = 10;
-const SCOPE_ADHERENCE = 0.94;
-const TEST_COVERAGE = '98%';
-
-/**
- * Generate a deterministic confidence history array from a saga ID.
- * Uses a sine-based walk so the sparkline looks plausible and consistent
- * across renders, matching the web2 reference pattern.
- */
-function generateHistory(sagaId: string): number[] {
-  let h = 0;
-  for (const c of sagaId) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return Array.from({ length: HISTORY_COUNT }, (_, i) => {
-    const progress = i / (HISTORY_COUNT - 1);
-    const noise = Math.sin(h + i * 2.3) * 0.06;
-    return Math.max(0.05, Math.min(0.99, 0.4 + progress * 0.42 + noise));
-  });
-}
+import type { Phase } from '../domain/saga';
 
 interface ConfidenceDriftCardProps {
-  sagaId: string;
-  /** Current aggregate confidence score (0–100). */
   confidence: number;
+  phases: Phase[];
 }
 
-export function ConfidenceDriftCard({ sagaId, confidence }: ConfidenceDriftCardProps) {
-  const history = generateHistory(sagaId);
-  const startVal = history[0] ?? 0;
-  const currentVal = confidence / 100;
-  // Splice actual current confidence into the last data point for accuracy.
-  const values = [...history.slice(0, -1), currentVal];
+function formatRelativeTime(timestamp: string | null): string {
+  if (!timestamp) return '—';
+  const ageMs = Date.now() - Date.parse(timestamp);
+  const ageMinutes = Math.max(0, Math.floor(ageMs / 60_000));
+  if (ageMinutes < 60) return `${ageMinutes}m ago`;
+  const ageHours = Math.floor(ageMinutes / 60);
+  if (ageHours < 24) return `${ageHours}h ago`;
+  const ageDays = Math.floor(ageHours / 24);
+  return `${ageDays}d ago`;
+}
+
+export function ConfidenceDriftCard({ confidence, phases }: ConfidenceDriftCardProps) {
+  const runs = phases.flatMap((phase) => phase.runs);
+  const averageRunConfidence = runs.length
+    ? Math.round(runs.reduce((sum, run) => sum + run.confidence, 0) / runs.length)
+    : null;
+  const lowConfidenceRuns = runs.filter((run) => run.confidence < 50).length;
+  const reviewPressure = runs.filter(
+    (run) => run.status === 'review' || run.status === 'escalated',
+  ).length;
+  const retries = runs.reduce((sum, run) => sum + run.retryCount, 0);
+  const latestUpdate =
+    runs
+      .map((run) => run.updatedAt)
+      .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
 
   return (
     <section
-      aria-label="Confidence drift"
+      aria-label="Confidence signals"
       className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-overflow-hidden"
     >
       <div className="niuu-flex niuu-items-center niuu-justify-between niuu-px-5 niuu-py-4 niuu-border-b niuu-border-border-subtle">
         <h3 className="niuu-m-0 niuu-text-[17px] niuu-font-semibold niuu-text-text-primary">
-          Confidence drift
+          Confidence signals
         </h3>
-        <span className="niuu-font-mono niuu-text-[12px] niuu-text-text-muted">
-          aggregate · {values.length} events
-        </span>
+        <span className="niuu-font-mono niuu-text-[12px] niuu-text-text-muted">live run state</span>
       </div>
 
       <div className="niuu-p-5 niuu-space-y-4">
         <p className="niuu-m-0 niuu-text-[13px] niuu-leading-6 niuu-text-text-secondary">
-          How this saga&apos;s overall confidence has moved as runs reported back. Dips call for
-          attention — a QA fail or security flag will pull it down.
+          This is the current confidence picture for the saga right now. It is based on live run
+          status, current run confidence, retries, and review pressure rather than a simulated
+          history curve.
         </p>
-        <div className="niuu-rounded-lg niuu-bg-[#15191e] niuu-p-3">
-          <Sparkline values={values} id={sagaId} height={126} />
+
+        <div className="niuu-grid niuu-gap-3 md:niuu-grid-cols-2 xl:niuu-grid-cols-4">
+          <div className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-4">
+            <div className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+              Saga confidence
+            </div>
+            <div className="niuu-mt-2 niuu-font-mono niuu-text-2xl niuu-text-text-primary">
+              {Math.round(confidence)}%
+            </div>
+          </div>
+
+          <div className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-4">
+            <div className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+              Average run confidence
+            </div>
+            <div className="niuu-mt-2 niuu-font-mono niuu-text-2xl niuu-text-text-primary">
+              {averageRunConfidence === null ? '—' : `${averageRunConfidence}%`}
+            </div>
+          </div>
+
+          <div className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-4">
+            <div className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+              Review pressure
+            </div>
+            <div className="niuu-mt-2 niuu-font-mono niuu-text-2xl niuu-text-text-primary">
+              {reviewPressure}
+            </div>
+          </div>
+
+          <div className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-4">
+            <div className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+              Latest run update
+            </div>
+            <div className="niuu-mt-2 niuu-font-mono niuu-text-2xl niuu-text-text-primary">
+              {formatRelativeTime(latestUpdate)}
+            </div>
+          </div>
         </div>
+
         <div
           className="niuu-flex niuu-flex-wrap niuu-gap-4 niuu-font-mono niuu-text-[12px] niuu-text-text-muted"
           aria-label="Confidence metrics"
         >
           <span>
-            start <strong>{startVal.toFixed(2)}</strong>
+            runs <strong>{runs.length}</strong>
           </span>
           <span>
-            now <strong className="niuu-text-text-primary">{currentVal.toFixed(2)}</strong>
+            low confidence <strong>{lowConfidenceRuns}</strong>
           </span>
           <span>
-            scope_adherence <strong>{SCOPE_ADHERENCE}</strong>
+            retries <strong>{retries}</strong>
           </span>
           <span>
-            tests <strong>{TEST_COVERAGE}</strong>
+            phases <strong>{phases.length}</strong>
           </span>
         </div>
       </div>
