@@ -68,6 +68,7 @@ from volundr.domain.services import (
     PresetService,
     PromptService,
     RepoService,
+    SessionArchiveService,
     SessionService,
     StatsService,
     TenantService,
@@ -133,6 +134,15 @@ def _create_resource_provider(settings: Settings) -> "ResourceProvider":  # noqa
     kwargs = resolve_secret_kwargs(rp_cfg.kwargs, rp_cfg.secret_kwargs_env)
     instance = cls(**kwargs)
     logger.info("Resource provider: %s", rp_cfg.adapter.rsplit(".", 1)[-1])
+    return instance
+
+def _create_archive_store(settings: Settings) -> "ArchiveStorePort":  # noqa: F821
+    """Create the ArchiveStorePort adapter from dynamic config."""
+    as_cfg = settings.archive_store
+    cls = import_class(as_cfg.adapter)
+    kwargs = resolve_secret_kwargs(as_cfg.kwargs, as_cfg.secret_kwargs_env)
+    instance = cls(**kwargs)
+    logger.info("Archive store: %s", as_cfg.adapter.rsplit(".", 1)[-1])
     return instance
 
 
@@ -547,6 +557,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 provisioning_timeout=settings.provisioning.timeout_seconds,
                 provisioning_initial_delay=settings.provisioning.initial_delay_seconds,
                 integration_repo=integration_repo,
+                storage=storage_adapter,
                 communication_route_repository=communication_route_repository,
                 session_communication_port=session_room_port,
             )
@@ -567,6 +578,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 broadcaster=broadcaster,
                 timeline_repository=timeline_repository,
             )
+            archive_store = _create_archive_store(settings)
+            archive_service = SessionArchiveService(
+                session_service,
+                storage_adapter,
+                archive_store,
+                chronicle_service=chronicle_service,
+            )
+            app.state.archive_service = archive_service
 
             # Create profile and template services (providers already created above)
             profile_service = ForgeProfileService(profile_provider, session_repository=repository)
@@ -590,6 +609,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 broadcaster=broadcaster,
                 repo_service=repo_service,
                 chronicle_service=chronicle_service,
+                archive_service=archive_service,
                 prefix="/api/v1/forge",
             )
             app.include_router(forge_router)

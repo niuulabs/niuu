@@ -38,6 +38,7 @@ from ravn.cli.commands import (
     app,
     main,
 )
+from ravn.cli.flock import NodeDef, _write_node_config
 from ravn.config import Settings
 from ravn.domain.models import (
     StreamEvent,
@@ -110,6 +111,33 @@ def _build_test_warden_store(tmp_path: Path, *, fail_on: str = "") -> WardenStor
         root=tmp_path,
         deployer_factory=lambda spec: FakeWardenDeployer(fail_on=fail_on),
     )
+
+
+class TestFlockNodeConfig:
+    def test_default_node_config_uses_available_vllm_model(self, tmp_path: Path) -> None:
+        flock_dir = tmp_path / ".flock"
+        node = NodeDef(
+            index=1,
+            persona="reviewer",
+            peer_id="flock-reviewer",
+            pub_port=7482,
+            rep_port=7483,
+            handshake_port=7582,
+            gateway_port=7682,
+            config_path=str(flock_dir / "node-reviewer.yaml"),
+            log_path=str(flock_dir / "reviewer.log"),
+        )
+
+        _write_node_config(
+            node,
+            flock_dir,
+            discovery="static",
+            mesh_transport="ipc",
+            http_gateway_enabled=False,
+        )
+
+        config = (flock_dir / "node-reviewer.yaml").read_text(encoding="utf-8")
+        assert "model: Qwen/Qwen3.6-35B-A3B-FP8" in config
 
 
 class TestPrintUsage:

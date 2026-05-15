@@ -8,8 +8,9 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID
 
-from volundr.domain.models import PVCRef, StorageQuota, WorkspaceStatus
+from volundr.domain.models import PVCRef, StorageQuota, Workspace, WorkspaceStatus
 from volundr.domain.ports import StoragePort
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,35 @@ class LocalStorageAdapter(StoragePort):
         if user_home.exists():
             shutil.rmtree(user_home)
         logger.info("Deprovisioned home storage for user %s", user_id)
+
+    async def get_workspace_by_session(
+        self,
+        session_id: str,
+    ) -> Workspace | None:
+        """Get the workspace entry for a session."""
+        entry = self._session_workspaces.get(session_id)
+        if entry is None:
+            return None
+        return Workspace(
+            id=UUID(session_id),
+            session_id=UUID(session_id),
+            user_id=entry.user_id,
+            tenant_id=entry.tenant_id,
+            pvc_name=entry.pvc_ref.name,
+            status=entry.status,
+            size_gb=entry.size_gb,
+            created_at=entry.created_at,
+            name=entry.name,
+            source_url=entry.source_url,
+            source_ref=entry.source_ref,
+        )
+
+    def resolve_session_workspace_path(self, session_id: str) -> str | None:
+        """Return the host path for a local session workspace."""
+        entry = self._session_workspaces.get(session_id)
+        if entry is None:
+            return None
+        return str(self._workspaces_dir / session_id)
 
     # ------------------------------------------------------------------
     # Internal helpers
