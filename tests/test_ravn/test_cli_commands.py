@@ -13,6 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ravn.adapters.personas.loader import PersonaConfig, PersonaExecutorConfig
+from ravn.cli.flock import NodeDef, _write_node_config
 from ravn.cli.commands import (
     _chat,
     _dedupe_preserve_order,
@@ -38,7 +39,6 @@ from ravn.cli.commands import (
     app,
     main,
 )
-from ravn.cli.flock import NodeDef, _write_node_config
 from ravn.config import Settings
 from ravn.domain.models import (
     StreamEvent,
