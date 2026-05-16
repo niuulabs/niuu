@@ -176,10 +176,37 @@ describe('MarkdownContent', () => {
     expect(screen.getByText('Verify the rollback path')).toBeInTheDocument();
   });
 
+  it('renders a single unfinished work string in archived summary JSON', () => {
+    render(
+      <MarkdownContent
+        content={JSON.stringify({
+          summary: 'The main task is done.',
+          unfinished_work: 'Circle back on the rollback notes',
+        })}
+      />,
+    );
+
+    expect(screen.getByText('Unfinished work')).toBeInTheDocument();
+    expect(screen.getByText('Circle back on the rollback notes')).toBeInTheDocument();
+  });
+
   it('leaves unrelated JSON content alone', () => {
     render(<MarkdownContent content={'{"event":"turn.started","ok":true}'} />);
 
     expect(screen.queryByTestId('session-summary-card')).not.toBeInTheDocument();
     expect(screen.getByText('{"event":"turn.started","ok":true}')).toBeInTheDocument();
+  });
+
+  it('leaves summary-like JSON with unexpected keys alone', () => {
+    render(
+      <MarkdownContent
+        content={
+          '{"summary":"Looks similar","key_changes":[],"unfinished_work":null,"raw":{"debug":true}}'
+        }
+      />,
+    );
+
+    expect(screen.queryByTestId('session-summary-card')).not.toBeInTheDocument();
+    expect(screen.getByText(/"raw":\{"debug":true\}/)).toBeInTheDocument();
   });
 });
