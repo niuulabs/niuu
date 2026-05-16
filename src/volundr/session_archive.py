@@ -3,49 +3,19 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 ARCHIVE_VERSION = 1
-DEFAULT_WORKSPACE_ARCHIVE_DIR = Path(".volundr") / "archive"
-DEFAULT_CONFIG_ARCHIVE_DIR = Path("archives")
+ARCHIVE_DIR = Path(".volundr") / "archive"
 TRANSCRIPT_DIR = Path(".skuld")
 
 
-def config_root_dir() -> Path:
-    """Return the runtime config root used for config-scoped archive paths."""
-    raw = os.environ.get("NIUU_HOME", "~/.niuu")
-    return Path(raw).expanduser()
-
-
-def archive_root(
-    workspace_dir: str | Path,
-    *,
-    session_id: str | None = None,
-    archive_location: str = "workspace",
-    archive_path: str | Path | None = None,
-) -> Path:
-    """Return the archive root for a session."""
-    if archive_location == "workspace":
-        configured = Path(archive_path) if archive_path else DEFAULT_WORKSPACE_ARCHIVE_DIR
-        if configured.is_absolute():
-            return configured.expanduser()
-        return Path(workspace_dir) / configured
-
-    if archive_location == "config":
-        configured = Path(archive_path) if archive_path else DEFAULT_CONFIG_ARCHIVE_DIR
-        if configured.is_absolute():
-            base = configured.expanduser()
-        else:
-            base = config_root_dir() / configured
-        if not session_id:
-            raise ValueError("session_id is required for config-scoped archives")
-        return base / session_id
-
-    raise ValueError(f"Unsupported archive location: {archive_location}")
+def archive_root(workspace_dir: str | Path) -> Path:
+    """Return the archive root inside a session workspace."""
+    return Path(workspace_dir) / ARCHIVE_DIR
 
 
 def transcript_source_path(workspace_dir: str | Path, session_id: str) -> Path:
@@ -53,52 +23,19 @@ def transcript_source_path(workspace_dir: str | Path, session_id: str) -> Path:
     return Path(workspace_dir) / TRANSCRIPT_DIR / f"conversation_{session_id}.json"
 
 
-def archive_manifest_path(
-    workspace_dir: str | Path,
-    *,
-    session_id: str | None = None,
-    archive_location: str = "workspace",
-    archive_path: str | Path | None = None,
-) -> Path:
+def archive_manifest_path(workspace_dir: str | Path) -> Path:
     """Return the archive manifest path."""
-    return archive_root(
-        workspace_dir,
-        session_id=session_id,
-        archive_location=archive_location,
-        archive_path=archive_path,
-    ) / "manifest.json"
+    return archive_root(workspace_dir) / "manifest.json"
 
 
-def archive_transcript_json_path(
-    workspace_dir: str | Path,
-    *,
-    session_id: str | None = None,
-    archive_location: str = "workspace",
-    archive_path: str | Path | None = None,
-) -> Path:
+def archive_transcript_json_path(workspace_dir: str | Path) -> Path:
     """Return the archived transcript JSON path."""
-    return archive_root(
-        workspace_dir,
-        session_id=session_id,
-        archive_location=archive_location,
-        archive_path=archive_path,
-    ) / "transcript.json"
+    return archive_root(workspace_dir) / "transcript.json"
 
 
-def archive_transcript_markdown_path(
-    workspace_dir: str | Path,
-    *,
-    session_id: str | None = None,
-    archive_location: str = "workspace",
-    archive_path: str | Path | None = None,
-) -> Path:
+def archive_transcript_markdown_path(workspace_dir: str | Path) -> Path:
     """Return the archived transcript Markdown path."""
-    return archive_root(
-        workspace_dir,
-        session_id=session_id,
-        archive_location=archive_location,
-        archive_path=archive_path,
-    ) / "transcript.md"
+    return archive_root(workspace_dir) / "transcript.md"
 
 
 def load_workspace_transcript(workspace_dir: str | Path, session_id: str) -> dict[str, Any]:
@@ -114,20 +51,9 @@ def load_workspace_transcript(workspace_dir: str | Path, session_id: str) -> dic
     return {"turns": turns, "is_active": False, "last_activity": ""}
 
 
-def load_archive_manifest(
-    workspace_dir: str | Path,
-    *,
-    session_id: str | None = None,
-    archive_location: str = "workspace",
-    archive_path: str | Path | None = None,
-) -> dict[str, Any] | None:
+def load_archive_manifest(workspace_dir: str | Path) -> dict[str, Any] | None:
     """Load an archive manifest if present."""
-    path = archive_manifest_path(
-        workspace_dir,
-        session_id=session_id,
-        archive_location=archive_location,
-        archive_path=archive_path,
-    )
+    path = archive_manifest_path(workspace_dir)
     if not path.exists():
         return None
     return _read_json(path)
@@ -162,20 +88,13 @@ def write_session_archive(
     workspace_dir: str | Path,
     transcript_payload: dict[str, Any],
     aggregated_logs: dict[str, Any],
-    archive_location: str = "workspace",
-    archive_path: str | Path | None = None,
     chronicle_payload: dict[str, Any] | None = None,
     timeline_payload: dict[str, Any] | None = None,
     event_source_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Write a normalized archive snapshot into the workspace."""
     workspace = Path(workspace_dir)
-    root = archive_root(
-        workspace,
-        session_id=session_id,
-        archive_location=archive_location,
-        archive_path=archive_path,
-    )
+    root = archive_root(workspace)
     root.mkdir(parents=True, exist_ok=True)
 
     _write_json(root / "transcript.json", transcript_payload)
@@ -197,8 +116,6 @@ def write_session_archive(
         "version": ARCHIVE_VERSION,
         "session_id": session_id,
         "created_at": datetime.now(UTC).isoformat(),
-        "location": archive_location,
-        "archive_root": str(root),
         "artifacts": {
             "transcript_json": "transcript.json",
             "transcript_md": "transcript.md",

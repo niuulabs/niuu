@@ -142,35 +142,6 @@ def test_load_archive_manifest_returns_none_when_missing(tmp_path):
     assert load_archive_manifest(tmp_path) is None
 
 
-def test_write_session_archive_can_target_config_root(tmp_path, monkeypatch):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    niuu_home = tmp_path / ".niuu"
-    monkeypatch.setenv("NIUU_HOME", str(niuu_home))
-
-    manifest = write_session_archive(
-        session_id="sess-config",
-        workspace_dir=workspace,
-        transcript_payload={"turns": []},
-        aggregated_logs={"lines": []},
-        archive_location="config",
-        archive_path="archives-store",
-    )
-
-    expected_root = niuu_home / "archives-store" / "sess-config"
-    assert manifest["location"] == "config"
-    assert manifest["archive_root"] == str(expected_root)
-    assert (expected_root / "manifest.json").exists()
-    loaded = load_archive_manifest(
-        workspace,
-        session_id="sess-config",
-        archive_location="config",
-        archive_path="archives-store",
-    )
-    assert loaded is not None
-    assert loaded["session_id"] == "sess-config"
-
-
 def test_load_workspace_transcript_rejects_non_object_json(tmp_path):
     transcript = tmp_path / ".skuld" / "conversation_sess-3.json"
     transcript.parent.mkdir(parents=True, exist_ok=True)

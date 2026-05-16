@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import InMemorySessionRepository, MockPodManager
 from volundr.adapters.inbound.rest import create_router
-from volundr.adapters.outbound.archive_store import FileSystemArchiveStore
 from volundr.adapters.outbound.local_storage_adapter import LocalStorageAdapter
 from volundr.domain.models import Session, SessionStatus
 from volundr.domain.services import SessionArchiveService, SessionService
@@ -36,7 +35,7 @@ def session_service(repository):
 
 @pytest.fixture
 def archive_service(session_service, storage):
-    return SessionArchiveService(session_service, storage, FileSystemArchiveStore())
+    return SessionArchiveService(session_service, storage)
 
 
 def build_app(session_service, archive_service):

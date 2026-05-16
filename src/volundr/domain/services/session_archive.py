@@ -7,12 +7,19 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from volundr.log_aggregate import aggregate_workspace_logs
-from volundr.session_archive import load_workspace_transcript
+from volundr.session_archive import (
+    archive_root,
+    archive_transcript_json_path,
+    archive_transcript_markdown_path,
+    load_archive_manifest,
+    load_workspace_transcript,
+    write_session_archive,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from volundr.domain.ports import ArchiveStorePort, StoragePort
+    from volundr.domain.ports import StoragePort
     from volundr.domain.services.chronicle import ChronicleService
     from volundr.domain.services.session import SessionService
 
@@ -28,13 +35,11 @@ class SessionArchiveService:
         self,
         session_service: SessionService,
         storage: StoragePort,
-        archive_store: ArchiveStorePort,
         *,
         chronicle_service: ChronicleService | None = None,
     ) -> None:
         self._session_service = session_service
         self._storage = storage
-        self._archive_store = archive_store
         self._chronicle_service = chronicle_service
 
     async def resolve_workspace_dir(self, session_id: UUID) -> Path:
@@ -100,10 +105,7 @@ class SessionArchiveService:
         """Materialize a normalized archive directory inside the workspace."""
         workspace_dir = await self.resolve_workspace_dir(session_id)
         if not force:
-            manifest = self._archive_store.load_manifest(
-                session_id=str(session_id),
-                workspace_dir=workspace_dir,
-            )
+            manifest = load_archive_manifest(workspace_dir)
             if manifest is not None:
                 return manifest
 
@@ -112,7 +114,7 @@ class SessionArchiveService:
         chronicle_payload = await self._load_chronicle_payload(session_id)
         timeline_payload = await self._load_timeline_payload(session_id)
 
-        return self._archive_store.write_archive(
+        return write_session_archive(
             session_id=str(session_id),
             workspace_dir=workspace_dir,
             transcript_payload=transcript_payload,
@@ -124,10 +126,7 @@ class SessionArchiveService:
     async def get_archive_manifest(self, session_id: UUID) -> dict[str, Any]:
         """Return the current archive manifest, building it on demand."""
         workspace_dir = await self.resolve_workspace_dir(session_id)
-        manifest = self._archive_store.load_manifest(
-            session_id=str(session_id),
-            workspace_dir=workspace_dir,
-        )
+        manifest = load_archive_manifest(workspace_dir)
         if manifest is not None:
             return manifest
         return await self.build_archive(session_id)
@@ -138,25 +137,16 @@ class SessionArchiveService:
         await self.build_archive(session_id)
 
         if fmt == "json":
-            return self._archive_store.transcript_json_path(
-                session_id=str(session_id),
-                workspace_dir=workspace_dir,
-            )
+            return archive_transcript_json_path(workspace_dir)
         if fmt == "md":
-            return self._archive_store.transcript_markdown_path(
-                session_id=str(session_id),
-                workspace_dir=workspace_dir,
-            )
+            return archive_transcript_markdown_path(workspace_dir)
         raise ValueError(f"Unsupported transcript format: {fmt}")
 
     async def get_archive_root(self, session_id: UUID) -> Path:
         """Return the archive root after ensuring it exists."""
         workspace_dir = await self.resolve_workspace_dir(session_id)
         await self.build_archive(session_id)
-        return self._archive_store.archive_root(
-            session_id=str(session_id),
-            workspace_dir=workspace_dir,
-        )
+        return archive_root(workspace_dir)
 
     async def _load_chronicle_payload(self, session_id: UUID) -> dict[str, Any] | None:
         if self._chronicle_service is None:

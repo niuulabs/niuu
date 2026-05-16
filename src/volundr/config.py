@@ -306,23 +306,6 @@ class ChronicleConfig(BaseModel):
     retention_days: int | None = Field(default=None)  # None = keep forever
 
 
-class ArchiveStoreConfig(BaseModel):
-    """Dynamic archive store adapter configuration."""
-
-    adapter: str = Field(
-        default="volundr.adapters.outbound.archive_store.FileSystemArchiveStore",
-        description="Fully-qualified class path for the archive store adapter.",
-    )
-    kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Extra kwargs forwarded to the archive store adapter constructor.",
-    )
-    secret_kwargs_env: dict[str, str] = Field(
-        default_factory=dict,
-        description="Mapping of kwarg names to env var names holding secret values.",
-    )
-
-
 class GitWorkflowConfig(BaseModel):
     """Git workflow configuration for PR-based development."""
 
@@ -1231,7 +1214,6 @@ class Settings(BaseSettings):
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     git: GitConfig = Field(default_factory=GitConfig)
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)
-    archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
