@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from niuu.domain.models import Principal
 from ting.domain.models import PRStatus
 
 
@@ -93,6 +94,11 @@ class VolundrPort(ABC):
     def name(self) -> str:
         """Human-readable adapter name (used for connection_id targeting)."""
         return ""
+
+    @property
+    def target_id(self) -> str:
+        """Stable identifier used for explicit target selection."""
+        return self.name
 
     @abstractmethod
     async def spawn_session(
@@ -205,4 +211,12 @@ class VolundrFactory(Protocol):
 
     async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
         """Return the primary (first) authenticated adapter, or ``None``."""
+        ...
+
+    async def for_principal(self, principal: Principal) -> list[VolundrPort]:
+        """Return all visible adapters for a fully scoped principal."""
+        ...
+
+    async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:
+        """Return the primary visible adapter for a fully scoped principal."""
         ...

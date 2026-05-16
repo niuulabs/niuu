@@ -6,7 +6,15 @@ from datetime import UTC, datetime
 
 import pytest
 
-from niuu.domain.models import IntegrationConnection, IntegrationType
+from niuu.domain.models import (
+    InstanceKind,
+    InstanceVisibility,
+    IntegrationConnection,
+    IntegrationType,
+    Principal,
+    RegisteredInstance,
+)
+from niuu.ports.instances import InstanceRepository
 from tests.test_ting.conftest import StubCredentialStore, StubIntegrationRepo
 from ting.adapters.volundr_factory import DEFAULT_VOLUNDR_URL, VolundrAdapterFactory
 from ting.adapters.volundr_http import VolundrHTTPAdapter
@@ -39,6 +47,59 @@ def _make_connection(
         updated_at=_NOW,
         slug=slug,
     )
+
+
+def _make_instance(
+    *,
+    instance_id: str,
+    name: str,
+    base_url: str,
+    visibility: InstanceVisibility,
+    owner_id: str | None = None,
+    tenant_id: str | None = None,
+    is_default: bool = False,
+) -> RegisteredInstance:
+    return RegisteredInstance(
+        id=instance_id,
+        kind=InstanceKind.VOLUNDR,
+        slug=name.lower().replace(" ", "-"),
+        name=name,
+        base_url=base_url,
+        visibility=visibility,
+        owner_id=owner_id,
+        tenant_id=tenant_id,
+        enabled=True,
+        is_default=is_default,
+        config={},
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+class StubInstanceRepo(InstanceRepository):
+    def __init__(self, instances: list[RegisteredInstance]) -> None:
+        self._instances = list(instances)
+
+    async def list_instances(
+        self, kind: InstanceKind | None = None
+    ) -> list[RegisteredInstance]:
+        if kind is None:
+            return list(self._instances)
+        return [instance for instance in self._instances if instance.kind == kind]
+
+    async def get_instance(self, instance_id: str) -> RegisteredInstance | None:
+        for instance in self._instances:
+            if instance.id == instance_id:
+                return instance
+        return None
+
+    async def save_instance(self, instance: RegisteredInstance) -> RegisteredInstance:
+        self._instances = [item for item in self._instances if item.id != instance.id]
+        self._instances.append(instance)
+        return instance
+
+    async def delete_instance(self, instance_id: str) -> None:
+        self._instances = [item for item in self._instances if item.id != instance_id]
 
 
 # ---------------------------------------------------------------------------
@@ -273,3 +334,93 @@ async def test_credential_store_error_skips_connection() -> None:
     )
     result = await factory.for_owner("owner-1")
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_for_principal_includes_tenant_and_user_scoped_instances() -> None:
+    factory = VolundrAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=[]),
+        credential_store=StubCredentialStore(),
+        instance_repo=StubInstanceRepo(
+            instances=[
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                    visibility=InstanceVisibility.SYSTEM,
+                    is_default=True,
+                ),
+                _make_instance(
+                    instance_id="tenant-1",
+                    name="Tenant Beta",
+                    base_url="http://beta:8000",
+                    visibility=InstanceVisibility.TENANT,
+                    tenant_id="tenant-a",
+                ),
+                _make_instance(
+                    instance_id="user-1",
+                    name="User Gamma",
+                    base_url="http://gamma:8000",
+                    visibility=InstanceVisibility.USER,
+                    owner_id="owner-1",
+                ),
+                _make_instance(
+                    instance_id="tenant-other",
+                    name="Tenant Other",
+                    base_url="http://other:8000",
+                    visibility=InstanceVisibility.TENANT,
+                    tenant_id="tenant-b",
+                ),
+            ]
+        ),
+        allow_unauthenticated=True,
+    )
+    principal = Principal(
+        user_id="owner-1",
+        email="owner-1@example.com",
+        tenant_id="tenant-a",
+        roles=["volundr:developer"],
+    )
+
+    result = await factory.for_principal(principal)
+
+    assert [adapter.target_id for adapter in result] == ["system-1", "tenant-1", "user-1"]
+    assert [adapter.name for adapter in result] == ["System Alpha", "Tenant Beta", "User Gamma"]
+
+
+@pytest.mark.asyncio
+async def test_primary_for_principal_prefers_default_visible_instance() -> None:
+    factory = VolundrAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=[]),
+        credential_store=StubCredentialStore(),
+        instance_repo=StubInstanceRepo(
+            instances=[
+                _make_instance(
+                    instance_id="tenant-1",
+                    name="Tenant Beta",
+                    base_url="http://beta:8000",
+                    visibility=InstanceVisibility.TENANT,
+                    tenant_id="tenant-a",
+                ),
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                    visibility=InstanceVisibility.SYSTEM,
+                    is_default=True,
+                ),
+            ]
+        ),
+        allow_unauthenticated=True,
+    )
+    principal = Principal(
+        user_id="owner-1",
+        email="owner-1@example.com",
+        tenant_id="tenant-a",
+        roles=["volundr:developer"],
+    )
+
+    result = await factory.primary_for_principal(principal)
+
+    assert result is not None
+    assert result.target_id == "system-1"

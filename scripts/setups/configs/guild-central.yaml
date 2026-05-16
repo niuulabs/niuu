@@ -1,0 +1,25 @@
+auth:
+  allow_anonymous_dev: true
+
+telegram_ingress:
+  enabled: false
+
+volundr:
+  use_connection_factory_in_dev: true
+
+niuu:
+  instances:
+    - kind: volundr
+      slug: guild-alpha
+      name: Guild Alpha
+      base_url: http://127.0.0.1:8181
+      visibility: system
+      enabled: true
+      is_default: true
+    - kind: volundr
+      slug: guild-beta
+      name: Guild Beta
+      base_url: http://127.0.0.1:8282
+      visibility: system
+      enabled: true
+      is_default: false

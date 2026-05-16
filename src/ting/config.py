@@ -25,7 +25,7 @@ from pydantic_settings import (
 )
 
 from bifrost.config import BifrostConfig
-from niuu.config import CorsConfig
+from niuu.config import CorsConfig, InstanceRegistryConfig
 from volundr.config import SessionDefinitionConfig, _default_session_definitions
 
 
@@ -1047,6 +1047,7 @@ class Settings(BaseSettings):
         default_factory=_default_session_definitions
     )
     git: GitConfig = Field(default_factory=GitConfig)
+    niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
     linear: LinearConfig = Field(default_factory=LinearConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     tracker: TrackerConfig = Field(default_factory=TrackerConfig)

@@ -28,15 +28,21 @@ class VolundrHTTPAdapter(VolundrPort):
         api_key: str | None = None,
         timeout: float = 30.0,
         name: str = "",
+        target_id: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
         self._name = name
+        self._target_id = target_id or name
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def target_id(self) -> str:
+        return self._target_id
 
     def _headers(self, auth_token: str | None = None) -> dict[str, str]:
         token = auth_token or self._api_key

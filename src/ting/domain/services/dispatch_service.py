@@ -30,6 +30,7 @@ from niuu.domain.model_runtime import (
     session_definition_for_model,
     transport_adapter_for_session_definition,
 )
+from niuu.domain.models import Principal
 from ting.domain.flock_merge import build_flock_workload_config
 from ting.domain.models import (
     Phase,
@@ -492,13 +493,13 @@ def _promote_default_ting_run_personas(personas: list[dict]) -> list[dict]:
 
 def resolve_target_adapter(
     connection_id: str | None,
-    adapter_by_name: dict[str, VolundrPort],
+    adapter_by_target: dict[str, VolundrPort],
     fallback: VolundrPort,
 ) -> VolundrPort:
     """Resolve the target Volundr adapter for a dispatch item."""
     if not connection_id:
         return fallback
-    adapter = adapter_by_name.get(connection_id)
+    adapter = adapter_by_target.get(connection_id)
     if adapter is not None:
         return adapter
     return fallback
@@ -666,6 +667,7 @@ class DispatchService:
         owner_id: str,
         items: list[DispatchItem],
         *,
+        principal: Principal | None = None,
         auth_token: str | None = None,
         model: str = "",
         system_prompt: str = "",
@@ -686,7 +688,10 @@ class DispatchService:
         )
 
         adapters = await self._tracker_factory.for_owner(owner_id)
-        volundr = await self._volundr_factory.primary_for_owner(owner_id)
+        if principal is not None and hasattr(self._volundr_factory, "primary_for_principal"):
+            volundr = await self._volundr_factory.primary_for_principal(principal)
+        else:
+            volundr = await self._volundr_factory.primary_for_owner(owner_id)
         if volundr is None:
             logger.error("No Volundr adapter for owner %s, cannot dispatch", owner_id)
             return [
@@ -703,11 +708,16 @@ class DispatchService:
         integration_ids = await self._fetch_integration_ids(volundr, auth_token, owner_id)
 
         # Pre-resolve all Volundr adapters for connection_id targeting
-        all_volundr = await self._volundr_factory.for_owner(owner_id)
-        adapter_by_name: dict[str, VolundrPort] = {}
+        if principal is not None and hasattr(self._volundr_factory, "for_principal"):
+            all_volundr = await self._volundr_factory.for_principal(principal)
+        else:
+            all_volundr = await self._volundr_factory.for_owner(owner_id)
+        adapter_by_target: dict[str, VolundrPort] = {}
         for a in all_volundr:
+            if a.target_id:
+                adapter_by_target[a.target_id] = a
             if a.name:
-                adapter_by_name[a.name] = a
+                adapter_by_target[a.name] = a
 
         # Build lookups
         sagas = await self._saga_repo.list_sagas(owner_id=owner_id)
@@ -729,7 +739,7 @@ class DispatchService:
             target_connection = item.connection_id or connection_id
             target_volundr = resolve_target_adapter(
                 target_connection,
-                adapter_by_name,
+                adapter_by_target,
                 volundr,
             )
             workflow_snapshot, workflow_error = await self._resolve_workflow_snapshot(item, saga)

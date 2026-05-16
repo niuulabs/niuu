@@ -299,6 +299,7 @@ export interface DispatchApprovalItem {
   sagaId: string;
   issueId: string;
   repo: string;
+  instanceId?: string;
   connectionId?: string;
   workflowId?: string;
   sessionDefinition?: string;
@@ -307,6 +308,7 @@ export interface DispatchApprovalItem {
 export interface DispatchApprovalOptions {
   model?: string;
   systemPrompt?: string;
+  instanceId?: string;
   connectionId?: string;
   sessionDefinition?: string;
   workloadType?: string;
@@ -322,6 +324,7 @@ export interface DispatchApprovalResult {
 }
 
 export interface DispatchCluster {
+  instanceId?: string;
   connectionId: string;
   name: string;
   url: string;

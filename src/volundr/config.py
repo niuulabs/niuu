@@ -32,6 +32,7 @@ from niuu.config import (
     GitHubInstance,  # noqa: F401
     GitLabConfig,  # noqa: F401
     GitLabInstance,  # noqa: F401
+    InstanceRegistryConfig,
 )
 from ravn.config import PersonaSourceConfig
 from volundr.domain.models import IntegrationType, SecretType
@@ -1213,6 +1214,7 @@ class Settings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     git: GitConfig = Field(default_factory=GitConfig)
+    niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)

@@ -20,6 +20,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from niuu.domain.models import InstanceKind, InstanceVisibility
+
 
 @dataclass(frozen=True)
 class GitHubInstance:
@@ -128,6 +130,28 @@ class GitConfig(BaseModel):
 
     github: GitHubConfig = Field(default_factory=GitHubConfig)
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
+
+
+class InstanceSeedConfig(BaseModel):
+    """Config-seeded runtime instance registration."""
+
+    id: str | None = Field(default=None)
+    kind: InstanceKind = Field(default=InstanceKind.VOLUNDR)
+    slug: str = Field(default="")
+    name: str = Field(default="")
+    base_url: str = Field(default="")
+    visibility: InstanceVisibility = Field(default=InstanceVisibility.SYSTEM)
+    owner_id: str | None = Field(default=None)
+    tenant_id: str | None = Field(default=None)
+    enabled: bool = Field(default=True)
+    is_default: bool = Field(default=False)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class InstanceRegistryConfig(BaseModel):
+    """Shared registry config for runtime instances."""
+
+    instances: list[InstanceSeedConfig] = Field(default_factory=list)
 
 
 def _env_csv_list(name: str, default: list[str]) -> list[str]:

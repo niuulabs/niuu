@@ -1,0 +1,5 @@
+auth:
+  allow_anonymous_dev: true
+
+telegram_ingress:
+  enabled: false

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUN_DIR="${ROOT_DIR}/build/guild-run"
+PG_CTL="${ROOT_DIR}/build/pginstall/bin/pg_ctl"
+
+stop_pid_file() {
+  local pid_file="$1"
+  local label="$2"
+
+  if [[ ! -f "${pid_file}" ]]; then
+    return 0
+  fi
+
+  local pid
+  pid="$(cat "${pid_file}")"
+  if [[ -n "${pid}" ]] && kill -0 "${pid}" >/dev/null 2>&1; then
+    echo "Stopping ${label} (${pid})..."
+    kill "${pid}" >/dev/null 2>&1 || true
+    for _ in {1..20}; do
+      if ! kill -0 "${pid}" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+    if kill -0 "${pid}" >/dev/null 2>&1; then
+      kill -9 "${pid}" >/dev/null 2>&1 || true
+    fi
+  fi
+  rm -f "${pid_file}"
+}
+
+stop_repo_port_listener() {
+  local port="$1"
+  local label="$2"
+  local pids
+
+  pids="$(lsof -nP -t -iTCP:${port} -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    echo "Stopping ${label} (${pid})..."
+    kill "${pid}" >/dev/null 2>&1 || true
+  done <<< "${pids}"
+}
+
+stop_embedded_postgres() {
+  local label="$1"
+  local data_dir="${RUN_DIR}/${label}/pgdata"
+
+  if [[ ! -x "${PG_CTL}" ]] || [[ ! -d "${data_dir}" ]]; then
+    return 0
+  fi
+
+  echo "Stopping ${label} postgres..."
+  "${PG_CTL}" -D "${data_dir}" stop -m fast >/dev/null 2>&1 || true
+}
+
+stop_pid_file "${RUN_DIR}/guild-central.pid" "guild shell"
+stop_pid_file "${RUN_DIR}/guild-alpha.pid" "guild alpha"
+stop_pid_file "${RUN_DIR}/guild-beta.pid" "guild beta"
+
+stop_embedded_postgres "guild-central"
+stop_embedded_postgres "guild-alpha"
+stop_embedded_postgres "guild-beta"
+
+stop_repo_port_listener 8080 "listener :8080"
+stop_repo_port_listener 8181 "listener :8181"
+stop_repo_port_listener 8282 "listener :8282"
+
+echo "Stopped."

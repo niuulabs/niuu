@@ -241,6 +241,7 @@ interface RawDispatchApprovalResult {
 
 interface RawDispatchCluster {
   connection_id: string;
+  instance_id?: string;
   name: string;
   url: string;
   enabled: boolean;
@@ -468,6 +469,7 @@ function toDispatchApprovalResult(raw: RawDispatchApprovalResult): DispatchAppro
 
 function toDispatchCluster(raw: RawDispatchCluster): DispatchCluster {
   return {
+    instanceId: raw.instance_id,
     connectionId: raw.connection_id,
     name: raw.name,
     url: raw.url,
@@ -816,7 +818,7 @@ export function buildDispatchBusHttpAdapter(client: ApiClient): IDispatchBus {
     },
 
     async getClusters(): Promise<DispatchCluster[]> {
-      const items = await client.get<RawDispatchCluster[]>('/dispatch/clusters');
+      const items = await client.get<RawDispatchCluster[]>('/dispatch/targets');
       return items.map(toDispatchCluster);
     },
 
@@ -829,13 +831,17 @@ export function buildDispatchBusHttpAdapter(client: ApiClient): IDispatchBus {
           saga_id: item.sagaId,
           issue_id: item.issueId,
           repo: item.repo,
-          ...(item.connectionId ? { connection_id: item.connectionId } : {}),
+          ...(item.instanceId || item.connectionId
+            ? { connection_id: item.instanceId ?? item.connectionId }
+            : {}),
           ...(item.workflowId ? { workflow_id: item.workflowId } : {}),
           ...(item.sessionDefinition ? { session_definition: item.sessionDefinition } : {}),
         })),
         ...(options.model ? { model: options.model } : {}),
         ...(options.systemPrompt ? { system_prompt: options.systemPrompt } : {}),
-        ...(options.connectionId ? { connection_id: options.connectionId } : {}),
+        ...(options.instanceId || options.connectionId
+          ? { connection_id: options.instanceId ?? options.connectionId }
+          : {}),
         ...(options.sessionDefinition ? { session_definition: options.sessionDefinition } : {}),
         ...(options.workloadType ? { workload_type: options.workloadType } : {}),
         ...(options.workloadConfig ? { workload_config: options.workloadConfig } : {}),

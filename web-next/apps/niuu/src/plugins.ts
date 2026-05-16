@@ -7,7 +7,22 @@ import { observatoryPlugin } from '@niuulabs/plugin-observatory';
 import { tingPlugin } from '@niuulabs/plugin-ting';
 import { volundrPlugin } from '@niuulabs/plugin-volundr';
 import { definePlugin, type PluginDescriptor } from '@niuulabs/plugin-sdk';
+import { GuildPage } from './GuildPage';
 import { SettingsPage } from './SettingsPage';
+
+const guildPlugin = definePlugin({
+  id: 'guild',
+  rune: '\u2692',
+  title: 'Guild',
+  subtitle: 'instance registry',
+  routes: (rootRoute) => [
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/guild',
+      component: GuildPage,
+    }),
+  ],
+});
 
 const settingsPlugin = definePlugin({
   id: 'settings',
@@ -42,5 +57,6 @@ export const plugins: PluginDescriptor[] = [
   mimirPlugin,
   ravnPlugin,
   observatoryPlugin,
+  guildPlugin,
   settingsPlugin,
 ];
