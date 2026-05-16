@@ -28,6 +28,8 @@ if [[ -z "${NIUU_SERVER__HOST:-}" ]]; then
   NIUU_SERVER__HOST="${detected_ip:-127.0.0.1}"
 fi
 export NIUU_SERVER__HOST
+UI_VARIANT="${UI_VARIANT:-new}"
+export UI_VARIANT
 PLATFORM_URL="http://${NIUU_SERVER__HOST}:8080/health"
 
 mkdir -p "${LOG_DIR}"

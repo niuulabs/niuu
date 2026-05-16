@@ -192,16 +192,21 @@ function buildSessionStore(session: VolundrSession | null = RUNNING_SESSION): IS
 
 function wrap(
   sessionId: string,
-  opts: { readOnly?: boolean; session?: VolundrSession | null } = {},
+  opts: {
+    readOnly?: boolean;
+    session?: VolundrSession | null;
+    volundr?: Partial<IVolundrService>;
+  } = {},
 ) {
   const session = opts.session === undefined ? RUNNING_SESSION : opts.session;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const volundr = { ...buildVolundrService(session), ...opts.volundr } as IVolundrService;
   return render(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
           bifrost: createMockBifrostService(),
-          volundr: buildVolundrService(session),
+          volundr,
           ptyStream: buildPtyStream(),
           filesystem: buildFilesystem(),
           sessionStore: buildSessionStore(session),
@@ -337,6 +342,56 @@ describe('LiveSessionDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByTestId('diffs-tab')).toBeInTheDocument();
       });
+    });
+
+    it('renders a saved transcript for stopped sessions', async () => {
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn().mockResolvedValue({
+            turns: [
+              {
+                id: 'turn-user-1',
+                role: 'user',
+                content: 'Can you summarize the last run?',
+                created_at: '2026-05-15T18:00:00Z',
+              },
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                content: 'It finished cleanly and archived the workspace.',
+                created_at: '2026-05-15T18:00:05Z',
+                participant_meta: {
+                  peer_id: 'flock-coder',
+                  persona: 'coder',
+                  display_name: 'Coder',
+                  participant_type: 'ravn',
+                  color: 'brand',
+                },
+              },
+            ],
+          }),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByText('Can you summarize the last run?')).toBeInTheDocument();
+      expect(
+        screen.getByText('It finished cleanly and archived the workspace.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Start the session to chat.')).not.toBeInTheDocument();
+    });
+
+    it('shows an archive-aware chronicle empty state for stopped sessions', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Chronicle/i }));
+      await waitFor(() => {
+        expect(screen.getByText('No saved chronicle yet.')).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByText('Start the session to view its chronicle.'),
+      ).not.toBeInTheDocument();
     });
   });
 

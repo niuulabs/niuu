@@ -1,6 +1,6 @@
 import type { Session, SessionState } from '../domain/session';
 
-export type HistoryOutcome = 'terminated' | 'failed';
+export type HistoryOutcome = 'terminated' | 'archived' | 'failed';
 
 export interface HistoryFilters {
   ravnId?: string;
@@ -11,7 +11,7 @@ export interface HistoryFilters {
   dateTo?: string;
 }
 
-const TERMINAL_STATES: ReadonlySet<SessionState> = new Set(['terminated', 'failed']);
+const TERMINAL_STATES: ReadonlySet<SessionState> = new Set(['terminated', 'archived', 'failed']);
 
 /**
  * Filters sessions to only include terminated/failed sessions that match

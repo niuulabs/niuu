@@ -106,7 +106,7 @@ type CliStreamEvent = {
   fields?: Record<string, unknown>;
 };
 
-interface ConversationTurn {
+export interface ConversationTurn {
   id: string;
   role: string;
   content: string;
@@ -337,7 +337,7 @@ export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
   }));
 }
 
-function participantsFromTurns(turns: ConversationTurn[]): Map<string, RoomParticipant> {
+export function participantsFromTurns(turns: ConversationTurn[]): Map<string, RoomParticipant> {
   const next = new Map<string, RoomParticipant>();
   for (const turn of turns) {
     const participant = parseParticipantMeta(
@@ -378,7 +378,7 @@ function normalizeOutcomeSummaryText(value: unknown): string | undefined {
   return value.replace(/([,;:!?])(?=[A-Za-z0-9])/g, '$1 ');
 }
 
-function meshEventsFromTurns(turns: ConversationTurn[]): MeshEvent[] {
+export function meshEventsFromTurns(turns: ConversationTurn[]): MeshEvent[] {
   const events: MeshEvent[] = [];
   for (const turn of turns) {
     if (turn.role !== 'assistant') continue;

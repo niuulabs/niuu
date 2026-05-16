@@ -566,8 +566,9 @@ function toSessionState(session: VolundrSession): Session['state'] {
     case 'stopping':
       return 'terminating';
     case 'stopped':
-    case 'archived':
       return 'terminated';
+    case 'archived':
+      return 'archived';
     case 'failed':
     case 'error':
       return 'failed';
@@ -605,11 +606,17 @@ function toDomainSession(session: VolundrSession): Session {
   const lastActivityAt = toIsoFromEpochMs(session.lastActive);
   const state = toSessionState(session);
   const readyAt =
-    state === 'running' || state === 'idle' || state === 'terminating' || state === 'terminated'
+    state === 'running' ||
+    state === 'idle' ||
+    state === 'terminating' ||
+    state === 'terminated' ||
+    state === 'archived'
       ? startedAt
       : undefined;
   const terminatedAt =
-    state === 'terminated' || state === 'failed' ? session.archivedAt?.toISOString() : undefined;
+    state === 'terminated' || state === 'archived' || state === 'failed'
+      ? session.archivedAt?.toISOString()
+      : undefined;
 
   return {
     id: session.id,

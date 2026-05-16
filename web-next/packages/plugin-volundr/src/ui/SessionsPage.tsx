@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useService } from '@niuulabs/plugin-sdk';
 import { LoadingState, ErrorState, EmptyState, StateDot, relTime, cn } from '@niuulabs/ui';
 import type { DotState } from '@niuulabs/ui';
 import { Clock3, FolderGit2, Search, SquareTerminal, Ticket } from 'lucide-react';
@@ -6,6 +8,7 @@ import { useSessionList } from './hooks/useSessionStore';
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import type { Session, SessionState } from '../domain/session';
+import type { IVolundrService } from '../ports/IVolundrService';
 
 // ---------------------------------------------------------------------------
 // Pod group definitions — maps display labels to session states
@@ -29,6 +32,7 @@ const POD_GROUPS: PodGroupDef[] = [
   { label: 'BOOTING', states: ['provisioning', 'requested'] },
   { label: 'ERROR', states: ['failed'] },
   { label: 'STOPPED', states: ['terminated'] },
+  { label: 'ARCHIVED', states: ['archived'] },
 ];
 
 // ---------------------------------------------------------------------------
@@ -43,6 +47,7 @@ const SESSION_DOT: Record<SessionState, DotState> = {
   ready: 'healthy',
   terminating: 'degraded',
   terminated: 'archived',
+  archived: 'archived',
   failed: 'failed',
 };
 
@@ -256,9 +261,16 @@ export function SessionsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('state');
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const volundr = useService<IVolundrService>('volundr');
+  const queryClient = useQueryClient();
 
   const sessionsQuery = useSessionList();
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
+  const stoppedSessionCount = useMemo(
+    () => allSessions.filter((session) => session.state === 'terminated').length,
+    [allSessions],
+  );
 
   // Filter by search query
   const filteredSessions = useMemo(() => {
@@ -297,6 +309,21 @@ export function SessionsPage() {
       setSelectedSessionId(sessionsQuery.data[0]!.id);
     }
   }, [sessionsQuery.data, selectedSessionId]);
+
+  async function handleArchiveAllStopped() {
+    if (archiveBusy || stoppedSessionCount === 0) return;
+    setArchiveBusy(true);
+    try {
+      await volundr.archiveStoppedSessions();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
+        queryClient.invalidateQueries({ queryKey: ['volundr', 'history'] }),
+      ]);
+      await sessionsQuery.refetch();
+    } finally {
+      setArchiveBusy(false);
+    }
+  }
 
   return (
     <div className="niuu-relative niuu-flex niuu-h-full" data-testid="sessions-page">
@@ -418,6 +445,21 @@ export function SessionsPage() {
                 />
               </div>
             </div>
+
+            {stoppedSessionCount > 0 && (
+              <div className="niuu-px-2.5 niuu-pb-2">
+                <button
+                  type="button"
+                  onClick={() => void handleArchiveAllStopped()}
+                  disabled={archiveBusy}
+                  className="niuu-flex niuu-w-full niuu-items-center niuu-justify-between niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-[10px] niuu-text-text-muted hover:niuu-bg-bg-elevated disabled:niuu-cursor-not-allowed disabled:niuu-opacity-50"
+                  data-testid="archive-stopped-button"
+                >
+                  <span>{archiveBusy ? 'archiving stopped sessions…' : 'archive all stopped'}</span>
+                  <span className="niuu-text-text-faint">{stoppedSessionCount}</span>
+                </button>
+              </div>
+            )}
 
             <div className="niuu-flex-1 niuu-overflow-y-auto niuu-pb-1.5">
               {sidebarGroups.map((g) => (

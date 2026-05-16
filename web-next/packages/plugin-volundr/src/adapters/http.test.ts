@@ -956,6 +956,7 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
     await svc.connectSession({ name: 'c', hostname: 'host.example.com' });
     await svc.resumeSession('sess-1');
     await svc.archiveSession('sess-1');
+    await svc.archiveStoppedSessions();
     await svc.restoreSession('sess-1');
     await svc.createTenant({ name: 'acme' });
     await svc.reprovisionUser('u1');

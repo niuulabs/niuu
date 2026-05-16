@@ -73,6 +73,7 @@ const volundrMocks = vi.hoisted(() => ({
     getTemplates: vi.fn().mockResolvedValue([]),
     getTemplate: vi.fn().mockResolvedValue(null),
     listArchivedSessions: vi.fn().mockResolvedValue([]),
+    archiveStoppedSessions: vi.fn().mockResolvedValue([]),
     deleteSession: vi.fn().mockResolvedValue(undefined),
     subscribe: vi.fn(() => () => {}),
   })),
@@ -936,15 +937,15 @@ describe('buildServices', () => {
       expect.objectContaining({
         id: 'sess-archived',
         ravnId: 'NIU-753',
-        state: 'terminated',
+        state: 'archived',
         terminatedAt: '2026-04-23T13:00:00.000Z',
       }),
     ]);
-    await expect(sessionStore.listSessions({ state: 'terminated' })).resolves.toEqual([
+    await expect(sessionStore.listSessions({ state: 'archived' })).resolves.toEqual([
       expect.objectContaining({ id: 'sess-archived' }),
     ]);
     await expect(sessionStore.getSession('sess-archived')).resolves.toEqual(
-      expect.objectContaining({ id: 'sess-archived', state: 'terminated' }),
+      expect.objectContaining({ id: 'sess-archived', state: 'archived' }),
     );
     await sessionStore.deleteSession('sess-live');
     expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live');

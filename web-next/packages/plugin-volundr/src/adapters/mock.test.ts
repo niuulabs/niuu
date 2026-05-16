@@ -636,6 +636,7 @@ describe('createMockVolundrService — full method sweep', () => {
     await svc.resumeSession('sess-1');
     await svc.deleteSession('sess-1');
     await svc.archiveSession('sess-1');
+    await svc.archiveStoppedSessions();
     await svc.restoreSession('sess-1');
     await svc.listArchivedSessions();
     await svc.getMessages('sess-1');

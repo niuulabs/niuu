@@ -25,6 +25,7 @@ const SESSION_PRIORITY: Record<SessionState, number> = {
   failed: 5,
   terminating: 6,
   terminated: 7,
+  archived: 8,
 };
 
 const KIND_LABEL: Record<ClusterKind, string> = {

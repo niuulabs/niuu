@@ -36,7 +36,12 @@ import type {
 } from '../models/volundr.model';
 import { useSessionDetail } from './hooks/useSessionStore';
 import { SessionFilesWorkspace } from './SessionFilesWorkspace';
-import { useSkuldChat } from './hooks/useSkuldChat';
+import {
+  meshEventsFromTurns,
+  participantsFromTurns,
+  transformTurns,
+  useSkuldChat,
+} from './hooks/useSkuldChat';
 import { deriveTerminalWsUrl, normalizeSessionUrl, wsUrlToHttpBase } from './liveSessionTransport';
 import { SessionTerminalLive } from './SessionTerminalLive';
 import { StructuredLogViewer } from './components/StructuredLogViewer';
@@ -628,9 +633,7 @@ function LiveChroniclesTab({
   if (!chronicle) {
     return (
       <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
-        {sessionStatus === 'running'
-          ? 'No chronicle data yet.'
-          : 'Start the session to view its chronicle.'}
+        {sessionStatus === 'running' ? 'No chronicle data yet.' : 'No saved chronicle yet.'}
       </div>
     );
   }
@@ -1233,7 +1236,9 @@ export function LiveSessionDetailPage({
 }) {
   const [activeTab, setActiveTab] = useState<SessionTab>('chat');
   const [tabWasManuallySelected, setTabWasManuallySelected] = useState(false);
-  const [actionBusy, setActionBusy] = useState<'start' | 'stop' | 'delete' | null>(null);
+  const [actionBusy, setActionBusy] = useState<
+    'start' | 'stop' | 'archive' | 'restore' | 'delete' | null
+  >(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const volundr = useService<IVolundrService>('volundr');
   const bifrost = useService<IBifrostService>('bifrost');
@@ -1266,8 +1271,20 @@ export function LiveSessionDetailPage({
   const isRunning = sessionStatus === 'running';
   const chatEndpoint = normalizeSessionUrl(liveSession?.chatEndpoint ?? null);
   const isReady = isRunning && Boolean(chatEndpoint);
+  const canReplayTranscript =
+    readOnly ||
+    sessionStatus === 'stopped' ||
+    sessionStatus === 'archived' ||
+    sessionStatus === 'failed' ||
+    sessionStatus === 'error';
   const terminalUrl = deriveTerminalWsUrl(chatEndpoint);
   const chat = useSkuldChat(chatEndpoint);
+  const transcriptQuery = useQuery({
+    queryKey: ['volundr', 'conversation-history', sessionId],
+    queryFn: () => volundr.getConversationHistory(sessionId),
+    enabled: Boolean(sessionId) && canReplayTranscript,
+    staleTime: 5_000,
+  });
   const sessionName = sessionQuery.data?.personaName ?? liveSession?.name ?? sessionId;
   const sessionFeatures = useMemo(
     () => sessionFeaturesQuery.data ?? [],
@@ -1277,6 +1294,13 @@ export function LiveSessionDetailPage({
   const modelCatalog = modelsQuery.data ?? {};
   const modelInfo = liveSession?.model ? modelCatalog[liveSession.model] : undefined;
   const modelLabel = modelInfo?.name ?? liveSession?.model ?? 'unknown';
+  const transcriptTurns = useMemo(() => transcriptQuery.data?.turns ?? [], [transcriptQuery.data]);
+  const replayMessages = useMemo(() => transformTurns(transcriptTurns), [transcriptTurns]);
+  const replayParticipants = useMemo(
+    () => participantsFromTurns(transcriptTurns),
+    [transcriptTurns],
+  );
+  const replayMeshEvents = useMemo(() => meshEventsFromTurns(transcriptTurns), [transcriptTurns]);
 
   const tabs = useMemo(() => {
     const prefMap = new Map(featurePrefs.map((pref) => [pref.featureKey, pref]));
@@ -1366,8 +1390,10 @@ export function LiveSessionDetailPage({
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['volundr', 'raw-session', sessionId] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'raw-session', 'logs', sessionId] }),
+      queryClient.invalidateQueries({ queryKey: ['volundr', 'conversation-history', sessionId] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-session', sessionId] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
+      queryClient.invalidateQueries({ queryKey: ['volundr', 'history'] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'filetree', sessionId] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'session-list'] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'stats'] }),
@@ -1402,6 +1428,28 @@ export function LiveSessionDetailPage({
     try {
       await volundr.deleteSession(liveSession.id, cleanup);
       setDeleteDialogOpen(false);
+      await refreshSessionData();
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleArchiveSession() {
+    if (!liveSession || actionBusy) return;
+    setActionBusy('archive');
+    try {
+      await volundr.archiveSession(liveSession.id);
+      await refreshSessionData();
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleRestoreSession() {
+    if (!liveSession || actionBusy) return;
+    setActionBusy('restore');
+    try {
+      await volundr.restoreSession(liveSession.id);
       await refreshSessionData();
     } finally {
       setActionBusy(null);
@@ -1525,32 +1573,61 @@ export function LiveSessionDetailPage({
             })(),
           )}
         </div>
-        {!readOnly && liveSession && (
+        {liveSession && (
           <div className="niuu-ml-auto niuu-flex niuu-flex-shrink-0 niuu-items-center niuu-gap-2 niuu-pr-1">
-            {liveSession.status === 'running' ? (
+            {!readOnly &&
+              (liveSession.status === 'running' ? (
+                <IconActionButton
+                  label={actionBusy === 'stop' ? '■ stopping' : '■ stop'}
+                  title="Stop session"
+                  onClick={() => void handleStopSession()}
+                  disabled={actionBusy !== null}
+                  tone="critical"
+                />
+              ) : liveSession.status === 'stopped' ? (
+                <>
+                  <IconActionButton
+                    label={actionBusy === 'start' ? '▶ starting' : '▶ start'}
+                    title="Start session"
+                    onClick={() => void handleResumeSession()}
+                    disabled={actionBusy !== null}
+                    tone="brand"
+                  />
+                  <IconActionButton
+                    label={actionBusy === 'archive' ? '⤓ archiving' : '⤓ archive'}
+                    title="Archive session"
+                    onClick={() => void handleArchiveSession()}
+                    disabled={actionBusy !== null}
+                    tone="neutral"
+                  />
+                </>
+              ) : liveSession.status === 'archived' ? null : (
+                <IconActionButton
+                  label={actionBusy === 'start' ? '▶ starting' : '▶ start'}
+                  title="Start session"
+                  onClick={() => void handleResumeSession()}
+                  disabled={actionBusy !== null}
+                  tone="brand"
+                />
+              ))}
+            {liveSession.status === 'archived' && (
               <IconActionButton
-                label={actionBusy === 'stop' ? '■ stopping' : '■ stop'}
-                title="Stop session"
-                onClick={() => void handleStopSession()}
-                disabled={actionBusy !== null}
-                tone="critical"
-              />
-            ) : (
-              <IconActionButton
-                label={actionBusy === 'start' ? '▶ starting' : '▶ start'}
-                title="Start session"
-                onClick={() => void handleResumeSession()}
+                label={actionBusy === 'restore' ? '↺ restoring' : '↺ restore'}
+                title="Restore archived session"
+                onClick={() => void handleRestoreSession()}
                 disabled={actionBusy !== null}
                 tone="brand"
               />
             )}
-            <IconActionButton
-              label="⌫ delete"
-              title="Delete session"
-              onClick={() => setDeleteDialogOpen(true)}
-              disabled={actionBusy !== null}
-              tone="neutral"
-            />
+            {!readOnly && (
+              <IconActionButton
+                label="⌫ delete"
+                title="Delete session"
+                onClick={() => setDeleteDialogOpen(true)}
+                disabled={actionBusy !== null}
+                tone="neutral"
+              />
+            )}
           </div>
         )}
       </div>
@@ -1594,9 +1671,33 @@ export function LiveSessionDetailPage({
                 onPermissionRespond={chat.respondToPermission}
                 renderPermissions={permissionRenderer}
               />
+            ) : canReplayTranscript && transcriptQuery.isLoading ? (
+              <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
+                Loading saved transcript…
+              </div>
+            ) : canReplayTranscript && transcriptQuery.isError ? (
+              <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-critical">
+                Failed to load saved transcript.
+              </div>
+            ) : canReplayTranscript && replayMessages.length > 0 ? (
+              <SessionChat
+                className="niuu-h-full"
+                messages={replayMessages}
+                connected={false}
+                historyLoaded={!transcriptQuery.isLoading}
+                participants={replayParticipants}
+                meshEvents={replayMeshEvents}
+                sessionName={sessionName}
+                onSend={() => {}}
+                onStop={() => {}}
+              />
             ) : isSessionBooting(sessionStatus) ? (
               <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
                 Session is starting…
+              </div>
+            ) : canReplayTranscript ? (
+              <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
+                No saved transcript yet.
               </div>
             ) : (
               <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
