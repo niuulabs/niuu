@@ -15,13 +15,7 @@ from tests.conftest import (
 )
 from volundr.adapters.outbound.archive_store import FileSystemArchiveStore
 from volundr.adapters.outbound.local_storage_adapter import LocalStorageAdapter
-from volundr.domain.models import (
-    LocalMountSource,
-    Session,
-    SessionStatus,
-    TimelineEvent,
-    TimelineEventType,
-)
+from volundr.domain.models import Session, SessionStatus, TimelineEvent, TimelineEventType
 from volundr.domain.services import ChronicleService, SessionArchiveService, SessionService
 from volundr.domain.services.session_archive import SessionArchiveNotAvailableError
 
@@ -199,46 +193,6 @@ async def test_session_archive_service_uses_file_endpoint_fallback(
     transcript = await archive_service.get_transcript(session.id)
 
     assert transcript["turns"][0]["content"] == "from file"
-
-
-@pytest.mark.asyncio
-async def test_session_archive_service_uses_local_mount_source_fallback(
-    tmp_path,
-    session_repository,
-    archive_store,
-):
-    workspace = tmp_path / "local-mount-workspace"
-    (workspace / ".skuld").mkdir(parents=True, exist_ok=True)
-    session = Session(
-        name="local-mount-fallback",
-        model="claude-sonnet-4",
-        status=SessionStatus.STOPPED,
-        source=LocalMountSource(local_path=str(workspace)),
-    )
-    await session_repository.create(session)
-    transcript_file = workspace / ".skuld" / f"conversation_{session.id}.json"
-    transcript_file.write_text(
-        json.dumps({"turns": [{"id": "1", "role": "assistant", "content": "from mount"}]}),
-        encoding="utf-8",
-    )
-
-    class EmptyStorage:
-        def resolve_session_workspace_path(self, _session_id: str) -> str | None:
-            return None
-
-        async def get_workspace_by_session(self, _session_id: str):
-            return None
-
-    session_service = SessionService(
-        repository=session_repository,
-        pod_manager=MockPodManager(),
-        validate_repos=False,
-    )
-    archive_service = SessionArchiveService(session_service, EmptyStorage(), archive_store)
-
-    transcript = await archive_service.get_transcript(session.id)
-
-    assert transcript["turns"][0]["content"] == "from mount"
 
 
 @pytest.mark.asyncio

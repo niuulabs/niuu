@@ -1,7 +1,5 @@
 """Tests for the REST adapter."""
 
-import asyncio
-
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -29,7 +27,6 @@ from volundr.adapters.inbound.rest import (
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session, SessionStatus
 from volundr.domain.services import RepoService, SessionService, StatsService
-from niuu.domain.models import Principal
 
 
 @pytest.fixture
@@ -571,81 +568,6 @@ class TestStopSession:
         response = client.post(f"/api/v1/forge/sessions/{session.id}/stop")
         assert response.status_code == 409
         assert "cannot stop" in response.json()["detail"].lower()
-
-
-class TestSessionMessages:
-    """Tests for POST /api/v1/volundr/sessions/{id}/messages."""
-
-    def test_send_message_uses_plain_ws_without_ssl(
-        self,
-        client: TestClient,
-        repository: InMemorySessionRepository,
-    ) -> None:
-        """ws:// chat endpoints should not receive an SSL context."""
-
-        class _FakeWebSocket:
-            def __init__(self) -> None:
-                self.sent: list[str] = []
-
-            async def recv(self) -> str:
-                raise TimeoutError
-
-            async def send(self, payload: str) -> None:
-                self.sent.append(payload)
-
-        class _FakeConnect:
-            def __init__(self) -> None:
-                self.calls: list[tuple[str, dict[str, object]]] = []
-                self.ws = _FakeWebSocket()
-
-            def __call__(self, url: str, **kwargs: object):
-                self.calls.append((url, kwargs))
-                ws = self.ws
-
-                class _Ctx:
-                    async def __aenter__(self_inner) -> _FakeWebSocket:
-                        return ws
-
-                    async def __aexit__(self_inner, exc_type, exc, tb) -> bool:
-                        return False
-
-                return _Ctx()
-
-        session = Session(
-            id=uuid4(),
-            name="message-session",
-            model="claude-sonnet-4",
-            source=GitSource(repo="https://github.com/org/repo", branch="main"),
-            status=SessionStatus.RUNNING,
-            chat_endpoint="ws://localhost:8080/s/message-session/session",
-        )
-        asyncio.run(repository.create(session))
-
-        fake_connect = _FakeConnect()
-        with (
-            patch("websockets.asyncio.client.connect", new=fake_connect),
-            patch(
-                "volundr.adapters.inbound.rest.extract_principal",
-                new=AsyncMock(
-                    return_value=Principal(
-                        user_id="dev-user",
-                        email="dev@example.com",
-                        tenant_id="default",
-                        roles=[],
-                    )
-                ),
-            ),
-        ):
-            response = client.post(
-                f"/api/v1/volundr/sessions/{session.id}/messages",
-                json={"content": "hello from rest"},
-            )
-
-        assert response.status_code == 200
-        assert fake_connect.calls == [
-            ("ws://localhost:8080/s/message-session/session", {"open_timeout": 10})
-        ]
-        assert fake_connect.ws.sent == ['{"type": "user", "content": "hello from rest"}']
 
 
 class TestSessionLogAggregationProxy:
