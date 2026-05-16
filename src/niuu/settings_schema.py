@@ -50,6 +50,16 @@ class SettingsTokensResourceSchema(SettingsResourceSchemaBase):
     delete_path: str = Field(serialization_alias="deletePath")
 
 
+class SettingsCredentialsResourceSchema(SettingsResourceSchemaBase):
+    """Resource descriptor for stored credential management."""
+
+    type: Literal["credentials"] = "credentials"
+    list_path: str = Field(serialization_alias="listPath")
+    types_path: str = Field(serialization_alias="typesPath")
+    create_path: str = Field(serialization_alias="createPath")
+    delete_path: str = Field(serialization_alias="deletePath")
+
+
 class SettingsIntegrationsResourceSchema(SettingsResourceSchemaBase):
     """Resource descriptor for integration management inside the mounted shell."""
 
@@ -58,11 +68,16 @@ class SettingsIntegrationsResourceSchema(SettingsResourceSchemaBase):
     catalog_path: str = Field(serialization_alias="catalogPath")
     create_path: str = Field(serialization_alias="createPath")
     delete_path: str = Field(serialization_alias="deletePath")
-    credential_create_path: str = Field(serialization_alias="credentialCreatePath")
+    credential_list_path: str = Field(serialization_alias="credentialListPath")
+    test_path: str = Field(serialization_alias="testPath")
+    oauth_authorize_path: str = Field(serialization_alias="oauthAuthorizePath")
+    oauth_disconnect_path: str = Field(serialization_alias="oauthDisconnectPath")
 
 
 SettingsResourceSchema = Annotated[
-    SettingsTokensResourceSchema | SettingsIntegrationsResourceSchema,
+    SettingsTokensResourceSchema
+    | SettingsCredentialsResourceSchema
+    | SettingsIntegrationsResourceSchema,
     Field(discriminator="type"),
 ]
 

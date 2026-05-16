@@ -38,10 +38,9 @@ class TestSettingsAPI:
             "dispatch",
             "flock",
             "notifications",
-            "integrations",
         ]
         assert body["sections"][1]["path"] == "/settings/dispatch"
-        assert body["sections"][-1]["resources"][0]["type"] == "integrations"
+        assert all(section.get("resources") in (None, []) for section in body["sections"])
 
     def test_get_flock_settings_returns_defaults(self) -> None:
         client = _make_client()

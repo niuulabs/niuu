@@ -99,13 +99,20 @@ function hasWsBackend(svc: ServiceConfig | undefined): svc is ServiceConfig & { 
   return svc?.mode === 'ws' && typeof svc.wsUrl === 'string';
 }
 
+function resolveBrowserRelativeWsUrl(url: string): string {
+  if (!url.startsWith('/')) return url;
+  if (typeof window === 'undefined') return url;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}${url}`;
+}
+
 function resolveDirectServiceWsUrl(
   config: Pick<NiuuConfig, 'services'>,
   ...serviceKeys: string[]
 ): string | null {
   for (const serviceKey of serviceKeys) {
     const svc = config.services[serviceKey];
-    if (hasWsBackend(svc)) return svc.wsUrl;
+    if (hasWsBackend(svc)) return resolveBrowserRelativeWsUrl(svc.wsUrl);
   }
   return null;
 }
@@ -140,7 +147,7 @@ function resolveDirectServiceStatus(
       return {
         mode: 'live',
         transport,
-        target: svc.wsUrl,
+        target: resolveBrowserRelativeWsUrl(svc.wsUrl),
         source: serviceKey,
       };
     }
@@ -238,6 +245,22 @@ function resolveBifrostServiceBase(config: Pick<NiuuConfig, 'services'>): string
   return sharedBase ? `${sharedBase}/bifrost` : null;
 }
 
+function resolveCredentialsServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveDirectServiceBase(config, 'credentials');
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/credentials` : null;
+}
+
+function resolveIntegrationsServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveDirectServiceBase(config, 'integrations');
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/integrations` : null;
+}
+
 function resolveForgeStreamWsUrl(config: Pick<NiuuConfig, 'services'>): string | null {
   const explicitWsUrl = resolveDirectServiceWsUrl(config, 'forge.pty', 'volundr.pty');
   if (explicitWsUrl) return explicitWsUrl;
@@ -309,7 +332,16 @@ function resolveObservatoryServiceBase(
 
 export function resolveSettingsServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  providerId: 'identity' | 'ting' | 'volundr' | 'mimir' | 'ravn' | 'observatory' | 'bifrost',
+  providerId:
+    | 'identity'
+    | 'credentials'
+    | 'integrations'
+    | 'ting'
+    | 'volundr'
+    | 'mimir'
+    | 'ravn'
+    | 'observatory'
+    | 'bifrost',
 ): string | null {
   switch (providerId) {
     case 'identity': {
@@ -317,6 +349,10 @@ export function resolveSettingsServiceBase(
       if (!base) return null;
       return /\/identity\/?$/.test(base) ? base : `${base.replace(/\/$/, '')}/identity`;
     }
+    case 'credentials':
+      return resolveCredentialsServiceBase(config);
+    case 'integrations':
+      return resolveIntegrationsServiceBase(config);
     case 'ting':
       return resolveTingServiceBase(config, 'ting.settings');
     case 'volundr':

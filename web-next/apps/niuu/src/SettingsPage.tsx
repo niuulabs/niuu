@@ -6,6 +6,7 @@ import { cn } from '@niuulabs/ui';
 import {
   useMountedSettingsProviders,
   type MountedSettingsProvider,
+  type RemoteSettingsCredentialsResource,
   type RemoteSettingsField,
   type RemoteSettingsIntegrationsResource,
   type RemoteSettingsProviderSchema,
@@ -41,6 +42,37 @@ interface PersonalAccessTokenRecord {
 
 interface CreatePersonalAccessTokenResult extends PersonalAccessTokenRecord {
   token: string;
+}
+
+interface CredentialSummaryRecord {
+  id?: string;
+  name: string;
+  secretType?: string;
+  secret_type?: string;
+  keys: string[];
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+  created_at?: string;
+  updatedAt?: string;
+  updated_at?: string;
+}
+
+interface CredentialListResponse {
+  credentials: CredentialSummaryRecord[];
+}
+
+interface CredentialTypeFieldDefinition {
+  key: string;
+  label: string;
+  type?: string;
+  required?: boolean;
+}
+
+interface CredentialTypeDefinition {
+  type: string;
+  label: string;
+  description?: string;
+  fields: CredentialTypeFieldDefinition[];
 }
 
 interface ResourceSchemaProperty {
@@ -83,6 +115,7 @@ interface IntegrationConnectionRecord {
   created_at?: string;
   updatedAt?: string;
   updated_at?: string;
+  config?: Record<string, unknown>;
 }
 
 interface NormalizedSettingsSection {
@@ -159,6 +192,19 @@ function normalizeTokenRow(token: PersonalAccessTokenRecord | CreatePersonalAcce
   };
 }
 
+function normalizeCredentialRows(payload: CredentialListResponse | CredentialSummaryRecord[]) {
+  const rows = Array.isArray(payload) ? payload : payload.credentials;
+  return rows.map((credential) => ({
+    id: credential.id ?? credential.name,
+    name: credential.name,
+    secretType: credential.secretType ?? credential.secret_type ?? 'generic',
+    keys: credential.keys,
+    metadata: credential.metadata ?? {},
+    createdAt: credential.createdAt ?? credential.created_at ?? '',
+    updatedAt: credential.updatedAt ?? credential.updated_at ?? '',
+  }));
+}
+
 function normalizeCatalogSchema(
   schema: IntegrationCatalogSchema | undefined,
 ): IntegrationCatalogSchema {
@@ -168,12 +214,10 @@ function normalizeCatalogSchema(
   };
 }
 
-function inferSecretType(entry: IntegrationCatalogEntry): 'api_key' | 'oauth_token' | 'generic' {
+function isOauthIntegration(entry: IntegrationCatalogEntry | null): boolean {
+  if (!entry) return false;
   const authType = entry.authType ?? entry.auth_type;
-  if (authType === 'oauth2_authorization_code' || authType === 'oauth_token') {
-    return 'oauth_token';
-  }
-  return 'api_key';
+  return authType === 'oauth2_authorization_code' || authType === 'oauth_token';
 }
 
 function formatTimestamp(value?: string | null): string {
@@ -217,6 +261,10 @@ function normalizeIntegrationRecord(integration: IntegrationConnectionRecord) {
 
 function formatIntegrationType(value: string): string {
   return value.replace(/_/g, ' ');
+}
+
+function titleCaseIdentifier(value: string): string {
+  return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function SettingsSidebar({
@@ -559,6 +607,287 @@ function TokensResourceCard({
   );
 }
 
+function CredentialTypeFields({
+  fields,
+  values,
+  onChange,
+}: {
+  fields: CredentialTypeFieldDefinition[];
+  values: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+}) {
+  if (fields.length === 0) {
+    return (
+      <div className="settings-resource__schema-fields">
+        <label className="settings-resource__composer-field">
+          <span className="settings-resource__composer-label">Key</span>
+          <input
+            value={values.__key ?? ''}
+            onChange={(event) => onChange('__key', event.target.value)}
+            className="settings-field__control"
+          />
+        </label>
+        <label className="settings-resource__composer-field">
+          <span className="settings-resource__composer-label">Value</span>
+          <input
+            value={values.__value ?? ''}
+            onChange={(event) => onChange('__value', event.target.value)}
+            className="settings-field__control"
+          />
+        </label>
+      </div>
+    );
+  }
+
+  return (
+    <div className="settings-resource__schema-fields">
+      {fields.map((field) => {
+        const multiline = field.type === 'textarea';
+        return (
+          <label
+            key={field.key}
+            className={cn(
+              'settings-resource__composer-field',
+              multiline && 'settings-resource__composer-field--wide',
+            )}
+          >
+            <span className="settings-resource__composer-label">
+              {field.label}
+              {field.required ? (
+                <span className="settings-resource__required">required</span>
+              ) : null}
+            </span>
+            {multiline ? (
+              <textarea
+                value={values[field.key] ?? ''}
+                onChange={(event) => onChange(field.key, event.target.value)}
+                className="settings-field__textarea"
+              />
+            ) : (
+              <input
+                type={field.type === 'password' ? 'password' : 'text'}
+                value={values[field.key] ?? ''}
+                onChange={(event) => onChange(field.key, event.target.value)}
+                className="settings-field__control"
+              />
+            )}
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+function CredentialsResourceCard({
+  resource,
+  rootBase,
+  providerId,
+}: {
+  resource: RemoteSettingsCredentialsResource;
+  rootBase: string;
+  providerId: string;
+}) {
+  const client = useMemo(() => createApiClient(rootBase), [rootBase]);
+  const queryClient = useQueryClient();
+  const [name, setName] = useState('');
+  const [selectedType, setSelectedType] = useState('api_key');
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+
+  const credentialsQuery = useQuery({
+    queryKey: ['settings-resource', providerId, resource.id, 'credentials'],
+    queryFn: async () => {
+      const payload = await client.get<CredentialListResponse | CredentialSummaryRecord[]>(
+        resource.listPath,
+      );
+      return normalizeCredentialRows(payload);
+    },
+  });
+
+  const typesQuery = useQuery({
+    queryKey: ['settings-resource', providerId, resource.id, 'credential-types'],
+    queryFn: () => client.get<CredentialTypeDefinition[]>(resource.typesPath),
+  });
+
+  const selectedDefinition = useMemo(() => {
+    const types = typesQuery.data ?? [];
+    return types.find((entry) => entry.type === selectedType) ?? types[0] ?? null;
+  }, [selectedType, typesQuery.data]);
+
+  useEffect(() => {
+    if (!selectedDefinition) return;
+    setSelectedType(selectedDefinition.type);
+    setFieldValues((current) => {
+      const next: Record<string, string> = {};
+      for (const field of selectedDefinition.fields) {
+        next[field.key] = current[field.key] ?? '';
+      }
+      return next;
+    });
+  }, [selectedDefinition]);
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const data =
+        selectedDefinition?.fields.length === 0
+          ? fieldValues.__key?.trim() && fieldValues.__value?.trim()
+            ? { [fieldValues.__key.trim()]: fieldValues.__value.trim() }
+            : {}
+          : Object.fromEntries(
+              Object.entries(fieldValues).filter(([, value]) => value.trim() !== ''),
+            );
+      return client.post(resource.createPath, {
+        name,
+        secret_type: selectedDefinition?.type ?? selectedType,
+        data,
+      });
+    },
+    onSuccess: async () => {
+      setName('');
+      setFieldValues({});
+      await queryClient.invalidateQueries({
+        queryKey: ['settings-resource', providerId, resource.id, 'credentials'],
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (credentialName: string) => {
+      return client.delete<void>(resource.deletePath.replace('{name}', credentialName));
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['settings-resource', providerId, resource.id, 'credentials'],
+      });
+    },
+  });
+
+  return (
+    <section className="settings-resource">
+      <div className="settings-resource__header">
+        <div>
+          <h2 className="settings-resource__title">{resource.label}</h2>
+          {resource.description ? (
+            <p className="settings-resource__copy">{resource.description}</p>
+          ) : null}
+        </div>
+      </div>
+
+      <form
+        className="settings-resource__composer settings-resource__composer--stacked"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!name.trim()) return;
+          void createMutation.mutateAsync();
+        }}
+      >
+        <div className="settings-resource__schema-fields">
+          <label className="settings-resource__composer-field">
+            <span className="settings-resource__composer-label">Credential name</span>
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="e.g. github-main or prod-openai"
+              className="settings-field__control"
+            />
+          </label>
+
+          <label className="settings-resource__composer-field">
+            <span className="settings-resource__composer-label">Credential type</span>
+            <div className="settings-field__control-wrap">
+              <select
+                value={selectedDefinition?.type ?? selectedType}
+                onChange={(event) => setSelectedType(event.target.value)}
+                className="settings-field__control"
+              >
+                {(typesQuery.data ?? []).map((type) => (
+                  <option key={type.type} value={type.type}>
+                    {type.label}
+                  </option>
+                ))}
+              </select>
+              <span className="settings-field__select-caret" aria-hidden="true">
+                ▾
+              </span>
+            </div>
+          </label>
+        </div>
+
+        {selectedDefinition?.description ? (
+          <p className="settings-resource__copy">{selectedDefinition.description}</p>
+        ) : null}
+
+        {selectedDefinition ? (
+          <CredentialTypeFields
+            fields={selectedDefinition.fields}
+            values={fieldValues}
+            onChange={(key, value) => {
+              setFieldValues((current) => ({ ...current, [key]: value }));
+            }}
+          />
+        ) : null}
+
+        <div className="settings-resource__actions">
+          {createMutation.isError ? (
+            <span className="settings-shell__status settings-shell__status--error">
+              Could not store this credential.
+            </span>
+          ) : null}
+          {createMutation.isSuccess ? (
+            <span className="settings-shell__status settings-shell__status--success">
+              Credential stored.
+            </span>
+          ) : null}
+          <button
+            type="submit"
+            className="settings-shell__save-button settings-shell__save-button--secondary"
+            disabled={
+              createMutation.isPending ||
+              !name.trim() ||
+              !selectedDefinition ||
+              (selectedDefinition.fields.length === 0 &&
+                (!fieldValues.__key?.trim() || !fieldValues.__value?.trim()))
+            }
+          >
+            {createMutation.isPending ? 'Storing…' : 'Store credential'}
+          </button>
+        </div>
+      </form>
+
+      <div className="settings-resource__list">
+        {credentialsQuery.isLoading ? (
+          <div className="settings-resource__empty">Loading credentials…</div>
+        ) : credentialsQuery.isError ? (
+          <div className="settings-resource__empty">Could not load credentials.</div>
+        ) : credentialsQuery.data && credentialsQuery.data.length > 0 ? (
+          credentialsQuery.data.map((credential) => (
+            <div key={credential.id} className="settings-resource__row">
+              <div className="settings-resource__row-main">
+                <div className="settings-resource__row-title">{credential.name}</div>
+                <div className="settings-resource__row-meta">
+                  {titleCaseIdentifier(credential.secretType)} · keys{' '}
+                  {credential.keys.join(', ') || '—'}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="settings-resource__row-action"
+                disabled={deleteMutation.isPending}
+                onClick={() => {
+                  void deleteMutation.mutateAsync(credential.name);
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          ))
+        ) : (
+          <div className="settings-resource__empty">No credentials stored yet.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function IntegrationSchemaFields({
   label,
   schema,
@@ -631,9 +960,12 @@ function IntegrationsResourceCard({
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState('');
   const [credentialName, setCredentialName] = useState('');
-  const [createCredential, setCreateCredential] = useState(true);
+  const [selectedExistingCredential, setSelectedExistingCredential] = useState('');
+  const [createInlineCredential, setCreateInlineCredential] = useState(true);
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
   const [configValues, setConfigValues] = useState<Record<string, string>>({});
+  const [oauthPendingSlug, setOauthPendingSlug] = useState<string | null>(null);
+  const [lastTestStatus, setLastTestStatus] = useState<Record<string, string>>({});
 
   const catalogQuery = useQuery({
     queryKey: ['settings-resource', providerId, resource.id, 'integration-catalog'],
@@ -648,10 +980,26 @@ function IntegrationsResourceCard({
     },
   });
 
+  const credentialsQuery = useQuery({
+    queryKey: ['settings-resource', providerId, resource.id, 'credentials'],
+    queryFn: async () => {
+      const payload = await client.get<CredentialListResponse | CredentialSummaryRecord[]>(
+        resource.credentialListPath,
+      );
+      return normalizeCredentialRows(payload);
+    },
+  });
+
   const selectedEntry = useMemo(() => {
     const entries = catalogQuery.data ?? [];
     return entries.find((entry) => (entry.slug ?? entry.id) === selectedId) ?? entries[0] ?? null;
   }, [catalogQuery.data, selectedId]);
+
+  const selectedConnection = useMemo(() => {
+    return (
+      integrationsQuery.data?.find((integration) => (integration.slug ?? '') === selectedId) ?? null
+    );
+  }, [integrationsQuery.data, selectedId]);
 
   const credentialSchema = useMemo(
     () =>
@@ -668,24 +1016,33 @@ function IntegrationsResourceCard({
     const nextId = selectedEntry.slug ?? selectedEntry.id;
     setSelectedId(nextId);
     setCredentialName((current) => current || `${nextId}-credential`);
+    setSelectedExistingCredential('');
     setCredentialValues(buildInitialResourceValues(credentialSchema));
     setConfigValues(buildInitialResourceValues(configSchema));
   }, [selectedEntry, credentialSchema, configSchema]);
+
+  useEffect(() => {
+    if (!oauthPendingSlug) return;
+    if (typeof window === 'undefined') return;
+
+    const intervalId = window.setInterval(() => {
+      void integrationsQuery.refetch().then((result) => {
+        const found = result.data?.find((integration) => integration.slug === oauthPendingSlug);
+        if (found) {
+          setOauthPendingSlug(null);
+        }
+      });
+    }, 2000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [integrationsQuery, oauthPendingSlug]);
 
   const createMutation = useMutation({
     mutationFn: async () => {
       if (!selectedEntry) {
         throw new Error('No integration selected');
-      }
-      if (createCredential) {
-        const credentialPayload = Object.fromEntries(
-          Object.entries(credentialValues).filter(([, value]) => value.trim() !== ''),
-        );
-        await client.post(resource.credentialCreatePath, {
-          name: credentialName,
-          secret_type: inferSecretType(selectedEntry),
-          data: credentialPayload,
-        });
       }
 
       const configPayload = Object.fromEntries(
@@ -708,13 +1065,40 @@ function IntegrationsResourceCard({
       );
 
       return client.post(resource.createPath, {
-        integration_type: selectedEntry.integrationType ?? selectedEntry.integration_type ?? '',
-        adapter: selectedEntry.adapter ?? '',
-        credential_name: credentialName,
+        slug: selectedEntry.slug ?? selectedEntry.id,
         config: configPayload,
         enabled: true,
-        slug: selectedEntry.slug ?? selectedEntry.id,
+        ...(createInlineCredential
+          ? {
+              credential: {
+                name: credentialName,
+                data: Object.fromEntries(
+                  Object.entries(credentialValues).filter(([, value]) => value.trim() !== ''),
+                ),
+              },
+            }
+          : {
+              credential_name: selectedExistingCredential,
+            }),
       });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['settings-resource', providerId, resource.id, 'integrations'],
+      });
+      setOauthPendingSlug(null);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (integration: { id: string; slug?: string; oauth: boolean }) => {
+      if (integration.oauth && integration.slug) {
+        return client.post<void>(
+          resource.oauthDisconnectPath.replace('{slug}', integration.slug),
+          {},
+        );
+      }
+      return client.delete<void>(resource.deletePath.replace('{id}', integration.id));
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({
@@ -723,16 +1107,46 @@ function IntegrationsResourceCard({
     },
   });
 
-  const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      return client.delete<void>(resource.deletePath.replace('{id}', id));
+  const testMutation = useMutation({
+    mutationFn: async (integrationId: string) => {
+      return client.post<{
+        success: boolean;
+        provider: string;
+        workspace?: string | null;
+        user?: string | null;
+        error?: string | null;
+      }>(resource.testPath.replace('{id}', integrationId), {});
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ['settings-resource', providerId, resource.id, 'integrations'],
-      });
+    onSuccess: (result, integrationId) => {
+      setLastTestStatus((current) => ({
+        ...current,
+        [integrationId]: result.success
+          ? `Connected to ${result.provider}${result.workspace ? ` · ${result.workspace}` : ''}`
+          : result.error || 'Connection test failed',
+      }));
+    },
+    onError: (_error, integrationId) => {
+      setLastTestStatus((current) => ({
+        ...current,
+        [integrationId]: 'Connection test failed',
+      }));
     },
   });
+
+  const oauthMutation = useMutation({
+    mutationFn: async (slug: string) => {
+      return client.get<{ url: string }>(resource.oauthAuthorizePath.replace('{slug}', slug));
+    },
+    onSuccess: (payload, slug) => {
+      setOauthPendingSlug(slug);
+      if (typeof window !== 'undefined') {
+        window.open(payload.url, `${slug}-oauth`, 'popup,width=720,height=840');
+      }
+    },
+  });
+
+  const selectedIsOauth = isOauthIntegration(selectedEntry);
+  const availableCredentials = credentialsQuery.data ?? [];
 
   return (
     <section className="settings-resource">
@@ -745,135 +1159,188 @@ function IntegrationsResourceCard({
         </div>
       </div>
 
-      <form
-        className="settings-resource__composer settings-resource__composer--stacked"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!selectedEntry || !credentialName.trim()) return;
-          void createMutation.mutateAsync();
-        }}
-      >
-        <div className="settings-resource__schema-fields">
-          <label className="settings-resource__composer-field">
-            <span className="settings-resource__composer-label">Integration</span>
-            <div className="settings-field__control-wrap">
-              <select
-                value={selectedId}
-                onChange={(event) => {
-                  setSelectedId(event.target.value);
-                  const next = (catalogQuery.data ?? []).find(
-                    (entry) => (entry.slug ?? entry.id) === event.target.value,
-                  );
-                  setCredentialName(`${event.target.value}-credential`);
-                  setCredentialValues(
-                    buildInitialResourceValues(
-                      normalizeCatalogSchema(next?.credentialSchema ?? next?.credential_schema),
-                    ),
-                  );
-                  setConfigValues(
-                    buildInitialResourceValues(
-                      normalizeCatalogSchema(next?.configSchema ?? next?.config_schema),
-                    ),
-                  );
-                }}
-                className="settings-field__control"
-              >
-                {(catalogQuery.data ?? []).map((entry) => {
-                  const key = entry.slug ?? entry.id;
-                  return (
-                    <option key={key} value={key}>
-                      {entry.name}
-                    </option>
-                  );
-                })}
-              </select>
-              <span className="settings-field__select-caret" aria-hidden="true">
-                ▾
-              </span>
-            </div>
-          </label>
-
-          <label className="settings-resource__composer-field">
-            <span className="settings-resource__composer-label">Credential name</span>
-            <input
-              value={credentialName}
-              onChange={(event) => setCredentialName(event.target.value)}
-              className="settings-field__control"
-            />
-          </label>
-        </div>
-
-        <label className="settings-field settings-field--toggle settings-resource__toggle">
-          <div className="settings-field__meta">
-            <span className="settings-field__label">Store credential first</span>
-            <span className="settings-field__description">
-              Disable this if you want to connect an existing credential by name.
-            </span>
-          </div>
-          <span className="settings-checkbox">
-            <input
-              type="checkbox"
-              checked={createCredential}
-              onChange={(event) => setCreateCredential(event.target.checked)}
-              className="settings-checkbox__input"
-            />
-            <span className="settings-checkbox__ui">
-              <span
-                className={cn(
-                  'settings-checkbox__box',
-                  createCredential && 'settings-checkbox__box--checked',
+      <div className="settings-resource__list settings-resource__list--catalog">
+        {(catalogQuery.data ?? []).map((entry) => {
+          const key = entry.slug ?? entry.id;
+          const connected = integrationsQuery.data?.some((integration) => integration.slug === key);
+          return (
+            <button
+              key={key}
+              type="button"
+              className={cn(
+                'settings-resource__catalog-card',
+                key === selectedId && 'settings-resource__catalog-card--active',
+              )}
+              onClick={() => {
+                setSelectedId(key);
+                setCredentialName(`${key}-credential`);
+              }}
+            >
+              <span className="settings-resource__catalog-title">{entry.name}</span>
+              <span className="settings-resource__catalog-meta">
+                {formatIntegrationType(
+                  entry.integrationType ?? entry.integration_type ?? 'integration',
                 )}
-                aria-hidden="true"
-              >
-                {createCredential ? '✓' : ''}
+                {connected ? ' · connected' : ''}
               </span>
-              <span className="settings-checkbox__label" aria-hidden="true">
-                {createCredential ? 'Enabled' : 'Disabled'}
-              </span>
-            </span>
-          </span>
-        </label>
+            </button>
+          );
+        })}
+      </div>
 
-        {createCredential ? (
-          <IntegrationSchemaFields
-            label="Credential"
-            schema={credentialSchema}
-            values={credentialValues}
-            onChange={(key, value) => {
-              setCredentialValues((current) => ({ ...current, [key]: value }));
-            }}
-          />
-        ) : null}
-
-        <IntegrationSchemaFields
-          label="Connection config"
-          schema={configSchema}
-          values={configValues}
-          onChange={(key, value) => {
-            setConfigValues((current) => ({ ...current, [key]: value }));
+      {selectedEntry ? (
+        <form
+          className="settings-resource__composer settings-resource__composer--stacked"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!selectedEntry) return;
+            if (!selectedIsOauth && createInlineCredential && !credentialName.trim()) return;
+            if (!selectedIsOauth && !createInlineCredential && !selectedExistingCredential) return;
+            void createMutation.mutateAsync();
           }}
-        />
+        >
+          <div className="settings-resource__header">
+            <div>
+              <h3 className="settings-resource__title settings-resource__title--compact">
+                {selectedEntry.name}
+              </h3>
+              {selectedEntry.description ? (
+                <p className="settings-resource__copy">{selectedEntry.description}</p>
+              ) : null}
+            </div>
+          </div>
 
-        <div className="settings-resource__actions">
-          {createMutation.isError ? (
-            <span className="settings-shell__status settings-shell__status--error">
-              Could not create this integration.
-            </span>
-          ) : null}
-          {createMutation.isSuccess ? (
-            <span className="settings-shell__status settings-shell__status--success">
-              Integration connected.
-            </span>
-          ) : null}
-          <button
-            type="submit"
-            className="settings-shell__save-button settings-shell__save-button--secondary"
-            disabled={createMutation.isPending || !selectedEntry || !credentialName.trim()}
-          >
-            {createMutation.isPending ? 'Connecting…' : 'Add integration'}
-          </button>
-        </div>
-      </form>
+          {selectedIsOauth ? (
+            <div className="settings-resource__actions">
+              {selectedConnection ? (
+                <span className="settings-shell__status settings-shell__status--success">
+                  Connected as {selectedConnection.credentialName}
+                </span>
+              ) : null}
+              {oauthPendingSlug === (selectedEntry.slug ?? selectedEntry.id) ? (
+                <span className="settings-shell__status">Waiting for OAuth confirmation…</span>
+              ) : null}
+              <button
+                type="button"
+                className="settings-shell__save-button settings-shell__save-button--secondary"
+                disabled={oauthMutation.isPending || !!selectedConnection}
+                onClick={() => {
+                  void oauthMutation.mutateAsync(selectedEntry.slug ?? selectedEntry.id);
+                }}
+              >
+                {oauthMutation.isPending ? 'Opening…' : 'Connect with OAuth'}
+              </button>
+            </div>
+          ) : (
+            <>
+              <label className="settings-field settings-field--toggle settings-resource__toggle">
+                <div className="settings-field__meta">
+                  <span className="settings-field__label">Create a new credential</span>
+                  <span className="settings-field__description">
+                    Turn this off to attach an existing stored credential instead.
+                  </span>
+                </div>
+                <span className="settings-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={createInlineCredential}
+                    onChange={(event) => setCreateInlineCredential(event.target.checked)}
+                    className="settings-checkbox__input"
+                  />
+                  <span className="settings-checkbox__ui">
+                    <span
+                      className={cn(
+                        'settings-checkbox__box',
+                        createInlineCredential && 'settings-checkbox__box--checked',
+                      )}
+                      aria-hidden="true"
+                    >
+                      {createInlineCredential ? '✓' : ''}
+                    </span>
+                    <span className="settings-checkbox__label" aria-hidden="true">
+                      {createInlineCredential ? 'Enabled' : 'Disabled'}
+                    </span>
+                  </span>
+                </span>
+              </label>
+
+              {createInlineCredential ? (
+                <>
+                  <label className="settings-resource__composer-field">
+                    <span className="settings-resource__composer-label">Credential name</span>
+                    <input
+                      value={credentialName}
+                      onChange={(event) => setCredentialName(event.target.value)}
+                      className="settings-field__control"
+                    />
+                  </label>
+                  <IntegrationSchemaFields
+                    label="Credential"
+                    schema={credentialSchema}
+                    values={credentialValues}
+                    onChange={(key, value) => {
+                      setCredentialValues((current) => ({ ...current, [key]: value }));
+                    }}
+                  />
+                </>
+              ) : (
+                <label className="settings-resource__composer-field">
+                  <span className="settings-resource__composer-label">Stored credential</span>
+                  <div className="settings-field__control-wrap">
+                    <select
+                      value={selectedExistingCredential}
+                      onChange={(event) => setSelectedExistingCredential(event.target.value)}
+                      className="settings-field__control"
+                    >
+                      <option value="">Choose a stored credential</option>
+                      {availableCredentials.map((credential) => (
+                        <option key={credential.id} value={credential.name}>
+                          {credential.name}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="settings-field__select-caret" aria-hidden="true">
+                      ▾
+                    </span>
+                  </div>
+                </label>
+              )}
+
+              <IntegrationSchemaFields
+                label="Connection config"
+                schema={configSchema}
+                values={configValues}
+                onChange={(key, value) => {
+                  setConfigValues((current) => ({ ...current, [key]: value }));
+                }}
+              />
+
+              <div className="settings-resource__actions">
+                {createMutation.isError ? (
+                  <span className="settings-shell__status settings-shell__status--error">
+                    Could not connect this integration.
+                  </span>
+                ) : null}
+                {createMutation.isSuccess ? (
+                  <span className="settings-shell__status settings-shell__status--success">
+                    Integration connected.
+                  </span>
+                ) : null}
+                <button
+                  type="submit"
+                  className="settings-shell__save-button settings-shell__save-button--secondary"
+                  disabled={
+                    createMutation.isPending ||
+                    (createInlineCredential ? !credentialName.trim() : !selectedExistingCredential)
+                  }
+                >
+                  {createMutation.isPending ? 'Connecting…' : 'Connect integration'}
+                </button>
+              </div>
+            </>
+          )}
+        </form>
+      ) : null}
 
       <div className="settings-resource__list">
         {integrationsQuery.isLoading ? (
@@ -891,17 +1358,42 @@ function IntegrationsResourceCard({
                   {formatIntegrationType(integration.integrationType)} ·{' '}
                   {integration.credentialName} · {integration.enabled ? 'enabled' : 'disabled'}
                 </div>
+                {lastTestStatus[integration.id] ? (
+                  <div className="settings-resource__row-note">
+                    {lastTestStatus[integration.id]}
+                  </div>
+                ) : null}
               </div>
-              <button
-                type="button"
-                className="settings-resource__row-action"
-                disabled={deleteMutation.isPending}
-                onClick={() => {
-                  void deleteMutation.mutateAsync(integration.id);
-                }}
-              >
-                Disconnect
-              </button>
+              <div className="settings-resource__row-actions">
+                <button
+                  type="button"
+                  className="settings-resource__row-action"
+                  disabled={testMutation.isPending}
+                  onClick={() => {
+                    void testMutation.mutateAsync(integration.id);
+                  }}
+                >
+                  Test
+                </button>
+                <button
+                  type="button"
+                  className="settings-resource__row-action"
+                  disabled={deleteMutation.isPending}
+                  onClick={() => {
+                    void deleteMutation.mutateAsync({
+                      id: integration.id,
+                      slug: integration.slug,
+                      oauth: isOauthIntegration(
+                        (catalogQuery.data ?? []).find(
+                          (entry) => (entry.slug ?? entry.id) === integration.slug,
+                        ) ?? null,
+                      ),
+                    });
+                  }}
+                >
+                  Disconnect
+                </button>
+              </div>
             </div>
           ))
         ) : (
@@ -933,6 +1425,16 @@ function SettingsSectionResources({
         if (resource.type === 'tokens') {
           return (
             <TokensResourceCard
+              key={resource.id}
+              resource={resource}
+              rootBase={rootBase}
+              providerId={snapshot.provider.id}
+            />
+          );
+        }
+        if (resource.type === 'credentials') {
+          return (
+            <CredentialsResourceCard
               key={resource.id}
               resource={resource}
               rootBase={rootBase}

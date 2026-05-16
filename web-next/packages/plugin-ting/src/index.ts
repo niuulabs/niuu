@@ -13,7 +13,7 @@ const LEGACY_SETTINGS_SECTION_TARGETS: Record<string, string> = {
   general: '/settings/ting/general',
   dispatch: '/settings/ting/dispatch',
   flock: '/settings/ting/flock',
-  integrations: '/settings/ting/integrations',
+  integrations: '/settings/integrations/connections',
   notifications: '/settings/ting/notifications',
 };
 
@@ -63,18 +63,24 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/settings',
-      beforeLoad: () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        throw redirect({ to: resolveLegacySettingsTarget() as any });
+      beforeLoad: ({ location }) => {
+        throw redirect({
+          to: resolveLegacySettingsTarget() as never,
+          // Preserve the active profile selector when old settings links bounce
+          // into the unified settings shell.
+          search: location.search as never,
+        });
       },
       component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/settings/$sectionId',
-      beforeLoad: ({ params }) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        throw redirect({ to: resolveLegacySettingsTarget(params.sectionId) as any });
+      beforeLoad: ({ params, location }) => {
+        throw redirect({
+          to: resolveLegacySettingsTarget(params.sectionId) as never,
+          search: location.search as never,
+        });
       },
       component: () => null,
     }),

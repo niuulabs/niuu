@@ -29,11 +29,24 @@ describe('niuuConfigSchema', () => {
     const parsed = niuuConfigSchema.parse({
       services: {
         bifrost: { baseUrl: '/api/v1/bifrost', mode: 'http' },
-        mimir: { baseUrl: '/mimir', mode: 'http' },
+        mimir: { baseUrl: '/api/v1/mimir', mode: 'http' },
+        'forge.pty': { wsUrl: '/s/{sessionId}/session', mode: 'ws' },
       },
     });
     expect(parsed.services.bifrost?.baseUrl).toBe('/api/v1/bifrost');
-    expect(parsed.services.mimir?.baseUrl).toBe('/mimir');
+    expect(parsed.services.mimir?.baseUrl).toBe('/api/v1/mimir');
+    expect(parsed.services['forge.pty']?.wsUrl).toBe('/s/{sessionId}/session');
+  });
+
+  it('accepts absolute websocket service URLs', () => {
+    const parsed = niuuConfigSchema.parse({
+      services: {
+        'forge.pty': { wsUrl: 'wss://niuu.example.com/s/{sessionId}/session', mode: 'ws' },
+      },
+    });
+    expect(parsed.services['forge.pty']?.wsUrl).toBe(
+      'wss://niuu.example.com/s/{sessionId}/session',
+    );
   });
 
   it('rejects an invalid theme', () => {
@@ -48,5 +61,25 @@ describe('niuuConfigSchema', () => {
         },
       }),
     ).toThrow('Invalid url');
+  });
+
+  it('rejects a non-websocket streaming URL', () => {
+    expect(() =>
+      niuuConfigSchema.parse({
+        services: {
+          'forge.pty': { wsUrl: 'https://niuu.example.com/s/{sessionId}/session', mode: 'ws' },
+        },
+      }),
+    ).toThrow('Invalid websocket url');
+  });
+
+  it('rejects an invalid websocket service URL', () => {
+    expect(() =>
+      niuuConfigSchema.parse({
+        services: {
+          'forge.pty': { wsUrl: 'not-a-websocket-url', mode: 'ws' },
+        },
+      }),
+    ).toThrow('Invalid websocket url');
   });
 });

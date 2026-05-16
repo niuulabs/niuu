@@ -1256,24 +1256,33 @@ webNext:
       login:
         enabled: true
         order: 0
-      bifrost:
+      credentials:
         enabled: true
         order: 1
-      volundr:
+      integrations:
         enabled: true
         order: 2
-      ting:
+      bifrost:
         enabled: true
         order: 3
-      mimir:
+      volundr:
         enabled: true
         order: 4
-      ravn:
+      ting:
         enabled: true
         order: 5
-      settings:
+      mimir:
         enabled: true
         order: 6
+      ravn:
+        enabled: true
+        order: 7
+      observatory:
+        enabled: true
+        order: 8
+      settings:
+        enabled: true
+        order: 9
     auth:
       issuer: ""
       clientId: ""

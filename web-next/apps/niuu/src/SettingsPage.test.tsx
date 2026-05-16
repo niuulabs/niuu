@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ConfigProvider } from '@niuulabs/plugin-sdk';
 import type { ReactNode } from 'react';
@@ -60,31 +60,34 @@ function installDefaultGetMock() {
               },
             ],
           },
-          {
-            id: 'integrations',
-            label: 'Integrations',
-            description: 'Connect services.',
-            fields: [],
-            resources: [
-              {
-                id: 'service_integrations',
-                type: 'integrations',
-                label: 'Service integrations',
-                description: 'Create credentials and connect services.',
-                listPath: '/api/v1/integrations',
-                catalogPath: '/api/v1/integrations/catalog',
-                createPath: '/api/v1/integrations',
-                deletePath: '/api/v1/integrations/{id}',
-                credentialCreatePath: '/api/v1/credentials/user',
-              },
-            ],
-          },
         ],
       };
     }
     if (path === '/api/v1/tokens') {
       return [
         { id: 'tok-1', name: 'local-tools', createdAt: '2026-05-15T12:00:00Z', lastUsedAt: null },
+      ];
+    }
+    if (path === '/api/v1/credentials/user') {
+      return {
+        credentials: [
+          {
+            id: 'cred-1',
+            name: 'shared-openai',
+            secretType: 'api_key',
+            keys: ['api_key'],
+          },
+        ],
+      };
+    }
+    if (path === '/api/v1/credentials/types') {
+      return [
+        {
+          type: 'api_key',
+          label: 'API Key',
+          description: 'API keys for external services',
+          fields: [{ key: 'api_key', label: 'API Key', type: 'password', required: true }],
+        },
       ];
     }
     if (path === '/api/v1/integrations') {
@@ -160,11 +163,15 @@ function wrap(children: ReactNode) {
       value={{
         theme: 'ice',
         plugins: {
-          login: { enabled: true, order: 1 },
-          ting: { enabled: true, order: 2 },
+          login: { enabled: true, order: 0 },
+          credentials: { enabled: true, order: 1 },
+          integrations: { enabled: true, order: 2 },
+          ting: { enabled: true, order: 3 },
         },
         services: {
           identity: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/identity' },
+          credentials: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/credentials' },
+          integrations: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/integrations' },
           ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
         },
       }}
@@ -256,16 +263,309 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('button', { name: 'Save notification settings' })).toBeTruthy();
   });
 
-  it('renders the integrations resource composer inside the unified shell', async () => {
-    routerMocks.params = { providerId: 'ting', sectionId: 'integrations' };
+  it('renders the credentials resource composer inside the unified shell', async () => {
+    routerMocks.params = { providerId: 'credentials', sectionId: 'user' };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Credentials',
+          subtitle: 'stored secrets and runtime keys',
+          scope: 'user',
+          sections: [
+            {
+              id: 'user',
+              label: 'User credentials',
+              description: 'Reusable stored credentials.',
+              fields: [],
+              resources: [
+                {
+                  id: 'user_credentials',
+                  type: 'credentials',
+                  label: 'User credentials',
+                  description: 'Store secrets once and reuse them.',
+                  listPath: '/api/v1/credentials/user',
+                  typesPath: '/api/v1/credentials/types',
+                  createPath: '/api/v1/credentials/user',
+                  deletePath: '/api/v1/credentials/user/{name}',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/credentials/user') {
+        return {
+          credentials: [
+            {
+              id: 'cred-1',
+              name: 'shared-openai',
+              secretType: 'api_key',
+              keys: ['api_key'],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/credentials/types') {
+        return [
+          {
+            type: 'api_key',
+            label: 'API Key',
+            description: 'API keys for external services',
+            fields: [{ key: 'api_key', label: 'API Key', type: 'password', required: true }],
+          },
+        ];
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
     wrap(<SettingsPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Integrations' })).toBeTruthy();
-    expect(screen.getByText('Service integrations')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Add integration' })).toBeTruthy();
-    expect(await screen.findByText('telegram')).toBeTruthy();
-    expect(screen.getByRole('combobox')).toBeTruthy();
+    expect((await screen.findAllByRole('heading', { name: 'User credentials' })).length).toBe(2);
+    expect(screen.getByText('Store credential')).toBeTruthy();
+    expect(await screen.findByText('shared-openai')).toBeTruthy();
+  });
+
+  it('renders the integrations resource composer inside the unified shell', async () => {
+    routerMocks.params = { providerId: 'integrations', sectionId: 'connections' };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Integrations',
+          subtitle: 'connected services and providers',
+          scope: 'user',
+          sections: [
+            {
+              id: 'connections',
+              label: 'Connections',
+              description: 'Connect external services.',
+              fields: [],
+              resources: [
+                {
+                  id: 'integration_connections',
+                  type: 'integrations',
+                  label: 'Integration connections',
+                  description: 'Connect services and providers.',
+                  listPath: '/api/v1/integrations',
+                  catalogPath: '/api/v1/integrations/catalog',
+                  createPath: '/api/v1/integrations',
+                  deletePath: '/api/v1/integrations/{id}',
+                  credentialListPath: '/api/v1/credentials/user',
+                  testPath: '/api/v1/integrations/{id}/test',
+                  oauthAuthorizePath: '/api/v1/integrations/oauth/{slug}/authorize',
+                  oauthDisconnectPath: '/api/v1/integrations/oauth/{slug}/disconnect',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/credentials/user') {
+        return {
+          credentials: [
+            {
+              id: 'cred-1',
+              name: 'shared-openai',
+              secretType: 'api_key',
+              keys: ['api_key'],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/integrations') {
+        return [
+          {
+            id: 'int-1',
+            slug: 'telegram',
+            integrationType: 'messaging',
+            credentialName: 'telegram-main',
+            enabled: true,
+          },
+        ];
+      }
+      if (path === '/api/v1/integrations/catalog') {
+        return [
+          {
+            id: 'telegram',
+            slug: 'telegram',
+            name: 'Telegram',
+            description: 'Bot notifications',
+            integration_type: 'messaging',
+            adapter: '',
+            auth_type: 'api_key',
+            credential_schema: {
+              required: ['bot_token', 'chat_id'],
+              properties: {
+                bot_token: { label: 'Bot token', type: 'password' },
+                chat_id: { label: 'Chat ID', type: 'string' },
+              },
+            },
+            config_schema: {},
+          },
+        ];
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    wrap(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Connections' })).toBeTruthy();
+    expect(screen.getByText('Integration connections')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Connect integration' })).toBeTruthy();
+    expect(await screen.findAllByText('Telegram')).toHaveLength(2);
     expect(screen.getByDisplayValue('telegram-credential')).toBeTruthy();
+  });
+
+  it('supports reusing an existing stored credential for non-oauth integrations', async () => {
+    routerMocks.params = { providerId: 'integrations', sectionId: 'connections' };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Integrations',
+          subtitle: 'connected services and providers',
+          scope: 'user',
+          sections: [
+            {
+              id: 'connections',
+              label: 'Connections',
+              description: 'Connect external services.',
+              fields: [],
+              resources: [
+                {
+                  id: 'integration_connections',
+                  type: 'integrations',
+                  label: 'Integration connections',
+                  description: 'Connect services and providers.',
+                  listPath: '/api/v1/integrations',
+                  catalogPath: '/api/v1/integrations/catalog',
+                  createPath: '/api/v1/integrations',
+                  deletePath: '/api/v1/integrations/{id}',
+                  credentialListPath: '/api/v1/credentials/user',
+                  testPath: '/api/v1/integrations/{id}/test',
+                  oauthAuthorizePath: '/api/v1/integrations/oauth/{slug}/authorize',
+                  oauthDisconnectPath: '/api/v1/integrations/oauth/{slug}/disconnect',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/credentials/user') {
+        return {
+          credentials: [
+            {
+              id: 'cred-1',
+              name: 'shared-linear',
+              secretType: 'api_key',
+              keys: ['api_key'],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/integrations') {
+        return [];
+      }
+      if (path === '/api/v1/integrations/catalog') {
+        return [
+          {
+            id: 'linear',
+            slug: 'linear',
+            name: 'Linear',
+            description: 'Issue tracking',
+            integration_type: 'issue_tracker',
+            adapter: 'linear',
+            auth_type: 'api_key',
+            credential_schema: {
+              required: ['api_key'],
+              properties: {
+                api_key: { label: 'API Key', type: 'password' },
+              },
+            },
+            config_schema: {},
+          },
+        ];
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    wrap(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Connections' })).toBeTruthy();
+    const reuseToggle = screen.getByRole('checkbox', { name: /Create a new credential/i });
+    fireEvent.click(reuseToggle);
+    expect(screen.getByText('Stored credential')).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'shared-linear' })).toBeTruthy();
+  });
+
+  it('renders oauth integration flows without the inline credential composer', async () => {
+    routerMocks.params = { providerId: 'integrations', sectionId: 'connections' };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Integrations',
+          subtitle: 'connected services and providers',
+          scope: 'user',
+          sections: [
+            {
+              id: 'connections',
+              label: 'Connections',
+              description: 'Connect external services.',
+              fields: [],
+              resources: [
+                {
+                  id: 'integration_connections',
+                  type: 'integrations',
+                  label: 'Integration connections',
+                  description: 'Connect services and providers.',
+                  listPath: '/api/v1/integrations',
+                  catalogPath: '/api/v1/integrations/catalog',
+                  createPath: '/api/v1/integrations',
+                  deletePath: '/api/v1/integrations/{id}',
+                  credentialListPath: '/api/v1/credentials/user',
+                  testPath: '/api/v1/integrations/{id}/test',
+                  oauthAuthorizePath: '/api/v1/integrations/oauth/{slug}/authorize',
+                  oauthDisconnectPath: '/api/v1/integrations/oauth/{slug}/disconnect',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/credentials/user') {
+        return { credentials: [] };
+      }
+      if (path === '/api/v1/integrations') {
+        return [
+          {
+            id: 'int-1',
+            slug: 'github',
+            integrationType: 'source_control',
+            credentialName: 'github-oauth',
+            enabled: true,
+          },
+        ];
+      }
+      if (path === '/api/v1/integrations/catalog') {
+        return [
+          {
+            id: 'github',
+            slug: 'github',
+            name: 'GitHub',
+            description: 'Source control',
+            integration_type: 'source_control',
+            adapter: 'github',
+            auth_type: 'oauth_token',
+            credential_schema: {},
+            config_schema: {},
+          },
+        ];
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    wrap(<SettingsPage />);
+
+    expect(await screen.findByRole('button', { name: 'Connect with OAuth' })).toBeTruthy();
+    expect(screen.getByText('Connected as github-oauth')).toBeTruthy();
+    expect(screen.queryByText('Create a new credential')).toBeNull();
   });
 
   it('renders the missing-provider state when a service base URL is not configured', async () => {

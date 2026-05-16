@@ -8,12 +8,16 @@ describe('buildMountedSettingsProviders', () => {
       theme: 'ice',
       plugins: {
         login: { enabled: true, order: 0 },
-        ting: { enabled: true, order: 2 },
-        bifrost: { enabled: true, order: 3 },
-        ravn: { enabled: true, order: 4 },
+        credentials: { enabled: true, order: 1 },
+        integrations: { enabled: true, order: 2 },
+        ting: { enabled: true, order: 3 },
+        bifrost: { enabled: true, order: 4 },
+        ravn: { enabled: true, order: 5 },
       },
       services: {
         identity: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1' },
+        credentials: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/credentials' },
+        integrations: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/integrations' },
         ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
         bifrost: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/bifrost' },
         ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
@@ -22,6 +26,8 @@ describe('buildMountedSettingsProviders', () => {
 
     expect(providers.map((provider) => provider.id)).toEqual([
       'identity',
+      'credentials',
+      'integrations',
       'ting',
       'bifrost',
       'ravn',
@@ -33,15 +39,25 @@ describe('buildMountedSettingsProviders', () => {
     });
     expect(providers[1]).toMatchObject({
       source: 'remote',
+      id: 'credentials',
+      baseUrl: 'http://localhost:8080/api/v1/credentials',
+    });
+    expect(providers[2]).toMatchObject({
+      source: 'remote',
+      id: 'integrations',
+      baseUrl: 'http://localhost:8080/api/v1/integrations',
+    });
+    expect(providers[3]).toMatchObject({
+      source: 'remote',
       id: 'ting',
       baseUrl: 'http://localhost:8080/api/v1/ting',
     });
-    expect(providers[2]).toMatchObject({
+    expect(providers[4]).toMatchObject({
       source: 'remote',
       id: 'bifrost',
       baseUrl: 'http://localhost:8080/api/v1/bifrost',
     });
-    expect(providers[3]).toMatchObject({
+    expect(providers[5]).toMatchObject({
       source: 'remote',
       id: 'ravn',
       baseUrl: 'http://localhost:8080/api/v1/ravn',

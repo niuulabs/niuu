@@ -35,6 +35,18 @@ export interface RemoteSettingsTokensResource {
   deletePath: string;
 }
 
+export interface RemoteSettingsCredentialsResource {
+  id: string;
+  type: 'credentials';
+  label: string;
+  description?: string;
+  writable?: boolean;
+  listPath: string;
+  typesPath: string;
+  createPath: string;
+  deletePath: string;
+}
+
 export interface RemoteSettingsIntegrationsResource {
   id: string;
   type: 'integrations';
@@ -45,11 +57,15 @@ export interface RemoteSettingsIntegrationsResource {
   catalogPath: string;
   createPath: string;
   deletePath: string;
-  credentialCreatePath: string;
+  credentialListPath: string;
+  testPath: string;
+  oauthAuthorizePath: string;
+  oauthDisconnectPath: string;
 }
 
 export type RemoteSettingsResource =
   | RemoteSettingsTokensResource
+  | RemoteSettingsCredentialsResource
   | RemoteSettingsIntegrationsResource;
 
 export interface RemoteSettingsSectionSchema {
@@ -92,6 +108,22 @@ const REMOTE_PROVIDER_DEFS = [
     subtitle: 'personal settings',
     scope: 'user' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'identity'),
+  },
+  {
+    id: 'credentials',
+    pluginId: 'credentials',
+    title: 'Credentials',
+    subtitle: 'stored secrets and runtime keys',
+    scope: 'user' as const,
+    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'credentials'),
+  },
+  {
+    id: 'integrations',
+    pluginId: 'integrations',
+    title: 'Integrations',
+    subtitle: 'connected services and providers',
+    scope: 'user' as const,
+    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'integrations'),
   },
   {
     id: 'volundr',
@@ -158,7 +190,9 @@ export function buildMountedSettingsProviders(config: NiuuConfig): MountedSettin
     if (localPluginIds.has(def.pluginId)) continue;
     if (
       !isPluginEnabled(config, def.pluginId) &&
-      !(def.id === 'identity' && def.resolver(config))
+      !(def.id === 'identity' && def.resolver(config)) &&
+      !(def.id === 'credentials' && def.resolver(config)) &&
+      !(def.id === 'integrations' && def.resolver(config))
     ) {
       continue;
     }

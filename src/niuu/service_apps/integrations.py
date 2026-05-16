@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
@@ -97,6 +98,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             app.state.identity = identity_adapter
             app.state.pat_validator = pat_validator
+            app.include_router(create_integrations_settings_router())
             app.include_router(
                 create_canonical_integrations_router(
                     integration_repo,

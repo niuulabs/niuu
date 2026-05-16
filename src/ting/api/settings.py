@@ -16,7 +16,6 @@ from pydantic import BaseModel, Field
 
 from niuu.settings_schema import (
     SettingsFieldSchema,
-    SettingsIntegrationsResourceSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
@@ -287,30 +286,6 @@ def create_settings_router() -> APIRouter:
                             value=notifications.get("webhook_url") or "",
                             placeholder="https://hooks.example.test/ting",
                         ),
-                    ],
-                ),
-                SettingsSectionSchema(
-                    id="integrations",
-                    label="Integrations",
-                    description=(
-                        "Connect trackers, providers, and messaging services "
-                        "to Ting from one place."
-                    ),
-                    fields=[],
-                    resources=[
-                        SettingsIntegrationsResourceSchema(
-                            id="service_integrations",
-                            label="Service integrations",
-                            description=(
-                                "Create credentials and connect catalog integrations "
-                                "without leaving settings."
-                            ),
-                            list_path="/api/v1/integrations",
-                            catalog_path="/api/v1/integrations/catalog",
-                            create_path="/api/v1/integrations",
-                            delete_path="/api/v1/integrations/{id}",
-                            credential_create_path="/api/v1/credentials/user",
-                        )
                     ],
                 ),
             ],

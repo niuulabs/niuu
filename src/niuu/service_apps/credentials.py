@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
@@ -63,6 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             app.state.identity = identity_adapter
             app.state.pat_validator = pat_validator
+            app.include_router(create_credentials_settings_router())
             app.include_router(create_canonical_credentials_router(credential_service))
             app.include_router(create_canonical_secrets_router(mcp_provider, secret_manager))
 

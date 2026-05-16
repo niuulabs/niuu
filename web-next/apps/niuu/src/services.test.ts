@@ -307,6 +307,38 @@ describe('resolveSettingsServiceBase', () => {
       ),
     ).toBe('http://localhost:8080/api/v1/bifrost');
   });
+
+  it('resolves shared credentials settings from the grouped credentials base', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            credentials: {
+              mode: 'http',
+              baseUrl: 'http://localhost:8080/api/v1/credentials',
+            },
+          },
+        } as any,
+        'credentials',
+      ),
+    ).toBe('http://localhost:8080/api/v1/credentials');
+  });
+
+  it('resolves shared integrations settings from the grouped integrations base', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            integrations: {
+              mode: 'http',
+              baseUrl: 'http://localhost:8080/api/v1/integrations',
+            },
+          },
+        } as any,
+        'integrations',
+      ),
+    ).toBe('http://localhost:8080/api/v1/integrations');
+  });
 });
 
 describe('resolveForgeServiceBase', () => {
@@ -525,6 +557,21 @@ describe('buildServiceBackendStatus', () => {
       transport: 'ws',
       target: 'ws://localhost:8080/s/{sessionId}/session',
       source: 'forge',
+    });
+  });
+
+  it('resolves root-relative forge pty websocket URLs against the browser host', () => {
+    const status = buildServiceBackendStatus({
+      services: {
+        'forge.pty': { mode: 'ws', wsUrl: '/s/{sessionId}/session' },
+      },
+    } as any);
+
+    expect(status['forge.pty']).toEqual({
+      mode: 'live',
+      transport: 'ws',
+      target: 'ws://localhost:3000/s/{sessionId}/session',
+      source: 'forge.pty',
     });
   });
 
