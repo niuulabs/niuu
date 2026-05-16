@@ -26,7 +26,6 @@ from .session import (
     SessionService,
     SessionStateError,
 )
-from .session_archive import SessionArchiveNotAvailableError, SessionArchiveService
 from .stats import StatsService
 from .tenant import TenantAlreadyExistsError, TenantNotFoundError, TenantService
 from .token import SessionNotRunningError, TokenService
@@ -61,8 +60,6 @@ __all__ = [
     "GitWorkflowService",
     "PromptService",
     "RepoService",
-    "SessionArchiveNotAvailableError",
-    "SessionArchiveService",
     "SessionService",
     "StatsService",
     "TenantService",

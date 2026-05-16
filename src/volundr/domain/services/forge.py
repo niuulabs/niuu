@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from volundr.domain.ports import PricingProvider
     from volundr.domain.services.chronicle import ChronicleService
     from volundr.domain.services.repo import ProviderInfo, RepoService
-    from volundr.domain.services.session_archive import SessionArchiveService
     from volundr.domain.services.stats import StatsService
     from volundr.domain.services.token import TokenService
     from volundr.domain.services.workspace import WorkspaceService
@@ -41,7 +40,6 @@ class ForgeService:
         pricing_provider: PricingProvider | None = None,
         repo_service: RepoService | None = None,
         chronicle_service: ChronicleService | None = None,
-        archive_service: SessionArchiveService | None = None,
         workspace_service: WorkspaceService | None = None,
     ) -> None:
         self._session_service = session_service
@@ -50,7 +48,6 @@ class ForgeService:
         self._pricing_provider = pricing_provider
         self._repo_service = repo_service
         self._chronicle_service = chronicle_service
-        self._archive_service = archive_service
         self._workspace_service = workspace_service
 
     @property
@@ -65,7 +62,6 @@ class ForgeService:
             pricing_provider=self._pricing_provider,
             repo_service=self._repo_service,
             chronicle_service=self._chronicle_service,
-            archive_service=self._archive_service,
             workspace_service=workspace_service,
         )
 
@@ -364,45 +360,6 @@ class ForgeService:
         if base_url.endswith("/session"):
             base_url = base_url[: -len("/session")]
         return session, base_url
-
-    async def get_transcript(self, session_id: UUID) -> dict:
-        if self._archive_service is None:
-            raise RuntimeError("Session archive service not available")
-        return await self._archive_service.get_transcript(session_id)
-
-    async def get_transcript_download_path(self, session_id: UUID, fmt: str):
-        if self._archive_service is None:
-            raise RuntimeError("Session archive service not available")
-        return await self._archive_service.get_transcript_download_path(session_id, fmt)
-
-    async def get_archive_manifest(self, session_id: UUID) -> dict:
-        if self._archive_service is None:
-            raise RuntimeError("Session archive service not available")
-        return await self._archive_service.get_archive_manifest(session_id)
-
-    async def build_archive(self, session_id: UUID, *, force: bool = False) -> dict:
-        if self._archive_service is None:
-            raise RuntimeError("Session archive service not available")
-        return await self._archive_service.build_archive(session_id, force=force)
-
-    async def get_aggregated_logs(
-        self,
-        session_id: UUID,
-        *,
-        lines: int = 200,
-        level: str = "DEBUG",
-        participants: set[str] | None = None,
-        query: str = "",
-    ) -> dict:
-        if self._archive_service is None:
-            raise RuntimeError("Session archive service not available")
-        return await self._archive_service.get_logs(
-            session_id,
-            lines=lines,
-            level=level,
-            participants=participants,
-            query=query,
-        )
 
     async def get_stats(self):
         if self._stats_service is None:

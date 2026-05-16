@@ -927,14 +927,6 @@ class StoragePort(ABC):
         """Get the workspace PVC for a session. Returns None if not found."""
         return None
 
-    def resolve_session_workspace_path(self, session_id: str) -> str | None:
-        """Resolve the local filesystem path for a session workspace if accessible.
-
-        Returns ``None`` when the storage backend does not expose the workspace
-        on the current host filesystem.
-        """
-        return None
-
 
 class GatewayPort(ABC):
     """Port for Gateway API resource management.
