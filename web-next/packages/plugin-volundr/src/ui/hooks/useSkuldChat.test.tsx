@@ -708,10 +708,35 @@ page_path: council/demo/opinion-b.md
       result.current.sendMessage('Need a summary', []);
     });
 
-    await waitFor(() =>
-      expect(sendJson).toHaveBeenCalledWith({ type: 'user', content: 'Need a summary' }),
-    );
+    await waitFor(() => {
+      expect(sendJson).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'user',
+          content: 'Need a summary',
+          request_id: expect.any(String),
+        }),
+      );
+    });
     expect(result.current.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: 'Need a summary',
+    });
+    const plainRequestId = sendJson.mock.calls.at(-1)?.[0]?.request_id as string;
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'user_confirmed',
+          id: 'server-user-1',
+          request_id: plainRequestId,
+          content: 'Need a summary',
+        }),
+      );
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]).toMatchObject({
+      id: 'server-user-1',
       role: 'user',
       content: 'Need a summary',
     });
@@ -733,20 +758,23 @@ page_path: council/demo/opinion-b.md
     });
 
     await waitFor(() =>
-      expect(sendJson).toHaveBeenCalledWith({
-        type: 'user',
-        content: [
-          { type: 'text', text: 'See attached' },
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: 'image/png',
-              data: 'cG5nLWRhdGE=',
+      expect(sendJson).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'user',
+          request_id: expect.any(String),
+          content: [
+            { type: 'text', text: 'See attached' },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'cG5nLWRhdGE=',
+              },
             },
-          },
-        ],
-      }),
+          ],
+        }),
+      ),
     );
     expect(result.current.messages.at(-1)?.attachments).toEqual([
       {
@@ -756,6 +784,43 @@ page_path: council/demo/opinion-b.md
         contentType: 'image/png',
       },
     ]);
+    const attachmentRequestId = sendJson.mock.calls.at(-1)?.[0]?.request_id as string;
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'user_confirmed',
+          id: 'server-user-2',
+          request_id: attachmentRequestId,
+          content: JSON.stringify([
+            { type: 'text', text: 'See attached' },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'cG5nLWRhdGE=',
+              },
+            },
+          ]),
+        }),
+      );
+    });
+
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages.at(-1)).toMatchObject({
+      id: 'server-user-2',
+      role: 'user',
+      content: 'See attached',
+      attachments: [
+        {
+          name: 'diagram.png',
+          type: 'image',
+          size: 8,
+          contentType: 'image/png',
+        },
+      ],
+    });
 
     await act(async () => {
       result.current.sendMessage('   ', [
@@ -770,19 +835,22 @@ page_path: council/demo/opinion-b.md
     });
 
     await waitFor(() =>
-      expect(sendJson).toHaveBeenCalledWith({
-        type: 'user',
-        content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: 'image/png',
-              data: 'cG5nLWRhdGE=',
+      expect(sendJson).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'user',
+          request_id: expect.any(String),
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'cG5nLWRhdGE=',
+              },
             },
-          },
-        ],
-      }),
+          ],
+        }),
+      ),
     );
   });
 

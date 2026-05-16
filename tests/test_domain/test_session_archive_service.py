@@ -391,3 +391,63 @@ async def test_session_archive_service_can_use_config_scoped_archive_root(
     assert manifest["location"] == "config"
     assert archive_root == tmp_path / ".niuu" / "archives-store" / str(session.id)
     assert (archive_root / "transcript.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_session_archive_service_reads_config_archive_without_workspace_lookup(
+    tmp_path,
+    monkeypatch,
+    storage,
+    session_repository,
+    session_service,
+):
+    monkeypatch.setenv("NIUU_HOME", str(tmp_path / ".niuu"))
+    session = Session(
+        name="config-archive-replay",
+        model="claude-sonnet-4",
+        status=SessionStatus.STOPPED,
+    )
+    await session_repository.create(session)
+    await storage.create_session_workspace(str(session.id), user_id="u1", tenant_id="t1")
+    workspace_path = storage.resolve_session_workspace_path(str(session.id))
+    assert workspace_path is not None
+    workspace = Path(workspace_path)
+    (workspace / ".skuld").mkdir(parents=True, exist_ok=True)
+    (workspace / ".skuld" / f"conversation_{session.id}.json").write_text(
+        json.dumps({"turns": [{"id": "1", "role": "assistant", "content": "archived replay"}]}),
+        encoding="utf-8",
+    )
+    (workspace / ".skuld.log").write_text(
+        "2026-01-01 12:00:00 skuld INFO archived replay\n",
+        encoding="utf-8",
+    )
+
+    seeded_archive = SessionArchiveService(
+        session_service,
+        storage,
+        FileSystemArchiveStore(location="config", path="archives-store"),
+    )
+    await seeded_archive.build_archive(session.id, force=True)
+
+    class MissingStorage:
+        def resolve_session_workspace_path(self, _session_id: str) -> str | None:
+            return None
+
+        async def get_workspace_by_session(self, _session_id: str):
+            return None
+
+    replay_archive = SessionArchiveService(
+        session_service,
+        MissingStorage(),
+        FileSystemArchiveStore(location="config", path="archives-store"),
+    )
+
+    transcript = await replay_archive.get_transcript(session.id)
+    logs = await replay_archive.get_logs(session.id)
+    manifest = await replay_archive.get_archive_manifest(session.id)
+    download_path = await replay_archive.get_transcript_download_path(session.id, "json")
+
+    assert transcript["turns"][0]["content"] == "archived replay"
+    assert logs["lines"][0]["message"] == "archived replay"
+    assert manifest["session_id"] == str(session.id)
+    assert download_path.name == "transcript.json"

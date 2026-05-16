@@ -528,6 +528,7 @@ export function useSkuldChat(
   const participantsRef = useRef(participants);
   const agentEventsRef = useRef(agentEvents);
   const internalStreamsRef = useRef<Map<string, InternalParticipantStream>>(new Map());
+  const optimisticUserMessagesRef = useRef<Map<string, string>>(new Map());
   const toolJsonRef = useRef('');
   const toolIdRef = useRef('');
   const streamingMessageIdRef = useRef<string | null>(null);
@@ -1044,7 +1045,37 @@ export function useSkuldChat(
                   : generateId();
             const content = typeof event.content === 'string' ? event.content : '';
             if (!content) break;
+            const requestId =
+              typeof event.request_id === 'string' && event.request_id ? event.request_id : null;
+            const optimisticMessageId = requestId
+              ? optimisticUserMessagesRef.current.get(requestId)
+              : undefined;
+            if (requestId && optimisticMessageId) {
+              optimisticUserMessagesRef.current.delete(requestId);
+            }
             setMessages((prev) => {
+              if (optimisticMessageId) {
+                return prev.map((message) =>
+                  message.id === optimisticMessageId
+                    ? {
+                        ...message,
+                        id: messageId,
+                        createdAt: event.created_at
+                          ? new Date(event.created_at)
+                          : message.createdAt,
+                        status: 'done',
+                        visibility: event.visibility ?? message.visibility,
+                        metadata:
+                          event.metadata && typeof event.metadata === 'object'
+                            ? ({
+                                ...(message.metadata ?? {}),
+                                ...(event.metadata as ChatMessage['metadata']),
+                              } as ChatMessage['metadata'])
+                            : message.metadata,
+                      }
+                    : message,
+                );
+              }
               if (prev.some((message) => message.id === messageId)) {
                 return prev;
               }
@@ -1340,13 +1371,15 @@ export function useSkuldChat(
       if (!trimmed && attachments.length === 0) return;
 
       Promise.all(attachments.map(attachmentToWireContent)).then((converted) => {
+        const requestId = generateId();
         const valid = converted.filter(
           (value): value is NonNullable<typeof value> => value !== null,
         );
+        optimisticUserMessagesRef.current.set(requestId, requestId);
         setMessages((prev) => [
           ...prev,
           {
-            id: generateId(),
+            id: requestId,
             role: 'user',
             content: trimmed,
             createdAt: new Date(),
@@ -1359,11 +1392,11 @@ export function useSkuldChat(
           const blocks: Array<{ type: 'text'; text: string } | ContentBlock> = [];
           if (trimmed) blocks.push({ type: 'text', text: trimmed });
           blocks.push(...valid.map((item) => item.block));
-          sendJson({ type: 'user', content: blocks });
+          sendJson({ type: 'user', content: blocks, request_id: requestId });
           return;
         }
 
-        sendJson({ type: 'user', content: trimmed });
+        sendJson({ type: 'user', content: trimmed, request_id: requestId });
       });
     },
     [sendJson],

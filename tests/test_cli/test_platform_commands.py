@@ -267,9 +267,12 @@ class TestDynamicUpCallback:
             assert os.environ["LOCAL_MOUNTS__ENABLED"] == "true"
             assert os.environ["LOCAL_MOUNTS__MINI_MODE"] == "true"
             assert os.environ["POD_MANAGER__ADAPTER"] == settings.pod_manager.adapter
-            assert (
-                os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"]
-                == "~/.niuu/workspaces"
+            assert os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "~/.niuu/workspaces"
+            assert os.environ["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == str(
+                Path("~/.niuu/workspaces").expanduser()
+            )
+            assert os.environ["STORAGE__KWARGS__HOME_MOUNT_PATH"] == str(
+                Path("~/.niuu/home").expanduser()
             )
             assert os.environ["POD_MANAGER__KWARGS__CLAUDE_BINARY"] == "claude"
             assert os.environ["POD_MANAGER__KWARGS__MAX_CONCURRENT"] == "4"
@@ -308,6 +311,8 @@ class TestDynamicUpCallback:
             )
 
             assert os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "/tmp/mini-workspaces"
+            assert os.environ["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == "/tmp/mini-workspaces"
+            assert os.environ["STORAGE__KWARGS__HOME_MOUNT_PATH"] == "/tmp/home"
 
         assert startup.await_count == 1
         called_settings = startup.await_args.args[1]
@@ -529,6 +534,8 @@ class TestRouteInventoryPayload:
                 "plugin": "niuu",
             }
         ]
+
+
 class TestInitOverwriteProtection:
     def test_aborts_when_config_exists_and_user_declines(self) -> None:
         import tempfile
@@ -776,4 +783,3 @@ class TestPlatformInventoryCommand:
         assert result.exit_code == 0
         assert out_path.exists()
         assert '"name": "niuu-api"' in out_path.read_text()
-

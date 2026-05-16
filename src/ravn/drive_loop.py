@@ -560,6 +560,7 @@ class DriveLoop:
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=config.task_queue_max)
         self._active_tasks: dict[str, asyncio.Task] = {}
         self._active_task_contexts: dict[str, AgentTask] = {}
+        self._active_agents: dict[str, object] = {}
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
         self._journal_path = Path(config.queue_journal_path).expanduser()
         self._source_id = "drive_loop"
@@ -878,6 +879,9 @@ class DriveLoop:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Enqueue a directed message from the browser as an agent task."""
+        if await self._try_steer_active_agent(content):
+            return
+
         import time
 
         task_id = f"task_{int(time.time() * 1000):x}_{self._next_counter()}"
@@ -906,6 +910,32 @@ class DriveLoop:
                 task.session_id = session_id
         logger.info("drive_loop: directed message enqueued as task %s", task_id)
         await self.enqueue(task)
+
+    async def _try_steer_active_agent(self, content: str) -> bool:
+        """Attempt to steer the currently active agent instead of queueing a new task."""
+        if not content.strip():
+            return False
+
+        steerable = [
+            agent
+            for agent in self._active_agents.values()
+            if getattr(agent, "supports_steering", False) and getattr(agent, "steering_mode", "")
+        ]
+        if len(steerable) != 1:
+            return False
+
+        agent = steerable[0]
+        steer = getattr(agent, "steer", None)
+        if steer is None:
+            return False
+        try:
+            steered = await steer(content)
+        except Exception:
+            logger.warning("drive_loop: active agent steering failed; falling back to enqueue")
+            return False
+        if steered:
+            logger.info("drive_loop: directed message applied as live steering")
+        return bool(steered)
 
     # ------------------------------------------------------------------
     # Main run loop
@@ -1090,6 +1120,7 @@ class DriveLoop:
         success = False
         token = self._current_task_var.set(task)
         self._active_task_contexts[task.task_id] = task
+        self._active_agents[task.task_id] = agent
         try:
             try:
                 turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
@@ -1191,6 +1222,7 @@ class DriveLoop:
                 thread_path = task.triggered_by.removeprefix("thread:")
                 await self._finalise_thread(thread_path, success)
         finally:
+            self._active_agents.pop(task.task_id, None)
             self._active_task_contexts.pop(task.task_id, None)
             self._current_task_var.reset(token)
 

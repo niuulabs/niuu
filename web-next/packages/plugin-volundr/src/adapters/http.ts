@@ -1157,7 +1157,7 @@ export function buildVolundrHttpAdapter(
 
     getConversationHistory: (sessionId) =>
       forgeClient
-        .get<ConversationPayload>(`/sessions/${sessionId}/conversation/history`)
+        .get<ConversationPayload>(`/sessions/${sessionId}/conversation`)
         .then(normalizeConversationHistory),
     getMessages: (sessionId) => loadMessages(sessionId),
     sendMessage: (sessionId, content) =>

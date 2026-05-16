@@ -91,6 +91,7 @@ class ForgeService:
         *,
         principal: Principal | None = None,
     ) -> Session:
+        resolved_definition = self._resolve_session_definition(data.model, data.definition)
         session = await self._session_service.create_session(
             name=data.name,
             model=data.model,
@@ -104,7 +105,7 @@ class ForgeService:
         )
         return await self._session_service.start_session(
             session.id,
-            definition=data.definition,
+            definition=resolved_definition,
             profile_name=data.profile_name,
             template_name=data.template_name,
             principal=principal,
@@ -117,6 +118,25 @@ class ForgeService:
             workload_type=data.workload_type,
             workload_config=data.workload_config or None,
         )
+
+    def _resolve_session_definition(
+        self,
+        model: str,
+        explicit_definition: str | None,
+    ) -> str | None:
+        if explicit_definition:
+            return explicit_definition
+        if self._pricing_provider is None:
+            return None
+        normalized_model = str(model or "").strip()
+        if not normalized_model:
+            return None
+        for candidate in self._pricing_provider.list_models():
+            if str(getattr(candidate, "id", "") or "").strip() != normalized_model:
+                continue
+            definition = str(getattr(candidate, "session_definition", "") or "").strip()
+            return definition or None
+        return None
 
     async def get_session(self, session_id: UUID) -> Session | None:
         return await self._session_service.get_session(session_id)

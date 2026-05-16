@@ -140,6 +140,18 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/sessions');
   });
 
+  it('getConversationHistory calls GET /sessions/:id/conversation', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      turns: [{ id: 'turn-1', role: 'assistant', content: 'archived reply' }],
+    });
+
+    const history = await buildVolundrHttpAdapter(client).getConversationHistory('sess-1');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/conversation');
+    expect(history.turns[0]).toMatchObject({ id: 'turn-1', role: 'assistant' });
+  });
+
   it('getSession calls GET /sessions/:id', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).getSession('s1');

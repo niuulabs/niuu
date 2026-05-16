@@ -366,12 +366,19 @@ MINI_POD_MANAGER_DEFAULTS: dict[str, Any] = {
     "claude_binary": "claude",
 }
 
+
 def _resolve_mini_pod_manager_env(settings: CLISettings) -> dict[str, str]:
     """Build env overrides for Volundr mini-mode runtime configuration."""
+    from pathlib import Path
+
     kwargs = dict(settings.pod_manager.adapter_kwargs())
+    workspaces_dir = Path(str(kwargs.get("workspaces_dir", "~/.niuu/workspaces"))).expanduser()
+    home_dir = workspaces_dir.parent / "home"
 
     env = {
         "POD_MANAGER__ADAPTER": settings.pod_manager.adapter,
+        "STORAGE__KWARGS__WORKSPACE_MOUNT_PATH": str(workspaces_dir),
+        "STORAGE__KWARGS__HOME_MOUNT_PATH": str(home_dir),
         "GIT__VALIDATE_ON_CREATE": "false",
     }
     for key, value in kwargs.items():

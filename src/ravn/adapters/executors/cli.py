@@ -125,6 +125,16 @@ class CliTransportAgent(ExecutionAgentPort):
     def task_id(self) -> str:
         return self._task_id
 
+    @property
+    def supports_steering(self) -> bool:
+        return self._transport is not None and self._transport.capabilities.steer
+
+    @property
+    def steering_mode(self) -> str:
+        if self._transport is None:
+            return "none"
+        return self._transport.capabilities.steering_mode
+
     def interrupt(self, reason: InterruptReason) -> None:
         if self._interrupt_reason is None:
             self._interrupt_reason = reason
@@ -133,6 +143,18 @@ class CliTransportAgent(ExecutionAgentPort):
             return
 
         asyncio.create_task(self._transport.send_control("interrupt"))
+
+    async def steer(self, content: str) -> bool:
+        transport = self._transport
+        if (
+            transport is None
+            or not transport.capabilities.steer
+            or not transport.is_turn_active
+            or not content.strip()
+        ):
+            return False
+        await transport.send_control("steer", content=content)
+        return True
 
     async def run_turn(self, user_input: str) -> TurnResult:
         if self._interrupt_reason is not None:

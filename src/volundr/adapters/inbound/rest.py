@@ -1813,13 +1813,9 @@ def create_router(
 
         try:
             async with connect(ws_url, **connect_kwargs) as ws:
-                # Drain any pending messages from the server
-                try:
-                    while True:
-                        await asyncio.wait_for(ws.recv(), timeout=1)
-                except TimeoutError:
-                    pass
-                # Send the user message
+                # Send immediately. Draining startup traffic here can delay or
+                # drop the first user turn for transports that emit welcome or
+                # capability events while still coming online.
                 await ws.send(json.dumps({"type": "user", "content": content}))
         except Exception as e:
             raise HTTPException(
@@ -2651,6 +2647,12 @@ def create_router(
     compat_router.add_api_route(
         "/sessions/{session_id}/conversation",
         get_conversation,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    compat_router.add_api_route(
+        "/sessions/{session_id}/transcript",
+        get_session_transcript,
         methods=["GET"],
         include_in_schema=False,
     )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -59,6 +59,60 @@ async def test_create_and_start_session_delegates_to_session_service() -> None:
         system_prompt="system",
         initial_prompt="start",
         workload_type="interactive",
+        workload_config=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_and_start_session_resolves_definition_from_model_catalog() -> None:
+    session_service = AsyncMock(spec=SessionService)
+    created = SimpleNamespace(id=uuid4())
+    started = SimpleNamespace(id=created.id)
+    session_service.create_session.return_value = created
+    session_service.start_session.return_value = started
+    pricing_provider = Mock()
+    pricing_provider.list_models.return_value = [
+        SimpleNamespace(id="gpt-5.5", session_definition="skuldCodex"),
+    ]
+    forge = ForgeService(session_service, pricing_provider=pricing_provider)
+    data = SimpleNamespace(
+        name="demo",
+        model="gpt-5.5",
+        source=SimpleNamespace(),
+        definition=None,
+        template_name=None,
+        preset_id=None,
+        workspace_id=None,
+        issue_id=None,
+        issue_url=None,
+        profile_name=None,
+        terminal_restricted=False,
+        credential_names=None,
+        integration_ids=None,
+        resource_config=None,
+        system_prompt="",
+        initial_prompt="",
+        workload_type="session",
+        workload_config=None,
+    )
+
+    result = await forge.create_and_start_session(data)
+
+    assert result is started
+    pricing_provider.list_models.assert_called_once_with()
+    session_service.start_session.assert_awaited_once_with(
+        created.id,
+        definition="skuldCodex",
+        profile_name=None,
+        template_name=None,
+        principal=None,
+        terminal_restricted=False,
+        credential_names=None,
+        integration_ids=None,
+        resource_config=None,
+        system_prompt="",
+        initial_prompt="",
+        workload_type="session",
         workload_config=None,
     )
 

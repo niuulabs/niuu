@@ -139,4 +139,47 @@ describe('MarkdownContent', () => {
     expect(screen.getByText('coder').tagName).toBe('CODE');
     expect(screen.getByText('blocked')).toBeInTheDocument();
   });
+
+  it('renders archived session summary JSON as a formatted summary card', () => {
+    render(
+      <MarkdownContent
+        content={JSON.stringify({
+          summary: 'The session started a timer and then stopped it after a user redirect.',
+          key_changes: ['started a `sleep` loop', 'stopped the timer after interruption'],
+          unfinished_work: null,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('session-summary-card')).toBeInTheDocument();
+    expect(screen.getByText('Session summary')).toBeInTheDocument();
+    expect(
+      screen.getByText('The session started a timer and then stopped it after a user redirect.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Key changes')).toBeInTheDocument();
+    expect(screen.getByText('sleep').tagName).toBe('CODE');
+    expect(screen.queryByText('Unfinished work')).not.toBeInTheDocument();
+  });
+
+  it('renders unfinished work section when present in archived summary JSON', () => {
+    render(
+      <MarkdownContent
+        content={JSON.stringify({
+          summary: 'The session wrapped up the main task.',
+          unfinished_work: ['Follow up on deployment docs', 'Verify the rollback path'],
+        })}
+      />,
+    );
+
+    expect(screen.getByText('Unfinished work')).toBeInTheDocument();
+    expect(screen.getByText('Follow up on deployment docs')).toBeInTheDocument();
+    expect(screen.getByText('Verify the rollback path')).toBeInTheDocument();
+  });
+
+  it('leaves unrelated JSON content alone', () => {
+    render(<MarkdownContent content={'{"event":"turn.started","ok":true}'} />);
+
+    expect(screen.queryByTestId('session-summary-card')).not.toBeInTheDocument();
+    expect(screen.getByText('{"event":"turn.started","ok":true}')).toBeInTheDocument();
+  });
 });

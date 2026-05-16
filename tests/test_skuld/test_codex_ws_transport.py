@@ -815,6 +815,83 @@ class TestControl:
         await t.send_control("set_model", model="o3")
         assert t._model == "o3"
 
+    @pytest.mark.asyncio
+    async def test_steer_sends_turn_steer(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-5"
+
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            return {}
+
+        t._send_rpc = fake_send_rpc
+
+        await t.send_control("steer", content="Focus on the smaller patch")
+
+        assert calls[0][0] == "turn/steer"
+        assert calls[0][1]["threadId"] == "thread-1"
+        assert calls[0][1]["expectedTurnId"] == "turn-5"
+        assert calls[0][1]["input"][0]["text"] == "Focus on the smaller patch"
+
+    @pytest.mark.asyncio
+    async def test_redirect_interrupts_active_turn(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-5"
+
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            return {}
+
+        t._send_rpc = fake_send_rpc
+
+        await t.send_control("redirect", content="Actually do option B instead")
+
+        assert t._pending_redirects == ["Actually do option B instead"]
+        assert t._redirect_interrupt_requested is True
+        assert calls[0][0] == "turn/interrupt"
+        assert calls[0][1]["threadId"] == "thread-1"
+        assert calls[0][1]["turnId"] == "turn-5"
+
+    @pytest.mark.asyncio
+    async def test_redirect_without_active_turn_starts_new_turn(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = None
+
+        send_message = AsyncMock()
+        t.send_message = send_message
+
+        await t.send_control("redirect", content="Start fresh")
+
+        send_message.assert_awaited_once_with("Start fresh")
+
+    @pytest.mark.asyncio
+    async def test_turn_completed_restarts_with_pending_redirect(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-5"
+        t._pending_redirects = ["Do option B instead"]
+        t._redirect_interrupt_requested = True
+        emit = _collect_emits(t)
+
+        send_message = AsyncMock()
+        t.send_message = send_message
+
+        await t._handle_server_message({"method": "turn/completed", "params": {}})
+        await asyncio.sleep(0)
+
+        assert t._current_turn_id is None
+        assert t._redirect_interrupt_requested is False
+        assert t._pending_redirects == []
+        assert _events_of_type(emit, "result")
+        send_message.assert_awaited_once_with("Do option B instead")
+
 
 # ---------------------------------------------------------------------------
 # Approval / permission requests
@@ -1409,6 +1486,14 @@ class TestResolvePendingEdgeCases:
 
 
 class TestCapabilitiesValues:
+    def test_steer_is_true(self, tmp_path):
+        t = _make_transport(tmp_path)
+        assert t.capabilities.steer is True
+
+    def test_steering_mode_is_live(self, tmp_path):
+        t = _make_transport(tmp_path)
+        assert t.capabilities.steering_mode == "live"
+
     def test_set_permission_mode_is_false(self, tmp_path):
         t = _make_transport(tmp_path)
         assert t.capabilities.set_permission_mode is False

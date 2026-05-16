@@ -161,11 +161,8 @@ class TestDefaultSessionDefinitions:
         claude = _default_session_definitions()["skuldClaude"]
         assert claude.display_name == "Claude Code"
         assert claude.defaults["broker"]["cliType"] == "claude"
-        assert claude.defaults["broker"]["transport"] == "persistent_subprocess"
-        assert (
-            claude.defaults["broker"]["transportAdapter"]
-            == "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-        )
+        assert claude.defaults["broker"]["transport"] == "sdk"
+        assert claude.defaults["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
 
     def test_codex_defaults(self):
         codex = _default_session_definitions()["skuldCodex"]

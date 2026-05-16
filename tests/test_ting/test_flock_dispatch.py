@@ -432,11 +432,7 @@ class TestBuildSpawnRequestFlockEnabled:
         assert personas[0]["llm"]["model"] == "claude-sonnet-4-6"
         assert personas[0]["executor"] == {
             "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-            "kwargs": {
-                "transport_adapter": (
-                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-                )
-            },
+            "kwargs": {"transport_adapter": "skuld.transports.sdk.SDKTransport"},
         }
         assert personas[1]["llm"]["model"] == "gpt-5.5"
         assert personas[1]["executor"] == {

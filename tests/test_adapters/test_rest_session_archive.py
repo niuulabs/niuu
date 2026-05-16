@@ -149,3 +149,40 @@ async def test_get_conversation_falls_back_to_local_mount_source_without_storage
 
     assert response.status_code == 200
     assert response.json()["turns"][0]["content"] == "rest mount"
+
+
+@pytest.mark.asyncio
+async def test_get_session_transcript_reads_config_archive_without_workspace_lookup(
+    repository,
+    storage,
+    session_service,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("NIUU_HOME", str(tmp_path / ".niuu"))
+    session = await _seed_workspace(storage, repository)
+    seeded_archive = SessionArchiveService(
+        session_service,
+        storage,
+        FileSystemArchiveStore(location="config", path="archives-store"),
+    )
+    await seeded_archive.build_archive(session.id, force=True)
+
+    class MissingStorage:
+        def resolve_session_workspace_path(self, _session_id: str) -> str | None:
+            return None
+
+        async def get_workspace_by_session(self, _session_id: str):
+            return None
+
+    replay_archive = SessionArchiveService(
+        session_service,
+        MissingStorage(),
+        FileSystemArchiveStore(location="config", path="archives-store"),
+    )
+    client = TestClient(build_app(session_service, replay_archive))
+
+    response = client.get(f"/api/v1/volundr/sessions/{session.id}/transcript")
+
+    assert response.status_code == 200
+    assert response.json()["turns"][0]["content"] == "hello from archive"

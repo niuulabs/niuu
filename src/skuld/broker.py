@@ -40,6 +40,7 @@ from skuld.channels import (
     ChannelRegistry,
     TelegramChannel,
     WebSocketChannel,
+    _is_expected_ws_disconnect,
 )
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.config import SkuldSettings
@@ -2063,6 +2064,7 @@ class Broker:
     # must be True for the control to be forwarded.
     _CONTROL_CAPABILITY_MAP: dict[str, str] = {
         "interrupt": "interrupt",
+        "steer_active_turn": "steer",
         "set_model": "set_model",
         "set_max_thinking_tokens": "set_thinking_tokens",
         "set_permission_mode": "set_permission_mode",
@@ -2112,6 +2114,12 @@ class Broker:
             # Phase 3: interrupt current turn
             case "interrupt":
                 await self._transport.send_control("interrupt")
+
+            # Phase 3: steer the current turn with additional user guidance
+            case "steer_active_turn":
+                content = str(data.get("content") or "").strip()
+                if content:
+                    await self._transport.send_control("steer", content=content)
 
             # Phase 3: change model mid-session
             case "set_model":
@@ -2198,6 +2206,8 @@ class Broker:
                 # Record user turn in conversation history
                 content_str = message if isinstance(message, str) else json.dumps(message)
                 msg_id = str(uuid.uuid4())
+                request_id = data.get("request_id")
+                request_id = request_id if isinstance(request_id, str) and request_id else None
                 self._append_turn(
                     ConversationTurn(
                         id=msg_id,
@@ -2214,8 +2224,23 @@ class Broker:
                         "type": "user_confirmed",
                         "id": msg_id,
                         "content": content_str,
+                        "request_id": request_id,
                     }
                 )
+
+                if (
+                    getattr(self._transport.capabilities, "steer", False) is True
+                    and getattr(self._transport, "is_turn_active", False) is True
+                ):
+                    asyncio.create_task(
+                        self._safe_transport_control(
+                            self._transport,
+                            "redirect",
+                            content=message,
+                        ),
+                        name=f"transport-redirect-{msg_id}",
+                    )
+                    return
 
                 # send_message holds a per-instance lock for the entire
                 # turn. Awaiting inline blocks the WS receive loop, so the
@@ -2227,6 +2252,22 @@ class Broker:
                     self._safe_transport_send(self._transport, message),
                     name=f"transport-send-{msg_id}",
                 )
+
+    async def _safe_transport_control(
+        self,
+        transport: object,
+        subtype: str,
+        **kwargs: object,
+    ) -> None:
+        """Wrap transport.send_control so background failures surface to the UI."""
+        try:
+            await transport.send_control(subtype, **kwargs)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.exception("Transport send_control failed in background task")
+            try:
+                await self._channels.broadcast({"type": "error", "content": str(exc)})
+            except Exception:
+                logger.debug("Failed to broadcast transport control error", exc_info=True)
 
     async def _safe_transport_send(self, transport: object, message: str) -> None:
         """Wrap transport.send_message so background-task failures are surfaced.
@@ -3092,6 +3133,17 @@ class Broker:
         if self._chronicle_watcher is not None:
             self._chronicle_watcher.update_headers(self._build_auth_headers())
 
+    async def _safe_browser_send_json(self, websocket: WebSocket, payload: dict[str, Any]) -> bool:
+        """Send a browser frame unless the client has already disconnected."""
+        try:
+            await websocket.send_json(payload)
+            return True
+        except Exception as exc:
+            if _is_expected_ws_disconnect(exc):
+                logger.info("WebSocket disconnected")
+                return False
+            raise
+
     async def handle_websocket(self, websocket: WebSocket) -> None:
         """Handle a browser WebSocket connection at /session."""
         # Extract JWT before accepting — headers are available pre-accept
@@ -3106,7 +3158,10 @@ class Broker:
         try:
             if not self._transport:
                 logger.error("handle_websocket: transport not initialized")
-                await websocket.send_json({"type": "error", "content": "Transport not initialized"})
+                await self._safe_browser_send_json(
+                    websocket,
+                    {"type": "error", "content": "Transport not initialized"},
+                )
                 return
 
             # Lazy-start transport on first browser connection
@@ -3127,11 +3182,12 @@ class Broker:
                             e,
                             exc_info=True,
                         )
-                        await websocket.send_json(
+                        await self._safe_browser_send_json(
+                            websocket,
                             {
                                 "type": "error",
                                 "content": f"Transport start failed: {e}",
-                            }
+                            },
                         )
                         return
             else:
@@ -3141,16 +3197,19 @@ class Broker:
             asyncio.create_task(self._report_session_start())
 
             # Send welcome message
-            await websocket.send_json(
-                {"type": "system", "content": f"Connected to session {self.session_id}"}
-            )
+            if not await self._safe_browser_send_json(
+                websocket,
+                {"type": "system", "content": f"Connected to session {self.session_id}"},
+            ):
+                return
             logger.debug("handle_websocket: welcome message sent")
 
             # Send transport capabilities so the frontend knows which
             # controls to render.
             if self._transport:
                 caps = {"type": "capabilities", **asdict(self._transport.capabilities)}
-                await websocket.send_json(caps)
+                if not await self._safe_browser_send_json(websocket, caps):
+                    return
                 logger.debug("handle_websocket: capabilities sent")
 
             # Replay conversation history so late-joining browsers see
@@ -3160,16 +3219,22 @@ class Broker:
                     "Replaying %d conversation turns to new browser",
                     len(self._conversation_turns),
                 )
-                await websocket.send_json(
+                if not await self._safe_browser_send_json(
+                    websocket,
                     {
                         "type": "conversation_history",
                         "turns": [asdict(t) for t in self._conversation_turns],
-                    }
-                )
+                    },
+                ):
+                    return
 
             # Send current room state to late-joining browsers when room mode active
             if self._room_bridge is not None:
-                await websocket.send_json(self._room_bridge.get_room_state_event())
+                if not await self._safe_browser_send_json(
+                    websocket,
+                    self._room_bridge.get_room_state_event(),
+                ):
+                    return
 
             # Handle messages from browser
             while True:
@@ -3187,6 +3252,9 @@ class Broker:
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected")
         except Exception as e:
+            if _is_expected_ws_disconnect(e):
+                logger.info("WebSocket disconnected")
+                return
             logger.exception("WebSocket error")
             try:
                 await websocket.send_json({"type": "error", "content": str(e)})

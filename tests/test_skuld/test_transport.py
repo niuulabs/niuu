@@ -33,6 +33,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is False
         assert caps.session_resume is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -49,6 +51,8 @@ class TestTransportCapabilities:
         assert caps.session_resume is True
         assert caps.cli_websocket is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -69,6 +73,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is True
         assert caps.session_resume is True
         assert caps.interrupt is True
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is True
         assert caps.set_thinking_tokens is True
         assert caps.set_permission_mode is True
@@ -85,6 +91,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is False
         assert caps.session_resume is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -105,6 +113,8 @@ class TestTransportCapabilities:
         caps = TransportCapabilities(interrupt=True, set_model=True)
         assert caps.interrupt is True
         assert caps.set_model is True
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.cli_websocket is False
         assert caps.session_resume is False
 

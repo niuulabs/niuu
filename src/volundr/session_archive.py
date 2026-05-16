@@ -22,7 +22,7 @@ def config_root_dir() -> Path:
 
 
 def archive_root(
-    workspace_dir: str | Path,
+    workspace_dir: str | Path | None,
     *,
     session_id: str | None = None,
     archive_location: str = "workspace",
@@ -30,6 +30,8 @@ def archive_root(
 ) -> Path:
     """Return the archive root for a session."""
     if archive_location == "workspace":
+        if workspace_dir is None:
+            raise ValueError("workspace_dir is required for workspace-scoped archives")
         configured = Path(archive_path) if archive_path else DEFAULT_WORKSPACE_ARCHIVE_DIR
         if configured.is_absolute():
             return configured.expanduser()
@@ -54,51 +56,60 @@ def transcript_source_path(workspace_dir: str | Path, session_id: str) -> Path:
 
 
 def archive_manifest_path(
-    workspace_dir: str | Path,
+    workspace_dir: str | Path | None,
     *,
     session_id: str | None = None,
     archive_location: str = "workspace",
     archive_path: str | Path | None = None,
 ) -> Path:
     """Return the archive manifest path."""
-    return archive_root(
-        workspace_dir,
-        session_id=session_id,
-        archive_location=archive_location,
-        archive_path=archive_path,
-    ) / "manifest.json"
+    return (
+        archive_root(
+            workspace_dir,
+            session_id=session_id,
+            archive_location=archive_location,
+            archive_path=archive_path,
+        )
+        / "manifest.json"
+    )
 
 
 def archive_transcript_json_path(
-    workspace_dir: str | Path,
+    workspace_dir: str | Path | None,
     *,
     session_id: str | None = None,
     archive_location: str = "workspace",
     archive_path: str | Path | None = None,
 ) -> Path:
     """Return the archived transcript JSON path."""
-    return archive_root(
-        workspace_dir,
-        session_id=session_id,
-        archive_location=archive_location,
-        archive_path=archive_path,
-    ) / "transcript.json"
+    return (
+        archive_root(
+            workspace_dir,
+            session_id=session_id,
+            archive_location=archive_location,
+            archive_path=archive_path,
+        )
+        / "transcript.json"
+    )
 
 
 def archive_transcript_markdown_path(
-    workspace_dir: str | Path,
+    workspace_dir: str | Path | None,
     *,
     session_id: str | None = None,
     archive_location: str = "workspace",
     archive_path: str | Path | None = None,
 ) -> Path:
     """Return the archived transcript Markdown path."""
-    return archive_root(
-        workspace_dir,
-        session_id=session_id,
-        archive_location=archive_location,
-        archive_path=archive_path,
-    ) / "transcript.md"
+    return (
+        archive_root(
+            workspace_dir,
+            session_id=session_id,
+            archive_location=archive_location,
+            archive_path=archive_path,
+        )
+        / "transcript.md"
+    )
 
 
 def load_workspace_transcript(workspace_dir: str | Path, session_id: str) -> dict[str, Any]:
@@ -108,26 +119,91 @@ def load_workspace_transcript(workspace_dir: str | Path, session_id: str) -> dic
         return {"turns": [], "is_active": False, "last_activity": ""}
 
     data = _read_json(path)
-    turns = data.get("turns", [])
-    if not isinstance(turns, list):
-        turns = []
-    return {"turns": turns, "is_active": False, "last_activity": ""}
+    return _normalise_transcript_payload(data)
+
+
+def load_archive_transcript(
+    workspace_dir: str | Path | None,
+    *,
+    session_id: str | None = None,
+    archive_location: str = "workspace",
+    archive_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Load the normalized archived transcript if present."""
+    try:
+        path = archive_transcript_json_path(
+            workspace_dir,
+            session_id=session_id,
+            archive_location=archive_location,
+            archive_path=archive_path,
+        )
+    except ValueError:
+        return None
+    if not path.exists():
+        return None
+    data = _read_json(path)
+    return _normalise_transcript_payload(data)
 
 
 def load_archive_manifest(
-    workspace_dir: str | Path,
+    workspace_dir: str | Path | None,
     *,
     session_id: str | None = None,
     archive_location: str = "workspace",
     archive_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Load an archive manifest if present."""
-    path = archive_manifest_path(
-        workspace_dir,
-        session_id=session_id,
-        archive_location=archive_location,
-        archive_path=archive_path,
+    try:
+        path = archive_manifest_path(
+            workspace_dir,
+            session_id=session_id,
+            archive_location=archive_location,
+            archive_path=archive_path,
+        )
+    except ValueError:
+        return None
+    if not path.exists():
+        return None
+    return _read_json(path)
+
+
+def archive_logs_aggregate_path(
+    workspace_dir: str | Path | None,
+    *,
+    session_id: str | None = None,
+    archive_location: str = "workspace",
+    archive_path: str | Path | None = None,
+) -> Path:
+    """Return the archived aggregated logs path."""
+    return (
+        archive_root(
+            workspace_dir,
+            session_id=session_id,
+            archive_location=archive_location,
+            archive_path=archive_path,
+        )
+        / "logs"
+        / "aggregate.json"
     )
+
+
+def load_archive_logs(
+    workspace_dir: str | Path | None,
+    *,
+    session_id: str | None = None,
+    archive_location: str = "workspace",
+    archive_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Load archived aggregate logs if present."""
+    try:
+        path = archive_logs_aggregate_path(
+            workspace_dir,
+            session_id=session_id,
+            archive_location=archive_location,
+            archive_path=archive_path,
+        )
+    except ValueError:
+        return None
     if not path.exists():
         return None
     return _read_json(path)
@@ -278,6 +354,13 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Expected JSON object in {path}")
     return data
+
+
+def _normalise_transcript_payload(data: dict[str, Any]) -> dict[str, Any]:
+    turns = data.get("turns", [])
+    if not isinstance(turns, list):
+        turns = []
+    return {"turns": turns, "is_active": False, "last_activity": ""}
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

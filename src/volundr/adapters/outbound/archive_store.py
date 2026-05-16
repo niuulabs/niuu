@@ -11,7 +11,9 @@ from volundr.session_archive import (
     archive_root,
     archive_transcript_json_path,
     archive_transcript_markdown_path,
+    load_archive_logs,
     load_archive_manifest,
+    load_archive_transcript,
     write_session_archive,
 )
 
@@ -33,9 +35,35 @@ class FileSystemArchiveStore(ArchiveStorePort):
         self,
         *,
         session_id: str,
-        workspace_dir: str | Path,
+        workspace_dir: str | Path | None = None,
     ) -> dict[str, Any] | None:
         return load_archive_manifest(
+            workspace_dir,
+            session_id=session_id,
+            archive_location=self._location,
+            archive_path=self._path,
+        )
+
+    def load_transcript(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> dict[str, Any] | None:
+        return load_archive_transcript(
+            workspace_dir,
+            session_id=session_id,
+            archive_location=self._location,
+            archive_path=self._path,
+        )
+
+    def load_aggregated_logs(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> dict[str, Any] | None:
+        return load_archive_logs(
             workspace_dir,
             session_id=session_id,
             archive_location=self._location,
@@ -69,7 +97,7 @@ class FileSystemArchiveStore(ArchiveStorePort):
         self,
         *,
         session_id: str,
-        workspace_dir: str | Path,
+        workspace_dir: str | Path | None = None,
     ) -> Path:
         return archive_transcript_json_path(
             workspace_dir,
@@ -82,7 +110,7 @@ class FileSystemArchiveStore(ArchiveStorePort):
         self,
         *,
         session_id: str,
-        workspace_dir: str | Path,
+        workspace_dir: str | Path | None = None,
     ) -> Path:
         return archive_transcript_markdown_path(
             workspace_dir,
@@ -95,7 +123,7 @@ class FileSystemArchiveStore(ArchiveStorePort):
         self,
         *,
         session_id: str,
-        workspace_dir: str | Path,
+        workspace_dir: str | Path | None = None,
     ) -> Path:
         return archive_root(
             workspace_dir,
@@ -108,7 +136,7 @@ class FileSystemArchiveStore(ArchiveStorePort):
         self,
         *,
         session_id: str,
-        workspace_dir: str | Path,
+        workspace_dir: str | Path | None = None,
     ) -> Path:
         """Return the manifest path for callers that need direct access."""
         return archive_manifest_path(

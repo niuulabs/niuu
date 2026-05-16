@@ -735,6 +735,22 @@ summary: post-mortem source captured
         assert enqueued.workflow_node_id == "chair-node"
         assert enqueued.session_id == "session-1"
 
+    @pytest.mark.asyncio
+    async def test_handle_directed_message_steers_active_agent_when_available(self) -> None:
+        dl = _make_drive_loop()
+        dl.enqueue = AsyncMock()
+        steering_agent = SimpleNamespace(
+            supports_steering=True,
+            steering_mode="live",
+            steer=AsyncMock(return_value=True),
+        )
+        dl._active_agents["task-1"] = steering_agent
+
+        await dl._handle_directed_message("Please switch to option B")
+
+        steering_agent.steer.assert_awaited_once_with("Please switch to option B")
+        dl.enqueue.assert_not_called()
+
     def test_default_mimir_mount_fields_prefers_write_routing_then_instances(self) -> None:
         dl = _make_drive_loop()
         dl._settings.mimir.write_routing.default = ["permanent", "scratch"]

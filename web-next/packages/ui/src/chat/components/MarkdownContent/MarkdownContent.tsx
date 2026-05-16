@@ -12,6 +12,12 @@ interface CodeBlockProps {
   code: string;
 }
 
+interface SessionSummaryPayload {
+  summary: string;
+  key_changes?: string[];
+  unfinished_work?: string | string[] | null;
+}
+
 function CodeBlock({ language, code }: CodeBlockProps) {
   const [copied, handleCopy] = useCopyFeedback(code);
   const [collapsed, setCollapsed] = useState(false);
@@ -77,7 +83,49 @@ function CodeBlock({ language, code }: CodeBlockProps) {
 type Segment =
   | { type: 'text'; content: string }
   | { type: 'code'; language: string; content: string }
-  | { type: 'outcome'; raw: string };
+  | { type: 'outcome'; raw: string }
+  | { type: 'session_summary'; payload: SessionSummaryPayload };
+
+function SessionSummaryCard({ payload }: { payload: SessionSummaryPayload }) {
+  const unfinishedItems = Array.isArray(payload.unfinished_work)
+    ? payload.unfinished_work.filter(Boolean)
+    : payload.unfinished_work
+      ? [payload.unfinished_work]
+      : [];
+
+  return (
+    <section className="niuu-chat-md-summary-card" data-testid="session-summary-card">
+      <div className="niuu-chat-md-summary-card-eyebrow">Session summary</div>
+      <p className="niuu-chat-md-summary-card-text">{renderInline(payload.summary)}</p>
+      {payload.key_changes && payload.key_changes.length > 0 && (
+        <div className="niuu-chat-md-summary-card-section">
+          <h4 className="niuu-chat-md-summary-card-heading">Key changes</h4>
+          <ul className="niuu-chat-md-summary-card-list">
+            {payload.key_changes.map((item, index) => (
+              <li key={index}>{renderInline(item)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {unfinishedItems.length > 0 && (
+        <div className="niuu-chat-md-summary-card-section">
+          <h4 className="niuu-chat-md-summary-card-heading">Unfinished work</h4>
+          {unfinishedItems.length === 1 ? (
+            <p className="niuu-chat-md-summary-card-text">
+              {renderInline(unfinishedItems[0] ?? '')}
+            </p>
+          ) : (
+            <ul className="niuu-chat-md-summary-card-list">
+              {unfinishedItems.map((item, index) => (
+                <li key={index}>{renderInline(item)}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
 
 function parseSegments(text: string): Segment[] {
   const segments: Segment[] = [];
@@ -88,15 +136,7 @@ function parseSegments(text: string): Segment[] {
     if (fenceStart === -1) break;
 
     if (fenceStart > cursor) {
-      const textChunk = text.slice(cursor, fenceStart);
-      const outcome = extractOutcomeBlock(textChunk);
-      if (outcome) {
-        if (outcome.before.trim()) segments.push({ type: 'text', content: outcome.before });
-        segments.push({ type: 'outcome', raw: outcome.raw });
-        if (outcome.after.trim()) segments.push({ type: 'text', content: outcome.after });
-      } else {
-        segments.push({ type: 'text', content: textChunk });
-      }
+      pushTextLikeSegment(segments, text.slice(cursor, fenceStart));
     }
 
     const languageStart = fenceStart + 3;
@@ -117,18 +157,85 @@ function parseSegments(text: string): Segment[] {
   }
 
   if (cursor < text.length) {
-    const textChunk = text.slice(cursor);
-    const outcome = extractOutcomeBlock(textChunk);
-    if (outcome) {
-      if (outcome.before.trim()) segments.push({ type: 'text', content: outcome.before });
-      segments.push({ type: 'outcome', raw: outcome.raw });
-      if (outcome.after.trim()) segments.push({ type: 'text', content: outcome.after });
-    } else {
-      segments.push({ type: 'text', content: textChunk });
-    }
+    pushTextLikeSegment(segments, text.slice(cursor));
   }
 
   return segments;
+}
+
+function pushTextLikeSegment(segments: Segment[], textChunk: string) {
+  const outcome = extractOutcomeBlock(textChunk);
+  if (outcome) {
+    if (outcome.before.trim()) {
+      pushTextLikeSegment(segments, outcome.before);
+    }
+    segments.push({ type: 'outcome', raw: outcome.raw });
+    if (outcome.after.trim()) {
+      pushTextLikeSegment(segments, outcome.after);
+    }
+    return;
+  }
+
+  const summary = parseSessionSummary(textChunk);
+  if (summary) {
+    segments.push({ type: 'session_summary', payload: summary });
+    return;
+  }
+
+  segments.push({ type: 'text', content: textChunk });
+}
+
+function parseSessionSummary(content: string): SessionSummaryPayload | null {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!isSessionSummaryPayload(parsed)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function isSessionSummaryPayload(value: unknown): value is SessionSummaryPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  const allowedKeys = new Set(['summary', 'key_changes', 'unfinished_work']);
+  if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+
+  if (typeof record.summary !== 'string' || record.summary.trim().length === 0) {
+    return false;
+  }
+
+  if (
+    record.key_changes !== undefined &&
+    (!Array.isArray(record.key_changes) ||
+      record.key_changes.some((item) => typeof item !== 'string' || item.trim().length === 0))
+  ) {
+    return false;
+  }
+
+  if (
+    record.unfinished_work !== undefined &&
+    record.unfinished_work !== null &&
+    typeof record.unfinished_work !== 'string' &&
+    (!Array.isArray(record.unfinished_work) ||
+      record.unfinished_work.some((item) => typeof item !== 'string' || item.trim().length === 0))
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -428,6 +535,9 @@ export function MarkdownContent({ content, isStreaming = false }: MarkdownConten
         }
         if (seg.type === 'outcome') {
           return <OutcomeCard key={i} raw={seg.raw} />;
+        }
+        if (seg.type === 'session_summary') {
+          return <SessionSummaryCard key={i} payload={seg.payload} />;
         }
         return (
           <TextSegment

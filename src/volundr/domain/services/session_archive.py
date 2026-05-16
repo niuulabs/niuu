@@ -13,6 +13,7 @@ from volundr.session_archive import load_workspace_transcript
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from volundr.domain.models import Session
     from volundr.domain.ports import ArchiveStorePort, StoragePort
     from volundr.domain.services.chronicle import ChronicleService
     from volundr.domain.services.session import SessionService
@@ -39,47 +40,40 @@ class SessionArchiveService:
         self._chronicle_service = chronicle_service
 
     async def resolve_workspace_dir(self, session_id: UUID) -> Path:
-        """Resolve a workspace path for a session from storage or local endpoints."""
-        session = await self._session_service.get_session(session_id)
-        if session is None:
-            raise LookupError(f"Session not found: {session_id}")
-
-        resolved = self._storage.resolve_session_workspace_path(str(session_id))
-        if resolved:
-            path = Path(resolved)
-            if path.exists():
-                return path
-
-        code_endpoint = session.code_endpoint
-        if code_endpoint:
-            try:
-                parsed = urlsplit(code_endpoint)
-            except ValueError:
-                parsed = None
-            if parsed and parsed.scheme == "file" and parsed.path:
-                path = Path(parsed.path)
-                if path.exists():
-                    return path
-
-        if isinstance(session.source, LocalMountSource) and session.source.local_path:
-            path = Path(session.source.local_path)
-            if path.exists():
-                return path
-
-        workspace = await self._storage.get_workspace_by_session(str(session_id))
-        if workspace is not None:
-            pvc_path = Path(workspace.pvc_name)
-            if pvc_path.is_absolute() and pvc_path.exists():
-                return pvc_path
-
+        """Resolve the first accessible workspace path for a session."""
+        _, candidates = await self._workspace_dir_candidates(session_id)
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
         raise SessionArchiveNotAvailableError(
             f"No accessible workspace path for session {session_id}"
         )
 
     async def get_transcript(self, session_id: UUID) -> dict[str, Any]:
         """Return the persisted transcript payload for a session."""
-        workspace_dir = await self.resolve_workspace_dir(session_id)
-        return load_workspace_transcript(workspace_dir, str(session_id))
+        session_id_str = str(session_id)
+        _, candidates = await self._workspace_dir_candidates(session_id)
+
+        for candidate in candidates:
+            archived = self._archive_store.load_transcript(
+                session_id=session_id_str,
+                workspace_dir=candidate,
+            )
+            if archived is not None:
+                return archived
+
+        archived = self._archive_store.load_transcript(session_id=session_id_str)
+        if archived is not None:
+            return archived
+
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            return load_workspace_transcript(candidate, session_id_str)
+
+        raise SessionArchiveNotAvailableError(
+            f"No accessible workspace path for session {session_id}"
+        )
 
     async def get_logs(
         self,
@@ -91,16 +85,40 @@ class SessionArchiveService:
         query: str = "",
     ) -> dict[str, Any]:
         """Return aggregated logs directly from the workspace."""
-        workspace_dir = await self.resolve_workspace_dir(session_id)
-        payload = aggregate_workspace_logs(
-            workspace_dir,
-            lines=lines,
-            level=level,
-            participants=participants,
-            query=query,
+        session_id_str = str(session_id)
+        _, candidates = await self._workspace_dir_candidates(session_id)
+
+        for candidate in candidates:
+            archived = self._archive_store.load_aggregated_logs(
+                session_id=session_id_str,
+                workspace_dir=candidate,
+            )
+            if archived is None:
+                continue
+            archived["session_id"] = session_id_str
+            return archived
+
+        archived = self._archive_store.load_aggregated_logs(session_id=session_id_str)
+        if archived is not None:
+            archived["session_id"] = session_id_str
+            return archived
+
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            payload = aggregate_workspace_logs(
+                candidate,
+                lines=lines,
+                level=level,
+                participants=participants,
+                query=query,
+            )
+            payload["session_id"] = session_id_str
+            return payload
+
+        raise SessionArchiveNotAvailableError(
+            f"No accessible workspace path for session {session_id}"
         )
-        payload["session_id"] = str(session_id)
-        return payload
 
     async def build_archive(self, session_id: UUID, *, force: bool = False) -> dict[str, Any]:
         """Materialize a normalized archive directory inside the workspace."""
@@ -129,40 +147,150 @@ class SessionArchiveService:
 
     async def get_archive_manifest(self, session_id: UUID) -> dict[str, Any]:
         """Return the current archive manifest, building it on demand."""
-        workspace_dir = await self.resolve_workspace_dir(session_id)
-        manifest = self._archive_store.load_manifest(
-            session_id=str(session_id),
-            workspace_dir=workspace_dir,
-        )
+        session_id_str = str(session_id)
+        _, candidates = await self._workspace_dir_candidates(session_id)
+
+        for candidate in candidates:
+            manifest = self._archive_store.load_manifest(
+                session_id=session_id_str,
+                workspace_dir=candidate,
+            )
+            if manifest is not None:
+                return manifest
+
+        manifest = self._archive_store.load_manifest(session_id=session_id_str)
         if manifest is not None:
             return manifest
+
         return await self.build_archive(session_id)
 
     async def get_transcript_download_path(self, session_id: UUID, fmt: str) -> Path:
         """Return a local file path for transcript download."""
+        session_id_str = str(session_id)
+        _, candidates = await self._workspace_dir_candidates(session_id)
+
+        for candidate in candidates:
+            existing = self._transcript_artifact_path(
+                session_id_str,
+                fmt,
+                workspace_dir=candidate,
+            )
+            if existing is not None and existing.exists():
+                return existing
+
+        existing = self._transcript_artifact_path(session_id_str, fmt)
+        if existing is not None and existing.exists():
+            return existing
+
         workspace_dir = await self.resolve_workspace_dir(session_id)
         await self.build_archive(session_id)
 
-        if fmt == "json":
-            return self._archive_store.transcript_json_path(
-                session_id=str(session_id),
-                workspace_dir=workspace_dir,
+        final_path = self._transcript_artifact_path(
+            session_id_str,
+            fmt,
+            workspace_dir=workspace_dir,
+        )
+        if final_path is None:
+            raise SessionArchiveNotAvailableError(
+                f"No transcript artifact available for session {session_id}"
             )
-        if fmt == "md":
-            return self._archive_store.transcript_markdown_path(
-                session_id=str(session_id),
-                workspace_dir=workspace_dir,
-            )
-        raise ValueError(f"Unsupported transcript format: {fmt}")
+        return final_path
 
     async def get_archive_root(self, session_id: UUID) -> Path:
         """Return the archive root after ensuring it exists."""
+        session_id_str = str(session_id)
+        _, candidates = await self._workspace_dir_candidates(session_id)
+
+        for candidate in candidates:
+            manifest = self._archive_store.load_manifest(
+                session_id=session_id_str,
+                workspace_dir=candidate,
+            )
+            if manifest is None:
+                continue
+            return self._archive_store.archive_root(
+                session_id=session_id_str,
+                workspace_dir=candidate,
+            )
+
+        manifest = self._archive_store.load_manifest(session_id=session_id_str)
+        if manifest is not None:
+            return self._archive_store.archive_root(session_id=session_id_str)
+
         workspace_dir = await self.resolve_workspace_dir(session_id)
         await self.build_archive(session_id)
         return self._archive_store.archive_root(
-            session_id=str(session_id),
+            session_id=session_id_str,
             workspace_dir=workspace_dir,
         )
+
+    async def _workspace_dir_candidates(self, session_id: UUID) -> tuple[Session, list[Path]]:
+        session = await self._session_service.get_session(session_id)
+        if session is None:
+            raise LookupError(f"Session not found: {session_id}")
+
+        candidates: list[Path] = []
+        seen: set[Path] = set()
+
+        def add_candidate(raw_path: str | Path | None) -> None:
+            if not raw_path:
+                return
+            path = Path(raw_path)
+            if path in seen:
+                return
+            seen.add(path)
+            candidates.append(path)
+
+        add_candidate(self._storage.resolve_session_workspace_path(str(session_id)))
+
+        code_endpoint = session.code_endpoint
+        if code_endpoint:
+            try:
+                parsed = urlsplit(code_endpoint)
+            except ValueError:
+                parsed = None
+            if parsed and parsed.scheme == "file" and parsed.path:
+                add_candidate(parsed.path)
+
+        if isinstance(session.source, LocalMountSource) and session.source.local_path:
+            add_candidate(session.source.local_path)
+
+        workspace = await self._storage.get_workspace_by_session(str(session_id))
+        if workspace is not None:
+            pvc_path = Path(workspace.pvc_name)
+            if pvc_path.is_absolute():
+                add_candidate(pvc_path)
+
+        return session, candidates
+
+    def _transcript_artifact_path(
+        self,
+        session_id: str,
+        fmt: str,
+        *,
+        workspace_dir: Path | None = None,
+    ) -> Path | None:
+        if fmt == "json":
+            try:
+                return self._archive_store.transcript_json_path(
+                    session_id=session_id,
+                    workspace_dir=workspace_dir,
+                )
+            except ValueError:
+                if workspace_dir is None:
+                    return None
+                raise
+        if fmt == "md":
+            try:
+                return self._archive_store.transcript_markdown_path(
+                    session_id=session_id,
+                    workspace_dir=workspace_dir,
+                )
+            except ValueError:
+                if workspace_dir is None:
+                    return None
+                raise
+        raise ValueError(f"Unsupported transcript format: {fmt}")
 
     async def _load_chronicle_payload(self, session_id: UUID) -> dict[str, Any] | None:
         if self._chronicle_service is None:

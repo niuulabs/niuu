@@ -1175,11 +1175,7 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "llm": {"model": "claude-sonnet-4-6"},
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-                    "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-                        )
-                    },
+                    "kwargs": {"transport_adapter": "skuld.transports.sdk.SDKTransport"},
                 },
             }
         ]
