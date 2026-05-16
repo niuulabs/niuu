@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
@@ -82,6 +82,8 @@ const ERROR_SESSION: VolundrSession = {
   status: 'error',
   error: 'OOMKilled',
 };
+
+const originalFetch = global.fetch;
 
 // ---------------------------------------------------------------------------
 // Wrapper
@@ -226,6 +228,33 @@ function wrap(
 describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    global.fetch = vi.fn(async (input: string | URL | Request) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+      if (url.includes('/api/diff/files')) {
+        return new Response(JSON.stringify({ files: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url.includes('/api/diff?')) {
+        return new Response(JSON.stringify({ filePath: 'README.md', hunks: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
   });
 
   describe('loading and error states', () => {
@@ -342,6 +371,188 @@ describe('LiveSessionDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByTestId('diffs-tab')).toBeInTheDocument();
       });
+    });
+
+    it('shows a starting message in the terminal tab while a session boots', async () => {
+      wrap('test-session-id-1234', { session: STARTING_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
+      await waitFor(() => {
+        expect(screen.getByText('Session is starting…')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a stopped message in the terminal tab when no live terminal is available', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
+      await waitFor(() => {
+        expect(screen.getByText('Start the session to access terminal.')).toBeInTheDocument();
+      });
+    });
+
+    it('renders diff file metadata and an empty diff state', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/diff/files')) {
+          return new Response(
+            JSON.stringify({
+              files: [{ path: 'README.md', status: 'mod', ins: 2, del: 1 }],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        if (url.includes('/api/diff?')) {
+          return new Response(JSON.stringify({ filePath: 'README.md', hunks: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      const fileButton = await screen.findByText('README.md');
+      expect(screen.getByText('+2')).toBeInTheDocument();
+      expect(screen.getByText('-1')).toBeInTheDocument();
+
+      fireEvent.click(fileButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('No changes in this file')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a diff error when loading a selected file fails', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/diff/files')) {
+          return new Response(
+            JSON.stringify({
+              files: [{ path: 'README.md', status: 'new', ins: 1, del: 0 }],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        if (url.includes('/api/diff?')) {
+          return new Response(null, { status: 500 });
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      fireEvent.click(await screen.findByText('README.md'));
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Failed to load diff: Failed to fetch diff: 500'),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('renders diff hunks and resets selection when switching diff base', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/diff/files')) {
+          const params = new URL(url).searchParams;
+          const base = params.get('base');
+          const files =
+            base === 'default-branch'
+              ? [{ path: 'src/app.ts', status: 'remove', ins: 0, del: 4 }]
+              : [{ path: 'src/app.ts', status: 'mod', ins: 3, del: 1 }];
+          return new Response(JSON.stringify({ files }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (url.includes('/api/diff?')) {
+          return new Response(
+            JSON.stringify({
+              filePath: 'src/app.ts',
+              hunks: [
+                {
+                  oldStart: 1,
+                  oldCount: 2,
+                  newStart: 1,
+                  newCount: 3,
+                  lines: [
+                    { type: 'context', content: 'const ready = true;', oldLine: 1, newLine: 1 },
+                    { type: 'remove', content: 'console.log("old");', oldLine: 2 },
+                    { type: 'add', content: 'console.log("new");', newLine: 2 },
+                    { type: 'add', content: '', newLine: 3 },
+                  ],
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      fireEvent.click(await screen.findByText('src/app.ts'));
+
+      await waitFor(() => {
+        expect(screen.getByText('@@ -1,2 +1,3 @@')).toBeInTheDocument();
+      });
+      expect(screen.getByText('console.log("old");')).toBeInTheDocument();
+      expect(screen.getByText('console.log("new");')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /default branch/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
+      });
+      expect(screen.getByText('-4')).toBeInTheDocument();
+    });
+
+    it('shows the empty diff state when a session has no live endpoint', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
+      });
+      expect(screen.getAllByText('changed files').length).toBeGreaterThanOrEqual(1);
+      expect(screen.queryByText('Loading files...')).not.toBeInTheDocument();
     });
 
     it('renders a saved transcript for stopped sessions', async () => {
