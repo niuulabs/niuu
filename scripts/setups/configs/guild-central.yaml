@@ -1,6 +1,9 @@
 auth:
   allow_anonymous_dev: true
 
+identity:
+  adapter: "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"
+
 telegram_ingress:
   enabled: false
 

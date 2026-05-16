@@ -80,7 +80,71 @@ class InMemorySagaRepository(SagaRepository):
                 confidence=saga.confidence,
                 created_at=saga.created_at,
                 owner_id=saga.owner_id,
+                workflow_id=saga.workflow_id,
+                workflow_version=saga.workflow_version,
+                workflow_snapshot=saga.workflow_snapshot,
+                instance_id=saga.instance_id,
             )
+
+    async def update_saga_workflow(
+        self,
+        saga_id: UUID,
+        *,
+        workflow_id: UUID | None,
+        workflow_version: str | None,
+        workflow_snapshot: dict[str, Any] | None,
+        owner_id: str | None = None,
+    ) -> None:
+        saga = self.sagas.get(saga_id)
+        if saga is None:
+            return
+        self.sagas[saga_id] = Saga(
+            id=saga.id,
+            tracker_id=saga.tracker_id,
+            tracker_type=saga.tracker_type,
+            slug=saga.slug,
+            name=saga.name,
+            repos=saga.repos,
+            feature_branch=saga.feature_branch,
+            base_branch=saga.base_branch,
+            status=saga.status,
+            confidence=saga.confidence,
+            created_at=saga.created_at,
+            owner_id=saga.owner_id,
+            workflow_id=workflow_id,
+            workflow_version=workflow_version,
+            workflow_snapshot=workflow_snapshot,
+            instance_id=saga.instance_id,
+        )
+
+    async def update_saga_target(
+        self,
+        saga_id: UUID,
+        *,
+        instance_id: str | None,
+        owner_id: str | None = None,
+    ) -> None:
+        saga = self.sagas.get(saga_id)
+        if saga is None:
+            return
+        self.sagas[saga_id] = Saga(
+            id=saga.id,
+            tracker_id=saga.tracker_id,
+            tracker_type=saga.tracker_type,
+            slug=saga.slug,
+            name=saga.name,
+            repos=saga.repos,
+            feature_branch=saga.feature_branch,
+            base_branch=saga.base_branch,
+            status=saga.status,
+            confidence=saga.confidence,
+            created_at=saga.created_at,
+            owner_id=saga.owner_id,
+            workflow_id=saga.workflow_id,
+            workflow_version=saga.workflow_version,
+            workflow_snapshot=saga.workflow_snapshot,
+            instance_id=instance_id,
+        )
 
     async def count_by_status(self) -> dict[str, int]:
         return {}

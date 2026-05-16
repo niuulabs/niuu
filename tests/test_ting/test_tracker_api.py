@@ -390,6 +390,44 @@ class MockSagaRepo(SagaRepository):
                     workflow_id=workflow_id,
                     workflow_version=workflow_version,
                     workflow_snapshot=workflow_snapshot,
+                    instance_id=saga.instance_id,
+                )
+            )
+        self.sagas = updated
+
+    async def update_saga_target(
+        self,
+        saga_id: UUID,
+        *,
+        instance_id: str | None,
+        owner_id: str | None = None,
+    ) -> None:
+        updated: list[Saga] = []
+        for saga in self.sagas:
+            if saga.id != saga_id:
+                updated.append(saga)
+                continue
+            if owner_id is not None and saga.owner_id != owner_id:
+                updated.append(saga)
+                continue
+            updated.append(
+                Saga(
+                    id=saga.id,
+                    tracker_id=saga.tracker_id,
+                    tracker_type=saga.tracker_type,
+                    slug=saga.slug,
+                    name=saga.name,
+                    repos=saga.repos,
+                    feature_branch=saga.feature_branch,
+                    status=saga.status,
+                    confidence=saga.confidence,
+                    created_at=saga.created_at,
+                    base_branch=saga.base_branch,
+                    owner_id=saga.owner_id,
+                    workflow_id=saga.workflow_id,
+                    workflow_version=saga.workflow_version,
+                    workflow_snapshot=saga.workflow_snapshot,
+                    instance_id=instance_id,
                 )
             )
         self.sagas = updated

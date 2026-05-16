@@ -19,7 +19,7 @@ except ImportError:
     _catalog_saga_created = None  # type: ignore[assignment]
 from pydantic import BaseModel, Field
 
-from niuu.domain.models import Principal
+from niuu.domain.models import InstanceKind, Principal
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.tracker import resolve_trackers
 from ting.config import ReviewConfig
@@ -54,6 +54,20 @@ def _can_use_workflow(workflow, principal: Principal) -> bool:  # noqa: ANN001
     if workflow.scope == WorkflowScope.SYSTEM:
         return True
     return workflow.owner_id == principal.user_id
+
+
+async def _resolve_instance_name(
+    request: Request,
+    principal: Principal,
+    instance_id: str | None,
+) -> str | None:
+    if not instance_id:
+        return None
+    instance_service = getattr(request.app.state, "instance_service", None)
+    if instance_service is None:
+        return None
+    instance = await instance_service.get_visible(principal, instance_id)
+    return instance.name if instance is not None else None
 
 
 async def _resolve_selected_workflow(
@@ -167,6 +181,8 @@ class SagaListItem(BaseModel):
     workflow_id: str | None = None
     workflow: str | None = None
     workflow_version: str | None = None
+    instance_id: str | None = None
+    instance_name: str | None = None
 
 
 class SagaDetailResponse(BaseModel):
@@ -189,6 +205,8 @@ class SagaDetailResponse(BaseModel):
     workflow_id: str | None = None
     workflow: str | None = None
     workflow_version: str | None = None
+    instance_id: str | None = None
+    instance_name: str | None = None
 
 
 class DecomposeRequest(BaseModel):
@@ -203,6 +221,10 @@ class UpdateSagaRequest(BaseModel):
 
 class SagaWorkflowAssignmentRequest(BaseModel):
     workflow_id: str | None = None
+
+
+class SagaTargetAssignmentRequest(BaseModel):
+    instance_id: str | None = None
 
 
 class RunSpecResponse(BaseModel):
@@ -428,6 +450,7 @@ def create_sagas_router() -> APIRouter:
 
     @router.get("", response_model=list[SagaListItem])
     async def list_sagas(
+        request: Request,
         principal: Principal = Depends(extract_principal),
         repo: SagaRepository = Depends(resolve_saga_repo),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
@@ -449,6 +472,7 @@ def create_sagas_router() -> APIRouter:
         for saga in sagas:
             project = all_projects.get(saga.tracker_id)
             phase_summary = await _build_phase_summary(repo, saga.id)
+            instance_name = await _resolve_instance_name(request, principal, saga.instance_id)
             items.append(
                 SagaListItem(
                     id=str(saga.id),
@@ -470,6 +494,8 @@ def create_sagas_router() -> APIRouter:
                     workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
                     workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
                     workflow_version=saga.workflow_version,
+                    instance_id=saga.instance_id,
+                    instance_name=instance_name,
                 )
             )
         return items
@@ -477,6 +503,7 @@ def create_sagas_router() -> APIRouter:
     @router.get("/{saga_id}", response_model=SagaDetailResponse)
     async def get_saga(
         saga_id: str,
+        request: Request,
         principal: Principal = Depends(extract_principal),
         repo: SagaRepository = Depends(resolve_saga_repo),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
@@ -561,6 +588,7 @@ def create_sagas_router() -> APIRouter:
         phase_summary = await _build_phase_summary(repo, saga.id)
         if phase_summary.total == 0 and phase_responses:
             phase_summary = _build_phase_summary_from_hydrated_phases(phase_responses)
+        instance_name = await _resolve_instance_name(request, principal, saga.instance_id)
 
         return SagaDetailResponse(
             id=str(saga.id),
@@ -582,6 +610,8 @@ def create_sagas_router() -> APIRouter:
             workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
             workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
             workflow_version=saga.workflow_version,
+            instance_id=saga.instance_id,
+            instance_name=instance_name,
         )
 
     @router.post("/decompose", response_model=SagaStructureResponse)
@@ -829,6 +859,7 @@ def create_sagas_router() -> APIRouter:
 
         project = await _find_project(updated.tracker_id, adapters)
         phase_summary = await _build_phase_summary(repo, updated.id)
+        instance_name = await _resolve_instance_name(request, principal, updated.instance_id)
         return SagaListItem(
             id=str(updated.id),
             tracker_id=updated.tracker_id,
@@ -849,6 +880,82 @@ def create_sagas_router() -> APIRouter:
             workflow_id=str(updated.workflow_id) if updated.workflow_id else None,
             workflow=workflow_name_from_snapshot(updated.workflow_snapshot),
             workflow_version=updated.workflow_version,
+            instance_id=updated.instance_id,
+            instance_name=instance_name,
+        )
+
+    @router.put("/{saga_id}/target", response_model=SagaListItem)
+    async def assign_target(
+        saga_id: str,
+        body: SagaTargetAssignmentRequest,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        repo: SagaRepository = Depends(resolve_saga_repo),
+        adapters: list[TrackerPort] = Depends(resolve_trackers),
+    ) -> SagaListItem:
+        try:
+            parsed_id = UUID(saga_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Saga not found: {saga_id}",
+            )
+
+        saga = await repo.get_saga(parsed_id, owner_id=principal.user_id)
+        if saga is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Saga not found: {saga_id}",
+            )
+
+        instance_name: str | None = None
+        if body.instance_id:
+            instance_service = getattr(request.app.state, "instance_service", None)
+            if instance_service is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Instance registry not configured",
+                )
+            instance = await instance_service.get_visible(principal, body.instance_id)
+            if instance is None or instance.kind != InstanceKind.VOLUNDR or not instance.enabled:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Target not found: {body.instance_id}",
+                )
+            instance_name = instance.name
+
+        await repo.update_saga_target(
+            parsed_id,
+            instance_id=body.instance_id,
+            owner_id=principal.user_id,
+        )
+        updated = await repo.get_saga(parsed_id, owner_id=principal.user_id)
+        assert updated is not None
+
+        project = await _find_project(updated.tracker_id, adapters)
+        phase_summary = await _build_phase_summary(repo, updated.id)
+        return SagaListItem(
+            id=str(updated.id),
+            tracker_id=updated.tracker_id,
+            tracker_type=updated.tracker_type,
+            slug=updated.slug,
+            name=project.name if project else updated.name,
+            repos=updated.repos,
+            feature_branch=updated.feature_branch,
+            status=updated.status.value.lower(),
+            progress=_display_progress(updated, project, phase_summary),
+            milestone_count=project.milestone_count if project else 0,
+            issue_count=project.issue_count if project else 0,
+            url=project.url if project else "",
+            base_branch=updated.base_branch,
+            confidence=updated.confidence,
+            created_at=updated.created_at.isoformat(),
+            phase_summary=phase_summary,
+            workflow_id=str(updated.workflow_id) if updated.workflow_id else None,
+            workflow=workflow_name_from_snapshot(updated.workflow_snapshot),
+            workflow_version=updated.workflow_version,
+            instance_id=updated.instance_id,
+            instance_name=instance_name,
         )
 
     @router.delete("/{saga_id}", status_code=204)
@@ -1141,6 +1248,8 @@ def create_sagas_router() -> APIRouter:
             workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
             workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
             workflow_version=saga.workflow_version,
+            instance_id=saga.instance_id,
+            instance_name=None,
         )
 
     return router

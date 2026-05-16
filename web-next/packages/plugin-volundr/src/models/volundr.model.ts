@@ -163,6 +163,8 @@ export interface VolundrSession {
   activityState?: 'active' | 'idle' | 'tool_executing' | null;
   ownerId?: string;
   tenantId?: string;
+  instanceId?: string;
+  instanceName?: string;
 }
 
 export interface VolundrStats {

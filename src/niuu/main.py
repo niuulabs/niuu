@@ -12,6 +12,7 @@ from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.rest_instances import create_instances_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_repos import create_repos_router
+from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.adapters.outbound.git_registry import create_git_registry
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
@@ -126,6 +127,7 @@ def create_app(
 
             app.include_router(create_repos_router(repo_service))
             app.include_router(create_instances_router(instance_service))
+            app.include_router(create_volundr_router(instance_service))
             app.include_router(create_identity_router(tenant_service))
             app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
             app.include_router(create_features_router(feature_service))

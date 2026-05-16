@@ -1284,6 +1284,21 @@ export function createMockTingService(): ITingService {
       sagas.set(sagaId, updated);
       return updated;
     },
+
+    async assignTarget(sagaId: string, instanceId: string | null) {
+      const saga = sagas.get(sagaId);
+      if (!saga) {
+        throw new Error(`Saga not found: ${sagaId}`);
+      }
+
+      const updated: Saga = {
+        ...saga,
+        instanceId: instanceId ?? undefined,
+        instanceName: instanceId ? 'Assigned target' : undefined,
+      };
+      sagas.set(sagaId, updated);
+      return updated;
+    },
   };
 }
 

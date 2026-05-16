@@ -167,6 +167,14 @@ function PodEntry({
                   <span className="niuu-truncate niuu-text-brand">{trackerLabel}</span>
                 </span>
               ) : null}
+              {session.clusterName ? (
+                <span
+                  className="niuu-flex niuu-min-w-0 niuu-items-center niuu-gap-1.5"
+                  title={session.clusterName}
+                >
+                  <span className="niuu-truncate">{session.clusterName}</span>
+                </span>
+              ) : null}
               {sourceParts ? (
                 <span
                   className="niuu-flex niuu-min-w-0 niuu-items-center niuu-gap-1.5"

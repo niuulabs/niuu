@@ -35,6 +35,11 @@ class InstanceKind(StrEnum):
     """Supported registered runtime instance kinds."""
 
     VOLUNDR = "volundr"
+    MIMIR = "mimir"
+    BIFROST = "bifrost"
+    RAVN = "ravn"
+    OBSERVATORY = "observatory"
+    GENERIC = "generic"
 
 
 class InstanceVisibility(StrEnum):

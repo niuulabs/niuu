@@ -4,9 +4,11 @@ import { createApiClient } from '@niuulabs/query';
 import { useConfig, useService, type IIdentityService } from '@niuulabs/plugin-sdk';
 import { resolveSharedApiBase } from './services';
 
+type InstanceKind = 'volundr' | 'mimir' | 'bifrost' | 'ravn' | 'observatory' | 'generic';
+
 type InstanceRecord = {
   id: string;
-  kind: string;
+  kind: InstanceKind;
   slug: string;
   name: string;
   baseUrl: string;
@@ -24,19 +26,30 @@ type InstanceTestResult = {
   message: string;
 };
 
-type InstanceSession = {
-  id: string;
-  name: string;
-  status: string;
-  model?: string | null;
-  ownerId?: string | null;
-  tenantId?: string | null;
-};
+const KIND_OPTIONS: Array<{ value: InstanceKind; label: string }> = [
+  { value: 'volundr', label: 'Volundr' },
+  { value: 'mimir', label: 'Mimir' },
+  { value: 'bifrost', label: 'Bifrost' },
+  { value: 'ravn', label: 'Ravn' },
+  { value: 'observatory', label: 'Observatory' },
+  { value: 'generic', label: 'Generic API' },
+];
 
 function scopeLabel(instance: InstanceRecord): string {
   if (instance.visibility === 'tenant') return `Tenant: ${instance.tenantId ?? 'unknown'}`;
   if (instance.visibility === 'user') return `User: ${instance.ownerId ?? 'unknown'}`;
   return 'System';
+}
+
+function kindLabel(kind: InstanceKind): string {
+  return KIND_OPTIONS.find((option) => option.value === kind)?.label ?? kind;
+}
+
+function openPathFor(instance: InstanceRecord): string | null {
+  if (instance.kind === 'volundr') {
+    return '/volundr?config=/config.live.json';
+  }
+  return null;
 }
 
 function InstanceCard({
@@ -46,34 +59,49 @@ function InstanceCard({
   client: ReturnType<typeof createApiClient>;
   instance: InstanceRecord;
 }) {
-  const sessionsQuery = useQuery({
-    queryKey: ['guild-instance-sessions', instance.id],
-    queryFn: () => client.get<InstanceSession[]>(`/niuu/instances/${instance.id}/sessions`),
-    refetchInterval: 5_000,
-  });
   const testMutation = useMutation({
     mutationFn: () => client.post<InstanceTestResult>(`/niuu/instances/${instance.id}/test`),
   });
-
-  const sessions = sessionsQuery.data ?? [];
-  const stopped = sessions.filter((session) =>
-    ['stopped', 'archived', 'failed'].includes(session.status),
-  ).length;
+  const openPath = openPathFor(instance);
 
   return (
     <article className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-primary niuu-p-5 niuu-space-y-4">
       <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-4">
-        <div>
-          <h3 className="niuu-text-lg niuu-font-semibold niuu-text-text-primary">{instance.name}</h3>
-          <p className="niuu-text-xs niuu-font-mono niuu-text-text-secondary">{instance.baseUrl}</p>
+        <div className="niuu-min-w-0">
+          <div className="niuu-flex niuu-flex-wrap niuu-items-center niuu-gap-2">
+            <h3 className="niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+              {instance.name}
+            </h3>
+            <span className="niuu-rounded-full niuu-border niuu-border-border niuu-px-2 niuu-py-0.5 niuu-text-[10px] niuu-font-mono niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-muted">
+              {kindLabel(instance.kind)}
+            </span>
+            {instance.isDefault ? (
+              <span className="niuu-rounded-full niuu-bg-brand/10 niuu-px-2 niuu-py-0.5 niuu-text-[10px] niuu-font-mono niuu-uppercase niuu-tracking-[0.12em] niuu-text-brand-200">
+                Default
+              </span>
+            ) : null}
+          </div>
+          <p className="niuu-mt-1 niuu-text-xs niuu-font-mono niuu-text-text-secondary">
+            {instance.baseUrl}
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={() => testMutation.mutate()}
-          className="niuu-rounded-md niuu-border niuu-border-border niuu-px-3 niuu-py-1.5 niuu-text-sm niuu-text-text-primary hover:niuu-bg-bg-secondary"
-        >
-          Test
-        </button>
+        <div className="niuu-flex niuu-gap-2">
+          {openPath ? (
+            <a
+              href={openPath}
+              className="niuu-rounded-md niuu-border niuu-border-border niuu-px-3 niuu-py-1.5 niuu-text-sm niuu-text-text-primary hover:niuu-bg-bg-secondary"
+            >
+              Open
+            </a>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => testMutation.mutate()}
+            className="niuu-rounded-md niuu-border niuu-border-border niuu-px-3 niuu-py-1.5 niuu-text-sm niuu-text-text-primary hover:niuu-bg-bg-secondary"
+          >
+            Test
+          </button>
+        </div>
       </div>
       <div className="niuu-grid niuu-grid-cols-2 lg:niuu-grid-cols-4 niuu-gap-3">
         <div className="niuu-rounded-lg niuu-bg-bg-secondary niuu-p-3">
@@ -90,17 +118,29 @@ function InstanceCard({
         </div>
         <div className="niuu-rounded-lg niuu-bg-bg-secondary niuu-p-3">
           <p className="niuu-text-xs niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
-            Sessions
+            State
           </p>
-          <p className="niuu-mt-1 niuu-text-sm niuu-text-text-primary">{sessions.length}</p>
+          <p className="niuu-mt-1 niuu-text-sm niuu-text-text-primary">
+            {instance.enabled ? 'Enabled' : 'Disabled'}
+          </p>
         </div>
         <div className="niuu-rounded-lg niuu-bg-bg-secondary niuu-p-3">
           <p className="niuu-text-xs niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
-            Stopped
+            Health
           </p>
-          <p className="niuu-mt-1 niuu-text-sm niuu-text-text-primary">{stopped}</p>
+          <p className="niuu-mt-1 niuu-text-sm niuu-text-text-primary">
+            {testMutation.data
+              ? testMutation.data.ok
+                ? 'Reachable'
+                : 'Unreachable'
+              : 'Not checked'}
+          </p>
         </div>
       </div>
+      <p className="niuu-text-sm niuu-text-text-secondary">
+        Guild tracks where this runtime lives, who can see it, and whether the shared shell can
+        reach it. Day-to-day sessions stay in the product UI for that runtime.
+      </p>
       {testMutation.data ? (
         <p
           className={`niuu-text-sm ${testMutation.data.ok ? 'niuu-text-emerald-400' : 'niuu-text-rose-400'}`}
@@ -108,38 +148,6 @@ function InstanceCard({
           {testMutation.data.message}
         </p>
       ) : null}
-      <div className="niuu-overflow-hidden niuu-rounded-lg niuu-border niuu-border-border">
-        <table className="niuu-min-w-full niuu-text-sm">
-          <thead className="niuu-bg-bg-secondary">
-            <tr>
-              <th className="niuu-px-3 niuu-py-2 niuu-text-left niuu-text-text-muted">Session</th>
-              <th className="niuu-px-3 niuu-py-2 niuu-text-left niuu-text-text-muted">Status</th>
-              <th className="niuu-px-3 niuu-py-2 niuu-text-left niuu-text-text-muted">Owner</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sessions.slice(0, 8).map((session) => (
-              <tr key={session.id} className="niuu-border-t niuu-border-border">
-                <td className="niuu-px-3 niuu-py-2 niuu-text-text-primary">{session.name}</td>
-                <td className="niuu-px-3 niuu-py-2 niuu-text-text-secondary">{session.status}</td>
-                <td className="niuu-px-3 niuu-py-2 niuu-text-text-secondary">
-                  {session.ownerId ?? session.tenantId ?? 'n/a'}
-                </td>
-              </tr>
-            ))}
-            {sessions.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={3}
-                  className="niuu-px-3 niuu-py-4 niuu-text-center niuu-text-text-secondary"
-                >
-                  No sessions reported by this instance yet.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
     </article>
   );
 }
@@ -153,7 +161,14 @@ export function GuildPage() {
     if (!sharedBase) return null;
     return createApiClient(sharedBase);
   }, [sharedBase]);
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<{
+    kind: InstanceKind;
+    name: string;
+    slug: string;
+    baseUrl: string;
+    visibility: 'user' | 'tenant' | 'system';
+  }>({
+    kind: 'volundr',
     name: '',
     slug: '',
     baseUrl: '',
@@ -167,7 +182,7 @@ export function GuildPage() {
   const instancesQuery = useQuery({
     queryKey: ['guild-instances'],
     enabled: client != null,
-    queryFn: () => client!.get<InstanceRecord[]>('/niuu/instances?kind=volundr'),
+    queryFn: () => client!.get<InstanceRecord[]>('/niuu/instances'),
     refetchInterval: 5_000,
   });
 
@@ -175,7 +190,13 @@ export function GuildPage() {
     mutationFn: (payload: typeof form & { tenantId?: string }) =>
       client!.post<InstanceRecord>('/niuu/instances', payload),
     onSuccess: async () => {
-      setForm({ name: '', slug: '', baseUrl: '', visibility: 'user' });
+      setForm({
+        kind: 'volundr',
+        name: '',
+        slug: '',
+        baseUrl: '',
+        visibility: 'user',
+      });
       await queryClient.invalidateQueries({ queryKey: ['guild-instances'] });
     },
   });
@@ -191,30 +212,30 @@ export function GuildPage() {
   }
 
   const currentIdentity = identityQuery.data;
-  const canCreateTenantScope = currentIdentity?.roles.includes('volundr:admin') ?? false;
+  const canCreateSharedScope = currentIdentity?.roles.includes('volundr:admin') ?? false;
 
   return (
     <div className="niuu-p-6 niuu-space-y-6">
       <section className="niuu-space-y-2">
         <h1 className="niuu-text-2xl niuu-font-semibold niuu-text-text-primary">Guild</h1>
         <p className="niuu-max-w-3xl niuu-text-sm niuu-text-text-secondary">
-          Register multiple Volundr instances, validate them from the shared shell, and inspect the
-          sessions each one is carrying. This is the multi-instance control surface that Ting uses
-          for explicit target selection.
+          Register runtime endpoints, define who can access them, and validate that the shared
+          shell can reach them. Guild is the catalog and control surface; the product UI is where
+          people operate sessions.
         </p>
       </section>
 
       <section className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-primary niuu-p-5 niuu-space-y-4">
         <div>
           <h2 className="niuu-text-lg niuu-font-semibold niuu-text-text-primary">
-            Register Instance
+            Register Endpoint
           </h2>
           <p className="niuu-text-sm niuu-text-text-secondary">
-            Add a Volundr instance through the UI. Config-seeded instances show up here too.
+            Add any Niuu-compatible API endpoint. Config-seeded entries appear here too.
           </p>
         </div>
         <form
-          className="niuu-grid niuu-grid-cols-1 lg:niuu-grid-cols-4 niuu-gap-3"
+          className="niuu-grid niuu-grid-cols-1 lg:niuu-grid-cols-5 niuu-gap-3"
           onSubmit={(event) => {
             event.preventDefault();
             createMutation.mutate({
@@ -223,6 +244,19 @@ export function GuildPage() {
             });
           }}
         >
+          <select
+            value={form.kind}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, kind: event.target.value as InstanceKind }))
+            }
+            className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-secondary niuu-px-3 niuu-py-2 niuu-text-sm"
+          >
+            {KIND_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <input
             value={form.name}
             onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
@@ -247,15 +281,18 @@ export function GuildPage() {
             <select
               value={form.visibility}
               onChange={(event) =>
-                setForm((current) => ({ ...current, visibility: event.target.value }))
+                setForm((current) => ({
+                  ...current,
+                  visibility: event.target.value as 'user' | 'tenant' | 'system',
+                }))
               }
               className="niuu-flex-1 niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-secondary niuu-px-3 niuu-py-2 niuu-text-sm"
             >
               <option value="user">User</option>
-              <option value="tenant" disabled={!canCreateTenantScope}>
+              <option value="tenant" disabled={!canCreateSharedScope}>
                 Tenant
               </option>
-              <option value="system" disabled={!canCreateTenantScope}>
+              <option value="system" disabled={!canCreateSharedScope}>
                 System
               </option>
             </select>
@@ -281,10 +318,10 @@ export function GuildPage() {
         <div className="niuu-flex niuu-items-center niuu-justify-between">
           <div>
             <h2 className="niuu-text-lg niuu-font-semibold niuu-text-text-primary">
-              Visible Instances
+              Visible Endpoints
             </h2>
             <p className="niuu-text-sm niuu-text-text-secondary">
-              Targets available to the current identity and tenant context.
+              Backends visible to the current user and tenant context.
             </p>
           </div>
           <button
@@ -299,7 +336,7 @@ export function GuildPage() {
           <div className="niuu-rounded-xl niuu-border niuu-border-rose-500/40 niuu-bg-rose-500/5 niuu-p-4 niuu-text-sm niuu-text-rose-300">
             {instancesQuery.error instanceof Error
               ? instancesQuery.error.message
-              : 'Failed to load visible instances.'}
+              : 'Failed to load visible endpoints.'}
           </div>
         ) : null}
         <div className="niuu-grid niuu-grid-cols-1 xl:niuu-grid-cols-2 niuu-gap-4">
@@ -309,7 +346,7 @@ export function GuildPage() {
         </div>
         {!instancesQuery.isLoading && (instancesQuery.data?.length ?? 0) === 0 ? (
           <div className="niuu-rounded-xl niuu-border niuu-border-dashed niuu-border-border niuu-p-6 niuu-text-sm niuu-text-text-secondary">
-            No Volundr instances are visible yet.
+            No endpoints are visible yet.
           </div>
         ) : null}
       </section>

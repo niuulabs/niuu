@@ -275,6 +275,7 @@ class QueueItem:
     workflow_id: str | None = None
     workflow: str | None = None
     workflow_version: str | None = None
+    instance_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -599,12 +600,16 @@ class DispatchService:
         self,
         owner_id: str,
         *,
+        principal: Principal | None = None,
         auth_token: str | None = None,
         saga_tracker_id: str | None = None,
     ) -> list[QueueItem]:
         """Find all dispatchable issues, optionally scoped to one saga."""
         adapters = await self._tracker_factory.for_owner(owner_id)
-        volundr = await self._volundr_factory.primary_for_owner(owner_id)
+        if principal is not None and hasattr(self._volundr_factory, "primary_for_principal"):
+            volundr = await self._volundr_factory.primary_for_principal(principal)
+        else:
+            volundr = await self._volundr_factory.primary_for_owner(owner_id)
         if volundr is None:
             logger.warning("No Volundr adapter for owner %s, returning empty queue", owner_id)
             return []
@@ -736,7 +741,7 @@ class DispatchService:
                 logger.warning("Issue not found: %s", item.issue_id)
                 continue
 
-            target_connection = item.connection_id or connection_id
+            target_connection = item.connection_id or connection_id or saga.instance_id
             target_volundr = resolve_target_adapter(
                 target_connection,
                 adapter_by_target,
@@ -1153,6 +1158,7 @@ class DispatchService:
                                 and saga.workflow_snapshot.get("version") is not None
                                 else None
                             ),
+                            instance_id=saga.instance_id,
                         )
                     )
                 return items, False

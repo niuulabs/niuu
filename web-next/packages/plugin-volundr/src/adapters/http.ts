@@ -118,6 +118,10 @@ type SessionPayload = {
   owner_id?: string | null;
   tenantId?: string | null;
   tenant_id?: string | null;
+  instanceId?: string | null;
+  instance_id?: string | null;
+  instanceName?: string | null;
+  instance_name?: string | null;
 };
 
 type StatsPayload = {
@@ -321,6 +325,8 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     activityState: session.activityState ?? session.activity_state ?? undefined,
     ownerId: session.ownerId ?? session.owner_id ?? undefined,
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
+    instanceId: session.instanceId ?? session.instance_id ?? undefined,
+    instanceName: session.instanceName ?? session.instance_name ?? undefined,
   };
 }
 

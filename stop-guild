@@ -48,6 +48,23 @@ stop_repo_port_listener() {
   done <<< "${pids}"
 }
 
+stop_repo_process_pattern() {
+  local pattern="$1"
+  local label="$2"
+  local pids
+
+  pids="$(pgrep -f "${pattern}" 2>/dev/null || true)"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    echo "Stopping ${label} (${pid})..."
+    kill "${pid}" >/dev/null 2>&1 || true
+  done <<< "${pids}"
+}
+
 stop_embedded_postgres() {
   local label="$1"
   local data_dir="${RUN_DIR}/${label}/pgdata"
@@ -71,5 +88,7 @@ stop_embedded_postgres "guild-beta"
 stop_repo_port_listener 8080 "listener :8080"
 stop_repo_port_listener 8181 "listener :8181"
 stop_repo_port_listener 8282 "listener :8282"
+stop_repo_process_pattern "${ROOT_DIR}/.venv/bin/python3 -m skuld" "repo skuld"
+stop_repo_process_pattern "${ROOT_DIR}/.venv/bin/python3 -m ravn daemon" "repo ravn"
 
 echo "Stopped."

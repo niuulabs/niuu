@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
 import { useService } from '@niuulabs/plugin-sdk';
-import { useQueries } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import type { PersonaRole } from '@niuulabs/domain';
 import { EmptyState, ErrorState, LoadingState, PersonaAvatar } from '@niuulabs/ui';
 import type { RunStatus, Saga, Phase, Run } from '../domain/saga';
-import type { ITingService, RunSessionMessage } from '../ports';
-import { useAssignSagaWorkflow, useSaga } from './useSaga';
+import type { DispatchCluster, IDispatchBus, ITingService, RunSessionMessage } from '../ports';
+import { useAssignSagaTarget, useAssignSagaWorkflow, useSaga } from './useSaga';
 import { usePhases } from './usePhases';
 import { useSendRunMessage } from './useRunMessages';
 import { WorkflowCard } from './WorkflowCard';
@@ -269,6 +269,77 @@ function FeedbackRequestCard({ request }: { request: PendingFeedbackRequest }) {
   );
 }
 
+function TargetCard({
+  saga,
+  targets,
+  isLoading,
+  isUpdating,
+  onAssign,
+}: {
+  saga: Saga;
+  targets: DispatchCluster[];
+  isLoading: boolean;
+  isUpdating: boolean;
+  onAssign: (instanceId: string | null) => void;
+}) {
+  const [value, setValue] = useState<string>(saga.instanceId ?? '');
+
+  return (
+    <section className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4 niuu-space-y-3">
+      <div className="niuu-space-y-1">
+        <div className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+          Volundr target
+        </div>
+        <h3 className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+          {saga.instanceName ?? 'Dispatch by default target'}
+        </h3>
+        <p className="niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
+          Assign this saga to a specific Volundr so dispatch can route work there without picking a
+          target every time.
+        </p>
+      </div>
+      <div className="niuu-space-y-3">
+        <select
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+          disabled={isLoading || isUpdating}
+        >
+          <option value="">No explicit target</option>
+          {targets.map((target) => (
+            <option key={target.connectionId} value={target.connectionId}>
+              {target.name}
+            </option>
+          ))}
+        </select>
+        <div className="niuu-flex niuu-gap-2">
+          <button
+            type="button"
+            onClick={() => onAssign(value || null)}
+            disabled={isLoading || isUpdating}
+            className="niuu-rounded-md niuu-border niuu-border-border niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary hover:niuu-bg-bg-primary"
+          >
+            Save target
+          </button>
+          {saga.instanceId ? (
+            <button
+              type="button"
+              onClick={() => {
+                setValue('');
+                onAssign(null);
+              }}
+              disabled={isUpdating}
+              className="niuu-rounded-md niuu-border niuu-border-border niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-secondary hover:niuu-text-text-primary"
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function SagaFeedbackPanel({ runs }: { runs: Run[] }) {
   const ting = useService<ITingService>('ting');
   const runIds = useMemo(() => runs.map((run) => run.id), [runs]);
@@ -372,6 +443,7 @@ interface SagaDetailPageProps {
 
 export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPageProps) {
   const navigate = useNavigate();
+  const dispatchBus = useService<IDispatchBus>('ting.dispatch');
   const [showWorkflowModal, setShowWorkflowModal] = useState(false);
   const {
     data: saga,
@@ -386,6 +458,11 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
     error: phasesErr,
   } = usePhases(sagaId);
   const assignWorkflow = useAssignSagaWorkflow(sagaId);
+  const assignTarget = useAssignSagaTarget(sagaId);
+  const targetsQuery = useQuery({
+    queryKey: ['ting', 'dispatch-clusters'],
+    queryFn: () => dispatchBus.getClusters(),
+  });
 
   if (sagaLoading || phasesLoading) return <LoadingState label="Loading saga…" />;
   if (sagaError)
@@ -412,6 +489,10 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
         setShowWorkflowModal(false);
       },
     });
+  }
+
+  function handleAssignTarget(instanceId: string | null) {
+    assignTarget.mutate(instanceId);
   }
 
   return (
@@ -451,6 +532,13 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
 
         <div className="niuu-space-y-4">
           <SagaFeedbackPanel runs={activeRuns} />
+          <TargetCard
+            saga={saga}
+            targets={(targetsQuery.data ?? []).filter((target) => target.enabled)}
+            isLoading={targetsQuery.isLoading}
+            isUpdating={assignTarget.isPending}
+            onAssign={handleAssignTarget}
+          />
           <WorkflowCard
             workflow={saga.workflow}
             workflowVersion={saga.workflowVersion}

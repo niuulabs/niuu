@@ -81,8 +81,9 @@ class PostgresSagaRepository(SagaRepository):
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
                  repos, feature_branch, base_branch, status, confidence, created_at, owner_id,
-                 workflow_id, workflow_version, workflow_snapshot)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+                 workflow_id, workflow_version, workflow_snapshot, instance_id)
+            VALUES
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -96,7 +97,8 @@ class PostgresSagaRepository(SagaRepository):
                 owner_id = EXCLUDED.owner_id,
                 workflow_id = EXCLUDED.workflow_id,
                 workflow_version = EXCLUDED.workflow_version,
-                workflow_snapshot = EXCLUDED.workflow_snapshot
+                workflow_snapshot = EXCLUDED.workflow_snapshot,
+                instance_id = EXCLUDED.instance_id
             """,
             saga.id,
             saga.tracker_id,
@@ -113,6 +115,7 @@ class PostgresSagaRepository(SagaRepository):
             saga.workflow_id,
             saga.workflow_version,
             json.dumps(saga.workflow_snapshot) if saga.workflow_snapshot is not None else None,
+            saga.instance_id,
         )
 
     async def list_sagas(self, *, owner_id: str | None = None) -> list[Saga]:
@@ -260,12 +263,43 @@ class PostgresSagaRepository(SagaRepository):
             UPDATE sagas
             SET workflow_id = $1,
                 workflow_version = $2,
-                workflow_snapshot = $3::jsonb
-            WHERE id = $4
-            """,
+            workflow_snapshot = $3::jsonb
+        WHERE id = $4
+        """,
             workflow_id,
             workflow_version,
             snapshot,
+            saga_id,
+        )
+
+    async def update_saga_target(
+        self,
+        saga_id: UUID,
+        *,
+        instance_id: str | None,
+        owner_id: str | None = None,
+    ) -> None:
+        if owner_id is not None:
+            await self._pool.execute(
+                """
+                UPDATE sagas
+                SET instance_id = $1::uuid
+                WHERE id = $2
+                  AND owner_id = $3
+                """,
+                instance_id,
+                saga_id,
+                owner_id,
+            )
+            return
+
+        await self._pool.execute(
+            """
+            UPDATE sagas
+            SET instance_id = $1::uuid
+            WHERE id = $2
+            """,
+            instance_id,
             saga_id,
         )
 
@@ -391,6 +425,7 @@ class PostgresSagaRepository(SagaRepository):
             workflow_id=row.get("workflow_id"),
             workflow_version=row.get("workflow_version"),
             workflow_snapshot=workflow_snapshot,
+            instance_id=str(row["instance_id"]) if row.get("instance_id") is not None else None,
         )
 
     @staticmethod

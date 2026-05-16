@@ -67,6 +67,8 @@ interface RawSaga {
   workflow_id?: string | null;
   workflow?: string | null;
   workflow_version?: string | null;
+  instance_id?: string | null;
+  instance_name?: string | null;
   phase_summary: {
     total: number;
     completed: number;
@@ -229,6 +231,7 @@ interface RawDispatchQueueItem {
   workflow_id?: string | null;
   workflow?: string | null;
   workflow_version?: string | null;
+  instance_id?: string | null;
 }
 
 interface RawDispatchApprovalResult {
@@ -318,6 +321,8 @@ function toSaga(raw: RawSaga): Saga {
     workflowId: raw.workflow_id ?? undefined,
     workflow: raw.workflow ?? undefined,
     workflowVersion: raw.workflow_version ?? undefined,
+    instanceId: raw.instance_id ?? undefined,
+    instanceName: raw.instance_name ?? undefined,
     phaseSummary: {
       total: raw.phase_summary.total,
       completed: raw.phase_summary.completed,
@@ -454,6 +459,7 @@ function toDispatchQueueItem(raw: RawDispatchQueueItem): DispatchQueueItem {
     workflowId: raw.workflow_id ?? undefined,
     workflow: raw.workflow ?? undefined,
     workflowVersion: raw.workflow_version ?? undefined,
+    instanceId: raw.instance_id ?? undefined,
   };
 }
 
@@ -644,6 +650,13 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
     async assignWorkflow(sagaId: string, workflowId: string | null) {
       const raw = await client.put<RawSaga>(`/sagas/${encodeURIComponent(sagaId)}/workflow`, {
         workflow_id: workflowId,
+      });
+      return toSaga(raw);
+    },
+
+    async assignTarget(sagaId: string, instanceId: string | null) {
+      const raw = await client.put<RawSaga>(`/sagas/${encodeURIComponent(sagaId)}/target`, {
+        instance_id: instanceId,
       });
       return toSaga(raw);
     },

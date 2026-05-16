@@ -60,6 +60,7 @@ class QueueItemResponse(BaseModel):
     workflow_id: str | None = None
     workflow: str | None = None
     workflow_version: str | None = None
+    instance_id: str | None = None
 
 
 class ModelOption(BaseModel):
@@ -187,6 +188,7 @@ def _queue_item_to_response(item: ServiceQueueItem) -> QueueItemResponse:
         workflow_id=item.workflow_id,
         workflow=item.workflow,
         workflow_version=item.workflow_version,
+        instance_id=item.instance_id,
     )
 
 
@@ -324,7 +326,11 @@ def create_dispatch_router() -> APIRouter:
     ) -> list[QueueItemResponse]:
         """Get the list of issues ready for dispatch across all sagas."""
         auth_token = extract_bearer_token(request)
-        items = await service.find_ready_issues(principal.user_id, auth_token=auth_token)
+        items = await service.find_ready_issues(
+            principal.user_id,
+            principal=principal,
+            auth_token=auth_token,
+        )
         return [_queue_item_to_response(item) for item in items]
 
     @router.post("/approve", response_model=list[DispatchResultResponse])

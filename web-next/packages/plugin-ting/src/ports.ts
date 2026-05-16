@@ -143,6 +143,7 @@ export interface ITingService {
   spawnPlanSession(spec: string, repo: string): Promise<PlanSession>;
   extractStructure(text: string): Promise<ExtractedStructure>;
   assignWorkflow(sagaId: string, workflowId: string | null): Promise<Saga>;
+  assignTarget(sagaId: string, instanceId: string | null): Promise<Saga>;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +294,7 @@ export interface DispatchQueueItem {
   workflowId?: string;
   workflow?: string;
   workflowVersion?: string;
+  instanceId?: string;
 }
 
 export interface DispatchApprovalItem {

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
 from niuu.adapters.inbound.auth import extract_principal
@@ -146,14 +146,33 @@ async def _probe_instance(instance: RegisteredInstance) -> InstanceTestResponse:
         return InstanceTestResponse(ok=False, message=str(exc))
 
 
+def _forward_headers(request: Request) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for name in (
+        "authorization",
+        "x-auth-user-id",
+        "x-auth-email",
+        "x-auth-tenant",
+        "x-auth-roles",
+    ):
+        value = request.headers.get(name)
+        if value:
+            headers[name] = value
+    return headers
+
+
 async def _load_remote_sessions(
     instance: RegisteredInstance,
+    request: Request,
     *,
     status_filter: str | None = None,
 ) -> list[dict[str, Any]]:
     query = f"?status={status_filter}" if status_filter else ""
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-        response = await client.get(f"{instance.base_url}/api/v1/forge/sessions{query}")
+        response = await client.get(
+            f"{instance.base_url}/api/v1/forge/sessions{query}",
+            headers=_forward_headers(request),
+        )
         response.raise_for_status()
         payload = response.json()
     return payload if isinstance(payload, list) else []
@@ -247,6 +266,7 @@ def create_instances_router(service: InstanceService) -> APIRouter:
 
     @router.get("/instances/{instance_id}/sessions", response_model=list[InstanceSessionResponse])
     async def list_instance_sessions(
+        request: Request,
         instance_id: str = Path(description="Registered instance UUID"),
         session_status: str | None = Query(default=None, alias="status"),
         principal: Principal = Depends(extract_principal),
@@ -255,7 +275,11 @@ def create_instances_router(service: InstanceService) -> APIRouter:
         if instance is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=instance_id)
         try:
-            payload = await _load_remote_sessions(instance, status_filter=session_status)
+            payload = await _load_remote_sessions(
+                instance,
+                request,
+                status_filter=session_status,
+            )
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
