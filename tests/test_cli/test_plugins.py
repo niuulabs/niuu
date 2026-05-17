@@ -691,7 +691,8 @@ class TestObservatoryPlugin:
         sentinel = object()
 
         def fake_create_app(**kwargs):
-            assert kwargs == {"discovery_service": None}
+            assert "discovery_service" in kwargs
+            assert kwargs["discovery_service"] is not None
             return sentinel
 
         monkeypatch.setattr("observatory.app.create_app", fake_create_app)

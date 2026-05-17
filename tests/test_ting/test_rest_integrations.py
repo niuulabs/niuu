@@ -14,7 +14,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from niuu.domain.models import IntegrationConnection, IntegrationType
+from niuu.domain.models import (
+    InstanceKind,
+    InstanceVisibility,
+    IntegrationConnection,
+    IntegrationType,
+    Principal,
+    RegisteredInstance,
+)
 from ting.adapters.inbound.rest_integrations import (
     create_integrations_router,
     create_telegram_setup_router,
@@ -98,6 +105,7 @@ def _make_client(
     app.state.integration_repo = mock_repo
     app.state.credential_store = mock_credential_store
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=allow_anonymous_dev))
+    app.state.instance_service = _StubInstanceService()
     app.include_router(create_integrations_router())
     app.include_router(
         create_telegram_setup_router(
@@ -110,6 +118,40 @@ def _make_client(
 
 def _auth_headers(user_id: str = "user-1") -> dict[str, str]:
     return {"x-auth-user-id": user_id}
+
+
+class _StubInstanceService:
+    def __init__(self) -> None:
+        now = datetime.now(UTC)
+        self.instances = [
+            RegisteredInstance(
+                id="system-volundr",
+                kind=InstanceKind.VOLUNDR,
+                slug="system-volundr",
+                name="System Volundr",
+                base_url="http://system-volundr:8000",
+                visibility=InstanceVisibility.SYSTEM,
+                owner_id=None,
+                tenant_id=None,
+                enabled=True,
+                is_default=True,
+                config={},
+                created_at=now,
+                updated_at=now,
+            )
+        ]
+
+    async def list_visible(
+        self,
+        principal: Principal,
+        *,
+        kind: InstanceKind | None = None,
+        enabled_only: bool = False,
+    ) -> list[RegisteredInstance]:
+        assert principal.user_id
+        assert kind == InstanceKind.VOLUNDR
+        assert enabled_only is True
+        return list(self.instances)
 
 
 # -------------------------------------------------------------------
@@ -212,6 +254,36 @@ class TestCreateIntegration:
         assert call_kwargs.kwargs["name"] == "github-pat"
         assert call_kwargs.kwargs["data"] == {"token": "ghp_abc123"}
         assert call_kwargs.kwargs["owner_id"] == "user-1"
+
+    def test_connection_test_uses_registered_volundr_targets(
+        self,
+        mock_repo: AsyncMock,
+        mock_credential_store: AsyncMock,
+    ) -> None:
+        from niuu.domain.services.connection_tester import ConnectionTestResult
+
+        client = _make_client(mock_repo, mock_credential_store)
+        with patch(
+            "ting.adapters.inbound.rest_integrations.test_connection",
+            return_value=ConnectionTestResult(success=True, message="mock ok"),
+        ) as test_connection_mock:
+            response = client.post(
+                "/api/v1/ting/integrations",
+                json={
+                    "integration_type": "code_forge",
+                    "adapter": "ting.adapters.volundr_http.VolundrHTTPAdapter",
+                    "credential_name": "volundr-pat",
+                    "credential_value": "secret-token",
+                    "config": {"url": "http://volundr"},
+                },
+                headers=_auth_headers(),
+            )
+
+        assert response.status_code == 201
+        assert (
+            test_connection_mock.call_args.kwargs["trusted_code_forge_base_urls"]
+            == ("http://system-volundr:8000", "http://localhost:8080")
+        )
 
     def test_rejects_missing_fields(self, client: TestClient):
         resp = client.post(

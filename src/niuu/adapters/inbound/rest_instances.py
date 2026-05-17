@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -171,6 +172,112 @@ def _forward_headers(request: Request) -> dict[str, str]:
     return headers
 
 
+def _slug(value: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-") or "service"
+
+
+def _iso(ts: datetime) -> str:
+    return ts.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _probe_status(probe: InstanceTestResponse) -> str:
+    if probe.ok:
+        return "healthy"
+    if probe.status_code is None and not probe.message:
+        return "unknown"
+    return "failed"
+
+
+async def _build_observatory_snapshot(
+    instances: list[RegisteredInstance],
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    probes = await asyncio.gather(*[_probe_instance(instance) for instance in instances])
+    probe_by_id = {instance.id: probe for instance, probe in zip(instances, probes, strict=False)}
+
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "service:guild",
+            "typeId": "service",
+            "label": "Guild",
+            "parentId": None,
+            "status": "healthy",
+            "svcType": "niuu",
+            "purpose": "shared instance registry and discovery surface",
+        }
+    ]
+    edges: list[dict[str, str]] = []
+    events: list[dict[str, str]] = []
+
+    kind_nodes: dict[str, str] = {}
+    for instance in instances:
+        kind_key = instance.kind.value
+        kind_node_id = kind_nodes.get(kind_key)
+        if kind_node_id is None:
+            kind_node_id = f"kind:{kind_key}"
+            kind_nodes[kind_key] = kind_node_id
+            nodes.append(
+                {
+                    "id": kind_node_id,
+                    "typeId": "cluster",
+                    "label": instance.kind.value.title(),
+                    "parentId": "service:guild",
+                    "status": "healthy",
+                    "svcType": kind_key,
+                }
+            )
+            edges.append(
+                {
+                    "id": f"edge:guild:{kind_key}",
+                    "sourceId": "service:guild",
+                    "targetId": kind_node_id,
+                    "kind": "solid",
+                }
+            )
+
+        probe = probe_by_id[instance.id]
+        node_id = f"instance:{kind_key}:{_slug(instance.slug or instance.name)}"
+        nodes.append(
+            {
+                "id": node_id,
+                "typeId": "service",
+                "label": instance.name,
+                "parentId": kind_node_id,
+                "status": _probe_status(probe),
+                "svcType": kind_key,
+                "slug": instance.slug,
+                "baseUrl": instance.base_url,
+                "visibility": instance.visibility.value,
+                "default": instance.is_default,
+                "enabled": instance.enabled,
+            }
+        )
+        edges.append(
+            {
+                "id": f"edge:{kind_key}:{instance.id}",
+                "sourceId": kind_node_id,
+                "targetId": node_id,
+                "kind": "solid",
+            }
+        )
+        events.append(
+            {
+                "id": f"instance:{instance.id}:{'up' if probe.ok else 'down'}",
+                "level": "info" if probe.ok else "warning",
+                "service": instance.kind.value,
+                "message": probe.message,
+                "timestamp": _iso(now),
+            }
+        )
+
+    return {
+        "timestamp": _iso(now),
+        "nodes": nodes,
+        "edges": edges,
+        "events": events,
+    }
+
+
 async def _load_remote_sessions(
     instance: RegisteredInstance,
     request: Request,
@@ -335,5 +442,12 @@ def create_instances_router(service: InstanceService) -> APIRouter:
             enabled_only=True,
         )
         return [_to_response(instance) for instance in instances]
+
+    @router.get("/observatory/snapshot")
+    async def get_observatory_snapshot(
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instances = await service.list_visible(principal, enabled_only=True)
+        return await _build_observatory_snapshot(instances)
 
     return router

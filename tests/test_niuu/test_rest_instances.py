@@ -396,3 +396,34 @@ def test_list_volundr_targets_requests_enabled_visible_volundr_instances() -> No
     assert response.json()[0]["id"] == "volundr-1"
     assert service.list_calls[-1]["kind"] == InstanceKind.VOLUNDR
     assert service.list_calls[-1]["enabled_only"] is True
+
+
+@respx.mock
+def test_observatory_snapshot_builds_registry_backed_topology() -> None:
+    service = StubInstanceService()
+    service.visible_instances = [
+        _instance(
+            "volundr-1",
+            kind=InstanceKind.VOLUNDR,
+            base_url="https://volundr.example.com",
+            is_default=True,
+        ),
+        _instance(
+            "bifrost-1",
+            kind=InstanceKind.BIFROST,
+            base_url="https://bifrost.example.com",
+        ),
+    ]
+    client = _client(service)
+    respx.get("https://volundr.example.com/health").mock(return_value=Response(200))
+    respx.get("https://bifrost.example.com/health").mock(return_value=Response(503))
+
+    response = client.get("/api/v1/niuu/observatory/snapshot", headers=_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["nodes"][0]["id"] == "service:guild"
+    assert any(node.get("svcType") == "volundr" for node in payload["nodes"])
+    assert any(node.get("svcType") == "bifrost" for node in payload["nodes"])
+    assert any(event["service"] == "volundr" for event in payload["events"])
+    assert any(event["service"] == "bifrost" for event in payload["events"])

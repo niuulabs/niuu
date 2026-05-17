@@ -62,6 +62,7 @@ def _make_instance(
     owner_id: str | None = None,
     tenant_id: str | None = None,
     is_default: bool = False,
+    config: dict | None = None,
 ) -> RegisteredInstance:
     return RegisteredInstance(
         id=instance_id,
@@ -74,7 +75,7 @@ def _make_instance(
         tenant_id=tenant_id,
         enabled=True,
         is_default=is_default,
-        config={},
+        config={} if config is None else config,
         created_at=_NOW,
         updated_at=_NOW,
     )
@@ -445,6 +446,32 @@ async def test_primary_for_principal_prefers_default_visible_instance() -> None:
 
     assert result is not None
     assert result.target_id == "system-1"
+
+
+@pytest.mark.asyncio
+async def test_registered_instance_uses_configured_credential_name_for_api_key() -> None:
+    factory = VolundrAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=[]),
+        credential_store=StubCredentialStore(
+            values={"user:owner-1:shared-volundr-pat": {"token": "tok-instance"}}
+        ),
+        instance_repo=StubInstanceRepo(
+            instances=[
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                    visibility=InstanceVisibility.SYSTEM,
+                    config={"credential_name": "shared-volundr-pat"},
+                )
+            ]
+        ),
+    )
+
+    result = await factory.for_owner("owner-1")
+
+    assert len(result) == 1
+    assert result[0]._api_key == "tok-instance"
 
 
 @pytest.mark.asyncio

@@ -45,11 +45,24 @@ class ObservatoryPlugin(ServicePlugin):
         return self.register_service().factory()
 
     def create_api_app(self, *, base_url: str | None = None) -> Any:
+        from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter
+        from niuu.service_settings import Settings
+        from niuu.utils import import_class, resolve_secret_kwargs
         from observatory.app import create_app
         from observatory.discovery import ObservatoryDiscoveryService
 
-        discovery_service = (
-            ObservatoryDiscoveryService(base_url=base_url) if base_url is not None else None
+        settings = Settings()
+        guild_cfg = settings.observatory.guild
+        auth_cls = import_class(guild_cfg.auth.adapter)
+        auth_kwargs = resolve_secret_kwargs(
+            guild_cfg.auth.kwargs,
+            guild_cfg.auth.secret_kwargs_env,
+        )
+        auth = auth_cls(**auth_kwargs) if guild_cfg.auth.adapter else NoAuthHeaderAdapter()
+        discovery_service = ObservatoryDiscoveryService(
+            guild_url=guild_cfg.url,
+            auth=auth,
+            timeout_seconds=guild_cfg.timeout_seconds,
         )
         return create_app(discovery_service=discovery_service)
 

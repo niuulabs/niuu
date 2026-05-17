@@ -132,6 +132,16 @@ class GitConfig(BaseModel):
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
 
 
+class HttpAuthAdapterConfig(BaseModel):
+    """Dynamic adapter config for outbound HTTP auth/header providers."""
+
+    adapter: str = Field(
+        default="niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
 class InstanceSeedConfig(BaseModel):
     """Config-seeded runtime instance registration."""
 
@@ -189,6 +199,20 @@ def _default_instance_catalog() -> list[InstanceCatalogEntryConfig]:
             rune="✦",
             summary="saga coordinator",
             detail="dispatch ravens",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.RAVN,
+            label="Ravn",
+            rune="ᚱ",
+            summary="agent runtime",
+            detail="runs ravens and wardens",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.OBSERVATORY,
+            label="Observatory",
+            rune="◉",
+            summary="topology surface",
+            detail="discovers and streams platform state",
         ),
     ]
 

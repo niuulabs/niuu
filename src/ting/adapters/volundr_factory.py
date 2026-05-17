@@ -175,9 +175,11 @@ class VolundrAdapterFactory:
             elif instance.visibility != InstanceVisibility.SYSTEM:
                 continue
             try:
+                token = await self._resolve_instance_token(instance, owner_id)
                 adapters.append(
                     VolundrHTTPAdapter(
                         base_url=instance.base_url,
+                        api_key=token,
                         name=instance.name,
                         target_id=instance.id,
                     )
@@ -190,3 +192,13 @@ class VolundrAdapterFactory:
                     exc_info=True,
                 )
         return adapters
+
+    async def _resolve_instance_token(self, instance, owner_id: str) -> str | None:
+        credential_name = str(instance.config.get("credential_name") or "").strip()
+        if not credential_name:
+            return None
+        credential = await self._credential_store.get_value("user", owner_id, credential_name)
+        if credential is None:
+            return None
+        token = credential.get("token")
+        return str(token).strip() if token else None

@@ -18,6 +18,7 @@ from niuu.adapters.inbound.rest_integration_models import (
     IntegrationToggleRequest,
 )
 from niuu.domain.models import (
+    InstanceKind,
     IntegrationConnection,
     IntegrationType,
     Principal,
@@ -39,12 +40,24 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
-def _trusted_code_forge_base_urls(request: Request) -> tuple[str, ...]:
+async def _trusted_code_forge_base_urls(
+    request: Request,
+    principal: Principal,
+) -> tuple[str, ...]:
     """Return trusted base URLs for server-side code_forge connection tests."""
     settings = getattr(request.app.state, "settings", None)
-    if settings is None:
-        return ()
-    candidates = [settings.volundr.url, *settings.volundr.trusted_connection_test_urls]
+    candidates: list[str] = []
+    instance_service = getattr(request.app.state, "instance_service", None)
+    if instance_service is not None:
+        instances = await instance_service.list_visible(
+            principal,
+            kind=InstanceKind.VOLUNDR,
+            enabled_only=True,
+        )
+        candidates.extend(instance.base_url for instance in instances if instance.base_url)
+    if settings is not None and settings.volundr.url:
+        candidates.append(settings.volundr.url)
+        candidates.extend(settings.volundr.trusted_connection_test_urls)
     ordered: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -201,7 +214,7 @@ def create_integrations_router() -> APIRouter:
             data.integration_type,
             data.config,
             credential_payload,
-            trusted_code_forge_base_urls=_trusted_code_forge_base_urls(request),
+            trusted_code_forge_base_urls=await _trusted_code_forge_base_urls(request, principal),
         )
         if not test_result.success:
             raise HTTPException(

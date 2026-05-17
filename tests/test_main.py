@@ -95,6 +95,10 @@ class TestLifespan:
         with (
             patch("volundr.main.database_pool", _mock_db_pool),
             patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
                 "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
                 new=AsyncMock(),
             ),
