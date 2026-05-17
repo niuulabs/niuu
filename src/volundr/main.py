@@ -89,6 +89,28 @@ BROADCAST_INTERVAL = 30
 logger = logging.getLogger(__name__)
 
 
+async def _load_bifrost_catalog(
+    pricing_provider: HardcodedPricingProvider,
+    bifrost_catalog: HttpBifrostCatalogAdapter,
+) -> None:
+    delay_seconds = 0.1
+    while True:
+        try:
+            models = await bifrost_catalog.list_models()
+            pricing_provider.replace_models(models)
+            logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
+            return
+        except Exception:
+            logger.warning(
+                "Bifrost catalog not ready yet at %s; retrying in %.1fs",
+                bifrost_catalog._base_url,  # noqa: SLF001
+                delay_seconds,
+                exc_info=True,
+            )
+            await asyncio.sleep(delay_seconds)
+            delay_seconds = min(delay_seconds * 2, 5.0)
+
+
 def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
     """Create the PodManager adapter from dynamic config."""
     pm_cfg = settings.pod_manager
@@ -469,7 +491,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 auth=bifrost_auth,
                 timeout_seconds=settings.bifrost.timeout_seconds,
             )
-            pricing_provider = HardcodedPricingProvider(await bifrost_catalog.list_models())
+            pricing_provider = HardcodedPricingProvider()
+            bifrost_catalog_task = asyncio.create_task(
+                _load_bifrost_catalog(
+                    pricing_provider,
+                    bifrost_catalog,
+                )
+            )
             git_registry = create_git_registry(settings.git)
 
             # Sleipnir integration (optional — enabled via sleipnir.enabled config)
@@ -856,6 +884,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 yield
             finally:
+                if bifrost_catalog_task is not None:
+                    bifrost_catalog_task.cancel()
+                    await asyncio.gather(bifrost_catalog_task, return_exceptions=True)
                 await telegram_ingress.stop()
                 background_task.cancel()
                 try:

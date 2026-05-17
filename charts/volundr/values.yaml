@@ -242,6 +242,33 @@ provisioning:
   # -- Initial delay before starting readiness polls in seconds
   initialDelaySeconds: 5.0
 
+bifrost:
+  # -- Base URL for the co-hosted Bifrost API Volundr reads models from
+  url: "http://127.0.0.1:8080"
+  # -- HTTP timeout for catalog fetches
+  timeoutSeconds: 10.0
+  auth:
+    # -- Fully-qualified outbound auth adapter class
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHttpAuthAdapter"
+    # -- Kwargs forwarded to the auth adapter constructor
+    kwargs: {}
+    # -- Secret-backed kwargs forwarded through env indirection
+    secretKwargs: []
+
+observatory:
+  guild:
+    # -- Base URL for the Guild/niuu API Observatory reads its topology from
+    url: "http://niuu-shared:8080"
+    # -- HTTP timeout for Guild discovery fetches
+    timeoutSeconds: 10.0
+    auth:
+      # -- Fully-qualified outbound auth adapter class
+      adapter: "niuu.adapters.outbound.http_auth.NoAuthHttpAuthAdapter"
+      # -- Kwargs forwarded to the auth adapter constructor
+      kwargs: {}
+      # -- Secret-backed kwargs forwarded through env indirection
+      secretKwargs: []
+
 podManager:
   # -- Fully-qualified class path for the PodManager adapter
   adapter: "volundr.adapters.outbound.flux.FluxPodManager"

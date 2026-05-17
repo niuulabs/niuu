@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from fastapi import FastAPI
 
 from volundr.config import Settings
@@ -97,6 +98,40 @@ class TestLifespan:
             patch(
                 "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
                 new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                response = client.get("/health")
+                assert response.status_code == 200
+
+    def test_lifespan_does_not_block_on_unavailable_bifrost_catalog_startup(self):
+        """Volundr should boot and keep retrying when Bifrost is not ready yet."""
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        with (
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(side_effect=httpx.ConnectError("not ready")),
             ),
             patch(
                 "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
