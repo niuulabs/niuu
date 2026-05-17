@@ -2,18 +2,24 @@
   "theme": "ice",
   "plugins": {
     "login": { "enabled": true, "order": 0 },
-    "volundr": { "enabled": true, "order": 1 },
-    "ting": { "enabled": true, "order": 2 },
-    "mimir": { "enabled": true, "order": 3 },
-    "ravn": { "enabled": true, "order": 4 },
-    "observatory": { "enabled": true, "order": 5 },
-    "settings": { "enabled": true, "order": 6 }
+    "credentials": { "enabled": true, "order": 1 },
+    "integrations": { "enabled": true, "order": 2 },
+    "volundr": { "enabled": true, "order": 3 },
+    "ting": { "enabled": true, "order": 4 },
+    "mimir": { "enabled": true, "order": 5 },
+    "ravn": { "enabled": true, "order": 6 },
+    "observatory": { "enabled": true, "order": 7 },
+    "bifrost": { "enabled": true, "order": 8 },
+    "settings": { "enabled": true, "order": 9 }
   },
   "services": {
     "identity": { "mode": "http", "baseUrl": "/api/v1" },
+    "credentials": { "mode": "http", "baseUrl": "/api/v1/credentials" },
+    "integrations": { "mode": "http", "baseUrl": "/api/v1/integrations" },
     "features": { "mode": "http", "baseUrl": "/api/v1" },
     "tracker": { "mode": "http", "baseUrl": "/api/v1" },
     "audit": { "mode": "http", "baseUrl": "/api/v1" },
+    "bifrost": { "mode": "http", "baseUrl": "/api/v1/bifrost" },
     "mimir": { "mode": "http", "baseUrl": "/api/v1/mimir" },
     "observatory": { "mode": "http", "baseUrl": "/api/v1/observatory" },
     "observatory.registry": {
@@ -35,7 +41,7 @@
     "ravn.triggers": { "mode": "http", "baseUrl": "/api/v1/ravn/triggers" },
     "ravn.budget": { "mode": "http", "baseUrl": "/api/v1/ravn/budget" },
     "forge": { "mode": "http", "baseUrl": "/api/v1/forge" },
-    "forge.pty": { "mode": "ws", "wsUrl": "ws://127.0.0.1:8080/s/{sessionId}/session" },
+    "forge.pty": { "mode": "ws", "wsUrl": "/s/{sessionId}/session" },
     "forge.metrics": { "mode": "http", "baseUrl": "/api/v1/forge/metrics" },
     "ting": { "mode": "http", "baseUrl": "/api/v1/ting" },
     "ting.dispatcher": {

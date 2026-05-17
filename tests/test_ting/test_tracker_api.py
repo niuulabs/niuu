@@ -319,6 +319,10 @@ class MockSagaRepo(SagaRepository):
         yield None
 
     async def save_saga(self, saga: Saga, *, conn=None) -> None:  # noqa: ANN001
+        for index, existing in enumerate(self.sagas):
+            if existing.id == saga.id:
+                self.sagas[index] = saga
+                return
         self.sagas.append(saga)
 
     async def save_phase(self, phase: Phase, *, conn=None) -> None:  # noqa: ANN001
@@ -663,6 +667,44 @@ class TestImportProject:
         )
         assert resp.status_code == 409
         assert "already exists" in resp.json()["detail"]
+
+    def test_reimport_same_project_updates_existing_saga(self, client: TestClient):
+        existing_id = uuid4()
+        original_created_at = datetime.now(UTC)
+        client.app.state.saga_repo.sagas.append(
+            Saga(
+                id=existing_id,
+                tracker_id="proj-1",
+                tracker_type="mock",
+                slug="alpha",
+                name="Alpha",
+                repos=["org/old-repo"],
+                feature_branch="feat/alpha",
+                status=SagaStatus.ACTIVE,
+                confidence=0.42,
+                created_at=original_created_at,
+                base_branch="main",
+                owner_id="dev-user",
+            )
+        )
+
+        resp = client.post(
+            "/api/v1/ting/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/new-repo"],
+                "base_branch": "dev",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(client.app.state.saga_repo.sagas) == 1
+        saved = client.app.state.saga_repo.sagas[0]
+        assert saved.id == existing_id
+        assert saved.created_at == original_created_at
+        assert saved.repos == ["org/new-repo"]
+        assert saved.base_branch == "dev"
+        assert saved.confidence == 0.42
 
     def test_canonical_import_matches_legacy_shape(self, mock_tracker: MockTracker):
         legacy_client = _build_test_client(mock_tracker)

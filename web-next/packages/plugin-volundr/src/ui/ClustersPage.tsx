@@ -78,6 +78,7 @@ const SESSION_STATE_ORDER: Record<SessionState, number> = {
   failed: 5,
   terminating: 6,
   terminated: 7,
+  archived: 8,
 };
 
 const PANEL_SURFACE_STYLE = {
@@ -251,6 +252,7 @@ function statusToDotState(status: Cluster['status'] | ClusterNode['status'] | Se
     case 'cordoned':
       return 'idle';
     case 'terminated':
+    case 'archived':
       return 'archived';
     case 'terminating':
       return 'degraded';

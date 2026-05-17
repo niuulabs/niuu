@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from volundr.adapters.outbound.k8s_storage import (
@@ -181,3 +183,21 @@ class TestDeprovisionUserStorage:
         storage: InMemoryStorageAdapter,
     ):
         await storage.deprovision_user_storage("ghost")
+
+
+class TestResolveSessionWorkspacePath:
+    """Tests for resolve_session_workspace_path."""
+
+    def test_prefers_nested_workspace_path_when_present(self, tmp_path: Path) -> None:
+        storage = InMemoryStorageAdapter(workspace_mount_path=str(tmp_path))
+        nested = tmp_path / "sess-1" / "workspace"
+        nested.mkdir(parents=True)
+
+        assert storage.resolve_session_workspace_path("sess-1") == str(nested)
+
+    def test_falls_back_to_direct_workspace_path_when_present(self, tmp_path: Path) -> None:
+        storage = InMemoryStorageAdapter(workspace_mount_path=str(tmp_path))
+        direct = tmp_path / "sess-2"
+        direct.mkdir(parents=True)
+
+        assert storage.resolve_session_workspace_path("sess-2") == str(direct)

@@ -114,8 +114,17 @@ class FakeResumableTransport(CLITransport):
         return True
 
     @property
+    def is_turn_active(self) -> bool:
+        return True
+
+    @property
     def capabilities(self) -> TransportCapabilities:
-        return TransportCapabilities(session_resume=True, interrupt=True)
+        return TransportCapabilities(
+            session_resume=True,
+            interrupt=True,
+            steer=True,
+            steering_mode="interrupt_resume",
+        )
 
 
 class FakeStatelessTransport(CLITransport):
@@ -258,7 +267,35 @@ async def test_cli_executor_interrupts_active_transport_when_supported() -> None
     transport = agent._transport
     assert transport is not None
     assert transport.control_calls == [("interrupt", {})]
-    assert agent._interrupt_reason == InterruptReason.SIGINT
+
+
+@pytest.mark.asyncio
+async def test_cli_executor_steers_active_transport_when_supported() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a reviewer.",
+        session=Session(),
+        model="fake-model",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-4",
+        persona="reviewer",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[],
+    )
+
+    await agent._ensure_transport()
+    steered = await agent.steer("Switch to a safer plan")
+
+    transport = agent._transport
+    assert steered is True
+    assert transport is not None
+    assert transport.control_calls == [("steer", {"content": "Switch to a safer plan"})]
 
 
 def _make_agent(

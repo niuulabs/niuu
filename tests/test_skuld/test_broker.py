@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -1050,15 +1050,67 @@ class TestDispatchBrowserMessage:
         )
         b = Broker(settings=settings)
         b._transport = AsyncMock()
+        b._transport.capabilities = TransportCapabilities()
+        b._transport.is_turn_active = False
         return b
 
     @pytest.mark.asyncio
     async def test_dispatch_user_message(self, test_broker):
-        await test_broker._dispatch_browser_message({"content": "hello"})
+        test_broker._channels.broadcast = AsyncMock()
+
+        await test_broker._dispatch_browser_message({"content": "hello", "request_id": "req-1"})
         # send_message now runs in a background task so the WS handler
         # doesn't block on the per-turn lock; pump the loop so the task runs.
         await asyncio.sleep(0)
         test_broker._transport.send_message.assert_called_once_with("hello")
+        test_broker._channels.broadcast.assert_awaited_once_with(
+            {
+                "type": "user_confirmed",
+                "id": ANY,
+                "content": "hello",
+                "request_id": "req-1",
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_user_message_steers_when_turn_active(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(steer=True)
+        test_broker._transport.is_turn_active = True
+
+        await test_broker._dispatch_browser_message({"content": "Prefer option B"})
+        await asyncio.sleep(0)
+
+        test_broker._transport.send_message.assert_not_called()
+        test_broker._transport.send_control.assert_called_once_with(
+            "redirect",
+            content="Prefer option B",
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_user_message_steers_active_turn(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(steer=True)
+        test_broker._transport.is_turn_active = True
+
+        await test_broker._dispatch_browser_message({"content": "change direction"})
+        await asyncio.sleep(0)
+
+        test_broker._transport.send_control.assert_called_once_with(
+            "redirect",
+            content="change direction",
+        )
+        test_broker._transport.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_explicit_steer_active_turn_message(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(steer=True)
+        await test_broker._dispatch_browser_message(
+            {"type": "steer_active_turn", "content": "abort the search"}
+        )
+
+        test_broker._transport.send_control.assert_awaited_once_with(
+            "steer",
+            content="abort the search",
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_user_message_empty_ignored(self, test_broker):
@@ -1114,6 +1166,36 @@ class TestDispatchBrowserMessage:
         )
 
     @pytest.mark.asyncio
+    async def test_safe_transport_control_broadcasts_background_errors(self, test_broker):
+        bad_transport = AsyncMock()
+        bad_transport.send_control.side_effect = RuntimeError("boom")
+        test_broker._channels = AsyncMock()
+
+        await test_broker._safe_transport_control(
+            bad_transport,
+            "steer",
+            content="reroute the task",
+        )
+
+        test_broker._channels.broadcast.assert_awaited_once()
+        payload = test_broker._channels.broadcast.await_args.args[0]
+        assert payload["type"] == "error"
+        assert "boom" in payload["content"]
+
+    @pytest.mark.asyncio
+    async def test_safe_transport_control_swallows_broadcast_failures(self, test_broker):
+        bad_transport = AsyncMock()
+        bad_transport.send_control.side_effect = RuntimeError("boom")
+        test_broker._channels = AsyncMock()
+        test_broker._channels.broadcast.side_effect = RuntimeError("offline")
+
+        await test_broker._safe_transport_control(
+            bad_transport,
+            "steer",
+            content="reroute the task",
+        )
+
+    @pytest.mark.asyncio
     async def test_dispatch_permission_response_deny(self, test_broker):
         await test_broker._dispatch_browser_message(
             {
@@ -1145,11 +1227,26 @@ class TestDispatchBrowserMessage:
 
     @pytest.mark.asyncio
     async def test_dispatch_interrupt(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(interrupt=True)
         await test_broker._dispatch_browser_message({"type": "interrupt"})
         test_broker._transport.send_control.assert_called_once_with("interrupt")
 
     @pytest.mark.asyncio
+    async def test_dispatch_steer_active_turn(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(steer=True)
+
+        await test_broker._dispatch_browser_message(
+            {"type": "steer_active_turn", "content": "Change approach"}
+        )
+
+        test_broker._transport.send_control.assert_called_once_with(
+            "steer",
+            content="Change approach",
+        )
+
+    @pytest.mark.asyncio
     async def test_dispatch_set_model(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(set_model=True)
         await test_broker._dispatch_browser_message(
             {
                 "type": "set_model",
@@ -1173,6 +1270,7 @@ class TestDispatchBrowserMessage:
 
     @pytest.mark.asyncio
     async def test_dispatch_set_max_thinking_tokens(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(set_thinking_tokens=True)
         await test_broker._dispatch_browser_message(
             {
                 "type": "set_max_thinking_tokens",
@@ -1186,6 +1284,7 @@ class TestDispatchBrowserMessage:
 
     @pytest.mark.asyncio
     async def test_dispatch_set_permission_mode(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(set_permission_mode=True)
         await test_broker._dispatch_browser_message(
             {
                 "type": "set_permission_mode",
@@ -1199,11 +1298,13 @@ class TestDispatchBrowserMessage:
 
     @pytest.mark.asyncio
     async def test_dispatch_rewind_files(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(rewind_files=True)
         await test_broker._dispatch_browser_message({"type": "rewind_files"})
         test_broker._transport.send_control.assert_called_once_with("rewind_files")
 
     @pytest.mark.asyncio
     async def test_dispatch_mcp_set_servers(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(mcp_set_servers=True)
         servers = [{"name": "my-mcp", "command": "node", "args": ["server.js"]}]
         await test_broker._dispatch_browser_message(
             {
@@ -1241,10 +1342,11 @@ class TestDispatchBrowserMessage:
 
     @pytest.mark.asyncio
     async def test_dispatch_guard_blocks_all_guarded_controls(self, test_broker):
-        """All six guarded control types are blocked when capabilities are False."""
+        """All guarded control types are blocked when capabilities are False."""
         test_broker._transport.capabilities = TransportCapabilities()  # all False
         guarded = [
             "interrupt",
+            "steer_active_turn",
             "set_model",
             "set_max_thinking_tokens",
             "set_permission_mode",
@@ -2289,6 +2391,46 @@ class TestHandleWebSocket:
         system_idx = types.index("system")
         caps_idx = types.index("capabilities")
         assert caps_idx > system_idx
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_treats_not_connected_runtime_error_as_disconnect(
+        self, test_broker
+    ):
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        test_broker._transport = mock_transport
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_json = AsyncMock(
+            side_effect=RuntimeError('WebSocket is not connected. Need to call "accept" first.')
+        )
+
+        await test_broker.handle_websocket(mock_ws)
+
+        error_messages = [
+            call.args[0]
+            for call in mock_ws.send_json.call_args_list
+            if call.args and isinstance(call.args[0], dict) and call.args[0].get("type") == "error"
+        ]
+        assert error_messages == []
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_treats_welcome_send_disconnect_as_normal(self, test_broker):
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        test_broker._transport = mock_transport
+
+        mock_ws = AsyncMock()
+        mock_ws.send_json = AsyncMock(
+            side_effect=RuntimeError('Cannot call "send" once a close message has been sent.')
+        )
+
+        await test_broker.handle_websocket(mock_ws)
+
+        mock_ws.accept.assert_called_once()
+        mock_ws.receive_json.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_websocket_starts_transport(self, test_broker):

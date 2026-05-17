@@ -829,14 +829,11 @@ sessionDefinitions:
       broker:
         # -- AI CLI backend: "claude" (Claude Code)
         cliType: claude
-        # -- CLI transport mode for Claude Code sessions.
-        # "persistent_subprocess" keeps one Claude process across all
-        # turns (multi-turn over a held-open stdin pipe) — no per-turn
-        # spawn cost, no --resume reload between turns. The legacy
-        # "subprocess" mode (spawn-per-turn) still works as a fallback.
-        transport: persistent_subprocess
+        # -- Claude Agent SDK transport keeps a live controllable session
+        # for interrupts, model changes, and steering redirects.
+        transport: sdk
         # -- Fully-qualified transport adapter class path
-        transportAdapter: "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+        transportAdapter: "skuld.transports.sdk.SDKTransport"
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
         skipPermissions: true
         # -- Enable Claude Code experimental Agent Teams
@@ -1256,24 +1253,33 @@ webNext:
       login:
         enabled: true
         order: 0
-      bifrost:
+      credentials:
         enabled: true
         order: 1
-      volundr:
+      integrations:
         enabled: true
         order: 2
-      ting:
+      bifrost:
         enabled: true
         order: 3
-      mimir:
+      volundr:
         enabled: true
         order: 4
-      ravn:
+      ting:
         enabled: true
         order: 5
-      settings:
+      mimir:
         enabled: true
         order: 6
+      ravn:
+        enabled: true
+        order: 7
+      observatory:
+        enabled: true
+        order: 8
+      settings:
+        enabled: true
+        order: 9
     auth:
       issuer: ""
       clientId: ""

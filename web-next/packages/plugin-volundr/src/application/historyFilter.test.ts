@@ -29,20 +29,21 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 
 describe('applyHistoryFilters', () => {
   const terminated = makeSession({ state: 'terminated' });
+  const archived = makeSession({ id: 'ds-5', state: 'archived' });
   const failed = makeSession({ id: 'ds-2', state: 'failed' });
   const running = makeSession({ id: 'ds-3', state: 'running' });
   const idle = makeSession({ id: 'ds-4', state: 'idle' });
 
   it('excludes non-terminal sessions', () => {
-    const result = applyHistoryFilters([terminated, failed, running, idle], {});
-    expect(result).toHaveLength(2);
+    const result = applyHistoryFilters([terminated, archived, failed, running, idle], {});
+    expect(result).toHaveLength(3);
     expect(result.find((s) => s.id === 'ds-3')).toBeUndefined();
     expect(result.find((s) => s.id === 'ds-4')).toBeUndefined();
   });
 
   it('returns all terminal sessions when no filters', () => {
-    const result = applyHistoryFilters([terminated, failed], {});
-    expect(result).toHaveLength(2);
+    const result = applyHistoryFilters([terminated, archived, failed], {});
+    expect(result).toHaveLength(3);
   });
 
   it('returns empty array when no sessions', () => {
@@ -93,6 +94,14 @@ describe('applyHistoryFilters', () => {
     const t = makeSession({ id: 'a', state: 'terminated' });
     const f = makeSession({ id: 'b', state: 'failed' });
     const result = applyHistoryFilters([t, f], { outcome: 'failed' });
+    expect(result).toHaveLength(1);
+    expect(result[0]!.id).toBe('b');
+  });
+
+  it('filters by outcome (archived)', () => {
+    const t = makeSession({ id: 'a', state: 'terminated' });
+    const a = makeSession({ id: 'b', state: 'archived' });
+    const result = applyHistoryFilters([t, a], { outcome: 'archived' });
     expect(result).toHaveLength(1);
     expect(result[0]!.id).toBe('b');
   });

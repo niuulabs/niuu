@@ -209,6 +209,16 @@ class TestInternalCatalogEndpoints:
         assert "claude-sonnet-4-6" in ids
         assert "gpt-5.5" in ids
 
+    def test_settings_endpoint_exposes_canonical_service_schema(self) -> None:
+        config = BifrostConfig(providers={})
+        app = create_app(config)
+        with TestClient(app) as client:
+            data = client.get("/api/v1/bifrost/settings").json()
+        assert data["title"] == "Bifrost"
+        assert data["sections"][0]["id"] == "service"
+        keys = {field["key"] for field in data["sections"][0]["fields"]}
+        assert {"auth_mode", "routing_strategy", "provider_count", "model_count"} <= keys
+
     def test_internal_catalog_providers_are_derived_from_model_vendors_when_unconfigured(
         self,
     ) -> None:

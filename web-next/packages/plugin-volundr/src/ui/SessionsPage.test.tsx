@@ -11,6 +11,7 @@ import {
   createMockFileSystemPort,
 } from '../adapters/mock';
 import type { ISessionStore } from '../ports/ISessionStore';
+import type { IVolundrService } from '../ports/IVolundrService';
 import type { Session } from '../domain/session';
 
 // ---------------------------------------------------------------------------
@@ -51,14 +52,17 @@ vi.mock('@tanstack/react-router', () => ({
   useParams: () => ({ sessionId: 'ds-1' }),
 }));
 
-function wrap(sessionStore: ISessionStore = createMockSessionStore()) {
+function wrap(
+  sessionStore: ISessionStore = createMockSessionStore(),
+  volundr: IVolundrService = createMockVolundrService(),
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
           bifrost: createMockBifrostService(),
-          volundr: createMockVolundrService(),
+          volundr,
           sessionStore,
           ptyStream: createMockPtyStream(),
           filesystem: createMockFileSystemPort(),
@@ -166,6 +170,15 @@ describe('SessionsPage', () => {
   it('renders ERROR group with failed sessions', async () => {
     wrap();
     await waitFor(() => expect(screen.getByTestId('pod-group-error')).toBeInTheDocument());
+  });
+
+  it('renders ARCHIVED group when archived sessions are present', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({ id: 'arch-1', personaName: 'archiver', state: 'archived' }),
+    ]);
+    wrap(store);
+    await waitFor(() => expect(screen.getByTestId('pod-group-archived')).toBeInTheDocument());
+    expect(screen.getByTestId('pod-entry-arch-1')).toBeInTheDocument();
   });
 
   it('renders pod entries for running sessions', async () => {
@@ -327,5 +340,19 @@ describe('SessionsPage', () => {
     const row = screen.getByTestId('pod-entry-forge-1');
     expect(row).toHaveTextContent(/forge/i);
     expect(row).toHaveTextContent('Guild Alpha');
+  });
+
+  it('shows archive-all-stopped action and calls the service', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({ id: 'stopped-1', personaName: 'stopped one', state: 'terminated' }),
+    ]);
+    const volundr = createMockVolundrService();
+    const archiveStoppedSessions = vi.fn().mockResolvedValue(['stopped-1']);
+    (volundr as IVolundrService).archiveStoppedSessions = archiveStoppedSessions;
+
+    wrap(store, volundr);
+    await waitFor(() => expect(screen.getByTestId('archive-stopped-button')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('archive-stopped-button'));
+    await waitFor(() => expect(archiveStoppedSessions).toHaveBeenCalledTimes(1));
   });
 });

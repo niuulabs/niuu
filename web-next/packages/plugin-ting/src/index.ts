@@ -1,15 +1,26 @@
-import { createRoute } from '@tanstack/react-router';
+import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { TingPage } from './ui/TingPage';
 import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
 import { SagasPage } from './ui/SagasPage';
 import { DispatchView } from './ui/DispatchView';
-import { SettingsPage, SettingsIndexPage } from './ui/settings/SettingsPage';
 import { TingTopbar } from './ui/TingTopbar';
 import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
 import { TingSubnav } from './ui/TingSubnav';
-export { tingMountedSettingsProvider } from './settingsMount';
+
+const LEGACY_SETTINGS_SECTION_TARGETS: Record<string, string> = {
+  general: '/settings/ting/general',
+  dispatch: '/settings/ting/dispatch',
+  flock: '/settings/ting/flock',
+  integrations: '/settings/integrations/connections',
+  notifications: '/settings/ting/notifications',
+};
+
+function resolveLegacySettingsTarget(sectionId?: string): string {
+  if (!sectionId) return '/settings/ting';
+  return LEGACY_SETTINGS_SECTION_TARGETS[sectionId] ?? '/settings/ting';
+}
 
 export const tingPlugin = definePlugin({
   id: 'ting',
@@ -52,52 +63,26 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/settings',
-      component: SettingsIndexPage,
+      beforeLoad: ({ location }) => {
+        throw redirect({
+          to: resolveLegacySettingsTarget() as never,
+          // Preserve the active profile selector when old settings links bounce
+          // into the unified settings shell.
+          search: location.search as never,
+        });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/ting/settings/general',
-      component: () => SettingsPage({ section: 'general' }),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/settings/dispatch',
-      component: () => SettingsPage({ section: 'dispatch' }),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/settings/integrations',
-      component: () => SettingsPage({ section: 'integrations' }),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/settings/personas',
-      component: () => SettingsPage({ section: 'personas' }),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/settings/gates',
-      component: () => SettingsPage({ section: 'gates' }),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/settings/flock',
-      component: () => SettingsPage({ section: 'flock' }),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/settings/notifications',
-      component: () => SettingsPage({ section: 'notifications' }),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/settings/advanced',
-      component: () => SettingsPage({ section: 'advanced' }),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/settings/audit',
-      component: () => SettingsPage({ section: 'audit' }),
+      path: '/ting/settings/$sectionId',
+      beforeLoad: ({ params, location }) => {
+        throw redirect({
+          to: resolveLegacySettingsTarget(params.sectionId) as never,
+          search: location.search as never,
+        });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,

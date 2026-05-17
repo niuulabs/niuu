@@ -24,6 +24,11 @@ const queryMocks = vi.hoisted(() => ({
     put: vi.fn().mockResolvedValue({}),
   })),
   getAccessToken: vi.fn(() => 'token-123'),
+  getAuthHeaders: vi.fn((headers?: HeadersInit) => {
+    const next = new Headers(headers);
+    next.set('Authorization', 'Bearer token-123');
+    return next;
+  }),
 }));
 
 vi.mock('@niuulabs/query', async () => {
@@ -32,6 +37,7 @@ vi.mock('@niuulabs/query', async () => {
     ...actual,
     createApiClient: queryMocks.createApiClient,
     getAccessToken: queryMocks.getAccessToken,
+    getAuthHeaders: queryMocks.getAuthHeaders,
   };
 });
 
@@ -65,6 +71,7 @@ afterEach(() => {
   vi.useRealTimers();
   queryMocks.createApiClient.mockClear();
   queryMocks.getAccessToken.mockClear();
+  queryMocks.getAuthHeaders.mockClear();
 });
 
 describe('buildVolundrFileSystemHttpAdapter', () => {
@@ -138,6 +145,18 @@ describe('buildVolundrHttpAdapter', () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).getSessions();
     expect(client.get).toHaveBeenCalledWith('/sessions');
+  });
+
+  it('getConversationHistory calls GET /sessions/:id/conversation', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      turns: [{ id: 'turn-1', role: 'assistant', content: 'archived reply' }],
+    });
+
+    const history = await buildVolundrHttpAdapter(client).getConversationHistory('sess-1');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/conversation');
+    expect(history.turns[0]).toMatchObject({ id: 'turn-1', role: 'assistant' });
   });
 
   it('getSession calls GET /sessions/:id', async () => {
@@ -992,6 +1011,7 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
     await svc.connectSession({ name: 'c', hostname: 'host.example.com' });
     await svc.resumeSession('sess-1');
     await svc.archiveSession('sess-1');
+    await svc.archiveStoppedSessions();
     await svc.restoreSession('sess-1');
     await svc.createTenant({ name: 'acme' });
     await svc.reprovisionUser('u1');

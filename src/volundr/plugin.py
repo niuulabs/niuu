@@ -69,7 +69,10 @@ class VolundrPlugin(ServicePlugin):
         return (
             APIRouteDomain(
                 name="admin-api",
-                prefixes=("/api/v1/forge/admin",),
+                prefixes=(
+                    "/api/v1/forge/admin",
+                    "/api/v1/forge/settings",
+                ),
                 description=(
                     "Administrative routes for Forge host settings and global workspace management."
                 ),

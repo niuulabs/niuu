@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
@@ -41,12 +42,14 @@ def _result_message(
     *,
     session_id: str = "sdk-session",
     result: str = "done",
+    is_error: bool = False,
+    subtype: str | None = None,
 ) -> ResultMessage:
     return ResultMessage(
-        subtype="success",
+        subtype=subtype or ("error_during_execution" if is_error else "success"),
         duration_ms=12,
         duration_api_ms=8,
-        is_error=False,
+        is_error=is_error,
         num_turns=1,
         session_id=session_id,
         total_cost_usd=0.01,
@@ -62,6 +65,9 @@ class _FakeClient:
         self.exited = False
         self.query = AsyncMock()
         self.interrupt = AsyncMock()
+        self.set_model = AsyncMock()
+        self.set_permission_mode = AsyncMock()
+        self.rewind_files = AsyncMock()
 
     async def __aenter__(self) -> _FakeClient:
         self.entered = True
@@ -288,9 +294,143 @@ def test_capabilities() -> None:
     caps = SDKTransport("/tmp").capabilities
 
     assert caps.interrupt is True
+    assert caps.steer is True
+    assert caps.steering_mode == "interrupt_resume"
     assert caps.session_resume is False
     assert caps.set_model is True
     assert caps.set_permission_mode is True
+
+
+@pytest.mark.asyncio
+async def test_send_control_updates_model_and_permission_mode(monkeypatch, tmp_path) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    await transport.start()
+    await transport.send_control("set_model", model="claude-sonnet-4-6")
+    await transport.send_control("set_permission_mode", permissionMode="plan")
+
+    assert factory.client is not None
+    factory.client.set_model.assert_awaited_once_with("claude-sonnet-4-6")
+    factory.client.set_permission_mode.assert_awaited_once_with("plan")
+
+
+@pytest.mark.asyncio
+async def test_send_control_steer_interrupts_and_continues(monkeypatch, tmp_path) -> None:
+    factory = _ClientFactory(
+        [
+            [_assistant_message(TextBlock(text="first")), _result_message(result="partial")],
+            [_assistant_message(TextBlock(text="second")), _result_message(result="final")],
+        ]
+    )
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    await transport.start()
+    assert factory.client is not None
+
+    async def _query_side_effect(_prompt: str) -> None:
+        await asyncio.sleep(0)
+
+    factory.client.query.side_effect = _query_side_effect
+
+    async def request_steer() -> None:
+        while not transport.is_turn_active:
+            await asyncio.sleep(0)
+        await transport.send_control("steer", content="Use option B instead")
+
+    steer_task = asyncio.create_task(request_steer())
+    await transport.send_message("Start with option A")
+    await steer_task
+
+    assert factory.client.query.await_args_list[0].args == ("Start with option A",)
+    assert factory.client.query.await_args_list[1].args == ("Use option B instead",)
+    factory.client.interrupt.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_control_redirect_interrupts_and_continues(monkeypatch, tmp_path) -> None:
+    factory = _ClientFactory(
+        [
+            [_assistant_message(TextBlock(text="first")), _result_message(result="partial")],
+            [_assistant_message(TextBlock(text="second")), _result_message(result="final")],
+        ]
+    )
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    await transport.start()
+    assert factory.client is not None
+
+    async def _query_side_effect(_prompt: str) -> None:
+        await asyncio.sleep(0)
+
+    factory.client.query.side_effect = _query_side_effect
+
+    async def request_redirect() -> None:
+        while not transport.is_turn_active:
+            await asyncio.sleep(0)
+        await transport.send_control("redirect", content="Actually use option B")
+
+    redirect_task = asyncio.create_task(request_redirect())
+    await transport.send_message("Start with option A")
+    await redirect_task
+
+    assert factory.client.query.await_args_list[0].args == ("Start with option A",)
+    assert factory.client.query.await_args_list[1].args == ("Actually use option B",)
+    factory.client.interrupt.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_transient_provider_error_does_not_retry_after_visible_output(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _ClientFactory(
+        [
+            [
+                _assistant_message(
+                    TextBlock(
+                        text=(
+                            "API Error: 500 Internal server error. This is a server-side issue, "
+                            "usually temporary — try again in a moment. If it persists, "
+                            "check the provider status page."
+                        )
+                    )
+                ),
+                _result_message(
+                    result=(
+                        "API Error: 500 Internal server error. This is a server-side issue, "
+                        "usually temporary — try again in a moment. If it persists, "
+                        "check the provider status page."
+                    ),
+                    is_error=True,
+                ),
+            ],
+            [
+                _assistant_message(TextBlock(text="CLAUDE-OK")),
+                _result_message(result="CLAUDE-OK"),
+            ],
+        ]
+    )
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    received: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        received.append(event)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    transport.on_event(on_event)
+
+    await transport.start()
+    await transport.send_message("Please reply with exactly CLAUDE-OK.")
+
+    assert factory.client is not None
+    assert factory.client.query.await_count == 1
+    assert [event["type"] for event in received] == ["assistant", "result"]
+    assert "provider status page" in received[0]["message"]["content"][0]["text"]
+    assert "provider status page" in received[1]["result"]
 
 
 @pytest.mark.asyncio
@@ -515,6 +655,35 @@ def test_content_block_and_message_conversion_helpers() -> None:
     }
 
     assert _to_stream_json(
+        StreamEvent(
+            uuid="start-uuid",
+            session_id="sess-2",
+            event={
+                "type": "message_start",
+                "message": {
+                    "id": "msg_123",
+                    "content": [],
+                    "model": "claude-sonnet-4-6",
+                    "usage": {"input_tokens": 2},
+                    "stop_reason": "end_turn",
+                },
+            },
+        )
+    ) == {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [],
+            "model": "claude-sonnet-4-6",
+            "usage": {"input_tokens": 2},
+            "id": "msg_123",
+            "stop_reason": "end_turn",
+        },
+        "session_id": "sess-2",
+        "uuid": "start-uuid",
+    }
+
+    assert _to_stream_json(
         RateLimitEvent(
             rate_limit_info=RateLimitInfo(
                 status="allowed_warning",
@@ -582,7 +751,7 @@ async def test_stop_swallows_client_exit_errors(monkeypatch, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_sdk_message_ignores_unknown_messages_and_callback_failures(tmp_path) -> None:
+async def test_translate_and_emit_ignore_unknown_messages_and_callback_failures(tmp_path) -> None:
     transport = SDKTransport(workspace_dir=str(tmp_path))
 
     async def bad_callback(event: dict) -> None:
@@ -590,7 +759,168 @@ async def test_handle_sdk_message_ignores_unknown_messages_and_callback_failures
 
     transport.on_event(bad_callback)
 
-    await transport._handle_sdk_message(_assistant_message(TextBlock(text="hello")))
-    await transport._handle_sdk_message(object())
+    translated = await transport._translate_sdk_message(_assistant_message(TextBlock(text="hello")))
+    assert translated is not None
+    await transport._emit_event(translated)
+    assert await transport._translate_sdk_message(object()) is None
 
     assert transport.last_result is None
+
+
+@pytest.mark.asyncio
+async def test_send_control_updates_sdk_client_and_buffers_active_steers(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    await transport.start()
+    assert factory.client is not None
+
+    await transport.send_control("set_model", model="claude-sonnet-4-6")
+    await transport.send_control("set_permission_mode", permissionMode="plan")
+    await transport.send_control("rewind_files", user_message_id="msg_123")
+
+    transport._turn_active = True
+    await transport.send_control("steer", content="Focus on tests first")
+    await transport.send_control("steer", content="Then summarize the findings")
+
+    factory.client.set_model.assert_awaited_once_with("claude-sonnet-4-6")
+    factory.client.set_permission_mode.assert_awaited_once_with("plan")
+    factory.client.rewind_files.assert_awaited_once_with("msg_123")
+    factory.client.interrupt.assert_awaited_once()
+    assert transport._pending_steers == [
+        "Focus on tests first",
+        "Then summarize the findings",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_control_redirect_without_active_turn_uses_send_message(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    await transport.start()
+    transport.send_message = AsyncMock()  # type: ignore[method-assign]
+
+    await transport.send_control("redirect", content="Use the fallback plan")
+    await transport.send_control("steer", content="")  # no-op branch
+
+    transport.send_message.assert_awaited_once_with("Use the fallback plan")
+
+
+@pytest.mark.asyncio
+async def test_send_control_handles_disconnect_and_interrupt_variants(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    assert transport.is_turn_active is False
+    await transport.send_control("interrupt")
+
+    await transport.start()
+    assert factory.client is not None
+
+    await transport.send_control("interrupt")
+    await transport.send_control("steer", content="Stay focused")
+
+    factory.client.interrupt.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_message_retries_transient_provider_errors_without_visible_output(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _ClientFactory(
+        [
+            [_result_message(result="Internal server error, try again in a moment", is_error=True)],
+            [_assistant_message(TextBlock(text="Recovered")), _result_message(result="Recovered")],
+        ]
+    )
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("skuld.transports.sdk.asyncio.sleep", sleep_mock)
+
+    received: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        received.append(event)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    transport.on_event(on_event)
+
+    await transport.start()
+    await transport.send_message("hello")
+
+    assert factory.client is not None
+    assert factory.client.query.await_count == 2
+    sleep_mock.assert_awaited_once_with(1.0)
+    assert received[-1]["result"] == "Recovered"
+    assert transport.last_result == received[-1]
+
+
+@pytest.mark.asyncio
+async def test_send_message_consumes_pending_steers_as_continuation(monkeypatch, tmp_path) -> None:
+    factory = _ClientFactory(
+        [
+            [_result_message(result="first")],
+            [_result_message(result="second")],
+        ]
+    )
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    transport._pending_steers = ["follow the new direction"]
+
+    await transport.start()
+    await transport.send_message("initial prompt")
+
+    assert factory.client is not None
+    assert [call.args[0] for call in factory.client.query.await_args_list] == [
+        "initial prompt",
+        "follow the new direction",
+    ]
+
+
+def test_pending_steers_and_visibility_helpers() -> None:
+    transport = SDKTransport("/tmp")
+    transport._pending_steers = ["one", "two"]
+
+    merged = transport._consume_pending_steers()
+    assert "multiple steering updates" in merged
+    assert "- one" in merged
+    assert "- two" in merged
+    assert transport._consume_pending_steers() is None
+
+    assert (
+        transport._is_visible_output_event(
+            {"type": "assistant", "message": {"content": []}}
+        )
+        is False
+    )
+    assert transport._is_visible_output_event(
+        {"type": "content_block_start", "content_block": {"type": "thinking"}}
+    ) is True
+    assert transport._is_visible_output_event(
+        {"type": "content_block_delta", "delta": {"thinking": "plan"}}
+    ) is True
+    assert transport._should_retry_transient_result(
+        _result_message(result="provider status page says overloaded", is_error=True),
+        {"type": "result", "result": "provider status page says overloaded"},
+    ) is True
+    assert transport._should_retry_transient_result(
+        _result_message(result="hard failure", is_error=False),
+        {"type": "result", "result": "hard failure"},
+    ) is False
+    assert transport._should_retry_transient_result(
+        _result_message(result="", is_error=True),
+        {"type": "result", "result": ""},
+    ) is False
+    assert transport._is_visible_output_event({"type": "assistant", "message": "bad"}) is False
+    assert transport._is_visible_output_event({"type": "content_block_delta", "delta": []}) is False

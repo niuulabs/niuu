@@ -1170,6 +1170,11 @@ class LocalProcessPodManager(PodManager):
         global_llm = flock_cfg.get("llm_config")
         if not isinstance(global_llm, dict):
             global_llm = None
+        raw_daily_budget_usd = flock_cfg.get("daily_budget_usd")
+        try:
+            daily_budget_usd = float(raw_daily_budget_usd)
+        except (TypeError, ValueError):
+            daily_budget_usd = None
         global_max_tasks = flock_cfg.get("max_concurrent_tasks", DEFAULT_MAX_CONCURRENT)
         try:
             global_max_tasks = int(global_max_tasks)
@@ -1211,6 +1216,9 @@ class LocalProcessPodManager(PodManager):
             initiative_cfg["max_concurrent_tasks"] = int(
                 persona_override.get("max_concurrent_tasks") or global_max_tasks
             )
+            if daily_budget_usd and daily_budget_usd > 0:
+                budget_cfg = node_config.setdefault("budget", {})
+                budget_cfg["daily_cap_usd"] = float(daily_budget_usd)
 
             permission_cfg = node_config.setdefault("permission", {})
             permission_cfg["workspace_root"] = str(workspace_root)

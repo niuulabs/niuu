@@ -1,19 +1,5 @@
-/**
- * TingTopbar — dispatcher status chips rendered in the shell topbar-right area.
- *
- * Shown when the ting plugin is active. Displays:
- *   - dispatcher on/off  (kind=ok/dim)
- *   - threshold value     (kind=dim)
- *   - concurrent X/Y      (kind=dim)
- *
- * When the user is on a /ting/settings/* route, the settings breadcrumb
- * is shown instead (via SettingsTopbar).
- */
-
-import { useRouterState } from '@tanstack/react-router';
 import { TopbarChip } from '@niuulabs/ui';
 import { useDispatcherState } from './useDispatcherState';
-import { SettingsTopbar } from './settings/SettingsTopbar';
 import { formatThreshold } from './thresholdDisplay';
 
 function DispatcherStats() {
@@ -54,13 +40,5 @@ function DispatcherStats() {
 }
 
 export function TingTopbar() {
-  const { location } = useRouterState({ select: (s) => ({ location: s.location }) });
-  const pathname = location.pathname;
-
-  // Settings routes show the breadcrumb instead
-  if (pathname === '/ting/settings' || pathname.startsWith('/ting/settings/')) {
-    return <SettingsTopbar />;
-  }
-
   return <DispatcherStats />;
 }

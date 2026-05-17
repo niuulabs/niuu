@@ -213,10 +213,8 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             defaults={
                 "broker": {
                     "cliType": "claude",
-                    "transport": "persistent_subprocess",
-                    "transportAdapter": (
-                        "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-                    ),
+                    "transport": "sdk",
+                    "transportAdapter": "skuld.transports.sdk.SDKTransport",
                     "skipPermissions": True,
                     "agentTeams": False,
                 },
@@ -305,6 +303,23 @@ class ChronicleConfig(BaseModel):
     summary_model: str = Field(default="claude-haiku-4-5-20251001")
     summary_max_tokens: int = Field(default=2000)
     retention_days: int | None = Field(default=None)  # None = keep forever
+
+
+class ArchiveStoreConfig(BaseModel):
+    """Dynamic archive store adapter configuration."""
+
+    adapter: str = Field(
+        default="volundr.adapters.outbound.archive_store.FileSystemArchiveStore",
+        description="Fully-qualified class path for the archive store adapter.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra kwargs forwarded to the archive store adapter constructor.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of kwarg names to env var names holding secret values.",
+    )
 
 
 class GitWorkflowConfig(BaseModel):
@@ -1216,6 +1231,7 @@ class Settings(BaseSettings):
     git: GitConfig = Field(default_factory=GitConfig)
     niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)
+    archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)

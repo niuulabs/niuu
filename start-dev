@@ -28,6 +28,8 @@ if [[ -z "${NIUU_SERVER__HOST:-}" ]]; then
   NIUU_SERVER__HOST="${detected_ip:-127.0.0.1}"
 fi
 export NIUU_SERVER__HOST
+UI_VARIANT="${UI_VARIANT:-new}"
+export UI_VARIANT
 PLATFORM_URL="http://${NIUU_SERVER__HOST}:8080/health"
 
 mkdir -p "${LOG_DIR}"
@@ -232,48 +234,44 @@ if [[ -x "${PG_CTL}" ]]; then
   "${PG_CTL}" -D "${PG_DATA}" stop -m fast >/dev/null 2>&1 || true
 fi
 
-HOST_PROFILE="full"
+# Old UI uses the legacy /api/v1/volundr/* routes (e.g. /api/v1/volundr/models),
+# which only get mounted under the full-compat host profile. New UI uses the
+# split canonical routes that ship in the default 'full' profile.
+if [[ "${UI_VARIANT}" == "old" ]]; then
+  HOST_PROFILE="full-compat"
+else
+  HOST_PROFILE="full"
+fi
+export ROOT_DIR PLATFORM_LOG PLATFORM_PID_FILE UI_VARIANT HOST_PROFILE
 
 echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (host-profile=${HOST_PROFILE})..."
-ROOT_DIR="${ROOT_DIR}" \
-PLATFORM_LOG="${PLATFORM_LOG}" \
-PLATFORM_PID_FILE="${PLATFORM_PID_FILE}" \
-HOST_PROFILE="${HOST_PROFILE}" \
-PYTHONUNBUFFERED=1 \
 python3 - <<'PY'
 import os
 import subprocess
-from pathlib import Path
-
-root_dir = Path(os.environ["ROOT_DIR"])
-platform_log = Path(os.environ["PLATFORM_LOG"])
-platform_pid_file = Path(os.environ["PLATFORM_PID_FILE"])
 host_profile = os.environ["HOST_PROFILE"]
+root = os.environ["ROOT_DIR"]
+log_path = os.environ["PLATFORM_LOG"]
+pid_path = os.environ["PLATFORM_PID_FILE"]
+ui_variant = os.environ["UI_VARIANT"]
 
 env = os.environ.copy()
 env["PYTHONUNBUFFERED"] = "1"
+env["NIUU_WEB_UI"] = ui_variant
 
-with platform_log.open("wb") as log_file:
+with open(log_path, "ab", buffering=0) as log_file, open(os.devnull, "rb") as devnull:
     process = subprocess.Popen(
-        [
-            "uv",
-            "run",
-            "niuu",
-            "platform",
-            "up",
-            "--skip-preflight",
-            "--host-profile",
-            host_profile,
-        ],
-        cwd=root_dir,
+        ["uv", "run", "niuu", "platform", "up", "--skip-preflight", "--host-profile", host_profile],
+        cwd=root,
         env=env,
+        stdin=devnull,
         stdout=log_file,
         stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
         start_new_session=True,
+        close_fds=True,
     )
 
-platform_pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
+with open(pid_path, "w", encoding="utf-8") as pid_file:
+    pid_file.write(str(process.pid))
 PY
 wait_for_platform "$(cat "${PLATFORM_PID_FILE}")" "${PLATFORM_URL}"
 

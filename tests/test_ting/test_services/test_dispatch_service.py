@@ -1274,6 +1274,7 @@ class TestBuildSpawnRequestPersonaOverrides:
 
         assert req.workload_type == "ravn_flock"
         assert req.workload_config["workflow"]["name"] == "Review Flow"
+        assert req.workload_config["daily_budget_usd"] == 25.0
         assert req.workload_config["personas"] == [
             {
                 "name": "reviewer",
@@ -1281,11 +1282,7 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "llm": {"model": "claude-sonnet-4-6"},
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-                    "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-                        )
-                    },
+                    "kwargs": {"transport_adapter": "skuld.transports.sdk.SDKTransport"},
                 },
             }
         ]

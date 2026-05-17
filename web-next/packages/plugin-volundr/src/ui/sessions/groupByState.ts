@@ -7,6 +7,7 @@ export const SESSION_STATES: SessionState[] = [
   'provisioning',
   'failed',
   'terminated',
+  'archived',
 ];
 
 export type SessionsByState = Record<SessionState, Session[]>;
@@ -24,6 +25,7 @@ export function groupByState(sessions: Session[]): SessionsByState {
     idle: [],
     terminating: [],
     terminated: [],
+    archived: [],
     failed: [],
   };
 

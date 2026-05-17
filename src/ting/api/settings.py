@@ -14,6 +14,11 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from niuu.settings_schema import (
+    SettingsFieldSchema,
+    SettingsProviderSchema,
+    SettingsSectionSchema,
+)
 from ting.api.settings_store import get_ting_settings_store, now_utc
 
 
@@ -92,6 +97,199 @@ class NotificationSettingsPatch(BaseModel):
 
 def create_settings_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1/ting/settings", tags=["Ting Settings"])
+
+    @router.get("", response_model=SettingsProviderSchema)
+    async def get_settings_schema(request: Request) -> SettingsProviderSchema:
+        store = get_ting_settings_store(request)
+        dispatch = store["dispatch"]
+        flock = store["flock"]
+        notifications = store["notifications"]
+        return SettingsProviderSchema(
+            title="Ting",
+            subtitle="saga coordinator settings",
+            scope="service",
+            sections=[
+                SettingsSectionSchema(
+                    id="general",
+                    label="General",
+                    description="Core Ting runtime characteristics mounted in this host profile.",
+                    fields=[
+                        SettingsFieldSchema(
+                            key="service_name",
+                            label="Service",
+                            type="text",
+                            value="Ting",
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="workflow_count",
+                            label="Workflow Count",
+                            type="number",
+                            value=len(getattr(request.app.state, "workflow_library", {}) or {}),
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="anonymous_dev_auth_enabled",
+                            label="Anonymous Dev Auth Enabled",
+                            type="boolean",
+                            value=bool(request.app.state.settings.auth.allow_anonymous_dev),
+                            read_only=True,
+                        ),
+                    ],
+                ),
+                SettingsSectionSchema(
+                    id="dispatch",
+                    label="Dispatch rules",
+                    description="Confidence thresholds, concurrency, and retry policy.",
+                    path="/settings/dispatch",
+                    save_label="Save dispatch settings",
+                    fields=[
+                        SettingsFieldSchema(
+                            key="confidence_threshold",
+                            label="Confidence Threshold",
+                            type="number",
+                            value=dispatch["confidence_threshold"],
+                        ),
+                        SettingsFieldSchema(
+                            key="max_concurrent_runs",
+                            label="Max Concurrent Runs",
+                            type="number",
+                            value=dispatch["max_concurrent_runs"],
+                        ),
+                        SettingsFieldSchema(
+                            key="auto_continue",
+                            label="Auto Continue",
+                            type="boolean",
+                            value=dispatch["auto_continue"],
+                        ),
+                        SettingsFieldSchema(
+                            key="batch_size",
+                            label="Batch Size",
+                            type="number",
+                            value=dispatch["batch_size"],
+                        ),
+                        SettingsFieldSchema(
+                            key="quiet_hours",
+                            label="Quiet Hours",
+                            type="text",
+                            value=dispatch.get("quiet_hours") or "",
+                            placeholder="e.g. 23:00-07:00",
+                        ),
+                        SettingsFieldSchema(
+                            key="escalate_after",
+                            label="Escalate After",
+                            type="text",
+                            value=dispatch.get("escalate_after") or "",
+                            placeholder="e.g. 15m",
+                        ),
+                    ],
+                ),
+                SettingsSectionSchema(
+                    id="flock",
+                    label="Flock defaults",
+                    description="Defaults used when new sagas and runs are created.",
+                    path="/settings/flock",
+                    save_label="Save flock defaults",
+                    fields=[
+                        SettingsFieldSchema(
+                            key="flock_name",
+                            label="Flock Name",
+                            type="text",
+                            value=flock["flock_name"],
+                        ),
+                        SettingsFieldSchema(
+                            key="default_base_branch",
+                            label="Default Base Branch",
+                            type="text",
+                            value=flock["default_base_branch"],
+                        ),
+                        SettingsFieldSchema(
+                            key="default_tracker_type",
+                            label="Default Tracker Type",
+                            type="text",
+                            value=flock["default_tracker_type"],
+                        ),
+                        SettingsFieldSchema(
+                            key="default_repos",
+                            label="Default Repositories",
+                            type="textarea",
+                            value="\n".join(flock["default_repos"]),
+                            description="One repository URL per line.",
+                        ),
+                        SettingsFieldSchema(
+                            key="max_active_sagas",
+                            label="Max Active Sagas",
+                            type="number",
+                            value=flock["max_active_sagas"],
+                        ),
+                        SettingsFieldSchema(
+                            key="auto_create_milestones",
+                            label="Auto Create Milestones",
+                            type="boolean",
+                            value=flock["auto_create_milestones"],
+                        ),
+                    ],
+                ),
+                SettingsSectionSchema(
+                    id="notifications",
+                    label="Notifications",
+                    description="Operator event delivery and approval alerts.",
+                    path="/settings/notifications",
+                    save_label="Save notification settings",
+                    fields=[
+                        SettingsFieldSchema(
+                            key="channel",
+                            label="Channel",
+                            type="select",
+                            value=notifications["channel"],
+                            options=[
+                                {"label": "Telegram", "value": "telegram"},
+                                {"label": "Email", "value": "email"},
+                                {"label": "Webhook", "value": "webhook"},
+                                {"label": "None", "value": "none"},
+                            ],
+                        ),
+                        SettingsFieldSchema(
+                            key="on_run_pending_approval",
+                            label="On Run Pending Approval",
+                            type="boolean",
+                            value=notifications["on_run_pending_approval"],
+                        ),
+                        SettingsFieldSchema(
+                            key="on_run_merged",
+                            label="On Run Merged",
+                            type="boolean",
+                            value=notifications["on_run_merged"],
+                        ),
+                        SettingsFieldSchema(
+                            key="on_run_failed",
+                            label="On Run Failed",
+                            type="boolean",
+                            value=notifications["on_run_failed"],
+                        ),
+                        SettingsFieldSchema(
+                            key="on_saga_complete",
+                            label="On Saga Complete",
+                            type="boolean",
+                            value=notifications["on_saga_complete"],
+                        ),
+                        SettingsFieldSchema(
+                            key="on_dispatcher_error",
+                            label="On Dispatcher Error",
+                            type="boolean",
+                            value=notifications["on_dispatcher_error"],
+                        ),
+                        SettingsFieldSchema(
+                            key="webhook_url",
+                            label="Webhook URL",
+                            type="text",
+                            value=notifications.get("webhook_url") or "",
+                            placeholder="https://hooks.example.test/ting",
+                        ),
+                    ],
+                ),
+            ],
+        )
 
     @router.get("/flock", response_model=FlockSettingsResponse)
     async def get_flock_settings(request: Request) -> FlockSettingsResponse:

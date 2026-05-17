@@ -13,6 +13,8 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 
+from fastapi import WebSocketDisconnect
+
 from niuu.domain.outcome import parse_outcome_block
 
 logger = logging.getLogger("skuld.channels")
@@ -25,6 +27,20 @@ TELEGRAM_BUFFER_FLUSH_INTERVAL = 1.5
 TELEGRAM_TOPIC_NAME_MAX_LENGTH = 128
 
 TelegramTopicMode = Literal["shared_chat", "fixed_topic", "topic_per_session"]
+
+
+def _is_expected_ws_disconnect(exc: Exception) -> bool:
+    if isinstance(exc, WebSocketDisconnect):
+        return True
+    if exc.__class__.__name__ == "ClientDisconnected":
+        return True
+    if isinstance(exc, RuntimeError):
+        text = str(exc)
+        return (
+            "WebSocket is not connected" in text
+            or 'Cannot call "send" once a close message has been sent.' in text
+        )
+    return False
 
 try:
     from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -194,7 +210,12 @@ class WebSocketChannel(MessageChannel):
             if filtered is None:
                 return
             event = filtered
-        await self._ws.send_text(json.dumps(event))
+        try:
+            await self._ws.send_text(json.dumps(event))
+        except Exception as exc:
+            if not _is_expected_ws_disconnect(exc):
+                raise
+            self._closed = True
 
     async def close(self) -> None:
         """Close the underlying WebSocket connection."""

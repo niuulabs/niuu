@@ -866,13 +866,13 @@ describe('buildDispatchBusHttpAdapter', () => {
     expect(item?.priorityLabel).toBe(rawDispatchQueueItem.priority_label);
   });
 
-  it('calls GET /dispatch/clusters and camelizes cluster items', async () => {
+  it('calls GET /dispatch/targets and camelizes cluster items', async () => {
     const client = makeClient();
     client.get.mockResolvedValue([rawDispatchCluster]);
 
     const [cluster] = await buildDispatchBusHttpAdapter(client).getClusters();
 
-    expect(client.get).toHaveBeenCalledWith('/dispatch/clusters');
+    expect(client.get).toHaveBeenCalledWith('/dispatch/targets');
     expect(cluster).toEqual({
       connectionId: 'cluster-mini',
       name: 'Mac mini',

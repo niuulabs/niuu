@@ -28,6 +28,10 @@ ingress:
         service: niuu-shared
       - path: /api/v1/ravn/personas
         service: niuu-shared
+      - path: /api/v1/mimir/mcp
+        service: mimir-shared
+      - path: /api/v1/mimir
+        service: mimir-shared
       - path: /api/v1/bifrost
         service: bifrost
       - path: /api/v1/ravn
@@ -39,6 +43,8 @@ ingress:
       - path: /api/v1/integrations
         service: volundr
       - path: /api/v1/credentials
+        service: volundr
+      - path: /api/v1/observatory
         service: volundr
       - path: /api/v1/audit
         service: volundr
@@ -128,7 +134,7 @@ bifrost:
   enabled: true
 
 ravn:
-  enabled: false
+  enabled: true
   command:
     - ravn-api
   persistence:

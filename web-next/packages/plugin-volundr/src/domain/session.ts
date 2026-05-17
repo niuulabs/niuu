@@ -16,6 +16,7 @@ export type SessionState =
   | 'idle'
   | 'terminating'
   | 'terminated'
+  | 'archived'
   | 'failed';
 
 export interface SessionResources {
@@ -86,6 +87,7 @@ const VALID_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   idle: ['running', 'terminating', 'failed'],
   terminating: ['terminated', 'failed'],
   terminated: [],
+  archived: [],
   failed: ['terminated'],
 };
 

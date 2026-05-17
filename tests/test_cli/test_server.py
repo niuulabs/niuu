@@ -1297,6 +1297,10 @@ class TestRootServerBuildApp:
         async def mimir_stats():
             return {"pages": 12}
 
+        @mimir_app.get("/mimir/settings")
+        async def mimir_settings():
+            return {"title": "Mimir"}
+
         @mimir_app.get("/mcp/health")
         async def mimir_mcp_health():
             return {"status": "ok"}
@@ -1330,6 +1334,7 @@ class TestRootServerBuildApp:
 
         client = TestClient(app)
         assert client.get("/api/v1/mimir/stats").json() == {"pages": 12}
+        assert client.get("/api/v1/mimir/settings").json() == {"title": "Mimir"}
         assert client.get("/api/v1/mimir/mcp/health").json() == {"status": "ok"}
         assert client.get("/mimir/stats").json() == {"pages": 12}
         assert client.get("/mcp/health").json() == {"status": "ok"}
@@ -1340,6 +1345,10 @@ class TestRootServerBuildApp:
         @bifrost_app.get("/models")
         async def internal_models():
             return [{"id": "gpt-5.5"}]
+
+        @bifrost_app.get("/settings")
+        async def settings():
+            return {"title": "Bifrost"}
 
         @bifrost_app.get("/v1/models")
         async def list_models():
@@ -1394,6 +1403,7 @@ class TestRootServerBuildApp:
 
         client = TestClient(app)
         assert client.get("/api/v1/bifrost/models").json() == [{"id": "gpt-5.5"}]
+        assert client.get("/api/v1/bifrost/settings").json() == {"title": "Bifrost"}
         assert client.get("/api/v1/bifrost/v1/models").json() == {"data": []}
         assert client.get("/api/v1/bifrost/metrics").json() == {"metrics": "ok"}
         assert client.get("/api/v1/bifrost/healthz").json() == {"status": "ok"}

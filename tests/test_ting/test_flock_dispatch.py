@@ -359,7 +359,9 @@ class TestBuildSpawnRequestFlockEnabled:
             "reviewer",
             "security-auditor",
         ]
-        assert "security-auditor" in req.workload_config["initiative_context"]
+        assert req.workload_config["initiative_context"] == (
+            "# Run: ALPHA-1 — Setup CI\n\nConfigure CI pipeline."
+        )
 
     def test_workflow_snapshot_can_mix_runtime_providers_per_stage(self) -> None:
         config = _make_flock_config(
@@ -432,11 +434,7 @@ class TestBuildSpawnRequestFlockEnabled:
         assert personas[0]["llm"]["model"] == "claude-sonnet-4-6"
         assert personas[0]["executor"] == {
             "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-            "kwargs": {
-                "transport_adapter": (
-                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-                )
-            },
+            "kwargs": {"transport_adapter": "skuld.transports.sdk.SDKTransport"},
         }
         assert personas[1]["llm"]["model"] == "gpt-5.5"
         assert personas[1]["executor"] == {
@@ -645,7 +643,7 @@ class TestBuildSpawnRequestFlockDisabled:
 
 
 class TestBuildFlockPrompt:
-    """build_flock_prompt includes run context and optional Mimir note."""
+    """build_flock_prompt injects only the tracker ticket content."""
 
     def test_includes_issue_identifier_and_title(self) -> None:
         issue = _make_issue(identifier="NIU-99", title="Ship the product")
@@ -658,33 +656,33 @@ class TestBuildFlockPrompt:
         prompt = build_flock_prompt(issue, "org/repo", "feat/ship")
         assert "Acceptance: deployed, tested, merged." in prompt
 
-    def test_includes_repo_and_branch(self) -> None:
+    def test_does_not_include_repo_and_branch_context(self) -> None:
         issue = _make_issue()
         prompt = build_flock_prompt(issue, "org/my-repo", "feat/my-branch")
-        assert "org/my-repo" in prompt
-        assert "feat/my-branch" in prompt
+        assert "org/my-repo" not in prompt
+        assert "feat/my-branch" not in prompt
 
-    def test_includes_mimir_url_when_provided(self) -> None:
+    def test_ignores_mimir_url_when_provided(self) -> None:
         issue = _make_issue()
         prompt = build_flock_prompt(
             issue, "org/repo", "feat/x", mimir_hosted_url="https://mimir.example.com"
         )
-        assert "Prior knowledge is available via Mimir at: https://mimir.example.com" in prompt
+        assert "mimir.example.com" not in prompt
 
     def test_no_mimir_reference_when_url_empty(self) -> None:
         issue = _make_issue()
         prompt = build_flock_prompt(issue, "org/repo", "feat/x", mimir_hosted_url="")
         assert "mimir" not in prompt.lower()
 
-    def test_includes_delegation_instructions(self) -> None:
+    def test_does_not_include_generic_workflow_instructions(self) -> None:
         issue = _make_issue()
         prompt = build_flock_prompt(issue, "org/repo", "feat/x")
-        assert "reviewer" in prompt.lower()
-        assert "coder" in prompt.lower()
-        assert "mesh workflow" in prompt.lower()
-        assert "code.requested" in prompt
+        assert "reviewer" not in prompt.lower()
+        assert "coder" not in prompt.lower()
+        assert "mesh workflow" not in prompt.lower()
+        assert "code.requested" not in prompt
 
-    def test_mentions_parallel_security_when_workflow_includes_auditor(self) -> None:
+    def test_ignores_workflow_shape_when_building_prompt(self) -> None:
         issue = _make_issue()
         prompt = build_flock_prompt(
             issue,
@@ -708,42 +706,8 @@ class TestBuildFlockPrompt:
                 }
             },
         )
-        assert "security-auditor" in prompt
-        assert "in parallel" in prompt
-        assert "both reviewer and security-auditor" in prompt
-
-    def test_mentions_postmortem_when_workflow_includes_memory_stage(self) -> None:
-        issue = _make_issue()
-        prompt = build_flock_prompt(
-            issue,
-            "org/repo",
-            "feat/x",
-            workflow_snapshot={
-                "graph": {
-                    "nodes": [
-                        {
-                            "id": "stage-review",
-                            "kind": "stage",
-                            "stageMembers": [{"personaId": "reviewer", "budget": 25}],
-                        },
-                        {
-                            "id": "stage-security",
-                            "kind": "stage",
-                            "stageMembers": [{"personaId": "security-auditor", "budget": 25}],
-                        },
-                        {
-                            "id": "stage-postmortem",
-                            "kind": "stage",
-                            "stageMembers": [{"personaId": "postmortem-analyst", "budget": 18}],
-                        },
-                    ],
-                    "edges": [],
-                }
-            },
-        )
-        assert "postmortem-analyst" in prompt
-        assert "shared mimir" in prompt.lower()
-        assert "post-mortem stage" in prompt.lower()
+        assert "security-auditor" not in prompt
+        assert "postmortem-analyst" not in prompt
 
 
 # ---------------------------------------------------------------------------

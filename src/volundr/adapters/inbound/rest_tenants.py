@@ -11,6 +11,7 @@ from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
+    SettingsTokensResourceSchema,
 )
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.domain.models import Principal, TenantRole, TenantTier
@@ -396,7 +397,29 @@ def _register_identity_routes(
                             read_only=True,
                         ),
                     ],
-                )
+                ),
+                SettingsSectionSchema(
+                    id="tokens",
+                    label="Personal access tokens",
+                    description=(
+                        "Create and revoke personal access tokens for scripts, "
+                        "local tools, and automation."
+                    ),
+                    fields=[],
+                    resources=[
+                        SettingsTokensResourceSchema(
+                            id="personal_access_tokens",
+                            label="Personal access tokens",
+                            description=(
+                                "Tokens are shown once when created. "
+                                "Revoke anything you no longer use."
+                            ),
+                            list_path="/api/v1/tokens",
+                            create_path="/api/v1/tokens",
+                            delete_path="/api/v1/tokens/{id}",
+                        )
+                    ],
+                ),
             ],
         )
 

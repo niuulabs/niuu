@@ -333,6 +333,7 @@ def _build_ravn_config(
     skuld_peer_id: str,
     mimir_config: dict[str, Any],
     sleipnir_publish_urls: list[str],
+    daily_budget_usd: float | None = None,
     global_max_concurrent_tasks: int = _DEFAULT_MAX_CONCURRENT_TASKS,
     mesh_host: str = "0.0.0.0",
     persona_source_mode: str = _PERSONA_SOURCE_FILESYSTEM,
@@ -389,6 +390,9 @@ def _build_ravn_config(
         },
         "logging": {"level": "INFO"},
     }
+
+    if daily_budget_usd and daily_budget_usd > 0:
+        config["budget"] = {"daily_cap_usd": float(daily_budget_usd)}
 
     # Merge LLM config: global override → per-persona override (last wins).
     effective_llm = merge_llm(
@@ -627,6 +631,11 @@ class RavnFlockContributor(SessionContributor):
             "max_concurrent_tasks", _DEFAULT_MAX_CONCURRENT_TASKS
         )
         global_llm: dict | None = wc.get("llm_config") or None
+        raw_daily_budget_usd = wc.get("daily_budget_usd")
+        try:
+            daily_budget_usd = float(raw_daily_budget_usd)
+        except (TypeError, ValueError):
+            daily_budget_usd = None
         initiative_context = str(wc.get("initiative_context") or "")
         workflow_cfg = _normalize_workflow_config(
             wc.get("workflow"),
@@ -641,6 +650,7 @@ class RavnFlockContributor(SessionContributor):
             sleipnir_publish_urls=sleipnir_publish_urls,
             global_max_concurrent_tasks=global_max_concurrent_tasks,
             global_llm=global_llm,
+            daily_budget_usd=daily_budget_usd,
             initiative_context=initiative_context,
             persona_source_mode=self._persona_source_mode,
             persona_source_configmap_name=self._persona_source_configmap_name,
@@ -678,6 +688,7 @@ class RavnFlockContributor(SessionContributor):
         sleipnir_publish_urls: list[str],
         global_max_concurrent_tasks: int,
         global_llm: dict | None = None,
+        daily_budget_usd: float | None = None,
         initiative_context: str = "",
         persona_source_mode: str = _PERSONA_SOURCE_FILESYSTEM,
         persona_source_configmap_name: str = _PERSONA_CM_DEFAULT_NAME,
@@ -841,6 +852,7 @@ class RavnFlockContributor(SessionContributor):
                 skuld_peer_id=skuld_peer_id,
                 mimir_config=mimir_config,
                 sleipnir_publish_urls=sleipnir_publish_urls,
+                daily_budget_usd=daily_budget_usd,
                 global_max_concurrent_tasks=global_max_concurrent_tasks,
                 mesh_host=self._mesh_host,
                 persona_source_mode=persona_source_mode,
@@ -940,6 +952,8 @@ class RavnFlockContributor(SessionContributor):
                 "max_concurrent_tasks": global_max_concurrent_tasks,
             },
         }
+        if daily_budget_usd and daily_budget_usd > 0:
+            values["flock"]["daily_budget_usd"] = float(daily_budget_usd)
         if workflow:
             values["workflow"] = workflow
 

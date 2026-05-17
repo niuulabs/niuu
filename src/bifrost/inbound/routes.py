@@ -60,6 +60,7 @@ from bifrost.pricing import ModelPricing, calculate_cost
 from bifrost.router import ModelRouter, RouterError
 from bifrost.translation.models import AnthropicRequest, AnthropicResponse
 from niuu.domain.model_catalog import ProviderHealthState
+from niuu.settings_schema import SettingsFieldSchema, SettingsProviderSchema, SettingsSectionSchema
 
 logger = logging.getLogger(__name__)
 
@@ -681,6 +682,68 @@ def create_router(
     @api_router.get("/health")
     async def health() -> dict:
         return {"status": "ok"}
+
+    @api_router.get("/settings", response_model=SettingsProviderSchema)
+    async def settings() -> SettingsProviderSchema:
+        return SettingsProviderSchema(
+            title="Bifrost",
+            subtitle="model catalog and routing settings",
+            scope="service",
+            sections=[
+                SettingsSectionSchema(
+                    id="service",
+                    label="Service",
+                    description=(
+                        "Mounted Bifrost gateway characteristics exposed by the current "
+                        "host profile."
+                    ),
+                    fields=[
+                        SettingsFieldSchema(
+                            key="auth_mode",
+                            label="Auth Mode",
+                            type="text",
+                            value=str(config.auth_mode.value),
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="routing_strategy",
+                            label="Routing Strategy",
+                            type="text",
+                            value=str(config.routing_strategy.value),
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="provider_count",
+                            label="Provider Count",
+                            type="number",
+                            value=len(config.providers),
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="model_count",
+                            label="Model Count",
+                            type="number",
+                            value=len(_catalog.list_models(config)),
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="alias_count",
+                            label="Alias Count",
+                            type="number",
+                            value=len(_catalog.list_aliases(config)),
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="cache_mode",
+                            label="Cache Mode",
+                            type="text",
+                            value=str(config.cache.mode.value),
+                            read_only=True,
+                        ),
+                    ],
+                )
+            ],
+        )
 
     @api_router.get("/models")
     async def list_catalog_models() -> list[dict]:

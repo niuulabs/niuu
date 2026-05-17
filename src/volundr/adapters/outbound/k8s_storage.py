@@ -188,3 +188,17 @@ class InMemoryStorageAdapter(StoragePort):
         if entry is None:
             return None
         return self._entry_to_workspace(session_id, entry)
+
+    def resolve_session_workspace_path(self, session_id: str) -> str | None:
+        """Return the configured mounted workspace path for a session."""
+        mount_root = self._workspace_mount_path.rstrip("/")
+        nested_workspace = f"{mount_root}/{session_id}/workspace"
+        if mount_root:
+            direct_workspace = f"{mount_root}/{session_id}"
+            from pathlib import Path
+
+            if Path(nested_workspace).exists():
+                return nested_workspace
+            if Path(direct_workspace).exists():
+                return direct_workspace
+        return nested_workspace

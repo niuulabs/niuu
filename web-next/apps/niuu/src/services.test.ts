@@ -73,6 +73,7 @@ const volundrMocks = vi.hoisted(() => ({
     getTemplates: vi.fn().mockResolvedValue([]),
     getTemplate: vi.fn().mockResolvedValue(null),
     listArchivedSessions: vi.fn().mockResolvedValue([]),
+    archiveStoppedSessions: vi.fn().mockResolvedValue([]),
     deleteSession: vi.fn().mockResolvedValue(undefined),
     subscribe: vi.fn(() => () => {}),
   })),
@@ -252,6 +253,19 @@ describe('resolveSettingsServiceBase', () => {
     ).toBe('http://localhost:8080/api/v1/identity');
   });
 
+  it('derives identity settings from the shared API root when needed', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            identity: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1' },
+          },
+        } as any,
+        'identity',
+      ),
+    ).toBe('http://localhost:8080/api/v1/identity');
+  });
+
   it('resolves ting settings from the normalized ting base', () => {
     expect(
       resolveSettingsServiceBase(
@@ -279,6 +293,51 @@ describe('resolveSettingsServiceBase', () => {
         'ravn',
       ),
     ).toBe('http://localhost:8080/api/v1/ravn');
+  });
+
+  it('resolves bifrost settings from the grouped bifrost base', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            bifrost: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/bifrost' },
+          },
+        } as any,
+        'bifrost',
+      ),
+    ).toBe('http://localhost:8080/api/v1/bifrost');
+  });
+
+  it('resolves shared credentials settings from the grouped credentials base', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            credentials: {
+              mode: 'http',
+              baseUrl: 'http://localhost:8080/api/v1/credentials',
+            },
+          },
+        } as any,
+        'credentials',
+      ),
+    ).toBe('http://localhost:8080/api/v1/credentials');
+  });
+
+  it('resolves shared integrations settings from the grouped integrations base', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            integrations: {
+              mode: 'http',
+              baseUrl: 'http://localhost:8080/api/v1/integrations',
+            },
+          },
+        } as any,
+        'integrations',
+      ),
+    ).toBe('http://localhost:8080/api/v1/integrations');
   });
 });
 
@@ -498,6 +557,21 @@ describe('buildServiceBackendStatus', () => {
       transport: 'ws',
       target: 'ws://localhost:8080/s/{sessionId}/session',
       source: 'forge',
+    });
+  });
+
+  it('resolves root-relative forge pty websocket URLs against the browser host', () => {
+    const status = buildServiceBackendStatus({
+      services: {
+        'forge.pty': { mode: 'ws', wsUrl: '/s/{sessionId}/session' },
+      },
+    } as any);
+
+    expect(status['forge.pty']).toEqual({
+      mode: 'live',
+      transport: 'ws',
+      target: 'ws://localhost:3000/s/{sessionId}/session',
+      source: 'forge.pty',
     });
   });
 
@@ -910,18 +984,18 @@ describe('buildServices', () => {
       expect.objectContaining({
         id: 'sess-archived',
         ravnId: 'NIU-753',
-        state: 'terminated',
+        state: 'archived',
         terminatedAt: '2026-04-23T13:00:00.000Z',
       }),
     ]);
-    await expect(sessionStore.listSessions({ state: 'terminated' })).resolves.toEqual([
+    await expect(sessionStore.listSessions({ state: 'archived' })).resolves.toEqual([
       expect.objectContaining({ id: 'sess-archived' }),
     ]);
     await expect(sessionStore.getSession('sess-archived')).resolves.toEqual(
-      expect.objectContaining({ id: 'sess-archived', state: 'terminated' }),
+      expect.objectContaining({ id: 'sess-archived', state: 'archived' }),
     );
     await sessionStore.deleteSession('sess-live');
-    expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live');
+    expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live', undefined);
   });
 
   it('prefers an explicit forge service base for the main Volundr http adapter', () => {

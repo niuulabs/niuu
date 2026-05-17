@@ -52,6 +52,24 @@ import type {
   CreatePATResult,
 } from '../models/volundr.model';
 
+export interface VolundrConversationTurn {
+  id: string;
+  role: string;
+  content: string;
+  parts?: Array<Record<string, unknown>>;
+  created_at: string;
+  metadata?: Record<string, unknown>;
+  participant_id?: string;
+  participant_meta?: Record<string, unknown>;
+  thread_id?: string;
+  visibility?: 'visible' | 'internal';
+}
+
+export interface VolundrConversationHistory {
+  turns: VolundrConversationTurn[];
+  last_activity?: string;
+}
+
 export interface IVolundrService {
   // Feature flags
   getFeatures(): Promise<VolundrFeatures>;
@@ -123,10 +141,12 @@ export interface IVolundrService {
   resumeSession(sessionId: string): Promise<void>;
   deleteSession(sessionId: string, cleanup?: string[]): Promise<void>;
   archiveSession(sessionId: string): Promise<void>;
+  archiveStoppedSessions(): Promise<string[]>;
   restoreSession(sessionId: string): Promise<void>;
   listArchivedSessions(): Promise<VolundrSession[]>;
 
   // Messaging
+  getConversationHistory(sessionId: string): Promise<VolundrConversationHistory>;
   getMessages(sessionId: string): Promise<VolundrMessage[]>;
   sendMessage(sessionId: string, content: string): Promise<VolundrMessage>;
   subscribeMessages(sessionId: string, callback: (message: VolundrMessage) => void): () => void;

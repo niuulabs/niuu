@@ -199,20 +199,17 @@ def test_local_supervisor_artifacts_use_runtime_model_env_for_claude() -> None:
     assert payload["EnvironmentVariables"]["PATH"] == "/tmp/bin:/usr/bin"
     assert payload["EnvironmentVariables"]["RAVN_LLM__MODEL"] == "claude-sonnet-4-6"
     assert payload["EnvironmentVariables"]["SKULD__CLI_TYPE"] == "claude"
-    assert payload["EnvironmentVariables"]["SKULD__TRANSPORT"] == "persistent_subprocess"
+    assert payload["EnvironmentVariables"]["SKULD__TRANSPORT"] == "sdk"
     assert payload["EnvironmentVariables"]["SKULD__TRANSPORT_ADAPTER"] == (
-        "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+        "skuld.transports.sdk.SDKTransport"
     )
     assert "ANTHROPIC_API_KEY" not in payload["EnvironmentVariables"]
     assert "Environment=HOME=/Users/tester" in unit_text
     assert "Environment=PATH=/tmp/bin:/usr/bin" in unit_text
     assert "Environment=RAVN_LLM__MODEL=claude-sonnet-4-6" in unit_text
     assert "Environment=SKULD__CLI_TYPE=claude" in unit_text
-    assert "Environment=SKULD__TRANSPORT=persistent_subprocess" in unit_text
-    assert (
-        "Environment=SKULD__TRANSPORT_ADAPTER="
-        "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-    ) in unit_text
+    assert "Environment=SKULD__TRANSPORT=sdk" in unit_text
+    assert "Environment=SKULD__TRANSPORT_ADAPTER=skuld.transports.sdk.SDKTransport" in unit_text
 
 
 def test_local_supervisor_artifacts_use_model_runtime_resolution_for_codex() -> None:

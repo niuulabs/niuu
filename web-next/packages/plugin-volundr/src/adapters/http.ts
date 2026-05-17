@@ -11,7 +11,7 @@ import {
   type EventStreamHandle,
   type EventStreamOptions,
 } from '@niuulabs/query';
-import type { IVolundrService } from '../ports/IVolundrService';
+import type { IVolundrService, VolundrConversationHistory } from '../ports/IVolundrService';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import type {
   VolundrSession,
@@ -459,6 +459,18 @@ function normalizeMessages(sessionId: string, payload: ConversationPayload): Vol
     tokensOut: turn.metadata?.tokens_out,
     latency: turn.metadata?.latency,
   }));
+}
+
+function normalizeConversationHistory(payload: ConversationPayload): VolundrConversationHistory {
+  return {
+    turns: payload.turns.map((turn) => ({
+      id: turn.id,
+      role: turn.role,
+      content: turn.content,
+      created_at: turn.created_at ?? new Date(0).toISOString(),
+      metadata: turn.metadata,
+    })),
+  };
 }
 
 function normalizeLogLevel(level?: string): VolundrLog['level'] {
@@ -1177,12 +1189,17 @@ export function buildVolundrHttpAdapter(
         `/sessions/${sessionId}${cleanup ? `?cleanup=${cleanup.join(',')}` : ''}`,
       ),
     archiveSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/archive`),
+    archiveStoppedSessions: () => forgeClient.post<string[]>('/sessions/archive-stopped'),
     restoreSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/restore`),
     listArchivedSessions: () =>
       forgeClient
         .get<SessionPayload[]>('/sessions?status=archived')
         .then((sessions) => sessions.map(normalizeSession)),
 
+    getConversationHistory: (sessionId) =>
+      forgeClient
+        .get<ConversationPayload>(`/sessions/${sessionId}/conversation`)
+        .then(normalizeConversationHistory),
     getMessages: (sessionId) => loadMessages(sessionId),
     sendMessage: (sessionId, content) =>
       forgeClient.post<VolundrMessage>(`/sessions/${sessionId}/messages`, { content }),

@@ -1412,9 +1412,11 @@ export function createMockVolundrService(): IVolundrService {
     resumeSession: async () => {},
     deleteSession: async () => {},
     archiveSession: async () => {},
+    archiveStoppedSessions: async () => [],
     restoreSession: async () => {},
     listArchivedSessions: async () => [],
 
+    getConversationHistory: async () => ({ turns: [] }),
     getMessages: async () => [],
     sendMessage: async (_sessionId, content): Promise<VolundrMessage> => ({
       id: `msg-${Date.now()}`,

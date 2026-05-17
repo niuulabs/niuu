@@ -29,6 +29,16 @@ def _probe_router(path: str) -> APIRouter:
     return router
 
 
+def _dynamic_conflict_router(path: str) -> APIRouter:
+    router = APIRouter()
+
+    @router.put(path)
+    async def _conflict() -> dict[str, str]:
+        return {"path": path}
+
+    return router
+
+
 @asynccontextmanager
 async def _fake_db_pool(_config):
     yield object()
@@ -220,7 +230,7 @@ def test_credentials_service_app_releases_credential_store(monkeypatch) -> None:
         "create_canonical_credentials_router",
         lambda credential_service: (
             captured.setdefault("credential_service", credential_service),
-            _probe_router("/api/v1/credentials/probe"),
+            _dynamic_conflict_router("/api/v1/credentials/{name}"),
         )[-1],
     )
     monkeypatch.setattr(
@@ -232,10 +242,15 @@ def test_credentials_service_app_releases_credential_store(monkeypatch) -> None:
             _probe_router("/api/v1/credentials/secrets-probe"),
         )[-1],
     )
+    monkeypatch.setattr(
+        credentials_app,
+        "create_credentials_settings_router",
+        lambda: _probe_router("/api/v1/credentials/settings"),
+    )
 
     app = credentials_app.create_app(settings)
     with TestClient(app) as client:
-        assert client.get("/api/v1/credentials/probe").status_code == 200
+        assert client.get("/api/v1/credentials/settings").status_code == 200
         assert client.get("/api/v1/credentials/secrets-probe").status_code == 200
         assert app.state.identity is identity_adapter
         assert app.state.pat_validator is pat_validator
@@ -311,7 +326,7 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
         lambda integration_repo, tracker_factory, registry, credential_store: (
             captured.setdefault("integrations_router_repo", integration_repo),
             captured.setdefault("integrations_router_registry", registry),
-            _probe_router("/api/v1/integrations/probe"),
+            _dynamic_conflict_router("/api/v1/integrations/{connection_id}"),
         )[-1],
     )
     monkeypatch.setattr(
@@ -322,10 +337,15 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
             _probe_router("/api/v1/integrations/oauth-probe"),
         )[-1],
     )
+    monkeypatch.setattr(
+        integrations_app,
+        "create_integrations_settings_router",
+        lambda: _probe_router("/api/v1/integrations/settings"),
+    )
 
     app = integrations_app.create_app(settings)
     with TestClient(app) as client:
-        assert client.get("/api/v1/integrations/probe").status_code == 200
+        assert client.get("/api/v1/integrations/settings").status_code == 200
         assert client.get("/api/v1/integrations/oauth-probe").status_code == 200
 
     seed_configured.assert_awaited_once()

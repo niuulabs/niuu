@@ -160,6 +160,8 @@ def _join_soft_wrapped_parts(parts: list[str], *, compact: bool = False) -> str:
             result += part
         elif result.endswith(("(", "[", "{", "/", "_", "-")):
             result += part
+        elif re.search(r"\s[A-Za-z]$", previous) and part[:1].isalnum():
+            result += part
         elif len(previous) == 1 and part[:1].islower():
             result += part
         else:
@@ -258,6 +260,18 @@ def _parse_soft_wrapped_mapping(
             current_key is not None
             and current_mode == "scalar"
             and current_raw
+            and (
+                current_raw[:1] in {"_", "/", "."}
+                or (current_raw.startswith("-") and not current_raw.startswith("- "))
+            )
+        ):
+            scalar_parts.append(current_raw)
+            index += 1
+            continue
+        if (
+            current_key is not None
+            and current_mode == "scalar"
+            and current_raw
             and _KEY_VALUE_LINE.match(current_raw) is None
             and _SOFT_KEY_FRAGMENT.match(current_raw)
             and expected_keys
@@ -313,6 +327,23 @@ def _parse_soft_wrapped_mapping(
     return parsed or None
 
 
+def _validate_against_schema(
+    parsed_fields: dict[str, Any],
+    schema: OutcomeSchema | None,
+) -> list[str]:
+    errors: list[str] = []
+    if schema is None:
+        return errors
+
+    for name, field_def in schema.fields.items():
+        if name not in parsed_fields:
+            if field_def.required:
+                errors.append(f"required field '{name}' is missing")
+        else:
+            _validate_field(name, parsed_fields[name], field_def, errors)
+    return errors
+
+
 def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> ParsedOutcome | None:
     """Extract and parse the ---outcome--- block from agent/session output.
 
@@ -331,7 +362,7 @@ def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> Parse
     raw = blocks[-1]
     clean = _strip_code_fence(raw)
 
-    errors: list[str] = []
+    parse_errors: list[str] = []
     parsed_fields: dict[str, Any] = {}
 
     try:
@@ -340,24 +371,25 @@ def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> Parse
             parsed_fields = loaded
         else:
             got = type(loaded).__name__
-            errors.append(f"outcome block did not parse as a YAML mapping; got {got}")
+            parse_errors.append(f"outcome block did not parse as a YAML mapping; got {got}")
     except yaml.YAMLError as exc:
-        errors.append(f"YAML parse error: {exc}")
+        parse_errors.append(f"YAML parse error: {exc}")
 
-    if errors:
-        expected_keys = set(schema.fields) if schema is not None else None
-        salvaged = _parse_soft_wrapped_mapping(clean, expected_keys=expected_keys)
-        if salvaged is not None:
+    validation_errors = _validate_against_schema(parsed_fields, schema) if not parse_errors else []
+    errors = list(parse_errors or validation_errors)
+
+    expected_keys = set(schema.fields) if schema is not None else None
+    salvaged = _parse_soft_wrapped_mapping(clean, expected_keys=expected_keys)
+    if salvaged is not None:
+        salvage_errors = _validate_against_schema(salvaged, schema)
+        if (
+            parse_errors
+            or validation_errors
+            or (expected_keys is not None and not expected_keys.issubset(parsed_fields))
+            or len(salvage_errors) < len(validation_errors)
+        ) and len(salvage_errors) <= len(errors):
             parsed_fields = salvaged
-            errors = []
-
-    if schema is not None and not errors:
-        for name, field_def in schema.fields.items():
-            if name not in parsed_fields:
-                if field_def.required:
-                    errors.append(f"required field '{name}' is missing")
-            else:
-                _validate_field(name, parsed_fields[name], field_def, errors)
+            errors = salvage_errors
 
     return ParsedOutcome(
         raw=raw,

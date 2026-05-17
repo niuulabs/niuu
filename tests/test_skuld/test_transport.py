@@ -33,6 +33,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is False
         assert caps.session_resume is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -49,6 +51,8 @@ class TestTransportCapabilities:
         assert caps.session_resume is True
         assert caps.cli_websocket is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -69,6 +73,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is True
         assert caps.session_resume is True
         assert caps.interrupt is True
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is True
         assert caps.set_thinking_tokens is True
         assert caps.set_permission_mode is True
@@ -85,6 +91,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is False
         assert caps.session_resume is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -105,6 +113,8 @@ class TestTransportCapabilities:
         caps = TransportCapabilities(interrupt=True, set_model=True)
         assert caps.interrupt is True
         assert caps.set_model is True
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.cli_websocket is False
         assert caps.session_resume is False
 
@@ -1149,6 +1159,13 @@ class TestSdkWebSocketTransport:
         # Should not raise
         await t.send_control("interrupt")
 
+    def test_base_transport_reports_turn_inactive(self):
+        """Base CLITransport.is_turn_active defaults to False."""
+        from skuld.transports import SubprocessTransport
+
+        t = SubprocessTransport("/tmp")
+        assert t.is_turn_active is False
+
     # --- Phase 4: Agent Teams ---
 
     def test_init_agent_teams_default(self, tmp_path):
@@ -1507,7 +1524,8 @@ class TestCodexSubprocessTransport:
             assert call_args[1] == "exec"
             assert "--model" in call_args
             assert "o4-mini" in call_args
-            assert "--full-auto" in call_args
+            assert "--sandbox" in call_args
+            assert "workspace-write" in call_args
             assert "--json" in call_args
             assert "--quiet" not in call_args
             assert "refactor the auth module" in call_args
@@ -1694,6 +1712,59 @@ class TestCodexSubprocessTransport:
         usage = transport.last_result["modelUsage"]["o4-mini"]
         assert usage["inputTokens"] == 50
         assert usage["outputTokens"] == 120
+
+    @pytest.mark.asyncio
+    async def test_send_message_normalizes_item_completed_agent_message(self, transport):
+        """Current Codex CLI agent_message items are normalized to assistant text."""
+        events = [
+            (
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"id": "item_0", "type": "agent_message", "text": "READY"},
+                    }
+                ).encode()
+                + b"\n"
+            ),
+            (
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 12, "output_tokens": 2},
+                    }
+                ).encode()
+                + b"\n"
+            ),
+            b"",
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(side_effect=events)
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        callback = AsyncMock()
+        transport.on_event(callback)
+
+        with patch(
+            "skuld.transports.codex.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_process
+            await transport.send_message("task")
+
+        assistant_calls = [c for c in callback.call_args_list if c[0][0].get("type") == "assistant"]
+        assert len(assistant_calls) == 1
+        assert assistant_calls[0][0][0]["message"]["content"] == "READY"
+        assert transport.last_result is not None
+        assert transport.last_result["type"] == "result"
+        usage = transport.last_result["modelUsage"]["o4-mini"]
+        assert usage["inputTokens"] == 12
+        assert usage["outputTokens"] == 2
 
     @pytest.mark.asyncio
     async def test_send_message_synthesizes_result_on_clean_exit(self, transport):
