@@ -1228,8 +1228,8 @@ export function GuildPage() {
     visibility: canCreateTenantScope ? 'tenant' : 'user',
   });
 
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const locationSearch = useRouterState({ select: (state) => state.location.search });
+  const location = useRouterState({ select: (state) => state.location });
+  const pathname = location.pathname;
   const section: RegistrySection = pathname.endsWith('/access')
     ? 'access'
     : pathname.endsWith('/connections')
@@ -1244,9 +1244,9 @@ export function GuildPage() {
   const [healthById, setHealthById] = useState<Record<string, HealthSnapshot>>({});
   const [healthHistory, setHealthHistory] = useState<Record<string, HealthSnapshot[]>>({});
   const registerRequested = useMemo(() => {
-    const params = new URLSearchParams(locationSearch);
+    const params = new URLSearchParams(location.search);
     return params.get('register') === '1';
-  }, [locationSearch]);
+  }, [location.search]);
 
   const resetWizard = () => {
     setWizard(makeDefaultWizard());

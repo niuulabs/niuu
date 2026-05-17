@@ -11,6 +11,9 @@ import type { RunSessionMessage } from '../ports';
 
 const mockNavigate = vi.fn();
 const mockUseParams = vi.fn().mockReturnValue({ sagaId: '00000000-0000-0000-0000-000000000001' });
+const mockDispatchBus = {
+  getClusters: vi.fn(async () => []),
+};
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
@@ -110,6 +113,7 @@ function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
 describe('SagaDetailPage', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    mockDispatchBus.getClusters.mockClear();
   });
 
   it('shows loading state initially', () => {
@@ -117,13 +121,15 @@ describe('SagaDetailPage', () => {
       getSaga: () => new Promise(() => undefined),
       getPhases: () => new Promise(() => undefined),
     };
-    render(<SagaDetailPage sagaId={SAGA_ID} />, { wrapper: wrap({ ting: slowSvc }) });
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({ ting: slowSvc, 'ting.dispatch': mockDispatchBus }),
+    });
     expect(screen.getByText(/Loading saga/i)).toBeInTheDocument();
   });
 
   it('renders the compact saga header', async () => {
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
-      wrapper: wrap({ ting: createMockTingService() }),
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
     await waitFor(() => expect(screen.getByText('NIU-500 · Auth Rewrite')).toBeInTheDocument());
     expect(screen.getByText('feat/auth-rewrite → main')).toBeInTheDocument();
@@ -134,7 +140,9 @@ describe('SagaDetailPage', () => {
       getSaga: async () => makeSaga(),
       getPhases: async () => [makePhase([makeRun()])],
     };
-    render(<SagaDetailPage sagaId={SAGA_ID} />, { wrapper: wrap({ ting: svc }) });
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({ ting: svc, 'ting.dispatch': mockDispatchBus }),
+    });
     await waitFor(() => expect(screen.getByText('Phase 1 · Plan')).toBeInTheDocument());
     expect(screen.getByText('NIU-501')).toBeInTheDocument();
     expect(screen.getByText('Implement OIDC flow')).toBeInTheDocument();
@@ -142,7 +150,7 @@ describe('SagaDetailPage', () => {
 
   it('renders workflow, stage progress, and confidence cards', async () => {
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
-      wrapper: wrap({ ting: createMockTingService() }),
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
     await waitFor(() =>
       expect(screen.getByRole('region', { name: /workflow/i })).toBeInTheDocument(),
@@ -156,7 +164,9 @@ describe('SagaDetailPage', () => {
       getSaga: async () => makeSaga(),
       getPhases: async (): Promise<Phase[]> => [],
     };
-    render(<SagaDetailPage sagaId={SAGA_ID} />, { wrapper: wrap({ ting: svc }) });
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({ ting: svc, 'ting.dispatch': mockDispatchBus }),
+    });
     await waitFor(() => expect(screen.getByText('No phases yet')).toBeInTheDocument());
   });
 
@@ -165,7 +175,9 @@ describe('SagaDetailPage', () => {
       getSaga: async (): Promise<Saga | null> => null,
       getPhases: async (): Promise<Phase[]> => [],
     };
-    render(<SagaDetailPage sagaId="nonexistent-id" />, { wrapper: wrap({ ting: svc }) });
+    render(<SagaDetailPage sagaId="nonexistent-id" />, {
+      wrapper: wrap({ ting: svc, 'ting.dispatch': mockDispatchBus }),
+    });
     await waitFor(() =>
       expect(screen.getByText(/Saga "nonexistent-id" not found/)).toBeInTheDocument(),
     );
@@ -173,7 +185,7 @@ describe('SagaDetailPage', () => {
 
   it('back button navigates to /ting/sagas', async () => {
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
-      wrapper: wrap({ ting: createMockTingService() }),
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
     await waitFor(() => expect(screen.getByText('NIU-500 · Auth Rewrite')).toBeInTheDocument());
     screen.getByRole('button', { name: /Sagas/i }).click();
@@ -196,7 +208,11 @@ describe('SagaDetailPage', () => {
     };
 
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
-      wrapper: wrap({ ting: tingService, 'ting.workflows': workflowService }),
+      wrapper: wrap({
+        ting: tingService,
+        'ting.workflows': workflowService,
+        'ting.dispatch': mockDispatchBus,
+      }),
     });
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Assign' })).toBeInTheDocument());
@@ -259,7 +275,9 @@ describe('SagaDetailPage', () => {
       sendRunMessage,
     };
 
-    render(<SagaDetailPage sagaId={SAGA_ID} />, { wrapper: wrap({ ting: svc }) });
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({ ting: svc, 'ting.dispatch': mockDispatchBus }),
+    });
 
     await waitFor(() => expect(screen.getByText('Human input requests')).toBeInTheDocument());
     await waitFor(() =>
@@ -284,7 +302,9 @@ describe('SagaDetailPage', () => {
 
 describe('SagaDetailRoute', () => {
   it('renders SagaDetailPage with sagaId from URL params', async () => {
-    render(<SagaDetailRoute />, { wrapper: wrap({ ting: createMockTingService() }) });
+    render(<SagaDetailRoute />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
+    });
     await waitFor(() => expect(screen.getByText('NIU-500 · Auth Rewrite')).toBeInTheDocument());
   });
 });

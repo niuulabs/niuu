@@ -9,6 +9,9 @@ import type { Saga } from '../domain/saga';
 import type { ITrackerBrowserService } from '../ports';
 
 const mockNavigate = vi.fn();
+const mockDispatchBus = {
+  getClusters: vi.fn(async () => []),
+};
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({}),
@@ -45,6 +48,7 @@ function withDefaults(services: Record<string, unknown>) {
         },
       ],
     },
+    'ting.dispatch': mockDispatchBus,
     ...services,
   };
 }
@@ -213,7 +217,12 @@ describe('SagasPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import saga' }));
 
     await waitFor(() =>
-      expect(importProject).toHaveBeenCalledWith('proj-niuu-core', ['niuulabs/volundr'], 'main'),
+      expect(importProject).toHaveBeenCalledWith(
+        'proj-niuu-core',
+        ['niuulabs/volundr'],
+        'main',
+        undefined,
+      ),
     );
   });
 

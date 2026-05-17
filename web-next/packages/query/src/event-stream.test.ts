@@ -85,8 +85,8 @@ describe('openEventStream', () => {
     handle.close();
 
     const [, init] = fetchSpy.mock.calls[0]!;
-    const headers = (init as RequestInit).headers as Record<string, string>;
-    expect(headers['Authorization']).toBe('Bearer test-token');
+    const headers = new Headers((init as RequestInit).headers);
+    expect(headers.get('Authorization')).toBe('Bearer test-token');
   });
 
   it('invokes onError when the server responds with a non-OK status', async () => {
