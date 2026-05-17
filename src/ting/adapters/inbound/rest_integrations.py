@@ -61,6 +61,24 @@ def _allow_unauthenticated_code_forge(request: Request, integration_type: str) -
     return allow_anon and integration_type == IntegrationType.CODE_FORGE.value
 
 
+def _credential_payload_for_integration(
+    integration_type: str,
+    adapter: str,
+    credential_value: str,
+) -> dict[str, str]:
+    """Normalize stored credential payloads for adapter-specific expectations."""
+    if not credential_value:
+        return {}
+    if (
+        integration_type == IntegrationType.ISSUE_TRACKER.value
+        and adapter.endswith("LinearTrackerAdapter")
+    ):
+        return {"api_key": credential_value}
+    if integration_type == IntegrationType.MESSAGING.value:
+        return {"bot_token": credential_value}
+    return {"token": credential_value}
+
+
 # --- Request / Response models ---
 
 
@@ -152,13 +170,18 @@ def create_integrations_router() -> APIRouter:
                 detail="credential_value is required",
             )
 
+        credential_payload = _credential_payload_for_integration(
+            data.integration_type,
+            data.adapter,
+            data.credential_value,
+        )
         if data.credential_value:
             await credential_store.store(
                 owner_type="user",
                 owner_id=principal.user_id,
                 name=data.credential_name,
                 secret_type=SecretType.API_KEY,
-                data={"token": data.credential_value},
+                data=credential_payload,
             )
 
         now = datetime.now(UTC)
@@ -177,7 +200,7 @@ def create_integrations_router() -> APIRouter:
         test_result = await test_connection(
             data.integration_type,
             data.config,
-            {"token": data.credential_value} if data.credential_value else {},
+            credential_payload,
             trusted_code_forge_base_urls=_trusted_code_forge_base_urls(request),
         )
         if not test_result.success:

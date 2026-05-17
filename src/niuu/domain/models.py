@@ -35,6 +35,7 @@ class InstanceKind(StrEnum):
     """Supported registered runtime instance kinds."""
 
     VOLUNDR = "volundr"
+    TING = "ting"
     MIMIR = "mimir"
     BIFROST = "bifrost"
     RAVN = "ravn"

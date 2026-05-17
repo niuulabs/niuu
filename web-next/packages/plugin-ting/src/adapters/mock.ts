@@ -1437,7 +1437,12 @@ export function createMockTrackerService(): ITrackerBrowserService {
       return byProject.filter((i) => i.milestoneId === milestoneId);
     },
 
-    async importProject(projectId: string, repos: string[], _baseBranch?: string) {
+    async importProject(
+      projectId: string,
+      repos: string[],
+      _baseBranch?: string,
+      instanceId?: string | null,
+    ) {
       const project = projectMap.get(projectId);
       const name = project?.name ?? projectId;
       const saga: Saga = {
@@ -1453,6 +1458,7 @@ export function createMockTrackerService(): ITrackerBrowserService {
         confidence: 50,
         createdAt: new Date().toISOString(),
         phaseSummary: { total: 0, completed: 0 },
+        instanceId: instanceId ?? undefined,
       };
       return saga;
     },

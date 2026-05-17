@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_DIR="${ROOT_DIR}/build/guild-run"
 LOG_DIR="${RUN_DIR}/logs"
 CONFIG_DIR="${ROOT_DIR}/scripts/setups/configs"
+USER_CONFIG_PATH="${HOME}/.niuu/config.yaml"
+MERGED_CONFIG_DIR="${RUN_DIR}/configs"
 
 require_tool() {
   local tool="$1"
@@ -154,17 +156,30 @@ pnpm --dir "${ROOT_DIR}/web-next" -r --filter "@niuulabs/*" --filter "!@niuulabs
   pnpm exec vite build
 )
 
+echo "Merging guild configs with ~/.niuu defaults..."
+uv run python "${ROOT_DIR}/scripts/guild_bootstrap.py" merge-configs \
+  --base-config "${USER_CONFIG_PATH}" \
+  --worker-overlay "${CONFIG_DIR}/guild-worker.yaml" \
+  --central-overlay "${CONFIG_DIR}/guild-central.yaml" \
+  --output-dir "${MERGED_CONFIG_DIR}"
+
 echo "Starting Guild Alpha on :8181..."
-launch_instance "guild-alpha" "8181" "${CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
+launch_instance "guild-alpha" "8181" "${MERGED_CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
 wait_for_url "http://127.0.0.1:8181/health" "Guild Alpha"
 
 echo "Starting Guild Beta on :8282..."
-launch_instance "guild-beta" "8282" "${CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
+launch_instance "guild-beta" "8282" "${MERGED_CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
 wait_for_url "http://127.0.0.1:8282/health" "Guild Beta"
 
 echo "Starting central guild shell on :8080..."
-launch_instance "guild-central" "8080" "${CONFIG_DIR}/guild-central.yaml" "full" "web"
+launch_instance "guild-central" "8080" "${MERGED_CONFIG_DIR}/guild-central.yaml" "full" "web"
 wait_for_url "http://127.0.0.1:8080/health" "Guild shell"
+
+echo "Seeding guild dev integrations..."
+uv run python "${ROOT_DIR}/scripts/guild_bootstrap.py" seed-dev-integrations \
+  --base-url "http://127.0.0.1:8080" \
+  --base-config "${USER_CONFIG_PATH}" \
+  --users-json '[["guild-user-a","tenant-a"],["guild-user-b","tenant-b"]]'
 
 cat <<EOF
 Ready.

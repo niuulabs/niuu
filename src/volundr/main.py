@@ -402,6 +402,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Identity & authorization adapters (dynamic adapter pattern)
             tenant_repository = PostgresTenantRepository(pool)
             user_repository = PostgresUserRepository(pool)
+            tenant_service = TenantService(tenant_repository, user_repository)
 
             resource_provider = _create_resource_provider(settings)
             storage_adapter = _create_storage_adapter(settings)
@@ -409,6 +410,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 settings,
                 user_repository,
                 storage=storage_adapter,
+                tenant_service=tenant_service,
             )
             authorization_adapter = _create_authorization_adapter(settings)
 
@@ -417,7 +419,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.authorization = authorization_adapter
 
             # Tenant service + ensure default tenant exists
-            tenant_service = TenantService(tenant_repository, user_repository)
             await tenant_service.ensure_default_tenant()
 
             # Create adapters

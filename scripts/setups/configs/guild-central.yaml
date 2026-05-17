@@ -10,7 +10,36 @@ telegram_ingress:
 volundr:
   use_connection_factory_in_dev: true
 
+git:
+  github:
+    instances:
+      - name: GitHub
+        base_url: https://api.github.com
+        orgs:
+          - niuulabs
+
 niuu:
+  catalog:
+    - kind: volundr
+      label: Volundr
+      rune: "ᚲ"
+      summary: session forge
+      detail: spawns remote dev pods
+    - kind: mimir
+      label: Mimir
+      rune: "ᛗ"
+      summary: knowledge index
+      detail: chronicles, embeddings, graph
+    - kind: bifrost
+      label: Bifrost
+      rune: "ᚨ"
+      summary: LLM gateway
+      detail: routes inference
+    - kind: ting
+      label: Tyr
+      rune: "✦"
+      summary: saga coordinator
+      detail: dispatch ravens
   instances:
     - kind: volundr
       slug: guild-alpha

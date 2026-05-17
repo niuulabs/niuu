@@ -6,3 +6,11 @@ identity:
 
 telegram_ingress:
   enabled: false
+
+git:
+  github:
+    instances:
+      - name: GitHub
+        base_url: https://api.github.com
+        orgs:
+          - niuulabs

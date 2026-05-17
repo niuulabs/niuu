@@ -81,12 +81,13 @@ def create_app(
             instance_repository = PostgresInstanceRepository(pool)
             instance_service = InstanceService(instance_repository)
             storage_adapter = create_storage_adapter(loaded_settings)
+            tenant_service = TenantService(tenant_repository, user_repository)
             identity_adapter = create_identity_adapter(
                 loaded_settings,
                 user_repository,
                 storage=storage_adapter,
+                tenant_service=tenant_service,
             )
-            tenant_service = TenantService(tenant_repository, user_repository)
             await tenant_service.ensure_default_tenant()
 
             pat_repository = PostgresPATRepository(pool)

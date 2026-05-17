@@ -1286,6 +1286,17 @@ export function createMockVolundrService(): IVolundrService {
     getStats: async () => ({ ...SEED_STATS }),
 
     getRepos: async () => [...SEED_REPOS],
+    getTargets: async () => [
+      {
+        id: 'mock-volundr-default',
+        slug: 'mock-volundr-default',
+        name: 'Mock Volundr',
+        baseUrl: 'http://127.0.0.1:8181',
+        enabled: true,
+        isDefault: true,
+        visibility: 'system',
+      },
+    ],
 
     subscribe: (callback) => {
       callback(sessions);
@@ -1378,6 +1389,8 @@ export function createMockVolundrService(): IVolundrService {
       lastActive: Date.now(),
       messageCount: 0,
       tokensUsed: 0,
+      instanceId: config.instanceId ?? 'mock-volundr-default',
+      instanceName: config.instanceId ? 'Selected Mock Volundr' : 'Mock Volundr',
     }),
 
     connectSession: async (config) => ({

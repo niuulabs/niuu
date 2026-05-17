@@ -205,8 +205,7 @@ def _wait_for_activity(
         aggregate_lines = (
             aggregated_logs.get("lines", []) if isinstance(aggregated_logs, dict) else []
         )
-        chronicle_events = chronicle.get("events", []) if isinstance(chronicle, dict) else []
-        if turns and log_lines and aggregate_lines and chronicle_events:
+        if turns and log_lines and aggregate_lines:
             return {
                 "detail": detail,
                 "conversation": conversation,
@@ -220,6 +219,15 @@ def _wait_for_activity(
     )
 
 
+def _wait_for_file(path: Path, expected: str, timeout_s: float = 90.0) -> None:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if path.exists() and path.read_text(encoding="utf-8") == expected:
+            return
+        time.sleep(2)
+    raise TimeoutError(f"File {path} never matched expected contents")
+
+
 def _queue_item_for_slug(
     queue: list[dict[str, Any]],
     slug: str,
@@ -230,13 +238,27 @@ def _queue_item_for_slug(
     raise LookupError(f"No queue item found for slug {slug}")
 
 
+def _target_id_by_name(targets: list[dict[str, Any]], name: str) -> str:
+    for target in targets:
+        if target.get("name") == name:
+            return str(target["instance_id"])
+    raise LookupError(f"No dispatch target found for {name!r}")
+
+
 def _commit_saga(
     client: httpx.Client,
     *,
     headers: dict[str, str],
     saga_name: str,
     slug: str,
-    ) -> dict[str, Any]:
+    proof_file: str,
+    proof_text: str,
+) -> dict[str, Any]:
+    prompt = (
+        f"Create the file `{proof_file}` in the checked-out repository, write exactly "
+        f"`{proof_text}` into it followed by a trailing newline, then report what you did. "
+        "Make the change directly on the assigned feature branch."
+    )
     commit_body = {
         "name": saga_name,
         "slug": slug,
@@ -249,9 +271,12 @@ def _commit_saga(
                 "runs": [
                     {
                         "name": f"Dispatch {slug}",
-                        "description": "Spawn a session on the selected guild instance",
-                        "acceptance_criteria": ["Session is created on the targeted instance"],
-                        "declared_files": ["proof.txt"],
+                        "description": prompt,
+                        "acceptance_criteria": [
+                            f"The file {proof_file} exists with the expected proof text",
+                            "The session runs on the targeted guild instance",
+                        ],
+                        "declared_files": [proof_file],
                         "estimate_hours": 0.1,
                     }
                 ],
@@ -311,6 +336,12 @@ def main() -> int:
     suffix = str(int(time.time()))
     tenant_instance_name = f"Tenant A Beta {suffix}"
     user_instance_name = f"User B Alpha {suffix}"
+    tenant_proof_file = f"guild-tenant-proof-{suffix}.txt"
+    tenant_proof_text = f"tenant-a proof {suffix}"
+    tenant_cross_proof_file = f"guild-tenant-alpha-proof-{suffix}.txt"
+    tenant_cross_proof_text = f"tenant-a alpha proof {suffix}"
+    user_proof_file = f"guild-user-proof-{suffix}.txt"
+    user_proof_text = f"user-b proof {suffix}"
     tenant_a_headers = _headers(user_id="guild-user-a", tenant_id="tenant-a")
     tenant_b_headers = _headers(user_id="guild-user-b", tenant_id="tenant-b")
 
@@ -403,12 +434,24 @@ def main() -> int:
             raise AssertionError("User B dispatch targets should include the user instance")
 
         tenant_slug = f"guild-tenant-dispatch-{suffix}"
+        tenant_cross_slug = f"guild-tenant-alpha-dispatch-{suffix}"
         user_slug = f"guild-user-dispatch-{suffix}"
+        guild_alpha_target_id = _target_id_by_name(targets_a, "Guild Alpha")
         tenant_saga = _commit_saga(
             client,
             headers=tenant_a_headers,
             saga_name=f"Guild Tenant Dispatch {suffix}",
             slug=tenant_slug,
+            proof_file=tenant_proof_file,
+            proof_text=tenant_proof_text,
+        )
+        _commit_saga(
+            client,
+            headers=tenant_a_headers,
+            saga_name=f"Guild Tenant Alpha Dispatch {suffix}",
+            slug=tenant_cross_slug,
+            proof_file=tenant_cross_proof_file,
+            proof_text=tenant_cross_proof_text,
         )
         assigned_tenant_saga = _request(
             client,
@@ -422,17 +465,19 @@ def main() -> int:
             headers=tenant_b_headers,
             saga_name=f"Guild User Dispatch {suffix}",
             slug=user_slug,
+            proof_file=user_proof_file,
+            proof_text=user_proof_text,
         )
         tenant_dispatch = _dispatch_one(
             client,
             headers=tenant_a_headers,
             slug=tenant_slug,
         )
-        user_dispatch = _dispatch_one(
+        tenant_cross_dispatch = _dispatch_one(
             client,
-            headers=tenant_b_headers,
-            slug=user_slug,
-            target_id=user_instance["id"],
+            headers=tenant_a_headers,
+            slug=tenant_cross_slug,
+            target_id=guild_alpha_target_id,
         )
 
         tenant_sessions = _wait_for_session(
@@ -441,38 +486,95 @@ def main() -> int:
             session_id=tenant_dispatch["dispatch_result"]["session_id"],
             headers=tenant_a_headers,
         )
-        user_sessions = _wait_for_session(
+        tenant_alpha_sessions = _wait_for_session(
             client,
-            instance_id=user_instance["id"],
-            session_id=user_dispatch["dispatch_result"]["session_id"],
-            headers=tenant_b_headers,
+            instance_id=guild_alpha_target_id,
+            session_id=tenant_cross_dispatch["dispatch_result"]["session_id"],
+            headers=tenant_a_headers,
         )
         aggregate_tenant_sessions = _wait_for_aggregate_session(
             client,
             headers=tenant_a_headers,
             session_id=tenant_dispatch["dispatch_result"]["session_id"],
         )
-        aggregate_user_sessions = _wait_for_aggregate_session(
+        aggregate_tenant_sessions = _wait_for_aggregate_session(
             client,
-            headers=tenant_b_headers,
-            session_id=user_dispatch["dispatch_result"]["session_id"],
+            headers=tenant_a_headers,
+            session_id=tenant_cross_dispatch["dispatch_result"]["session_id"],
         )
         tenant_activity = _wait_for_activity(
             client,
             headers=tenant_a_headers,
             session_id=tenant_dispatch["dispatch_result"]["session_id"],
         )
+        tenant_alpha_activity = _wait_for_activity(
+            client,
+            headers=tenant_a_headers,
+            session_id=tenant_cross_dispatch["dispatch_result"]["session_id"],
+        )
+        tenant_aggregate_ids = {session["id"] for session in aggregate_tenant_sessions}
+        tenant_backend_names = {
+            session.get("instance_name") for session in aggregate_tenant_sessions
+        }
+        if (
+            "Guild Alpha" not in tenant_backend_names
+            or tenant_instance_name not in tenant_backend_names
+        ):
+            raise AssertionError(
+                "Tenant A aggregate view must contain sessions from Guild Alpha "
+                "and the tenant Beta backend"
+            )
+
+        tenant_repo_file = (
+            Path(tenant_activity["detail"]["code_endpoint"].removeprefix("file://"))
+            / "repo"
+            / tenant_proof_file
+        )
+        tenant_alpha_repo_file = (
+            Path(tenant_alpha_activity["detail"]["code_endpoint"].removeprefix("file://"))
+            / "repo"
+            / tenant_cross_proof_file
+        )
+        _wait_for_file(tenant_repo_file, f"{tenant_proof_text}\n")
+        _wait_for_file(tenant_alpha_repo_file, f"{tenant_cross_proof_text}\n")
+
+        user_dispatch = _dispatch_one(
+            client,
+            headers=tenant_b_headers,
+            slug=user_slug,
+            target_id=user_instance["id"],
+        )
+        user_sessions = _wait_for_session(
+            client,
+            instance_id=user_instance["id"],
+            session_id=user_dispatch["dispatch_result"]["session_id"],
+            headers=tenant_b_headers,
+        )
+        aggregate_user_sessions = _wait_for_aggregate_session(
+            client,
+            headers=tenant_b_headers,
+            session_id=user_dispatch["dispatch_result"]["session_id"],
+        )
         user_activity = _wait_for_activity(
             client,
             headers=tenant_b_headers,
             session_id=user_dispatch["dispatch_result"]["session_id"],
         )
-        tenant_aggregate_ids = {session["id"] for session in aggregate_tenant_sessions}
-        user_aggregate_ids = {session["id"] for session in aggregate_user_sessions}
         if user_dispatch["dispatch_result"]["session_id"] in tenant_aggregate_ids:
             raise AssertionError("Tenant A aggregate view must not contain User B's session")
+        user_aggregate_ids = {session["id"] for session in aggregate_user_sessions}
         if tenant_dispatch["dispatch_result"]["session_id"] in user_aggregate_ids:
             raise AssertionError("Tenant B aggregate view must not contain Tenant A's session")
+        if tenant_cross_dispatch["dispatch_result"]["session_id"] in user_aggregate_ids:
+            raise AssertionError(
+                "Tenant B aggregate view must not contain Tenant A's cross-backend session"
+            )
+        user_repo_file = (
+            Path(user_activity["detail"]["code_endpoint"].removeprefix("file://"))
+            / "repo"
+            / user_proof_file
+        )
+        _wait_for_file(user_repo_file, f"{user_proof_text}\n")
 
     proof = {
         "health": health,
@@ -483,9 +585,14 @@ def main() -> int:
             "tenantInstance": tenant_instance,
             "assignedSaga": assigned_tenant_saga,
             "dispatch": tenant_dispatch,
+            "crossDispatch": tenant_cross_dispatch,
             "instanceSessions": tenant_sessions,
+            "alphaSessions": tenant_alpha_sessions,
             "aggregateSessions": aggregate_tenant_sessions,
             "aggregateActivity": tenant_activity,
+            "alphaActivity": tenant_alpha_activity,
+            "proofFile": str(tenant_repo_file),
+            "alphaProofFile": str(tenant_alpha_repo_file),
         },
         "tenantB": {
             "visibleInstances": visible_b,
@@ -496,6 +603,7 @@ def main() -> int:
             "instanceSessions": user_sessions,
             "aggregateSessions": aggregate_user_sessions,
             "aggregateActivity": user_activity,
+            "proofFile": str(user_repo_file),
         },
     }
     OUTPUT_PATH.write_text(json.dumps(proof, indent=2), encoding="utf-8")

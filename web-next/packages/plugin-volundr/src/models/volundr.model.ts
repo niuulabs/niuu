@@ -183,6 +183,16 @@ export interface VolundrStats {
   };
 }
 
+export interface VolundrTarget {
+  id: string;
+  slug: string;
+  name: string;
+  baseUrl: string;
+  enabled: boolean;
+  isDefault: boolean;
+  visibility?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Messages / Logs / Chronicle
 // ---------------------------------------------------------------------------

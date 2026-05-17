@@ -108,6 +108,16 @@ class InstanceSessionResponse(BaseModel):
     archived_at: str | None = Field(default=None, serialization_alias="archivedAt")
 
 
+class InstanceCatalogEntryResponse(BaseModel):
+    kind: str
+    label: str
+    rune: str
+    summary: str
+    detail: str
+    registerable: bool
+    filterable: bool
+
+
 def _to_response(instance: RegisteredInstance) -> InstanceResponse:
     return InstanceResponse(
         id=instance.id,
@@ -194,6 +204,23 @@ def create_instances_router(service: InstanceService) -> APIRouter:
             enabled_only=enabled_only,
         )
         return [_to_response(instance) for instance in instances]
+
+    @router.get("/instances/catalog", response_model=list[InstanceCatalogEntryResponse])
+    async def get_instance_catalog(request: Request) -> list[InstanceCatalogEntryResponse]:
+        settings = getattr(request.app.state, "settings", None)
+        catalog = getattr(getattr(settings, "niuu", None), "catalog", []) if settings else []
+        return [
+            InstanceCatalogEntryResponse(
+                kind=entry.kind.value,
+                label=entry.label or entry.kind.value.title(),
+                rune=entry.rune,
+                summary=entry.summary,
+                detail=entry.detail,
+                registerable=entry.registerable,
+                filterable=entry.filterable,
+            )
+            for entry in catalog
+        ]
 
     @router.post("/instances", response_model=InstanceResponse, status_code=status.HTTP_201_CREATED)
     async def create_instance(

@@ -268,12 +268,14 @@ function SagaGroupHeader({
   featureBranch,
   runCount,
   workflowName,
+  targetName,
 }: {
   sagaName: string;
   trackerId: string;
   featureBranch: string;
   runCount: number;
   workflowName?: string;
+  targetName?: string;
 }) {
   return (
     <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-px-4 niuu-py-2 niuu-bg-bg-tertiary niuu-border-b niuu-border-border-subtle niuu-sticky niuu-top-0 niuu-z-10">
@@ -285,6 +287,14 @@ function SagaGroupHeader({
         <span>
           {runCount} queued · {featureBranch}
         </span>
+        {targetName && (
+          <>
+            <span className="niuu-w-px niuu-h-[10px] niuu-bg-border" />
+            <span>
+              forge <span className="niuu-text-text-secondary">{targetName}</span>
+            </span>
+          </>
+        )}
         {workflowName && (
           <>
             <span className="niuu-w-px niuu-h-[10px] niuu-bg-border" />
@@ -631,6 +641,7 @@ function DispatchViewContent() {
         trackerId: string;
         featureBranch: string;
         workflowName: string;
+        targetName: string;
         entries: EnrichedEntry[];
       }
     >();
@@ -639,17 +650,25 @@ function DispatchViewContent() {
       if (existing) {
         existing.entries.push(entry);
       } else {
+        const targetName =
+          entry.queueItem.instanceId != null
+            ? (clusters.find(
+                (cluster) =>
+                  (cluster.instanceId ?? cluster.connectionId) === entry.queueItem.instanceId,
+              )?.name ?? '')
+            : '';
         map.set(entry.saga.id, {
           sagaName: entry.saga.name,
           trackerId: entry.saga.trackerId,
           featureBranch: entry.saga.featureBranch,
           workflowName: entry.saga.workflow ?? '',
+          targetName,
           entries: [entry],
         });
       }
     }
     return Array.from(map.entries());
-  }, [filtered]);
+  }, [clusters, filtered]);
 
   const selectedEntries = filtered.filter((e) => selectedIds.has(e.run.id));
   const allSelectedFeasible =
@@ -892,6 +911,7 @@ function DispatchViewContent() {
                     featureBranch={group.featureBranch}
                     runCount={group.entries.length}
                     workflowName={group.workflowName}
+                    targetName={group.targetName}
                   />
                   <div className="niuu-p-2 niuu-flex niuu-flex-col niuu-gap-2">
                     {group.entries.map((entry) => (

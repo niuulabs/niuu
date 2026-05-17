@@ -6,7 +6,7 @@
  */
 import {
   createApiClient,
-  getAccessToken,
+  getAuthHeaders,
   openEventStream,
   type EventStreamHandle,
   type EventStreamOptions,
@@ -49,6 +49,7 @@ import type {
   WorkspaceStatus,
   VolundrMember,
   VolundrProvisioningResult,
+  VolundrTarget,
   AdminSettings,
   AdminStorageSettings,
   FeatureModule,
@@ -251,6 +252,18 @@ type SharedRepoPayload = {
 
 type SharedRepoResponse = Record<string, SharedRepoPayload[]>;
 
+type InstanceTargetPayload = {
+  id: string;
+  slug: string;
+  name: string;
+  baseUrl?: string;
+  base_url?: string;
+  enabled: boolean;
+  isDefault?: boolean;
+  is_default?: boolean;
+  visibility?: string;
+};
+
 type SessionDefinitionPayload = {
   key: string;
   display_name?: string;
@@ -330,6 +343,18 @@ function normalizeSession(session: SessionPayload): VolundrSession {
   };
 }
 
+function normalizeTarget(payload: InstanceTargetPayload): VolundrTarget {
+  return {
+    id: payload.id,
+    slug: payload.slug,
+    name: payload.name,
+    baseUrl: payload.baseUrl ?? payload.base_url ?? '',
+    enabled: payload.enabled,
+    isDefault: payload.isDefault ?? payload.is_default ?? false,
+    visibility: payload.visibility,
+  };
+}
+
 function normalizeStats(stats: StatsPayload): VolundrStats {
   return {
     activeSessions: stats.activeSessions ?? stats.active_sessions ?? 0,
@@ -362,6 +387,8 @@ function deriveSharedApiBasePath(basePath?: string): string | null {
 
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1')) return normalized;
+  if (normalized.endsWith('/api/v1/niuu')) return normalized.replace(/\/niuu$/, '');
+  if (normalized.endsWith('/api/v1/niuu/volundr')) return normalized.replace(/\/niuu\/volundr$/, '');
 
   const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1');
   return derived === normalized ? null : derived;
@@ -381,6 +408,7 @@ function deriveNiuuBasePath(basePath?: string): string | null {
 
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/niuu')) return normalized;
+  if (normalized.endsWith('/api/v1/niuu/volundr')) return normalized.replace(/\/volundr$/, '');
 
   const sharedBasePath = deriveSharedApiBasePath(normalized);
   return sharedBasePath ? `${sharedBasePath}/niuu` : null;
@@ -696,12 +724,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
   }
 
   function withAuthHeaders(headers: HeadersInit = {}): Headers {
-    const nextHeaders = new Headers(headers);
-    const token = getAccessToken();
-    if (token) {
-      nextHeaders.set('Authorization', `Bearer ${token}`);
-    }
-    return nextHeaders;
+    return getAuthHeaders(headers);
   }
 
   async function listDirectory(
@@ -1083,6 +1106,13 @@ export function buildVolundrHttpAdapter(
           SharedRepoResponse | SharedRepoPayload[] | VolundrRepo[]
         >('/repos'),
       ),
+    getTargets: async () => {
+      const targetClient = niuuClient ?? sharedClient;
+      const payload = await targetClient.get<InstanceTargetPayload[]>(
+        '/instances?kind=volundr&enabledOnly=true',
+      );
+      return payload.map(normalizeTarget);
+    },
 
     subscribe: (callback) => {
       sessionSubscribers.add(callback);
@@ -1130,7 +1160,12 @@ export function buildVolundrHttpAdapter(
     getClusterResources: () => forgeClient.get<ClusterResourceInfo>('/cluster/resources'),
 
     startSession: async (config) =>
-      normalizeSession(await forgeClient.post<SessionPayload>('/sessions', config)),
+      normalizeSession(
+        await forgeClient.post<SessionPayload>('/sessions', {
+          ...config,
+          instance_id: config.instanceId ?? null,
+        }),
+      ),
     connectSession: async (config) =>
       normalizeSession(await forgeClient.post<SessionPayload>('/sessions/connect', config)),
     updateSession: (sessionId, updates) =>

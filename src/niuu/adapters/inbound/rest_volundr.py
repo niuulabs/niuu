@@ -40,6 +40,17 @@ async def _visible_instances(
     )
 
 
+def _strip_instance_hints(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    sanitized = dict(payload)
+    sanitized.pop("instance_id", None)
+    sanitized.pop("instanceId", None)
+    sanitized.pop("instance_name", None)
+    sanitized.pop("instanceName", None)
+    return sanitized
+
+
 def _with_instance(payload: Any, instance: RegisteredInstance) -> Any:
     if not isinstance(payload, dict):
         return payload
@@ -143,6 +154,30 @@ async def _find_session_owner(
     )
 
 
+async def _resolve_target_instance(
+    service: InstanceService,
+    principal: Principal,
+    instance_id: str | None,
+) -> RegisteredInstance:
+    if instance_id:
+        instance = await service.get_visible(principal, instance_id)
+        if instance is None or instance.kind != InstanceKind.VOLUNDR or not instance.enabled:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Target not found: {instance_id}",
+            )
+        return instance
+
+    instances = await _visible_instances(service, principal)
+    if not instances:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No enabled Volundr instances are registered for this user",
+        )
+    default_instance = next((instance for instance in instances if instance.is_default), None)
+    return default_instance or instances[0]
+
+
 def create_volundr_router(service: InstanceService) -> APIRouter:
     """Create a registry-aware Volundr aggregate router."""
     router = APIRouter(prefix="/api/v1/niuu/volundr", tags=["Shared", "Volundr"])
@@ -193,6 +228,34 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
     ) -> dict[str, Any]:
         _, payload = await _find_session_owner(service, principal, request, session_id)
         return payload
+
+    @router.post("/sessions", status_code=status.HTTP_201_CREATED)
+    async def create_session(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        requested_instance_id = body.get("instance_id") or body.get("instanceId")
+        instance = await _resolve_target_instance(
+            service,
+            principal,
+            str(requested_instance_id) if requested_instance_id else None,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path="/sessions",
+            json_body=_strip_instance_hints(body),
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Unexpected response from target Volundr instance",
+            )
+        return _with_instance(payload, instance)
 
     @router.get("/stats")
     async def get_stats(

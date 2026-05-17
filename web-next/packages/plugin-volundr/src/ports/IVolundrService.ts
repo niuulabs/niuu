@@ -42,6 +42,7 @@ import type {
   VolundrProvisioningResult,
   SessionSource,
   SessionDefinition,
+  VolundrTarget,
   AdminSettings,
   AdminStorageSettings,
   FeatureModule,
@@ -64,6 +65,7 @@ export interface IVolundrService {
   getActiveSessions(): Promise<VolundrSession[]>;
   getStats(): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;
+  getTargets(): Promise<VolundrTarget[]>;
 
   /** Subscribe to live session updates via SSE. Returns an unsubscribe function. */
   subscribe(callback: (sessions: VolundrSession[]) => void): () => void;
@@ -103,6 +105,7 @@ export interface IVolundrService {
     taskType?: string;
     trackerIssue?: TrackerIssue;
     terminalRestricted?: boolean;
+    instanceId?: string | null;
     workspaceId?: string;
     credentialNames?: string[];
     integrationIds?: string[];

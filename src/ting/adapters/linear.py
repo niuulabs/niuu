@@ -7,6 +7,7 @@ Maps: Project=Saga, Milestone=Phase, Issue=Run.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime
 from uuid import UUID, uuid4, uuid5
 
@@ -499,8 +500,13 @@ class LinearTrackerAdapter(TrackerPort):
         if run.confidence:
             description += f"\n\n**Confidence:** {run.confidence:.0%}"
 
-        # Linear estimate is an integer (story points); round hours to nearest int
-        estimate = round(run.estimate_hours) if run.estimate_hours else None
+        # Linear estimate is an integer (story points); clamp positive work to at least 1.
+        estimate = None
+        if run.estimate_hours is not None:
+            if run.estimate_hours > 0:
+                estimate = max(1, math.ceil(run.estimate_hours))
+            else:
+                estimate = 0
 
         effective_project_id = project_id or run.tracker_id
         effective_milestone_id = milestone_id or None

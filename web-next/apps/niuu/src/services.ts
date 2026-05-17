@@ -643,10 +643,12 @@ function buildMultiVolundrService(
 ): IVolundrService {
   return {
     ...primary,
+    getTargets: () => aggregate.getTargets(),
     getSessions: () => aggregate.getSessions(),
     getSession: (id) => aggregate.getSession(id),
     getActiveSessions: () => aggregate.getActiveSessions(),
     getStats: () => aggregate.getStats(),
+    startSession: (config) => aggregate.startSession(config),
     subscribe: (callback) => aggregate.subscribe(callback),
     subscribeStats: (callback) => aggregate.subscribeStats(callback),
     stopSession: (sessionId) => aggregate.stopSession(sessionId),

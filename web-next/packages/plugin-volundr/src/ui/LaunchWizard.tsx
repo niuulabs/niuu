@@ -23,6 +23,7 @@ import type {
   SessionSource,
   SessionDefinition,
   IntegrationConnection,
+  VolundrTarget,
   StoredCredential,
   TrackerIssue,
   VolundrPreset,
@@ -68,6 +69,7 @@ export interface WizardForm {
   mem: string;
   gpu: string;
   cluster: string;
+  instanceId: string;
   yamlMode: boolean;
   yamlContent: string;
 }
@@ -872,6 +874,7 @@ export function RuntimeStep({
   update,
   models,
   workspaces,
+  targets,
   credentials,
   integrations,
   clusterResources,
@@ -886,6 +889,7 @@ export function RuntimeStep({
   update: (patch: Partial<WizardForm>) => void;
   models: Record<string, RuntimeModelDescriptor>;
   workspaces: VolundrWorkspace[];
+  targets: VolundrTarget[];
   credentials: StoredCredential[];
   integrations: IntegrationConnection[];
   clusterResources: ClusterResourceInfo | null;
@@ -1156,6 +1160,20 @@ export function RuntimeStep({
                   update({ workspaceId: value === NEW_WORKSPACE_VALUE ? '' : value })
                 }
                 testId="workspace-select"
+              />
+            </Field>
+          ) : null}
+          {targets.length > 0 ? (
+            <Field label="Forge">
+              <WizardSelect
+                options={targets.map((target) => ({
+                  value: target.id,
+                  label: `${target.name}${target.isDefault ? ' (default)' : ''}`,
+                }))}
+                value={form.instanceId}
+                onChange={(value) => update({ instanceId: value })}
+                placeholder="Select forge"
+                testId="forge-target-select"
               />
             </Field>
           ) : null}
@@ -1660,17 +1678,21 @@ export function ConfirmStep({
   models,
   integrations,
   sessionDefinitions,
+  targets,
 }: {
   form: WizardForm;
   templates: Template[];
   models: Record<string, RuntimeModelDescriptor>;
   integrations: IntegrationConnection[];
   sessionDefinitions: SessionDefinition[];
+  targets: VolundrTarget[];
 }) {
   const tpl = templates.find((t) => t.id === form.templateId);
   const modelLabel = formatModelOption(form.model, models[form.model]);
   const definitionLabel =
     sessionDefinitions.find((d) => d.key === form.definition)?.displayName ?? form.definition;
+  const targetLabel =
+    targets.find((target) => target.id === form.instanceId)?.name || form.instanceId || 'default';
   const integrationLabels = form.selectedIntegrations.map((id) => {
     const integration = integrations.find((item) => item.id === id);
     return integration ? formatIntegrationLabel(integration) : id;
@@ -1684,6 +1706,7 @@ export function ConfirmStep({
         <div className="niuu-flex niuu-flex-col niuu-divide-y niuu-divide-border-subtle">
           <ConfirmRow label="session" value={deriveSessionName(form, tpl)} />
           <ConfirmRow label="template" value={tpl?.name ?? form.templateId} />
+          <ConfirmRow label="forge" value={targetLabel} />
           <ConfirmRow label="definition" value={definitionLabel} />
           <ConfirmRow label="model" value={modelLabel} />
           <ConfirmRow
@@ -1916,6 +1939,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   const [integrations, setIntegrations] = useState<IntegrationConnection[]>([]);
   const [clusterResources, setClusterResources] = useState<ClusterResourceInfo | null>(null);
   const [presets, setPresets] = useState<VolundrPreset[]>([]);
+  const [targets, setTargets] = useState<VolundrTarget[]>([]);
   const [availableMcpServers, setAvailableMcpServers] = useState<McpServerConfig[]>([]);
   const [sessionDefinitions, setSessionDefinitions] = useState<SessionDefinition[]>([]);
   const [trackerResults, setTrackerResults] = useState<TrackerIssue[]>([]);
@@ -1947,6 +1971,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     mem: '8Gi',
     gpu: '0',
     cluster: '',
+    instanceId: '',
     yamlMode: false,
     yamlContent: '',
   }));
@@ -1972,6 +1997,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       volundr.getIntegrations().catch(() => []),
       volundr.getClusterResources().catch(() => null),
       volundr.getPresets().catch(() => []),
+      volundr.getTargets().catch(() => []),
       volundr.getAvailableMcpServers().catch(() => []),
       volundr.getSessionDefinitions().catch(() => FALLBACK_SESSION_DEFINITIONS),
     ]).then(
@@ -1983,6 +2009,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         nextIntegrations,
         nextClusterResources,
         nextPresets,
+        nextTargets,
         nextMcpServers,
         nextSessionDefinitions,
       ]) => {
@@ -1994,6 +2021,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         setIntegrations(nextIntegrations);
         setClusterResources(nextClusterResources);
         setPresets(nextPresets);
+        setTargets(nextTargets);
         setAvailableMcpServers(nextMcpServers);
         setSessionDefinitions(
           nextSessionDefinitions.length > 0 ? nextSessionDefinitions : FALLBACK_SESSION_DEFINITIONS,
@@ -2063,9 +2091,18 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         changed = true;
       }
 
+      if (targets.length > 0) {
+        const matchingTarget = targets.find((target) => target.id === current.instanceId);
+        if (!matchingTarget) {
+          next.instanceId =
+            targets.find((target) => target.isDefault)?.id ?? targets[0]!.id;
+          changed = true;
+        }
+      }
+
       return changed ? next : current;
     });
-  }, [repos, models]);
+  }, [repos, models, targets]);
 
   useEffect(() => {
     const query = form.trackerQuery.trim();
@@ -2261,6 +2298,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         taskType: definitionToTaskType(form.definition),
         trackerIssue: form.trackerIssue ?? undefined,
         terminalRestricted: form.permission === 'restricted',
+        instanceId: form.instanceId || undefined,
         workspaceId: form.workspaceId || undefined,
         credentialNames: form.selectedCredentials.length ? form.selectedCredentials : undefined,
         integrationIds: form.selectedIntegrations.length ? form.selectedIntegrations : undefined,
@@ -2351,6 +2389,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
               update={update}
               models={models}
               workspaces={workspaces}
+              targets={targets}
               credentials={credentials}
               integrations={integrations}
               clusterResources={clusterResources}
@@ -2373,6 +2412,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
               sessionDefinitions={
                 sessionDefinitions.length > 0 ? sessionDefinitions : FALLBACK_SESSION_DEFINITIONS
               }
+              targets={targets}
             />
           )}
           {step === 'booting' && <BootingStep bootStep={bootStep} progress={bootProgress} />}

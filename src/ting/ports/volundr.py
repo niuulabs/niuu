@@ -106,6 +106,7 @@ class VolundrPort(ABC):
         request: SpawnRequest,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> VolundrSession: ...
 
     @abstractmethod
@@ -114,6 +115,7 @@ class VolundrPort(ABC):
         session_id: str,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> VolundrSession | None: ...
 
     @abstractmethod
@@ -121,6 +123,7 @@ class VolundrPort(ABC):
         self,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> list[VolundrSession]: ...
 
     @abstractmethod
@@ -136,6 +139,7 @@ class VolundrPort(ABC):
         message: str,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
         """Send a human message to a running Volundr session."""
         ...
@@ -147,13 +151,19 @@ class VolundrPort(ABC):
         message: str,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
         """Send a directed human message to a specific room participant.
 
         Implementations that do not expose room-level addressing can safely
         fall back to the generic session message channel.
         """
-        await self.send_message(session_id, message, auth_token=auth_token)
+        await self.send_message(
+            session_id,
+            message,
+            auth_token=auth_token,
+            principal=principal,
+        )
 
     @abstractmethod
     async def stop_session(
@@ -161,17 +171,28 @@ class VolundrPort(ABC):
         session_id: str,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
         """Stop a running Volundr session."""
         ...
 
     @abstractmethod
-    async def list_integration_ids(self, *, auth_token: str | None = None) -> list[str]:
+    async def list_integration_ids(
+        self,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[str]:
         """Return the IDs of the user's enabled integrations on this Volundr instance."""
         ...
 
     @abstractmethod
-    async def list_repos(self, *, auth_token: str | None = None) -> list[dict]:
+    async def list_repos(
+        self,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[dict]:
         """Return configured repos from Volundr, each with at least 'org', 'name', 'url'."""
         ...
 

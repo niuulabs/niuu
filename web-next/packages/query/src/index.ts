@@ -2,6 +2,8 @@ export {
   createApiClient,
   setTokenProvider,
   getAccessToken,
+  getAuthHeaders,
+  withAuthQuery,
   ApiClientError,
   type ApiClient,
   type ApiError,

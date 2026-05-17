@@ -12,6 +12,7 @@
 /** Service / persona-identity glyphs keyed by system name */
 export const SERVICE_RUNES = {
   volundr: 'ᚲ',
+  guild: 'ᚹ',
   ting: '✦',
   ravn: 'ᚱ',
   mimir: 'ᛗ',
