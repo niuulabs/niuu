@@ -97,10 +97,22 @@ function confidenceTone(value: number): string {
 }
 
 function relTime(date: string): string {
-  const diffMs = Date.now() - new Date(date).getTime();
-  if (diffMs < 86_400_000) return 'today';
-  const days = Math.floor(diffMs / 86_400_000);
+  const dayMs = 86_400_000;
+  const createdAtMs = new Date(date).getTime();
+  const diffMs = Date.now() - createdAtMs;
+  if (diffMs < dayMs) return 'today';
+  const days = Math.floor(diffMs / dayMs);
   return `${days}d ago`;
+}
+
+function downloadJson(filename: string, data: string): void {
+  const blob = new Blob([data], { type: 'application/json' });
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 type RepoCatalogService = {
@@ -556,12 +568,7 @@ function SagasPageContent() {
               className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-2.5 niuu-text-[14px] niuu-font-medium niuu-text-text-primary"
               onClick={() => {
                 const data = JSON.stringify(allSagas, null, 2);
-                const blob = new Blob([data], { type: 'application/json' });
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = 'sagas.json';
-                a.click();
-                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+                downloadJson('sagas.json', data);
                 toast({ title: `Exported ${allSagas.length} sagas`, tone: 'success' });
               }}
               aria-label="Export sagas as JSON"
