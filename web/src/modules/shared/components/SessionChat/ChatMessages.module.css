@@ -207,19 +207,19 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-3);
-  color: color-mix(in srgb, var(--color-accent-purple) 80%, var(--color-text-muted));
+  color: color-mix(in srgb, var(--color-brand) 80%, var(--color-text-muted));
   font-size: var(--text-xs);
   font-family: var(--font-sans);
-  background: color-mix(in srgb, var(--color-accent-purple) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-accent-purple) 20%, transparent);
+  background: color-mix(in srgb, var(--color-brand) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-brand) 20%, transparent);
   border-radius: var(--radius-full);
   transition: all var(--transition-fast);
 }
 
 .reasoningTrigger:hover {
-  background: color-mix(in srgb, var(--color-accent-purple) 18%, transparent);
-  border-color: color-mix(in srgb, var(--color-accent-purple) 35%, transparent);
-  color: var(--color-accent-purple);
+  background: color-mix(in srgb, var(--color-brand) 18%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand) 35%, transparent);
+  color: var(--color-brand);
 }
 
 .reasoningChevron {
@@ -232,7 +232,7 @@
   width: 12px;
   height: 12px;
   flex-shrink: 0;
-  color: var(--color-accent-purple);
+  color: var(--color-brand);
 }
 
 .reasoningLabel {
@@ -245,12 +245,12 @@
   margin-top: var(--space-2);
   padding: 10px 14px;
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--color-accent-purple) 15%, transparent);
-  background-color: color-mix(in srgb, var(--color-accent-purple) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-brand) 15%, transparent);
+  background-color: color-mix(in srgb, var(--color-brand) 5%, transparent);
   max-height: 300px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-accent-purple) 20%, transparent) transparent;
+  scrollbar-color: color-mix(in srgb, var(--color-brand) 20%, transparent) transparent;
 }
 
 .reasoningText {

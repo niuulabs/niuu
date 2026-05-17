@@ -17,7 +17,16 @@ interface CliStreamEvent {
     id?: string;
     role?: string;
     model?: string;
-    content?: Array<{ type: string; text?: string }>;
+    content?: Array<{
+      type: string;
+      text?: string;
+      thinking?: string;
+      id?: string;
+      name?: string;
+      input?: Record<string, unknown>;
+      tool_use_id?: string;
+      content?: string;
+    }>;
     usage?: { input_tokens?: number; output_tokens?: number };
   };
 
@@ -216,6 +225,14 @@ interface UseSkuldChatOptions {
   historyEndpoint?: string | null;
   /** Optional storage key for persisted chat state */
   cacheKey?: string | null;
+  /** Whether to hydrate the initial state from session storage */
+  hydrateFromCache?: boolean;
+  /** Whether to persist chat state into session storage */
+  persistCache?: boolean;
+  /** Whether to reconcile server-pushed conversation history events */
+  reconcileConversationHistory?: boolean;
+  /** Whether websocket sends may queue while the socket is disconnected */
+  queueOutgoingWhileDisconnected?: boolean;
 }
 
 interface ConversationTurn {
@@ -229,6 +246,24 @@ interface ConversationTurn {
   participant_meta?: Record<string, unknown>;
   thread_id?: string;
   visibility?: string;
+}
+
+function mergeServerTurnsWithLocal(
+  serverTurns: ConversationTurn[],
+  localMessages: SkuldChatMessage[]
+): SkuldChatMessage[] {
+  const serverMessages = transformTurns(serverTurns);
+  const lastServerTime =
+    serverMessages.length > 0 ? serverMessages[serverMessages.length - 1].createdAt.getTime() : 0;
+
+  const localPending = localMessages.filter(message => {
+    if (message.status === 'running') {
+      return true;
+    }
+    return message.role === 'user' && message.createdAt.getTime() > lastServerTime;
+  });
+
+  return [...serverMessages, ...localPending];
 }
 
 /**
@@ -378,6 +413,58 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function assistantBlocksToParts(
+  blocks:
+    | Array<{
+        type: string;
+        text?: string;
+        thinking?: string;
+        id?: string;
+        name?: string;
+        input?: Record<string, unknown>;
+        tool_use_id?: string;
+        content?: string;
+      }>
+    | undefined
+): SkuldChatMessagePart[] {
+  if (!Array.isArray(blocks)) {
+    return [];
+  }
+  const parts: SkuldChatMessagePart[] = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue;
+    if (block.type === 'text' && typeof block.text === 'string' && block.text) {
+      parts.push({ type: 'text', text: block.text });
+      continue;
+    }
+    if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
+      parts.push({ type: 'reasoning', text: block.thinking });
+      continue;
+    }
+    if (
+      block.type === 'tool_use' &&
+      typeof block.id === 'string' &&
+      typeof block.name === 'string'
+    ) {
+      parts.push({
+        type: 'tool_use',
+        id: block.id,
+        name: block.name,
+        input: (block.input ?? {}) as Record<string, unknown>,
+      });
+      continue;
+    }
+    if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+      parts.push({
+        type: 'tool_result',
+        tool_use_id: block.tool_use_id,
+        content: typeof block.content === 'string' ? block.content : '',
+      });
+    }
+  }
+  return parts;
+}
+
 /**
  * Manages a Skuld chat session over WebSocket.
  *
@@ -398,6 +485,10 @@ export function useSkuldChat(
     onDisconnect,
     historyEndpoint = null,
     cacheKey = historyEndpoint ?? url,
+    hydrateFromCache = true,
+    persistCache = true,
+    reconcileConversationHistory = true,
+    queueOutgoingWhileDisconnected = true,
   } = options;
 
   const {
@@ -409,7 +500,7 @@ export function useSkuldChat(
   } = useChatStore();
 
   const [messages, setMessages] = useState<SkuldChatMessage[]>(() => {
-    if (!cacheKey) return [];
+    if (!cacheKey || !hydrateFromCache) return [];
     return getMessages(cacheKey);
   });
   const [participants, setParticipants] = useState<Map<string, RoomParticipant>>(new Map());
@@ -427,7 +518,7 @@ export function useSkuldChat(
   }
   const internalStreamsRef = useRef<Map<string, InternalStreamState>>(new Map());
   const [meshEvents, setMeshEvents] = useState<MeshEvent[]>(() => {
-    if (!cacheKey) return [];
+    if (!cacheKey || !hydrateFromCache) return [];
     return getStoredMeshEvents(cacheKey);
   });
   const [agentEvents, setAgentEvents] = useState<Map<string, AgentInternalEvent[]>>(new Map());
@@ -440,7 +531,6 @@ export function useSkuldChat(
   // REST endpoint changes, historyLoadedForKey will no longer match.
   const [historyLoadedForKey, setHistoryLoadedForKey] = useState<string | null>(null);
   const historyLoaded = historyLoadedForKey === cacheKey;
-
   // Fetch conversation history from server on mount/reconnect
   useEffect(() => {
     if (!cacheKey || historyLoaded) return;
@@ -460,7 +550,13 @@ export function useSkuldChat(
       })();
 
     if (!resolvedHistoryUrl) {
-      // Cannot derive HTTP URL — schedule fallback to sessionStorage
+      // Cannot derive HTTP URL — optionally fall back to sessionStorage
+      if (!hydrateFromCache) {
+        const timer = setTimeout(() => {
+          setHistoryLoadedForKey(cacheKey);
+        }, 0);
+        return () => clearTimeout(timer);
+      }
       const timer = setTimeout(() => {
         const cached = getMessages(cacheKey);
         if (cached.length) setMessages(cached);
@@ -485,15 +581,19 @@ export function useSkuldChat(
         const isActive = data.is_active === true;
         const lastActivity = data.last_activity ?? '';
         setMessages(prev => {
-          // Server history is authoritative. Only keep local messages
-          // that were added AFTER the last server message (i.e. messages
-          // the user typed that haven't been recorded server-side yet).
-          const lastServerTime =
-            serverMsgs.length > 0 ? serverMsgs[serverMsgs.length - 1].createdAt.getTime() : 0;
-          const localOnly = prev.filter(
-            m => m.role === 'user' && m.createdAt.getTime() > lastServerTime
-          );
-          const merged = [...serverMsgs, ...localOnly];
+          // For active sessions, keep user messages typed after the last
+          // server turn so reconnects do not drop in-flight prompts.
+          // For stopped sessions, the saved transcript is authoritative and
+          // must not be polluted by cached local echoes from earlier views.
+          const merged = [...serverMsgs];
+          if (isActive || Boolean(url)) {
+            const lastServerTime =
+              serverMsgs.length > 0 ? serverMsgs[serverMsgs.length - 1].createdAt.getTime() : 0;
+            const localOnly = prev.filter(
+              m => m.role === 'user' && m.createdAt.getTime() > lastServerTime
+            );
+            merged.push(...localOnly);
+          }
           // If session is actively working, add a placeholder running message
           if (isActive && lastActivity) {
             merged.push({
@@ -511,28 +611,30 @@ export function useSkuldChat(
       })
       .catch(() => {
         if (cancelled) return;
-        // Fallback to sessionStorage cache
-        const cached = getMessages(cacheKey);
-        if (cached.length) setMessages(cached);
+        // Optional fallback to sessionStorage cache
+        if (hydrateFromCache) {
+          const cached = getMessages(cacheKey);
+          if (cached.length) setMessages(cached);
+        }
         setHistoryLoadedForKey(cacheKey);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [cacheKey, getMessages, historyEndpoint, historyLoaded, url]);
+  }, [cacheKey, getMessages, historyEndpoint, historyLoaded, hydrateFromCache, url]);
 
   // Persist messages to Zustand sessionStorage store on every change
   useEffect(() => {
-    if (!cacheKey) return;
+    if (!cacheKey || !persistCache) return;
     persistMessages(cacheKey, messages);
-  }, [cacheKey, messages, persistMessages]);
+  }, [cacheKey, messages, persistCache, persistMessages]);
 
   // Persist mesh events alongside messages
   useEffect(() => {
-    if (!cacheKey) return;
+    if (!cacheKey || !persistCache) return;
     persistMeshEvents(cacheKey, meshEvents);
-  }, [cacheKey, meshEvents, persistMeshEvents]);
+  }, [cacheKey, meshEvents, persistCache, persistMeshEvents]);
 
   // Streaming state refs (not in React state to avoid render churn)
   const streamingIdRef = useRef<string | null>(null);
@@ -544,6 +646,7 @@ export function useSkuldChat(
   const streamingToolJsonRef = useRef('');
   const streamingToolNameRef = useRef('');
   const streamingToolIdRef = useRef('');
+  const streamingAssistantMessageIdRef = useRef<string | null>(null);
 
   const resetStreamingRefs = useCallback(() => {
     streamingIdRef.current = null;
@@ -555,6 +658,7 @@ export function useSkuldChat(
     streamingToolJsonRef.current = '';
     streamingToolNameRef.current = '';
     streamingToolIdRef.current = '';
+    streamingAssistantMessageIdRef.current = null;
   }, []);
 
   const handleOpen = useCallback(() => {
@@ -613,7 +717,51 @@ export function useSkuldChat(
 
         // ── assistant: start of a new assistant turn ──────────────
         if (eventType === 'assistant') {
-          // Finalize any previous in-flight message before starting a new one
+          const assistantParts = assistantBlocksToParts(event.message?.content);
+          const initialContent =
+            event.message?.content
+              ?.filter(c => c.type === 'text' && c.text)
+              .map(c => c.text)
+              .join('') ?? '';
+          const assistantMessageId = event.message?.id ?? null;
+          let finalizePrevious: {
+            id: string;
+            text: string;
+            parts?: SkuldChatMessagePart[];
+            metadata: ChatMessageMeta;
+          } | null = null;
+
+          if (
+            streamingIdRef.current &&
+            assistantMessageId &&
+            streamingAssistantMessageIdRef.current === assistantMessageId
+          ) {
+            streamingTextRef.current = initialContent || streamingTextRef.current;
+            streamingModelRef.current = event.message?.model ?? streamingModelRef.current;
+            streamingInputTokensRef.current =
+              event.message?.usage?.input_tokens ?? streamingInputTokensRef.current;
+            streamingOutputTokensRef.current =
+              event.message?.usage?.output_tokens ?? streamingOutputTokensRef.current;
+            if (assistantParts.length > 0) {
+              streamingPartsRef.current = assistantParts;
+            }
+            const id = streamingIdRef.current;
+            const currentParts =
+              streamingPartsRef.current.length > 0 ? [...streamingPartsRef.current] : undefined;
+            setMessages(prev =>
+              prev.map(m =>
+                m.id === id
+                  ? {
+                      ...m,
+                      content: streamingTextRef.current,
+                      parts: currentParts,
+                    }
+                  : m
+              )
+            );
+            continue;
+          }
+
           if (streamingIdRef.current) {
             const prevId = streamingIdRef.current;
             const prevText = streamingTextRef.current;
@@ -630,54 +778,59 @@ export function useSkuldChat(
                   }
                 : undefined,
             };
-            if (prevText.trim()) {
-              // Has content — finalize as complete message
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === prevId
-                    ? {
-                        ...m,
-                        content: prevText,
-                        parts: prevParts,
-                        status: 'complete' as const,
-                        metadata: prevMeta,
-                      }
-                    : m
-                )
-              );
-            } else {
-              // Empty content (only thinking/tool calls) — remove to avoid clutter
-              setMessages(prev => prev.filter(m => m.id !== prevId));
-            }
+            finalizePrevious = prevText.trim()
+              ? {
+                  id: prevId,
+                  text: prevText,
+                  parts: prevParts,
+                  metadata: prevMeta,
+                }
+              : {
+                  id: prevId,
+                  text: '',
+                  metadata: prevMeta,
+                };
             resetStreamingRefs();
           }
-
-          // Extract any initial text content from the assistant event's message
-          const initialContent =
-            event.message?.content
-              ?.filter(c => c.type === 'text' && c.text)
-              .map(c => c.text)
-              .join('') ?? '';
 
           streamingTextRef.current = initialContent;
           streamingModelRef.current = event.message?.model ?? '';
           streamingInputTokensRef.current = event.message?.usage?.input_tokens ?? 0;
           streamingOutputTokensRef.current = event.message?.usage?.output_tokens ?? 0;
+          streamingPartsRef.current = assistantParts;
+          streamingAssistantMessageIdRef.current = assistantMessageId;
 
           const id = generateId();
           streamingIdRef.current = id;
           setIsRunning(true);
-          setMessages(prev => [
-            // Remove any activity indicator placeholder
-            ...prev.filter(m => m.id !== 'activity-indicator'),
-            {
+          setMessages(prev => {
+            let next = prev.filter(m => m.id !== 'activity-indicator');
+            if (finalizePrevious) {
+              if (finalizePrevious.text) {
+                next = next.map(m =>
+                  m.id === finalizePrevious!.id
+                    ? {
+                        ...m,
+                        content: finalizePrevious!.text,
+                        parts: finalizePrevious!.parts,
+                        status: 'complete' as const,
+                        metadata: finalizePrevious!.metadata,
+                      }
+                    : m
+                );
+              } else {
+                next = next.filter(m => m.id !== finalizePrevious!.id);
+              }
+            }
+            next.push({
               id,
               role: 'assistant',
               content: initialContent,
               createdAt: new Date(),
               status: 'running',
-            },
-          ]);
+            });
+            return next;
+          });
           continue;
         }
 
@@ -970,6 +1123,18 @@ export function useSkuldChat(
           continue;
         }
 
+        // ── conversation_history: reconcile after reconnect/startup ──
+        if (eventType === 'conversation_history') {
+          if (!reconcileConversationHistory) {
+            continue;
+          }
+          const turns = Array.isArray((event as unknown as { turns?: unknown[] }).turns)
+            ? ((event as unknown as { turns: ConversationTurn[] }).turns ?? [])
+            : [];
+          setMessages(prev => mergeServerTurnsWithLocal(turns, prev));
+          continue;
+        }
+
         // ── user_confirmed: broker echo confirming message reached session ──
         if (eventType === 'user_confirmed') {
           // The broker confirmed the message was sent to the CLI.
@@ -1026,6 +1191,7 @@ export function useSkuldChat(
               content,
               createdAt: new Date(),
               status: 'complete',
+              visibility: 'internal',
               metadata: { messageType: 'system', systemSubtype: subtype || 'info' },
             },
           ]);
@@ -1400,7 +1566,7 @@ export function useSkuldChat(
         // ── message_start, message_stop — silently consumed ──────
       } // end for (const event of events)
     },
-    [parseEvent, resetStreamingRefs]
+    [parseEvent, reconcileConversationHistory, resetStreamingRefs]
   );
 
   const handleClose = useCallback(() => {
@@ -1445,6 +1611,7 @@ export function useSkuldChat(
     onMessage: handleMessage,
     onClose: handleClose,
     onError: handleError,
+    queueWhenDisconnected: queueOutgoingWhileDisconnected,
   });
 
   const sendMessage = useCallback(

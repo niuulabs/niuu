@@ -17,6 +17,8 @@ class TransportCapabilities:
     cli_websocket: bool = False
     session_resume: bool = False
     interrupt: bool = False
+    steer: bool = False
+    steering_mode: str = "none"
     set_model: bool = False
     set_thinking_tokens: bool = False
     set_permission_mode: bool = False
@@ -84,6 +86,11 @@ class CLITransport(ABC):
     @abstractmethod
     def is_alive(self) -> bool:
         """Whether the transport is connected and operational."""
+
+    @property
+    def is_turn_active(self) -> bool:
+        """Whether the transport is currently executing a turn."""
+        return False
 
     @property
     def capabilities(self) -> TransportCapabilities:

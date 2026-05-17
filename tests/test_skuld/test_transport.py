@@ -33,6 +33,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is False
         assert caps.session_resume is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -1148,6 +1150,13 @@ class TestSdkWebSocketTransport:
         t = SubprocessTransport("/tmp")
         # Should not raise
         await t.send_control("interrupt")
+
+    def test_base_transport_reports_turn_inactive(self):
+        """Base CLITransport.is_turn_active defaults to False."""
+        from skuld.transports import SubprocessTransport
+
+        t = SubprocessTransport("/tmp")
+        assert t.is_turn_active is False
 
     # --- Phase 4: Agent Teams ---
 

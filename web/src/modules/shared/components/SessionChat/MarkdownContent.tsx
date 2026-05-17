@@ -8,6 +8,12 @@ import styles from './MarkdownContent.module.css';
 
 const COLLAPSE_LINE_THRESHOLD = 25;
 
+interface ArchivedSummaryPayload {
+  readonly summary: string;
+  readonly key_changes?: readonly string[];
+  readonly unfinished_work?: readonly string[];
+}
+
 /* ------------------------------------------------------------------ */
 /*  Code block with copy button                                        */
 /* ------------------------------------------------------------------ */
@@ -129,6 +135,59 @@ interface MarkdownContentProps {
   className?: string;
 }
 
+function parseArchivedSummary(raw: string): ArchivedSummaryPayload | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const allowed = new Set(['summary', 'key_changes', 'unfinished_work']);
+    if (!Object.keys(parsed).every(key => allowed.has(key))) {
+      return null;
+    }
+    if (typeof parsed.summary !== 'string' || !parsed.summary.trim()) {
+      return null;
+    }
+
+    const keyChanges =
+      Array.isArray(parsed.key_changes) &&
+      parsed.key_changes.every(item => typeof item === 'string' && item.trim().length > 0)
+        ? (parsed.key_changes as string[])
+        : undefined;
+
+    const unfinished =
+      parsed.unfinished_work === null || parsed.unfinished_work === undefined
+        ? undefined
+        : typeof parsed.unfinished_work === 'string'
+          ? parsed.unfinished_work.trim()
+            ? [parsed.unfinished_work]
+            : undefined
+          : Array.isArray(parsed.unfinished_work) &&
+              parsed.unfinished_work.every(
+                item => typeof item === 'string' && item.trim().length > 0
+              )
+            ? (parsed.unfinished_work as string[])
+            : undefined;
+
+    return {
+      summary: parsed.summary.trim(),
+      key_changes: keyChanges,
+      unfinished_work: unfinished,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function SummaryMarkdown({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {content}
+    </ReactMarkdown>
+  );
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const markdownComponents: Record<string, React.ComponentType<any>> = {
   p: ({ children }: { children?: React.ReactNode }) => (
@@ -207,6 +266,45 @@ export function MarkdownContent({ content, isStreaming, className }: MarkdownCon
           return <OutcomeCard key={`outcome-${i}`} yaml={match[1]} />;
         }
         if (!segment.trim()) return null;
+        const archivedSummary = parseArchivedSummary(segment);
+        if (archivedSummary) {
+          const unfinished =
+            archivedSummary.unfinished_work && archivedSummary.unfinished_work.length > 0
+              ? archivedSummary.unfinished_work
+              : null;
+          return (
+            <section key={`summary-${i}`} className={styles.summaryCard}>
+              <div className={styles.summaryEyebrow}>Session summary</div>
+              <div className={styles.summaryBody}>
+                <SummaryMarkdown content={archivedSummary.summary} />
+              </div>
+              {archivedSummary.key_changes && archivedSummary.key_changes.length > 0 && (
+                <div className={styles.summarySection}>
+                  <div className={styles.summaryHeading}>Key changes</div>
+                  <ul className={styles.summaryList}>
+                    {archivedSummary.key_changes.map(item => (
+                      <li key={item} className={styles.summaryListItem}>
+                        <SummaryMarkdown content={item} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {unfinished && (
+                <div className={styles.summarySection}>
+                  <div className={styles.summaryHeading}>Unfinished work</div>
+                  <ul className={styles.summaryList}>
+                    {unfinished.map(item => (
+                      <li key={item} className={styles.summaryListItem}>
+                        <SummaryMarkdown content={item} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+          );
+        }
         return (
           <ReactMarkdown
             key={`md-${i}`}

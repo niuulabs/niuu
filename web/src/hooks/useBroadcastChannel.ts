@@ -7,13 +7,19 @@ interface BroadcastMessage<T = unknown> {
   sourceId: string;
 }
 
+function generateSourceId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  );
+}
+
 /**
  * Hook for cross-window communication using BroadcastChannel API.
  * Messages are automatically ignored from the same source.
  */
 export function useBroadcastChannel<T = unknown>(channelName: string) {
   const channelRef = useRef<BroadcastChannel | null>(null);
-  const sourceId = useRef(crypto.randomUUID());
+  const sourceId = useRef(generateSourceId());
   const listenersRef = useRef<Set<(msg: BroadcastMessage<T>) => void>>(new Set());
 
   useEffect(() => {

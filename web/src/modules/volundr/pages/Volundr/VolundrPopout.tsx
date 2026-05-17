@@ -262,6 +262,7 @@ export function VolundrPopout() {
             <SessionStartingIndicator className={styles.fullPanel} />
           ) : conversationEndpoint ? (
             <SessionChat
+              key={conversationEndpoint ?? session.id}
               url={chatWsUrl}
               historyEndpoint={conversationEndpoint}
               className={styles.fullPanel}

@@ -221,20 +221,34 @@ describe('SessionChat', () => {
     mockSkuldChat();
     render(<SessionChat url="wss://my-host/session" />);
 
-    expect(useSkuldChat).toHaveBeenCalledWith('wss://my-host/session', {
-      historyEndpoint: null,
-      cacheKey: 'wss://my-host/session',
-    });
+    expect(useSkuldChat).toHaveBeenCalledWith(
+      'wss://my-host/session',
+      expect.objectContaining({
+        historyEndpoint: null,
+        cacheKey: 'wss://my-host/session',
+        hydrateFromCache: false,
+        persistCache: false,
+        reconcileConversationHistory: false,
+        queueOutgoingWhileDisconnected: false,
+      })
+    );
   });
 
   it('passes null url to useSkuldChat', () => {
     mockSkuldChat();
     render(<SessionChat url={null} />);
 
-    expect(useSkuldChat).toHaveBeenCalledWith(null, {
-      historyEndpoint: null,
-      cacheKey: null,
-    });
+    expect(useSkuldChat).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({
+        historyEndpoint: null,
+        cacheKey: null,
+        hydrateFromCache: true,
+        persistCache: true,
+        reconcileConversationHistory: true,
+        queueOutgoingWhileDisconnected: true,
+      })
+    );
   });
 
   it('passes history endpoint through to useSkuldChat', () => {
@@ -246,10 +260,17 @@ describe('SessionChat', () => {
       />
     );
 
-    expect(useSkuldChat).toHaveBeenCalledWith(null, {
-      historyEndpoint: '/api/v1/volundr/sessions/test-session/conversation',
-      cacheKey: '/api/v1/volundr/sessions/test-session/conversation',
-    });
+    expect(useSkuldChat).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({
+        historyEndpoint: '/api/v1/volundr/sessions/test-session/conversation',
+        cacheKey: '/api/v1/volundr/sessions/test-session/conversation',
+        hydrateFromCache: true,
+        persistCache: true,
+        reconcileConversationHistory: true,
+        queueOutgoingWhileDisconnected: true,
+      })
+    );
   });
 
   it('renders the chat input', () => {

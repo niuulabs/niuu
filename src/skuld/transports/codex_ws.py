@@ -94,7 +94,6 @@ class CodexWebSocketTransport(CLITransport):
         self._last_usage: dict | None = None
         self._alive = False
         self._block_index: int = 0
-
         # Pending RPC response futures keyed by request id.
         self._pending: dict[int, asyncio.Future] = {}
         # Pending approval RPC ids keyed by string request_id.
@@ -755,6 +754,54 @@ class CodexWebSocketTransport(CLITransport):
                 )
             return
 
+        if subtype == "steer":
+            content = str(kwargs.get("content") or "").strip()
+            if content and self._thread_id and self._current_turn_id:
+                logger.info(
+                    "Codex steer requested (thread=%s turn=%s)",
+                    self._thread_id,
+                    self._current_turn_id,
+                )
+                await self._send_rpc(
+                    "turn/steer",
+                    {
+                        "threadId": self._thread_id,
+                        "expectedTurnId": self._current_turn_id,
+                        "input": [{"type": "text", "text": content}],
+                    },
+                )
+            return
+
+        if subtype == "redirect":
+            content = str(kwargs.get("content") or "").strip()
+            if not content:
+                return
+            if not self._thread_id or not self._current_turn_id:
+                await self.send_message(content)
+                return
+            logger.info(
+                "Codex redirect requested as live steer (thread=%s turn=%s)",
+                self._thread_id,
+                self._current_turn_id,
+            )
+            await self._send_rpc(
+                "turn/steer",
+                {
+                    "threadId": self._thread_id,
+                    "expectedTurnId": self._current_turn_id,
+                    "input": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Change of plans. Stop what you are doing and follow this "
+                                f"instead:\n{content}"
+                            ),
+                        }
+                    ],
+                },
+            )
+            return
+
         if subtype == "set_model":
             model = kwargs.get("model")
             if model and isinstance(model, str):
@@ -776,11 +823,17 @@ class CodexWebSocketTransport(CLITransport):
         return self._alive
 
     @property
+    def is_turn_active(self) -> bool:
+        return bool(self._thread_id and self._current_turn_id)
+
+    @property
     def capabilities(self) -> TransportCapabilities:
         return TransportCapabilities(
             cli_websocket=False,  # We don't expose a /ws/cli endpoint
             session_resume=True,
             interrupt=True,
+            steer=True,
+            steering_mode="live",
             set_model=True,
             set_thinking_tokens=False,
             set_permission_mode=False,

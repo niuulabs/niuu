@@ -83,7 +83,14 @@ export function SessionChat({
     clearMessages,
     availableCommands,
     capabilities,
-  } = useSkuldChat(url, { historyEndpoint, cacheKey: historyEndpoint ?? url });
+  } = useSkuldChat(url, {
+    historyEndpoint,
+    cacheKey: historyEndpoint ?? url,
+    hydrateFromCache: !url,
+    persistCache: !url,
+    reconcileConversationHistory: !url,
+    queueOutgoingWhileDisconnected: !url,
+  });
 
   const {
     isRoomMode,
@@ -475,7 +482,7 @@ export function SessionChat({
               type="button"
               className={cn(styles.controlBtn, showInternal && styles.controlBtnActive)}
               onClick={toggleInternal}
-              title={showInternal ? 'Hide tool calls and results' : 'Show tool calls and results'}
+              title={showInternal ? 'Hide internal messages' : 'Show internal messages'}
               aria-pressed={showInternal}
               data-testid="internal-toggle"
             >

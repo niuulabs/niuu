@@ -20,6 +20,8 @@ interface UseWebSocketOptions {
   reconnectBaseDelay?: number;
   /** Max delay in ms for exponential backoff (default: 30000) */
   reconnectMaxDelay?: number;
+  /** Whether to queue outbound messages while disconnected (default: true) */
+  queueWhenDisconnected?: boolean;
 }
 
 interface UseWebSocketReturn {
@@ -51,12 +53,14 @@ export function useWebSocket(
     maxReconnectAttempts = 10,
     reconnectBaseDelay = 1000,
     reconnectMaxDelay = 30000,
+    queueWhenDisconnected = true,
   } = options;
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const intentionalCloseRef = useRef(false);
+  const pendingMessagesRef = useRef<string[]>([]);
 
   // Keep latest callbacks in refs so we don't re-connect on callback changes
   const onOpenRef = useRef(onOpen);
@@ -85,6 +89,7 @@ export function useWebSocket(
   const maxReconnectAttemptsRef = useRef(maxReconnectAttempts);
   const reconnectBaseDelayRef = useRef(reconnectBaseDelay);
   const reconnectMaxDelayRef = useRef(reconnectMaxDelay);
+  const queueWhenDisconnectedRef = useRef(queueWhenDisconnected);
 
   useEffect(() => {
     reconnectRef.current = reconnect;
@@ -102,10 +107,26 @@ export function useWebSocket(
     reconnectMaxDelayRef.current = reconnectMaxDelay;
   }, [reconnectMaxDelay]);
 
+  useEffect(() => {
+    queueWhenDisconnectedRef.current = queueWhenDisconnected;
+  }, [queueWhenDisconnected]);
+
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const flushPendingMessages = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || pendingMessagesRef.current.length === 0) {
+      return;
+    }
+
+    const pending = pendingMessagesRef.current.splice(0, pendingMessagesRef.current.length);
+    for (const message of pending) {
+      ws.send(message);
     }
   }, []);
 
@@ -142,6 +163,7 @@ export function useWebSocket(
 
       ws.onopen = () => {
         reconnectAttemptsRef.current = 0;
+        flushPendingMessages();
         onOpenRef.current?.();
       };
 
@@ -189,27 +211,49 @@ export function useWebSocket(
     return () => {
       intentionalCloseRef.current = true;
       clearReconnectTimer();
+      pendingMessagesRef.current = [];
       wsRef.current?.close();
       wsRef.current = null;
       reconnectAttemptsRef.current = 0;
     };
-  }, [url, clearReconnectTimer]);
+  }, [url, clearReconnectTimer, flushPendingMessages]);
 
-  const send = useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(data);
-    }
-  }, []);
+  const enqueueOrSend = useCallback(
+    (message: string) => {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(message);
+        return;
+      }
+      if (!url || intentionalCloseRef.current) {
+        return;
+      }
+      if (!queueWhenDisconnectedRef.current) {
+        return;
+      }
+      pendingMessagesRef.current.push(message);
+    },
+    [url]
+  );
 
-  const sendJson = useCallback((data: unknown) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(data));
-    }
-  }, []);
+  const send = useCallback(
+    (data: string) => {
+      enqueueOrSend(data);
+    },
+    [enqueueOrSend]
+  );
+
+  const sendJson = useCallback(
+    (data: unknown) => {
+      enqueueOrSend(JSON.stringify(data));
+    },
+    [enqueueOrSend]
+  );
 
   const close = useCallback(() => {
     intentionalCloseRef.current = true;
     clearReconnectTimer();
+    pendingMessagesRef.current = [];
     wsRef.current?.close();
   }, [clearReconnectTimer]);
 

@@ -408,6 +408,7 @@ class DriveLoop:
         # (priority, counter, AgentTask)
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=config.task_queue_max)
         self._active_tasks: dict[str, asyncio.Task] = {}
+        self._active_agents: dict[str, object] = {}
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
         self._journal_path = Path(config.queue_journal_path).expanduser()
         self._source_id = "drive_loop"
@@ -616,6 +617,9 @@ class DriveLoop:
 
     async def _handle_directed_message(self, content: str) -> None:
         """Enqueue a directed message from the browser as an agent task."""
+        if await self._try_steer_active_agent(content):
+            return
+
         import time
 
         task_id = f"task_{int(time.time() * 1000):x}_{self._next_counter()}"
@@ -631,6 +635,32 @@ class DriveLoop:
         )
         logger.info("drive_loop: directed message enqueued as task %s", task_id)
         await self.enqueue(task)
+
+    async def _try_steer_active_agent(self, content: str) -> bool:
+        """Attempt to steer the current active agent instead of queueing work."""
+        if not content.strip():
+            return False
+
+        steerable = [
+            agent
+            for agent in self._active_agents.values()
+            if getattr(agent, "supports_steering", False) and getattr(agent, "steering_mode", "")
+        ]
+        if len(steerable) != 1:
+            return False
+
+        agent = steerable[0]
+        steer = getattr(agent, "steer", None)
+        if steer is None:
+            return False
+        try:
+            steered = await steer(content)
+        except Exception:
+            logger.warning("drive_loop: active agent steering failed; falling back to enqueue")
+            return False
+        if steered:
+            logger.info("drive_loop: directed message applied as live steering")
+        return bool(steered)
 
     # ------------------------------------------------------------------
     # Main run loop
@@ -777,6 +807,7 @@ class DriveLoop:
                 channel = SilentChannel()
         agent = self._agent_factory(channel, task.task_id, task.persona, task.triggered_by)
         prompt = build_initiative_prompt(task)
+        self._active_agents[task.task_id] = agent
 
         logger.info(
             "drive_loop: executing task %s (%r) triggered_by=%r",
@@ -812,106 +843,109 @@ class DriveLoop:
             )
         )
 
-        success = False
         try:
-            turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
-            success = True
-            self._record_task_cost(task, turn_result)
-            await self._maybe_publish_budget_warning(task)
-            self._save_task_output(task, capture_channel or channel)
-            response_text = capture_channel.response_text if capture_channel else ""
-            if response_text:
-                logger.info(
-                    "drive_loop: task %s output: %s",
-                    task.task_id,
-                    response_text[:500],
+            success = False
+            try:
+                turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
+                success = True
+                self._record_task_cost(task, turn_result)
+                await self._maybe_publish_budget_warning(task)
+                self._save_task_output(task, capture_channel or channel)
+                response_text = capture_channel.response_text if capture_channel else ""
+                if response_text:
+                    logger.info(
+                        "drive_loop: task %s output: %s",
+                        task.task_id,
+                        response_text[:500],
+                    )
+            except asyncio.CancelledError:
+                logger.info("drive_loop: task %s cancelled mid-turn", task.task_id)
+                self._result_store.set_status(task.task_id, "cancelled")
+                await self._event_publisher.publish(
+                    RavnEvent(
+                        type=RavnEventType.TASK_COMPLETE,
+                        source=self._source_id,
+                        payload={"task_id": task.task_id, "success": False},
+                        timestamp=datetime.now(UTC),
+                        urgency=0.7,
+                        correlation_id=task.task_id,
+                        session_id=task.session_id,
+                        task_id=task.task_id,
+                    )
                 )
-        except asyncio.CancelledError:
-            logger.info("drive_loop: task %s cancelled mid-turn", task.task_id)
-            self._result_store.set_status(task.task_id, "cancelled")
+                emit_fn = getattr(agent, "emit_session_ended", None)
+                if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
+                    try:
+                        await emit_fn("interrupted")
+                    except Exception:
+                        logger.warning("emit_session_ended failed; continuing", exc_info=True)
+                await self._emit_sleipnir_task_completed(task, "interrupted")
+                if task.triggered_by and task.triggered_by.startswith("thread:"):
+                    thread_path = task.triggered_by.removeprefix("thread:")
+                    await self._finalise_thread(thread_path, False)
+                return
+            except Exception as exc:
+                logger.error("drive_loop: task %s failed: %s", task.task_id, exc)
+                self._result_store.set_status(task.task_id, "failed")
+                await channel.emit(
+                    RavnEvent.error(
+                        source=self._source_id,
+                        message=self._format_task_error(task, exc),
+                        correlation_id=task.task_id,
+                        session_id=task.session_id or task.task_id,
+                        task_id=task.task_id,
+                    )
+                )
+
+            outcome = "success" if success else "error"
+            emit_fn = getattr(agent, "emit_session_ended", None)
+            if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
+                try:
+                    await emit_fn(outcome)
+                except Exception:
+                    logger.warning("emit_session_ended failed; continuing", exc_info=True)
+            await self._emit_sleipnir_task_completed(task, outcome)
+
+            # Publish outcome event to mesh for other agents to consume
+            response_text = capture_channel.response_text if capture_channel else ""
+            await self._emit_mesh_outcome_event(task, response_text, success)
+
             await self._event_publisher.publish(
                 RavnEvent(
                     type=RavnEventType.TASK_COMPLETE,
                     source=self._source_id,
-                    payload={"task_id": task.task_id, "success": False},
+                    payload={"task_id": task.task_id, "success": success},
                     timestamp=datetime.now(UTC),
-                    urgency=0.7,
+                    urgency=0.2 if success else 0.7,
                     correlation_id=task.task_id,
                     session_id=task.session_id,
                     task_id=task.task_id,
                 )
             )
-            emit_fn = getattr(agent, "emit_session_ended", None)
-            if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
-                try:
-                    await emit_fn("interrupted")
-                except Exception:
-                    logger.warning("emit_session_ended failed; continuing", exc_info=True)
-            await self._emit_sleipnir_task_completed(task, "interrupted")
-            if task.triggered_by and task.triggered_by.startswith("thread:"):
-                thread_path = task.triggered_by.removeprefix("thread:")
-                await self._finalise_thread(thread_path, False)
-            return
-        except Exception as exc:
-            logger.error("drive_loop: task %s failed: %s", task.task_id, exc)
-            self._result_store.set_status(task.task_id, "failed")
             await channel.emit(
-                RavnEvent.error(
+                RavnEvent.task_complete(
                     source=self._source_id,
-                    message=self._format_task_error(task, exc),
+                    success=success,
                     correlation_id=task.task_id,
                     session_id=task.session_id or task.task_id,
                     task_id=task.task_id,
                 )
             )
 
-        outcome = "success" if success else "error"
-        emit_fn = getattr(agent, "emit_session_ended", None)
-        if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
-            try:
-                await emit_fn(outcome)
-            except Exception:
-                logger.warning("emit_session_ended failed; continuing", exc_info=True)
-        await self._emit_sleipnir_task_completed(task, outcome)
+            if capture_channel and capture_channel.surface_triggered:
+                await self._re_deliver_surface(task, capture_channel.response_text)
+            elif (
+                capture_channel is None
+                and getattr(channel, "surface_triggered", False)
+                and hasattr(channel, "response_text")
+            ):
+                await self._re_deliver_surface(task, channel.response_text)
 
-        # Publish outcome event to mesh for other agents to consume
-        response_text = capture_channel.response_text if capture_channel else ""
-        await self._emit_mesh_outcome_event(task, response_text, success)
-
-        await self._event_publisher.publish(
-            RavnEvent(
-                type=RavnEventType.TASK_COMPLETE,
-                source=self._source_id,
-                payload={"task_id": task.task_id, "success": success},
-                timestamp=datetime.now(UTC),
-                urgency=0.2 if success else 0.7,
-                correlation_id=task.task_id,
-                session_id=task.session_id,
-                task_id=task.task_id,
-            )
-        )
-        await channel.emit(
-            RavnEvent.task_complete(
-                source=self._source_id,
-                success=success,
-                correlation_id=task.task_id,
-                session_id=task.session_id or task.task_id,
-                task_id=task.task_id,
-            )
-        )
-
-        if capture_channel and capture_channel.surface_triggered:
-            await self._re_deliver_surface(task, capture_channel.response_text)
-        elif (
-            capture_channel is None
-            and getattr(channel, "surface_triggered", False)
-            and hasattr(channel, "response_text")
-        ):
-            await self._re_deliver_surface(task, channel.response_text)
-
-        if task.triggered_by and task.triggered_by.startswith("thread:"):
-            thread_path = task.triggered_by.removeprefix("thread:")
-            await self._finalise_thread(thread_path, success)
+            if task.triggered_by and task.triggered_by.startswith("thread:"):
+                thread_path = task.triggered_by.removeprefix("thread:")
+                await self._finalise_thread(thread_path, success)
+        finally:
+            self._active_agents.pop(task.task_id, None)
 
     def _format_task_error(self, task: AgentTask, exc: Exception) -> str:
         """Render a user-visible task failure message for live room chat."""

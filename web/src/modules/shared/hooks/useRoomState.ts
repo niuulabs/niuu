@@ -74,7 +74,7 @@ export function useRoomState(
   const filteredMessages = useMemo<readonly SkuldChatMessage[]>(() => {
     const out: SkuldChatMessage[] = [];
     for (const msg of messages) {
-      if (isRoomMode && !showInternal && msg.visibility === 'internal') continue;
+      if (!showInternal && msg.visibility === 'internal') continue;
       if (isRoomMode && activeFilter !== FILTER_ALL && msg.participantId !== activeFilter) {
         continue;
       }

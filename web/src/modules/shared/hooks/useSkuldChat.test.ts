@@ -70,11 +70,11 @@ function setupMock() {
 
 // ── Helpers to build Claude CLI stream-json events ──────────
 
-function assistantEvent(model = 'claude-sonnet-4-5-20250514', inputTokens = 100) {
+function assistantEvent(model = 'claude-sonnet-4-5-20250514', inputTokens = 100, id = 'msg_test') {
   return JSON.stringify({
     type: 'assistant',
     message: {
-      id: 'msg_test',
+      id,
       role: 'assistant',
       model,
       content: [],
@@ -458,6 +458,7 @@ describe('useSkuldChat', () => {
     expect(result.current.messages[0].content).toBe(
       'Session initialized · claude-sonnet-4-5-20250929 · 5 tools'
     );
+    expect(result.current.messages[0].visibility).toBe('internal');
     expect(result.current.messages[0].metadata?.messageType).toBe('system');
     expect(result.current.messages[0].metadata?.systemSubtype).toBe('init');
   });
@@ -1765,6 +1766,57 @@ describe('useSkuldChat', () => {
       vi.unstubAllGlobals();
     });
 
+    it('does not merge cached local user messages into a stopped-session transcript', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            turns: [
+              {
+                id: 'turn-1',
+                role: 'assistant',
+                content: 'Saved transcript answer',
+                parts: [],
+                created_at: '2026-05-15T12:00:00Z',
+                metadata: {},
+              },
+            ],
+            is_active: false,
+            last_activity: '',
+          }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { storeMock } = setupMock();
+      storeMock.getMessages.mockReturnValue([
+        {
+          id: 'cached-user',
+          role: 'user',
+          content: 'Locally echoed prompt',
+          createdAt: new Date('2026-05-15T12:05:00Z'),
+          status: 'complete',
+        },
+      ]);
+
+      const { result } = renderHook(() =>
+        useSkuldChat(null, {
+          historyEndpoint: '/api/v1/volundr/sessions/test-session/conversation',
+          cacheKey: '/api/v1/volundr/sessions/test-session/conversation',
+          hydrateFromCache: true,
+          persistCache: true,
+        })
+      );
+
+      await vi.waitFor(() => {
+        expect(result.current.historyLoaded).toBe(true);
+      });
+
+      expect(result.current.messages).toHaveLength(1);
+      expect(result.current.messages[0].content).toBe('Saved transcript answer');
+
+      vi.unstubAllGlobals();
+    });
+
     it('falls back to sessionStorage on fetch failure', async () => {
       const fetchMock = vi.fn().mockRejectedValue(new Error('Network error'));
       vi.stubGlobal('fetch', fetchMock);
@@ -1789,6 +1841,35 @@ describe('useSkuldChat', () => {
       // Should have used cached messages
       expect(result.current.messages).toHaveLength(1);
       expect(result.current.messages[0].content).toBe('Cached message');
+
+      vi.unstubAllGlobals();
+    });
+
+    it('does not fall back to sessionStorage when cache hydration is disabled', async () => {
+      const fetchMock = vi.fn().mockRejectedValue(new Error('Network error'));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { storeMock } = setupMock();
+      storeMock.getMessages.mockReturnValue([
+        {
+          id: 'cached-disabled-1',
+          role: 'assistant',
+          content: 'Should stay hidden',
+          createdAt: new Date(),
+          status: 'complete',
+        },
+      ]);
+
+      const { result } = renderHook(() =>
+        useSkuldChat('wss://test-host/session', { hydrateFromCache: false })
+      );
+
+      await vi.waitFor(() => {
+        expect(result.current.historyLoaded).toBe(true);
+      });
+
+      expect(result.current.messages).toEqual([]);
+      expect(storeMock.getMessages).not.toHaveBeenCalled();
 
       vi.unstubAllGlobals();
     });
@@ -2003,14 +2084,14 @@ describe('useSkuldChat', () => {
     act(() => handlers.onOpen?.());
 
     // First assistant turn
-    act(() => handlers.onMessage?.(assistantEvent('claude-sonnet-4-5-20250514', 100)));
+    act(() => handlers.onMessage?.(assistantEvent('claude-sonnet-4-5-20250514', 100, 'msg_1')));
     act(() => handlers.onMessage?.(contentBlockDelta('First response')));
 
     expect(result.current.messages).toHaveLength(1);
     expect(result.current.messages[0].status).toBe('running');
 
     // Second assistant event arrives without a result event for the first
-    act(() => handlers.onMessage?.(assistantEvent('claude-sonnet-4-5-20250514', 200)));
+    act(() => handlers.onMessage?.(assistantEvent('claude-sonnet-4-5-20250514', 200, 'msg_2')));
 
     // First message should be finalized
     expect(result.current.messages[0].status).toBe('complete');
@@ -2019,6 +2100,35 @@ describe('useSkuldChat', () => {
     // Second message should be running
     expect(result.current.messages).toHaveLength(2);
     expect(result.current.messages[1].status).toBe('running');
+  });
+
+  it('merges a same-id assistant snapshot into the active streaming message', () => {
+    const { handlers } = setupMock();
+    const { result } = renderHook(() => useSkuldChat('wss://test/session'));
+
+    act(() => handlers.onOpen?.());
+    act(() => handlers.onMessage?.(assistantEvent('claude-sonnet-4-5-20250514', 100, 'msg_same')));
+    act(() => handlers.onMessage?.(contentBlockStart(0, 'text')));
+    act(() => handlers.onMessage?.(contentBlockDelta('Streaming text')));
+
+    act(() =>
+      handlers.onMessage?.(
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            id: 'msg_same',
+            role: 'assistant',
+            model: 'claude-sonnet-4-5-20250514',
+            content: [{ type: 'text', text: 'Streaming text' }],
+            usage: { input_tokens: 100, output_tokens: 12 },
+          },
+        })
+      )
+    );
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0].status).toBe('running');
+    expect(result.current.messages[0].content).toBe('Streaming text');
   });
 
   it('handles result event with is_error and result text', () => {
@@ -2097,6 +2207,82 @@ describe('useSkuldChat', () => {
     act(() => handlers.onMessage?.(JSON.stringify({ type: 'user_confirmed' })));
 
     expect(result.current.messages).toEqual([]);
+  });
+
+  it('reconciles conversation_history events into visible messages', () => {
+    const { handlers } = setupMock();
+    const { result } = renderHook(() => useSkuldChat('wss://test/session'));
+
+    act(() => handlers.onOpen?.());
+
+    act(() =>
+      handlers.onMessage?.(
+        JSON.stringify({
+          type: 'conversation_history',
+          turns: [
+            {
+              id: 'turn-1',
+              role: 'user',
+              content: 'Start the search',
+              parts: [],
+              created_at: '2026-05-16T23:00:00.000Z',
+              metadata: {},
+            },
+            {
+              id: 'turn-2',
+              role: 'assistant',
+              content: 'Searching now',
+              parts: [],
+              created_at: '2026-05-16T23:00:01.000Z',
+              metadata: {},
+            },
+          ],
+        })
+      )
+    );
+
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[0].content).toBe('Start the search');
+    expect(result.current.messages[1].content).toBe('Searching now');
+  });
+
+  it('ignores conversation_history events when reconciliation is disabled', () => {
+    const { handlers } = setupMock();
+    const { result } = renderHook(() =>
+      useSkuldChat('wss://test/session', { reconcileConversationHistory: false })
+    );
+
+    act(() => handlers.onOpen?.());
+    act(() => result.current.sendMessage('Newest prompt'));
+
+    act(() =>
+      handlers.onMessage?.(
+        JSON.stringify({
+          type: 'conversation_history',
+          turns: [
+            {
+              id: 'turn-old-1',
+              role: 'user',
+              content: 'Old prompt',
+              parts: [],
+              created_at: '2026-05-16T22:00:00.000Z',
+              metadata: {},
+            },
+            {
+              id: 'turn-old-2',
+              role: 'assistant',
+              content: 'Old answer',
+              parts: [],
+              created_at: '2026-05-16T22:00:01.000Z',
+              metadata: {},
+            },
+          ],
+        })
+      )
+    );
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0].content).toBe('Newest prompt');
   });
 
   // ── Capabilities ────────────────────────────────────────────
