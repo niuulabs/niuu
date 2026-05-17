@@ -569,6 +569,17 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_dispatch_explicit_steer_active_turn_message(self, test_broker):
+        await test_broker._dispatch_browser_message(
+            {"type": "steer_active_turn", "content": "abort the search"}
+        )
+
+        test_broker._transport.send_control.assert_awaited_once_with(
+            "steer",
+            content="abort the search",
+        )
+
+    @pytest.mark.asyncio
     async def test_dispatch_user_message_empty_ignored(self, test_broker):
         await test_broker._dispatch_browser_message({"content": ""})
         test_broker._transport.send_message.assert_not_called()
@@ -619,6 +630,36 @@ class TestDispatchBrowserMessage:
                 "behavior": "allow",
                 "updatedInput": {"command": "ls -la"},
             },
+        )
+
+    @pytest.mark.asyncio
+    async def test_safe_transport_control_broadcasts_background_errors(self, test_broker):
+        bad_transport = AsyncMock()
+        bad_transport.send_control.side_effect = RuntimeError("boom")
+        test_broker._channels = AsyncMock()
+
+        await test_broker._safe_transport_control(
+            bad_transport,
+            "steer",
+            content="reroute the task",
+        )
+
+        test_broker._channels.broadcast.assert_awaited_once()
+        payload = test_broker._channels.broadcast.await_args.args[0]
+        assert payload["type"] == "error"
+        assert "boom" in payload["content"]
+
+    @pytest.mark.asyncio
+    async def test_safe_transport_control_swallows_broadcast_failures(self, test_broker):
+        bad_transport = AsyncMock()
+        bad_transport.send_control.side_effect = RuntimeError("boom")
+        test_broker._channels = AsyncMock()
+        test_broker._channels.broadcast.side_effect = RuntimeError("offline")
+
+        await test_broker._safe_transport_control(
+            bad_transport,
+            "steer",
+            content="reroute the task",
         )
 
     @pytest.mark.asyncio

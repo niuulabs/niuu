@@ -863,6 +863,17 @@ class TestControl:
             "Write BETA to /tmp/proof.txt"
         )
 
+    @pytest.mark.asyncio
+    async def test_redirect_falls_back_to_send_message_without_active_turn(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t.send_message = AsyncMock()  # type: ignore[method-assign]
+
+        await t.send_control("redirect", content="Write BETA to /tmp/proof.txt")
+        await t.send_control("redirect", content="")
+
+        t.send_message.assert_awaited_once_with("Write BETA to /tmp/proof.txt")
+        assert t.is_turn_active is False
+
 
 # ---------------------------------------------------------------------------
 # Approval / permission requests
