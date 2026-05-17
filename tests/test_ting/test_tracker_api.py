@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
 from ting.api.tracker import (
     create_canonical_tracker_router,
     create_tracker_router,
@@ -518,6 +519,23 @@ def _build_test_client(
     return TestClient(app)
 
 
+class _FailingTracker(MockTracker):
+    async def list_projects(self) -> list[TrackerProject]:
+        raise RuntimeError("tracker down")
+
+
+class _StubInstanceService:
+    def __init__(self, instance: RegisteredInstance | None) -> None:
+        self.instance = instance
+
+    async def get_visible(
+        self,
+        principal: Principal,
+        instance_id: str,
+    ) -> RegisteredInstance | None:
+        return self.instance
+
+
 @pytest.fixture
 def client(mock_tracker: MockTracker) -> TestClient:
     return _build_test_client(mock_tracker)
@@ -545,6 +563,19 @@ class TestListProjects:
         assert canonical.status_code == 200
         assert canonical.json() == legacy.json()
         assert legacy.headers["X-Niuu-Canonical-Route"] == "/api/v1/tracker/projects"
+
+    def test_ignores_tracker_failures(self, mock_tracker: MockTracker):
+        app = FastAPI()
+        app.include_router(create_tracker_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [_FailingTracker(), mock_tracker]
+        app.state.saga_repo = MockSagaRepo()
+        app.state.settings = MagicMock(auth=AuthConfig(allow_anonymous_dev=True))
+        client = TestClient(app)
+
+        response = client.get("/api/v1/ting/tracker/projects")
+
+        assert response.status_code == 200
+        assert {project["id"] for project in response.json()} == {"proj-1", "proj-2"}
 
 
 class TestGetProject:
@@ -763,6 +794,90 @@ class TestImportProject:
         assert saved.workflow_version == "1.2.3"
         assert saved.workflow_snapshot is not None
         assert saved.workflow_snapshot["name"] == "Security Review Flow"
+
+    def test_rejects_invalid_workflow_id(self, mock_tracker: MockTracker):
+        client = _build_test_client(mock_tracker, workflow_repo=InMemoryWorkflowRepository())
+
+        response = client.post(
+            "/api/v1/ting/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "workflow_id": "not-a-uuid",
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "Invalid workflow_id: 'not-a-uuid'"
+
+    def test_requires_workflow_repo_when_workflow_id_is_provided(self, mock_tracker: MockTracker):
+        client = _build_test_client(mock_tracker)
+
+        response = client.post(
+            "/api/v1/ting/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "workflow_id": str(uuid4()),
+            },
+        )
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Workflow repository not configured"
+
+    def test_requires_instance_registry_when_instance_id_is_provided(
+        self,
+        mock_tracker: MockTracker,
+    ):
+        client = _build_test_client(mock_tracker)
+
+        response = client.post(
+            "/api/v1/ting/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "instance_id": "volundr-1",
+            },
+        )
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Instance registry not configured"
+
+    def test_rejects_missing_or_disabled_instance_targets(self, mock_tracker: MockTracker):
+        client = _build_test_client(mock_tracker)
+        client.app.state.instance_service = _StubInstanceService(
+            RegisteredInstance(
+                id="ting-1",
+                kind=InstanceKind.TING,
+                slug="ting-1",
+                name="Wrong Kind",
+                base_url="http://ting:8000",
+                visibility=InstanceVisibility.SYSTEM,
+                owner_id=None,
+                tenant_id=None,
+                enabled=False,
+                is_default=False,
+                config={},
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )
+
+        response = client.post(
+            "/api/v1/ting/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "instance_id": "ting-1",
+            },
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Target not found: ting-1"
 
     def test_start_immediately_requires_workflow(self, client: TestClient):
         response = client.post(

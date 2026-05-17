@@ -11,7 +11,12 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
-from niuu.domain.models import Principal
+from niuu.domain.models import (
+    InstanceKind,
+    InstanceVisibility,
+    Principal,
+    RegisteredInstance,
+)
 from ting.api.phases import create_saga_phases_router
 from ting.api.sagas import (
     _build_phase_summary,
@@ -932,6 +937,186 @@ class TestCommitSaga:
 
         assert response.status_code == 201
         assert "Failed to kick off initial dispatch" in response.json()["warnings"][0]
+
+    def test_rejects_duplicate_slug(self, mock_tracker: MockTracker) -> None:
+        repo = MockSagaRepo()
+        repo.sagas.append(
+            Saga(
+                id=uuid4(),
+                tracker_id="existing",
+                tracker_type="mock",
+                slug="proof-saga",
+                name="Existing",
+                repos=["org/repo"],
+                feature_branch="feat/proof-saga",
+                status=SagaStatus.ACTIVE,
+                confidence=0.0,
+                created_at=datetime.now(UTC),
+                base_branch="dev",
+                owner_id="dev-user",
+            )
+        )
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.state.settings = _dev_settings()
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/v1/ting/sagas/commit",
+            json={
+                "name": "Proof Saga",
+                "slug": "proof-saga",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "phases": [{"name": "Phase 1", "runs": [{"name": "Run 1"}]}],
+            },
+        )
+
+        assert response.status_code == 409
+        assert "already exists" in response.json()["detail"]
+
+    def test_rejects_empty_phases_and_missing_tracker(self) -> None:
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
+        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.state.settings = _dev_settings()
+        client = TestClient(app)
+        app.dependency_overrides[resolve_trackers] = lambda: [MockTracker()]
+
+        no_phases = client.post(
+            "/api/v1/ting/sagas/commit",
+            json={
+                "name": "Proof Saga",
+                "slug": "proof-saga",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "phases": [],
+            },
+        )
+        app.dependency_overrides[resolve_trackers] = lambda: []
+        no_tracker = client.post(
+            "/api/v1/ting/sagas/commit",
+            json={
+                "name": "Proof Saga",
+                "slug": "proof-saga-2",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "phases": [{"name": "Phase 1", "runs": [{"name": "Run 1"}]}],
+            },
+        )
+
+        assert no_phases.status_code == 422
+        assert no_phases.json()["detail"] == "At least one phase is required"
+        assert no_tracker.status_code == 503
+        assert no_tracker.json()["detail"] == "No tracker configured"
+
+    def test_returns_502_when_tracker_create_saga_fails(self, mock_tracker: MockTracker) -> None:
+        class FailingTracker(MockTracker):
+            async def create_saga(self, saga: Saga, *, description: str = "") -> str:
+                raise RuntimeError("tracker unavailable")
+
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [FailingTracker()]
+        app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
+        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.state.settings = _dev_settings()
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/v1/ting/sagas/commit",
+            json={
+                "name": "Proof Saga",
+                "slug": "proof-saga-fail",
+                "repos": ["org/repo"],
+                "base_branch": "dev",
+                "phases": [{"name": "Phase 1", "runs": [{"name": "Run 1"}]}],
+            },
+        )
+
+        assert response.status_code == 502
+        assert "Failed to create project in tracker" in response.json()["detail"]
+
+
+class TestAssignTarget:
+    class _StubInstanceService:
+        def __init__(self, instance: object | None) -> None:
+            self.instance = instance
+
+        async def get_visible(self, principal: Principal, instance_id: str) -> object | None:
+            return self.instance
+
+    def test_assigns_visible_target_and_returns_instance_name(
+        self,
+        mock_tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+    ) -> None:
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
+        app.state.settings = _dev_settings()
+        app.state.instance_service = self._StubInstanceService(
+            RegisteredInstance(
+                id="volundr-1",
+                kind=InstanceKind.VOLUNDR,
+                slug="volundr-1",
+                name="Volundr One",
+                base_url="http://volundr:8000",
+                visibility=InstanceVisibility.SYSTEM,
+                owner_id=None,
+                tenant_id=None,
+                enabled=True,
+                is_default=False,
+                config={},
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )
+        client = TestClient(app)
+        saga_id = str(saga_repo.sagas[0].id)
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_id}/target",
+            json={"instance_id": "volundr-1"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["instance_id"] == "volundr-1"
+        assert response.json()["instance_name"] == "Volundr One"
+
+    def test_assign_target_requires_registry_and_valid_instance(
+        self,
+        mock_tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+    ) -> None:
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
+        app.state.settings = _dev_settings()
+        client = TestClient(app)
+        saga_id = str(saga_repo.sagas[0].id)
+
+        missing_registry = client.put(
+            f"/api/v1/ting/sagas/{saga_id}/target",
+            json={"instance_id": "volundr-1"},
+        )
+
+        app.state.instance_service = self._StubInstanceService(None)
+        missing_target = client.put(
+            f"/api/v1/ting/sagas/{saga_id}/target",
+            json={"instance_id": "volundr-1"},
+        )
+
+        assert missing_registry.status_code == 503
+        assert missing_registry.json()["detail"] == "Instance registry not configured"
+        assert missing_target.status_code == 404
+        assert missing_target.json()["detail"] == "Target not found: volundr-1"
 
 
 class TestExtractStructure:

@@ -16,7 +16,11 @@ from niuu.domain.models import (
 )
 from niuu.ports.instances import InstanceRepository
 from tests.test_ting.conftest import StubCredentialStore, StubIntegrationRepo
-from ting.adapters.volundr_factory import DEFAULT_VOLUNDR_URL, VolundrAdapterFactory
+from ting.adapters.volundr_factory import (
+    DEFAULT_VOLUNDR_URL,
+    LocalVolundrAdapterFactory,
+    VolundrAdapterFactory,
+)
 from ting.adapters.volundr_http import VolundrHTTPAdapter
 
 # ---------------------------------------------------------------------------
@@ -100,6 +104,23 @@ class StubInstanceRepo(InstanceRepository):
 
     async def delete_instance(self, instance_id: str) -> None:
         self._instances = [item for item in self._instances if item.id != instance_id]
+
+
+class FailingInstanceRepo(InstanceRepository):
+    async def list_instances(
+        self,
+        kind: InstanceKind | None = None,
+    ) -> list[RegisteredInstance]:
+        raise RuntimeError("db unavailable")
+
+    async def get_instance(self, instance_id: str) -> RegisteredInstance | None:
+        return None
+
+    async def save_instance(self, instance: RegisteredInstance) -> RegisteredInstance:
+        return instance
+
+    async def delete_instance(self, instance_id: str) -> None:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -424,3 +445,113 @@ async def test_primary_for_principal_prefers_default_visible_instance() -> None:
 
     assert result is not None
     assert result.target_id == "system-1"
+
+
+@pytest.mark.asyncio
+async def test_local_factory_reuses_single_adapter_for_all_entrypoints() -> None:
+    factory = LocalVolundrAdapterFactory("http://local:8000")
+    principal = Principal(
+        user_id="owner-1",
+        email="owner-1@example.com",
+        tenant_id="tenant-a",
+        roles=[],
+    )
+
+    owner_adapters = await factory.for_owner("owner-1")
+    owner_primary = await factory.primary_for_owner("owner-1")
+    principal_adapters = await factory.for_principal(principal)
+    principal_primary = await factory.primary_for_principal(principal)
+
+    assert len(owner_adapters) == 1
+    assert owner_adapters[0] is owner_primary
+    assert principal_adapters[0] is owner_primary
+    assert principal_primary is owner_primary
+
+
+@pytest.mark.asyncio
+async def test_for_principal_skips_unavailable_or_invisible_registered_instances() -> None:
+    principal = Principal(
+        user_id="owner-1",
+        email="owner-1@example.com",
+        tenant_id="tenant-a",
+        roles=[],
+    )
+    factory = VolundrAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=[]),
+        credential_store=StubCredentialStore(),
+        instance_repo=StubInstanceRepo(
+            instances=[
+                _make_instance(
+                    instance_id="disabled",
+                    name="Disabled",
+                    base_url="http://disabled:8000",
+                    visibility=InstanceVisibility.SYSTEM,
+                ),
+                RegisteredInstance(
+                    id="custom",
+                    kind=InstanceKind.VOLUNDR,
+                    slug="custom",
+                    name="Custom",
+                    base_url="http://custom:8000",
+                    visibility="custom",  # type: ignore[arg-type]
+                    owner_id=None,
+                    tenant_id=None,
+                    enabled=True,
+                    is_default=False,
+                    config={},
+                    created_at=_NOW,
+                    updated_at=_NOW,
+                ),
+                _make_instance(
+                    instance_id="tenant-other",
+                    name="Tenant Other",
+                    base_url="http://other:8000",
+                    visibility=InstanceVisibility.TENANT,
+                    tenant_id="tenant-b",
+                ),
+            ]
+        ),
+        allow_unauthenticated=True,
+    )
+    factory._instance_repo = FailingInstanceRepo()
+    assert await factory.for_principal(principal) == []
+
+    factory._instance_repo = StubInstanceRepo(
+        instances=[
+            RegisteredInstance(
+                id="custom",
+                kind=InstanceKind.VOLUNDR,
+                slug="custom",
+                name="Custom",
+                base_url="http://custom:8000",
+                visibility="custom",  # type: ignore[arg-type]
+                owner_id=None,
+                tenant_id=None,
+                enabled=True,
+                is_default=False,
+                config={},
+                created_at=_NOW,
+                updated_at=_NOW,
+            ),
+            _make_instance(
+                instance_id="disabled",
+                name="Disabled",
+                base_url="http://disabled:8000",
+                visibility=InstanceVisibility.SYSTEM,
+            ),
+            _make_instance(
+                instance_id="tenant-visible",
+                name="Tenant Visible",
+                base_url="http://tenant:8000",
+                visibility=InstanceVisibility.TENANT,
+                tenant_id="tenant-a",
+            ),
+        ]
+    )
+    factory._instance_repo._instances[1] = RegisteredInstance(
+        **{**factory._instance_repo._instances[1].__dict__, "enabled": False}
+    )
+
+    result = await factory.for_principal(principal)
+
+    assert [adapter.target_id for adapter in result] == ["tenant-visible"]
