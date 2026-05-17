@@ -30,9 +30,7 @@ DEFINITIONS = {
         defaults={
             "broker": {
                 "cliType": "claude",
-                "transportAdapter": (
-                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-                ),
+                "transportAdapter": "skuld.transports.sdk.SDKTransport",
             },
         },
     ),

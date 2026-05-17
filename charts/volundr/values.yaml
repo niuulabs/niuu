@@ -829,7 +829,8 @@ sessionDefinitions:
       broker:
         # -- AI CLI backend: "claude" (Claude Code)
         cliType: claude
-        # -- Transport mode for the Claude SDK runtime
+        # -- Claude Agent SDK transport keeps a live controllable session
+        # for interrupts, model changes, and steering redirects.
         transport: sdk
         # -- Fully-qualified transport adapter class path
         transportAdapter: "skuld.transports.sdk.SDKTransport"

@@ -1159,6 +1159,13 @@ class TestSdkWebSocketTransport:
         # Should not raise
         await t.send_control("interrupt")
 
+    def test_base_transport_reports_turn_inactive(self):
+        """Base CLITransport.is_turn_active defaults to False."""
+        from skuld.transports import SubprocessTransport
+
+        t = SubprocessTransport("/tmp")
+        assert t.is_turn_active is False
+
     # --- Phase 4: Agent Teams ---
 
     def test_init_agent_teams_default(self, tmp_path):

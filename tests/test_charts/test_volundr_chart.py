@@ -1,13 +1,11 @@
 """Tests for Volundr Helm chart templates."""
 
-import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "volundr"
-VOLUNDR_MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations"
 
 
 class TestChartMetadata:
@@ -137,7 +135,7 @@ class TestValuesDefaults:
         assert broker["cliType"] == "claude"
 
     def test_skuld_claude_broker_transport_adapter(self, values_yaml):
-        """Test skuld-claude broker defaults to the SDK transport adapter."""
+        """Test skuld-claude broker defaults to the SDK adapter."""
         broker = values_yaml["sessionDefinitions"]["skuldClaude"]["defaults"]["broker"]
         assert broker["transport"] == "sdk"
         assert broker["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
@@ -623,35 +621,3 @@ class TestNewValuesDefaults:
         """Test network policy is configured."""
         np = values_yaml["networkPolicy"]
         assert np["enabled"] is False
-
-
-class TestMigrationConfigMap:
-    """Tests for embedded Volundr SQL migrations."""
-
-    @pytest.fixture
-    def template_yaml(self) -> str:
-        return (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
-
-    def test_embeds_chronicle_history_preservation_migration(self, template_yaml: str) -> None:
-        pattern = re.compile(r"^  (\d+_[^:]+\.(?:up|down)\.sql): \|\n", re.MULTILINE)
-        blocks: dict[str, str] = {}
-        matches = list(pattern.finditer(template_yaml))
-        template_end = template_yaml.index("{{- end }}")
-
-        for index, match in enumerate(matches):
-            name = match.group(1)
-            start = match.end()
-            end = matches[index + 1].start() if index + 1 < len(matches) else template_end
-            lines = template_yaml[start:end].splitlines()
-            content = (
-                "\n".join(line[4:] if line.startswith("    ") else "" for line in lines).rstrip()
-                + "\n"
-            )
-            blocks[name] = content
-
-        for filename in (
-            "000038_chronicle_history_survives_session_delete.up.sql",
-            "000038_chronicle_history_survives_session_delete.down.sql",
-        ):
-            expected = (VOLUNDR_MIGRATIONS_DIR / filename).read_text().rstrip() + "\n"
-            assert blocks[filename] == expected

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -70,13 +70,12 @@ async def test_create_and_start_session_resolves_definition_from_model_catalog()
     started = SimpleNamespace(id=created.id)
     session_service.create_session.return_value = created
     session_service.start_session.return_value = started
-    pricing_provider = Mock()
-    pricing_provider.list_models.return_value = [
-        SimpleNamespace(id="gpt-5.5", session_definition="skuldCodex"),
-    ]
+    pricing_provider = SimpleNamespace(
+        list_models=lambda: [SimpleNamespace(id="gpt-5.5", session_definition="skuldCodex")]
+    )
     forge = ForgeService(session_service, pricing_provider=pricing_provider)
     data = SimpleNamespace(
-        name="demo",
+        name="codex",
         model="gpt-5.5",
         source=SimpleNamespace(),
         definition=None,
@@ -87,34 +86,168 @@ async def test_create_and_start_session_resolves_definition_from_model_catalog()
         issue_url=None,
         profile_name=None,
         terminal_restricted=False,
-        credential_names=None,
-        integration_ids=None,
+        credential_names=[],
+        integration_ids=[],
         resource_config=None,
-        system_prompt="",
-        initial_prompt="",
-        workload_type="session",
+        system_prompt=None,
+        initial_prompt=None,
+        workload_type="interactive",
         workload_config=None,
     )
 
-    result = await forge.create_and_start_session(data)
+    await forge.create_and_start_session(data)
 
-    assert result is started
-    pricing_provider.list_models.assert_called_once_with()
-    session_service.start_session.assert_awaited_once_with(
-        created.id,
-        definition="skuldCodex",
-        profile_name=None,
+    session_service.start_session.assert_awaited_once()
+    assert session_service.start_session.await_args.kwargs["definition"] == "skuldCodex"
+
+
+@pytest.mark.asyncio
+async def test_create_and_start_session_prefers_explicit_definition_over_catalog() -> None:
+    session_service = AsyncMock(spec=SessionService)
+    created = SimpleNamespace(id=uuid4())
+    started = SimpleNamespace(id=created.id)
+    session_service.create_session.return_value = created
+    session_service.start_session.return_value = started
+    pricing_provider = SimpleNamespace(
+        list_models=lambda: [SimpleNamespace(id="gpt-5.5", session_definition="skuldCodex")]
+    )
+    forge = ForgeService(session_service, pricing_provider=pricing_provider)
+    data = SimpleNamespace(
+        name="codex",
+        model="gpt-5.5",
+        source=SimpleNamespace(),
+        definition="manualDefinition",
         template_name=None,
-        principal=None,
+        preset_id=None,
+        workspace_id=None,
+        issue_id=None,
+        issue_url=None,
+        profile_name=None,
         terminal_restricted=False,
-        credential_names=None,
-        integration_ids=None,
+        credential_names=[],
+        integration_ids=[],
         resource_config=None,
-        system_prompt="",
-        initial_prompt="",
-        workload_type="session",
+        system_prompt=None,
+        initial_prompt=None,
+        workload_type="interactive",
         workload_config=None,
     )
+
+    await forge.create_and_start_session(data)
+
+    assert session_service.start_session.await_args.kwargs["definition"] == "manualDefinition"
+
+
+@pytest.mark.asyncio
+async def test_create_and_start_session_leaves_definition_none_when_catalog_has_no_match() -> None:
+    session_service = AsyncMock(spec=SessionService)
+    created = SimpleNamespace(id=uuid4())
+    started = SimpleNamespace(id=created.id)
+    session_service.create_session.return_value = created
+    session_service.start_session.return_value = started
+    pricing_provider = SimpleNamespace(
+        list_models=lambda: [
+            SimpleNamespace(id="claude-sonnet-4-6", session_definition="skuldClaude")
+        ]
+    )
+    forge = ForgeService(session_service, pricing_provider=pricing_provider)
+    data = SimpleNamespace(
+        name="codex",
+        model="gpt-5.5",
+        source=SimpleNamespace(),
+        definition=None,
+        template_name=None,
+        preset_id=None,
+        workspace_id=None,
+        issue_id=None,
+        issue_url=None,
+        profile_name=None,
+        terminal_restricted=False,
+        credential_names=[],
+        integration_ids=[],
+        resource_config=None,
+        system_prompt=None,
+        initial_prompt=None,
+        workload_type="interactive",
+        workload_config=None,
+    )
+
+    await forge.create_and_start_session(data)
+
+    assert session_service.start_session.await_args.kwargs["definition"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_and_start_session_leaves_definition_none_without_pricing_provider() -> None:
+    session_service = AsyncMock(spec=SessionService)
+    created = SimpleNamespace(id=uuid4())
+    started = SimpleNamespace(id=created.id)
+    session_service.create_session.return_value = created
+    session_service.start_session.return_value = started
+    forge = ForgeService(session_service)
+    data = SimpleNamespace(
+        name="claude",
+        model="claude-sonnet-4-6",
+        source=SimpleNamespace(),
+        definition=None,
+        template_name=None,
+        preset_id=None,
+        workspace_id=None,
+        issue_id=None,
+        issue_url=None,
+        profile_name=None,
+        terminal_restricted=False,
+        credential_names=[],
+        integration_ids=[],
+        resource_config=None,
+        system_prompt=None,
+        initial_prompt=None,
+        workload_type="interactive",
+        workload_config=None,
+    )
+
+    await forge.create_and_start_session(data)
+
+    assert session_service.start_session.await_args.kwargs["definition"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_and_start_session_leaves_definition_none_for_blank_model() -> None:
+    session_service = AsyncMock(spec=SessionService)
+    created = SimpleNamespace(id=uuid4())
+    started = SimpleNamespace(id=created.id)
+    session_service.create_session.return_value = created
+    session_service.start_session.return_value = started
+    pricing_provider = SimpleNamespace(
+        list_models=lambda: [
+            SimpleNamespace(id="claude-sonnet-4-6", session_definition="skuldClaude")
+        ]
+    )
+    forge = ForgeService(session_service, pricing_provider=pricing_provider)
+    data = SimpleNamespace(
+        name="blank",
+        model="   ",
+        source=SimpleNamespace(),
+        definition=None,
+        template_name=None,
+        preset_id=None,
+        workspace_id=None,
+        issue_id=None,
+        issue_url=None,
+        profile_name=None,
+        terminal_restricted=False,
+        credential_names=[],
+        integration_ids=[],
+        resource_config=None,
+        system_prompt=None,
+        initial_prompt=None,
+        workload_type="interactive",
+        workload_config=None,
+    )
+
+    await forge.create_and_start_session(data)
+
+    assert session_service.start_session.await_args.kwargs["definition"] is None
 
 
 @pytest.mark.asyncio

@@ -177,6 +177,34 @@ def _to_stream_json(message: object) -> dict[str, Any] | None:
 
     if isinstance(message, StreamEvent):
         event = dict(message.event)
+        event_type = event.get("type")
+
+        # Claude SDK partial streaming uses Anthropic wire events like
+        # ``message_start`` and ``content_block_delta``. Normalize the start
+        # event into the Skuld-style ``assistant`` frame so existing UIs know
+        # when to create a running assistant bubble before the deltas arrive.
+        if event_type == "message_start":
+            raw_message = event.get("message", {})
+            if isinstance(raw_message, dict):
+                payload: dict[str, Any] = {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": raw_message.get("content", []),
+                        "model": raw_message.get("model"),
+                    },
+                }
+                usage = raw_message.get("usage")
+                if usage is not None:
+                    payload["message"]["usage"] = usage
+                message_id = raw_message.get("id")
+                if isinstance(message_id, str) and message_id:
+                    payload["message"]["id"] = message_id
+                stop_reason = raw_message.get("stop_reason")
+                if stop_reason is not None:
+                    payload["message"]["stop_reason"] = stop_reason
+                event = payload
+
         event.setdefault("session_id", message.session_id)
         event.setdefault("uuid", message.uuid)
         if message.parent_tool_use_id is not None:
@@ -302,20 +330,22 @@ class SDKTransport(CLITransport):
                 attempt = 0
                 try:
                     while True:
-                        turn_events: list[dict[str, Any]] = []
                         last_result_message: ResultMessage | None = None
                         last_result_event: dict[str, Any] | None = None
+                        visible_output_emitted = False
 
                         await client.query(prompt)
                         async for message in client.receive_response():
                             event = await self._translate_sdk_message(message)
-                            if event is not None:
-                                turn_events.append(event)
                             if isinstance(message, ResultMessage):
                                 last_result_message = message
                                 if event is not None:
                                     last_result_event = event
                                 break
+                            if event is not None:
+                                await self._emit_event(event)
+                                if self._is_visible_output_event(event):
+                                    visible_output_emitted = True
 
                         if (
                             last_result_message is not None
@@ -324,6 +354,7 @@ class SDKTransport(CLITransport):
                                 last_result_message, last_result_event
                             )
                             and attempt < _MAX_TRANSIENT_RETRIES
+                            and not visible_output_emitted
                         ):
                             attempt += 1
                             logger.warning(
@@ -334,9 +365,8 @@ class SDKTransport(CLITransport):
                             await asyncio.sleep(1.0)
                             continue
 
-                        for event in turn_events:
-                            await self._emit_event(event)
                         if last_result_event is not None:
+                            await self._emit_event(last_result_event)
                             self._last_result = last_result_event
                         break
                 finally:
@@ -427,6 +457,8 @@ class SDKTransport(CLITransport):
             permission_mode=(_DEFAULT_PERMISSION_MODE if self._skip_permissions else "default"),
             cwd=self.workspace_dir,
             mcp_servers=self._mcp_servers,
+            include_partial_messages=True,
+            thinking={"type": "adaptive", "display": "summarized"},
             env=env,
         )
         client = ClaudeSDKClient(options)
@@ -453,6 +485,19 @@ class SDKTransport(CLITransport):
                 exc_info=True,
             )
 
+    async def _handle_sdk_message(self, message: object) -> None:
+        """Translate and emit one SDK message event.
+
+        Kept as a small wrapper so older tests and callers do not need to know
+        about the newer translate/emit split.
+        """
+        event = await self._translate_sdk_message(message)
+        if event is None:
+            return
+        await self._emit_event(event)
+        if isinstance(message, ResultMessage):
+            self._last_result = event
+
     def _capture_session_id(self, message: object) -> None:
         session_id = getattr(message, "session_id", None)
         if isinstance(session_id, str) and session_id:
@@ -466,7 +511,8 @@ class SDKTransport(CLITransport):
             self._session_id = raw_session_id
 
     def _consume_pending_steers(self) -> str | None:
-        """Drain pending steering updates into the next continuation prompt."""
+        """Drain steering updates into the next continuation prompt."""
+        self._steer_interrupt_requested = False
         if not self._pending_steers:
             return None
 
@@ -481,6 +527,24 @@ class SDKTransport(CLITransport):
         ]
         lines.extend(f"- {item}" for item in pending)
         return "\n".join(lines)
+
+    @staticmethod
+    def _is_visible_output_event(event: dict[str, Any]) -> bool:
+        event_type = event.get("type")
+        if event_type == "assistant":
+            message = event.get("message", {})
+            if not isinstance(message, dict):
+                return False
+            content = message.get("content", [])
+            return bool(content)
+        if event_type == "content_block_start":
+            return True
+        if event_type == "content_block_delta":
+            delta = event.get("delta", {})
+            if not isinstance(delta, dict):
+                return False
+            return bool(delta.get("text") or delta.get("thinking") or delta.get("partial_json"))
+        return False
 
     @staticmethod
     def _should_retry_transient_result(
