@@ -128,7 +128,8 @@ class CodexSubprocessTransport(CLITransport):
             "exec",
             "--model",
             self._model,
-            "--full-auto",  # skip all human confirmations
+            "--sandbox",
+            "workspace-write",
             "--json",
         ]
         for key, value in self._mcp_overrides:
@@ -194,6 +195,23 @@ class CodexSubprocessTransport(CLITransport):
         event_type = data.get("type", "")
         logger.debug("Codex event: type=%s", event_type)
 
+        # --- Current Codex CLI agent message item ---
+        if event_type == "item.completed":
+            item = data.get("item", {})
+            if not isinstance(item, dict):
+                return
+            if item.get("type") == "agent_message":
+                text = item.get("text", "")
+                if isinstance(text, str) and text:
+                    await self._emit(
+                        {
+                            "type": "assistant",
+                            "message": {"content": text},
+                            "content": text,
+                        }
+                    )
+                return
+
         # --- Streaming text output ---
         if event_type in ("response.output_text.delta", "text_delta"):
             delta_text = data.get("delta", "") or data.get("text", "")
@@ -232,7 +250,7 @@ class CodexSubprocessTransport(CLITransport):
             return
 
         # --- Turn complete ---
-        if event_type in ("response.completed", "response.done", "done"):
+        if event_type in ("response.completed", "response.done", "turn.completed", "done"):
             usage = data.get("usage", {})
             model_id = data.get("model", self._model)
             self._last_result = {

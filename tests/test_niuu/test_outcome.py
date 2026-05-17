@@ -246,6 +246,57 @@ end---
     assert result.fields["page_path"] == "council/niu-906-human-approval-gate/opinions/opinion-b.md"
 
 
+def test_schema_recovery_prefers_salvaged_wrapped_codex_outcome() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "verdict": OutcomeField(
+                type="enum",
+                description="workflow verdict",
+                enum_values=["opinion_submitted", "review_submitted", "blocked"],
+            ),
+            "summary": OutcomeField(type="string", description="one-line summary"),
+            "page_path": OutcomeField(type="string", description="written page path"),
+        }
+    )
+    text = """\
+---outcome---
+ver
+dict: opinion
+_submitted
+summary
+: Wrote
+ Opinion B recommending Q
+wen3.
+6-35B
+-A3B as
+ the Spark-first
+ default, with Deep
+Seek-V4
+-Flash as the
+ long-context research
+ tier and larger models
+ rejected for operational
+ fit.
+page_path
+: council/
+niu-929-local
+-model-eval
+/opinions/op
+inion-b.md
+
+---end---
+"""
+    result = parse_outcome_block(text, schema)
+    assert result is not None
+    assert result.valid is True
+    assert result.fields["verdict"] == "opinion_submitted"
+    assert result.fields["summary"].startswith("Wrote Opinion B recommending Qwen3. 6-35B-A3B")
+    assert (
+        result.fields["page_path"]
+        == "council/niu-929-local-model-eval/opinions/opinion-b.md"
+    )
+
+
 def test_validate_boolean_field() -> None:
     schema = OutcomeSchema(
         fields={

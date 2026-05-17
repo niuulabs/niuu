@@ -1,8 +1,9 @@
 """CodexWebSocketTransport — Codex app-server over WebSocket (JSON-RPC 2.0).
 
-Spawns ``codex app-server --listen ws://127.0.0.1:{port}`` and connects to it
-as a WebSocket client.  Communication uses JSON-RPC 2.0 (requests, responses,
-notifications) rather than the NDJSON protocol used by Claude's ``--sdk-url``.
+Spawns ``codex app-server --listen unix://PATH`` and connects to it as a
+WebSocket client over the Unix socket. Communication uses JSON-RPC 2.0
+(requests, responses, notifications) rather than the NDJSON protocol used by
+Claude's ``--sdk-url``.
 
 The direction is reversed compared to SdkWebSocketTransport: here Skuld is the
 *client* connecting to the Codex app-server, whereas with Claude the CLI
@@ -13,10 +14,12 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import tempfile
 from itertools import count
 
 import websockets
-from websockets.asyncio.client import ClientConnection
+from websockets.asyncio.client import ClientConnection, unix_connect
 
 from niuu.adapters.cli.runtime import (
     drain_process_stream as _drain_stream,
@@ -28,7 +31,11 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
-from skuld.transports.codex import _map_codex_tool, resolve_codex_cli
+from skuld.transports.codex import (
+    CodexSubprocessTransport,
+    _map_codex_tool,
+    resolve_codex_cli,
+)
 from skuld.transports.mcp_config import build_codex_mcp_overrides
 
 logger = logging.getLogger("skuld.transport")
@@ -55,7 +62,7 @@ class CodexWebSocketTransport(CLITransport):
     """Long-lived Codex app-server process controlled via WebSocket JSON-RPC.
 
     Lifecycle:
-        1. ``start()`` spawns ``codex app-server --listen ws://127.0.0.1:{port}``
+        1. ``start()`` spawns ``codex app-server --listen unix://PATH``
         2. Skuld connects to the server as a WebSocket client
         3. JSON-RPC ``initialize`` handshake, then ``thread/start``
         4. User messages are sent via ``turn/start``
@@ -83,11 +90,15 @@ class CodexWebSocketTransport(CLITransport):
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._codex_port = codex_port or _pick_free_port()
-        self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
+        self._mcp_servers = list(mcp_servers or [])
+        self._mcp_overrides = build_codex_mcp_overrides(self._mcp_servers)
 
         self._process: asyncio.subprocess.Process | None = None
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task | None = None
+        self._codex_socket_dir: str | None = None
+        self._codex_socket_path: str | None = None
+        self._fallback_transport: CodexSubprocessTransport | None = None
         self._thread_id: str | None = None
         self._current_turn_id: str | None = None
         self._last_result: dict | None = None
@@ -107,14 +118,22 @@ class CodexWebSocketTransport(CLITransport):
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        await self._spawn_app_server()
-        await self._connect_ws()
-        await self._handshake()
+        try:
+            await self._spawn_app_server()
+            await self._connect_ws()
+            await self._handshake()
+        except Exception as exc:
+            await self._start_fallback_transport(exc)
+            return
 
         if self._initial_prompt:
             await self.send_message(self._initial_prompt)
 
     async def stop(self) -> None:
+        if self._fallback_transport is not None:
+            await self._fallback_transport.stop()
+            self._fallback_transport = None
+
         self._alive = False
 
         if self._receive_task and not self._receive_task.done():
@@ -131,6 +150,11 @@ class CodexWebSocketTransport(CLITransport):
             await _stop_process(self._process)
             self._process = None
 
+        if self._codex_socket_dir:
+            shutil.rmtree(self._codex_socket_dir, ignore_errors=True)
+            self._codex_socket_dir = None
+            self._codex_socket_path = None
+
         # Cancel any awaiting RPC futures.
         for fut in self._pending.values():
             if not fut.done():
@@ -139,12 +163,39 @@ class CodexWebSocketTransport(CLITransport):
 
         logger.info("CodexWebSocketTransport stopped")
 
+    def on_event(self, callback) -> None:  # type: ignore[override]
+        super().on_event(callback)
+        if self._fallback_transport is not None:
+            self._fallback_transport.on_event(callback)
+
+    async def _start_fallback_transport(self, cause: Exception) -> None:
+        logger.warning(
+            "Codex app-server transport unavailable; falling back to subprocess transport: %s",
+            cause,
+            exc_info=True,
+        )
+        await self.stop()
+        fallback = CodexSubprocessTransport(
+            workspace_dir=self.workspace_dir,
+            model=self._model,
+            mcp_servers=self._mcp_servers,
+        )
+        fallback.on_event(self.event_callback)
+        self._fallback_transport = fallback
+        await fallback.start()
+        if self._initial_prompt:
+            await fallback.send_message(self._initial_prompt)
+
     # ------------------------------------------------------------------
     # Spawn & connect
     # ------------------------------------------------------------------
 
     async def _spawn_app_server(self) -> None:
-        listen_url = f"ws://127.0.0.1:{self._codex_port}"
+        if self._codex_socket_dir:
+            shutil.rmtree(self._codex_socket_dir, ignore_errors=True)
+        self._codex_socket_dir = tempfile.mkdtemp(prefix="skuld-codex-")
+        self._codex_socket_path = os.path.join(self._codex_socket_dir, "app-server.sock")
+        listen_url = f"unix://{self._codex_socket_path}"
         codex_cli = resolve_codex_cli()
 
         cmd = [
@@ -177,13 +228,17 @@ class CodexWebSocketTransport(CLITransport):
 
     async def _connect_ws(self) -> None:
         """Connect to the Codex app-server with retries."""
-        url = f"ws://127.0.0.1:{self._codex_port}"
+        if not self._codex_socket_path:
+            raise RuntimeError("Codex socket path missing before connect")
+
+        socket_path = self._codex_socket_path
+        uri = "ws://localhost/"
         max_attempts = 30
         for attempt in range(1, max_attempts + 1):
             if self._process and self._process.returncode is not None:
                 raise RuntimeError(f"Codex app-server exited with code {self._process.returncode}")
             try:
-                self._ws = await websockets.connect(url)
+                self._ws = await unix_connect(path=socket_path, uri=uri, compression=None)
                 logger.info("Connected to Codex app-server (attempt %d)", attempt)
                 self._alive = True
                 self._receive_task = asyncio.create_task(self._receive_loop())
@@ -191,7 +246,7 @@ class CodexWebSocketTransport(CLITransport):
             except (OSError, websockets.exceptions.InvalidHandshake):
                 if attempt == max_attempts:
                     raise RuntimeError(
-                        f"Could not connect to Codex app-server at {url} "
+                        f"Could not connect to Codex app-server at {socket_path} "
                         f"after {max_attempts} attempts"
                     )
                 await asyncio.sleep(0.5)
@@ -719,6 +774,10 @@ class CodexWebSocketTransport(CLITransport):
     # ------------------------------------------------------------------
 
     async def send_message(self, content: str) -> None:
+        if self._fallback_transport is not None:
+            await self._fallback_transport.send_message(content)
+            return
+
         if not self._thread_id:
             raise RuntimeError("No active thread — call start() first")
 
@@ -734,6 +793,10 @@ class CodexWebSocketTransport(CLITransport):
         await self._send_rpc("turn/start", params)
 
     async def send_control_response(self, request_id: str, response: dict) -> None:
+        if self._fallback_transport is not None:
+            await self._fallback_transport.send_control_response(request_id, response)
+            return
+
         """Respond to a Codex approval request."""
         rid = self._pending_approvals.pop(request_id, None)
         if rid is None:
@@ -750,6 +813,10 @@ class CodexWebSocketTransport(CLITransport):
         await self._send_rpc_response(rid, {"decision": decision})
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
+        if self._fallback_transport is not None:
+            await self._fallback_transport.send_control(subtype, **kwargs)
+            return
+
         """Handle control messages (interrupt, set_model, etc.)."""
         if subtype == "interrupt":
             if self._thread_id and self._current_turn_id:
@@ -840,22 +907,32 @@ class CodexWebSocketTransport(CLITransport):
 
     @property
     def session_id(self) -> str | None:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.session_id
         return self._thread_id
 
     @property
     def last_result(self) -> dict | None:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.last_result
         return self._last_result
 
     @property
     def is_alive(self) -> bool:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.is_alive
         return self._alive
 
     @property
     def is_turn_active(self) -> bool:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.is_turn_active
         return bool(self._thread_id and self._current_turn_id)
 
     @property
     def capabilities(self) -> TransportCapabilities:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.capabilities
         return TransportCapabilities(
             cli_websocket=False,  # We don't expose a /ws/cli endpoint
             session_resume=True,

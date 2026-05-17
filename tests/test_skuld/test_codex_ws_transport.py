@@ -271,16 +271,50 @@ class TestSpawnAppServer:
             await t._spawn_app_server()
 
             call_args = mock_exec.call_args[0]
-            assert call_args[:4] == (
+            assert call_args[:3] == (
                 "/Applications/Codex.app/Contents/Resources/codex",
                 "app-server",
                 "--listen",
-                "ws://127.0.0.1:19999",
             )
+            assert call_args[3].startswith("unix://")
+            assert t._codex_socket_path is not None
+            assert call_args[3] == f"unix://{t._codex_socket_path}"
             assert "-c" in call_args
             assert any(
                 arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
             )
+
+
+class TestFallbackTransport:
+    @pytest.mark.asyncio
+    async def test_start_falls_back_to_subprocess_when_app_server_startup_fails(self, tmp_path):
+        t = _make_transport(tmp_path, initial_prompt="Investigate this")
+        emit = AsyncMock()
+        t.on_event(emit)
+        t._spawn_app_server = AsyncMock()
+        t._connect_ws = AsyncMock(side_effect=RuntimeError("uds handshake failed"))
+        t._handshake = AsyncMock()
+
+        fallback = MagicMock()
+        fallback.start = AsyncMock()
+        fallback.send_message = AsyncMock()
+        fallback.stop = AsyncMock()
+        fallback.session_id = None
+        fallback.last_result = None
+        fallback.is_alive = True
+        fallback.is_turn_active = False
+
+        with patch(
+            "skuld.transports.codex_ws.CodexSubprocessTransport",
+            return_value=fallback,
+        ) as mock_fallback_cls:
+            await t.start()
+
+        mock_fallback_cls.assert_called_once()
+        fallback.on_event.assert_called_once_with(emit)
+        fallback.start.assert_called_once()
+        fallback.send_message.assert_called_once_with("Investigate this")
+        assert t._fallback_transport is fallback
 
 
 # ---------------------------------------------------------------------------

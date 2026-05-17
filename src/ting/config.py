@@ -504,6 +504,14 @@ class FlockConfig(BaseModel):
             "When empty, ravn nodes use their own default or image-baked config."
         ),
     )
+    daily_budget_usd: float = Field(
+        default=25.0,
+        ge=0.0,
+        description=(
+            "Per-node Ravn daily budget cap for flock sessions. "
+            "Set to 0 to keep the daemon default."
+        ),
+    )
 
 
 class InProcessDispatchConfig(BaseModel):

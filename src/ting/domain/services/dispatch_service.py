@@ -373,77 +373,18 @@ def build_flock_prompt(
     mimir_hosted_url: str = "",
     workflow_snapshot: dict[str, Any] | None = None,
 ) -> str:
-    """Build the coordinator's initiative_context for a flock session.
+    """Build the initiative context for a flock session.
 
-    Includes run title, description, saga context (repo, branch), and an
-    optional note that Mimir is available for prior knowledge queries.
+    In flock mode we inject only the tracker ticket content here. Workflow
+    structure, persona prompts, repository bindings, and Mimir resources are
+    already conveyed structurally in the workload config and persona setup.
     """
+    del repo, feature_branch, mimir_hosted_url, workflow_snapshot
     parts = [
         f"# Run: {issue.identifier} — {issue.title}",
         "",
         issue.description or "",
-        "",
-        f"Repository: {repo}",
-        f"Feature branch: {feature_branch}",
     ]
-
-    if mimir_hosted_url:
-        parts += [
-            "",
-            f"Prior knowledge is available via Mimir at: {mimir_hosted_url}",
-            "Query it for relevant context about this repository and area before starting.",
-        ]
-
-    workflow_personas = {
-        str(persona.get("name") or "")
-        for persona in workflow_personas_from_snapshot(workflow_snapshot)
-        if isinstance(persona, dict)
-    }
-    includes_security = "security-auditor" in workflow_personas
-    includes_postmortem = "postmortem-analyst" in workflow_personas
-
-    parts.append("")
-    if includes_security and includes_postmortem:
-        parts.append(
-            "This run runs through a staged mesh workflow. The workflow trigger emits "
-            "code.requested for the coder. The coder emits code.changed only after it has "
-            "made a durable checkpoint on the shared feature branch. Reviewer and "
-            "security-auditor react to code.changed in parallel. If either emits a "
-            "changes_requested outcome, the coder handles that revision loop. Once both "
-            "reviewer and security-auditor emit passing outcomes for the same code "
-            "iteration, a postmortem-analyst reads the task history and ingests a "
-            "post-mortem memory source into shared Mimir for later wiki synthesis. "
-            "The workflow runtime only finalizes the run after that post-mortem "
-            "stage succeeds. Do the work "
-            "directly on the checked-out feature branch for this saga, commit it, and "
-            "push it before reporting success so downstream runs start from the updated "
-            "branch state."
-        )
-    elif includes_security:
-        parts.append(
-            "This run runs through a staged mesh workflow. The workflow trigger emits "
-            "code.requested for the coder. The coder emits code.changed only after it has "
-            "made a durable checkpoint on the shared feature branch. Reviewer and "
-            "security-auditor react to code.changed in parallel. If either emits a "
-            "changes_requested outcome, the coder handles that revision loop. The "
-            "workflow runtime only finalizes the run after both reviewer and "
-            "security-auditor emit passing outcomes for the same code iteration. "
-            "Do the work directly on the checked-out feature branch for this saga, "
-            "commit it, and push it before reporting success so downstream runs "
-            "start from the updated branch state."
-        )
-    else:
-        parts.append(
-            "This run runs through a staged mesh workflow. The workflow trigger emits "
-            "code.requested for the coder. The coder emits code.changed only after it has "
-            "made a durable checkpoint on the shared feature branch. The reviewer "
-            "reacts to code.changed. If the reviewer emits review.changes_requested, "
-            "the coder handles that revision loop. The workflow runtime publishes the "
-            "final run completion outcome after the reviewer emits a passing result "
-            "for the current code iteration. Do the work directly on the checked-out "
-            "feature branch for this saga, commit it, and push it before reporting "
-            "success so downstream runs start from the updated branch state."
-        )
     return "\n".join(parts)
 
 
@@ -539,6 +480,7 @@ class DispatchConfig:
     flock_mimir_registry_path: str = "~/.ravn/mimir/.mimir-registry.json"
     flock_sleipnir_publish_urls: list[str] = field(default_factory=list)
     flock_llm_config: dict = field(default_factory=dict)
+    flock_daily_budget_usd: float = 25.0
     live_flock: object | None = field(default=None, repr=False)
     session_definitions: dict[str, Any] = field(default_factory=_default_session_definitions)
     configured_models: list[Any] = field(default_factory=list)
@@ -561,6 +503,8 @@ class DispatchConfig:
             return list(live.sleipnir_publish_urls)  # type: ignore[union-attr]
         if name == "flock_llm_config":
             return dict(live.llm_config)  # type: ignore[union-attr]
+        if name == "flock_daily_budget_usd":
+            return float(live.daily_budget_usd)  # type: ignore[union-attr]
         return super().__getattribute__(name)
 
 
@@ -1344,6 +1288,8 @@ class DispatchService:
             "initiative_context": initiative_context,
             "mesh_transport": mesh_transport,
         }
+        if self._config.flock_daily_budget_usd > 0:
+            workload_config["daily_budget_usd"] = self._config.flock_daily_budget_usd
         if workflow_snapshot:
             workload_config["workflow"] = workflow_snapshot
         if sleipnir_urls:

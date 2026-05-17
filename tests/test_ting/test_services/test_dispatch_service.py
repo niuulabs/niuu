@@ -1168,6 +1168,7 @@ class TestBuildSpawnRequestPersonaOverrides:
 
         assert req.workload_type == "ravn_flock"
         assert req.workload_config["workflow"]["name"] == "Review Flow"
+        assert req.workload_config["daily_budget_usd"] == 25.0
         assert req.workload_config["personas"] == [
             {
                 "name": "reviewer",

@@ -1525,6 +1525,30 @@ class TestPerPersonaLLMOverrides:
         assert reviewer_parsed["initiative"]["max_concurrent_tasks"] == 1
         assert coordinator_parsed["initiative"]["max_concurrent_tasks"] == 5
 
+    async def test_daily_budget_is_written_to_ravn_configs(self, session):
+        """daily_budget_usd from workload_config becomes ravn budget.daily_cap_usd."""
+        c = RavnFlockContributor()
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [{"name": "reviewer"}, {"name": "coordinator"}],
+                "daily_budget_usd": 25.0,
+            },
+        )
+        result = await c.contribute(session, ctx)
+
+        reviewer_cfg = _extract_mounted_config(result.pod_spec, "reviewer")
+        coordinator_cfg = _extract_mounted_config(result.pod_spec, "coordinator")
+
+        import yaml as _yaml
+
+        reviewer_parsed = _yaml.safe_load(reviewer_cfg)
+        coordinator_parsed = _yaml.safe_load(coordinator_cfg)
+
+        assert reviewer_parsed["budget"]["daily_cap_usd"] == 25.0
+        assert coordinator_parsed["budget"]["daily_cap_usd"] == 25.0
+        assert result.values["flock"]["daily_budget_usd"] == 25.0
+
     async def test_no_persona_overrides_block_when_no_extra(self, session):
         """No persona_overrides block emitted when system_prompt_extra is absent."""
         c = RavnFlockContributor()

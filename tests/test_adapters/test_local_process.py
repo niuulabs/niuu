@@ -1257,6 +1257,7 @@ class TestProcessSpawning:
                         "max_tokens": 8192,
                     },
                     "max_concurrent_tasks": 5,
+                    "daily_budget_usd": 25.0,
                 }
             },
             pod_spec=PodSpecAdditions(
@@ -1295,6 +1296,7 @@ class TestProcessSpawning:
         assert "iteration_budget: 40" in node_config
         assert "consumes_event_types:" in node_config
         assert "- review.requested" in node_config
+        assert "daily_cap_usd: 25.0" in node_config
         assert "enabled: true" in node_config
         assert "broker_url: ws://127.0.0.1:9101/ws/ravn" in node_config
         assert f"workspace_root: {repo_dir}" in node_config
