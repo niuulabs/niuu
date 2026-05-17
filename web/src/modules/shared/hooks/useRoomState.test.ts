@@ -166,16 +166,23 @@ describe('useRoomState', () => {
     });
   });
 
-  describe('passthrough in single-agent mode', () => {
+  describe('single-agent internal filtering', () => {
     const singleParticipant = makeParticipantsMap([makeParticipant()]);
     const messages = [
       makeMessage({ id: 'msg-1', visibility: 'internal' }),
       makeMessage({ id: 'msg-2', visibility: 'public' }),
     ];
 
-    it('returns all messages unfiltered when not room mode', () => {
+    it('hides internal messages until showInternal is enabled', () => {
       const { result } = renderHook(() => useRoomState(messages, singleParticipant));
-      expect(result.current.filteredMessages).toHaveLength(2);
+
+      expect(result.current.filteredMessages.map(m => m.id)).toEqual(['msg-2']);
+
+      act(() => {
+        result.current.toggleInternal();
+      });
+
+      expect(result.current.filteredMessages.map(m => m.id)).toEqual(['msg-1', 'msg-2']);
     });
   });
 

@@ -555,6 +555,20 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_message.assert_called_once_with("hello")
 
     @pytest.mark.asyncio
+    async def test_dispatch_user_message_steers_active_turn(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(steer=True)
+        test_broker._transport.is_turn_active = True
+
+        await test_broker._dispatch_browser_message({"content": "change direction"})
+        await asyncio.sleep(0)
+
+        test_broker._transport.send_control.assert_called_once_with(
+            "steer",
+            content="change direction",
+        )
+        test_broker._transport.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_dispatch_user_message_empty_ignored(self, test_broker):
         await test_broker._dispatch_browser_message({"content": ""})
         test_broker._transport.send_message.assert_not_called()

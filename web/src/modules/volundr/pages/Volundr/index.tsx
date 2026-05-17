@@ -1239,6 +1239,7 @@ export function VolundrPage() {
                 <SessionStartingIndicator className={styles.tabPanel} />
               ) : conversationEndpoint ? (
                 <SessionChat
+                  key={conversationEndpoint ?? effectiveSelectedSession.id}
                   url={chatWsUrl}
                   historyEndpoint={conversationEndpoint}
                   className={styles.tabPanel}

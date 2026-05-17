@@ -193,7 +193,7 @@
 }
 
 .eventItem[data-type='thought'] {
-  border-left: 2px solid var(--color-accent-purple);
+  border-left: 2px solid var(--color-brand);
 }
 
 .eventItem[data-type='tool_start'] {

@@ -223,6 +223,33 @@ describe('MarkdownContent', () => {
     // Code content should include line10
     expect(screen.getByText(/line10/)).toBeInTheDocument();
   });
+
+  it('renders archived summary JSON as a recap card', () => {
+    render(
+      <MarkdownContent
+        content={JSON.stringify({
+          summary: 'The assistant completed the task.',
+          key_changes: ['Updated the CLI transport', 'Verified steering end to end'],
+          unfinished_work: null,
+        })}
+      />
+    );
+
+    expect(screen.getByText('Session summary')).toBeInTheDocument();
+    expect(screen.getByText('The assistant completed the task.')).toBeInTheDocument();
+    expect(screen.getByText('Key changes')).toBeInTheDocument();
+    expect(screen.getByText('Updated the CLI transport')).toBeInTheDocument();
+    expect(screen.getByText('Verified steering end to end')).toBeInTheDocument();
+  });
+
+  it('leaves summary-like JSON with extra keys alone', () => {
+    const raw =
+      '{"summary":"Looks like a summary","key_changes":["one"],"extra":"should stay raw"}';
+    render(<MarkdownContent content={raw} />);
+
+    expect(screen.queryByText('Session summary')).not.toBeInTheDocument();
+    expect(screen.getByText(raw)).toBeInTheDocument();
+  });
 });
 
 /* ================================================================== */

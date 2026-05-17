@@ -1407,6 +1407,7 @@ class Broker:
     # must be True for the control to be forwarded.
     _CONTROL_CAPABILITY_MAP: dict[str, str] = {
         "interrupt": "interrupt",
+        "steer_active_turn": "steer",
         "set_model": "set_model",
         "set_max_thinking_tokens": "set_thinking_tokens",
         "set_permission_mode": "set_permission_mode",
@@ -1456,6 +1457,12 @@ class Broker:
             # Phase 3: interrupt current turn
             case "interrupt":
                 await self._transport.send_control("interrupt")
+
+            # Phase 3: steer the active turn with new guidance
+            case "steer_active_turn":
+                content = str(data.get("content") or "").strip()
+                if content:
+                    await self._transport.send_control("steer", content=content)
 
             # Phase 3: change model mid-session
             case "set_model":
@@ -1557,6 +1564,20 @@ class Broker:
                     }
                 )
 
+                if (
+                    getattr(self._transport.capabilities, "steer", False) is True
+                    and getattr(self._transport, "is_turn_active", False) is True
+                ):
+                    asyncio.create_task(
+                        self._safe_transport_control(
+                            self._transport,
+                            "steer",
+                            content=message,
+                        ),
+                        name=f"transport-steer-{msg_id}",
+                    )
+                    return
+
                 # send_message holds a per-instance lock for the entire
                 # turn. Awaiting inline blocks the WS receive loop, so the
                 # user can't queue a follow-up while Claude is running.
@@ -1567,6 +1588,22 @@ class Broker:
                     self._safe_transport_send(self._transport, message),
                     name=f"transport-send-{msg_id}",
                 )
+
+    async def _safe_transport_control(
+        self,
+        transport: object,
+        subtype: str,
+        **kwargs: object,
+    ) -> None:
+        """Wrap background transport control so failures surface to the browser."""
+        try:
+            await transport.send_control(subtype, **kwargs)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.exception("Transport send_control failed in background task")
+            try:
+                await self._channels.broadcast({"type": "error", "content": str(exc)})
+            except Exception:
+                logger.debug("Failed to broadcast transport control error", exc_info=True)
 
     async def _safe_transport_send(
         self, transport: object, message: str

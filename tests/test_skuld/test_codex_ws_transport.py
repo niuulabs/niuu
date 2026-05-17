@@ -815,6 +815,54 @@ class TestControl:
         await t.send_control("set_model", model="o3")
         assert t._model == "o3"
 
+    @pytest.mark.asyncio
+    async def test_steer_sends_expected_turn_id_and_input(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-5"
+
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            return {}
+
+        t._send_rpc = fake_send_rpc
+
+        await t.send_control("steer", content="Actually focus on tests first.")
+
+        assert calls[0][0] == "turn/steer"
+        assert calls[0][1]["threadId"] == "thread-1"
+        assert calls[0][1]["expectedTurnId"] == "turn-5"
+        assert calls[0][1]["input"] == [
+            {"type": "text", "text": "Actually focus on tests first."}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_redirect_uses_live_steer_with_change_of_plans_prefix(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-5"
+
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            return {}
+
+        t._send_rpc = fake_send_rpc
+
+        await t.send_control("redirect", content="Write BETA to /tmp/proof.txt")
+
+        assert calls[0][0] == "turn/steer"
+        assert calls[0][1]["threadId"] == "thread-1"
+        assert calls[0][1]["expectedTurnId"] == "turn-5"
+        assert (
+            calls[0][1]["input"][0]["text"]
+            == "Change of plans. Stop what you are doing and follow this instead:\n"
+            "Write BETA to /tmp/proof.txt"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Approval / permission requests

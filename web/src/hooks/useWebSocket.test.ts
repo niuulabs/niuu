@@ -173,18 +173,80 @@ describe('useWebSocket', () => {
     expect(latestSocket().send).toHaveBeenCalledWith(JSON.stringify(payload));
   });
 
-  // ---- 8. send/sendJson are no-ops when not connected ---------------------
+  // ---- 8. send/sendJson queue until connected -----------------------------
 
-  it('should not send when readyState is not OPEN', () => {
+  it('should queue outbound messages until the socket opens', () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost:8080'));
 
-    // Socket is still in CONNECTING state, never opened
     act(() => {
-      result.current.send('should not go');
+      result.current.send('queued-string');
+    });
+
+    const payload = { should: 'queue' };
+    act(() => {
+      result.current.sendJson(payload);
+    });
+
+    expect(latestSocket().send).not.toHaveBeenCalled();
+
+    act(() => {
+      latestSocket().simulateOpen();
+    });
+
+    expect(latestSocket().send).toHaveBeenNthCalledWith(1, 'queued-string');
+    expect(latestSocket().send).toHaveBeenNthCalledWith(2, JSON.stringify(payload));
+  });
+
+  it('should flush queued messages after reconnect', () => {
+    const { result } = renderHook(() =>
+      useWebSocket('ws://localhost:8080', {
+        reconnect: true,
+        reconnectBaseDelay: 1000,
+      })
+    );
+
+    act(() => {
+      latestSocket().simulateOpen();
     });
 
     act(() => {
-      result.current.sendJson({ should: 'not go' });
+      latestSocket().simulateClose(1006, 'abnormal');
+    });
+
+    act(() => {
+      result.current.sendJson({ type: 'steer_active_turn', content: 'follow-up' });
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(latestSocket().send).not.toHaveBeenCalled();
+
+    act(() => {
+      latestSocket().simulateOpen();
+    });
+
+    expect(latestSocket().send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'steer_active_turn', content: 'follow-up' })
+    );
+  });
+
+  it('should drop outbound messages while disconnected when queueing is disabled', () => {
+    const { result } = renderHook(() =>
+      useWebSocket('ws://localhost:8080', { queueWhenDisconnected: false })
+    );
+
+    act(() => {
+      result.current.send('do-not-queue');
+      result.current.sendJson({ type: 'do-not-queue' });
+    });
+
+    expect(latestSocket().send).not.toHaveBeenCalled();
+
+    act(() => {
+      latestSocket().simulateOpen();
     });
 
     expect(latestSocket().send).not.toHaveBeenCalled();

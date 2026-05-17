@@ -20,12 +20,17 @@ class ExecutionAgentPort(Protocol):
     task_id: str
     _tools: dict[str, object]
     _interrupt_reason: InterruptReason | None
+    supports_steering: bool
+    steering_mode: str
 
     async def run_turn(self, user_input: str) -> object:
         """Execute one turn and return a turn result."""
 
     def interrupt(self, reason: InterruptReason) -> None:
         """Signal the agent to stop at the next safe interruption point."""
+
+    async def steer(self, content: str) -> bool:
+        """Attempt to steer an active turn and return whether it was applied."""
 
 
 class ExecutorPort(ABC):
