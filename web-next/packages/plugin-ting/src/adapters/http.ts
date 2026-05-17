@@ -316,7 +316,12 @@ function toSaga(raw: RawSaga): Saga {
     id: raw.id,
     trackerId: raw.tracker_id,
     trackerType: raw.tracker_type ?? 'linear',
-    slug: raw.slug ?? raw.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+    slug:
+      raw.slug ??
+      raw.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, ''),
     name: raw.name,
     repos: raw.repos,
     featureBranch: raw.feature_branch,

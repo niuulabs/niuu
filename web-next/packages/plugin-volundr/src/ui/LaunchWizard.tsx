@@ -2094,8 +2094,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       if (targets.length > 0) {
         const matchingTarget = targets.find((target) => target.id === current.instanceId);
         if (!matchingTarget) {
-          next.instanceId =
-            targets.find((target) => target.isDefault)?.id ?? targets[0]!.id;
+          next.instanceId = targets.find((target) => target.isDefault)?.id ?? targets[0]!.id;
           changed = true;
         }
       }

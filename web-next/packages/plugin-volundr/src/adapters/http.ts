@@ -388,7 +388,8 @@ function deriveSharedApiBasePath(basePath?: string): string | null {
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1')) return normalized;
   if (normalized.endsWith('/api/v1/niuu')) return normalized.replace(/\/niuu$/, '');
-  if (normalized.endsWith('/api/v1/niuu/volundr')) return normalized.replace(/\/niuu\/volundr$/, '');
+  if (normalized.endsWith('/api/v1/niuu/volundr'))
+    return normalized.replace(/\/niuu\/volundr$/, '');
 
   const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1');
   return derived === normalized ? null : derived;

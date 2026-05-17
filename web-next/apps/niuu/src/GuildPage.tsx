@@ -1,16 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
 import { createApiClient } from '@niuulabs/query';
 import { useConfig, useService, type IIdentityService } from '@niuulabs/plugin-sdk';
-import {
-  Dialog,
-  DialogContent,
-  ErrorState,
-  LoadingState,
-  Rune,
-  cn,
-} from '@niuulabs/ui';
+import { Dialog, DialogContent, ErrorState, LoadingState, Rune, cn } from '@niuulabs/ui';
 import {
   Building2,
   ChevronRight,
@@ -24,22 +17,10 @@ import {
 } from 'lucide-react';
 import { resolveSharedApiBase } from './services';
 
-type InstanceKind =
-  | 'volundr'
-  | 'ting'
-  | 'mimir'
-  | 'bifrost'
-  | 'ravn'
-  | 'observatory'
-  | 'generic';
+type InstanceKind = 'volundr' | 'ting' | 'mimir' | 'bifrost' | 'ravn' | 'observatory' | 'generic';
 type RegistrySection = 'instances' | 'access' | 'connections';
 type WizardStep = 1 | 2 | 3;
-type AuthMethod =
-  | 'service-account'
-  | 'personal-token'
-  | 'oauth'
-  | 'mtls'
-  | 'shared-secret';
+type AuthMethod = 'service-account' | 'personal-token' | 'oauth' | 'mtls' | 'shared-secret';
 type CredentialScope = 'none' | 'user' | 'tenant';
 type VisibilityScope = 'user' | 'tenant' | 'system';
 type InstanceCatalogEntry = {
@@ -162,8 +143,16 @@ const AUTH_OPTIONS: Array<{
   label: string;
   helper: string;
 }> = [
-  { value: 'service-account', label: 'service account', helper: 'long-lived token, rotated quarterly' },
-  { value: 'personal-token', label: 'personal token', helper: 'bind to a user-owned PAT or API key' },
+  {
+    value: 'service-account',
+    label: 'service account',
+    helper: 'long-lived token, rotated quarterly',
+  },
+  {
+    value: 'personal-token',
+    label: 'personal token',
+    helper: 'bind to a user-owned PAT or API key',
+  },
   { value: 'oauth', label: 'oauth', helper: 'interactive or refresh-token backed access' },
   { value: 'mtls', label: 'mtls', helper: 'client certificate bound transport' },
   { value: 'shared-secret', label: 'shared secret', helper: 'shared API secret or gateway key' },
@@ -203,7 +192,11 @@ function authMeta(method: AuthMethod) {
   return AUTH_OPTIONS.find((option) => option.value === method) ?? AUTH_OPTIONS[0]!;
 }
 
-function scopeBadge(instance: InstanceRecord): { label: string; icon: typeof Shield; tone: string } {
+function scopeBadge(instance: InstanceRecord): {
+  label: string;
+  icon: typeof Shield;
+  tone: string;
+} {
   if (instance.visibility === 'tenant') {
     return {
       label: 'tenant',
@@ -418,7 +411,8 @@ function HealthStrip({ history }: { history: HealthSnapshot[] }) {
   );
 
   const healthyCount = history.filter((entry) => entry.ok).length;
-  const percentage = history.length > 0 ? Math.round((healthyCount / history.length) * 1000) / 10 : null;
+  const percentage =
+    history.length > 0 ? Math.round((healthyCount / history.length) * 1000) / 10 : null;
 
   return (
     <div className="niuu-space-y-2.5">
@@ -458,11 +452,7 @@ function HealthStrip({ history }: { history: HealthSnapshot[] }) {
   );
 }
 
-function WizardProgress({
-  current,
-}: {
-  current: WizardStep;
-}) {
+function WizardProgress({ current }: { current: WizardStep }) {
   return (
     <div className="niuu-flex niuu-items-center niuu-gap-2">
       {[1, 2, 3].map((step, index) => (
@@ -575,7 +565,9 @@ function InstanceCard({
           <div className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
             auth
           </div>
-          <div className="niuu-mt-1 niuu-truncate niuu-text-text-secondary">{inferAuth(instance)}</div>
+          <div className="niuu-mt-1 niuu-truncate niuu-text-text-secondary">
+            {inferAuth(instance)}
+          </div>
         </div>
       </div>
 
@@ -653,7 +645,9 @@ function GuildDetailRail({
           <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
             endpoint
           </dt>
-          <dd className="niuu-font-mono niuu-break-all niuu-text-text-primary">{instance.baseUrl}</dd>
+          <dd className="niuu-font-mono niuu-break-all niuu-text-text-primary">
+            {instance.baseUrl}
+          </dd>
 
           <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
             region
@@ -751,7 +745,11 @@ function GuildDetailRail({
               disabled={isTesting}
               className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-[12px] niuu-text-text-primary hover:niuu-bg-bg-tertiary disabled:niuu-opacity-50"
             >
-              {health?.ok ? <Wifi className="niuu-h-4 niuu-w-4" /> : <WifiOff className="niuu-h-4 niuu-w-4" />}
+              {health?.ok ? (
+                <Wifi className="niuu-h-4 niuu-w-4" />
+              ) : (
+                <WifiOff className="niuu-h-4 niuu-w-4" />
+              )}
               test endpoint
             </button>
             <button
@@ -766,8 +764,12 @@ function GuildDetailRail({
           {openPath ? (
             <a
               href={openPath}
-              target={instance.kind === 'volundr' || instance.kind === 'ting' ? undefined : '_blank'}
-              rel={instance.kind === 'volundr' || instance.kind === 'ting' ? undefined : 'noreferrer'}
+              target={
+                instance.kind === 'volundr' || instance.kind === 'ting' ? undefined : '_blank'
+              }
+              rel={
+                instance.kind === 'volundr' || instance.kind === 'ting' ? undefined : 'noreferrer'
+              }
               className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-brand/35 niuu-bg-brand/12 niuu-px-3 niuu-py-2 niuu-text-[12px] niuu-text-brand hover:niuu-bg-brand/18"
             >
               open in {meta.label}
@@ -997,8 +999,7 @@ function RegisterWizard({
                     { value: 'user', label: 'personal' },
                     { value: 'tenant', label: 'tenant' },
                   ].map((option) => {
-                    const disabled =
-                      (option.value === 'tenant' && !canCreateTenantScope) || false;
+                    const disabled = (option.value === 'tenant' && !canCreateTenantScope) || false;
                     return (
                       <button
                         key={option.value}
@@ -1028,7 +1029,9 @@ function RegisterWizard({
                 {wizard.credentialScope !== 'none' ? (
                   <div className="niuu-space-y-1.5">
                     <label className="niuu-block niuu-text-[12px] niuu-font-medium niuu-text-text-secondary">
-                      {wizard.credentialScope === 'tenant' ? 'tenant credential' : 'personal credential'}
+                      {wizard.credentialScope === 'tenant'
+                        ? 'tenant credential'
+                        : 'personal credential'}
                     </label>
                     <select
                       value={wizard.credentialName}
@@ -1061,7 +1064,9 @@ function RegisterWizard({
           {step === 3 ? (
             <div className="niuu-space-y-4">
               <div className="niuu-space-y-2">
-                <div className="niuu-text-[13px] niuu-font-medium niuu-text-text-secondary">scope</div>
+                <div className="niuu-text-[13px] niuu-font-medium niuu-text-text-secondary">
+                  scope
+                </div>
                 <div className="niuu-grid niuu-gap-3 sm:niuu-grid-cols-3">
                   {SCOPE_OPTIONS.map((option) => {
                     const disabled =
@@ -1137,10 +1142,10 @@ function RegisterWizard({
                   </dt>
                   <dd className="niuu-text-text-primary">
                     {wizard.visibility === 'tenant'
-                      ? currentIdentity?.tenantId ?? 'current tenant'
+                      ? (currentIdentity?.tenantId ?? 'current tenant')
                       : wizard.visibility === 'system'
                         ? 'system'
-                        : currentIdentity?.userId ?? 'current user'}
+                        : (currentIdentity?.userId ?? 'current user')}
                   </dd>
                 </dl>
               </div>
@@ -1218,15 +1223,18 @@ export function GuildPage() {
   const canCreateTenantScope = Boolean(currentIdentity?.tenantId);
   const canCreateSystemScope = currentIdentity?.roles.includes('volundr:admin') ?? false;
 
-  const makeDefaultWizard = (): WizardState => ({
-    kind: 'volundr',
-    name: '',
-    baseUrl: '',
-    authMethod: 'service-account',
-    credentialScope: 'none',
-    credentialName: '',
-    visibility: canCreateTenantScope ? 'tenant' : 'user',
-  });
+  const makeDefaultWizard = useCallback(
+    (): WizardState => ({
+      kind: 'volundr',
+      name: '',
+      baseUrl: '',
+      authMethod: 'service-account',
+      credentialScope: 'none',
+      credentialName: '',
+      visibility: canCreateTenantScope ? 'tenant' : 'user',
+    }),
+    [canCreateTenantScope],
+  );
 
   const location = useRouterState({ select: (state) => state.location });
   const pathname = location.pathname;
@@ -1248,9 +1256,9 @@ export function GuildPage() {
     return params.get('register') === '1';
   }, [location.search]);
 
-  const resetWizard = () => {
+  const resetWizard = useCallback(() => {
     setWizard(makeDefaultWizard());
-  };
+  }, [makeDefaultWizard]);
 
   const instancesQuery = useQuery({
     queryKey: ['guild-instances'],
@@ -1324,8 +1332,8 @@ export function GuildPage() {
     },
   });
 
-  const instances = instancesQuery.data ?? [];
-  const catalogEntries = catalogQuery.data ?? [];
+  const instances = useMemo(() => instancesQuery.data ?? [], [instancesQuery.data]);
+  const catalogEntries = useMemo(() => catalogQuery.data ?? [], [catalogQuery.data]);
   const filterOptions = useMemo(
     () =>
       catalogEntries.length > 0
@@ -1378,7 +1386,7 @@ export function GuildPage() {
     if (!registerRequested) {
       resetWizard();
     }
-  }, [registerRequested]);
+  }, [registerRequested, resetWizard]);
 
   const countsByKind = useMemo(() => {
     const counts: Record<'all' | InstanceKind, number> = {
@@ -1431,8 +1439,8 @@ export function GuildPage() {
     filteredInstances.find((instance) => instance.id === selectedId) ??
     filteredInstances[0] ??
     null;
-  const selectedHealth = selectedInstance ? healthById[selectedInstance.id] ?? null : null;
-  const selectedHistory = selectedInstance ? healthHistory[selectedInstance.id] ?? [] : [];
+  const selectedHealth = selectedInstance ? (healthById[selectedInstance.id] ?? null) : null;
+  const selectedHistory = selectedInstance ? (healthHistory[selectedInstance.id] ?? []) : [];
 
   useEffect(() => {
     if (!selectedInstance || healthMutation.isPending) return;
@@ -1469,7 +1477,9 @@ export function GuildPage() {
               </div>
               <div>
                 <div className="niuu-flex niuu-items-center niuu-gap-2">
-                  <h1 className="niuu-text-[22px] niuu-font-semibold niuu-text-text-primary">Guild</h1>
+                  <h1 className="niuu-text-[22px] niuu-font-semibold niuu-text-text-primary">
+                    Guild
+                  </h1>
                   <span className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-faint">
                     niuu runtime registry
                   </span>
@@ -1506,29 +1516,27 @@ export function GuildPage() {
                       label: option.label,
                       rune: option.rune,
                     })),
-                  ].map(
-                    (option) => {
-                      const active = kindFilter === option.value;
-                      const count = countsByKind[option.value as 'all' | InstanceKind];
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => setKindFilter(option.value)}
-                          className={cn(
-                            'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-full niuu-border niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-transition-colors',
-                            active
-                              ? 'niuu-border-brand/35 niuu-bg-brand/12 niuu-text-brand'
-                              : 'niuu-border-border-subtle niuu-bg-bg-tertiary niuu-text-text-muted hover:niuu-text-text-primary',
-                          )}
-                        >
-                          <Rune glyph={option.rune} size={13} className="niuu-text-current" />
-                          <span>{option.label}</span>
-                          <span className="niuu-text-[10px] niuu-text-text-faint">{count}</span>
-                        </button>
-                      );
-                    },
-                  )}
+                  ].map((option) => {
+                    const active = kindFilter === option.value;
+                    const count = countsByKind[option.value as 'all' | InstanceKind];
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setKindFilter(option.value)}
+                        className={cn(
+                          'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-full niuu-border niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-transition-colors',
+                          active
+                            ? 'niuu-border-brand/35 niuu-bg-brand/12 niuu-text-brand'
+                            : 'niuu-border-border-subtle niuu-bg-bg-tertiary niuu-text-text-muted hover:niuu-text-text-primary',
+                        )}
+                      >
+                        <Rune glyph={option.rune} size={13} className="niuu-text-current" />
+                        <span>{option.label}</span>
+                        <span className="niuu-text-[10px] niuu-text-text-faint">{count}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </section>
@@ -1549,9 +1557,7 @@ export function GuildPage() {
               <section
                 className={cn(
                   'niuu-grid niuu-gap-5',
-                  detailOpen
-                    ? 'xl:niuu-grid-cols-[minmax(0,1.55fr)_360px]'
-                    : 'niuu-grid-cols-1',
+                  detailOpen ? 'xl:niuu-grid-cols-[minmax(0,1.55fr)_360px]' : 'niuu-grid-cols-1',
                 )}
               >
                 <div className="niuu-space-y-4">
@@ -1658,7 +1664,9 @@ export function GuildPage() {
                       </div>
                     </div>
                     <div className="niuu-text-text-secondary">{scopeBadge(instance).label}</div>
-                    <div className="niuu-truncate niuu-text-text-secondary">{scopeSummary(instance)}</div>
+                    <div className="niuu-truncate niuu-text-text-secondary">
+                      {scopeSummary(instance)}
+                    </div>
                   </div>
                 ))}
               </div>

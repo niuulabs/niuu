@@ -15,24 +15,22 @@ function GuildTopbar() {
   const navigate = useNavigate();
   const location = useRouterState({ select: (state) => state.location });
 
-  return (
-    createElement(
-      'button',
-      {
-        type: 'button',
-        onClick: () => {
-          const params = new URLSearchParams(location.search);
-          params.set('register', '1');
-          void navigate({
-            to: location.pathname,
-            search: params.toString() ? `?${params.toString()}` : '',
-          });
-        },
-        className:
-          'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-brand/35 niuu-bg-brand/12 niuu-px-3 niuu-py-1.5 niuu-text-[12px] niuu-font-medium niuu-text-brand hover:niuu-bg-brand/18',
+  return createElement(
+    'button',
+    {
+      type: 'button',
+      onClick: () => {
+        const params = new URLSearchParams(location.search);
+        params.set('register', '1');
+        void navigate({
+          to: location.pathname,
+          search: params.toString() ? `?${params.toString()}` : '',
+        });
       },
-      '+ register',
-    )
+      className:
+        'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-brand/35 niuu-bg-brand/12 niuu-px-3 niuu-py-1.5 niuu-text-[12px] niuu-font-medium niuu-text-brand hover:niuu-bg-brand/18',
+    },
+    '+ register',
   );
 }
 
