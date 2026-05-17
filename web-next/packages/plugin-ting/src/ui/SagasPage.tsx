@@ -98,8 +98,8 @@ function confidenceTone(value: number): string {
 
 function relTime(date: string): string {
   const diffMs = Date.now() - new Date(date).getTime();
-  const days = Math.max(1, Math.floor(diffMs / 86_400_000));
-  if (days < 1) return 'today';
+  if (diffMs < 86_400_000) return 'today';
+  const days = Math.floor(diffMs / 86_400_000);
   return `${days}d ago`;
 }
 

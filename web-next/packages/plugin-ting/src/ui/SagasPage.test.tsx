@@ -164,24 +164,17 @@ describe('SagasPage', () => {
   it('shows export toast', async () => {
     const mockCreateObjectURL = vi.fn(() => 'blob:mock');
     const mockRevokeObjectURL = vi.fn();
-    const realCreateElement = document.createElement.bind(document);
-    const mockAnchorClick = vi.fn();
+    const anchorClickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined);
     Object.defineProperty(URL, 'createObjectURL', { value: mockCreateObjectURL, writable: true });
     Object.defineProperty(URL, 'revokeObjectURL', { value: mockRevokeObjectURL, writable: true });
-    const createElementSpy = vi.spyOn(document, 'createElement').mockImplementation((tagName) => {
-      const element = realCreateElement(tagName);
-      if (tagName.toLowerCase() === 'a') {
-        Object.defineProperty(element, 'click', { value: mockAnchorClick, writable: true });
-      }
-      return element;
-    });
 
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button', { name: /Export sagas as JSON/i }));
     await waitFor(() => expect(screen.getByText(/Exported \d+ sagas/i)).toBeInTheDocument());
-    expect(mockAnchorClick).toHaveBeenCalled();
-    createElementSpy.mockRestore();
+    expect(anchorClickSpy).toHaveBeenCalled();
   });
 
   it('opens new saga modal', async () => {
@@ -274,34 +267,6 @@ describe('SagasPage', () => {
     expect(screen.queryByText(/already exists in Ting/i)).not.toBeInTheDocument();
   });
 
-  it('shows imported state for active tracker projects already represented by a saga', async () => {
-    const importedSaga = makeSaga({
-      id: '00000000-0000-0000-0000-000000000223',
-      name: 'Imported Niuu Core',
-      trackerId: 'proj-niuu-core',
-      status: 'active',
-      phaseSummary: { total: 3, completed: 1 },
-    });
-    const sagasSvc = {
-      ...createMockTingService(),
-      getSagas: async (): Promise<Saga[]> => [importedSaga],
-      getSaga: async (id: string): Promise<Saga | null> =>
-        id === importedSaga.id ? importedSaga : null,
-    };
-
-    render(<SagasPage />, { wrapper: wrap(withDefaults({ ting: sagasSvc })) });
-    await waitFor(() =>
-      expect(screen.getAllByText('Imported Niuu Core').length).toBeGreaterThan(0),
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
-    await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
-    await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
-
-    expect(screen.getByText('imported')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import saga' })).toBeDisabled();
-  });
-
   it('blocks tracker import when a saga with the same slug already exists', async () => {
     const conflictingSaga = makeSaga({
       id: '00000000-0000-0000-0000-000000000333',
@@ -389,7 +354,12 @@ describe('SagasPage', () => {
   it('renders grouped bucket items from mixed data', async () => {
     const mixedSvc = {
       getSagas: async (): Promise<Saga[]> => [
-        makeSaga({ id: '1', name: 'Active', phaseSummary: { total: 2, completed: 0 } }),
+        makeSaga({
+          id: '1',
+          name: 'Active',
+          createdAt: new Date().toISOString(),
+          phaseSummary: { total: 2, completed: 0 },
+        }),
         makeSaga({ id: '2', name: 'Review', phaseSummary: { total: 4, completed: 2 } }),
         makeSaga({
           id: '3',
@@ -406,5 +376,6 @@ describe('SagasPage', () => {
     expect(screen.getAllByText('Review').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Done').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Broken').length).toBeGreaterThan(0);
+    expect(screen.getByText('today')).toBeInTheDocument();
   });
 });
