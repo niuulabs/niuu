@@ -4,10 +4,13 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 from fastapi import FastAPI
 
+from niuu.domain.model_catalog import ManagedModel
+from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.config import Settings
-from volundr.main import create_app
+from volundr.main import _load_bifrost_catalog, create_app
 
 
 class TestCreateApp:
@@ -116,6 +119,56 @@ class TestLifespan:
             with TestClient(app) as client:
                 response = client.get("/health")
                 assert response.status_code == 200
+
+
+class TestBifrostCatalogLoading:
+    """Tests for background Bifrost catalog refresh behavior."""
+
+    @pytest.mark.asyncio
+    async def test_load_bifrost_catalog_populates_provider(self):
+        provider = HardcodedPricingProvider()
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(
+                    return_value=[ManagedModel(id="gpt-5", name="GPT-5", vendor="openai")]
+                ),
+            },
+        )()
+
+        await _load_bifrost_catalog(provider, catalog)
+
+        assert [model.id for model in provider.list_models()] == ["gpt-5"]
+
+    @pytest.mark.asyncio
+    async def test_load_bifrost_catalog_retries_until_catalog_is_ready(self):
+        provider = HardcodedPricingProvider()
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(
+                    side_effect=[
+                        httpx.ConnectError("not ready"),
+                        [ManagedModel(id="gpt-5.5", name="GPT-5.5", vendor="openai")],
+                    ]
+                ),
+            },
+        )()
+
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch("volundr.main.asyncio.sleep", side_effect=fake_sleep):
+            await _load_bifrost_catalog(provider, catalog)
+
+        assert sleep_calls == [0.1]
+        assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
 
     def test_lifespan_does_not_block_on_unavailable_bifrost_catalog_startup(self):
         """Volundr should boot and keep retrying when Bifrost is not ready yet."""

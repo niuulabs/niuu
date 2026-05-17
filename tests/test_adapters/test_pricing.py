@@ -72,3 +72,34 @@ class TestHardcodedPricingProvider:
         local = [m for m in models if m.provider == ModelProvider.LOCAL]
         for model in local:
             assert model.vram_required is not None
+
+    def test_replace_models_replaces_existing_catalog(self):
+        provider = HardcodedPricingProvider(
+            [
+                ManagedModelConfig(
+                    id="claude-opus-4-6",
+                    name="Opus 4.6",
+                    cost_per_million_tokens=15.0,
+                )
+            ]
+        )
+
+        provider.replace_models(
+            [
+                ManagedModelConfig(
+                    id="llama3.2:latest",
+                    name="Llama 3.2",
+                    provider="local",
+                    vram_required="24GB",
+                    session_definition="skuldCodex",
+                )
+            ]
+        )
+
+        assert provider.get_price("claude-opus-4-6") is None
+        models = provider.list_models()
+        assert len(models) == 1
+        assert models[0].id == "llama3.2:latest"
+        assert models[0].provider == ModelProvider.LOCAL
+        assert models[0].vram_required == "24GB"
+        assert models[0].session_definition == "skuldCodex"
