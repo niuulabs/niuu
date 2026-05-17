@@ -394,7 +394,7 @@ async def test_transient_provider_error_does_not_retry_after_visible_output(
                         text=(
                             "API Error: 500 Internal server error. This is a server-side issue, "
                             "usually temporary — try again in a moment. If it persists, "
-                            "check status.claude.com."
+                            "check the provider status page."
                         )
                     )
                 ),
@@ -402,7 +402,7 @@ async def test_transient_provider_error_does_not_retry_after_visible_output(
                     result=(
                         "API Error: 500 Internal server error. This is a server-side issue, "
                         "usually temporary — try again in a moment. If it persists, "
-                        "check status.claude.com."
+                        "check the provider status page."
                     ),
                     is_error=True,
                 ),
@@ -429,8 +429,8 @@ async def test_transient_provider_error_does_not_retry_after_visible_output(
     assert factory.client is not None
     assert factory.client.query.await_count == 1
     assert [event["type"] for event in received] == ["assistant", "result"]
-    assert "status.claude.com" in received[0]["message"]["content"][0]["text"]
-    assert "status.claude.com" in received[1]["result"]
+    assert "provider status page" in received[0]["message"]["content"][0]["text"]
+    assert "provider status page" in received[1]["result"]
 
 
 @pytest.mark.asyncio
@@ -911,8 +911,8 @@ def test_pending_steers_and_visibility_helpers() -> None:
         {"type": "content_block_delta", "delta": {"thinking": "plan"}}
     ) is True
     assert transport._should_retry_transient_result(
-        _result_message(result="status.claude.com says overloaded", is_error=True),
-        {"type": "result", "result": "status.claude.com says overloaded"},
+        _result_message(result="provider status page says overloaded", is_error=True),
+        {"type": "result", "result": "provider status page says overloaded"},
     ) is True
     assert transport._should_retry_transient_result(
         _result_message(result="hard failure", is_error=False),
