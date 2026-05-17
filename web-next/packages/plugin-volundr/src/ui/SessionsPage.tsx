@@ -16,7 +16,7 @@ interface PodGroupDef {
   states: SessionState[];
 }
 
-type SidebarMode = 'state' | 'repo';
+type SidebarMode = 'state' | 'repo' | 'forge';
 
 interface SessionSection {
   label: string;
@@ -116,6 +116,31 @@ function groupByRepo(sessions: Session[]): SessionSection[] {
     }));
 }
 
+function forgeGroupLabel(session: Session): string {
+  return session.clusterName ?? session.clusterId ?? 'unknown forge';
+}
+
+function groupByForge(sessions: Session[]): SessionSection[] {
+  const grouped = new Map<string, Session[]>();
+
+  for (const session of sessions) {
+    const label = forgeGroupLabel(session);
+    const bucket = grouped.get(label);
+    if (bucket) {
+      bucket.push(session);
+    } else {
+      grouped.set(label, [session]);
+    }
+  }
+
+  return [...grouped.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([label, groupedSessions]) => ({
+      label,
+      sessions: [...groupedSessions].sort(compareSessionsByActivity),
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // PodEntry — a single session row in the sidebar
 // ---------------------------------------------------------------------------
@@ -138,6 +163,7 @@ function PodEntry({
   const sourceParts =
     previewLabel && looksLikeRepoLabel(previewLabel) ? compactSourceParts(previewLabel) : null;
   const showPreviewFallback = previewLabel && !sourceParts;
+  const forgeLabel = session.clusterName ?? session.clusterId;
   return (
     <button
       type="button"
@@ -165,6 +191,17 @@ function PodEntry({
                 >
                   <Ticket className="niuu-h-3 niuu-w-3 niuu-flex-shrink-0 niuu-text-text-faint" />
                   <span className="niuu-truncate niuu-text-brand">{trackerLabel}</span>
+                </span>
+              ) : null}
+              {forgeLabel ? (
+                <span
+                  className="niuu-inline-flex niuu-min-w-0 niuu-items-center niuu-gap-1.5 niuu-rounded-full niuu-border niuu-border-brand/20 niuu-bg-brand/10 niuu-px-2 niuu-py-0.5"
+                  title={forgeLabel}
+                >
+                  <span className="niuu-text-[9px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+                    forge
+                  </span>
+                  <span className="niuu-truncate niuu-text-brand">{forgeLabel}</span>
                 </span>
               ) : null}
               {sourceParts ? (
@@ -268,7 +305,9 @@ export function SessionsPage() {
       (s) =>
         s.id.toLowerCase().includes(q) ||
         s.personaName.toLowerCase().includes(q) ||
-        s.preview?.toLowerCase().includes(q),
+        s.preview?.toLowerCase().includes(q) ||
+        s.clusterName?.toLowerCase().includes(q) ||
+        s.clusterId?.toLowerCase().includes(q),
     );
   }, [allSessions, searchQuery]);
 
@@ -279,6 +318,9 @@ export function SessionsPage() {
   const sidebarGroups = useMemo<SessionSection[]>(() => {
     if (sidebarMode === 'repo') {
       return groupByRepo(filteredSessions);
+    }
+    if (sidebarMode === 'forge') {
+      return groupByForge(filteredSessions);
     }
     return POD_GROUPS.map((g) => ({
       label: g.label,
@@ -378,7 +420,7 @@ export function SessionsPage() {
                 className="niuu-inline-flex niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-p-0.5"
                 data-testid="pod-group-mode"
               >
-                {(['state', 'repo'] as const).map((mode) => {
+                {(['state', 'repo', 'forge'] as const).map((mode) => {
                   const active = sidebarMode === mode;
                   return (
                     <button
@@ -409,7 +451,7 @@ export function SessionsPage() {
                 />
                 <input
                   type="search"
-                  placeholder="filter by name / repo / branch"
+                  placeholder="filter by name / repo / branch / forge"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="niuu-min-w-0 niuu-flex-1 niuu-bg-transparent niuu-py-0.5 niuu-text-[11px] niuu-text-text-primary placeholder:niuu-text-text-muted focus:niuu-outline-none"

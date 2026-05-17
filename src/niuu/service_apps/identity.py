@@ -52,12 +52,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user_repository = PostgresUserRepository(pool)
             tenant_repository = PostgresTenantRepository(pool)
             storage_adapter = create_storage_adapter(settings)
+            tenant_service = TenantService(tenant_repository, user_repository)
             identity_adapter = create_identity_adapter(
                 settings,
                 user_repository,
                 storage=storage_adapter,
+                tenant_service=tenant_service,
             )
-            tenant_service = TenantService(tenant_repository, user_repository)
             await tenant_service.ensure_default_tenant()
             pat_repository = PostgresPATRepository(pool)
             pat_validator = create_pat_validator(settings, pat_repository)

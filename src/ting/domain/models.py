@@ -109,6 +109,7 @@ class Saga:
     workflow_id: UUID | None = None
     workflow_version: str | None = None
     workflow_snapshot: dict[str, Any] | None = None
+    instance_id: str | None = None
 
 
 @dataclass(frozen=True)

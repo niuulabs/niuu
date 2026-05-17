@@ -965,6 +965,14 @@ def create_router(
 
         return principal
 
+    def _strict_identity_enabled(request: Request) -> bool:
+        identity = getattr(request.app.state, "identity", None)
+        if identity is None:
+            return False
+        from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
+
+        return not isinstance(identity, AllowAllIdentityAdapter)
+
     @router.get("/feature-flags", tags=["Features"])
     async def get_feature_flags(request: Request) -> dict:
         """Return feature flags derived from server configuration.
@@ -1032,6 +1040,8 @@ def create_router(
     ) -> list[SessionResponse]:
         """List all sessions. Archived sessions are excluded by default."""
         principal = await _optional_principal(request)
+        if principal is None and _strict_identity_enabled(request):
+            return []
         sessions = await forge.list_sessions(
             status=status_filter,
             include_archived=include_archived,
@@ -1468,8 +1478,12 @@ def create_router(
         return [ModelInfo.from_model(m) for m in models]
 
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
-    async def get_stats() -> StatsResponse:
+    async def get_stats(request: Request) -> StatsResponse:
         """Get aggregate statistics for the dashboard."""
+        if _strict_identity_enabled(request):
+            principal = await _optional_principal(request)
+            if principal is None:
+                return StatsResponse()
         try:
             stats = await forge.get_stats()
         except RuntimeError as exc:

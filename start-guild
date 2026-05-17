@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_DIR="${ROOT_DIR}/build/guild-run"
 LOG_DIR="${RUN_DIR}/logs"
 CONFIG_DIR="${ROOT_DIR}/scripts/setups/configs"
-
-mkdir -p "${LOG_DIR}"
+USER_CONFIG_PATH="${HOME}/.niuu/config.yaml"
+MERGED_CONFIG_DIR="${RUN_DIR}/configs"
 
 require_tool() {
   local tool="$1"
@@ -59,6 +59,14 @@ launch_instance() {
   local state_dir="${RUN_DIR}/${label}"
   local pid_file="${RUN_DIR}/${label}.pid"
   local log_file="${LOG_DIR}/${label}.log"
+  local sdk_port_start
+
+  case "${label}" in
+    guild-alpha) sdk_port_start="9100" ;;
+    guild-beta) sdk_port_start="9200" ;;
+    guild-central) sdk_port_start="9300" ;;
+    *) sdk_port_start="9400" ;;
+  esac
 
   mkdir -p "${state_dir}/workspaces"
 
@@ -69,6 +77,7 @@ launch_instance() {
   HOST_PROFILE="${host_profile}" \
   WEB_MODE="${web_mode}" \
   STATE_DIR="${state_dir}" \
+  SDK_PORT_START="${sdk_port_start}" \
   PID_FILE="${pid_file}" \
   LOG_FILE="${log_file}" \
   PYTHONUNBUFFERED=1 \
@@ -84,6 +93,7 @@ config_path = os.environ["CONFIG_PATH"]
 host_profile = os.environ["HOST_PROFILE"]
 web_mode = os.environ["WEB_MODE"]
 state_dir = Path(os.environ["STATE_DIR"])
+sdk_port_start = os.environ["SDK_PORT_START"]
 pid_file = Path(os.environ["PID_FILE"])
 log_file = Path(os.environ["LOG_FILE"])
 
@@ -94,6 +104,8 @@ env["NIUU_SERVER__PORT"] = port
 env["NIUU_CONFIG"] = config_path
 env["NIUU_PGDATA_DIR"] = str(state_dir / "pgdata")
 env["NIUU_POD_MANAGER__WORKSPACES_DIR"] = str(state_dir / "workspaces")
+env["NIUU_POD_MANAGER__STATE_FILE"] = str(state_dir / "forge-state.json")
+env["NIUU_POD_MANAGER__SDK_PORT_START"] = sdk_port_start
 env["NIUU_FORGE_STATE_FILE"] = str(state_dir / "forge-state.json")
 
 command = [
@@ -131,6 +143,8 @@ ensure_uv
 ensure_pnpm
 
 "${ROOT_DIR}/stop-guild" >/dev/null 2>&1 || true
+rm -rf "${RUN_DIR}"
+mkdir -p "${LOG_DIR}"
 
 echo "Preparing guild workspace..."
 uv sync --extra dev
@@ -142,17 +156,30 @@ pnpm --dir "${ROOT_DIR}/web-next" -r --filter "@niuulabs/*" --filter "!@niuulabs
   pnpm exec vite build
 )
 
+echo "Merging guild configs with ~/.niuu defaults..."
+uv run python "${ROOT_DIR}/scripts/guild_bootstrap.py" merge-configs \
+  --base-config "${USER_CONFIG_PATH}" \
+  --worker-overlay "${CONFIG_DIR}/guild-worker.yaml" \
+  --central-overlay "${CONFIG_DIR}/guild-central.yaml" \
+  --output-dir "${MERGED_CONFIG_DIR}"
+
 echo "Starting Guild Alpha on :8181..."
-launch_instance "guild-alpha" "8181" "${CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
+launch_instance "guild-alpha" "8181" "${MERGED_CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
 wait_for_url "http://127.0.0.1:8181/health" "Guild Alpha"
 
 echo "Starting Guild Beta on :8282..."
-launch_instance "guild-beta" "8282" "${CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
+launch_instance "guild-beta" "8282" "${MERGED_CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
 wait_for_url "http://127.0.0.1:8282/health" "Guild Beta"
 
 echo "Starting central guild shell on :8080..."
-launch_instance "guild-central" "8080" "${CONFIG_DIR}/guild-central.yaml" "full" "web"
+launch_instance "guild-central" "8080" "${MERGED_CONFIG_DIR}/guild-central.yaml" "full" "web"
 wait_for_url "http://127.0.0.1:8080/health" "Guild shell"
+
+echo "Seeding guild dev integrations..."
+uv run python "${ROOT_DIR}/scripts/guild_bootstrap.py" seed-dev-integrations \
+  --base-url "http://127.0.0.1:8080" \
+  --base-config "${USER_CONFIG_PATH}" \
+  --users-json '[["guild-user-a","tenant-a"],["guild-user-b","tenant-b"]]'
 
 cat <<EOF
 Ready.

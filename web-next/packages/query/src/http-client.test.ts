@@ -1,5 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createApiClient, setTokenProvider, getAccessToken, ApiClientError } from './http-client';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
+import {
+  createApiClient,
+  setTokenProvider,
+  getAccessToken,
+  getAuthHeaders,
+  withAuthQuery,
+  ApiClientError,
+} from './http-client';
 
 function makeFetch(status: number, body: unknown, ok = status >= 200 && status < 300) {
   return vi.fn().mockResolvedValue({
@@ -10,7 +17,18 @@ function makeFetch(status: number, body: unknown, ok = status >= 200 && status <
 }
 
 describe('setTokenProvider / getAccessToken', () => {
+  const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/');
+    window.sessionStorage.clear();
+  });
+
   afterEach(() => setTokenProvider(null));
+  afterAll(() => {
+    window.history.replaceState({}, '', originalPath);
+    window.sessionStorage.clear();
+  });
 
   it('returns null when no provider is set', () => {
     setTokenProvider(null);
@@ -26,6 +44,48 @@ describe('setTokenProvider / getAccessToken', () => {
     setTokenProvider(() => 'tok');
     setTokenProvider(null);
     expect(getAccessToken()).toBeNull();
+  });
+
+  it('builds x-auth headers from local dev identity query params', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?devUserId=guild-user-a&devTenantId=tenant-a&devEmail=a%40example.com&devRoles=volundr%3Adeveloper%2Cvolundr%3Aviewer',
+    );
+    const headers = getAuthHeaders();
+    expect(headers.get('x-auth-user-id')).toBe('guild-user-a');
+    expect(headers.get('x-auth-tenant')).toBe('tenant-a');
+    expect(headers.get('x-auth-email')).toBe('a@example.com');
+    expect(headers.get('x-auth-roles')).toBe('volundr:developer,volundr:viewer');
+  });
+
+  it('adds dev identity query params to websocket urls when no token exists', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?devUserId=guild-user-b&devTenantId=tenant-b&devRoles=volundr%3Adeveloper',
+    );
+    expect(withAuthQuery('ws://127.0.0.1:8080/s/abc/session')).toBe(
+      'ws://127.0.0.1:8080/s/abc/session?devUserId=guild-user-b&devTenantId=tenant-b&devRoles=volundr%3Adeveloper',
+    );
+  });
+
+  it('remembers local dev identity across navigation without the query string', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?devUserId=guild-user-a&devTenantId=tenant-a&devEmail=a%40example.com&devRoles=volundr%3Adeveloper',
+    );
+    expect(getAuthHeaders().get('x-auth-user-id')).toBe('guild-user-a');
+
+    window.history.replaceState({}, '', '/volundr/session/sess-1');
+
+    const headers = getAuthHeaders();
+    expect(headers.get('x-auth-user-id')).toBe('guild-user-a');
+    expect(headers.get('x-auth-tenant')).toBe('tenant-a');
+    expect(withAuthQuery('ws://127.0.0.1:8080/s/abc/session')).toBe(
+      'ws://127.0.0.1:8080/s/abc/session?devUserId=guild-user-a&devEmail=a%40example.com&devTenantId=tenant-a&devRoles=volundr%3Adeveloper',
+    );
   });
 });
 
@@ -115,7 +175,7 @@ describe('createApiClient', () => {
     const client = createApiClient(BASE);
     await client.get('/items');
     const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect((opts.headers as Record<string, string>)['Authorization']).toBe('Bearer bearer-xyz');
+    expect((opts.headers as Headers).get('Authorization')).toBe('Bearer bearer-xyz');
   });
 
   it('omits Authorization header when token is null', async () => {
@@ -123,7 +183,7 @@ describe('createApiClient', () => {
     const client = createApiClient(BASE);
     await client.get('/items');
     const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect((opts.headers as Record<string, string>)['Authorization']).toBeUndefined();
+    expect((opts.headers as Headers).get('Authorization')).toBeNull();
   });
 
   it('returns undefined for 204 No Content without parsing body', async () => {

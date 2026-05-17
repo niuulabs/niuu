@@ -64,8 +64,9 @@ class NativeTrackerAdapter(TrackerPort):
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
                  repos, feature_branch, base_branch, status, confidence, created_at,
-                 owner_id, workflow_id, workflow_version, workflow_snapshot)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+                 owner_id, workflow_id, workflow_version, workflow_snapshot, instance_id)
+            VALUES
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -79,7 +80,8 @@ class NativeTrackerAdapter(TrackerPort):
                 owner_id = EXCLUDED.owner_id,
                 workflow_id = EXCLUDED.workflow_id,
                 workflow_version = EXCLUDED.workflow_version,
-                workflow_snapshot = EXCLUDED.workflow_snapshot
+                workflow_snapshot = EXCLUDED.workflow_snapshot,
+                instance_id = EXCLUDED.instance_id
             """,
             saga.id,
             tracker_id,
@@ -96,6 +98,7 @@ class NativeTrackerAdapter(TrackerPort):
             saga.workflow_id,
             saga.workflow_version,
             json.dumps(saga.workflow_snapshot) if saga.workflow_snapshot is not None else None,
+            saga.instance_id,
         )
         return tracker_id
 
@@ -525,6 +528,13 @@ class NativeTrackerAdapter(TrackerPort):
             confidence=row["confidence"] or 0.0,
             created_at=row["created_at"] or datetime.now(UTC),
             base_branch=row["base_branch"],
+            owner_id=row.get("owner_id") or "",
+            workflow_id=row.get("workflow_id"),
+            workflow_version=row.get("workflow_version"),
+            workflow_snapshot=json.loads(row["workflow_snapshot"])
+            if isinstance(row.get("workflow_snapshot"), str)
+            else (dict(row["workflow_snapshot"]) if row.get("workflow_snapshot") else None),
+            instance_id=str(row["instance_id"]) if row.get("instance_id") is not None else None,
         )
 
     @staticmethod

@@ -62,6 +62,7 @@ const RUNNING_SESSION: VolundrSession = {
   messageCount: 10,
   tokensUsed: 5000,
   hostname: 'skuld-test.local',
+  instanceName: 'Guild Alpha',
   chatEndpoint: 'wss://skuld-test.local/session',
 };
 
@@ -551,6 +552,13 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('Tokens')).toBeInTheDocument();
+    });
+
+    it('shows Forge metric with the instance name', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByText('Forge')).toBeInTheDocument();
+      expect(screen.getByText('Guild Alpha')).toBeInTheDocument();
     });
   });
 });

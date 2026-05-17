@@ -55,22 +55,26 @@ import type { Workflow } from '../domain/workflow';
 interface RawSaga {
   id: string;
   tracker_id: string;
-  tracker_type: string;
-  slug: string;
+  tracker_type?: string;
+  slug?: string;
   name: string;
   repos: string[];
   feature_branch: string;
   base_branch?: string;
   status: string;
-  confidence: number;
+  confidence?: number;
   created_at: string;
   workflow_id?: string | null;
   workflow?: string | null;
   workflow_version?: string | null;
-  phase_summary: {
+  instance_id?: string | null;
+  instance_name?: string | null;
+  phase_summary?: {
     total: number;
     completed: number;
-  };
+  } | null;
+  phase_count?: number;
+  run_count?: number;
 }
 
 interface RawRun {
@@ -229,6 +233,7 @@ interface RawDispatchQueueItem {
   workflow_id?: string | null;
   workflow?: string | null;
   workflow_version?: string | null;
+  instance_id?: string | null;
 }
 
 interface RawDispatchApprovalResult {
@@ -303,24 +308,30 @@ function toPhase(raw: RawPhase): Phase {
 }
 
 function toSaga(raw: RawSaga): Saga {
+  const phaseSummary = raw.phase_summary ?? {
+    total: raw.run_count ?? 0,
+    completed: 0,
+  };
   return {
     id: raw.id,
     trackerId: raw.tracker_id,
-    trackerType: raw.tracker_type,
-    slug: raw.slug,
+    trackerType: raw.tracker_type ?? 'linear',
+    slug: raw.slug ?? raw.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
     name: raw.name,
     repos: raw.repos,
     featureBranch: raw.feature_branch,
     baseBranch: raw.base_branch ?? 'main',
     status: raw.status as Saga['status'],
-    confidence: raw.confidence,
+    confidence: raw.confidence ?? 0,
     createdAt: raw.created_at,
     workflowId: raw.workflow_id ?? undefined,
     workflow: raw.workflow ?? undefined,
     workflowVersion: raw.workflow_version ?? undefined,
+    instanceId: raw.instance_id ?? undefined,
+    instanceName: raw.instance_name ?? undefined,
     phaseSummary: {
-      total: raw.phase_summary.total,
-      completed: raw.phase_summary.completed,
+      total: phaseSummary.total,
+      completed: phaseSummary.completed,
     },
   };
 }
@@ -454,6 +465,7 @@ function toDispatchQueueItem(raw: RawDispatchQueueItem): DispatchQueueItem {
     workflowId: raw.workflow_id ?? undefined,
     workflow: raw.workflow ?? undefined,
     workflowVersion: raw.workflow_version ?? undefined,
+    instanceId: raw.instance_id ?? undefined,
   };
 }
 
@@ -647,6 +659,13 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
       });
       return toSaga(raw);
     },
+
+    async assignTarget(sagaId: string, instanceId: string | null) {
+      const raw = await client.put<RawSaga>(`/sagas/${encodeURIComponent(sagaId)}/target`, {
+        instance_id: instanceId,
+      });
+      return toSaga(raw);
+    },
   };
 }
 
@@ -750,11 +769,17 @@ export function buildTrackerHttpAdapter(client: ApiClient): ITrackerBrowserServi
       return raw.map(toTrackerIssue);
     },
 
-    async importProject(projectId: string, repos: string[], baseBranch?: string) {
+    async importProject(
+      projectId: string,
+      repos: string[],
+      baseBranch?: string,
+      instanceId?: string | null,
+    ) {
       const raw = await client.post<RawSaga>('/tracker/import', {
         project_id: projectId,
         repos,
         base_branch: baseBranch,
+        instance_id: instanceId ?? null,
       });
       return toSaga(raw);
     },

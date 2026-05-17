@@ -143,6 +143,7 @@ export interface ITingService {
   spawnPlanSession(spec: string, repo: string): Promise<PlanSession>;
   extractStructure(text: string): Promise<ExtractedStructure>;
   assignWorkflow(sagaId: string, workflowId: string | null): Promise<Saga>;
+  assignTarget(sagaId: string, instanceId: string | null): Promise<Saga>;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +201,12 @@ export interface ITrackerBrowserService {
   getProject(projectId: string): Promise<TrackerProject>;
   listMilestones(projectId: string): Promise<TrackerMilestone[]>;
   listIssues(projectId: string, milestoneId?: string): Promise<TrackerIssue[]>;
-  importProject(projectId: string, repos: string[], baseBranch?: string): Promise<Saga>;
+  importProject(
+    projectId: string,
+    repos: string[],
+    baseBranch?: string,
+    instanceId?: string | null,
+  ): Promise<Saga>;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +299,7 @@ export interface DispatchQueueItem {
   workflowId?: string;
   workflow?: string;
   workflowVersion?: string;
+  instanceId?: string;
 }
 
 export interface DispatchApprovalItem {

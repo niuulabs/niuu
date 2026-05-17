@@ -28,3 +28,20 @@ export function useAssignSagaWorkflow(sagaId: string) {
     },
   });
 }
+
+export function useAssignSagaTarget(sagaId: string) {
+  const ting = useService<ITingService>('ting');
+  const queryClient = useQueryClient();
+
+  return useMutation<Saga, Error, string | null>({
+    mutationFn: (instanceId: string | null) => ting.assignTarget(sagaId, instanceId),
+    onSuccess: (saga) => {
+      queryClient.setQueryData(['ting', 'sagas', saga.id], saga);
+      queryClient.setQueryData(['ting', 'sagas'], (current: Saga[] | undefined) => {
+        if (!Array.isArray(current)) return current;
+        return current.map((entry) => (entry.id === saga.id ? saga : entry));
+      });
+      void queryClient.invalidateQueries({ queryKey: ['ting', 'dispatch-queue'] });
+    },
+  });
+}

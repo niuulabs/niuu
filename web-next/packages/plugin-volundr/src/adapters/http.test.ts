@@ -245,6 +245,36 @@ describe('buildVolundrHttpAdapter', () => {
     ]);
   });
 
+  it('getTargets uses the shared niuu registry when mounted at /api/v1/niuu/volundr', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/niuu/volundr');
+    const svc = buildVolundrHttpAdapter(client);
+    const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu')!;
+    expect(niuuClient).toBeDefined();
+    niuuClient.get.mockResolvedValue([
+      {
+        id: 'inst-alpha',
+        name: 'Guild Alpha',
+        slug: 'guild-alpha',
+        baseUrl: 'http://127.0.0.1:8181',
+        visibility: 'tenant',
+        enabled: true,
+        isDefault: true,
+      },
+    ]);
+
+    const targets = await svc.getTargets();
+
+    expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+    expect(targets).toEqual([
+      expect.objectContaining({
+        id: 'inst-alpha',
+        name: 'Guild Alpha',
+        baseUrl: 'http://127.0.0.1:8181',
+        isDefault: true,
+      }),
+    ]);
+  });
+
   it('startSession calls POST /sessions', async () => {
     const client = makeClient();
     const config = {
@@ -253,7 +283,10 @@ describe('buildVolundrHttpAdapter', () => {
       model: 'claude-sonnet',
     };
     await buildVolundrHttpAdapter(client).startSession(config);
-    expect(client.post).toHaveBeenCalledWith('/sessions', config);
+    expect(client.post).toHaveBeenCalledWith('/sessions', {
+      ...config,
+      instance_id: null,
+    });
   });
 
   it('uses the configured forge client directly for session launch when the base is canonical', async () => {
@@ -267,7 +300,10 @@ describe('buildVolundrHttpAdapter', () => {
     await buildVolundrHttpAdapter(client).startSession(config);
 
     expect(getDerivedClient('http://localhost:8080/api/v1/forge')).toBeUndefined();
-    expect(client.post).toHaveBeenCalledWith('/sessions', config);
+    expect(client.post).toHaveBeenCalledWith('/sessions', {
+      ...config,
+      instance_id: null,
+    });
   });
 
   it('uses the configured forge client directly for session reads when the base is canonical', async () => {

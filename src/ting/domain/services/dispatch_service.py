@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import inspect
 import json
 import logging
 import re
@@ -77,6 +78,13 @@ _CLI_TRANSPORT_EXECUTOR = "ravn.adapters.executors.cli.CliTransportExecutor"
 def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _supports_principal_kwarg(method: object) -> bool:
+    try:
+        return "principal" in inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _workflow_persona_model_conflicts(
@@ -275,6 +283,7 @@ class QueueItem:
     workflow_id: str | None = None
     workflow: str | None = None
     workflow_version: str | None = None
+    instance_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -599,12 +608,16 @@ class DispatchService:
         self,
         owner_id: str,
         *,
+        principal: Principal | None = None,
         auth_token: str | None = None,
         saga_tracker_id: str | None = None,
     ) -> list[QueueItem]:
         """Find all dispatchable issues, optionally scoped to one saga."""
         adapters = await self._tracker_factory.for_owner(owner_id)
-        volundr = await self._volundr_factory.primary_for_owner(owner_id)
+        if principal is not None and hasattr(self._volundr_factory, "primary_for_principal"):
+            volundr = await self._volundr_factory.primary_for_principal(principal)
+        else:
+            volundr = await self._volundr_factory.primary_for_owner(owner_id)
         if volundr is None:
             logger.warning("No Volundr adapter for owner %s, returning empty queue", owner_id)
             return []
@@ -705,7 +718,12 @@ class DispatchService:
             ]
 
         # Query Volundr for the user's integration IDs
-        integration_ids = await self._fetch_integration_ids(volundr, auth_token, owner_id)
+        integration_ids = await self._fetch_integration_ids(
+            volundr,
+            auth_token,
+            owner_id,
+            principal=principal,
+        )
 
         # Pre-resolve all Volundr adapters for connection_id targeting
         if principal is not None and hasattr(self._volundr_factory, "for_principal"):
@@ -736,7 +754,7 @@ class DispatchService:
                 logger.warning("Issue not found: %s", item.issue_id)
                 continue
 
-            target_connection = item.connection_id or connection_id
+            target_connection = item.connection_id or connection_id or saga.instance_id
             target_volundr = resolve_target_adapter(
                 target_connection,
                 adapter_by_target,
@@ -770,6 +788,7 @@ class DispatchService:
                 integration_ids=integration_ids,
                 session_definition=item.session_definition or effective_session_definition,
                 auth_token=auth_token,
+                principal=principal,
                 owner_id=owner_id,
                 persona_overrides=persona_overrides,
                 workflow_snapshot=workflow_snapshot,
@@ -1153,6 +1172,7 @@ class DispatchService:
                                 and saga.workflow_snapshot.get("version") is not None
                                 else None
                             ),
+                            instance_id=saga.instance_id,
                         )
                     )
                 return items, False
@@ -1174,11 +1194,18 @@ class DispatchService:
 
     @staticmethod
     async def _fetch_integration_ids(
-        volundr: VolundrPort, auth_token: str | None, owner_id: str
+        volundr: VolundrPort,
+        auth_token: str | None,
+        owner_id: str,
+        *,
+        principal: Principal | None = None,
     ) -> list[str]:
         """Fetch integration IDs from Volundr, returning empty on failure."""
         try:
-            ids = await volundr.list_integration_ids(auth_token=auth_token)
+            kwargs: dict[str, Any] = {"auth_token": auth_token}
+            if principal is not None and _supports_principal_kwarg(volundr.list_integration_ids):
+                kwargs["principal"] = principal
+            ids = await volundr.list_integration_ids(**kwargs)
             logger.info("Fetched %d Volundr integration IDs: %s", len(ids), ids)
             return ids
         except Exception:
@@ -1394,6 +1421,7 @@ class DispatchService:
         integration_ids: list[str],
         session_definition: str | None,
         auth_token: str | None,
+        principal: Principal | None,
         owner_id: str,
         persona_overrides: list[dict] | None = None,
         workflow_snapshot: dict[str, Any] | None = None,
@@ -1411,10 +1439,13 @@ class DispatchService:
                 persona_overrides=persona_overrides,
                 workflow_snapshot=workflow_snapshot,
             )
-            session = await target_volundr.spawn_session(
-                request=request,
-                auth_token=auth_token,
-            )
+            spawn_kwargs: dict[str, Any] = {
+                "request": request,
+                "auth_token": auth_token,
+            }
+            if principal is not None and _supports_principal_kwarg(target_volundr.spawn_session):
+                spawn_kwargs["principal"] = principal
+            session = await target_volundr.spawn_session(**spawn_kwargs)
 
             # Record run progress and set tracker issue to In Progress
             logger.info(

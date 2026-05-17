@@ -148,10 +148,56 @@ class InstanceSeedConfig(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class InstanceCatalogEntryConfig(BaseModel):
+    """Config-driven runtime kind metadata for Guild registration UX."""
+
+    kind: InstanceKind = Field(default=InstanceKind.VOLUNDR)
+    label: str = Field(default="")
+    rune: str = Field(default="")
+    summary: str = Field(default="")
+    detail: str = Field(default="")
+    registerable: bool = Field(default=True)
+    filterable: bool = Field(default=True)
+
+
+def _default_instance_catalog() -> list[InstanceCatalogEntryConfig]:
+    return [
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.VOLUNDR,
+            label="Volundr",
+            rune="ᚲ",
+            summary="session forge",
+            detail="spawns remote dev pods",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.MIMIR,
+            label="Mimir",
+            rune="ᛗ",
+            summary="knowledge index",
+            detail="chronicles, embeddings, graph",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.BIFROST,
+            label="Bifrost",
+            rune="ᚨ",
+            summary="LLM gateway",
+            detail="routes inference",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.TING,
+            label="Tyr",
+            rune="✦",
+            summary="saga coordinator",
+            detail="dispatch ravens",
+        ),
+    ]
+
+
 class InstanceRegistryConfig(BaseModel):
     """Shared registry config for runtime instances."""
 
     instances: list[InstanceSeedConfig] = Field(default_factory=list)
+    catalog: list[InstanceCatalogEntryConfig] = Field(default_factory=_default_instance_catalog)
 
 
 def _env_csv_list(name: str, default: list[str]) -> list[str]:

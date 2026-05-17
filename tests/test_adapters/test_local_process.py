@@ -145,20 +145,21 @@ def _mock_spawn(
 
 class TestInit:
     def test_coerces_string_kwargs_from_env_backed_config(self, tmp_path: Path) -> None:
-        mgr = LocalProcessPodManager(
-            workspaces_dir=str(tmp_path / "workspaces"),
-            claude_binary="claude",
-            max_concurrent="4",
-            sdk_port_start="9200",
-            stop_timeout="15",
-            state_file=str(tmp_path / "state.json"),
-            allowed_mount_prefixes="/repo-a,/repo-b",
-        )
+        with patch.object(SdkPortAllocator, "_is_port_free", return_value=True):
+            mgr = LocalProcessPodManager(
+                workspaces_dir=str(tmp_path / "workspaces"),
+                claude_binary="claude",
+                max_concurrent="4",
+                sdk_port_start="9200",
+                stop_timeout="15",
+                state_file=str(tmp_path / "state.json"),
+                allowed_mount_prefixes="/repo-a,/repo-b",
+            )
 
-        assert mgr._max_concurrent == 4
-        assert mgr._stop_timeout == 15
-        assert mgr._port_allocator.allocate() == 9200
-        assert mgr._allowed_mount_prefixes == ["/repo-a", "/repo-b"]
+            assert mgr._max_concurrent == 4
+            assert mgr._stop_timeout == 15
+            assert mgr._port_allocator.allocate() == 9200
+            assert mgr._allowed_mount_prefixes == ["/repo-a", "/repo-b"]
 
 
 class TestSkuldEnv:
@@ -292,6 +293,17 @@ class TestFlockPortAllocation:
             skuld_rep_port=7485,
             skuld_handshake_port=7584,
         )
+
+    def test_pick_flock_base_port_skips_reserved_ranges(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """Concurrent flock starts should not reuse an already reserved base."""
+        manager._allocated_flock_base_ports.add(7480)
+        with patch.object(SdkPortAllocator, "_is_port_free", return_value=True):
+            base_port = manager._pick_flock_base_port(node_count=1)
+
+        assert base_port == 7481
 
 
 # ------------------------------------------------------------------

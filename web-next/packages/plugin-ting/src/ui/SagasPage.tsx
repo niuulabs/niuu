@@ -19,7 +19,7 @@ import {
 } from '@niuulabs/ui';
 import type { Saga } from '../domain/saga';
 import type { SagaStatus } from '../domain/saga';
-import type { ITrackerBrowserService, TrackerProject } from '../ports';
+import type { DispatchCluster, IDispatchBus, ITrackerBrowserService, TrackerProject } from '../ports';
 import { useSagas } from './useSagas';
 import { phaseStatusToCell } from './mappers';
 import { SagaDetailPage } from './SagaDetailPage';
@@ -280,6 +280,7 @@ function SagasPageContent() {
   const { toast } = useToast();
   const params = useParams({ strict: false }) as { sagaId?: string };
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
+  const dispatchBus = useService<IDispatchBus>('ting.dispatch');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const { data: sagas, isLoading, isError, error } = useSagas();
   const [showNewSagaModal, setShowNewSagaModal] = useState(false);
@@ -290,6 +291,7 @@ function SagasPageContent() {
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [repoCandidate, setRepoCandidate] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
+  const [selectedInstanceId, setSelectedInstanceId] = useState('');
   const [isImporting, setIsImporting] = useState(false);
 
   useEffect(() => {
@@ -319,6 +321,11 @@ function SagasPageContent() {
   const repoCatalogQuery = useQuery({
     queryKey: ['niuu', 'repos'],
     queryFn: () => repoCatalog.getRepos(),
+    enabled: showImportModal,
+  });
+  const dispatchTargetsQuery = useQuery({
+    queryKey: ['ting', 'dispatch', 'targets'],
+    queryFn: () => dispatchBus.getClusters(),
     enabled: showImportModal,
   });
   const repoBranchesQuery = useQuery({
@@ -365,11 +372,13 @@ function SagasPageContent() {
       setSelectedRepos([]);
       setRepoCandidate('');
       setBaseBranch('');
+      setSelectedInstanceId('');
       return;
     }
     setSelectedRepos([]);
     setRepoCandidate('');
     setBaseBranch('');
+    setSelectedInstanceId('');
   }, [showImportModal]);
 
   useEffect(() => {
@@ -439,6 +448,7 @@ function SagasPageContent() {
         selectedProject.id,
         selectedRepos,
         baseBranch,
+        selectedInstanceId || undefined,
       );
       await queryClient.invalidateQueries({ queryKey: ['ting', 'sagas'] });
       setSelectedSagaId(importedSaga.id);
@@ -829,6 +839,30 @@ function SagasPageContent() {
                           className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary niuu-outline-none focus:niuu-border-brand"
                         />
                       )}
+                    </label>
+
+                    <label className="niuu-block">
+                      <span className="niuu-block niuu-mb-1.5 niuu-text-xs niuu-font-mono niuu-text-text-muted">
+                        Volundr target (optional)
+                      </span>
+                      <select
+                        value={selectedInstanceId}
+                        onChange={(event) => setSelectedInstanceId(event.target.value)}
+                        className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary niuu-outline-none focus:niuu-border-brand"
+                      >
+                        <option value="">Use default routing</option>
+                        {(dispatchTargetsQuery.data ?? []).map((target: DispatchCluster) => (
+                          <option
+                            key={target.instanceId ?? target.connectionId}
+                            value={target.instanceId ?? target.connectionId}
+                          >
+                            {target.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="niuu-mt-1 niuu-text-[11px] niuu-text-text-faint">
+                        If selected, the imported saga will default to this forge for dispatches.
+                      </div>
                     </label>
 
                     <div className="niuu-rounded-md niuu-bg-bg-tertiary niuu-p-3 niuu-text-xs niuu-leading-5 niuu-text-text-secondary">

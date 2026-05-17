@@ -15,6 +15,16 @@ from ting.ports.tracker import TrackerPort
 logger = logging.getLogger(__name__)
 
 
+def _normalize_tracker_credentials(adapter: str, credentials: dict[str, Any]) -> dict[str, Any]:
+    """Bridge generic credential payloads to adapter-specific constructor kwargs."""
+    normalized = dict(credentials)
+    if adapter.endswith("LinearTrackerAdapter") and "api_key" not in normalized:
+        token = normalized.get("token")
+        if token:
+            normalized["api_key"] = token
+    return normalized
+
+
 class TrackerAdapterFactory:
     """Resolves tracker adapters for a specific owner from stored credentials.
 
@@ -61,7 +71,7 @@ class TrackerAdapterFactory:
                     continue
 
                 cls = import_class(conn.adapter)
-                kwargs = {**cred, **conn.config}
+                kwargs = {**_normalize_tracker_credentials(conn.adapter, cred), **conn.config}
                 if self._pool is not None:
                     kwargs["pool"] = self._pool
                 adapters.append(cls(**kwargs))
