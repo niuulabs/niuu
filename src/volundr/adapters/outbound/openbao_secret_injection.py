@@ -251,7 +251,7 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
             "",
             '  sink "file" {',
             "    config = {",
-            '      path = "/home/openbao/.openbao-token"',
+            '      path = "/home/vault/.vault-token"',
             "    }",
             "  }",
             "}",
