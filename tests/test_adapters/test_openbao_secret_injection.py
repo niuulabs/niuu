@@ -205,6 +205,34 @@ class TestOpenBaoAgentInjectionAdapter:
         assert 'destination = "/run/secrets/env.sh"' in config_hcl
         assert 'destination = "/home/volundr/.git-credentials"' in config_hcl
         assert 'secret "volundr/data/users/alice/github"' in config_hcl
+        assert "{{ with secret \"volundr/data/users/alice/github\" }}" in config_hcl
+        assert "{{ end }}" in config_hcl
+
+    def test_build_configmap_data_separates_env_exports_with_newlines(self, adapter):
+        data = adapter._build_configmap_data(
+            user_id="alice",
+            credential_mappings=[
+                CredentialMapping(
+                    credential_name="linear",
+                    env_mappings={"LINEAR_API_KEY": "api_key"},
+                ),
+                CredentialMapping(
+                    credential_name="github",
+                    env_mappings={"GITHUB_TOKEN": "token"},
+                ),
+            ],
+            role_name="volundr-session-session-123",
+        )
+
+        config_hcl = data["config.hcl"]
+        env_block = config_hcl.split('destination = "/run/secrets/env.sh"', 1)[1]
+        expected_linear = (
+            "export LINEAR_API_KEY='{{ index .Data.data \"api_key\" }}'\n"
+            "{{ end }}\n"
+            "{{ with secret \"volundr/data/users/alice/github\" }}"
+        )
+        assert expected_linear in env_block
+        assert "export GITHUB_TOKEN='{{ index .Data.data \"token\" }}'\n{{ end }}" in env_block
 
     def test_build_agent_config_includes_namespace_and_empty_templates(self, adapter):
         config_hcl = adapter._build_agent_config_hcl(

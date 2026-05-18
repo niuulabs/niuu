@@ -282,9 +282,9 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
             for env_var, field_name in mapping.env_mappings.items():
                 env_lines.extend(
                     [
-                        f'{{{{- with secret "{secret_path}" -}}}}',
+                        f'{{{{ with secret "{secret_path}" }}}}',
                         f'export {env_var}=\'{{{{ index .Data.data "{field_name}" }}}}\'',
-                        "{{- end -}}",
+                        "{{ end }}",
                     ]
                 )
 
