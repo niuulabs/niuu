@@ -16,8 +16,9 @@ from niuu.cors import apply_cors_middleware
 from niuu.domain.services.instances import InstanceService
 from niuu.service_database import database_pool
 from niuu.service_instances import seed_configured_instances
-from niuu.service_runtime import create_pat_validator
+from niuu.service_runtime import configure_logging, create_identity_adapter, create_pat_validator
 from niuu.service_settings import Settings
+from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 
 
 def _load_settings() -> Settings:
@@ -27,13 +28,14 @@ def _load_settings() -> Settings:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create the Guild FastAPI application."""
+    loaded_settings = settings or _load_settings()
+    configure_logging(loaded_settings.logging)
+
     app = FastAPI(
         title="Guild",
         description="Shared instance registry, discovery, and Volundr aggregation APIs.",
         version="0.1.0",
     )
-
-    loaded_settings = settings or _load_settings()
     app.state.settings = loaded_settings
 
     @asynccontextmanager
@@ -42,10 +44,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             instance_repository = PostgresInstanceRepository(pool)
             instance_service = InstanceService(instance_repository)
 
+            user_repository = PostgresUserRepository(pool)
+            identity_adapter = create_identity_adapter(loaded_settings, user_repository)
             pat_repository = PostgresPATRepository(pool)
             pat_validator = create_pat_validator(loaded_settings, pat_repository)
 
             app.state.instance_service = instance_service
+            app.state.identity = identity_adapter
             app.state.pat_validator = pat_validator
 
             if loaded_settings.niuu.instances:
