@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from niuu.cli_api_client import CLIAPIClient
 from niuu.guild_plugin import GuildPlugin, _GuildStub
 
@@ -58,3 +60,13 @@ def test_guild_plugin_create_api_client() -> None:
     assert isinstance(client, CLIAPIClient)
     assert client._base_url == "http://localhost:8080"
     assert client._service_name == "Guild"
+
+
+@pytest.mark.asyncio
+async def test_guild_stub_lifecycle_and_health_check() -> None:
+    stub = _GuildStub()
+
+    await stub.start()
+    await stub.stop()
+
+    assert await stub.health_check() is True

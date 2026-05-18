@@ -63,3 +63,25 @@ def test_create_app_mounts_only_guild_routes(monkeypatch) -> None:
         assert "/api/v1/niuu/repos" not in paths
 
     seed_instances.assert_awaited_once()
+
+
+def test_create_app_uses_loaded_settings_and_skips_empty_seed(monkeypatch) -> None:
+    loaded_settings = Settings()
+    seed_instances = AsyncMock(return_value=0)
+
+    monkeypatch.setattr(guild_app, "_load_settings", lambda: loaded_settings)
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(guild_app, "PostgresInstanceRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+    monkeypatch.setattr(guild_app, "seed_configured_instances", seed_instances)
+
+    app = guild_app.create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+        assert response.json() == {"status": "healthy"}
+        assert app.state.settings is loaded_settings
+        assert app.state.pat_validator.__class__ is _DummyPATValidator
+
+    seed_instances.assert_not_awaited()
