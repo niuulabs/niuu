@@ -153,6 +153,11 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
 
     @app.get("/settings", response_model=SettingsProviderSchema)
     @app.get("/mimir/settings", response_model=SettingsProviderSchema, include_in_schema=False)
+    @app.get(
+        "/api/v1/mimir/settings",
+        response_model=SettingsProviderSchema,
+        include_in_schema=False,
+    )
     async def settings() -> SettingsProviderSchema:
         categories = ", ".join(config.categories or ["all"])
         return SettingsProviderSchema(

@@ -31,7 +31,7 @@ function buildInitialDraft(section: RemoteSettingsSectionSchema | null): Record<
   return Object.fromEntries(section.fields.map((field) => [field.key, field.value]));
 }
 
-type ProviderStatus = 'ready' | 'loading' | 'missing' | 'error';
+type ProviderStatus = 'ready' | 'loading' | 'missing' | 'idle' | 'error';
 
 interface PersonalAccessTokenRecord {
   id: string;
@@ -136,6 +136,18 @@ interface ProviderSnapshot {
   sections: NormalizedSettingsSection[];
   status: ProviderStatus;
   scopeLabel: string;
+  error?: Error | null;
+}
+
+function isApiClientError(
+  error: Error | null | undefined,
+): error is Error & { status: number; detail?: string } {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'status' in error &&
+      typeof (error as { status?: unknown }).status === 'number',
+  );
 }
 
 function describeScope(scope: string): string {
@@ -340,6 +352,8 @@ function SettingsSidebar({
                 <div className="settings-shell__provider-empty">
                   {snapshot.status === 'loading'
                     ? 'Loading schema…'
+                    : snapshot.status === 'idle'
+                      ? 'Select to load'
                     : snapshot.status === 'missing'
                       ? 'Not mounted'
                       : snapshot.status === 'error'
@@ -1592,6 +1606,27 @@ function ProviderUnavailablePanel({ snapshot }: { snapshot: ProviderSnapshot }) 
     isRemoteProvider(snapshot.provider) && snapshot.provider.baseUrl
       ? `${snapshot.provider.baseUrl}/settings`
       : null;
+  const apiError = isApiClientError(snapshot.error) ? snapshot.error : null;
+  let copy =
+    'This service does not have a live settings endpoint configured in the current host profile.';
+
+  if (snapshot.status === 'loading') {
+    copy = 'Loading the mounted settings schema…';
+  } else if (snapshot.status === 'idle') {
+    copy = 'Select this provider to load its mounted settings schema.';
+  } else if (snapshot.status === 'error') {
+    if (apiError?.status === 401) {
+      copy = 'This service rejected the current token while loading its settings schema.';
+    } else if (apiError?.status === 403) {
+      copy = 'You do not have permission to view this service settings surface.';
+    } else if (apiError?.status === 404) {
+      copy = 'This service is mounted, but it does not expose the expected settings route.';
+    } else if (apiError?.status === 503) {
+      copy = 'This service is configured, but it is not currently available.';
+    } else {
+      copy = 'This service responded, but its settings schema could not be loaded.';
+    }
+  }
 
   return (
     <div className="settings-shell__panel settings-shell__panel--empty">
@@ -1602,13 +1637,12 @@ function ProviderUnavailablePanel({ snapshot }: { snapshot: ProviderSnapshot }) 
         <span className="settings-shell__panel-code">{snapshot.provider.id}.settings</span>
       </div>
       <h1 className="settings-shell__panel-heading">{snapshot.title} Settings</h1>
-      <p className="settings-shell__panel-copy">
-        {snapshot.status === 'loading'
-          ? 'Loading the mounted settings schema…'
-          : snapshot.status === 'error'
-            ? 'This service responded, but its settings schema could not be loaded.'
-            : 'This service does not have a live settings endpoint configured in the current host profile.'}
-      </p>
+      <p className="settings-shell__panel-copy">{copy}</p>
+      {apiError?.detail ? (
+        <p className="settings-shell__endpoint-note">
+          Response detail: <code>{apiError.detail}</code>
+        </p>
+      ) : null}
       {target ? (
         <p className="settings-shell__endpoint-note">
           Expected endpoint: <code>{target}</code>
@@ -1628,13 +1662,17 @@ export function SettingsPage() {
     providerId?: string;
     sectionId?: string;
   };
+  const activeProvider =
+    providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null;
+  const activeRemoteProviderId =
+    activeProvider && isRemoteProvider(activeProvider) ? activeProvider.id : null;
 
   const remoteProviders = useMemo(() => providers.filter(isRemoteProvider), [providers]);
 
   const remoteSchemaQueries = useQueries({
     queries: remoteProviders.map((provider) => ({
       queryKey: ['mounted-settings', provider.id],
-      enabled: Boolean(provider.baseUrl),
+      enabled: Boolean(provider.baseUrl) && provider.id === activeRemoteProviderId,
       queryFn: async () => {
         if (!provider.baseUrl) return null;
         return createApiClient(provider.baseUrl).get<RemoteSettingsProviderSchema>('/settings');
@@ -1672,6 +1710,8 @@ export function SettingsPage() {
       const schema = query?.data ?? null;
       const status: ProviderStatus = !provider.baseUrl
         ? 'missing'
+        : provider.id !== activeRemoteProviderId
+          ? 'idle'
         : query?.isLoading
           ? 'loading'
           : query?.isError
@@ -1687,12 +1727,13 @@ export function SettingsPage() {
         sections: normalizeSections(schema),
         status,
         scopeLabel: schema?.scope ?? provider.scope,
+        error: (query?.error as Error | undefined) ?? null,
       };
     });
   }, [providers, remoteProviders, remoteSchemaQueries]);
 
   const activeSnapshot =
-    providerSnapshots.find((snapshot) => snapshot.provider.id === providerId) ??
+    providerSnapshots.find((snapshot) => snapshot.provider.id === activeProvider?.id) ??
     providerSnapshots[0] ??
     null;
   const activeSection =
