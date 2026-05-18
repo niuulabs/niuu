@@ -120,6 +120,30 @@ describe('SagasPage', () => {
     expect(railButton).toHaveTextContent('2/4 runs');
   });
 
+  it('falls back to the default repo label when a saga has no repo listed', async () => {
+    const sagasSvc = {
+      ...createMockTingService(),
+      getSagas: async (): Promise<Saga[]> => [
+        makeSaga({
+          id: '00000000-0000-0000-0000-000000000124',
+          name: 'Fallback Repo Saga',
+          repos: [],
+        }),
+      ],
+    };
+
+    render(<SagasPage />, { wrapper: wrap(withDefaults({ ting: sagasSvc })) });
+
+    await waitFor(() =>
+      expect(screen.getAllByText('Fallback Repo Saga').length).toBeGreaterThan(0),
+    );
+    const railButton = screen
+      .getAllByRole('button')
+      .find((button) => button.textContent?.includes('Fallback Repo Saga'));
+    expect(railButton).toBeDefined();
+    expect(railButton).toHaveTextContent('niuulabs/volundr');
+  });
+
   it('shows detail without rendering a duplicate saga list in the main panel', async () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
 
