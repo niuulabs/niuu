@@ -9,6 +9,8 @@ from importlib.metadata import metadata
 
 from fastapi import FastAPI
 
+from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
+from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.cors import apply_cors_middleware
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_database import database_pool
@@ -31,19 +33,34 @@ from niuu.service_runtime import create_storage_adapter as _create_storage_adapt
 from niuu.service_runtime import release_credential_store as _release_credential_store
 from niuu.service_settings import Settings
 from niuu.utils import import_class, resolve_secret_kwargs
+from sleipnir.adapters.audit_postgres import PostgresAuditRepository
+from sleipnir.adapters.audit_subscriber import AuditSubscriber
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
+from volundr.adapters.inbound.rest_audit import (
+    create_audit_router,
+    create_canonical_audit_router,
+)
+from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.adapters.inbound.rest_git import create_git_router
+from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
+from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
+from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_presets import create_presets_router
 from volundr.adapters.inbound.rest_profiles import create_profiles_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
+from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
+from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.outbound.bifrost_catalog_http import HttpBifrostCatalogAdapter
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
+from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.config_profiles import ConfigProfileProvider
 from volundr.adapters.outbound.config_templates import ConfigTemplateProvider
 from volundr.adapters.outbound.git_registry import create_git_registry
+from volundr.adapters.outbound.linear import LinearAdapter
+from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
 from volundr.adapters.outbound.postgres_chronicles import PostgresChronicleRepository
@@ -54,6 +71,7 @@ from volundr.adapters.outbound.postgres_communication_routes import (
     PostgresCommunicationRouteRepository,
 )
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
+from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_presets import PostgresPresetRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
@@ -77,10 +95,14 @@ from volundr.domain.services import (
     TokenService,
 )
 from volundr.domain.services.communication_ingress import CommunicationIngressService
+from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.event_ingestion import EventIngestionService
+from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.profile import ForgeProfileService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.template import WorkspaceTemplateService
+from volundr.domain.services.tracker import TrackerService
+from volundr.domain.services.tracker_factory import TrackerFactory
 from volundr.domain.services.workspace import WorkspaceService
 
 # Interval for periodic stats and heartbeat broadcasts (seconds)
@@ -438,6 +460,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         """Manage application lifecycle."""
         settings = app.state.settings
+        audit_subscriber: AuditSubscriber | None = None
 
         async with database_pool(settings.database) as pool:
             # Identity & authorization adapters (dynamic adapter pattern)
@@ -527,9 +550,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             secret_injection = _create_secret_injection_adapter(settings)
 
             # Credential store (pluggable: memory, Vault, Infisical)
-            from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
-
             credential_store = _create_credential_store(settings)
+            credential_service = CredentialService(
+                store=credential_store,
+                strategies=SecretMountStrategyRegistry(),
+            )
+            mcp_provider = ConfigMCPServerProvider(settings.mcp_servers)
+            secret_manager = InMemorySecretManager()
 
             # Inject credential store into pod manager for envSecrets resolution
             if hasattr(pod_manager, "set_credential_store"):
@@ -548,6 +575,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             integration_registry = IntegrationRegistry(integration_definitions)
             integration_repo = PostgresIntegrationRepository(pool)
+            mapping_repository = PostgresMappingRepository(pool)
+            tracker_factory = TrackerFactory(credential_store)
+            default_tracker = (
+                LinearAdapter(api_key=settings.linear.api_key)
+                if settings.linear.enabled and settings.linear.api_key
+                else None
+            )
 
             # User integration service — ephemeral per-user provider factory.
             from volundr.domain.services.user_integration import UserIntegrationService
@@ -634,6 +668,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Create profile and template services (providers already created above)
             profile_service = ForgeProfileService(profile_provider, session_repository=repository)
             template_service = WorkspaceTemplateService(template_provider)
+            tracker_service = TrackerService(
+                default_tracker,
+                mapping_repository,
+                integration_repo=integration_repo,
+                tracker_factory=tracker_factory,
+            )
 
             # Create git workflow service (PRs sourced from GitHub/GitLab)
             git_workflow_service = GitWorkflowService(
@@ -682,6 +722,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 prefix="/api/v1/forge",
             )
             app.include_router(prompts_router)
+
+            app.include_router(create_credentials_settings_router())
+            app.include_router(create_canonical_credentials_router(credential_service))
+            app.include_router(create_canonical_secrets_router(mcp_provider, secret_manager))
+
+            app.include_router(create_integrations_settings_router())
+            app.include_router(
+                create_canonical_integrations_router(
+                    integration_repo,
+                    tracker_factory,
+                    registry=integration_registry,
+                    credential_store=credential_store,
+                )
+            )
+            app.include_router(
+                create_canonical_oauth_router(
+                    oauth_config=settings.oauth,
+                    integration_registry=integration_registry,
+                    credential_store=credential_store,
+                    integration_repo=integration_repo,
+                )
+            )
+            app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))
+            app.include_router(create_canonical_issues_router(integration_repo, tracker_factory))
 
             # Presets (DB-stored runtime config)
             preset_repository = PostgresPresetRepository(pool)
@@ -751,13 +815,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     api_key=settings.linear.api_key,
                 )
                 logger.info("Linear integration seeded from config")
-
             app.state.user_integration_service = user_integration_service
             app.state.communication_route_repository = communication_route_repository
             app.state.communication_cursor_repository = communication_cursor_repository
             app.state.session_room_port = session_room_port
             app.state.communication_ingress = communication_ingress
             app.state.telegram_ingress = telegram_ingress
+
+            audit_repository = PostgresAuditRepository(pool)
+            if settings.sleipnir.enabled and sleipnir_bus is not None:
+                try:
+                    audit_subscriber = AuditSubscriber(sleipnir_bus, audit_repository)
+                    await audit_subscriber.start()
+                except Exception:
+                    logger.exception("Failed to start audit subscriber")
+            app.include_router(create_canonical_audit_router(audit_repository))
+            app.include_router(create_audit_router(audit_repository))
 
             # Event pipeline: sinks + ingestion service + REST endpoints
             pg_event_sink = PostgresEventSink(
@@ -899,6 +972,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if hasattr(gateway_adapter, "close"):
                     await gateway_adapter.close()
                 await git_registry.close()
+                if audit_subscriber is not None:
+                    await audit_subscriber.stop()
                 _release_credential_store(settings)
 
     app.router.lifespan_context = lifespan

@@ -120,6 +120,46 @@ class TestLifespan:
                 response = client.get("/health")
                 assert response.status_code == 200
 
+    def test_lifespan_mounts_shared_api_routes(self):
+        """Volundr hosts the shared credentials, integrations, tracker, and audit APIs."""
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        with (
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                paths = client.get("/openapi.json").json()["paths"]
+
+        assert "/api/v1/credentials/user" in paths
+        assert "/api/v1/integrations" in paths
+        assert "/api/v1/integrations/catalog" in paths
+        assert "/api/v1/tracker/status" in paths
+        assert "/api/v1/tracker/issues" in paths
+        assert "/api/v1/audit/events" in paths
+
 
 class TestBifrostCatalogLoading:
     """Tests for background Bifrost catalog refresh behavior."""
