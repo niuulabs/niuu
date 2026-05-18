@@ -319,7 +319,7 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
             f"""\
             template {{
               destination = "{destination}"
-              perms = "0600"
+              perms = "0640"
               contents = <<EOT
             {content}
             EOT

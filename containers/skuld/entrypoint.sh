@@ -67,9 +67,9 @@ for target, spec in manifest.get('files', {}).items():
 ")"
 fi
 
-# Source env vars rendered by Infisical Agent Injector (no-op if file doesn't exist)
+# Source env vars rendered by the configured secret injector (no-op if file doesn't exist)
 if [ -f /run/secrets/env.sh ]; then
-    echo "Sourcing Infisical agent secrets"
+    echo "Sourcing injected session secrets"
     . /run/secrets/env.sh
 fi
 

@@ -201,6 +201,7 @@ class TestOpenBaoAgentInjectionAdapter:
         assert 'mount_path = "auth/jwt-valhalla"' in config_hcl
         assert 'role = "volundr-session-session-123"' in config_hcl
         assert 'path = "/home/vault/.vault-token"' in config_hcl
+        assert 'perms = "0640"' in config_hcl
         assert 'destination = "/run/secrets/env.sh"' in config_hcl
         assert 'destination = "/home/volundr/.git-credentials"' in config_hcl
         assert 'secret "volundr/data/users/alice/github"' in config_hcl
