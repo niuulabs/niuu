@@ -76,8 +76,6 @@ ingress:
         service: niuu-shared
       - path: /api/v1
         service: volundr
-      - path: /mimir
-        service: mimir-shared
       - path: /mcp
         service: mimir-shared
   hosts:
