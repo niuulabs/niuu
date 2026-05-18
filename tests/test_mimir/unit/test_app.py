@@ -54,6 +54,15 @@ def test_create_app_mounts_mimir_router(tmp_path: Path) -> None:
     assert any("/mimir" in r for r in routes)
 
 
+def test_create_app_exposes_api_v1_mimir_routes(tmp_path: Path) -> None:
+    config = MimirServiceConfig(path=str(tmp_path / "mimir"))
+    app = create_app(config)
+    routes = [r.path for r in app.routes]  # type: ignore[attr-defined]
+    assert "/api/v1/mimir/stats" in routes
+    assert "/api/v1/mimir/mounts" in routes
+    assert "/api/v1/mimir/mcp" in routes
+
+
 def test_create_app_exposes_settings_schema(tmp_path: Path) -> None:
     config = MimirServiceConfig(path=str(tmp_path / "mimir"), name="shared", role="shared")
     app = create_app(config)
