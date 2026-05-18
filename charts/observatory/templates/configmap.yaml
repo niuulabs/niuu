@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "observatory.fullname" . }}
+  labels:
+    {{- include "observatory.labels" . | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.logLevel | default "info" | quote }}
+  LOG_FORMAT: {{ .Values.config.logFormat | default "json" | quote }}
+  HOST: {{ .Values.config.host | default "0.0.0.0" | quote }}
+  PORT: {{ .Values.service.targetPort | default 8083 | quote }}
+  {{- with .Values.config.extra }}
+  {{- range $key, $value := . }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  {{- end }}
+
+  config.yaml: |
+    logging:
+      level: {{ .Values.config.logLevel | default "info" | quote }}
+      format: {{ .Values.config.logFormat | default "json" | quote }}
+
+    cors:
+      allowed_origins:
+        {{- range .Values.config.cors.allowedOrigins }}
+        - {{ . | quote }}
+        {{- end }}
+      allow_credentials: {{ .Values.config.cors.allowCredentials | default true }}
+      allow_methods:
+        - "*"
+      allow_headers:
+        - "*"
+
+    database:
+      min_pool_size: {{ .Values.database.minPoolSize | default 5 }}
+      max_pool_size: {{ .Values.database.maxPoolSize | default 20 }}
+
+    observatory:
+      guild:
+        url: {{ .Values.guild.url | default (printf "http://%s-guild" .Release.Name) | quote }}
+        timeout_seconds: {{ .Values.guild.timeoutSeconds | default 10.0 }}
+        auth:
+          adapter: {{ .Values.guild.auth.adapter | quote }}
+          kwargs: {{ .Values.guild.auth.kwargs | toJson }}
+          {{- if .Values.guild.auth.secretKwargs }}
+          secret_kwargs_env:
+            {{- range .Values.guild.auth.secretKwargs }}
+            {{ .kwarg }}: OBSERVATORY_GUILD_AUTH_SK_{{ .kwarg | upper }}
+            {{- end }}
+          {{- else }}
+          secret_kwargs_env: {}
+          {{- end }}

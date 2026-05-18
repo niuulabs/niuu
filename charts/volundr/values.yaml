@@ -255,20 +255,6 @@ bifrost:
     # -- Secret-backed kwargs forwarded through env indirection
     secretKwargs: []
 
-observatory:
-  guild:
-    # -- Base URL for the Guild/niuu API Observatory reads its topology from
-    url: "http://niuu-shared:8080"
-    # -- HTTP timeout for Guild discovery fetches
-    timeoutSeconds: 10.0
-    auth:
-      # -- Fully-qualified outbound auth adapter class
-      adapter: "niuu.adapters.outbound.http_auth.NoAuthHttpAuthAdapter"
-      # -- Kwargs forwarded to the auth adapter constructor
-      kwargs: {}
-      # -- Secret-backed kwargs forwarded through env indirection
-      secretKwargs: []
-
 podManager:
   # -- Fully-qualified class path for the PodManager adapter
   adapter: "volundr.adapters.outbound.flux.FluxPodManager"

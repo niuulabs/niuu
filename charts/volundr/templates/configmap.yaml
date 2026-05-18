@@ -307,23 +307,6 @@ data:
         {{- else }}
         secret_kwargs_env: {}
         {{- end }}
-
-    observatory:
-      guild:
-        url: {{ .Values.observatory.guild.url | quote }}
-        timeout_seconds: {{ .Values.observatory.guild.timeoutSeconds | default 10.0 }}
-        auth:
-          adapter: {{ .Values.observatory.guild.auth.adapter | quote }}
-          kwargs: {{ .Values.observatory.guild.auth.kwargs | toJson }}
-          {{- if .Values.observatory.guild.auth.secretKwargs }}
-          secret_kwargs_env:
-            {{- range .Values.observatory.guild.auth.secretKwargs }}
-            {{ .kwarg }}: OBSERVATORY_GUILD_AUTH_SK_{{ .kwarg | upper }}
-            {{- end }}
-          {{- else }}
-          secret_kwargs_env: {}
-          {{- end }}
-
     gateway:
       adapter: {{ .Values.gateway.adapter | quote }}
       kwargs: {{ .Values.gateway.kwargs | toJson }}

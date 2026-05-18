@@ -27,10 +27,18 @@ dependencies:
     version: ">=0.0.0-0"
     repository: "file://../niuu-shared"
     condition: niuu-shared.enabled
+  - name: guild
+    version: ">=0.0.0-0"
+    repository: "file://../guild"
+    condition: guild.enabled
   - name: bifrost
     version: ">=0.0.0-0"
     repository: "file://../bifrost"
     condition: bifrost.enabled
+  - name: observatory
+    version: ">=0.0.0-0"
+    repository: "file://../observatory"
+    condition: observatory.enabled
   - name: mimir
     version: ">=0.0.0-0"
     repository: "file://../mimir"

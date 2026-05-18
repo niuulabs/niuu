@@ -1,0 +1,131 @@
+# Observatory — topology and event stream service
+
+replicaCount: 1
+revisionHistoryLimit: 10
+
+image:
+  registry: ghcr.io/niuulabs
+  repository: niuu
+  tag: ""
+  pullPolicy: IfNotPresent
+
+command:
+  - observatory
+args: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8083
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: api.example.com
+      paths:
+        - path: /api/v1/observatory
+          pathType: Prefix
+  tls: []
+
+config:
+  logLevel: "info"
+  logFormat: "json"
+  host: "0.0.0.0"
+  port: 8083
+  cors:
+    allowedOrigins:
+      - "*"
+    allowCredentials: true
+  extra: {}
+
+database:
+  name: volundr
+  minPoolSize: 5
+  maxPoolSize: 20
+  createSecret: false
+  existingSecret: ""
+  userKey: username
+  passwordKey: password
+  username: ""
+  password: "CHANGE_ME"
+  extraSecretData: {}
+  secretAnnotations: {}
+  external:
+    enabled: true
+    host: postgresql.default.svc.cluster.local
+    port: 5432
+
+guild:
+  url: ""
+  timeoutSeconds: 10.0
+  auth:
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHttpAuthAdapter"
+    kwargs: {}
+    secretKwargs: []
+
+livenessProbe:
+  enabled: true
+  path: "/health"
+  initialDelaySeconds: 5
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  path: "/health"
+  initialDelaySeconds: 3
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+startupProbe:
+  enabled: false
+  path: "/health"
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 30
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+deploymentAnnotations: {}
+extraEnv: []
+extraVolumeMounts: []
+extraVolumes: []
+
+global:
+  imagePullSecrets: []
+  image:
+    registry: ""

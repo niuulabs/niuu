@@ -9,21 +9,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from niuu.adapters.inbound.auth import extract_principal
-from niuu.adapters.inbound.rest_instances import create_instances_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_repos import create_repos_router
-from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.adapters.outbound.git_registry import create_git_registry
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
-from niuu.adapters.postgres_instances import PostgresInstanceRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.config import GitConfig
 from niuu.cors import apply_cors_middleware
-from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.repo import RepoService
 from niuu.service_database import database_pool
-from niuu.service_instances import seed_configured_instances
 from niuu.service_runtime import (
     create_identity_adapter,
     create_pat_validator,
@@ -78,8 +73,6 @@ def create_app(
             repo_service = RepoService(git_registry)
             user_repository = PostgresUserRepository(pool)
             tenant_repository = PostgresTenantRepository(pool)
-            instance_repository = PostgresInstanceRepository(pool)
-            instance_service = InstanceService(instance_repository)
             storage_adapter = create_storage_adapter(loaded_settings)
             tenant_service = TenantService(tenant_repository, user_repository)
             identity_adapter = create_identity_adapter(
@@ -111,24 +104,13 @@ def create_app(
 
             app.state.git_registry = git_registry
             app.state.repo_service = repo_service
-            app.state.instance_service = instance_service
             app.state.identity = identity_adapter
             app.state.storage = storage_adapter
             app.state.pat_validator = pat_validator
             app.state.pat_service = pat_service
             app.state.persona_registry = PostgresPersonaRegistry(pool)
 
-            if loaded_settings.niuu.instances:
-                seeded = await seed_configured_instances(
-                    instance_service,
-                    list(loaded_settings.niuu.instances),
-                )
-                if seeded:
-                    logger.info("Seeded %d shared instance(s) from config", seeded)
-
             app.include_router(create_repos_router(repo_service))
-            app.include_router(create_instances_router(instance_service))
-            app.include_router(create_volundr_router(instance_service))
             app.include_router(create_identity_router(tenant_service))
             app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
             app.include_router(create_features_router(feature_service))

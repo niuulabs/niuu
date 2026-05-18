@@ -18,6 +18,14 @@ ingress:
   annotations: {}
   routeSets:
     api:
+      - path: /api/v1/niuu/instances
+        service: guild
+      - path: /api/v1/niuu/targets
+        service: guild
+      - path: /api/v1/niuu/volundr
+        service: guild
+      - path: /api/v1/niuu/observatory
+        service: guild
       - path: /api/v1/tokens
         service: niuu-shared
       - path: /api/v1/identity
@@ -45,7 +53,7 @@ ingress:
       - path: /api/v1/credentials
         service: volundr
       - path: /api/v1/observatory
-        service: volundr
+        service: observatory
       - path: /api/v1/audit
         service: volundr
       - path: /audit
@@ -64,7 +72,7 @@ ingress:
         service: ting
       - path: /api/v1/tracker/import
         service: ting
-      - path: /api/v1/niuu
+      - path: /api/v1/niuu/repos
         service: niuu-shared
       - path: /api/v1
         service: volundr
@@ -130,6 +138,16 @@ niuu-shared:
         - "*"
       allowCredentials: true
 
+guild:
+  enabled: true
+  ingress:
+    enabled: false
+  config:
+    cors:
+      allowedOrigins:
+        - "*"
+      allowCredentials: true
+
 bifrost:
   enabled: true
 
@@ -139,6 +157,13 @@ ravn:
     - ravn-api
   persistence:
     enabled: false
+
+observatory:
+  enabled: true
+  ingress:
+    enabled: false
+  guild:
+    url: ""
 
 # Mímir — shared ODIN-wide instance (always enabled)
 mimir-shared:

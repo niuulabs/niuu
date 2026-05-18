@@ -66,8 +66,16 @@ class TestNiuuPlugin:
     def test_api_route_domains(self, plugin: NiuuPlugin) -> None:
         route_domains = plugin.api_route_domains()
         assert route_domains
-        assert route_domains[0].name == "niuu-api"
-        assert route_domains[0].prefixes == ("/api/v1/niuu",)
+        assert route_domains[0].name == "niuu-repos-api"
+        assert route_domains[0].prefixes == ("/api/v1/niuu/repos",)
+        assert route_domains[1].name == "niuu-shared-api"
+        assert route_domains[1].prefixes == (
+            "/api/v1/tokens",
+            "/api/v1/identity",
+            "/api/v1/features",
+            "/api/v1/personas",
+            "/api/v1/ravn/personas",
+        )
 
 
 class TestNiuuStub:

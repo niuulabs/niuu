@@ -1,8 +1,4 @@
-"""NiuuPlugin — registers the shared niuu services as a CLI plugin.
-
-Provides the shared ``/api/v1/niuu`` API (repos, PATs, integrations)
-as an independent FastAPI sub-application, decoupled from Volundr.
-"""
+"""NiuuPlugin — registers the remaining shared niuu services as a CLI plugin."""
 
 from __future__ import annotations
 
@@ -25,7 +21,7 @@ class _NiuuStub(Service):
 
 
 class NiuuPlugin(ServicePlugin):
-    """Plugin for the Niuu shared services (repos, PATs, integrations)."""
+    """Plugin for shared platform services that remain on niuu-shared."""
 
     @property
     def name(self) -> str:
@@ -33,7 +29,7 @@ class NiuuPlugin(ServicePlugin):
 
     @property
     def description(self) -> str:
-        return "Shared platform services — repos, PATs, integrations"
+        return "Shared platform services — repos, PATs, identity, features, personas"
 
     def register_service(self) -> ServiceDefinition:
         return ServiceDefinition(
@@ -55,9 +51,20 @@ class NiuuPlugin(ServicePlugin):
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (
             APIRouteDomain(
-                name="niuu-api",
-                prefixes=("/api/v1/niuu",),
-                description="Shared Niuu API routes.",
+                name="niuu-repos-api",
+                prefixes=("/api/v1/niuu/repos",),
+                description="Shared repository catalog routes.",
+            ),
+            APIRouteDomain(
+                name="niuu-shared-api",
+                prefixes=(
+                    "/api/v1/tokens",
+                    "/api/v1/identity",
+                    "/api/v1/features",
+                    "/api/v1/personas",
+                    "/api/v1/ravn/personas",
+                ),
+                description="Shared identity, PAT, feature, and persona routes.",
             ),
         )
 
