@@ -9,9 +9,9 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response, status
 
-from niuu.adapters.inbound.auth import extract_principal
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
+from volundr.adapters.inbound.auth import extract_principal
 
 
 def _forward_headers(request: Request) -> dict[str, str]:

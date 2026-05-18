@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_pats import PostgresPATRepository
@@ -22,6 +21,7 @@ from niuu.service_runtime import (
 )
 from niuu.service_settings import Settings
 from niuu.utils import import_class
+from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.rest_tenants import create_identity_router
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository

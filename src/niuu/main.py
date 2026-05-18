@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_repos import create_repos_router
 from niuu.adapters.outbound.git_registry import create_git_registry
@@ -27,6 +26,7 @@ from niuu.service_runtime import (
 from niuu.service_settings import Settings
 from niuu.utils import import_class
 from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
+from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.rest_features import create_features_router
 from volundr.adapters.inbound.rest_ravn_personas import create_ravn_personas_router
 from volundr.adapters.inbound.rest_tenants import create_identity_router
