@@ -147,7 +147,7 @@ class EnvoyHeaderIdentityAdapter(IdentityPort):
             raise InvalidTokenError(f"Missing required header: {self._user_id_header}")
 
         email = headers.get(self._email_header, "")
-        tenant_id = headers.get(self._tenant_header, self._default_tenant_id)
+        tenant_id = headers.get(self._tenant_header, "") or self._default_tenant_id
 
         roles_raw = headers.get(self._roles_header, "")
         raw_roles = _parse_roles_header(roles_raw)
