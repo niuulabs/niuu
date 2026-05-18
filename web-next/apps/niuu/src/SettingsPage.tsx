@@ -144,9 +144,9 @@ function isApiClientError(
 ): error is Error & { status: number; detail?: string } {
   return Boolean(
     error &&
-      typeof error === 'object' &&
-      'status' in error &&
-      typeof (error as { status?: unknown }).status === 'number',
+    typeof error === 'object' &&
+    'status' in error &&
+    typeof (error as { status?: unknown }).status === 'number',
   );
 }
 
@@ -354,11 +354,11 @@ function SettingsSidebar({
                     ? 'Loading schema…'
                     : snapshot.status === 'idle'
                       ? 'Select to load'
-                    : snapshot.status === 'missing'
-                      ? 'Not mounted'
-                      : snapshot.status === 'error'
-                        ? 'Schema error'
-                        : 'No sections'}
+                      : snapshot.status === 'missing'
+                        ? 'Not mounted'
+                        : snapshot.status === 'error'
+                          ? 'Schema error'
+                          : 'No sections'}
                 </div>
               )}
             </section>
@@ -1712,13 +1712,13 @@ export function SettingsPage() {
         ? 'missing'
         : provider.id !== activeRemoteProviderId
           ? 'idle'
-        : query?.isLoading
-          ? 'loading'
-          : query?.isError
-            ? 'error'
-            : schema
-              ? 'ready'
-              : 'missing';
+          : query?.isLoading
+            ? 'loading'
+            : query?.isError
+              ? 'error'
+              : schema
+                ? 'ready'
+                : 'missing';
 
       return {
         provider,

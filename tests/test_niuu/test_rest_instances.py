@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import respx
 from fastapi import FastAPI
@@ -136,6 +137,7 @@ def _client(
     catalog: list[Any] | None = None,
 ) -> TestClient:
     app = FastAPI()
+    app.state.identity = AsyncMock()
     if catalog is not None:
         app.state.settings = SimpleNamespace(
             niuu=SimpleNamespace(catalog=catalog),

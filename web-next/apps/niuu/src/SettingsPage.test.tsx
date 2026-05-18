@@ -690,22 +690,19 @@ describe('SettingsPage', () => {
     [403, 'You do not have permission to view this service settings surface.'],
     [404, 'This service is mounted, but it does not expose the expected settings route.'],
     [503, 'This service is configured, but it is not currently available.'],
-  ])(
-    'renders the remote provider error copy for HTTP %i',
-    async (status, expectedCopy) => {
-      routerMocks.params = { providerId: 'ting', sectionId: '' };
-      apiMocks.get.mockRejectedValueOnce({
-        name: 'ApiClientError',
-        message: `HTTP ${status}`,
-        status,
-        detail: 'upstream detail',
-      });
+  ])('renders the remote provider error copy for HTTP %i', async (status, expectedCopy) => {
+    routerMocks.params = { providerId: 'ting', sectionId: '' };
+    apiMocks.get.mockRejectedValueOnce({
+      name: 'ApiClientError',
+      message: `HTTP ${status}`,
+      status,
+      detail: 'upstream detail',
+    });
 
-      wrap(<SettingsPage />);
+    wrap(<SettingsPage />);
 
-      expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
-      expect(await screen.findByText(expectedCopy)).toBeTruthy();
-      expect(await screen.findByText('Response detail:')).toBeTruthy();
-    },
-  );
+    expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
+    expect(await screen.findByText(expectedCopy)).toBeTruthy();
+    expect(await screen.findByText('Response detail:')).toBeTruthy();
+  });
 });

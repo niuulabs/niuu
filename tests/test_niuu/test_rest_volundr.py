@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import respx
@@ -18,6 +19,15 @@ from niuu.domain.models import (
     Principal,
     RegisteredInstance,
 )
+
+
+def _principal() -> Principal:
+    return Principal(
+        user_id="user-a",
+        email="user-a@example.com",
+        tenant_id="tenant-a",
+        roles=[],
+    )
 
 
 def _instance(
@@ -78,6 +88,8 @@ class StubInstanceService:
 
 def _client(instances: list[RegisteredInstance]) -> TestClient:
     app = FastAPI()
+    app.state.identity = AsyncMock()
+    app.state.identity.validate_token.return_value = _principal()
     app.include_router(create_volundr_router(StubInstanceService(instances)))  # type: ignore[arg-type]
     return TestClient(app)
 
