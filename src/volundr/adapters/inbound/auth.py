@@ -40,7 +40,7 @@ async def extract_principal(request: Request) -> Principal:
         return Principal(
             user_id=forwarded_user_id,
             email=request.headers.get("x-auth-email", "").strip(),
-            tenant_id=request.headers.get("x-auth-tenant", "").strip(),
+            tenant_id=request.headers.get("x-auth-tenant", "").strip() or "default",
             roles=_split_roles(request.headers.get("x-auth-roles", "volundr:developer")),
         )
 

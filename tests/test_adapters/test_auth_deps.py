@@ -186,6 +186,33 @@ class TestEnvoyHeaderMode:
         assert data["user_id"] == "envoy-user"
         assert data["tenant_id"] == "acme"
 
+    def test_envoy_headers_blank_tenant_defaults_to_default(self):
+        user_repo = AsyncMock()
+        identity = EnvoyHeaderIdentityAdapter(user_repository=user_repo)
+        app = _make_app(identity=identity)
+
+        @app.get("/test")
+        async def endpoint(principal: Principal = Depends(extract_principal)):
+            return {
+                "user_id": principal.user_id,
+                "tenant_id": principal.tenant_id,
+            }
+
+        client = TestClient(app)
+        resp = client.get(
+            "/test",
+            headers={
+                "x-auth-user-id": "envoy-user",
+                "x-auth-email": "envoy@test.com",
+                "x-auth-tenant": "",
+                "x-auth-roles": "volundr:admin",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_id"] == "envoy-user"
+        assert data["tenant_id"] == "default"
+
     def test_envoy_missing_user_id_returns_401(self):
         user_repo = AsyncMock()
         identity = EnvoyHeaderIdentityAdapter(user_repository=user_repo)
