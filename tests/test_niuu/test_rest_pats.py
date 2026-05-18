@@ -37,6 +37,8 @@ def _make_app(pat_service: AsyncMock) -> tuple[FastAPI, TestClient]:
     """Build a minimal FastAPI app with the PAT router mounted."""
     app = FastAPI()
     app.state.pat_service = pat_service
+    app.state.identity = AsyncMock()
+    app.state.identity.get_or_provision_user = AsyncMock()
 
     async def extract_principal() -> Principal:
         return _make_principal()
@@ -50,6 +52,8 @@ def _make_dual_router_app(pat_service: AsyncMock) -> TestClient:
     """Build an app with canonical and deprecated PAT routes mounted."""
     app = FastAPI()
     app.state.pat_service = pat_service
+    app.state.identity = AsyncMock()
+    app.state.identity.get_or_provision_user = AsyncMock()
 
     async def extract_principal() -> Principal:
         return _make_principal()
@@ -164,6 +168,27 @@ class TestCreateToken:
         assert data["token"] == "raw.jwt.token"
         assert data["createdAt"] == data["created_at"]
 
+    def test_create_provisions_user_before_issuing_pat(self) -> None:
+        pat_id = uuid4()
+        now = datetime.now(UTC)
+
+        mock_pat = AsyncMock()
+        mock_pat.id = pat_id
+        mock_pat.name = "my-pat"
+        mock_pat.created_at = now
+
+        service = AsyncMock()
+        service.create = AsyncMock(return_value=(mock_pat, "raw.jwt.token"))
+
+        app, client = _make_app(service)
+        resp = client.post(
+            "/api/v1/tokens",
+            json={"name": "my-pat"},
+            headers={"Authorization": "Bearer user-access-token"},
+        )
+        assert resp.status_code == 201
+        app.state.identity.get_or_provision_user.assert_awaited_once()
+
     def test_create_passes_subject_token(self) -> None:
         pat_id = uuid4()
         now = datetime.now(UTC)
@@ -227,6 +252,15 @@ class TestListTokens:
         assert data[0]["createdAt"] == data[0]["created_at"]
         assert data[0]["lastUsedAt"] == data[0]["last_used_at"]
 
+    def test_list_provisions_user_before_listing(self) -> None:
+        service = AsyncMock()
+        service.list = AsyncMock(return_value=[])
+
+        app, client = _make_app(service)
+        resp = client.get("/api/v1/tokens")
+        assert resp.status_code == 200
+        app.state.identity.get_or_provision_user.assert_awaited_once()
+
     def test_list_empty_returns_empty_list(self) -> None:
         service = AsyncMock()
         service.list = AsyncMock(return_value=[])
@@ -246,6 +280,16 @@ class TestRevokeToken:
         _, client = _make_app(service)
         resp = client.delete(f"/api/v1/tokens/{pat_id}")
         assert resp.status_code == 204
+
+    def test_revoke_provisions_user_before_revoking(self) -> None:
+        service = AsyncMock()
+        service.revoke = AsyncMock(return_value=True)
+
+        pat_id = str(uuid4())
+        app, client = _make_app(service)
+        resp = client.delete(f"/api/v1/tokens/{pat_id}")
+        assert resp.status_code == 204
+        app.state.identity.get_or_provision_user.assert_awaited_once()
 
     def test_revoke_not_found_returns_404(self) -> None:
         service = AsyncMock()
