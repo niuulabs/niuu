@@ -70,7 +70,7 @@ def adapter() -> OpenBaoAgentInjectionAdapter:
         openbao_namespace="apps",
         mount_path="volundr",
         auth_path="jwt-valhalla",
-        audience="https://kubernetes.default.svc.cluster.local",
+        audience="https://k8s-issuer.valhalla.asgard.niuu.world",
         token="root-token",
         agent_image="openbao/openbao:2.5.3",
     )
@@ -82,14 +82,17 @@ class TestOpenBaoAgentInjectionAdapter:
         result = await adapter.pod_spec_additions("alice", "session-123")
 
         assert result.service_account == "openbao-session-session-123"
-        assert result.annotations["openbao.org/agent-inject"] == "true"
-        assert result.annotations["openbao.org/agent-configmap"] == "openbao-agent-session-123"
-        assert result.annotations["openbao.org/agent-pre-populate-only"] == "true"
-        assert result.annotations["openbao.org/auth-type"] == "jwt"
-        assert result.annotations["openbao.org/auth-path"] == "auth/jwt-valhalla"
-        assert result.annotations["openbao.org/secret-volume-path"] == "/run/secrets"
-        assert result.annotations["openbao.org/namespace"] == "apps"
-        assert result.annotations["openbao.org/agent-image"] == "openbao/openbao:2.5.3"
+        assert result.annotations["vault.hashicorp.com/agent-inject"] == "true"
+        assert (
+            result.annotations["vault.hashicorp.com/agent-configmap"]
+            == "openbao-agent-session-123"
+        )
+        assert result.annotations["vault.hashicorp.com/agent-pre-populate-only"] == "true"
+        assert result.annotations["vault.hashicorp.com/auth-type"] == "jwt"
+        assert result.annotations["vault.hashicorp.com/auth-path"] == "auth/jwt-valhalla"
+        assert result.annotations["vault.hashicorp.com/secret-volume-path"] == "/run/secrets"
+        assert result.annotations["vault.hashicorp.com/namespace"] == "apps"
+        assert result.annotations["vault.hashicorp.com/agent-image"] == "openbao/openbao:2.5.3"
 
     @pytest.mark.asyncio()
     async def test_pod_spec_additions_omits_optional_annotations(self):
@@ -106,10 +109,10 @@ class TestOpenBaoAgentInjectionAdapter:
 
         result = await adapter.pod_spec_additions("alice", "session-123")
 
-        assert "openbao.org/namespace" not in result.annotations
-        assert "openbao.org/agent-image" not in result.annotations
-        assert "openbao.org/agent-copy-volume-mounts" not in result.annotations
-        assert "openbao.org/agent-inject-containers" not in result.annotations
+        assert "vault.hashicorp.com/namespace" not in result.annotations
+        assert "vault.hashicorp.com/agent-image" not in result.annotations
+        assert "vault.hashicorp.com/agent-copy-volume-mounts" not in result.annotations
+        assert "vault.hashicorp.com/agent-inject-containers" not in result.annotations
 
     @pytest.mark.asyncio()
     async def test_ensure_secret_provider_class_creates_runtime_access(self, adapter):
@@ -143,7 +146,7 @@ class TestOpenBaoAgentInjectionAdapter:
             user_id="alice",
             tenant_id="acme",
             auth_path="jwt-valhalla",
-            audience="https://kubernetes.default.svc.cluster.local",
+            audience="https://k8s-issuer.valhalla.asgard.niuu.world",
             service_account_namespace="skuld",
             service_account_name="openbao-session-session-123",
             policy_name="volundr-user-alice",

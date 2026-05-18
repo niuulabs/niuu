@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 _ENV_FILE_PATH = "/run/secrets/env.sh"
 
-_ANNOTATION_PREFIX = "openbao.org"
+_ANNOTATION_PREFIX = "vault.hashicorp.com"
 _INJECT_ANNOTATION = f"{_ANNOTATION_PREFIX}/agent-inject"
 _INIT_FIRST_ANNOTATION = f"{_ANNOTATION_PREFIX}/agent-init-first"
 _PRE_POPULATE_ANNOTATION = f"{_ANNOTATION_PREFIX}/agent-pre-populate"
