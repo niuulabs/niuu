@@ -1730,7 +1730,7 @@ export function SettingsPage() {
         error: (query?.error as Error | undefined) ?? null,
       };
     });
-  }, [providers, remoteProviders, remoteSchemaQueries]);
+  }, [activeRemoteProviderId, providers, remoteProviders, remoteSchemaQueries]);
 
   const activeSnapshot =
     providerSnapshots.find((snapshot) => snapshot.provider.id === activeProvider?.id) ??
