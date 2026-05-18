@@ -12,8 +12,8 @@ runtime provisioning without needing a separate IaC stack.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
+from dataclasses import dataclass, field
 
 import httpx
 

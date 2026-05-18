@@ -142,7 +142,9 @@ class TestEnsureServiceAccountAccess:
     @respx.mock
     async def test_provisions_policy_and_role(self, client: OpenBaoAdminClient):
         policy = respx.put(f"{BAO_URL}/v1/sys/policy/volundr-user-alice").respond(status_code=204)
-        role = respx.post(f"{BAO_URL}/v1/auth/jwt-workloads/role/volundr-alice-skuld-session-alice").respond(status_code=204)
+        role = respx.post(
+            f"{BAO_URL}/v1/auth/jwt-workloads/role/volundr-alice-skuld-session-alice"
+        ).respond(status_code=204)
 
         policy_name, role_name = await client.ensure_service_account_access(
             mount_path="volundr",

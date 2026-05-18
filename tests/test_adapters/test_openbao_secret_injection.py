@@ -85,7 +85,10 @@ class TestOpenBaoAgentInjectionAdapter:
         assert cm_kwargs["name"] == "openbao-agent-session-123"
         assert "config.hcl" in cm_kwargs["data"]
         assert "config-init.hcl" in cm_kwargs["data"]
-        assert cm_kwargs["annotations"]["volundr.niuu.io/openbao-role"] == "volundr-session-session-123"
+        assert (
+            cm_kwargs["annotations"]["volundr.niuu.io/openbao-role"]
+            == "volundr-session-session-123"
+        )
 
     @pytest.mark.asyncio()
     async def test_ensure_skips_without_mappings(self, adapter):
