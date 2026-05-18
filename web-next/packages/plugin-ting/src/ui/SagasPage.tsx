@@ -9,7 +9,6 @@ import {
   LoadingState,
   ErrorState,
   EmptyState,
-  Pipe,
   RepoSelect,
   Rune,
   ToastProvider,
@@ -26,16 +25,7 @@ import type {
   TrackerProject,
 } from '../ports';
 import { useSagas } from './useSagas';
-import { phaseStatusToCell } from './mappers';
 import { SagaDetailPage } from './SagaDetailPage';
-
-const SAGA_GLYPHS = ['ᚠ', 'ᚱ', 'ᚲ', 'ᚷ', 'ᚢ', 'ᚨ', '✦', 'ᚦ', 'ᛒ', 'ᛖ', 'ᛗ', 'ᛜ', 'ᚹ', 'ᛞ'];
-
-function sagaGlyph(id: string): string {
-  let h = 0;
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return SAGA_GLYPHS[h % SAGA_GLYPHS.length]!;
-}
 
 type SagaBucket = 'active' | 'review' | 'complete' | 'failed';
 
@@ -55,16 +45,6 @@ function statusLabel(status: SagaStatus): string {
     case 'failed':
       return 'FAILED';
   }
-}
-
-function statusClasses(status: SagaStatus): string {
-  const base =
-    'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-min-w-[112px] niuu-justify-center niuu-rounded-full niuu-border niuu-px-3 niuu-py-1 niuu-text-[11px] niuu-font-mono niuu-tracking-[0.1em]';
-  if (status === 'failed')
-    return `${base} niuu-border-critical/50 niuu-text-critical-fg niuu-bg-critical-bg`;
-  if (status === 'complete')
-    return `${base} niuu-border-border niuu-text-text-primary niuu-bg-bg-tertiary`;
-  return `${base} niuu-border-brand/45 niuu-text-brand-200 niuu-bg-brand/10`;
 }
 
 function isTerminalTrackerStatus(status: string): boolean {
@@ -89,22 +69,6 @@ function trackerProjectSlug(project: TrackerProject): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function confidenceTone(value: number): string {
-  if (value >= 85) return 'niuu-bg-brand';
-  if (value >= 65) return 'niuu-bg-brand/80';
-  if (value >= 45) return 'niuu-bg-accent-amber';
-  return 'niuu-bg-critical';
-}
-
-function relTime(date: string): string {
-  const dayMs = 86_400_000;
-  const createdAtMs = new Date(date).getTime();
-  const diffMs = Date.now() - createdAtMs;
-  if (diffMs < dayMs) return 'today';
-  const days = Math.floor(diffMs / dayMs);
-  return `${days}d ago`;
-}
-
 function downloadJson(filename: string, data: string): void {
   const blob = new Blob([data], { type: 'application/json' });
   const objectUrl = URL.createObjectURL(blob);
@@ -119,23 +83,6 @@ type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
   getBranches(repoUrl: string): Promise<string[]>;
 };
-
-function ConfidenceMeter({ value }: { value: number }) {
-  const clamped = Math.max(0, Math.min(100, value));
-  return (
-    <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-justify-end">
-      <div className="niuu-w-14 niuu-h-1 niuu-rounded-full niuu-bg-bg-elevated niuu-overflow-hidden">
-        <div
-          className={['niuu-h-full niuu-rounded-full', confidenceTone(clamped)].join(' ')}
-          style={{ width: `${clamped}%` }}
-        />
-      </div>
-      <span className="niuu-min-w-6 niuu-text-right niuu-font-mono niuu-text-[12px] niuu-text-text-muted">
-        {Math.round(clamped)}
-      </span>
-    </div>
-  );
-}
 
 function SagaRailItem({
   saga,
@@ -157,20 +104,33 @@ function SagaRailItem({
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={selected}
       className={[
-        'niuu-grid niuu-w-full niuu-grid-cols-[10px_minmax(0,1fr)] niuu-items-center niuu-gap-3 niuu-rounded-md niuu-px-3 niuu-py-2 niuu-text-left niuu-transition-colors',
+        'niuu-grid niuu-w-full niuu-grid-cols-[10px_minmax(0,1fr)] niuu-items-start niuu-gap-3 niuu-rounded-md niuu-px-3 niuu-py-3 niuu-text-left niuu-transition-colors',
         selected
           ? 'niuu-bg-[#202733] niuu-text-text-primary'
           : 'hover:niuu-bg-bg-secondary/70 niuu-text-text-secondary',
       ].join(' ')}
     >
-      <span className={['niuu-w-2.5 niuu-h-2.5 niuu-rounded-full', bucketColor].join(' ')} />
+      <span
+        className={['niuu-mt-1 niuu-w-2.5 niuu-h-2.5 niuu-rounded-full', bucketColor].join(' ')}
+      />
       <span className="niuu-min-w-0 niuu-flex niuu-flex-col">
-        <span className="niuu-truncate niuu-text-[13px] niuu-font-medium niuu-text-text-primary">
-          {saga.name}
+        <span className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-2">
+          <span className="niuu-min-w-0 niuu-truncate niuu-text-[13px] niuu-font-medium niuu-text-text-primary">
+            {saga.name}
+          </span>
+          <span className="niuu-shrink-0 niuu-text-[10px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+            {statusLabel(saga.status)}
+          </span>
         </span>
-        <span className="niuu-truncate niuu-text-[11px] niuu-font-mono niuu-text-text-muted">
+        <span className="niuu-mt-1 niuu-truncate niuu-text-[11px] niuu-font-mono niuu-text-text-muted">
           {saga.trackerId}
+        </span>
+        <span className="niuu-mt-2 niuu-grid niuu-grid-cols-[minmax(0,1fr)_auto] niuu-gap-x-3 niuu-gap-y-1 niuu-text-[10px] niuu-font-mono niuu-uppercase niuu-tracking-[0.06em] niuu-text-text-muted">
+          <span className="niuu-truncate">{saga.repos[0] ?? 'niuulabs/volundr'}</span>
+          <span>{`${saga.phaseSummary.completed}/${saga.phaseSummary.total} runs`}</span>
+          <span className="niuu-col-span-2 niuu-truncate">{saga.featureBranch}</span>
         </span>
       </span>
     </button>
@@ -208,78 +168,6 @@ function SagaBucketSection({
         ))}
       </div>
     </section>
-  );
-}
-
-function SagaRow({
-  saga,
-  selected,
-  onSelect,
-}: {
-  saga: Saga;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const totalRuns = saga.phaseSummary.total;
-  const mergedRuns = saga.phaseSummary.completed;
-
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-pressed={selected}
-      className={[
-        'niuu-grid niuu-w-full niuu-items-center niuu-gap-4 niuu-rounded-xl niuu-border niuu-px-5 niuu-py-4 niuu-text-left',
-        selected
-          ? 'niuu-border-brand/45 niuu-bg-[#1d232b]'
-          : 'niuu-border-border-subtle niuu-bg-bg-secondary',
-      ].join(' ')}
-      style={{ gridTemplateColumns: '64px minmax(340px,1fr) 150px 174px 88px' }}
-    >
-      <div className="niuu-flex niuu-items-center niuu-justify-center niuu-w-11 niuu-h-11 niuu-rounded-xl niuu-border niuu-border-brand/30 niuu-bg-[#23303b] niuu-text-brand">
-        <span className="niuu-text-xl niuu-leading-none" aria-hidden="true">
-          {sagaGlyph(saga.trackerId)}
-        </span>
-      </div>
-
-      <div className="niuu-min-w-0">
-        <div className="niuu-mb-1 niuu-text-[15px] niuu-font-semibold niuu-text-text-primary niuu-truncate">
-          {saga.name}
-        </div>
-        <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-flex-wrap niuu-text-[11px] niuu-font-mono niuu-text-text-muted">
-          <span className="niuu-rounded-md niuu-bg-bg-elevated niuu-px-2 niuu-py-0.5">
-            {saga.trackerId}
-          </span>
-          <span>{saga.repos[0] ?? 'niuulabs/volundr'}</span>
-          <span>{`branch · ${saga.featureBranch}`}</span>
-          <span>{relTime(saga.createdAt)}</span>
-        </div>
-      </div>
-
-      <Pipe
-        cells={Array.from({ length: saga.phaseSummary.total }, (_, i) => ({
-          status:
-            i < saga.phaseSummary.completed
-              ? phaseStatusToCell('complete')
-              : saga.status === 'failed'
-                ? 'crit'
-                : saga.status === 'complete'
-                  ? 'ok'
-                  : 'run',
-          label: `Phase ${i + 1}`,
-        }))}
-        cellWidth={24}
-      />
-
-      <span className={statusClasses(saga.status)}>{statusLabel(saga.status)}</span>
-      <div className="niuu-flex niuu-flex-col niuu-items-end niuu-font-mono niuu-leading-none">
-        <div className="niuu-mb-2">
-          <ConfidenceMeter value={saga.confidence} />
-        </div>
-        <span className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">{`${mergedRuns}/${totalRuns}`}</span>
-        <span className="niuu-mt-1 niuu-text-[11px] niuu-text-text-muted">runs</span>
-      </div>
-    </button>
   );
 }
 
@@ -586,28 +474,15 @@ function SagasPageContent() {
           </div>
         </div>
 
-        <section className="niuu-space-y-3" aria-label="Saga list">
-          {filtered.length === 0 ? (
-            <div className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-6">
-              <EmptyState
-                title="No sagas found"
-                description={search ? `No sagas match "${search}"` : 'No sagas yet.'}
-              />
-            </div>
-          ) : (
-            filtered.map((saga) => (
-              <SagaRow
-                key={saga.id}
-                saga={saga}
-                selected={selectedSaga?.id === saga.id}
-                onSelect={() => handleSelectSaga(saga)}
-              />
-            ))
-          )}
-        </section>
-
         {selectedSaga ? (
           <SagaDetailPage sagaId={selectedSaga.id} hideBackButton />
+        ) : filtered.length === 0 ? (
+          <div className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-6">
+            <EmptyState
+              title="No sagas found"
+              description={search ? `No sagas match "${search}"` : 'No sagas yet.'}
+            />
+          </div>
         ) : (
           <div className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-6">
             <EmptyState

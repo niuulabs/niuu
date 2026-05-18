@@ -8,12 +8,10 @@ describe('volundrPlugin', () => {
       { id: 'forge', label: 'Forge', path: '/volundr/forge' },
       { id: 'sessions', label: 'Sessions', path: '/volundr' },
       { id: 'templates', label: 'Templates', path: '/volundr/templates' },
-      { id: 'credentials', label: 'Credentials', path: '/volundr/credentials' },
-      { id: 'clusters', label: 'Clusters', path: '/volundr/clusters' },
     ]);
   });
 
-  it('routes the plugin root to sessions while keeping Forge available explicitly', () => {
+  it('routes the plugin root to sessions while keeping legacy redirects available', () => {
     const rootRoute = createRootRoute();
     const routes = volundrPlugin.routes?.(rootRoute) ?? [];
     const paths = routes.map((route) => route.options.path);
@@ -21,5 +19,7 @@ describe('volundrPlugin', () => {
     expect(paths).toContain('/volundr');
     expect(paths).toContain('/volundr/forge');
     expect(paths).toContain('/volundr/sessions');
+    expect(paths).toContain('/volundr/credentials');
+    expect(paths).toContain('/volundr/clusters');
   });
 });

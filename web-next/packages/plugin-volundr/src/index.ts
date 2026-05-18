@@ -1,12 +1,10 @@
-import { createRoute } from '@tanstack/react-router';
+import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ForgePage } from './ui/ForgePage';
 import { VolundrPage } from './ui/VolundrPage';
 import { SessionsPage } from './ui/SessionsPage';
 import { VolundrSessionRoute, VolundrArchivedRoute } from './ui/routes';
 import { TemplatesPage } from './ui/TemplatesPage';
-import { ClustersPage } from './ui/ClustersPage';
-import { CredentialsPage } from './ui/CredentialsPage';
 import { HistoryPage } from './ui/HistoryPage';
 
 export const volundrPlugin = definePlugin({
@@ -18,8 +16,6 @@ export const volundrPlugin = definePlugin({
     { id: 'forge', label: 'Forge', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr' },
     { id: 'templates', label: 'Templates', path: '/volundr/templates' },
-    { id: 'credentials', label: 'Credentials', path: '/volundr/credentials' },
-    { id: 'clusters', label: 'Clusters', path: '/volundr/clusters' },
   ],
   routes: (rootRoute) => [
     createRoute({
@@ -60,12 +56,24 @@ export const volundrPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/volundr/clusters',
-      component: ClustersPage,
+      beforeLoad: ({ location }) => {
+        throw redirect({
+          to: '/guild' as never,
+          search: location.search as never,
+        });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/volundr/credentials',
-      component: CredentialsPage,
+      beforeLoad: ({ location }) => {
+        throw redirect({
+          to: '/settings/credentials/user' as never,
+          search: location.search as never,
+        });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -106,7 +114,6 @@ export { SessionDetailPage } from './ui/SessionDetailPage';
 export type { SessionDetailPageProps, SessionTab } from './ui/SessionDetailPage';
 export { SessionsPage } from './ui/SessionsPage';
 export { ForgePage } from './ui/ForgePage';
-export { CredentialsPage } from './ui/CredentialsPage';
 export { StructuredLogViewer } from './ui/components/StructuredLogViewer';
 export { useSkuldChat } from './ui/hooks/useSkuldChat';
 

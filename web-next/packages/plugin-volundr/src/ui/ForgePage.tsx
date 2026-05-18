@@ -569,7 +569,7 @@ export function ForgePage() {
               <button
                 type="button"
                 className="vol-forge__panel-link"
-                onClick={() => void navigate({ to: '/volundr/clusters' })}
+                onClick={() => void navigate({ to: '/guild' })}
                 data-testid="cluster-details-link"
               >
                 details ›

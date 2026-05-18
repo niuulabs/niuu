@@ -90,6 +90,8 @@ describe('SagasPage', () => {
   it('uses the saga title as the left-rail primary label', async () => {
     const sagaName = 'Readable Saga Title';
     const trackerId = '00000000-0000-0000-0000-000000000123';
+    const repoName = 'niuulabs/saga-ui';
+    const branchName = 'feat/compact-rail';
     const sagasSvc = {
       ...createMockTingService(),
       getSagas: async (): Promise<Saga[]> => [
@@ -97,6 +99,9 @@ describe('SagasPage', () => {
           id: '00000000-0000-0000-0000-000000000123',
           name: sagaName,
           trackerId,
+          repos: [repoName],
+          featureBranch: branchName,
+          phaseSummary: { total: 4, completed: 2 },
         }),
       ],
     };
@@ -110,6 +115,20 @@ describe('SagasPage', () => {
     expect(railButton).toBeDefined();
     expect(railButton).toHaveTextContent(sagaName);
     expect(railButton).toHaveTextContent(trackerId);
+    expect(railButton).toHaveTextContent(repoName);
+    expect(railButton).toHaveTextContent(branchName);
+    expect(railButton).toHaveTextContent('2/4 runs');
+  });
+
+  it('shows detail without rendering a duplicate saga list in the main panel', async () => {
+    render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
+
+    await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
+    expect(screen.queryByRole('region', { name: /Saga list/i })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole('status', { name: /Loading saga/i })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText('feat/flokk-subs → main')).toBeInTheDocument();
   });
 
   it('filters sagas from the page-head search', async () => {
@@ -135,7 +154,7 @@ describe('SagasPage', () => {
     mockNavigate.mockClear();
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { pressed: true }));
+    fireEvent.click(screen.getByRole('button', { name: /Auth Rewrite COMPLETE NIU-500/i }));
     expect(mockNavigate).toHaveBeenCalled();
   });
 
@@ -376,6 +395,7 @@ describe('SagasPage', () => {
     expect(screen.getAllByText('Review').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Done').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Broken').length).toBeGreaterThan(0);
-    expect(screen.getByText('today')).toBeInTheDocument();
+    expect(screen.getAllByText('0/2 runs').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('feat/test').length).toBeGreaterThan(0);
   });
 });
