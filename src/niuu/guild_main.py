@@ -10,5 +10,5 @@ def main() -> None:
     run_service_app("niuu.guild_app:app", default_port=8084)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from niuu.cli_api_client import CLIAPIClient
 from niuu.guild_plugin import GuildPlugin, _GuildStub
 
 
@@ -47,3 +48,13 @@ def test_guild_plugin_route_domains() -> None:
         "/api/v1/niuu/observatory",
     )
     assert route_domains[1].prefixes == ("/api/v1/niuu/volundr",)
+
+
+def test_guild_plugin_create_api_client() -> None:
+    plugin = GuildPlugin()
+
+    client = plugin.create_api_client()
+
+    assert isinstance(client, CLIAPIClient)
+    assert client._base_url == "http://localhost:8080"
+    assert client._service_name == "Guild"

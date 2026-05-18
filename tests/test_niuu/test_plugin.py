@@ -77,6 +77,11 @@ class TestNiuuPlugin:
             "/api/v1/ravn/personas",
         )
 
+    def test_create_api_client(self, plugin: NiuuPlugin) -> None:
+        client = plugin.create_api_client()
+        assert client._base_url == "http://localhost:8080"
+        assert client._service_name == "Niuu"
+
 
 class TestNiuuStub:
     """Tests for the _NiuuStub service lifecycle."""

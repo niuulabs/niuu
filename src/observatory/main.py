@@ -13,5 +13,5 @@ def main() -> None:
     run_service_app("observatory.main:app", default_port=8083)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
