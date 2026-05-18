@@ -456,11 +456,11 @@ class CredentialStoreConfig(BaseModel):
     Example YAML::
 
         credential_store:
-          adapter: "volundr.adapters.outbound.vault_credential_store.VaultCredentialStore"
+          adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
           kwargs:
-            url: "http://vault:8200"
-            auth_method: "kubernetes"
-            mount_path: "secret"
+            url: "http://openbao:8200"
+            mount_path: "volundr"
+            auth_method: "token"
     """
 
     adapter: str = Field(
@@ -522,7 +522,7 @@ class SecretInjectionConfig(BaseModel):
         secret_injection:
           adapter: >-
             volundr.adapters.outbound.infisical_secret_injection
-            .InfisicalCSISecretInjectionAdapter
+            .InfisicalAgentInjectionAdapter
           kwargs:
             infisical_url: "https://infisical.example.com"
             client_id: "..."

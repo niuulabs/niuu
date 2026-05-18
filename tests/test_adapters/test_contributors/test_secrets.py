@@ -10,6 +10,7 @@ from volundr.adapters.outbound.contributors.secrets import (
     SecretsContributor,
 )
 from volundr.domain.models import (
+    CredentialMapping,
     GitSource,
     IntegrationConnection,
     IntegrationDefinition,
@@ -109,6 +110,12 @@ class TestSecretInjectionContributor:
         result = await c.contribute(session, ctx)
         assert result.pod_spec is pod_spec
         adapter.pod_spec_additions.assert_called_once_with("user-1", str(session.id))
+        adapter.ensure_secret_provider_class.assert_called_once_with(
+            "user-1",
+            [CredentialMapping(credential_name="my-cred", env_mappings={}, file_mappings={})],
+            session_id=str(session.id),
+            tenant_id=None,
+        )
 
     async def test_builds_mappings_from_registry(self, session):
         """Credential mappings include env and file mappings from definitions."""

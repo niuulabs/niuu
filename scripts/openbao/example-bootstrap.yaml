@@ -1,0 +1,30 @@
+openbao:
+  url: "https://openbao.ymir.niuu.world"
+  namespace: ""
+  auth:
+    method: token
+    token_env: OPENBAO_TOKEN
+
+mounts:
+  - path: volundr
+    description: "Volundr app credentials"
+  - path: ting
+    description: "Ting app credentials"
+
+jwtAuthBackends:
+  - path: jwt-valhalla
+    description: "Valhalla workload JWT auth"
+    oidc_discovery_url: "https://kubernetes.default.svc.cluster.local/.well-known/openid-configuration"
+    bound_issuer: "https://kubernetes.default.svc.cluster.local"
+
+policies:
+  - name: volundr-default
+    policy: |
+      path "volundr/data/users/*" {
+        capabilities = ["deny"]
+      }
+  - name: ting-default
+    policy: |
+      path "ting/data/users/*" {
+        capabilities = ["deny"]
+      }

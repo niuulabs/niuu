@@ -1,36 +1,96 @@
-"""OpenBao adapter for secret management.
+"""OpenBao admin helpers for bootstrap and runtime access reconciliation.
 
-Uses the Vault-compatible HTTP API (KV v2) via httpx.
+This module is intentionally concrete:
+- enable KV v2 mounts per app (for example ``volundr`` and ``ting``)
+- enable/configure JWT auth backends
+- reconcile ACL policies
+- reconcile service-account-bound JWT roles
+
+The goal is to support lightweight idempotent bootstrap jobs and future
+runtime provisioning without needing a separate IaC stack.
 """
 
 from __future__ import annotations
 
-import json
+from dataclasses import dataclass, field
 import logging
-from dataclasses import dataclass
 
 import httpx
 
-from volundr.domain.models import SecretMountSpec
-from volundr.domain.ports import SecretRepository
-
 logger = logging.getLogger(__name__)
 
+_HTTP_TIMEOUT = 30.0
 
-@dataclass
-class OpenBaoConfig:
-    """Configuration for the OpenBao adapter."""
+
+@dataclass(frozen=True)
+class OpenBaoAdminConfig:
+    """Configuration for the OpenBao admin client."""
 
     url: str = "http://openbao.volundr-system:8200"
     token: str = ""
-    mount_path: str = "volundr"
-    k8s_auth_path: str = "auth/kubernetes"
-    session_namespace: str = "volundr-sessions"
-    session_ttl: str = "24h"
+    namespace: str = ""
+    auth_method: str = "token"
+    approle_mount_path: str = "auth/approle"
+    role_id: str = ""
+    secret_id: str = ""
+
+
+@dataclass(frozen=True)
+class OpenBaoJWTAuthConfig:
+    """Desired configuration for a JWT auth backend."""
+
+    path: str = "jwt"
+    oidc_discovery_url: str = ""
+    bound_issuer: str = ""
+    default_role: str = ""
+    oidc_discovery_ca_pem: str = ""
+    jwt_supported_algs: tuple[str, ...] = ("RS256",)
+
+    def payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "oidc_discovery_url": self.oidc_discovery_url,
+            "jwt_supported_algs": list(self.jwt_supported_algs),
+        }
+        if self.bound_issuer:
+            payload["bound_issuer"] = self.bound_issuer
+        if self.default_role:
+            payload["default_role"] = self.default_role
+        if self.oidc_discovery_ca_pem:
+            payload["oidc_discovery_ca_pem"] = self.oidc_discovery_ca_pem
+        return payload
+
+
+@dataclass(frozen=True)
+class OpenBaoJWTAuthRole:
+    """Desired configuration for a JWT role."""
+
+    name: str
+    auth_path: str = "jwt"
+    user_claim: str = "sub"
+    role_type: str = "jwt"
+    bound_audiences: tuple[str, ...] = ("openbao",)
+    bound_subject: str = ""
+    policies: tuple[str, ...] = ()
+    ttl: str = "1h"
+    bound_claims: dict[str, object] = field(default_factory=dict)
+
+    def payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "role_type": self.role_type,
+            "user_claim": self.user_claim,
+            "bound_audiences": list(self.bound_audiences),
+            "policies": list(self.policies),
+            "ttl": self.ttl,
+        }
+        if self.bound_subject:
+            payload["bound_subject"] = self.bound_subject
+        if self.bound_claims:
+            payload["bound_claims"] = self.bound_claims
+        return payload
 
 
 class OpenBaoApiError(Exception):
-    """Raised when OpenBao API returns an error."""
+    """Raised when OpenBao returns an API error."""
 
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code
@@ -38,327 +98,281 @@ class OpenBaoApiError(Exception):
         super().__init__(f"OpenBao API error ({status_code}): {message}")
 
 
-# HCL policy template for user provisioning.
-_USER_POLICY_TEMPLATE = """\
-path "{mount}/data/users/{user_id}/*" {{
-    capabilities = ["create", "read", "update", "delete"]
-}}
-path "{mount}/data/tenants/{tenant_id}/shared/*" {{
-    capabilities = ["read"]
-}}
-path "{mount}/data/sessions/+/*" {{
-    capabilities = ["read"]
-}}
-"""
-
-
-class OpenBaoSecretRepository(SecretRepository):
-    """OpenBao/Vault implementation of SecretRepository.
-
-    Uses the Vault-compatible KV v2 HTTP API for credential
-    storage, user provisioning, and ephemeral session secrets.
-    """
+class OpenBaoAdminClient:
+    """Idempotent admin client for OpenBao bootstrap and access provisioning."""
 
     def __init__(
         self,
-        config: OpenBaoConfig,
+        config: OpenBaoAdminConfig,
         client: httpx.AsyncClient | None = None,
-    ):
+    ) -> None:
         self._config = config
         self._client = client
         self._owns_client = client is None
+        self._client_token: str | None = config.token or None
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
         if self._client is not None:
             return self._client
 
+        headers: dict[str, str] = {}
+        if self._config.namespace:
+            headers["X-Vault-Namespace"] = self._config.namespace
+
         self._client = httpx.AsyncClient(
-            base_url=self._config.url,
-            headers={"X-Vault-Token": self._config.token},
-            timeout=30.0,
+            base_url=self._config.url.rstrip("/"),
+            headers=headers,
+            timeout=_HTTP_TIMEOUT,
         )
         return self._client
 
+    async def _ensure_authenticated(self) -> str:
+        if self._client_token:
+            return self._client_token
+
+        if self._config.auth_method != "approle":
+            raise RuntimeError("OpenBao admin client requires a token or approle credentials")
+        if not self._config.role_id or not self._config.secret_id:
+            raise RuntimeError("AppRole auth requires role_id and secret_id")
+
+        client = await self._get_client()
+        response = await client.post(
+            f"/v1/{self._config.approle_mount_path.strip('/')}/login",
+            json={
+                "role_id": self._config.role_id,
+                "secret_id": self._config.secret_id,
+            },
+        )
+        if response.status_code >= 400:
+            raise OpenBaoApiError(response.status_code, response.text)
+
+        self._client_token = response.json()["auth"]["client_token"]
+        return self._client_token
+
+    async def _headers(self) -> dict[str, str]:
+        token = await self._ensure_authenticated()
+        headers = {"X-Vault-Token": token}
+        if self._config.namespace:
+            headers["X-Vault-Namespace"] = self._config.namespace
+        return headers
+
     async def close(self) -> None:
-        """Close the HTTP client if we own it."""
-        if self._client and self._owns_client:
+        if self._client is not None and self._owns_client:
             await self._client.aclose()
             self._client = None
 
-    # ------------------------------------------------------------------
-    # KV v2 CRUD
-    # ------------------------------------------------------------------
-
-    async def store_credential(
-        self,
-        path: str,
-        data: dict[str, str],
-    ) -> None:
-        """Store a credential at the given KV v2 path."""
-        client = await self._get_client()
-        mount = self._config.mount_path
-
-        response = await client.post(
-            f"/v1/{mount}/data/{path}",
-            json={"data": data},
-        )
-        if response.status_code >= 400:
-            raise OpenBaoApiError(
-                response.status_code,
-                response.text,
-            )
-
-    async def get_credential(
-        self,
-        path: str,
-    ) -> dict | None:
-        """Read a credential from the given KV v2 path."""
-        client = await self._get_client()
-        mount = self._config.mount_path
-
-        response = await client.get(
-            f"/v1/{mount}/data/{path}",
-        )
-        if response.status_code == 404:
-            return None
-        if response.status_code >= 400:
-            raise OpenBaoApiError(
-                response.status_code,
-                response.text,
-            )
-
-        body = response.json()
-        return body.get("data", {}).get("data")
-
-    async def delete_credential(self, path: str) -> bool:
-        """Delete a credential at the given KV v2 path."""
-        client = await self._get_client()
-        mount = self._config.mount_path
-
-        response = await client.delete(
-            f"/v1/{mount}/data/{path}",
-        )
-        if response.status_code == 404:
+    async def health_check(self) -> bool:
+        try:
+            client = await self._get_client()
+            response = await client.get("/v1/sys/health")
+            return response.status_code < 500
+        except Exception:
+            logger.exception("OpenBao health check failed")
             return False
-        if response.status_code >= 400:
-            raise OpenBaoApiError(
-                response.status_code,
-                response.text,
-            )
-        return True
 
-    async def list_credentials(
-        self,
-        path_prefix: str,
-    ) -> list[str]:
-        """List credential keys under a KV v2 metadata path."""
+    async def ensure_kv_v2_mount(self, mount_path: str, description: str = "") -> None:
+        """Ensure a KV v2 mount exists at *mount_path*."""
+        mount_path = mount_path.strip("/")
+        mounts = await self._list_mounts()
+        if f"{mount_path}/" in mounts:
+            return
+
         client = await self._get_client()
-        mount = self._config.mount_path
-
-        response = await client.get(
-            f"/v1/{mount}/metadata/{path_prefix}",
-            params={"list": "true"},
+        response = await client.post(
+            f"/v1/sys/mounts/{mount_path}",
+            headers=await self._headers(),
+            json={
+                "type": "kv",
+                "description": description,
+                "options": {"version": "2"},
+            },
         )
-        if response.status_code == 404:
-            return []
         if response.status_code >= 400:
-            raise OpenBaoApiError(
-                response.status_code,
-                response.text,
-            )
+            raise OpenBaoApiError(response.status_code, response.text)
 
-        body = response.json()
-        return body.get("data", {}).get("keys", [])
+    async def ensure_jwt_auth_backend(self, path: str = "jwt", description: str = "") -> None:
+        """Ensure a JWT auth backend exists at *path*."""
+        path = path.strip("/")
+        auth_backends = await self._list_auth_backends()
+        if f"{path}/" in auth_backends:
+            return
 
-    # ------------------------------------------------------------------
-    # User provisioning
-    # ------------------------------------------------------------------
-
-    async def provision_user(
-        self,
-        user_id: str,
-        tenant_id: str,
-    ) -> None:
-        """Create vault policy and K8s auth role for a user."""
-        await self._create_policy(user_id, tenant_id)
-        await self._create_k8s_role(user_id)
-
-    async def deprovision_user(self, user_id: str) -> None:
-        """Remove vault policy and K8s auth role for a user."""
-        await self._delete_k8s_role(user_id)
-        await self._delete_policy(user_id)
-
-    async def _create_policy(
-        self,
-        user_id: str,
-        tenant_id: str,
-    ) -> None:
-        """Create an ACL policy for a user."""
         client = await self._get_client()
-        policy_name = f"volundr-user-{user_id}"
-
-        policy_hcl = _USER_POLICY_TEMPLATE.format(
-            mount=self._config.mount_path,
-            user_id=user_id,
-            tenant_id=tenant_id,
+        response = await client.post(
+            f"/v1/sys/auth/{path}",
+            headers=await self._headers(),
+            json={
+                "type": "jwt",
+                "description": description,
+            },
         )
+        if response.status_code >= 400:
+            raise OpenBaoApiError(response.status_code, response.text)
 
+    async def configure_jwt_auth(self, config: OpenBaoJWTAuthConfig) -> None:
+        """Apply JWT auth configuration idempotently."""
+        client = await self._get_client()
+        response = await client.post(
+            f"/v1/auth/{config.path.strip('/')}/config",
+            headers=await self._headers(),
+            json=config.payload(),
+        )
+        if response.status_code >= 400:
+            raise OpenBaoApiError(response.status_code, response.text)
+
+    async def ensure_policy(self, name: str, policy_hcl: str) -> None:
+        """Write or replace an ACL policy."""
+        client = await self._get_client()
         response = await client.put(
-            f"/v1/sys/policies/acl/{policy_name}",
+            f"/v1/sys/policy/{name}",
+            headers=await self._headers(),
             json={"policy": policy_hcl},
         )
         if response.status_code >= 400:
-            raise OpenBaoApiError(
-                response.status_code,
-                response.text,
-            )
+            raise OpenBaoApiError(response.status_code, response.text)
 
-        logger.info(
-            "Created policy %s for user %s",
-            policy_name,
-            user_id,
-        )
-
-    async def _delete_policy(self, user_id: str) -> None:
-        """Delete an ACL policy for a user."""
+    async def ensure_jwt_role(self, role: OpenBaoJWTAuthRole) -> None:
+        """Write or replace a JWT role."""
         client = await self._get_client()
-        policy_name = f"volundr-user-{user_id}"
-
-        response = await client.delete(
-            f"/v1/sys/policies/acl/{policy_name}",
-        )
-        if response.status_code == 404:
-            logger.debug(
-                "Policy %s not found, skipping delete",
-                policy_name,
-            )
-            return
-        if response.status_code >= 400:
-            raise OpenBaoApiError(
-                response.status_code,
-                response.text,
-            )
-
-        logger.info("Deleted policy %s", policy_name)
-
-    async def _create_k8s_role(self, user_id: str) -> None:
-        """Create a Kubernetes auth role for a user."""
-        client = await self._get_client()
-        role_name = f"volundr-user-{user_id}"
-        k8s_path = self._config.k8s_auth_path
-
-        payload = {
-            "bound_service_account_names": [
-                f"volundr-session-user-{user_id}-*",
-            ],
-            "bound_service_account_namespaces": [
-                self._config.session_namespace,
-            ],
-            "policies": [role_name],
-            "ttl": self._config.session_ttl,
-        }
-
         response = await client.post(
-            f"/v1/{k8s_path}/role/{role_name}",
-            json=payload,
+            f"/v1/auth/{role.auth_path.strip('/')}/role/{role.name}",
+            headers=await self._headers(),
+            json=role.payload(),
         )
         if response.status_code >= 400:
-            raise OpenBaoApiError(
-                response.status_code,
-                response.text,
-            )
+            raise OpenBaoApiError(response.status_code, response.text)
 
-        logger.info(
-            "Created K8s auth role %s for user %s",
-            role_name,
-            user_id,
-        )
-
-    async def _delete_k8s_role(self, user_id: str) -> None:
-        """Delete a Kubernetes auth role for a user."""
+    async def delete_jwt_role(self, name: str, auth_path: str = "jwt") -> None:
+        """Delete a JWT role if it exists."""
         client = await self._get_client()
-        role_name = f"volundr-user-{user_id}"
-        k8s_path = self._config.k8s_auth_path
-
         response = await client.delete(
-            f"/v1/{k8s_path}/role/{role_name}",
+            f"/v1/auth/{auth_path.strip('/')}/role/{name}",
+            headers=await self._headers(),
         )
-        if response.status_code == 404:
-            logger.debug(
-                "K8s role %s not found, skipping delete",
-                role_name,
-            )
-            return
-        if response.status_code >= 400:
-            raise OpenBaoApiError(
-                response.status_code,
-                response.text,
-            )
+        if response.status_code >= 400 and response.status_code != 404:
+            raise OpenBaoApiError(response.status_code, response.text)
 
-        logger.info("Deleted K8s auth role %s", role_name)
-
-    # ------------------------------------------------------------------
-    # Session secrets
-    # ------------------------------------------------------------------
-
-    async def create_session_secrets(
+    async def ensure_service_account_access(
         self,
-        session_id: str,
+        *,
+        mount_path: str,
         user_id: str,
-        mounts: list[SecretMountSpec],
-    ) -> None:
-        """Store ephemeral secrets for a session."""
-        session_path = f"sessions/{session_id}"
-
-        manifest = {
-            "user_id": user_id,
-            "mounts": [
-                {
-                    "secret_path": m.secret_path,
-                    "mount_type": m.mount_type.value
-                    if hasattr(m.mount_type, "value")
-                    else str(m.mount_type),
-                    "destination": m.destination,
-                    "template": m.template,
-                    "renewal": m.renewal,
-                }
-                for m in mounts
-            ],
-        }
-
-        await self.store_credential(
-            f"{session_path}/manifest",
-            {"manifest": json.dumps(manifest)},
-        )
-
-        logger.info(
-            "Created session secrets for session %s (user %s, %d mounts)",
-            session_id,
+        tenant_id: str = "",
+        auth_path: str = "jwt",
+        audience: str = "openbao",
+        service_account_namespace: str,
+        service_account_name: str,
+        policy_name: str | None = None,
+        role_name: str | None = None,
+        ttl: str = "1h",
+    ) -> tuple[str, str]:
+        """Ensure a user-scoped policy and a service-account JWT role exist."""
+        resolved_policy_name = policy_name or self.user_policy_name(mount_path, user_id)
+        resolved_role_name = role_name or self.service_account_role_name(
+            mount_path,
             user_id,
-            len(mounts),
+            service_account_namespace,
+            service_account_name,
         )
 
-    async def delete_session_secrets(
-        self,
-        session_id: str,
-    ) -> None:
-        """Delete all ephemeral secrets for a session."""
-        session_path = f"sessions/{session_id}"
-
-        keys = await self.list_credentials(session_path)
-        for key in keys:
-            sub = key.rstrip("/")
-            await self.delete_credential(
-                f"{session_path}/{sub}",
+        await self.ensure_policy(
+            resolved_policy_name,
+            self.build_user_policy(
+                mount_path=mount_path,
+                user_id=user_id,
+                tenant_id=tenant_id,
+            ),
+        )
+        await self.ensure_jwt_role(
+            OpenBaoJWTAuthRole(
+                name=resolved_role_name,
+                auth_path=auth_path,
+                bound_audiences=(audience,),
+                bound_subject=self.service_account_subject(
+                    service_account_namespace,
+                    service_account_name,
+                ),
+                policies=(resolved_policy_name,),
+                ttl=ttl,
             )
-
-        # Delete the session prefix itself.
-        await self.delete_credential(
-            f"{session_path}/manifest",
         )
+        return resolved_policy_name, resolved_role_name
 
-        logger.info(
-            "Deleted session secrets for session %s",
-            session_id,
-        )
+    async def _list_mounts(self) -> dict[str, object]:
+        client = await self._get_client()
+        response = await client.get("/v1/sys/mounts", headers=await self._headers())
+        if response.status_code >= 400:
+            raise OpenBaoApiError(response.status_code, response.text)
+        return response.json().get("data", {})
+
+    async def _list_auth_backends(self) -> dict[str, object]:
+        client = await self._get_client()
+        response = await client.get("/v1/sys/auth", headers=await self._headers())
+        if response.status_code >= 400:
+            raise OpenBaoApiError(response.status_code, response.text)
+        return response.json().get("data", {})
+
+    @staticmethod
+    def build_user_policy(
+        *,
+        mount_path: str,
+        user_id: str,
+        tenant_id: str = "",
+        owner_type: str = "user",
+    ) -> str:
+        """Render an ACL policy for one user's credentials under one mount."""
+        mount = mount_path.strip("/")
+        owners = f"{owner_type}s"
+        lines = [
+            f'path "{mount}/data/{owners}/{user_id}/*" {{',
+            '  capabilities = ["create", "read", "update", "delete"]',
+            "}",
+            "",
+            f'path "{mount}/metadata/{owners}/{user_id}" {{',
+            '  capabilities = ["read", "list"]',
+            "}",
+            "",
+            f'path "{mount}/metadata/{owners}/{user_id}/*" {{',
+            '  capabilities = ["read", "list"]',
+            "}",
+        ]
+        if tenant_id:
+            lines.extend(
+                [
+                    "",
+                    f'path "{mount}/data/tenants/{tenant_id}/shared/*" {{',
+                    '  capabilities = ["read"]',
+                    "}",
+                    "",
+                    f'path "{mount}/metadata/tenants/{tenant_id}/shared" {{',
+                    '  capabilities = ["read", "list"]',
+                    "}",
+                    "",
+                    f'path "{mount}/metadata/tenants/{tenant_id}/shared/*" {{',
+                    '  capabilities = ["read", "list"]',
+                    "}",
+                ]
+            )
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def service_account_subject(namespace: str, service_account_name: str) -> str:
+        """Return the Kubernetes service account JWT subject."""
+        return f"system:serviceaccount:{namespace}:{service_account_name}"
+
+    @staticmethod
+    def user_policy_name(mount_path: str, user_id: str) -> str:
+        mount = mount_path.strip("/").replace("/", "-")
+        return f"{mount}-user-{user_id}"
+
+    @staticmethod
+    def service_account_role_name(
+        mount_path: str,
+        user_id: str,
+        namespace: str,
+        service_account_name: str,
+    ) -> str:
+        mount = mount_path.strip("/").replace("/", "-")
+        ns = namespace.replace("/", "-")
+        sa = service_account_name.replace("/", "-")
+        return f"{mount}-{user_id}-{ns}-{sa}"

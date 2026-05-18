@@ -589,11 +589,12 @@ authorization:
 #
 # ── Vault/OpenBao ──────────────────────────────────────────────
 #   credentialStore:
-#     adapter: "volundr.adapters.outbound.vault_credential_store.VaultCredentialStore"
+#     adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
 #     kwargs:
-#       url: "http://vault:8200"
-#       auth_method: "kubernetes"
-#       mount_path: "secret"
+#       url: "http://openbao:8200"
+#       mount_path: "volundr"
+#       auth_method: "token"
+#       token: ""
 #
 # ── Infisical ──────────────────────────────────────────────────
 #   credentialStore:
@@ -616,13 +617,25 @@ credentialStore:
 # Controls how secrets (e.g. Infisical CSI volumes) are injected
 # into session pods. The in-memory adapter is a no-op for development.
 #
-# ── Infisical CSI ────────────────────────────────────────────
+# ── Infisical Agent Injector ─────────────────────────────────
 #   secretInjection:
 #     adapter: >-
 #       volundr.adapters.outbound.infisical_secret_injection
-#       .InfisicalCSISecretInjectionAdapter
+#       .InfisicalAgentInjectionAdapter
 #     kwargs:
 #       infisical_url: "https://infisical.example.com"
+#
+# ── OpenBao Agent Injector ───────────────────────────────────
+#   secretInjection:
+#     adapter: >-
+#       volundr.adapters.outbound.openbao_secret_injection
+#       .OpenBaoAgentInjectionAdapter
+#     kwargs:
+#       openbao_url: "https://openbao.ymir.niuu.world"
+#       namespace: "skuld"
+#       mount_path: "volundr"
+#       auth_path: "jwt-valhalla"
+#       audience: "https://kubernetes.default.svc.cluster.local"
 #
 secretInjection:
   # -- Fully-qualified class path for the SecretInjectionPort adapter

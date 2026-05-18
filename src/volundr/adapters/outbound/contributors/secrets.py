@@ -166,6 +166,7 @@ class SecretInjectionContributor(SessionContributor):
                 session.owner_id,
                 mappings,
                 session_id=str(session.id),
+                tenant_id=session.tenant_id,
             )
         except Exception:
             logger.warning(

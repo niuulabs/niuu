@@ -1,4 +1,4 @@
-"""Tests for OpenBaoSecretRepository adapter."""
+"""Tests for the OpenBao admin/bootstrap client."""
 
 from __future__ import annotations
 
@@ -9,318 +9,183 @@ import pytest
 import respx
 
 from volundr.adapters.outbound.openbao import (
+    OpenBaoAdminClient,
+    OpenBaoAdminConfig,
     OpenBaoApiError,
-    OpenBaoConfig,
-    OpenBaoSecretRepository,
+    OpenBaoJWTAuthConfig,
+    OpenBaoJWTAuthRole,
 )
-from volundr.domain.models import MountType, SecretMountSpec
 
 BAO_URL = "https://bao.example.com"
 
 
 @pytest.fixture
-def config() -> OpenBaoConfig:
-    """Create OpenBao config for testing."""
-    return OpenBaoConfig(
+def config() -> OpenBaoAdminConfig:
+    return OpenBaoAdminConfig(
         url=BAO_URL,
-        token="test-root-token",
-        mount_path="volundr",
-        k8s_auth_path="auth/kubernetes",
-        session_namespace="volundr-sessions",
-        session_ttl="24h",
+        token="root-token",
+        namespace="platform",
     )
 
 
 @pytest.fixture
-def repo(config: OpenBaoConfig) -> OpenBaoSecretRepository:
-    """Create repo with an httpx client (mocked by respx)."""
-    client = httpx.AsyncClient(
+def client(config: OpenBaoAdminConfig) -> OpenBaoAdminClient:
+    http_client = httpx.AsyncClient(
         base_url=config.url,
-        headers={"X-Vault-Token": config.token},
+        headers={"X-Vault-Namespace": config.namespace},
     )
-    return OpenBaoSecretRepository(config, client=client)
+    return OpenBaoAdminClient(config, client=http_client)
 
 
-class TestStoreCredential:
-    """Tests for store_credential."""
+class TestEnsureKvV2Mount:
+    @respx.mock
+    async def test_skips_when_mount_already_exists(self, client: OpenBaoAdminClient):
+        mounts = respx.get(f"{BAO_URL}/v1/sys/mounts").respond(
+            status_code=200,
+            json={"data": {"volundr/": {"type": "kv"}}},
+        )
+        create = respx.post(f"{BAO_URL}/v1/sys/mounts/volundr").respond(status_code=204)
+
+        await client.ensure_kv_v2_mount("volundr")
+
+        assert mounts.called
+        assert not create.called
 
     @respx.mock
-    async def test_makes_correct_post(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        route = respx.post(
-            f"{BAO_URL}/v1/volundr/data/users/u1/keys/my-key",
-        ).respond(status_code=200, json={})
+    async def test_creates_mount_when_missing(self, client: OpenBaoAdminClient):
+        respx.get(f"{BAO_URL}/v1/sys/mounts").respond(status_code=200, json={"data": {}})
+        create = respx.post(f"{BAO_URL}/v1/sys/mounts/volundr").respond(status_code=204)
 
-        await repo.store_credential(
-            "users/u1/keys/my-key",
-            {"api_key": "secret"},
+        await client.ensure_kv_v2_mount("volundr", description="Volundr credentials")
+
+        assert create.called
+        body = json.loads(create.calls.last.request.content)
+        assert body["type"] == "kv"
+        assert body["options"] == {"version": "2"}
+
+
+class TestEnsureJwtAuthBackend:
+    @respx.mock
+    async def test_creates_jwt_backend_when_missing(self, client: OpenBaoAdminClient):
+        respx.get(f"{BAO_URL}/v1/sys/auth").respond(status_code=200, json={"data": {}})
+        create = respx.post(f"{BAO_URL}/v1/sys/auth/jwt-workloads").respond(status_code=204)
+
+        await client.ensure_jwt_auth_backend("jwt-workloads", description="Cluster JWT auth")
+
+        assert create.called
+        body = json.loads(create.calls.last.request.content)
+        assert body["type"] == "jwt"
+
+
+class TestConfigureJwtAuth:
+    @respx.mock
+    async def test_writes_auth_config(self, client: OpenBaoAdminClient):
+        route = respx.post(f"{BAO_URL}/v1/auth/jwt-workloads/config").respond(status_code=204)
+
+        await client.configure_jwt_auth(
+            OpenBaoJWTAuthConfig(
+                path="jwt-workloads",
+                oidc_discovery_url="https://kubernetes.default/.well-known/openid-configuration",
+                bound_issuer="https://kubernetes.default",
+                default_role="volundr-default",
+            )
         )
 
         assert route.called
-        body = json.loads(
-            route.calls.last.request.content,
+        body = json.loads(route.calls.last.request.content)
+        assert body["oidc_discovery_url"].startswith("https://kubernetes.default")
+        assert body["default_role"] == "volundr-default"
+
+
+class TestEnsurePolicy:
+    @respx.mock
+    async def test_writes_policy(self, client: OpenBaoAdminClient):
+        route = respx.put(f"{BAO_URL}/v1/sys/policy/volundr-user-u1").respond(status_code=204)
+
+        await client.ensure_policy("volundr-user-u1", 'path "volundr/data/users/u1/*" {}')
+
+        assert route.called
+        body = json.loads(route.calls.last.request.content)
+        assert "volundr/data/users/u1" in body["policy"]
+
+
+class TestEnsureJwtRole:
+    @respx.mock
+    async def test_writes_role(self, client: OpenBaoAdminClient):
+        route = respx.post(f"{BAO_URL}/v1/auth/jwt/role/volundr-u1-role").respond(status_code=204)
+
+        await client.ensure_jwt_role(
+            OpenBaoJWTAuthRole(
+                name="volundr-u1-role",
+                auth_path="jwt",
+                bound_audiences=("openbao",),
+                bound_subject="system:serviceaccount:skuld:volundr-session-u1",
+                policies=("volundr-user-u1",),
+            )
         )
-        assert body == {"data": {"api_key": "secret"}}
+
+        assert route.called
+        body = json.loads(route.calls.last.request.content)
+        assert body["bound_subject"] == "system:serviceaccount:skuld:volundr-session-u1"
+        assert body["policies"] == ["volundr-user-u1"]
 
     @respx.mock
-    async def test_raises_on_error(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        respx.post(
-            f"{BAO_URL}/v1/volundr/data/path",
-        ).respond(status_code=500, text="internal error")
+    async def test_delete_role_ignores_missing(self, client: OpenBaoAdminClient):
+        route = respx.delete(f"{BAO_URL}/v1/auth/jwt/role/volundr-u1-role").respond(status_code=404)
+
+        await client.delete_jwt_role("volundr-u1-role")
+
+        assert route.called
+
+
+class TestEnsureServiceAccountAccess:
+    @respx.mock
+    async def test_provisions_policy_and_role(self, client: OpenBaoAdminClient):
+        policy = respx.put(f"{BAO_URL}/v1/sys/policy/volundr-user-alice").respond(status_code=204)
+        role = respx.post(f"{BAO_URL}/v1/auth/jwt-workloads/role/volundr-alice-skuld-session-alice").respond(status_code=204)
+
+        policy_name, role_name = await client.ensure_service_account_access(
+            mount_path="volundr",
+            user_id="alice",
+            tenant_id="acme",
+            auth_path="jwt-workloads",
+            service_account_namespace="skuld",
+            service_account_name="session-alice",
+        )
+
+        assert policy_name == "volundr-user-alice"
+        assert role_name == "volundr-alice-skuld-session-alice"
+        assert policy.called
+        policy_body = json.loads(policy.calls.last.request.content)
+        assert "volundr/data/users/alice/*" in policy_body["policy"]
+        assert "volundr/data/tenants/acme/shared/*" in policy_body["policy"]
+        assert role.called
+
+
+class TestHelpers:
+    def test_build_user_policy(self):
+        policy = OpenBaoAdminClient.build_user_policy(
+            mount_path="ting",
+            user_id="alice",
+            tenant_id="acme",
+        )
+        assert 'path "ting/data/users/alice/*"' in policy
+        assert 'path "ting/metadata/users/alice"' in policy
+        assert 'path "ting/data/tenants/acme/shared/*"' in policy
+
+    def test_service_account_subject(self):
+        assert (
+            OpenBaoAdminClient.service_account_subject("skuld", "session-a")
+            == "system:serviceaccount:skuld:session-a"
+        )
+
+
+class TestApiErrors:
+    @respx.mock
+    async def test_mount_list_error_raises(self, client: OpenBaoAdminClient):
+        respx.get(f"{BAO_URL}/v1/sys/mounts").respond(status_code=500, text="boom")
 
         with pytest.raises(OpenBaoApiError) as exc_info:
-            await repo.store_credential("path", {"k": "v"})
+            await client.ensure_kv_v2_mount("volundr")
+
         assert exc_info.value.status_code == 500
-
-
-class TestGetCredential:
-    """Tests for get_credential."""
-
-    @respx.mock
-    async def test_parses_kv_v2_response(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        respx.get(
-            f"{BAO_URL}/v1/volundr/data/users/u1/keys/my-key",
-        ).respond(
-            status_code=200,
-            json={
-                "data": {
-                    "data": {
-                        "api_key": "secret-123",
-                        "host": "example.com",
-                    },
-                    "metadata": {
-                        "version": 1,
-                    },
-                },
-            },
-        )
-
-        result = await repo.get_credential(
-            "users/u1/keys/my-key",
-        )
-        assert result == {
-            "api_key": "secret-123",
-            "host": "example.com",
-        }
-
-    @respx.mock
-    async def test_returns_none_on_404(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        respx.get(
-            f"{BAO_URL}/v1/volundr/data/missing",
-        ).respond(status_code=404)
-
-        result = await repo.get_credential("missing")
-        assert result is None
-
-    @respx.mock
-    async def test_raises_on_server_error(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        respx.get(
-            f"{BAO_URL}/v1/volundr/data/err",
-        ).respond(status_code=503, text="unavailable")
-
-        with pytest.raises(OpenBaoApiError):
-            await repo.get_credential("err")
-
-
-class TestDeleteCredential:
-    """Tests for delete_credential."""
-
-    @respx.mock
-    async def test_returns_true_on_success(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        respx.delete(
-            f"{BAO_URL}/v1/volundr/data/p",
-        ).respond(status_code=204)
-
-        assert await repo.delete_credential("p") is True
-
-    @respx.mock
-    async def test_returns_false_on_404(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        respx.delete(
-            f"{BAO_URL}/v1/volundr/data/gone",
-        ).respond(status_code=404)
-
-        assert await repo.delete_credential("gone") is False
-
-
-class TestListCredentials:
-    """Tests for list_credentials."""
-
-    @respx.mock
-    async def test_parses_list_response(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        respx.get(
-            f"{BAO_URL}/v1/volundr/metadata/users/u1/keys",
-        ).respond(
-            status_code=200,
-            json={
-                "data": {
-                    "keys": ["cred-a", "cred-b"],
-                },
-            },
-        )
-
-        result = await repo.list_credentials(
-            "users/u1/keys",
-        )
-        assert result == ["cred-a", "cred-b"]
-
-    @respx.mock
-    async def test_returns_empty_on_404(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        respx.get(
-            f"{BAO_URL}/v1/volundr/metadata/empty",
-        ).respond(status_code=404)
-
-        result = await repo.list_credentials("empty")
-        assert result == []
-
-
-class TestProvisionUser:
-    """Tests for provision_user (policy + K8s role)."""
-
-    @respx.mock
-    async def test_creates_policy_and_role(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        policy_route = respx.put(
-            f"{BAO_URL}/v1/sys/policies/acl/volundr-user-user-42",
-        ).respond(status_code=204)
-
-        role_route = respx.post(
-            f"{BAO_URL}/v1/auth/kubernetes/role/volundr-user-user-42",
-        ).respond(status_code=204)
-
-        await repo.provision_user("user-42", "tenant-1")
-
-        assert policy_route.called
-        policy_body = json.loads(
-            policy_route.calls.last.request.content,
-        )
-        assert "volundr/data/users/user-42" in (policy_body["policy"])
-        assert "tenants/tenant-1" in policy_body["policy"]
-
-        assert role_route.called
-        role_body = json.loads(
-            role_route.calls.last.request.content,
-        )
-        assert role_body["policies"] == [
-            "volundr-user-user-42",
-        ]
-        assert "volundr-session-user-user-42-*" in role_body["bound_service_account_names"]
-
-
-class TestDeprovisionUser:
-    """Tests for deprovision_user."""
-
-    @respx.mock
-    async def test_deletes_role_and_policy(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        role_route = respx.delete(
-            f"{BAO_URL}/v1/auth/kubernetes/role/volundr-user-user-42",
-        ).respond(status_code=204)
-
-        policy_route = respx.delete(
-            f"{BAO_URL}/v1/sys/policies/acl/volundr-user-user-42",
-        ).respond(status_code=204)
-
-        await repo.deprovision_user("user-42")
-
-        assert role_route.called
-        assert policy_route.called
-
-    @respx.mock
-    async def test_tolerates_404_on_delete(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        respx.delete(
-            f"{BAO_URL}/v1/auth/kubernetes/role/volundr-user-ghost",
-        ).respond(status_code=404)
-
-        respx.delete(
-            f"{BAO_URL}/v1/sys/policies/acl/volundr-user-ghost",
-        ).respond(status_code=404)
-
-        # Should not raise
-        await repo.deprovision_user("ghost")
-
-
-class TestCreateSessionSecrets:
-    """Tests for create_session_secrets."""
-
-    @respx.mock
-    async def test_stores_manifest(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        route = respx.post(
-            f"{BAO_URL}/v1/volundr/data/sessions/s1/manifest",
-        ).respond(status_code=200, json={})
-
-        mounts = [
-            SecretMountSpec(
-                secret_path="users/u1/keys/api",
-                mount_type=MountType.ENV_FILE,
-                destination="/home/volundr/.env",
-            ),
-        ]
-        await repo.create_session_secrets("s1", "u1", mounts)
-
-        assert route.called
-        body = json.loads(
-            route.calls.last.request.content,
-        )
-        manifest = json.loads(body["data"]["manifest"])
-        assert manifest["user_id"] == "u1"
-        assert len(manifest["mounts"]) == 1
-
-
-class TestDeleteSessionSecrets:
-    """Tests for delete_session_secrets."""
-
-    @respx.mock
-    async def test_cleans_up_manifest(
-        self,
-        repo: OpenBaoSecretRepository,
-    ):
-        # list returns one sub-key
-        respx.get(
-            f"{BAO_URL}/v1/volundr/metadata/sessions/s1",
-        ).respond(
-            status_code=200,
-            json={"data": {"keys": ["manifest"]}},
-        )
-
-        # delete sub-key
-        respx.delete(
-            f"{BAO_URL}/v1/volundr/data/sessions/s1/manifest",
-        ).respond(status_code=204)
-
-        await repo.delete_session_secrets("s1")

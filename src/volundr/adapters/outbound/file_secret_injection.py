@@ -70,6 +70,7 @@ class FileSecretInjectionAdapter(SecretInjectionPort):
         user_id: str,
         credential_mappings: list[CredentialMapping],
         session_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """No-op for file-based adapter."""
 
