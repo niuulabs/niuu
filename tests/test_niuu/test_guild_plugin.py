@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
+from guild.plugin import GuildPlugin, _GuildStub
 from niuu.cli_api_client import CLIAPIClient
-from niuu.guild_plugin import GuildPlugin, _GuildStub
 
 
 def test_guild_plugin_metadata() -> None:
@@ -33,7 +33,7 @@ def test_guild_plugin_create_api_app() -> None:
     plugin = GuildPlugin()
     sentinel = object()
 
-    with patch("niuu.guild_app.create_app", return_value=sentinel):
+    with patch("guild.app.create_app", return_value=sentinel):
         assert plugin.create_api_app() is sentinel
 
 

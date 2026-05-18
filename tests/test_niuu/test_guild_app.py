@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-import niuu.guild_app as guild_app
+import guild.app as guild_app
 from niuu.service_settings import Settings
 
 

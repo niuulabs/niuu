@@ -45,7 +45,7 @@ class GuildPlugin(ServicePlugin):
         return self.register_service().factory()
 
     def create_api_app(self) -> Any:
-        from niuu.guild_app import create_app
+        from guild.app import create_app
 
         return create_app()
 

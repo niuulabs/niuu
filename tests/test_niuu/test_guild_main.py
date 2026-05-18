@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-import niuu.guild_main as guild_main
-from niuu.guild_app import app as guild_app
+import guild.main as guild_main
+from guild.app import app as guild_app
 
 
 def test_guild_main_exposes_app() -> None:
@@ -24,6 +24,6 @@ def test_guild_main_runs_service_app(monkeypatch) -> None:
     guild_main.main()
 
     assert captured == {
-        "import_path": "niuu.guild_app:app",
+        "import_path": "guild.app:app",
         "default_port": 8084,
     }
