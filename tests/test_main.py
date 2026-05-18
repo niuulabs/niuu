@@ -160,6 +160,134 @@ class TestLifespan:
         assert "/api/v1/tracker/issues" in paths
         assert "/api/v1/audit/events" in paths
 
+    def test_lifespan_seeds_integrations_and_starts_audit_subscriber(self):
+        """Lifespan runs the shared seeders and audit subscriber when enabled."""
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        settings = Settings()
+        settings.integrations.seed_connections = [{"owner_id": "u1"}]
+        settings.linear.enabled = True
+        settings.linear.api_key = "lin-test"
+        settings.telegram_ingress.enabled = False
+        settings.sleipnir.enabled = True
+        settings.sleipnir.adapter = "tests.test_main.DummySleipnir"
+
+        seed_integrations = AsyncMock()
+        seed_linear = AsyncMock()
+        subscriber = AsyncMock()
+        subscriber.start = AsyncMock()
+        subscriber.stop = AsyncMock()
+
+        class DummySleipnir:
+            def __init__(self, **_kwargs):
+                pass
+
+        from niuu.utils import import_class as real_import_class
+
+        def selective_import(path: str):
+            if path == "tests.test_main.DummySleipnir":
+                return DummySleipnir
+            return real_import_class(path)
+
+        with (
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch("volundr.main.import_class", side_effect=selective_import),
+            patch("volundr.main._seed_configured_integrations", seed_integrations),
+            patch("volundr.main._seed_linear_integration", seed_linear),
+            patch("volundr.main._has_seeded_linear_integration", return_value=False),
+            patch("volundr.main.AuditSubscriber", return_value=subscriber),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app(settings)
+            with TestClient(app) as client:
+                response = client.get("/health")
+                assert response.status_code == 200
+
+        seed_integrations.assert_awaited_once()
+        seed_linear.assert_awaited_once()
+        subscriber.start.assert_awaited_once()
+        subscriber.stop.assert_awaited_once()
+
+    def test_lifespan_swallows_audit_subscriber_start_failures(self):
+        """Audit subscriber start failures do not prevent app startup."""
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        settings = Settings()
+        settings.telegram_ingress.enabled = False
+        settings.sleipnir.enabled = True
+        settings.sleipnir.adapter = "tests.test_main.DummySleipnir"
+
+        class DummySleipnir:
+            def __init__(self, **_kwargs):
+                pass
+
+        from niuu.utils import import_class as real_import_class
+
+        def selective_import(path: str):
+            if path == "tests.test_main.DummySleipnir":
+                return DummySleipnir
+            return real_import_class(path)
+
+        subscriber = AsyncMock()
+        subscriber.start = AsyncMock(side_effect=RuntimeError("boom"))
+        subscriber.stop = AsyncMock()
+
+        with (
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch("volundr.main.import_class", side_effect=selective_import),
+            patch("volundr.main.AuditSubscriber", return_value=subscriber),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app(settings)
+            with TestClient(app) as client:
+                response = client.get("/health")
+                assert response.status_code == 200
+
+        subscriber.start.assert_awaited_once()
+        subscriber.stop.assert_awaited_once()
+
 
 class TestBifrostCatalogLoading:
     """Tests for background Bifrost catalog refresh behavior."""
