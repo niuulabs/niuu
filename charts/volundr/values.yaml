@@ -249,7 +249,7 @@ bifrost:
   timeoutSeconds: 10.0
   auth:
     # -- Fully-qualified outbound auth adapter class
-    adapter: "niuu.adapters.outbound.http_auth.NoAuthHttpAuthAdapter"
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
     # -- Kwargs forwarded to the auth adapter constructor
     kwargs: {}
     # -- Secret-backed kwargs forwarded through env indirection

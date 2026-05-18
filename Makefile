@@ -58,8 +58,8 @@ build-postgres:
 copy-migrations:
 	rm -rf $(MIG_DEST)/*.sql $(TING_MIG_DEST)/*.sql
 	mkdir -p $(MIG_DEST) $(TING_MIG_DEST)
-	cp $(MIG_DIR)/*.up.sql $(MIG_DEST)/
-	cp $(MIG_DIR)/ting/*.up.sql $(TING_MIG_DEST)/
+	cp $(MIG_DIR)/*.sql $(MIG_DEST)/
+	cp $(MIG_DIR)/ting/*.sql $(TING_MIG_DEST)/
 
 # --------------------------------------------------------------------------
 # Nuitka single-binary compilation

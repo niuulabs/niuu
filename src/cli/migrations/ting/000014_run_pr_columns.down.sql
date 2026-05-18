@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_runs_session_id;
+ALTER TABLE runs DROP COLUMN IF EXISTS pr_id;
+ALTER TABLE runs DROP COLUMN IF EXISTS pr_url;

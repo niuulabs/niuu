@@ -147,6 +147,15 @@ guild:
       allowedOrigins:
         - "*"
       allowCredentials: true
+  database:
+    name: volundr
+    existingSecret: volundr-postgres-app
+    userKey: username
+    passwordKey: password
+    external:
+      enabled: true
+      host: volundr-postgres-rw
+      port: 5432
 
 bifrost:
   enabled: true
@@ -162,6 +171,15 @@ observatory:
   enabled: true
   ingress:
     enabled: false
+  database:
+    name: volundr
+    existingSecret: volundr-postgres-app
+    userKey: username
+    passwordKey: password
+    external:
+      enabled: true
+      host: volundr-postgres-rw
+      port: 5432
   guild:
     url: ""
 
