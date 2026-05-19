@@ -1,0 +1,49 @@
+name: Docker Login With Retry
+description: Log in to a container registry with bounded retries for transient network failures.
+
+inputs:
+  registry:
+    description: Container registry hostname.
+    required: true
+  username:
+    description: Registry username.
+    required: true
+  password:
+    description: Registry password or token.
+    required: true
+  max-attempts:
+    description: Maximum login attempts before failing.
+    required: false
+    default: "5"
+
+runs:
+  using: composite
+  steps:
+    - name: Log in with retry
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        REGISTRY_USERNAME: ${{ inputs.username }}
+        REGISTRY_PASSWORD: ${{ inputs.password }}
+        MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+      run: |
+        set -euo pipefail
+        echo "::add-mask::${REGISTRY_PASSWORD}"
+
+        attempt=1
+        while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+          if printf '%s' "${REGISTRY_PASSWORD}" \
+            | docker login "${REGISTRY}" --username "${REGISTRY_USERNAME}" --password-stdin; then
+            exit 0
+          fi
+
+          if [ "$attempt" -eq "$MAX_ATTEMPTS" ]; then
+            echo "Registry login failed after ${MAX_ATTEMPTS} attempts: ${REGISTRY}" >&2
+            exit 1
+          fi
+
+          sleep_seconds=$((attempt * 5))
+          echo "Registry login attempt ${attempt}/${MAX_ATTEMPTS} failed for ${REGISTRY}; retrying in ${sleep_seconds}s" >&2
+          sleep "${sleep_seconds}"
+          attempt=$((attempt + 1))
+        done
