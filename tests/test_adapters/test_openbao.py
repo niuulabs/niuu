@@ -115,7 +115,10 @@ class TestConfigureJwtAuth:
 
         assert route.called
         body = json.loads(route.calls.last.request.content)
-        assert body["oidc_discovery_url"].startswith("https://kubernetes.default")
+        assert (
+            body["oidc_discovery_url"]
+            == "https://kubernetes.default/.well-known/openid-configuration"
+        )
         assert body["default_role"] == "volundr-default"
 
     @respx.mock

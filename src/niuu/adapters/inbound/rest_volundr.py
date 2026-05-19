@@ -10,6 +10,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response, status
 
 from niuu.adapters.inbound.auth import extract_principal
+from niuu.adapters.inbound.remote_urls import build_remote_url
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
@@ -110,10 +111,15 @@ async def _request_remote(
     json_body: Any | None = None,
     params: list[tuple[str, str]] | None = None,
 ) -> httpx.Response:
+    try:
+        remote_url = build_remote_url(instance.base_url, "/api/v1/forge", path)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         response = await client.request(
             method,
-            f"{instance.base_url}/api/v1/forge{path}",
+            remote_url,
             headers=_forward_headers(request),
             params=params,
             json=json_body,

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from pydantic import BaseModel, Field
 
 from niuu.adapters.inbound.auth import extract_principal
+from niuu.adapters.inbound.remote_urls import build_remote_url
 from niuu.domain.models import (
     InstanceKind,
     InstanceVisibility,
@@ -284,11 +285,17 @@ async def _load_remote_sessions(
     *,
     status_filter: str | None = None,
 ) -> list[dict[str, Any]]:
-    query = f"?status={status_filter}" if status_filter else ""
+    try:
+        remote_url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions")
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    params = {"status": status_filter} if status_filter else None
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
         response = await client.get(
-            f"{instance.base_url}/api/v1/forge/sessions{query}",
+            remote_url,
             headers=_forward_headers(request),
+            params=params,
         )
         response.raise_for_status()
         payload = response.json()

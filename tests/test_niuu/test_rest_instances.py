@@ -376,6 +376,17 @@ def test_list_instance_sessions_forwards_headers_and_status_filter() -> None:
     assert failed.status_code == 502
 
 
+def test_list_instance_sessions_rejects_invalid_remote_base_urls() -> None:
+    service = StubInstanceService()
+    service.single_instance = _instance("instance-1", base_url="ftp://volundr.example.com")
+    client = _client(service)
+
+    response = client.get("/api/v1/niuu/instances/instance-1/sessions", headers=_headers())
+
+    assert response.status_code == 502
+    assert "http or https" in response.json()["detail"]
+
+
 def test_list_volundr_targets_requests_enabled_visible_volundr_instances() -> None:
     service = StubInstanceService()
     service.visible_instances = [_instance("volundr-1", enabled=True)]

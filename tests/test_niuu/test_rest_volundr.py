@@ -192,6 +192,15 @@ def test_get_session_returns_404_when_no_visible_instance_owns_it() -> None:
     assert response.json()["detail"] == "Session not found: missing"
 
 
+def test_get_session_rejects_invalid_remote_base_urls() -> None:
+    client = _client([_instance("alpha", base_url="ftp://alpha")])
+
+    response = client.get("/api/v1/niuu/volundr/sessions/s2", headers=_headers())
+
+    assert response.status_code == 502
+    assert "http or https" in response.json()["detail"]
+
+
 @respx.mock
 def test_create_session_uses_requested_instance_and_strips_instance_hints() -> None:
     client = _client(
