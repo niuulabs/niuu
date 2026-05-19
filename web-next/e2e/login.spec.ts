@@ -109,8 +109,8 @@ test('auth-disabled mode: no redirect to /login', async ({ page }) => {
   await page.goto('/');
   // App boots normally and shows the first enabled plugin.
   await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
-  await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
-  await expect(page).toHaveURL('http://localhost:5173/volundr');
+  await expect(page.getByTestId('forge-page')).toBeVisible();
+  await expect(page).toHaveURL('http://localhost:5173/volundr/forge');
 });
 
 test('login page shows error state for OIDC failure in URL', async ({ page }) => {

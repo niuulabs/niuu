@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
 
-test('navigate to /volundr shows the sessions page', async ({ page }) => {
+test('navigate to /volundr redirects to the forge page', async ({ page }) => {
   await page.goto('/volundr');
-  await expect(page.getByTestId('sessions-page')).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByTestId('forge-page')).toBeVisible({ timeout: 8_000 });
+  await expect(page).toHaveURL(/\/volundr\/forge$/);
 });
 
 test('volundr overview shows KPI strip after data loads', async ({ page }) => {
@@ -34,7 +35,8 @@ test('navigating back from /volundr preserves the shell', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Ting' })).toBeVisible({ timeout: 5_000 });
 
   await page.goto('/volundr');
-  await expect(page.getByTestId('sessions-page')).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByTestId('forge-page')).toBeVisible({ timeout: 8_000 });
+  await expect(page).toHaveURL(/\/volundr\/forge$/);
 
   await page.goBack();
   await expect(page).toHaveURL(/\/ting$/);

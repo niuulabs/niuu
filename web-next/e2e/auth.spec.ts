@@ -15,14 +15,14 @@ import { test, expect } from '@playwright/test';
 test('app boots without auth when auth config is absent', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
-  await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
-  await expect(page).toHaveURL('http://localhost:5173/volundr');
+  await expect(page.getByTestId('forge-page')).toBeVisible();
+  await expect(page).toHaveURL('http://localhost:5173/volundr/forge');
 });
 
 test('auth-disabled: default front door renders normally', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
-  await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
+  await expect(page.getByTestId('forge-page')).toBeVisible();
 });
 
 test('OIDC callback: handles code in URL and cleans up query string', async ({ page }) => {
@@ -97,6 +97,6 @@ test('RequireAuth: no redirect when auth is disabled', async ({ page }) => {
   // does NOT contain /login (auth redirect would go there).
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
-  await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
-  await expect(page).toHaveURL('http://localhost:5173/volundr');
+  await expect(page.getByTestId('forge-page')).toBeVisible();
+  await expect(page).toHaveURL('http://localhost:5173/volundr/forge');
 });

@@ -7,7 +7,7 @@ test.describe('CommandPalette', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/volundr');
     await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
-    await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible();
+    await expect(page.getByTestId('forge-page')).toBeVisible({ timeout: 8_000 });
   });
 
   test('Ctrl+K opens the palette', async ({ page }) => {
