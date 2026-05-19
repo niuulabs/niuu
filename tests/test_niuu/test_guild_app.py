@@ -24,13 +24,10 @@ async def _fake_database_pool(_config) -> AsyncIterator[object]:
 
 def test_create_app_mounts_only_guild_routes(monkeypatch) -> None:
     seed_instances = AsyncMock(return_value=1)
-    identity_adapter = object()
 
     monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
     monkeypatch.setattr(guild_app, "PostgresInstanceRepository", lambda _pool: object())
-    monkeypatch.setattr(guild_app, "PostgresUserRepository", lambda _pool: object())
     monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
-    monkeypatch.setattr(guild_app, "create_identity_adapter", lambda *_args: identity_adapter)
     monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
     monkeypatch.setattr(guild_app, "seed_configured_instances", seed_instances)
 
@@ -53,7 +50,6 @@ def test_create_app_mounts_only_guild_routes(monkeypatch) -> None:
     with TestClient(app) as client:
         response = client.get("/health")
         assert response.status_code == 200
-        assert app.state.identity is identity_adapter
 
         paths = {route.path for route in app.routes}
         assert "/api/v1/niuu/instances" in paths
@@ -72,14 +68,11 @@ def test_create_app_mounts_only_guild_routes(monkeypatch) -> None:
 def test_create_app_uses_loaded_settings_and_skips_empty_seed(monkeypatch) -> None:
     loaded_settings = Settings()
     seed_instances = AsyncMock(return_value=0)
-    identity_adapter = object()
 
     monkeypatch.setattr(guild_app, "_load_settings", lambda: loaded_settings)
     monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
     monkeypatch.setattr(guild_app, "PostgresInstanceRepository", lambda _pool: object())
-    monkeypatch.setattr(guild_app, "PostgresUserRepository", lambda _pool: object())
     monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
-    monkeypatch.setattr(guild_app, "create_identity_adapter", lambda *_args: identity_adapter)
     monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
     monkeypatch.setattr(guild_app, "seed_configured_instances", seed_instances)
 
@@ -89,7 +82,6 @@ def test_create_app_uses_loaded_settings_and_skips_empty_seed(monkeypatch) -> No
         response = client.get("/health")
         assert response.json() == {"status": "healthy"}
         assert app.state.settings is loaded_settings
-        assert app.state.identity is identity_adapter
         assert app.state.pat_validator.__class__ is _DummyPATValidator
 
     seed_instances.assert_not_awaited()

@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 
 import respx
 from fastapi import FastAPI
@@ -23,15 +22,6 @@ from niuu.domain.services.instances import (
     InstanceAccessError,
     InstanceValidationError,
 )
-
-
-def _principal() -> Principal:
-    return Principal(
-        user_id="user-a",
-        email="user-a@example.com",
-        tenant_id="tenant-a",
-        roles=[],
-    )
 
 
 def _instance(
@@ -137,7 +127,6 @@ def _client(
     catalog: list[Any] | None = None,
 ) -> TestClient:
     app = FastAPI()
-    app.state.identity = AsyncMock()
     if catalog is not None:
         app.state.settings = SimpleNamespace(
             niuu=SimpleNamespace(catalog=catalog),

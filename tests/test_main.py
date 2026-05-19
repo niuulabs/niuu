@@ -288,7 +288,6 @@ class TestLifespan:
         subscriber.start.assert_awaited_once()
         subscriber.stop.assert_awaited_once()
 
-
 class TestBifrostCatalogLoading:
     """Tests for background Bifrost catalog refresh behavior."""
 

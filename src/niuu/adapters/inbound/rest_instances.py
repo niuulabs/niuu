@@ -10,6 +10,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
+from niuu.adapters.inbound.auth import extract_principal
 from niuu.domain.models import (
     InstanceKind,
     InstanceVisibility,
@@ -21,7 +22,6 @@ from niuu.domain.services.instances import (
     InstanceService,
     InstanceValidationError,
 )
-from volundr.adapters.inbound.auth import extract_principal
 
 
 class InstanceResponse(BaseModel):

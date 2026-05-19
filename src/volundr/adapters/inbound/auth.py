@@ -77,6 +77,27 @@ async def extract_principal(request: Request) -> Principal:
             roles=_split_roles(request.query_params.get("devRoles", "volundr:developer")),
         )
 
+    # Shared local shells forward explicit developer identity through
+    # x-auth-* headers. Honor those first so proxied browser flows preserve
+    # tenant/user ownership even when the worker is running in allow-all mode.
+    forwarded_user_id = request.headers.get("x-auth-user-id", "").strip()
+    if forwarded_user_id:
+        return Principal(
+            user_id=forwarded_user_id,
+            email=request.headers.get("x-auth-email", "").strip(),
+            tenant_id=request.headers.get("x-auth-tenant", "").strip(),
+            roles=_split_roles(request.headers.get("x-auth-roles", "volundr:developer")),
+        )
+
+    dev_user_id = request.query_params.get("devUserId", "").strip()
+    if dev_user_id:
+        return Principal(
+            user_id=dev_user_id,
+            email=request.query_params.get("devEmail", "").strip(),
+            tenant_id=request.query_params.get("devTenantId", "").strip(),
+            roles=_split_roles(request.query_params.get("devRoles", "volundr:developer")),
+        )
+
     # If the adapter supports header-based auth (Envoy mode), use it
     if isinstance(identity, EnvoyHeaderIdentityAdapter):
         header_items = request.headers.items()

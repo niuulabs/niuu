@@ -1097,7 +1097,6 @@ data:
 
   000039_observatory_registry.down.sql: |
     DROP TABLE IF EXISTS observatory_registries;
-
   000040_niuu_instances.up.sql: |
     -- Shared runtime instance registry for multi-instance Niuu deployments.
 
