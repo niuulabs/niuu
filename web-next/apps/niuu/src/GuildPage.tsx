@@ -1476,18 +1476,9 @@ export function GuildPage() {
                 <Rune glyph="ᚹ" size={22} className="niuu-text-brand" />
               </div>
               <div>
-                <div className="niuu-flex niuu-items-center niuu-gap-2">
-                  <h1 className="niuu-text-[22px] niuu-font-semibold niuu-text-text-primary">
-                    Guild
-                  </h1>
-                  <span className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-faint">
-                    niuu runtime registry
-                  </span>
-                </div>
-                <p className="niuu-max-w-3xl niuu-text-[13px] niuu-leading-6 niuu-text-text-secondary">
-                  Register typed backend endpoints, attach auth bindings, and control who can see or
-                  target them across Volundr, Tyr, Mimir, Bifrost, and future services.
-                </p>
+                <h1 className="niuu-text-[22px] niuu-font-semibold niuu-text-text-primary">
+                  Guild
+                </h1>
               </div>
             </div>
           </div>
@@ -1621,54 +1612,104 @@ export function GuildPage() {
               ].map((card) => (
                 <div
                   key={card.title}
-                  className="niuu-rounded-[20px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5"
+                  className="niuu-rounded-[16px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4"
                 >
-                  <div className="niuu-flex niuu-items-center niuu-justify-between">
-                    <h2 className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
-                      {card.title}
-                    </h2>
-                    <span className="niuu-rounded-full niuu-bg-bg-elevated niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary">
+                  <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3">
+                    <div>
+                      <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                        visibility
+                      </div>
+                      <h2 className="niuu-mt-2 niuu-text-[15px] niuu-font-semibold niuu-text-text-primary">
+                        {card.title}
+                      </h2>
+                    </div>
+                    <span className="niuu-rounded-full niuu-bg-bg-elevated niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-text-secondary">
                       {card.count}
                     </span>
                   </div>
-                  <p className="niuu-mt-2 niuu-text-[13px] niuu-leading-6 niuu-text-text-secondary">
+                  <p className="niuu-mt-2 niuu-text-[12px] niuu-leading-5 niuu-text-text-secondary">
                     {card.body}
                   </p>
                 </div>
               ))}
             </div>
 
-            <div className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
-              <div className="niuu-flex niuu-items-center niuu-justify-between">
+            <div className="niuu-rounded-[18px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4">
+              <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-4">
                 <div>
-                  <h2 className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+                  <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                    current visibility
+                  </div>
+                  <h2 className="niuu-mt-2 niuu-text-[15px] niuu-font-semibold niuu-text-text-primary">
                     Visible registry entries
                   </h2>
-                  <p className="niuu-text-[13px] niuu-text-text-secondary">
+                  <p className="niuu-mt-1 niuu-text-[12px] niuu-leading-5 niuu-text-text-secondary">
                     What the current identity can actually discover right now.
                   </p>
                 </div>
+                <span className="niuu-rounded-full niuu-bg-bg-elevated niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-text-secondary">
+                  {instances.length}
+                </span>
               </div>
-              <div className="niuu-mt-4 niuu-space-y-2">
-                {instances.map((instance) => (
-                  <div
-                    key={`access-${instance.id}`}
-                    className="niuu-grid niuu-grid-cols-[minmax(0,1.2fr)_120px_140px] niuu-gap-3 niuu-rounded-xl niuu-bg-bg-elevated niuu-p-3 niuu-text-[12px]"
-                  >
-                    <div className="niuu-min-w-0">
-                      <div className="niuu-truncate niuu-font-medium niuu-text-text-primary">
-                        {instance.name}
+              <div className="niuu-mt-4 niuu-grid niuu-gap-4 md:niuu-grid-cols-2 xl:niuu-grid-cols-3">
+                {instances.map((instance) => {
+                  const badge = scopeBadge(instance);
+                  const ScopeIcon = badge.icon;
+                  return (
+                    <div
+                      key={`access-${instance.id}`}
+                      className="niuu-flex niuu-flex-col niuu-gap-3 niuu-rounded-[16px] niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-p-4"
+                    >
+                      <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3">
+                        <div className="niuu-min-w-0">
+                          <div className="niuu-truncate niuu-text-[14px] niuu-font-semibold niuu-text-text-primary">
+                            {instance.name}
+                          </div>
+                          <div className="niuu-mt-1 niuu-truncate niuu-font-mono niuu-text-[10px] niuu-text-text-muted">
+                            {kindMeta(instance.kind).label} · {instance.slug}
+                          </div>
+                        </div>
+                        <span
+                          className={cn(
+                            'niuu-inline-flex niuu-items-center niuu-gap-1.5 niuu-rounded-full niuu-border niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[9px] niuu-uppercase niuu-tracking-[0.12em]',
+                            badge.tone,
+                          )}
+                        >
+                          <ScopeIcon className="niuu-h-3 niuu-w-3" />
+                          {badge.label}
+                        </span>
                       </div>
-                      <div className="niuu-truncate niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
-                        {instance.baseUrl}
+                      <div className="niuu-space-y-2">
+                        <div>
+                          <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                            endpoint
+                          </div>
+                          <div className="niuu-mt-1 niuu-truncate niuu-font-mono niuu-text-[11px] niuu-text-text-secondary">
+                            {instance.baseUrl}
+                          </div>
+                        </div>
+                        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
+                          <div>
+                            <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                              boundary
+                            </div>
+                            <div className="niuu-mt-1 niuu-text-[12px] niuu-text-text-secondary">
+                              {scopeSummary(instance)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                              auth
+                            </div>
+                            <div className="niuu-mt-1 niuu-text-[12px] niuu-text-text-secondary">
+                              {inferAuth(instance)}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                    <div className="niuu-text-text-secondary">{scopeBadge(instance).label}</div>
-                    <div className="niuu-truncate niuu-text-text-secondary">
-                      {scopeSummary(instance)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </section>

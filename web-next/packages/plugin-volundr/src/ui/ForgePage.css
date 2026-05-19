@@ -1,8 +1,8 @@
 .vol-forge {
   min-height: 100%;
   background: #090a0d;
-  color: #f3f5f8;
-  padding: 26px 32px 28px;
+  color: var(--ops-text-strong);
+  padding: 20px 24px 24px;
 }
 
 .vol-forge--loading {
@@ -14,21 +14,26 @@
 .vol-forge__metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
+  gap: 14px;
+  margin-bottom: 18px;
 }
 
 .vol-forge__metric {
-  min-height: 190px;
-  border: 1px solid rgba(75, 82, 97, 0.72);
-  border-radius: 18px;
-  background: #1a1b1f;
-  padding: 18px 22px;
+  min-height: 148px;
+  border: 1px solid var(--ops-border-2);
+  border-radius: 14px;
+  background: var(--ops-surface-2);
+  padding: 16px 18px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
 .vol-forge__metric--brand {
-  border-color: rgba(95, 173, 228, 0.58);
+  border-color: var(--ops-border-strong);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-brand) 7%, var(--ops-surface-3)) 0%,
+    var(--ops-surface-2) 100%
+  );
 }
 
 .vol-forge__metric-label,
@@ -46,11 +51,12 @@
 }
 
 .vol-forge__metric-label {
-  color: #787c87;
-  font-size: 13px;
+  color: var(--ops-text-muted);
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.14em;
-  margin-bottom: 10px;
+  letter-spacing: 0.1em;
+  margin-bottom: 8px;
+  text-transform: uppercase;
 }
 
 .vol-forge__metric-value {
@@ -62,16 +68,16 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 43px;
-  font-weight: 700;
+  font-size: 29px;
+  font-weight: 600;
   line-height: 1;
   letter-spacing: -0.04em;
-  color: #fcfdff;
+  color: var(--ops-text-strong);
 }
 
 .vol-forge__metric-sub {
-  margin-top: 12px;
-  color: #8b909c;
+  margin-top: 8px;
+  color: var(--ops-text-faint);
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -80,13 +86,13 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .vol-forge__metric-viz {
-  margin-top: 18px;
-  color: #8fd8ff;
+  margin-top: 14px;
+  color: var(--ops-fill-brand);
 }
 
 .vol-forge__gpu-strip {
@@ -98,28 +104,28 @@
 
 .vol-forge__gpu-cell {
   width: 14px;
-  height: 20px;
+  height: 18px;
   border-radius: 4px;
-  background: rgba(73, 76, 84, 0.52);
-  border: 1px solid rgba(108, 113, 125, 0.4);
+  background: color-mix(in srgb, var(--ops-fill-muted) 80%, transparent);
+  border: 1px solid rgba(108, 113, 125, 0.34);
 }
 
 .vol-forge__gpu-cell.is-used {
   background: linear-gradient(180deg, #6cc5ff 0%, #4ea7ea 100%);
-  border-color: rgba(113, 194, 255, 0.72);
+  border-color: var(--ops-border-strong);
   box-shadow: 0 0 8px rgba(96, 190, 255, 0.18);
 }
 
 .vol-forge__grid {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(360px, 1fr);
-  gap: 18px;
+  gap: 16px;
 }
 
 .vol-forge__panel {
-  border: 1px solid rgba(78, 83, 95, 0.72);
-  border-radius: 18px;
-  background: #1a1b1f;
+  border: 1px solid var(--ops-border-2);
+  border-radius: 14px;
+  background: var(--ops-surface-2);
   overflow: hidden;
 }
 
@@ -146,8 +152,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 20px;
-  border-bottom: 1px solid rgba(71, 76, 87, 0.62);
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--ops-border-soft);
 }
 
 .vol-forge__panel-title {
@@ -159,15 +165,17 @@
 
 .vol-forge__panel-title h2 {
   margin: 0;
-  color: #f1f3f7;
-  font-size: 17px;
-  font-weight: 700;
+  color: var(--ops-text-strong);
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .vol-forge__panel-title span {
-  color: #7f8490;
-  font-size: 13px;
+  color: var(--ops-text-faint);
+  font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .vol-forge__panel-title--critical h2 {
@@ -177,7 +185,7 @@
 .vol-forge__panel-link {
   border: 0;
   background: transparent;
-  color: #9196a1;
+  color: var(--ops-text-muted);
   cursor: pointer;
   font-family:
     ui-monospace,
@@ -187,8 +195,10 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .vol-forge__panel-link:hover {
@@ -207,14 +217,14 @@
   display: grid;
   grid-template-columns: minmax(220px, 1.15fr) minmax(180px, 1.3fr) minmax(140px, 0.9fr) auto auto;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
   width: 100%;
   border: 0;
-  border-top: 1px solid rgba(67, 71, 80, 0.58);
+  border-top: 1px solid var(--ops-border-soft);
   background: transparent;
   color: inherit;
   cursor: pointer;
-  padding: 16px 20px;
+  padding: 12px 16px;
   text-align: left;
 }
 
@@ -257,9 +267,9 @@
 }
 
 .vol-forge__inflight-name {
-  color: #eef3f8;
-  font-size: 18px;
-  font-weight: 700;
+  color: var(--ops-text-strong);
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.15;
 }
 
@@ -268,7 +278,7 @@
   align-items: center;
   gap: 8px;
   margin-top: 6px;
-  color: #848997;
+  color: var(--ops-text-faint);
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -277,8 +287,8 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -293,9 +303,9 @@
 .vol-forge__error-message,
 .vol-forge__launch-desc,
 .vol-forge__booting-copy {
-  color: #a2a8b4;
-  font-size: 13px;
-  font-weight: 600;
+  color: var(--ops-text-body);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .vol-forge__inflight-preview,
@@ -328,7 +338,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: #9197a4;
+  color: var(--ops-text-muted);
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -337,8 +347,8 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -367,8 +377,8 @@
 }
 
 .vol-forge__cluster-row {
-  padding: 18px 20px;
-  border-top: 1px solid rgba(67, 71, 80, 0.58);
+  padding: 14px 16px;
+  border-top: 1px solid var(--ops-border-soft);
 }
 
 .vol-forge__load-list > .vol-forge__cluster-row:first-child {
@@ -389,14 +399,14 @@
 }
 
 .vol-forge__cluster-name {
-  color: #f1f4f8;
-  font-size: 18px;
-  font-weight: 700;
+  color: var(--ops-text-strong);
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .vol-forge__cluster-realm,
 .vol-forge__cluster-count {
-  color: #7f8591;
+  color: var(--ops-text-faint);
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -405,8 +415,8 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .vol-forge__kind {
@@ -459,8 +469,8 @@
 
 .vol-forge__cluster-meters {
   display: flex;
-  gap: 16px;
-  margin-top: 14px;
+  gap: 14px;
+  margin-top: 12px;
 }
 
 .vol-forge__meter-empty {
@@ -471,7 +481,7 @@
 }
 
 .vol-forge__meter-empty span {
-  color: #777d89;
+  color: var(--ops-text-faint);
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -486,32 +496,32 @@
 .vol-forge__meter-empty-track {
   height: 4px;
   border-radius: 999px;
-  background: rgba(67, 71, 80, 0.58);
+  background: color-mix(in srgb, var(--ops-fill-muted) 72%, transparent);
 }
 
 .vol-forge__launch-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  padding: 18px 20px 0;
+  gap: 14px;
+  padding: 14px 16px 0;
 }
 
 .vol-forge__launch-card {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 148px;
-  border: 1px solid rgba(88, 94, 108, 0.72);
+  min-height: 124px;
+  border: 1px solid var(--ops-border-2);
   border-radius: 12px;
-  background: #090a0d;
-  padding: 18px;
+  background: var(--ops-surface-1);
+  padding: 14px;
   color: inherit;
   cursor: pointer;
   text-align: left;
 }
 
 .vol-forge__launch-card:hover {
-  border-color: rgba(95, 173, 228, 0.72);
+  border-color: var(--ops-border-strong);
 }
 
 .vol-forge__launch-head {
@@ -535,15 +545,15 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
 }
 
 .vol-forge__launch-name {
-  color: #eef3f7;
-  font-size: 17px;
-  font-weight: 700;
+  color: var(--ops-text-strong);
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .vol-forge__launch-foot {
@@ -552,7 +562,7 @@
   justify-content: space-between;
   gap: 12px;
   margin-top: auto;
-  color: #8f95a2;
+  color: var(--ops-text-muted);
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -561,8 +571,8 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .vol-forge__launch-cta {
@@ -570,12 +580,12 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
-  width: calc(100% - 40px);
-  margin: 18px 20px 20px;
-  border: 1px dashed rgba(88, 94, 108, 0.72);
+  width: calc(100% - 32px);
+  margin: 14px 16px 16px;
+  border: 1px dashed var(--ops-border-2);
   border-radius: 12px;
   background: transparent;
-  color: #818692;
+  color: var(--ops-text-muted);
   cursor: pointer;
   font-family:
     ui-monospace,
@@ -585,13 +595,13 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 13px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 11px 14px;
 }
 
 .vol-forge__launch-cta:hover {
-  border-color: rgba(95, 173, 228, 0.72);
+  border-color: var(--ops-border-strong);
   color: #cbeeff;
 }
 
@@ -605,8 +615,8 @@
   grid-template-columns: auto auto minmax(180px, 240px) auto minmax(0, 1fr);
   align-items: center;
   gap: 14px;
-  padding: 13px 20px;
-  border-top: 1px solid rgba(67, 71, 80, 0.58);
+  padding: 11px 16px;
+  border-top: 1px solid var(--ops-border-soft);
 }
 
 .vol-forge__tail-list > .vol-forge__tail-row:first-child {
@@ -614,15 +624,15 @@
 }
 
 .vol-forge__tail-time {
-  color: #c1c5cf;
-  font-size: 12px;
-  font-weight: 700;
+  color: var(--ops-text-body);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .vol-forge__tail-name {
-  color: #edf2f7;
-  font-size: 16px;
-  font-weight: 700;
+  color: var(--ops-text-strong);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .vol-forge__error-list {
@@ -633,8 +643,8 @@
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 18px 20px;
-  border-top: 1px solid rgba(124, 83, 83, 0.46);
+  padding: 14px 16px;
+  border-top: 1px solid rgba(124, 83, 83, 0.38);
 }
 
 .vol-forge__error-body {
@@ -649,13 +659,13 @@
 }
 
 .vol-forge__error-title span:first-child {
-  color: #f0f4f8;
-  font-size: 16px;
-  font-weight: 700;
+  color: var(--ops-text-strong);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .vol-forge__error-title span:last-child {
-  color: #787d88;
+  color: var(--ops-text-faint);
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -664,8 +674,8 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .vol-forge__error-message {
@@ -682,7 +692,7 @@
 }
 
 .vol-forge__retry-btn {
-  border: 1px solid rgba(96, 171, 231, 0.78);
+  border: 1px solid var(--ops-border-strong);
   border-radius: 10px;
   background: rgba(27, 90, 129, 0.18);
   color: #d5f1ff;
@@ -695,9 +705,9 @@
     Consolas,
     Liberation Mono,
     monospace;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 9px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 8px 12px;
 }
 
 @media (max-width: 1500px) {

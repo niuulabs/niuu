@@ -2,8 +2,8 @@
   display: flex;
   min-height: 100%;
   flex-direction: column;
-  gap: 22px;
-  padding: 20px 28px 28px;
+  gap: 18px;
+  padding: 18px 22px 22px;
   overflow-y: auto;
   background: #090a0d;
 }
@@ -11,7 +11,7 @@
 .rv-ov__kpis {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 18px;
+  gap: 14px;
 }
 
 .rv-ov__metric,
@@ -20,15 +20,15 @@
 .rv-ov__burners,
 .rv-ov__log,
 .rv-ov__active {
-  border: 1px solid rgba(154, 163, 178, 0.14);
-  border-radius: 16px;
-  background: #1a1b20;
+  border: 1px solid var(--ops-border-1);
+  border-radius: 14px;
+  background: var(--ops-surface-2);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
 .rv-ov__metric {
-  min-height: 128px;
-  padding: 18px 22px;
+  min-height: 104px;
+  padding: 14px 16px;
 }
 
 .rv-ov__metric-label,
@@ -53,17 +53,17 @@
 }
 
 .rv-ov__metric-label {
-  color: #777f8c;
-  font-size: 11px;
-  letter-spacing: 0.08em;
+  color: var(--ops-text-muted);
+  font-size: 10px;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
 }
 
 .rv-ov__metric-value {
-  margin-top: 12px;
-  color: #f4f6f9;
-  font-size: 42px;
-  font-weight: 700;
+  margin-top: 8px;
+  color: var(--ops-text-strong);
+  font-size: 28px;
+  font-weight: 600;
   line-height: 0.95;
 }
 
@@ -75,9 +75,9 @@
   display: flex;
   gap: 8px;
   align-items: baseline;
-  margin-top: 10px;
-  color: #717986;
-  font-size: 12px;
+  margin-top: 8px;
+  color: var(--ops-text-faint);
+  font-size: 11px;
 }
 
 .rv-ov__sub-ok {
@@ -102,7 +102,7 @@
 .rv-ov__body {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(360px, 1fr);
-  gap: 28px;
+  gap: 18px;
   align-items: start;
 }
 
@@ -110,7 +110,7 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 28px;
+  gap: 18px;
 }
 
 .rv-ov__section {
@@ -122,30 +122,31 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 14px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .rv-ov__section-title {
   margin: 0;
-  color: #858d99;
-  font-size: 13px;
+  color: var(--ops-text-muted);
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .rv-ov__section-meta {
-  color: #707884;
-  font-size: 11px;
+  color: var(--ops-text-faint);
+  font-size: 10px;
   letter-spacing: 0.03em;
 }
 
 .rv-ov__section-link {
-  color: #b7daf8;
-  font-size: 11px;
-  font-weight: 700;
+  color: var(--brand-300);
+  font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0.03em;
   text-decoration: none;
+  text-transform: uppercase;
 }
 
 .rv-ov__section-link:hover {
@@ -154,9 +155,9 @@
 
 .rv-ov__empty-text {
   margin: 0;
-  color: #767f8b;
+  color: var(--ops-text-faint);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .rv-ov__active {
@@ -180,10 +181,10 @@
   grid-template-columns:
     18px 28px minmax(88px, 132px) minmax(120px, 1fr) minmax(100px, 128px)
     62px minmax(120px, 156px) 68px;
-  gap: 14px;
+  gap: 12px;
   align-items: center;
-  min-height: 52px;
-  padding: 0 16px;
+  min-height: 46px;
+  padding: 0 14px;
   background: transparent;
 }
 
@@ -202,9 +203,9 @@
 .rv-ov__active-name,
 .rv-ov__burner-name,
 .rv-ov__log-raven {
-  color: #eef2f6;
-  font-size: 13px;
-  font-weight: 700;
+  color: var(--ops-text-strong);
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1.1;
 }
 
@@ -225,8 +226,8 @@
 .rv-ov__chart-axis,
 .rv-ov__log-time,
 .rv-ov__log-kind {
-  color: #757d89;
-  font-size: 11px;
+  color: var(--ops-text-faint);
+  font-size: 10px;
 }
 
 .rv-ov__active-loc,
@@ -241,13 +242,13 @@
 }
 
 .rv-ov .niuu-budget-bar__track {
-  background: #2b2d33;
+  background: var(--ops-fill-muted);
 }
 
 .rv-ov .niuu-budget-bar--ok .niuu-budget-bar__fill,
 .rv-ov .niuu-budget-bar--warn .niuu-budget-bar__fill,
 .rv-ov .niuu-budget-bar--crit .niuu-budget-bar__fill {
-  background: #8ecaf3;
+  background: var(--ops-fill-brand);
 }
 
 .rv-ov .niuu-budget-bar__warn-mark {
@@ -257,22 +258,22 @@
 .rv-ov__location-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px 20px;
+  gap: 12px;
+  padding: 14px 16px;
 }
 
 .rv-ov__location-row {
   display: grid;
   grid-template-columns: 170px minmax(0, 1fr) 24px;
-  gap: 14px;
+  gap: 12px;
   align-items: center;
 }
 
 .rv-ov__location-name,
 .rv-ov__location-count {
-  color: #e7ebef;
-  font-size: 12px;
-  font-weight: 700;
+  color: var(--ops-text-strong);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .rv-ov__location-name {
@@ -284,7 +285,7 @@
   height: 8px;
   overflow: hidden;
   border-radius: 999px;
-  background: #2b2d33;
+  background: var(--ops-fill-muted);
 }
 
 .rv-ov__location-fill {
@@ -292,11 +293,11 @@
   inset: 0 auto 0 0;
   min-width: 10%;
   border-radius: inherit;
-  background: #8fcaf2;
+  background: var(--ops-fill-brand);
 }
 
 .rv-ov__chart {
-  padding: 14px 18px 16px;
+  padding: 12px 14px 14px;
 }
 
 .rv-ov__chart .niuu-sparkline {
@@ -326,10 +327,10 @@
 .rv-ov__burner-row {
   display: grid;
   grid-template-columns: 24px minmax(88px, 108px) minmax(0, 1fr) 44px 72px;
-  gap: 14px;
+  gap: 12px;
   align-items: center;
-  min-height: 50px;
-  padding: 0 18px;
+  min-height: 44px;
+  padding: 0 14px;
 }
 
 .rv-ov__burner-pct {
@@ -337,10 +338,10 @@
 }
 
 .rv-ov__burner-amount {
-  color: #eef2f6;
+  color: var(--ops-text-strong);
   font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   text-align: right;
 }
 
@@ -351,10 +352,10 @@
 .rv-ov__log-row {
   display: grid;
   grid-template-columns: 72px 48px 92px minmax(0, 1fr);
-  gap: 16px;
+  gap: 12px;
   align-items: center;
-  min-height: 44px;
-  padding: 0 16px;
+  min-height: 40px;
+  padding: 0 14px;
 }
 
 .rv-ov__log-kind {
@@ -375,24 +376,24 @@
 }
 
 .rv-ov__log-raven {
-  color: #c6ddf1;
-  font-size: 12px;
+  color: var(--ops-text-body);
+  font-size: 11px;
 }
 
 .rv-ov__log-message {
   overflow: hidden;
-  color: #afb6c1;
+  color: var(--ops-text-body);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .rv-ov__log-empty {
-  padding: 20px 18px;
-  color: #717986;
+  padding: 16px 14px;
+  color: var(--ops-text-faint);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 @media (max-width: 1240px) {

@@ -186,7 +186,7 @@ function PendingDispatchBar({
 
   return (
     <div
-      className="niuu-border-b niuu-border-brand/30 niuu-bg-[linear-gradient(90deg,rgba(56,189,248,0.10),rgba(59,130,246,0.06))] niuu-px-4 niuu-py-3"
+      className="niuu-border-b niuu-border-brand/20 niuu-bg-[linear-gradient(180deg,rgba(56,189,248,0.08),rgba(21,26,32,0.96))] niuu-px-4 niuu-py-3"
       role="status"
       aria-live="polite"
     >
@@ -206,7 +206,7 @@ function PendingDispatchBar({
             {entries.map((entry) => (
               <div
                 key={entry.run.id}
-                className="niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-border-brand/20 niuu-bg-bg-primary/80 niuu-px-3 niuu-py-2"
+                className="niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-border-brand/20 niuu-bg-[#1e232a] niuu-px-3 niuu-py-2"
               >
                 <span className="niuu-rounded niuu-bg-bg-elevated niuu-px-1.5 niuu-py-0.5 niuu-font-mono niuu-text-[10px] niuu-text-text-secondary">
                   {entry.run.trackerId}
@@ -333,10 +333,10 @@ function RunRow({
       className={cn(
         'niuu-flex niuu-items-center niuu-gap-3 niuu-px-4 niuu-py-2.5 niuu-border niuu-rounded-md niuu-cursor-pointer niuu-transition-colors',
         isPendingDispatch
-          ? 'niuu-bg-[linear-gradient(90deg,rgba(56,189,248,0.10),rgba(59,130,246,0.04))] niuu-border-brand/30'
+          ? 'niuu-bg-[#252c36] niuu-border-brand/30'
           : isSelected
-            ? 'niuu-bg-[#1e232a] niuu-border-border'
-            : 'niuu-bg-[#171b22] niuu-border-border-subtle hover:niuu-bg-[#1b2028]',
+            ? 'niuu-bg-[#1d232b] niuu-border-brand/20'
+            : 'niuu-bg-[#171b22] niuu-border-border-subtle hover:niuu-bg-[#1d232b]',
       )}
       onClick={onToggle}
     >

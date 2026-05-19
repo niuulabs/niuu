@@ -211,6 +211,27 @@
   --ice-panel: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
   --ice-panel-solid: var(--color-bg-secondary);
   --ice-glow: 0 0 14px color-mix(in srgb, var(--brand-300) 25%, transparent);
+
+  /* ── Cooler ops/dashboard surfaces ─────────────────────
+   * Ting developed a distinct steel/ice treatment that suits
+   * operational dashboards well. Keep that palette shared so
+   * Forge, Ravn, and Guild can align without hard-coded drift.
+   * ────────────────────────────────────────────────────── */
+  --ops-surface-1: #151a20;
+  --ops-surface-2: #1a1f26;
+  --ops-surface-3: #202733;
+  --ops-surface-accent: #1d2630;
+  --ops-surface-ink: #101318;
+  --ops-border-1: rgba(145, 154, 170, 0.16);
+  --ops-border-2: rgba(145, 154, 170, 0.22);
+  --ops-border-strong: rgba(105, 161, 205, 0.42);
+  --ops-border-soft: rgba(145, 154, 170, 0.12);
+  --ops-fill-muted: #2b2d33;
+  --ops-fill-brand: #8ecaf3;
+  --ops-text-strong: #eef2f6;
+  --ops-text-body: #c7d2de;
+  --ops-text-muted: #86909d;
+  --ops-text-faint: #6f7885;
 }
 
 /* ── Theme overrides ──────────────────────────────────── */

@@ -81,7 +81,7 @@ export function WorkflowCard({
           </p>
         </div>
 
-        <div className="niuu-flex niuu-items-start niuu-gap-3 niuu-rounded-lg niuu-border niuu-border-brand/25 niuu-bg-[#1d2630] niuu-px-4 niuu-py-3 niuu-text-[13px] niuu-leading-6 niuu-text-text-secondary">
+        <div className="niuu-flex niuu-items-start niuu-gap-3 niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-[#1d2630] niuu-px-4 niuu-py-3 niuu-text-[13px] niuu-leading-6 niuu-text-text-secondary">
           <span
             className="niuu-mt-0.5 niuu-inline-flex niuu-w-5 niuu-h-5 niuu-items-center niuu-justify-center niuu-rounded-full niuu-bg-brand niuu-text-[12px] niuu-font-semibold niuu-text-bg-primary"
             aria-hidden="true"

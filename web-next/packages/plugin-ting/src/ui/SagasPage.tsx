@@ -106,9 +106,9 @@ function SagaRailItem({
       onClick={onClick}
       aria-pressed={selected}
       className={[
-        'niuu-grid niuu-w-full niuu-grid-cols-[10px_minmax(0,1fr)] niuu-items-start niuu-gap-3 niuu-rounded-md niuu-px-3 niuu-py-3 niuu-text-left niuu-transition-colors',
+        'niuu-grid niuu-w-full niuu-grid-cols-[10px_minmax(0,1fr)] niuu-items-start niuu-gap-3 niuu-rounded-md niuu-border niuu-border-transparent niuu-px-3 niuu-py-3 niuu-text-left niuu-transition-colors',
         selected
-          ? 'niuu-bg-[#202733] niuu-text-text-primary'
+          ? 'niuu-border-border niuu-bg-[#202733] niuu-text-text-primary'
           : 'hover:niuu-bg-bg-secondary/70 niuu-text-text-secondary',
       ].join(' ')}
     >
@@ -374,7 +374,7 @@ function SagasPageContent() {
 
   return (
     <div className="niuu-flex niuu-h-full niuu-overflow-hidden niuu-bg-bg-primary">
-      <aside className="niuu-w-[294px] niuu-shrink-0 niuu-border-r niuu-border-border-subtle niuu-bg-[#151a20] niuu-flex niuu-flex-col">
+      <aside className="niuu-flex niuu-w-[294px] niuu-shrink-0 niuu-flex-col niuu-border-r niuu-border-border-subtle niuu-bg-[#151a20]">
         <div className="niuu-p-4 niuu-border-b niuu-border-border-subtle">
           <input
             type="search"
@@ -560,7 +560,7 @@ function SagasPageContent() {
                         className={[
                           'niuu-w-full niuu-rounded-lg niuu-border niuu-p-3 niuu-text-left niuu-transition-colors',
                           selected
-                            ? 'niuu-border-brand/50 niuu-bg-[#1d232b]'
+                            ? 'niuu-border-brand/40 niuu-bg-[#1d232b]'
                             : 'niuu-border-border-subtle niuu-bg-bg-secondary hover:niuu-bg-bg-tertiary',
                         ].join(' ')}
                       >

@@ -12,7 +12,7 @@ function dotClassName(status: PhaseStatus): string {
   const base =
     'niuu-w-9 niuu-h-9 niuu-rounded-full niuu-flex niuu-items-center niuu-justify-center niuu-text-[15px] niuu-font-semibold niuu-border niuu-shrink-0';
   if (status === 'complete')
-    return `${base} niuu-bg-[#455564] niuu-border-[#cad4df] niuu-text-text-primary`;
+    return `${base} niuu-bg-[#455564] niuu-border-[#617183] niuu-text-[#cad4df]`;
   if (status === 'active')
     return `${base} niuu-bg-brand niuu-border-brand niuu-text-bg-primary niuu-shadow-[0_0_18px_rgba(125,211,252,0.35)]`;
   if (status === 'gated')
