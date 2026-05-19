@@ -478,7 +478,7 @@ export function SessionsPage() {
               </div>
 
               <div className="niuu-px-2.5 niuu-pb-1">
-                <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-2 niuu-py-1 niuu-shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] focus-within:niuu-border-brand/50 focus-within:niuu-ring-1 focus-within:niuu-ring-brand/20">
+                <div className="niuu-flex niuu-items-center niuu-gap-2">
                   <button
                     type="button"
                     onClick={() => setLaunchOpen(true)}
@@ -489,19 +489,21 @@ export function SessionsPage() {
                   >
                     +
                   </button>
-                  <Search
-                    className="niuu-h-4 niuu-w-4 niuu-flex-shrink-0 niuu-text-text-muted"
-                    aria-hidden="true"
-                  />
-                  <input
-                    type="search"
-                    placeholder="filter by name / repo / branch / forge"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="niuu-min-w-0 niuu-flex-1 niuu-bg-transparent niuu-py-0.5 niuu-pr-1 niuu-text-[11px] niuu-text-text-primary placeholder:niuu-text-text-muted focus:niuu-outline-none"
-                    data-testid="pod-search"
-                    aria-label="Filter sessions"
-                  />
+                  <div className="niuu-flex niuu-min-w-0 niuu-flex-1 niuu-items-center niuu-gap-2 niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-2 niuu-py-1 niuu-shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] focus-within:niuu-border-brand/50 focus-within:niuu-ring-1 focus-within:niuu-ring-brand/20">
+                    <Search
+                      className="niuu-h-4 niuu-w-4 niuu-flex-shrink-0 niuu-text-text-muted"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="search"
+                      placeholder="filter by name / repo / branch / forge"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="niuu-min-w-0 niuu-flex-1 niuu-bg-transparent niuu-py-0.5 niuu-pr-1 niuu-text-[11px] niuu-text-text-primary placeholder:niuu-text-text-muted focus:niuu-outline-none"
+                      data-testid="pod-search"
+                      aria-label="Filter sessions"
+                    />
+                  </div>
                 </div>
               </div>
 

@@ -11,6 +11,7 @@ import type {
   BifrostUsageResponse,
   IBifrostService,
 } from '../ports';
+import './BifrostPage.css';
 
 const EMPTY_ALIASES: BifrostAlias[] = [];
 const EMPTY_MODELS: BifrostModel[] = [];
@@ -110,151 +111,139 @@ function OverviewTab({
   const enabledModels = models.filter((model) => model.enabled).length;
   const localModels = models.filter((model) => model.provider === 'local').length;
   const cloudModels = models.filter((model) => model.provider === 'cloud').length;
-  const providerStateSummary = providers
-    .map((provider) => `${provider.key} · ${provider.state}`)
-    .join('  •  ');
+  const providerStateSummary = providers.length
+    ? providers.map((provider) => `${provider.key}:${provider.state}`).join(' · ')
+    : 'No providers configured';
+  const aliasSummary = aliases.length
+    ? aliases
+        .slice(0, 2)
+        .map((alias) => `${alias.alias}→${alias.target}`)
+        .join(' · ')
+    : 'No alias routes configured';
 
   return (
-    <div className="niuu-grid niuu-gap-5">
-      <div className="niuu-grid niuu-grid-cols-1 md:niuu-grid-cols-2 xl:niuu-grid-cols-4 niuu-gap-4">
-        {[
-          {
-            label: 'Enabled models',
-            value: formatInteger(enabledModels),
-            detail: `${formatInteger(localModels)} local · ${formatInteger(cloudModels)} cloud`,
-          },
-          {
-            label: 'Healthy providers',
-            value: `${healthyProviders}/${providers.length}`,
-            detail: providers.length > 0 ? providerStateSummary : 'No providers configured',
-          },
-          {
-            label: 'Alias routes',
-            value: formatInteger(aliases.length),
-            detail:
-              aliases.length > 0
-                ? aliases
-                    .slice(0, 3)
-                    .map((alias) => `${alias.alias} → ${alias.target}`)
-                    .join('  •  ')
-                : 'No alias routes configured',
-          },
-          {
-            label: 'Cache hit rate',
-            value: `${Math.round(cache.hitRate * 100)}%`,
-            detail: `${formatInteger(cache.savedTokens)} tokens saved · ${formatInteger(cache.entries)} live entries`,
-          },
-        ].map((item) => (
-          <section
-            key={item.label}
-            className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5"
-          >
-            <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-muted">
-              {item.label}
-            </p>
-            <p className="niuu-m-0 niuu-mt-2 niuu-text-[2rem] niuu-font-semibold niuu-leading-none niuu-text-text-primary">
-              {item.value}
-            </p>
-            <p className="niuu-m-0 niuu-mt-3 niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
-              {item.detail}
-            </p>
-          </section>
-        ))}
+    <div className="bf-dash">
+      <div className="bf-dash__topbar">
+        <span className="bf-dash__stat">
+          models <strong>{formatInteger(enabledModels)}</strong>
+        </span>
+        <span className="bf-dash__stat-sep" aria-hidden="true" />
+        <span className="bf-dash__stat">
+          providers{' '}
+          <strong>
+            {healthyProviders}/{providers.length}
+          </strong>
+        </span>
+        <span className="bf-dash__stat-sep" aria-hidden="true" />
+        <span className="bf-dash__stat">
+          aliases <strong>{aliases.length}</strong>
+        </span>
       </div>
 
-      <div className="niuu-grid niuu-grid-cols-1 xl:niuu-grid-cols-[1.25fr,0.75fr] niuu-gap-4">
-        <section className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
-          <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
-            <div>
-              <h3 className="niuu-m-0 niuu-text-xl niuu-font-semibold niuu-text-text-primary">
-                Usage snapshot
-              </h3>
-              <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-muted">
-                Aggregated from the live Bifrost gateway.
-              </p>
-            </div>
-            <Chip tone="brand">{formatCurrency(usage.summary.totalCostUsd)}</Chip>
-          </div>
-          <div className="niuu-grid niuu-grid-cols-2 md:niuu-grid-cols-4 niuu-gap-3 niuu-mt-5">
-            {[
-              ['Requests', formatInteger(usage.summary.totalRequests)],
-              ['Input tokens', formatInteger(usage.summary.totalInputTokens)],
-              ['Output tokens', formatInteger(usage.summary.totalOutputTokens)],
-              ['Reasoning tokens', formatInteger(usage.summary.totalReasoningTokens)],
-            ].map(([label, value]) => (
-              <div key={label} className="niuu-rounded-xl niuu-bg-bg-tertiary niuu-p-4">
-                <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
-                  {label}
-                </p>
-                <p className="niuu-m-0 niuu-mt-2 niuu-text-xl niuu-font-semibold niuu-text-text-primary">
-                  {value}
-                </p>
-              </div>
-            ))}
-          </div>
-          <div className="niuu-grid niuu-grid-cols-1 md:niuu-grid-cols-2 niuu-gap-3 niuu-mt-3">
-            {[
-              ['Cost', formatCurrency(usage.summary.totalCostUsd)],
-              ['Cache read tokens', formatInteger(usage.summary.totalCacheReadTokens)],
-            ].map(([label, value]) => (
-              <div key={label} className="niuu-rounded-xl niuu-bg-bg-tertiary niuu-p-4">
-                <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
-                  {label}
-                </p>
-                <p className="niuu-m-0 niuu-mt-2 niuu-text-xl niuu-font-semibold niuu-text-text-primary">
-                  {value}
-                </p>
-              </div>
-            ))}
-          </div>
+      {[
+        {
+          label: 'Enabled models',
+          value: formatInteger(enabledModels),
+          detail: `${formatInteger(localModels)} local · ${formatInteger(cloudModels)} cloud`,
+          accent: true,
+        },
+        {
+          label: 'Healthy providers',
+          value: `${healthyProviders}/${providers.length}`,
+          detail: providerStateSummary,
+        },
+        {
+          label: 'Alias routes',
+          value: formatInteger(aliases.length),
+          detail: aliasSummary,
+        },
+        {
+          label: 'Cache hit rate',
+          value: `${Math.round(cache.hitRate * 100)}%`,
+          detail: `${formatInteger(cache.savedTokens)} saved · ${formatInteger(cache.entries)} entries`,
+        },
+      ].map((item) => (
+        <section key={item.label} className={item.accent ? 'bf-kpi bf-kpi--accent' : 'bf-kpi'}>
+          <div className="bf-kpi__label">{item.label}</div>
+          <div className="bf-kpi__val">{item.value}</div>
+          <div className="bf-kpi__sub">{item.detail}</div>
         </section>
+      ))}
 
-        <section className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
-          <h3 className="niuu-m-0 niuu-text-xl niuu-font-semibold niuu-text-text-primary">Cache</h3>
-          <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-muted">
-            Current process-level savings and entry pressure.
-          </p>
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-mt-5">
+      <section className="bf-panel bf-panel--wide">
+        <div className="bf-panel__head">
+          <div>
+            <h3 className="bf-panel__title">Usage snapshot</h3>
+            <p className="bf-panel__copy">
+              Live request, token, and spend telemetry from the gateway.
+            </p>
+          </div>
+          <Chip tone="brand">{formatCurrency(usage.summary.totalCostUsd)}</Chip>
+        </div>
+        <div className="bf-panel__metric-grid">
+          {[
+            ['Requests', formatInteger(usage.summary.totalRequests)],
+            ['Input tokens', formatInteger(usage.summary.totalInputTokens)],
+            ['Output tokens', formatInteger(usage.summary.totalOutputTokens)],
+            ['Reasoning tokens', formatInteger(usage.summary.totalReasoningTokens)],
+          ].map(([label, value]) => (
+            <div key={label} className="bf-panel__metric">
+              <div className="bf-panel__metric-label">{label}</div>
+              <div className="bf-panel__metric-value">{value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="bf-panel__split-grid">
+          {[
+            ['Cost', formatCurrency(usage.summary.totalCostUsd)],
+            ['Cache reads', formatInteger(usage.summary.totalCacheReadTokens)],
+            ['Cache writes', formatInteger(usage.summary.totalCacheWriteTokens)],
+            ['Providers billed', formatInteger(Object.keys(usage.summary.byProvider).length)],
+          ].map(([label, value]) => (
+            <div key={label} className="bf-panel__metric">
+              <div className="bf-panel__metric-label">{label}</div>
+              <div className="bf-panel__metric-value">{value}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="bf-panel bf-panel--side">
+        <div className="bf-panel__head">
+          <div>
+            <h3 className="bf-panel__title">Cache</h3>
+            <p className="bf-panel__copy">Process-level hit rate, savings, and entry pressure.</p>
+          </div>
+        </div>
+        <div className="bf-panel__metric-grid bf-panel__metric-grid--compact">
+          {[
+            ['Hit rate', `${Math.round(cache.hitRate * 100)}%`],
+            ['Entries', formatInteger(cache.entries)],
+            ['Saved tokens', formatInteger(cache.savedTokens)],
+            ['Saved output', formatInteger(cache.savedOutputTokens)],
+          ].map(([label, value]) => (
+            <div key={label} className="bf-panel__metric">
+              <div className="bf-panel__metric-label">{label}</div>
+              <div className="bf-panel__metric-value">{value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="bf-list-card">
+          <div className="bf-list-card__label">Efficiency split</div>
+          <div className="bf-list-card__rows">
             {[
-              ['Hit rate', `${Math.round(cache.hitRate * 100)}%`],
-              ['Entries', formatInteger(cache.entries)],
-              ['Saved tokens', formatInteger(cache.savedTokens)],
-              ['Saved output', formatInteger(cache.savedOutputTokens)],
+              ['Hits', formatInteger(cache.hits)],
+              ['Misses', formatInteger(cache.misses)],
+              ['Saved input', formatInteger(cache.savedInputTokens)],
             ].map(([label, value]) => (
-              <div key={label} className="niuu-rounded-xl niuu-bg-bg-tertiary niuu-p-4">
-                <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
-                  {label}
-                </p>
-                <p className="niuu-m-0 niuu-mt-2 niuu-text-xl niuu-font-semibold niuu-text-text-primary">
-                  {value}
-                </p>
+              <div key={label} className="bf-list-card__row">
+                <span>{label}</span>
+                <strong>{value}</strong>
               </div>
             ))}
           </div>
-          <div className="niuu-rounded-xl niuu-bg-bg-tertiary niuu-p-4 niuu-mt-3">
-            <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
-              Efficiency split
-            </p>
-            <div className="niuu-mt-3 niuu-space-y-3">
-              {[
-                ['Hits', formatInteger(cache.hits)],
-                ['Misses', formatInteger(cache.misses)],
-                ['Saved input', formatInteger(cache.savedInputTokens)],
-              ].map(([label, value]) => (
-                <div
-                  key={label}
-                  className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3"
-                >
-                  <span className="niuu-text-sm niuu-text-text-secondary">{label}</span>
-                  <span className="niuu-text-sm niuu-font-semibold niuu-text-text-primary">
-                    {value}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      </div>
+        </div>
+      </section>
     </div>
   );
 }
@@ -514,15 +503,11 @@ export function BifrostPage({ defaultTab = 'overview' }: { defaultTab?: BifrostT
   }, [models]);
 
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-5 niuu-p-6">
-      <div className="niuu-flex niuu-flex-wrap niuu-items-center niuu-justify-between niuu-gap-3">
+    <div className="bf-page">
+      <div className="bf-page__head">
         <div>
-          <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-muted">
-            Bifröst
-          </p>
-          <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
-            {TAB_COPY[activeTab]}
-          </p>
+          <p className="bf-page__title">Bifröst</p>
+          <p className="bf-page__copy">{TAB_COPY[activeTab]}</p>
         </div>
         <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
           <Chip tone="brand">{formatInteger(models.length)} models</Chip>
