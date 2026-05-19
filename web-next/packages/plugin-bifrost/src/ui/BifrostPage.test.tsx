@@ -26,12 +26,13 @@ function renderPage(
 }
 
 describe('BifrostPage', () => {
-  it('renders the control-plane heading and overview stats', async () => {
+  it('renders the overview metric bar and summary panels', async () => {
     renderPage();
 
-    expect(await screen.findByText('LLM control plane')).toBeInTheDocument();
     expect(await screen.findByText('Enabled models')).toBeInTheDocument();
+    expect(screen.getByText('Cache hit rate')).toBeInTheDocument();
     expect(screen.getByText('Usage snapshot')).toBeInTheDocument();
+    expect(screen.getByText('Cache')).toBeInTheDocument();
   });
 
   it('renders the models tab as a real table without an in-page tab row', async () => {

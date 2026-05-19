@@ -6,6 +6,7 @@ import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { SessionsPage } from './SessionsPage';
 import {
   createMockSessionStore,
+  createMockTemplateStore,
   createMockVolundrService,
   createMockPtyStream,
   createMockFileSystemPort,
@@ -57,12 +58,15 @@ function wrap(
   volundr: IVolundrService = createMockVolundrService(),
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const templateStore = createMockTemplateStore();
   return render(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
           bifrost: createMockBifrostService(),
           volundr,
+          'volundr.templates': templateStore,
+          'niuu.repos': { getRepos: volundr.getRepos.bind(volundr) },
           sessionStore,
           ptyStream: createMockPtyStream(),
           filesystem: createMockFileSystemPort(),
@@ -155,6 +159,13 @@ describe('SessionsPage', () => {
   it('renders search input in sidebar', async () => {
     wrap();
     await waitFor(() => expect(screen.getByTestId('pod-search')).toBeInTheDocument());
+  });
+
+  it('opens the launch wizard from the sidebar add button', async () => {
+    wrap();
+    await waitFor(() => expect(screen.getByTestId('pod-launch-button')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('pod-launch-button'));
+    await waitFor(() => expect(screen.getByText('Launch pod')).toBeInTheDocument());
   });
 
   it('renders ACTIVE group with running sessions', async () => {

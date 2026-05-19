@@ -1469,21 +1469,6 @@ export function GuildPage() {
   return (
     <div className="niuu-min-h-full niuu-bg-bg-primary niuu-p-6" data-testid="guild-page">
       <div className="niuu-space-y-6">
-        <header className="niuu-space-y-4">
-          <div className="niuu-flex niuu-flex-wrap niuu-items-start niuu-gap-4 niuu-border-b niuu-border-white/8 niuu-pb-4">
-            <div className="niuu-flex niuu-items-center niuu-gap-3">
-              <div className="niuu-flex niuu-h-11 niuu-w-11 niuu-items-center niuu-justify-center niuu-rounded-[14px] niuu-border niuu-border-brand/30 niuu-bg-brand/10">
-                <Rune glyph="ᚹ" size={22} className="niuu-text-brand" />
-              </div>
-              <div>
-                <h1 className="niuu-text-[22px] niuu-font-semibold niuu-text-text-primary">
-                  Guild
-                </h1>
-              </div>
-            </div>
-          </div>
-        </header>
-
         {section === 'instances' ? (
           <div className="niuu-space-y-5">
             <section className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4">

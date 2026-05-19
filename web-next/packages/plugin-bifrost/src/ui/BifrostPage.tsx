@@ -109,35 +109,64 @@ function OverviewTab({
   const healthyProviders = providers.filter((provider) => provider.state === 'healthy').length;
   const enabledModels = models.filter((model) => model.enabled).length;
   const localModels = models.filter((model) => model.provider === 'local').length;
+  const cloudModels = models.filter((model) => model.provider === 'cloud').length;
+  const providerStateSummary = providers
+    .map((provider) => `${provider.key} · ${provider.state}`)
+    .join('  •  ');
 
   return (
-    <div className="niuu-grid niuu-gap-4">
-      <div className="niuu-grid niuu-grid-cols-1 md:niuu-grid-cols-2 xl:niuu-grid-cols-4 niuu-gap-3">
+    <div className="niuu-grid niuu-gap-5">
+      <div className="niuu-grid niuu-grid-cols-1 md:niuu-grid-cols-2 xl:niuu-grid-cols-4 niuu-gap-4">
         {[
-          { label: 'Enabled models', value: formatInteger(enabledModels) },
-          { label: 'Healthy providers', value: `${healthyProviders}/${providers.length}` },
-          { label: 'Aliases', value: formatInteger(aliases.length) },
-          { label: 'Local models', value: formatInteger(localModels) },
+          {
+            label: 'Enabled models',
+            value: formatInteger(enabledModels),
+            detail: `${formatInteger(localModels)} local · ${formatInteger(cloudModels)} cloud`,
+          },
+          {
+            label: 'Healthy providers',
+            value: `${healthyProviders}/${providers.length}`,
+            detail: providers.length > 0 ? providerStateSummary : 'No providers configured',
+          },
+          {
+            label: 'Alias routes',
+            value: formatInteger(aliases.length),
+            detail:
+              aliases.length > 0
+                ? aliases
+                    .slice(0, 3)
+                    .map((alias) => `${alias.alias} → ${alias.target}`)
+                    .join('  •  ')
+                : 'No alias routes configured',
+          },
+          {
+            label: 'Cache hit rate',
+            value: `${Math.round(cache.hitRate * 100)}%`,
+            detail: `${formatInteger(cache.savedTokens)} tokens saved · ${formatInteger(cache.entries)} live entries`,
+          },
         ].map((item) => (
           <section
             key={item.label}
-            className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4"
+            className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5"
           >
             <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-muted">
               {item.label}
             </p>
-            <p className="niuu-m-0 niuu-mt-2 niuu-text-2xl niuu-font-semibold niuu-text-text-primary">
+            <p className="niuu-m-0 niuu-mt-2 niuu-text-[2rem] niuu-font-semibold niuu-leading-none niuu-text-text-primary">
               {item.value}
+            </p>
+            <p className="niuu-m-0 niuu-mt-3 niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
+              {item.detail}
             </p>
           </section>
         ))}
       </div>
 
-      <div className="niuu-grid niuu-grid-cols-1 xl:niuu-grid-cols-[1.3fr,0.7fr] niuu-gap-4">
-        <section className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4">
+      <div className="niuu-grid niuu-grid-cols-1 xl:niuu-grid-cols-[1.25fr,0.75fr] niuu-gap-4">
+        <section className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
           <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
             <div>
-              <h3 className="niuu-m-0 niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+              <h3 className="niuu-m-0 niuu-text-xl niuu-font-semibold niuu-text-text-primary">
                 Usage snapshot
               </h3>
               <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-muted">
@@ -146,18 +175,33 @@ function OverviewTab({
             </div>
             <Chip tone="brand">{formatCurrency(usage.summary.totalCostUsd)}</Chip>
           </div>
-          <div className="niuu-grid niuu-grid-cols-2 md:niuu-grid-cols-4 niuu-gap-3 niuu-mt-4">
+          <div className="niuu-grid niuu-grid-cols-2 md:niuu-grid-cols-4 niuu-gap-3 niuu-mt-5">
             {[
               ['Requests', formatInteger(usage.summary.totalRequests)],
               ['Input tokens', formatInteger(usage.summary.totalInputTokens)],
               ['Output tokens', formatInteger(usage.summary.totalOutputTokens)],
               ['Reasoning tokens', formatInteger(usage.summary.totalReasoningTokens)],
             ].map(([label, value]) => (
-              <div key={label} className="niuu-rounded-lg niuu-bg-bg-tertiary niuu-p-3">
+              <div key={label} className="niuu-rounded-xl niuu-bg-bg-tertiary niuu-p-4">
                 <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
                   {label}
                 </p>
-                <p className="niuu-m-0 niuu-mt-2 niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+                <p className="niuu-m-0 niuu-mt-2 niuu-text-xl niuu-font-semibold niuu-text-text-primary">
+                  {value}
+                </p>
+              </div>
+            ))}
+          </div>
+          <div className="niuu-grid niuu-grid-cols-1 md:niuu-grid-cols-2 niuu-gap-3 niuu-mt-3">
+            {[
+              ['Cost', formatCurrency(usage.summary.totalCostUsd)],
+              ['Cache read tokens', formatInteger(usage.summary.totalCacheReadTokens)],
+            ].map(([label, value]) => (
+              <div key={label} className="niuu-rounded-xl niuu-bg-bg-tertiary niuu-p-4">
+                <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
+                  {label}
+                </p>
+                <p className="niuu-m-0 niuu-mt-2 niuu-text-xl niuu-font-semibold niuu-text-text-primary">
                   {value}
                 </p>
               </div>
@@ -165,27 +209,49 @@ function OverviewTab({
           </div>
         </section>
 
-        <section className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4">
-          <h3 className="niuu-m-0 niuu-text-lg niuu-font-semibold niuu-text-text-primary">Cache</h3>
+        <section className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
+          <h3 className="niuu-m-0 niuu-text-xl niuu-font-semibold niuu-text-text-primary">Cache</h3>
           <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-muted">
-            Current process-level savings.
+            Current process-level savings and entry pressure.
           </p>
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-mt-4">
+          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-mt-5">
             {[
               ['Hit rate', `${Math.round(cache.hitRate * 100)}%`],
               ['Entries', formatInteger(cache.entries)],
               ['Saved tokens', formatInteger(cache.savedTokens)],
               ['Saved output', formatInteger(cache.savedOutputTokens)],
             ].map(([label, value]) => (
-              <div key={label} className="niuu-rounded-lg niuu-bg-bg-tertiary niuu-p-3">
+              <div key={label} className="niuu-rounded-xl niuu-bg-bg-tertiary niuu-p-4">
                 <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
                   {label}
                 </p>
-                <p className="niuu-m-0 niuu-mt-2 niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+                <p className="niuu-m-0 niuu-mt-2 niuu-text-xl niuu-font-semibold niuu-text-text-primary">
                   {value}
                 </p>
               </div>
             ))}
+          </div>
+          <div className="niuu-rounded-xl niuu-bg-bg-tertiary niuu-p-4 niuu-mt-3">
+            <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
+              Efficiency split
+            </p>
+            <div className="niuu-mt-3 niuu-space-y-3">
+              {[
+                ['Hits', formatInteger(cache.hits)],
+                ['Misses', formatInteger(cache.misses)],
+                ['Saved input', formatInteger(cache.savedInputTokens)],
+              ].map(([label, value]) => (
+                <div
+                  key={label}
+                  className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3"
+                >
+                  <span className="niuu-text-sm niuu-text-text-secondary">{label}</span>
+                  <span className="niuu-text-sm niuu-font-semibold niuu-text-text-primary">
+                    {value}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
       </div>
@@ -448,33 +514,22 @@ export function BifrostPage({ defaultTab = 'overview' }: { defaultTab?: BifrostT
   }, [models]);
 
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-4 niuu-p-5">
-      <section className="niuu-rounded-2xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-5">
-        <div className="niuu-flex niuu-flex-col niuu-gap-2 xl:niuu-flex-row xl:niuu-items-end xl:niuu-justify-between">
-          <div>
-            <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.2em] niuu-text-text-muted">
-              Bifröst
-            </p>
-            <h1 className="niuu-m-0 niuu-mt-2 niuu-text-3xl niuu-font-semibold niuu-text-text-primary">
-              LLM control plane
-            </h1>
-            <p className="niuu-m-0 niuu-mt-2 niuu-max-w-3xl niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
-              Bifröst owns the platform’s model catalog, provider health, aliases, and runtime
-              hints. Volundr, Ting, Wardens, and future Valkyries should all select from this
-              inventory instead of carrying private model lists.
-            </p>
-          </div>
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
-            <Chip tone="brand">{formatInteger(models.length)} models</Chip>
-            <Chip tone="default">{formatInteger(providers.length)} providers</Chip>
-            <Chip tone="default">{formatInteger(aliases.length)} aliases</Chip>
-          </div>
+    <div className="niuu-flex niuu-flex-col niuu-gap-5 niuu-p-6">
+      <div className="niuu-flex niuu-flex-wrap niuu-items-center niuu-justify-between niuu-gap-3">
+        <div>
+          <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-muted">
+            Bifröst
+          </p>
+          <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
+            {TAB_COPY[activeTab]}
+          </p>
         </div>
-        <p className="niuu-m-0 niuu-mt-3 niuu-text-sm niuu-text-text-muted">
-          {TAB_COPY[activeTab]}
-        </p>
-      </section>
-
+        <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+          <Chip tone="brand">{formatInteger(models.length)} models</Chip>
+          <Chip tone="default">{formatInteger(providers.length)} providers</Chip>
+          <Chip tone="default">{formatInteger(aliases.length)} aliases</Chip>
+        </div>
+      </div>
       {loading ? (
         <div className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-6 niuu-text-text-secondary">
           Loading Bifröst…
