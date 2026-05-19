@@ -199,7 +199,7 @@ describe('LaunchWizard', () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(navigate).toHaveBeenCalledWith({
-      to: '/volundr/session/$sessionId',
+      to: '/volundr/sessions/$sessionId',
       params: { sessionId: 'sess-new' },
     });
   }, 12000);

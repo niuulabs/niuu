@@ -548,7 +548,7 @@ export function ForgePage() {
                   clusterLabel={displayCluster(session, clusterLookup)}
                   onClick={() =>
                     void navigate({
-                      to: '/volundr/session/$sessionId',
+                      to: '/volundr/sessions/$sessionId',
                       params: { sessionId: session.id },
                     })
                   }

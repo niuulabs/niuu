@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
@@ -14,6 +14,8 @@ import {
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { Session } from '../domain/session';
+
+const navigate = vi.fn();
 
 // ---------------------------------------------------------------------------
 // Mock xterm + shiki (SessionDetailPage embeds terminal)
@@ -49,7 +51,7 @@ class ResizeObserverStub {
 vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigate,
   useParams: () => ({ sessionId: 'ds-1' }),
 }));
 
@@ -136,6 +138,10 @@ function createSessionStoreWithSessions(sessions: Session[]): ISessionStore {
 // ---------------------------------------------------------------------------
 
 describe('SessionsPage', () => {
+  beforeEach(() => {
+    navigate.mockClear();
+  });
+
   it('renders the sessions page container', () => {
     wrap();
     expect(screen.getByTestId('sessions-page')).toBeInTheDocument();
@@ -211,6 +217,10 @@ describe('SessionsPage', () => {
     );
     fireEvent.click(screen.getByTestId('pod-entry-mimir-bge-reindex'));
     await waitFor(() => expect(screen.getByTestId('live-session-detail-page')).toBeInTheDocument());
+    expect(navigate).toHaveBeenCalledWith({
+      to: '/volundr/sessions/$sessionId',
+      params: { sessionId: 'mimir-bge-reindex' },
+    });
   });
 
   it('filters sidebar entries by search query', async () => {

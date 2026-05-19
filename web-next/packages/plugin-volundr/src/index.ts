@@ -14,14 +14,20 @@ export const volundrPlugin = definePlugin({
   subtitle: 'session forge · remote dev pods',
   tabs: [
     { id: 'forge', label: 'Forge', path: '/volundr/forge' },
-    { id: 'sessions', label: 'Sessions', path: '/volundr' },
+    { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
     { id: 'templates', label: 'Templates', path: '/volundr/templates' },
   ],
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/volundr',
-      component: SessionsPage,
+      beforeLoad: ({ location }) => {
+        throw redirect({
+          to: '/volundr/forge' as never,
+          search: location.search as never,
+        });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -36,6 +42,11 @@ export const volundrPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/volundr/sessions',
+      component: SessionsPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/volundr/sessions/$sessionId',
       component: SessionsPage,
     }),
     createRoute({

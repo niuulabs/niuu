@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { LoadingState, ErrorState, EmptyState, StateDot, relTime, cn } from '@niuulabs/ui';
@@ -295,6 +296,8 @@ function PodGroup({
 // ---------------------------------------------------------------------------
 
 export function SessionsPage() {
+  const navigate = useNavigate();
+  const { sessionId: routeSessionId } = useParams({ strict: false });
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -344,15 +347,38 @@ export function SessionsPage() {
 
   // Auto-select first running session on load
   useEffect(() => {
-    if (selectedSessionId) return;
     if (!sessionsQuery.data) return;
+
+    const requestedSessionId = typeof routeSessionId === 'string' ? routeSessionId : null;
+    if (requestedSessionId) {
+      const matchingSession = sessionsQuery.data.find(
+        (session) => session.id === requestedSessionId,
+      );
+      if (matchingSession) {
+        if (selectedSessionId !== matchingSession.id) {
+          setSelectedSessionId(matchingSession.id);
+        }
+        return;
+      }
+    }
+
+    if (selectedSessionId) return;
+
     const running = sessionsQuery.data.filter((s) => s.state === 'running');
     if (running.length > 0) {
       setSelectedSessionId(running[0]!.id);
     } else if (sessionsQuery.data.length > 0) {
       setSelectedSessionId(sessionsQuery.data[0]!.id);
     }
-  }, [sessionsQuery.data, selectedSessionId]);
+  }, [routeSessionId, selectedSessionId, sessionsQuery.data]);
+
+  function handleSelectSession(id: string) {
+    setSelectedSessionId(id);
+    void navigate({
+      to: '/volundr/sessions/$sessionId',
+      params: { sessionId: id },
+    });
+  }
 
   async function handleArchiveAllStopped() {
     if (archiveBusy || stoppedSessionCount === 0) return;
@@ -415,7 +441,7 @@ export function SessionsPage() {
                     label={g.label}
                     sessions={g.sessions}
                     selectedId={selectedSessionId}
-                    onSelect={setSelectedSessionId}
+                    onSelect={handleSelectSession}
                     collapsed
                   />
                 ))}
@@ -531,7 +557,7 @@ export function SessionsPage() {
                     label={g.label}
                     sessions={g.sessions}
                     selectedId={selectedSessionId}
-                    onSelect={setSelectedSessionId}
+                    onSelect={handleSelectSession}
                   />
                 ))}
               </div>

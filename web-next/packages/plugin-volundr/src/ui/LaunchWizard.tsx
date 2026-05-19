@@ -2445,7 +2445,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
                   if (!createdSessionId) return;
                   onOpenChange(false);
                   void navigate({
-                    to: '/volundr/session/$sessionId',
+                    to: '/volundr/sessions/$sessionId',
                     params: { sessionId: createdSessionId },
                   });
                 }}
