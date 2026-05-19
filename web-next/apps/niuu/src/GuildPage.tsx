@@ -986,7 +986,7 @@ function RegisterWizard({
                     </div>
                   </div>
                   <a
-                href="/settings/credentials/user"
+                    href="/settings/credentials/user"
                     className="niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-brand"
                   >
                     manage credentials
