@@ -50,7 +50,7 @@ def test_create_api_app_returns_fastapi(monkeypatch) -> None:
     monkeypatch.setattr("observatory.app.create_app", fake_create_app)
     assert plugin.create_api_app(base_url="http://platform.test:8080") is sentinel
     discovery_service = captured["discovery_service"]
-    assert discovery_service.base_url == "http://platform.test:8080"
+    assert discovery_service.guild_url == "http://localhost:8080"
 
 
 def test_api_route_domains_include_registry_topology_and_events() -> None:

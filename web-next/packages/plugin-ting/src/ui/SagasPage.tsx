@@ -19,7 +19,12 @@ import {
 } from '@niuulabs/ui';
 import type { Saga } from '../domain/saga';
 import type { SagaStatus } from '../domain/saga';
-import type { ITrackerBrowserService, TrackerProject } from '../ports';
+import type {
+  DispatchCluster,
+  IDispatchBus,
+  ITrackerBrowserService,
+  TrackerProject,
+} from '../ports';
 import { useSagas } from './useSagas';
 import { phaseStatusToCell } from './mappers';
 import { SagaDetailPage } from './SagaDetailPage';
@@ -92,10 +97,22 @@ function confidenceTone(value: number): string {
 }
 
 function relTime(date: string): string {
-  const diffMs = Date.now() - new Date(date).getTime();
-  const days = Math.max(1, Math.floor(diffMs / 86_400_000));
-  if (days < 1) return 'today';
+  const dayMs = 86_400_000;
+  const createdAtMs = new Date(date).getTime();
+  const diffMs = Date.now() - createdAtMs;
+  if (diffMs < dayMs) return 'today';
+  const days = Math.floor(diffMs / dayMs);
   return `${days}d ago`;
+}
+
+function downloadJson(filename: string, data: string): void {
+  const blob = new Blob([data], { type: 'application/json' });
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 type RepoCatalogService = {
@@ -280,6 +297,7 @@ function SagasPageContent() {
   const { toast } = useToast();
   const params = useParams({ strict: false }) as { sagaId?: string };
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
+  const dispatchBus = useService<IDispatchBus>('ting.dispatch');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const { data: sagas, isLoading, isError, error } = useSagas();
   const [showNewSagaModal, setShowNewSagaModal] = useState(false);
@@ -290,6 +308,7 @@ function SagasPageContent() {
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [repoCandidate, setRepoCandidate] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
+  const [selectedInstanceId, setSelectedInstanceId] = useState('');
   const [isImporting, setIsImporting] = useState(false);
 
   useEffect(() => {
@@ -319,6 +338,11 @@ function SagasPageContent() {
   const repoCatalogQuery = useQuery({
     queryKey: ['niuu', 'repos'],
     queryFn: () => repoCatalog.getRepos(),
+    enabled: showImportModal,
+  });
+  const dispatchTargetsQuery = useQuery({
+    queryKey: ['ting', 'dispatch', 'targets'],
+    queryFn: () => dispatchBus.getClusters(),
     enabled: showImportModal,
   });
   const repoBranchesQuery = useQuery({
@@ -365,11 +389,13 @@ function SagasPageContent() {
       setSelectedRepos([]);
       setRepoCandidate('');
       setBaseBranch('');
+      setSelectedInstanceId('');
       return;
     }
     setSelectedRepos([]);
     setRepoCandidate('');
     setBaseBranch('');
+    setSelectedInstanceId('');
   }, [showImportModal]);
 
   useEffect(() => {
@@ -439,6 +465,7 @@ function SagasPageContent() {
         selectedProject.id,
         selectedRepos,
         baseBranch,
+        selectedInstanceId || undefined,
       );
       await queryClient.invalidateQueries({ queryKey: ['ting', 'sagas'] });
       setSelectedSagaId(importedSaga.id);
@@ -541,12 +568,7 @@ function SagasPageContent() {
               className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-2.5 niuu-text-[14px] niuu-font-medium niuu-text-text-primary"
               onClick={() => {
                 const data = JSON.stringify(allSagas, null, 2);
-                const blob = new Blob([data], { type: 'application/json' });
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = 'sagas.json';
-                a.click();
-                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+                downloadJson('sagas.json', data);
                 toast({ title: `Exported ${allSagas.length} sagas`, tone: 'success' });
               }}
               aria-label="Export sagas as JSON"
@@ -829,6 +851,30 @@ function SagasPageContent() {
                           className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary niuu-outline-none focus:niuu-border-brand"
                         />
                       )}
+                    </label>
+
+                    <label className="niuu-block">
+                      <span className="niuu-block niuu-mb-1.5 niuu-text-xs niuu-font-mono niuu-text-text-muted">
+                        Volundr target (optional)
+                      </span>
+                      <select
+                        value={selectedInstanceId}
+                        onChange={(event) => setSelectedInstanceId(event.target.value)}
+                        className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary niuu-outline-none focus:niuu-border-brand"
+                      >
+                        <option value="">Use default routing</option>
+                        {(dispatchTargetsQuery.data ?? []).map((target: DispatchCluster) => (
+                          <option
+                            key={target.instanceId ?? target.connectionId}
+                            value={target.instanceId ?? target.connectionId}
+                          >
+                            {target.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="niuu-mt-1 niuu-text-[11px] niuu-text-text-faint">
+                        If selected, the imported saga will default to this forge for dispatches.
+                      </div>
                     </label>
 
                     <div className="niuu-rounded-md niuu-bg-bg-tertiary niuu-p-3 niuu-text-xs niuu-leading-5 niuu-text-text-secondary">

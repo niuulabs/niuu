@@ -729,7 +729,40 @@ describe('buildTrackerHttpAdapter', () => {
       project_id: 'proj-1',
       repos: ['niuulabs/volundr'],
       base_branch: 'main',
+      instance_id: null,
     });
+  });
+
+  it('normalizes lightweight tracker import responses without phase_summary', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      id: 'saga-1',
+      tracker_id: 'proj-1',
+      name: 'Research Persona Sandbox',
+      repos: ['niuulabs/volundr'],
+      feature_branch: 'feat/research-persona-sandbox',
+      status: 'active',
+      phase_count: 0,
+      run_count: 2,
+      workflow_id: null,
+      workflow: null,
+      workflow_version: null,
+      instance_id: 'instance-1',
+      instance_name: 'Guild Beta',
+      warnings: [],
+    });
+
+    const saga = await buildTrackerHttpAdapter(client).importProject(
+      'proj-1',
+      ['niuulabs/volundr'],
+      'main',
+      'instance-1',
+    );
+
+    expect(saga.instanceName).toBe('Guild Beta');
+    expect(saga.phaseSummary.total).toBe(2);
+    expect(saga.phaseSummary.completed).toBe(0);
+    expect(saga.slug).toBe('research-persona-sandbox');
   });
 
   it('satisfies ITrackerBrowserService', () => {
@@ -833,13 +866,13 @@ describe('buildDispatchBusHttpAdapter', () => {
     expect(item?.priorityLabel).toBe(rawDispatchQueueItem.priority_label);
   });
 
-  it('calls GET /dispatch/clusters and camelizes cluster items', async () => {
+  it('calls GET /dispatch/targets and camelizes cluster items', async () => {
     const client = makeClient();
     client.get.mockResolvedValue([rawDispatchCluster]);
 
     const [cluster] = await buildDispatchBusHttpAdapter(client).getClusters();
 
-    expect(client.get).toHaveBeenCalledWith('/dispatch/clusters');
+    expect(client.get).toHaveBeenCalledWith('/dispatch/targets');
     expect(cluster).toEqual({
       connectionId: 'cluster-mini',
       name: 'Mac mini',

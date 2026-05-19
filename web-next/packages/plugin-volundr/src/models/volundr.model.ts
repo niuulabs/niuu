@@ -163,6 +163,8 @@ export interface VolundrSession {
   activityState?: 'active' | 'idle' | 'tool_executing' | null;
   ownerId?: string;
   tenantId?: string;
+  instanceId?: string;
+  instanceName?: string;
 }
 
 export interface VolundrStats {
@@ -179,6 +181,16 @@ export interface VolundrStats {
     costToday?: number[];
     gpus?: number[];
   };
+}
+
+export interface VolundrTarget {
+  id: string;
+  slug: string;
+  name: string;
+  baseUrl: string;
+  enabled: boolean;
+  isDefault: boolean;
+  visibility?: string;
 }
 
 // ---------------------------------------------------------------------------

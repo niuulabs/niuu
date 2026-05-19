@@ -623,7 +623,14 @@ function toSessionTemplateId(session: VolundrSession): string {
 }
 
 function toSessionClusterId(session: VolundrSession): string {
-  return session.podName ?? session.hostname ?? session.tenantId ?? 'shared';
+  return (
+    session.instanceId ??
+    session.instanceName ??
+    session.podName ??
+    session.hostname ??
+    session.tenantId ??
+    'shared'
+  );
 }
 
 function toSessionRavnId(session: VolundrSession): string {
@@ -660,6 +667,7 @@ function toDomainSession(session: VolundrSession): Session {
     personaName: session.name,
     templateId: toSessionTemplateId(session),
     clusterId: toSessionClusterId(session),
+    clusterName: session.instanceName ?? session.instanceId ?? undefined,
     state,
     startedAt,
     readyAt,
@@ -674,6 +682,38 @@ function toDomainSession(session: VolundrSession): Session {
     tokensIn: session.tokensUsed,
     tokensOut: 0,
     preview: toSessionPreview(session),
+  };
+}
+
+function buildMultiVolundrService(
+  primary: IVolundrService,
+  aggregate: IVolundrService,
+): IVolundrService {
+  return {
+    ...primary,
+    getTargets: () => aggregate.getTargets(),
+    getSessions: () => aggregate.getSessions(),
+    getSession: (id) => aggregate.getSession(id),
+    getActiveSessions: () => aggregate.getActiveSessions(),
+    getStats: () => aggregate.getStats(),
+    startSession: (config) => aggregate.startSession(config),
+    subscribe: (callback) => aggregate.subscribe(callback),
+    subscribeStats: (callback) => aggregate.subscribeStats(callback),
+    stopSession: (sessionId) => aggregate.stopSession(sessionId),
+    deleteSession: (sessionId, cleanup) => aggregate.deleteSession(sessionId, cleanup),
+    archiveSession: (sessionId) => aggregate.archiveSession(sessionId),
+    restoreSession: (sessionId) => aggregate.restoreSession(sessionId),
+    listArchivedSessions: () => aggregate.listArchivedSessions(),
+    getMessages: (sessionId) => aggregate.getMessages(sessionId),
+    sendMessage: (sessionId, content) => aggregate.sendMessage(sessionId, content),
+    subscribeMessages: (sessionId, callback) => aggregate.subscribeMessages(sessionId, callback),
+    getLogs: (sessionId, limit) => aggregate.getLogs(sessionId, limit),
+    subscribeLogs: (sessionId, callback) => aggregate.subscribeLogs(sessionId, callback),
+    getAggregatedLogs: (sessionId, options) => aggregate.getAggregatedLogs(sessionId, options),
+    subscribeAggregatedLogs: (sessionId, options, callback) =>
+      aggregate.subscribeAggregatedLogs(sessionId, options, callback),
+    getChronicle: (sessionId) => aggregate.getChronicle(sessionId),
+    subscribeChronicle: (sessionId, callback) => aggregate.subscribeChronicle(sessionId, callback),
   };
 }
 
@@ -1143,9 +1183,18 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   // ── Völundr request/response ──
   const forgeBase = resolveForgeServiceBase(config);
   const volundrBase = resolveVolundrServiceBase(config);
-  const volundr = volundrBase
+  const primaryVolundr = volundrBase
     ? buildVolundrHttpAdapter(createApiClient(volundrBase))
     : createMockVolundrService();
+  const sharedApiBase = resolveSharedApiBase(config);
+  const aggregateVolundr =
+    sharedApiBase != null
+      ? buildVolundrHttpAdapter(createApiClient(`${sharedApiBase}/niuu/volundr`))
+      : null;
+  const volundr =
+    aggregateVolundr != null
+      ? buildMultiVolundrService(primaryVolundr, aggregateVolundr)
+      : primaryVolundr;
   const repoCatalogBase = resolveRepoCatalogBase(config);
   const repoCatalogService = repoCatalogBase
     ? buildRepoCatalogHttpAdapter(createApiClient(repoCatalogBase))

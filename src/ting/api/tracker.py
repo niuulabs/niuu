@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
-from niuu.domain.models import Principal
+from niuu.domain.models import InstanceKind, Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from ting.adapters.inbound.auth import extract_principal
 from ting.domain.models import (
@@ -103,6 +103,10 @@ class ImportRequest(BaseModel):
         default=None,
         description="Optional saved workflow UUID to assign on import",
     )
+    instance_id: str | None = Field(
+        default=None,
+        description="Optional Volundr target UUID to assign on import",
+    )
     start_immediately: bool = Field(
         default=False,
         description="When true, assign a workflow and immediately dispatch ready work",
@@ -123,6 +127,8 @@ class SagaResponse(BaseModel):
     workflow_id: str | None = None
     workflow: str | None = None
     workflow_version: str | None = None
+    instance_id: str | None = None
+    instance_name: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -332,6 +338,21 @@ def _build_tracker_router(
             principal=principal,
             workflow_id_value=body.workflow_id,
         )
+        instance_name: str | None = None
+        if body.instance_id:
+            instance_service = getattr(request.app.state, "instance_service", None)
+            if instance_service is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Instance registry not configured",
+                )
+            instance = await instance_service.get_visible(principal, body.instance_id)
+            if instance is None or instance.kind != InstanceKind.VOLUNDR or not instance.enabled:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Target not found: {body.instance_id}",
+                )
+            instance_name = instance.name
         if body.start_immediately and workflow_snapshot is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -375,6 +396,7 @@ def _build_tracker_router(
             workflow_id=workflow_id,
             workflow_version=workflow_version,
             workflow_snapshot=workflow_snapshot,
+            instance_id=body.instance_id,
         )
 
         await saga_repo.save_saga(saga)
@@ -416,6 +438,8 @@ def _build_tracker_router(
             workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
             workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
             workflow_version=saga.workflow_version,
+            instance_id=saga.instance_id,
+            instance_name=instance_name,
             warnings=warnings,
         )
 

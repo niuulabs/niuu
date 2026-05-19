@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_pats import PostgresPATRepository
@@ -21,7 +22,6 @@ from niuu.service_runtime import (
 )
 from niuu.service_settings import Settings
 from niuu.utils import import_class
-from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.rest_tenants import create_identity_router
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
@@ -52,12 +52,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user_repository = PostgresUserRepository(pool)
             tenant_repository = PostgresTenantRepository(pool)
             storage_adapter = create_storage_adapter(settings)
+            tenant_service = TenantService(tenant_repository, user_repository)
             identity_adapter = create_identity_adapter(
                 settings,
                 user_repository,
                 storage=storage_adapter,
+                tenant_service=tenant_service,
             )
-            tenant_service = TenantService(tenant_repository, user_repository)
             await tenant_service.ensure_default_tenant()
             pat_repository = PostgresPATRepository(pool)
             pat_validator = create_pat_validator(settings, pat_repository)

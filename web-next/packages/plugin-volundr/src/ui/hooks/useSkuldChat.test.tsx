@@ -18,6 +18,7 @@ import {
 
 vi.mock('@niuulabs/query', () => ({
   getAccessToken: () => null,
+  getAuthHeaders: (headers?: HeadersInit) => new Headers(headers),
 }));
 
 const sendJson = vi.fn();

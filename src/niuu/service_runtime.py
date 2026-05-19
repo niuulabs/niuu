@@ -55,6 +55,7 @@ def create_identity_adapter(
     settings: Settings,
     user_repository,
     storage=None,
+    tenant_service=None,
 ):
     """Create the shared identity adapter from dynamic config."""
     config = settings.identity
@@ -64,6 +65,8 @@ def create_identity_adapter(
     kwargs["role_mapping"] = settings.identity.role_mapping
     if storage is not None:
         kwargs["storage"] = storage
+    if tenant_service is not None:
+        kwargs["tenant_service"] = tenant_service
     cls = import_class(config.adapter)
     instance = cls(**kwargs)
     logger.info("Identity adapter: %s", config.adapter.rsplit(".", 1)[-1])

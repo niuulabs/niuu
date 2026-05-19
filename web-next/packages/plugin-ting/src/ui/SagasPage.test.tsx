@@ -9,6 +9,9 @@ import type { Saga } from '../domain/saga';
 import type { ITrackerBrowserService } from '../ports';
 
 const mockNavigate = vi.fn();
+const mockDispatchBus = {
+  getClusters: vi.fn(async () => []),
+};
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({}),
@@ -45,6 +48,7 @@ function withDefaults(services: Record<string, unknown>) {
         },
       ],
     },
+    'ting.dispatch': mockDispatchBus,
     ...services,
   };
 }
@@ -160,6 +164,9 @@ describe('SagasPage', () => {
   it('shows export toast', async () => {
     const mockCreateObjectURL = vi.fn(() => 'blob:mock');
     const mockRevokeObjectURL = vi.fn();
+    const anchorClickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined);
     Object.defineProperty(URL, 'createObjectURL', { value: mockCreateObjectURL, writable: true });
     Object.defineProperty(URL, 'revokeObjectURL', { value: mockRevokeObjectURL, writable: true });
 
@@ -167,6 +174,7 @@ describe('SagasPage', () => {
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button', { name: /Export sagas as JSON/i }));
     await waitFor(() => expect(screen.getByText(/Exported \d+ sagas/i)).toBeInTheDocument());
+    expect(anchorClickSpy).toHaveBeenCalled();
   });
 
   it('opens new saga modal', async () => {
@@ -213,7 +221,12 @@ describe('SagasPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import saga' }));
 
     await waitFor(() =>
-      expect(importProject).toHaveBeenCalledWith('proj-niuu-core', ['niuulabs/volundr'], 'main'),
+      expect(importProject).toHaveBeenCalledWith(
+        'proj-niuu-core',
+        ['niuulabs/volundr'],
+        'main',
+        undefined,
+      ),
     );
   });
 
@@ -341,7 +354,12 @@ describe('SagasPage', () => {
   it('renders grouped bucket items from mixed data', async () => {
     const mixedSvc = {
       getSagas: async (): Promise<Saga[]> => [
-        makeSaga({ id: '1', name: 'Active', phaseSummary: { total: 2, completed: 0 } }),
+        makeSaga({
+          id: '1',
+          name: 'Active',
+          createdAt: new Date().toISOString(),
+          phaseSummary: { total: 2, completed: 0 },
+        }),
         makeSaga({ id: '2', name: 'Review', phaseSummary: { total: 4, completed: 2 } }),
         makeSaga({
           id: '3',
@@ -358,5 +376,6 @@ describe('SagasPage', () => {
     expect(screen.getAllByText('Review').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Done').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Broken').length).toBeGreaterThan(0);
+    expect(screen.getByText('today')).toBeInTheDocument();
   });
 });

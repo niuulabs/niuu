@@ -599,8 +599,9 @@ class TestIntegrationsAndRepos:
 
     @pytest.mark.asyncio
     async def test_resolve_repo_url_matches_repo(self, adapter: VolundrHTTPAdapter, monkeypatch):
-        async def fake_list_repos(*, auth_token=None):
+        async def fake_list_repos(*, auth_token=None, principal=None):
             assert auth_token == "runtime"
+            assert principal is None
             return [
                 {
                     "org": "niuulabs",
@@ -619,7 +620,7 @@ class TestIntegrationsAndRepos:
     async def test_resolve_repo_url_returns_none_for_invalid_shorthand(
         self, adapter: VolundrHTTPAdapter, monkeypatch
     ):
-        async def fake_list_repos(*, auth_token=None):
+        async def fake_list_repos(*, auth_token=None, principal=None):
             return [
                 {"org": "niuulabs", "name": "volundr", "url": "https://github.com/niuulabs/volundr"}
             ]
@@ -632,7 +633,7 @@ class TestIntegrationsAndRepos:
     async def test_resolve_repo_url_handles_repo_lookup_errors(
         self, adapter: VolundrHTTPAdapter, monkeypatch
     ):
-        async def broken_list_repos(*, auth_token=None):
+        async def broken_list_repos(*, auth_token=None, principal=None):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(adapter, "list_repos", broken_list_repos)

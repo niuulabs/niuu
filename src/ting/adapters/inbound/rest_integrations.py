@@ -18,6 +18,7 @@ from niuu.adapters.inbound.rest_integration_models import (
     IntegrationToggleRequest,
 )
 from niuu.domain.models import (
+    InstanceKind,
     IntegrationConnection,
     IntegrationType,
     Principal,
@@ -39,12 +40,24 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
-def _trusted_code_forge_base_urls(request: Request) -> tuple[str, ...]:
+async def _trusted_code_forge_base_urls(
+    request: Request,
+    principal: Principal,
+) -> tuple[str, ...]:
     """Return trusted base URLs for server-side code_forge connection tests."""
     settings = getattr(request.app.state, "settings", None)
-    if settings is None:
-        return ()
-    candidates = [settings.volundr.url, *settings.volundr.trusted_connection_test_urls]
+    candidates: list[str] = []
+    instance_service = getattr(request.app.state, "instance_service", None)
+    if instance_service is not None:
+        instances = await instance_service.list_visible(
+            principal,
+            kind=InstanceKind.VOLUNDR,
+            enabled_only=True,
+        )
+        candidates.extend(instance.base_url for instance in instances if instance.base_url)
+    if settings is not None and settings.volundr.url:
+        candidates.append(settings.volundr.url)
+        candidates.extend(settings.volundr.trusted_connection_test_urls)
     ordered: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -59,6 +72,24 @@ def _allow_unauthenticated_code_forge(request: Request, integration_type: str) -
     settings = getattr(request.app.state, "settings", None)
     allow_anon = settings.auth.allow_anonymous_dev if settings is not None else False
     return allow_anon and integration_type == IntegrationType.CODE_FORGE.value
+
+
+def _credential_payload_for_integration(
+    integration_type: str,
+    adapter: str,
+    credential_value: str,
+) -> dict[str, str]:
+    """Normalize stored credential payloads for adapter-specific expectations."""
+    if not credential_value:
+        return {}
+    if (
+        integration_type == IntegrationType.ISSUE_TRACKER.value
+        and adapter.endswith("LinearTrackerAdapter")
+    ):
+        return {"api_key": credential_value}
+    if integration_type == IntegrationType.MESSAGING.value:
+        return {"bot_token": credential_value}
+    return {"token": credential_value}
 
 
 # --- Request / Response models ---
@@ -152,13 +183,18 @@ def create_integrations_router() -> APIRouter:
                 detail="credential_value is required",
             )
 
+        credential_payload = _credential_payload_for_integration(
+            data.integration_type,
+            data.adapter,
+            data.credential_value,
+        )
         if data.credential_value:
             await credential_store.store(
                 owner_type="user",
                 owner_id=principal.user_id,
                 name=data.credential_name,
                 secret_type=SecretType.API_KEY,
-                data={"token": data.credential_value},
+                data=credential_payload,
             )
 
         now = datetime.now(UTC)
@@ -177,8 +213,8 @@ def create_integrations_router() -> APIRouter:
         test_result = await test_connection(
             data.integration_type,
             data.config,
-            {"token": data.credential_value} if data.credential_value else {},
-            trusted_code_forge_base_urls=_trusted_code_forge_base_urls(request),
+            credential_payload,
+            trusted_code_forge_base_urls=await _trusted_code_forge_base_urls(request, principal),
         )
         if not test_result.success:
             raise HTTPException(

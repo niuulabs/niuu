@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getAccessToken } from '@niuulabs/query';
+import { getAuthHeaders } from '@niuulabs/query';
 import { cn } from '@niuulabs/ui';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -55,9 +55,7 @@ export function deriveHttpBase(wsUrl: string): string {
 }
 
 export async function listSessions(httpBase: string): Promise<ServerSession[] | null> {
-  const headers: Record<string, string> = {};
-  const token = getAccessToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
+  const headers = Object.fromEntries(getAuthHeaders().entries());
 
   const resp = await fetch(`${httpBase}/api/terminal/sessions`, { headers });
   if (resp.status === 404) return null;
@@ -70,9 +68,9 @@ export async function spawnSession(
   httpBase: string,
   cliType: string,
 ): Promise<{ terminalId: string; label: string } | null> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const token = getAccessToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
+  const headers = Object.fromEntries(
+    getAuthHeaders({ 'Content-Type': 'application/json' }).entries(),
+  );
 
   const resp = await fetch(`${httpBase}/api/terminal/spawn`, {
     method: 'POST',
@@ -85,9 +83,9 @@ export async function spawnSession(
 }
 
 export async function killSession(httpBase: string, terminalId: string): Promise<void> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const token = getAccessToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
+  const headers = Object.fromEntries(
+    getAuthHeaders({ 'Content-Type': 'application/json' }).entries(),
+  );
 
   try {
     await fetch(`${httpBase}/api/terminal/kill`, {

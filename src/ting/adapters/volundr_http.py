@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from niuu.domain.models import Principal
 from ting.domain.models import PRStatus
 from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
 
@@ -28,33 +29,54 @@ class VolundrHTTPAdapter(VolundrPort):
         api_key: str | None = None,
         timeout: float = 30.0,
         name: str = "",
+        target_id: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
         self._name = name
+        self._target_id = target_id or name
 
     @property
     def name(self) -> str:
         return self._name
 
-    def _headers(self, auth_token: str | None = None) -> dict[str, str]:
+    @property
+    def target_id(self) -> str:
+        return self._target_id
+
+    def _headers(
+        self,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict[str, str]:
+        headers: dict[str, str] = {}
         token = auth_token or self._api_key
         if token:
-            return {"Authorization": f"Bearer {token}"}
-        return {}
+            headers["Authorization"] = f"Bearer {token}"
+        if principal is not None:
+            headers["x-auth-user-id"] = principal.user_id
+            headers["x-auth-email"] = principal.email
+            headers["x-auth-tenant"] = principal.tenant_id
+            headers["x-auth-roles"] = ",".join(principal.roles)
+        return headers
 
     async def spawn_session(
         self,
         request: SpawnRequest,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> VolundrSession:
         repo = request.repo
         # Resolve bare org/repo shorthands to full URLs so Volundr's
         # GitContributor can produce an authenticated clone URL.
         if repo and "://" not in repo and "@" not in repo:
-            resolved = await self._resolve_repo_url(repo, auth_token=auth_token)
+            resolved = await self._resolve_repo_url(
+                repo,
+                auth_token=auth_token,
+                principal=principal,
+            )
             if resolved:
                 logger.info("Resolved repo shorthand %s → %s", repo, resolved)
                 repo = resolved
@@ -62,7 +84,7 @@ class VolundrHTTPAdapter(VolundrPort):
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
                 f"{self._base_url}{FORGE_SESSIONS_PATH}",
-                headers=self._headers(auth_token),
+                headers=self._headers(auth_token, principal),
                 json={
                     "name": request.name,
                     "model": request.model,
@@ -106,11 +128,12 @@ class VolundrHTTPAdapter(VolundrPort):
         session_id: str,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> VolundrSession | None:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.get(
                 f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}",
-                headers=self._headers(auth_token),
+                headers=self._headers(auth_token, principal),
             )
             if resp.status_code == 404:
                 return None
@@ -134,11 +157,12 @@ class VolundrHTTPAdapter(VolundrPort):
         self,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> list[VolundrSession]:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.get(
                 f"{self._base_url}{FORGE_SESSIONS_PATH}",
-                headers=self._headers(auth_token),
+                headers=self._headers(auth_token, principal),
             )
             resp.raise_for_status()
             if not resp.content:
@@ -188,11 +212,12 @@ class VolundrHTTPAdapter(VolundrPort):
         message: str,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
                 f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/messages",
-                headers=self._headers(auth_token),
+                headers=self._headers(auth_token, principal),
                 json={"content": message},
             )
             resp.raise_for_status()
@@ -204,8 +229,13 @@ class VolundrHTTPAdapter(VolundrPort):
         message: str,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
-        session = await self.get_session(session_id, auth_token=auth_token)
+        session = await self.get_session(
+            session_id,
+            auth_token=auth_token,
+            principal=principal,
+        )
         if session is None or not session.chat_endpoint:
             raise LookupError(f"Session {session_id} has no active room endpoint")
 
@@ -213,7 +243,7 @@ class VolundrHTTPAdapter(VolundrPort):
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
                 f"{base_url}/api/room/direct",
-                headers=self._headers(auth_token),
+                headers=self._headers(auth_token, principal),
                 json={
                     "target_peer_id": target_peer_id,
                     "content": message,
@@ -227,32 +257,42 @@ class VolundrHTTPAdapter(VolundrPort):
         session_id: str,
         *,
         auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> None:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.delete(
                 f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}",
-                headers=self._headers(auth_token),
+                headers=self._headers(auth_token, principal),
             )
             if resp.status_code == 404:
                 return
             resp.raise_for_status()
 
-    async def list_integration_ids(self, *, auth_token: str | None = None) -> list[str]:
+    async def list_integration_ids(
+        self,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[str]:
         """Fetch the user's enabled integration IDs from this Volundr instance."""
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 f"{self._base_url}{INTEGRATIONS_PATH}",
-                headers=self._headers(auth_token),
+                headers=self._headers(auth_token, principal),
             )
             resp.raise_for_status()
             return [c["id"] for c in resp.json() if c.get("enabled", True)]
 
     async def _resolve_repo_url(
-        self, shorthand: str, *, auth_token: str | None = None
+        self,
+        shorthand: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
     ) -> str | None:
         """Resolve a bare org/repo shorthand to a full URL via the repos listing."""
         try:
-            repos = await self.list_repos(auth_token=auth_token)
+            repos = await self.list_repos(auth_token=auth_token, principal=principal)
             parts = shorthand.strip("/").split("/")
             if len(parts) != 2:
                 return None
@@ -264,12 +304,17 @@ class VolundrHTTPAdapter(VolundrPort):
             logger.warning("Failed to resolve repo shorthand %s", shorthand, exc_info=True)
         return None
 
-    async def list_repos(self, *, auth_token: str | None = None) -> list[dict]:
+    async def list_repos(
+        self,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[dict]:
         """Fetch configured repos from Volundr's shared niuu endpoint."""
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 f"{self._base_url}/api/v1/niuu/repos",
-                headers=self._headers(auth_token),
+                headers=self._headers(auth_token, principal),
             )
             resp.raise_for_status()
             repos = []

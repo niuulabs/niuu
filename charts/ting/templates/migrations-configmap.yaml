@@ -1358,4 +1358,14 @@ data:
         END IF;
     END $$;
 
+  000027_saga_instance_assignment.down.sql: |
+    DROP INDEX IF EXISTS idx_sagas_instance_id;
+
+    ALTER TABLE sagas DROP COLUMN IF EXISTS instance_id;
+
+  000027_saga_instance_assignment.up.sql: |
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS instance_id UUID;
+
+    CREATE INDEX IF NOT EXISTS idx_sagas_instance_id ON sagas(instance_id);
+
 {{- end }}

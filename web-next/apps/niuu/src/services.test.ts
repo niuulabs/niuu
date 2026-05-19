@@ -995,7 +995,7 @@ describe('buildServices', () => {
       expect.objectContaining({ id: 'sess-archived', state: 'archived' }),
     );
     await sessionStore.deleteSession('sess-live');
-    expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live');
+    expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live', undefined);
   });
 
   it('prefers an explicit forge service base for the main Volundr http adapter', () => {

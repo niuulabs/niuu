@@ -91,6 +91,7 @@ class ProcessInfo:
     state: ProcessState = ProcessState.STARTING
     error: str | None = None
     flock_dir: str = ""
+    flock_base_port: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-safe dict."""
@@ -109,6 +110,7 @@ class ProcessInfo:
             state=ProcessState(data.get("state", data.get("status", "stopped"))),
             error=data.get("error"),
             flock_dir=data.get("flock_dir", ""),
+            flock_base_port=data.get("flock_base_port"),
         )
 
 
@@ -423,12 +425,16 @@ class LocalProcessPodManager(PodManager):
         self._allowed_mount_prefixes = allowed_mount_prefixes or DEFAULT_ALLOWED_MOUNT_PREFIXES
 
         self._port_allocator = SdkPortAllocator(start_port=int(sdk_port_start))
+        self._allocated_flock_base_ports: set[int] = set()
         self._processes: dict[str, ProcessInfo] = {}
         self._monitors: dict[str, asyncio.Task] = {}
         self._skuld_registry: object | None = None  # Set via set_skuld_registry()
         self._persona_registry: object | None = None  # Set via set_persona_registry()
 
         self._load_state()
+        for info in self._processes.values():
+            if info.state in (ProcessState.STARTING, ProcessState.RUNNING) and info.flock_base_port:
+                self._allocated_flock_base_ports.add(info.flock_base_port)
 
     def set_skuld_registry(self, registry: object) -> None:
         """Inject the SkuldPortRegistry for proxy routing."""
@@ -478,6 +484,7 @@ class LocalProcessPodManager(PodManager):
             port=port,
             workspace=str(workspace),
             state=ProcessState.STARTING,
+            flock_base_port=flock_plan.session_base_port if flock_plan is not None else None,
         )
         self._processes[session_id] = info
         self._persist_state()
@@ -519,6 +526,8 @@ class LocalProcessPodManager(PodManager):
         except Exception:
             info.state = ProcessState.FAILED
             self._port_allocator.release(port)
+            if info.flock_base_port is not None:
+                self._allocated_flock_base_ports.discard(info.flock_base_port)
             self._persist_state()
             raise
 
@@ -559,6 +568,8 @@ class LocalProcessPodManager(PodManager):
 
         if info.port is not None:
             self._port_allocator.release(info.port)
+        if info.flock_base_port is not None:
+            self._allocated_flock_base_ports.discard(info.flock_base_port)
 
         if self._skuld_registry is not None:
             self._skuld_registry.unregister(session_id)
@@ -778,6 +789,8 @@ class LocalProcessPodManager(PodManager):
         """
         for offset in range(DEFAULT_FLOCK_PORT_SCAN_LIMIT):
             base_port = DEFAULT_FLOCK_BASE_PORT + offset
+            if base_port in self._allocated_flock_base_ports:
+                continue
             required_ports: list[int] = [base_port, base_port + 1, base_port + 100]
             for index in range(node_count):
                 ravn_index = index + 1
@@ -791,6 +804,7 @@ class LocalProcessPodManager(PodManager):
                 )
 
             if all(SdkPortAllocator._is_port_free(port) for port in required_ports):
+                self._allocated_flock_base_ports.add(base_port)
                 return base_port
 
         raise RuntimeError(
@@ -1444,6 +1458,8 @@ class LocalProcessPodManager(PodManager):
                 info.state = ProcessState.STOPPED
                 if info.port is not None:
                     self._port_allocator.release(info.port)
+                if info.flock_base_port is not None:
+                    self._allocated_flock_base_ports.discard(info.flock_base_port)
                 self._persist_state()
                 logger.info("Claude process exited pid=%d session=%s", pid, session_id)
         except asyncio.CancelledError:

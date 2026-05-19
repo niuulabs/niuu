@@ -11,12 +11,14 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
+from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_settings import Settings
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
+from niuu.utils import import_class, resolve_secret_kwargs
 from observatory.discovery import ObservatoryDiscoveryService
 from observatory.registry import (
     InMemoryObservatoryRegistryRepository,
@@ -45,6 +47,12 @@ def _repository(request: Request) -> ObservatoryRegistryRepository:
 
 def _discovery(request: Request) -> ObservatoryDiscoveryService:
     return request.app.state.discovery_service
+
+
+def _create_http_auth_adapter(config) -> HttpAuthPort:
+    cls = import_class(config.adapter)
+    kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+    return cls(**kwargs)
 
 
 async def _topology_stream(discovery: ObservatoryDiscoveryService) -> AsyncGenerator[str, None]:
@@ -137,7 +145,7 @@ def create_router() -> APIRouter:
         topology = await _discovery(request).get_topology_snapshot()
         return SettingsProviderSchema(
             title="Observatory",
-            subtitle="registry and local discovery",
+            subtitle="registry and guild discovery",
             scope="service",
             sections=[
                 SettingsSectionSchema(
@@ -173,11 +181,19 @@ def create_router() -> APIRouter:
                             read_only=True,
                         ),
                         SettingsFieldSchema(
-                            key="discovery_base_url",
-                            label="Discovery Base URL",
+                            key="guild_url",
+                            label="Guild URL",
                             type="text",
-                            value=request.app.state.discovery_base_url,
-                            description="Local NIUU surface used for observatory introspection.",
+                            value=request.app.state.guild_url,
+                            description="Guild endpoint used for Observatory discovery.",
+                            read_only=True,
+                        ),
+                        SettingsFieldSchema(
+                            key="guild_auth_adapter",
+                            label="Guild Auth Adapter",
+                            type="text",
+                            value=request.app.state.guild_auth_adapter,
+                            description="Dynamic auth adapter used for Guild requests.",
                             read_only=True,
                         ),
                     ],
@@ -222,7 +238,14 @@ def create_app(
 ) -> FastAPI:
     """Create the Observatory ASGI app."""
     loaded_settings = settings or Settings()
-    discovery = discovery_service or ObservatoryDiscoveryService()
+    discovery = discovery_service
+    if discovery is None:
+        guild_cfg = loaded_settings.observatory.guild
+        discovery = ObservatoryDiscoveryService(
+            guild_url=guild_cfg.url,
+            auth=_create_http_auth_adapter(guild_cfg.auth),
+            timeout_seconds=guild_cfg.timeout_seconds,
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -230,7 +253,6 @@ def create_app(
             app.state.registry_repository = registry_repository
             await app.state.registry_repository.ensure_seeded()
             app.state.discovery_service = discovery
-            app.state.discovery_base_url = discovery.base_url
             yield
             return
 
@@ -239,13 +261,13 @@ def create_app(
             await repo.ensure_seeded()
             app.state.registry_repository = repo
             app.state.discovery_service = discovery
-            app.state.discovery_base_url = discovery.base_url
             yield
 
     app = FastAPI(title="Observatory API", lifespan=lifespan)
     app.state.settings = loaded_settings
     app.state.registry_repository = registry_repository or InMemoryObservatoryRegistryRepository()
     app.state.discovery_service = discovery
-    app.state.discovery_base_url = discovery.base_url
+    app.state.guild_url = getattr(discovery, "guild_url", getattr(discovery, "base_url", ""))
+    app.state.guild_auth_adapter = loaded_settings.observatory.guild.auth.adapter
     app.include_router(create_router())
     return app

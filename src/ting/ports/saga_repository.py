@@ -71,6 +71,16 @@ class SagaRepository(ABC):
         """Update the workflow assignment and snapshot for a saga."""
         raise NotImplementedError(f"{type(self).__name__}.update_saga_workflow not implemented")
 
+    async def update_saga_target(
+        self,
+        saga_id: UUID,
+        *,
+        instance_id: str | None,
+        owner_id: str | None = None,
+    ) -> None:
+        """Update the assigned Volundr target for a saga."""
+        raise NotImplementedError(f"{type(self).__name__}.update_saga_target not implemented")
+
     @abstractmethod
     async def count_by_status(self) -> dict[str, int]:
         """Return a count of runs grouped by status.

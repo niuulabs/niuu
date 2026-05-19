@@ -74,3 +74,5 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
         assert "/api/v1/personas" in paths
         assert "/api/v1/ravn/personas" in paths
         assert "/api/v1/tokens" in paths
+        assert "/api/v1/niuu/instances" not in paths
+        assert "/api/v1/niuu/volundr/sessions" not in paths

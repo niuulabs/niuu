@@ -11,7 +11,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from niuu.domain.models import IntegrationType, Principal
+from niuu.domain.models import InstanceKind, IntegrationType, Principal
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.flock_config import FlockPersonaResponse
 from ting.api.tracker import resolve_trackers
@@ -60,6 +60,7 @@ class QueueItemResponse(BaseModel):
     workflow_id: str | None = None
     workflow: str | None = None
     workflow_version: str | None = None
+    instance_id: str | None = None
 
 
 class ModelOption(BaseModel):
@@ -156,6 +157,7 @@ class ClusterInfo(BaseModel):
     """A user's available Volundr cluster."""
 
     connection_id: str
+    instance_id: str | None = None
     name: str
     url: str
     enabled: bool
@@ -186,6 +188,7 @@ def _queue_item_to_response(item: ServiceQueueItem) -> QueueItemResponse:
         workflow_id=item.workflow_id,
         workflow=item.workflow,
         workflow_version=item.workflow_version,
+        instance_id=item.instance_id,
     )
 
 
@@ -323,7 +326,11 @@ def create_dispatch_router() -> APIRouter:
     ) -> list[QueueItemResponse]:
         """Get the list of issues ready for dispatch across all sagas."""
         auth_token = extract_bearer_token(request)
-        items = await service.find_ready_issues(principal.user_id, auth_token=auth_token)
+        items = await service.find_ready_issues(
+            principal.user_id,
+            principal=principal,
+            auth_token=auth_token,
+        )
         return [_queue_item_to_response(item) for item in items]
 
     @router.post("/approve", response_model=list[DispatchResultResponse])
@@ -362,6 +369,7 @@ def create_dispatch_router() -> APIRouter:
         results = await service.dispatch_issues(
             owner_id=principal.user_id,
             items=service_items,
+            principal=principal,
             auth_token=auth_token,
             model=body.model or settings.dispatch.default_model,
             system_prompt=body.system_prompt or settings.dispatch.default_system_prompt,
@@ -371,12 +379,26 @@ def create_dispatch_router() -> APIRouter:
         )
         return [_result_to_response(r) for r in results]
 
-    @router.get("/clusters", response_model=list[ClusterInfo])
-    async def list_clusters(
-        request: Request,
-        principal: Principal = Depends(extract_principal),
-    ) -> list[ClusterInfo]:
-        """List the user's available Volundr clusters from their CODE_FORGE connections."""
+    async def _list_targets(request: Request, principal: Principal) -> list[ClusterInfo]:
+        instance_service = getattr(request.app.state, "instance_service", None)
+        if instance_service is not None:
+            instances = await instance_service.list_visible(
+                principal,
+                kind=InstanceKind.VOLUNDR,
+                enabled_only=False,
+            )
+            if instances:
+                return [
+                    ClusterInfo(
+                        connection_id=instance.id,
+                        instance_id=instance.id,
+                        name=instance.name,
+                        url=instance.base_url,
+                        enabled=instance.enabled,
+                    )
+                    for instance in instances
+                ]
+
         integration_repo = getattr(request.app.state, "integration_repo", None)
         if integration_repo is None:
             return []
@@ -392,12 +414,29 @@ def create_dispatch_router() -> APIRouter:
             clusters.append(
                 ClusterInfo(
                     connection_id=conn.id,
+                    instance_id=None,
                     name=name,
                     url=url,
                     enabled=conn.enabled,
                 )
             )
         return clusters
+
+    @router.get("/targets", response_model=list[ClusterInfo])
+    async def list_targets(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[ClusterInfo]:
+        """List the user's available Volundr targets."""
+        return await _list_targets(request, principal)
+
+    @router.get("/clusters", response_model=list[ClusterInfo])
+    async def list_clusters(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[ClusterInfo]:
+        """Compatibility alias for Volundr targets."""
+        return await _list_targets(request, principal)
 
     @router.post("/batch", response_model=DispatchBatchResultResponse)
     async def dispatch_batch(

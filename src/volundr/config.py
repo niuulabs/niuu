@@ -32,6 +32,8 @@ from niuu.config import (
     GitHubInstance,  # noqa: F401
     GitLabConfig,  # noqa: F401
     GitLabInstance,  # noqa: F401
+    HttpAuthAdapterConfig,
+    InstanceRegistryConfig,
 )
 from ravn.config import PersonaSourceConfig
 from volundr.domain.models import IntegrationType, SecretType
@@ -1203,6 +1205,40 @@ class TelegramIngressConfig(BaseModel):
     enabled: bool = Field(default=True)
 
 
+class VolundrBifrostConfig(BifrostConfig):
+    """Volundr-facing Bifrost dependency configuration."""
+
+    url: str = Field(
+        default="http://localhost:8080",
+        description="Base URL for the mounted Bifrost API host.",
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        description="HTTP timeout for Bifrost catalog calls.",
+    )
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
+
+
+class ObservatoryGuildConfig(BaseModel):
+    """Guild dependency config consumed by the host-mounted Observatory app."""
+
+    url: str = Field(
+        default="http://localhost:8080",
+        description="Base URL for the mounted Guild/niuu API host.",
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        description="HTTP timeout for Observatory Guild discovery calls.",
+    )
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
+
+
+class ObservatoryConfig(BaseModel):
+    """Observatory plugin configuration."""
+
+    guild: ObservatoryGuildConfig = Field(default_factory=ObservatoryGuildConfig)
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -1228,6 +1264,7 @@ class Settings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     git: GitConfig = Field(default_factory=GitConfig)
+    niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
@@ -1254,7 +1291,7 @@ class Settings(BaseSettings):
         default_factory=_default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
     )
-    bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
+    bifrost: VolundrBifrostConfig = Field(default_factory=VolundrBifrostConfig)
     default_definition: str = Field(
         default="skuldClaude",
         description="Fallback definition key when no explicit definition is specified.",
@@ -1267,6 +1304,7 @@ class Settings(BaseSettings):
         description="Feature module catalog — defines available UI modules.",
     )
     ravn: RavnConfig = Field(default_factory=RavnConfig)
+    observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)
 
     @classmethod
     def settings_customise_sources(

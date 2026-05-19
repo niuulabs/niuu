@@ -18,7 +18,8 @@ from observatory.registry import (
 
 
 class _FakeDiscoveryService:
-    base_url = "http://testserver"
+    guild_url = "http://guild.test"
+    base_url = "http://guild.test"
 
     async def get_topology_snapshot(self) -> dict[str, object]:
         return {
@@ -48,7 +49,8 @@ class _FakeDiscoveryService:
 
 
 class _SequenceDiscoveryService:
-    base_url = "http://sequence.test"
+    guild_url = "http://guild.test"
+    base_url = "http://guild.test"
 
     def __init__(self) -> None:
         self._topology_calls = 0
@@ -159,7 +161,7 @@ class TestObservatoryApp:
             assert payload["title"] == "Observatory"
             assert payload["sections"][0]["id"] == "streams"
             assert any(
-                field["key"] == "discovery_base_url"
+                field["key"] == "guild_url"
                 for field in payload["sections"][0]["fields"]
             )
 

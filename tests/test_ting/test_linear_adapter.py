@@ -448,6 +448,47 @@ class TestCreateRun:
         assert "## Declared Files" in desc
         assert "- `src/main.py`" in desc
 
+    async def test_clamps_fractional_positive_estimates_to_one_point(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.return_value = _mock_response(
+            {
+                "data": {
+                    "issueCreate": {
+                        "issue": {"id": "new-issue", "identifier": "TEST-101"},
+                        "success": True,
+                    }
+                }
+            }
+        )
+
+        now = datetime.now(UTC)
+        run = Run(
+            id=uuid4(),
+            phase_id=uuid4(),
+            tracker_id="proj-1",
+            name="Tiny run",
+            description="Small but non-zero effort",
+            acceptance_criteria=[],
+            declared_files=[],
+            estimate_hours=0.1,
+            status=RunStatus.PENDING,
+            confidence=0.0,
+            session_id=None,
+            branch=None,
+            chronicle_summary=None,
+            pr_url=None,
+            pr_id=None,
+            retry_count=0,
+            created_at=now,
+            updated_at=now,
+        )
+
+        await adapter.create_run(run)
+
+        payload = adapter._gql._client.post.call_args[1]["json"]
+        assert payload["variables"]["estimate"] == 1
+
 
 # ---------------------------------------------------------------------------
 # update_run_state

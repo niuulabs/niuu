@@ -53,6 +53,7 @@ export interface Session {
   runId?: string;
   templateId: string;
   clusterId: string;
+  clusterName?: string;
   state: SessionState;
   startedAt: string;
   readyAt?: string;

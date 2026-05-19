@@ -12,10 +12,13 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Request, Response
 
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
+from niuu.adapters.postgres_instances import PostgresInstanceRepository
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
+from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.pat_validator import PATValidator
+from niuu.service_instances import seed_configured_instances
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
@@ -376,6 +379,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # Wire shared credential/integration infrastructure
             integration_repo = PostgresIntegrationRepository(pool)
+            instance_repo = PostgresInstanceRepository(pool)
+            instance_service = InstanceService(instance_repo)
 
             cs_cfg = settings.credential_store
             cs_cls = import_class(cs_cfg.adapter)
@@ -385,7 +390,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # Expose shared infrastructure on app.state for REST routers
             app.state.integration_repo = integration_repo
+            app.state.instance_service = instance_service
             app.state.credential_store = credential_store
+
+            if settings.niuu.instances:
+                seeded = await seed_configured_instances(
+                    instance_service,
+                    list(settings.niuu.instances),
+                )
+                if seeded:
+                    logger.info("Seeded %d shared instance(s) from config", seeded)
 
             # Wire adapter factories (used by autonomous dispatcher)
             if _use_local_volundr_factory(settings):
@@ -399,6 +413,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.volundr_factory = VolundrAdapterFactory(
                     integration_repo,
                     credential_store,
+                    instance_repo,
                     allow_unauthenticated=settings.auth.allow_anonymous_dev,
                 )
             # Default Volundr adapter for code paths that don't have a per-owner

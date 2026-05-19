@@ -293,6 +293,20 @@ data:
       {{- end }}
     {{- end }}
 
+    bifrost:
+      url: {{ .Values.bifrost.url | quote }}
+      timeout_seconds: {{ .Values.bifrost.timeoutSeconds | default 10.0 }}
+      auth:
+        adapter: {{ .Values.bifrost.auth.adapter | quote }}
+        kwargs: {{ .Values.bifrost.auth.kwargs | toJson }}
+        {{- if .Values.bifrost.auth.secretKwargs }}
+        secret_kwargs_env:
+          {{- range .Values.bifrost.auth.secretKwargs }}
+          {{ .kwarg }}: BIFROST_AUTH_SK_{{ .kwarg | upper }}
+          {{- end }}
+        {{- else }}
+        secret_kwargs_env: {}
+        {{- end }}
     gateway:
       adapter: {{ .Values.gateway.adapter | quote }}
       kwargs: {{ .Values.gateway.kwargs | toJson }}

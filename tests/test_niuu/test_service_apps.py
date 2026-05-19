@@ -77,9 +77,10 @@ def test_identity_service_app_initializes_state_and_routes(monkeypatch) -> None:
     monkeypatch.setattr(
         identity_app,
         "create_identity_adapter",
-        lambda _settings, user_repository, storage=None: (
+        lambda _settings, user_repository, storage=None, tenant_service=None: (
             captured.setdefault("identity_user_repository", user_repository),
             captured.setdefault("identity_storage", storage),
+            captured.setdefault("identity_tenant_service", tenant_service),
             identity_adapter,
         )[-1],
     )
@@ -98,7 +99,7 @@ def test_identity_service_app_initializes_state_and_routes(monkeypatch) -> None:
     monkeypatch.setattr(
         identity_app,
         "create_identity_router",
-        lambda tenant_service: (
+        lambda tenant_service=None, **_: (
             captured.setdefault("tenant_service", tenant_service),
             _probe_router("/api/v1/identity/probe"),
         )[-1],

@@ -85,6 +85,7 @@ dev = [
 
 [project.scripts]
 niuu = "niuu.__main__:main"
+guild = "guild.main:main"
 volundr = "volundr.main:main"
 audit = "audit.main:main"
 identity = "identity.main:main"
@@ -95,6 +96,7 @@ tracker = "tracker.main:main"
 skuld = "skuld.broker:main"
 bifrost = "bifrost.__main__:main"
 ting = "ting.main:main"
+observatory = "observatory.main:main"
 ravn = "ravn.cli.commands:app"
 ravn-api = "ravn.main:main"
 ravn-approvals = "ravn.cli.commands:approvals_main"
@@ -104,6 +106,7 @@ ravn-mimir = "ravn.cli.commands:mimir_main"
 
 [project.entry-points."niuu.plugins"]
 niuu = "niuu.plugin:NiuuPlugin"
+guild = "guild.plugin:GuildPlugin"
 volundr = "volundr.plugin:VolundrPlugin"
 audit = "audit.plugin:AuditPlugin"
 identity = "identity.plugin:IdentityPlugin"
@@ -129,7 +132,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/identity", "src/integrations", "src/niuu", "src/volundr", "src/ting", "src/tracker", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas"]
+packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/niuu", "src/volundr", "src/ting", "src/tracker", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -154,7 +157,7 @@ line-length = 100
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.coverage.run]
-source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/identity", "src/integrations", "src/ting", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir"]
+source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/ting", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory"]
 branch = true
 # Textual TUI widgets require a running terminal and cannot be exercised with
 # plain pytest. They are excluded from coverage measurement until Textual

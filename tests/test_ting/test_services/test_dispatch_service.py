@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 import yaml
 
+from niuu.domain.models import Principal
 from ting.config import FlockConfig, PersonaOverride
 from ting.domain.flock_flow import FlockFlowConfig, FlockPersonaOverride
 from ting.domain.models import (
@@ -278,6 +279,47 @@ class TestFindReadyIssues:
         assert "ALPHA-1" in ids
         assert "ALPHA-3" in ids
         assert "ALPHA-2" not in ids
+
+    @pytest.mark.asyncio
+    async def test_uses_principal_scoped_volundr_adapter(
+        self,
+        tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+        dispatcher_repo: MockDispatcherRepo,
+    ):
+        class PrincipalOnlyFactory:
+            def __init__(self, adapter: MockVolundr) -> None:
+                self.adapter = adapter
+
+            async def for_owner(self, owner_id: str):
+                return []
+
+            async def primary_for_owner(self, owner_id: str):
+                return None
+
+            async def for_principal(self, principal: Principal):
+                return [self.adapter]
+
+            async def primary_for_principal(self, principal: Principal):
+                return self.adapter
+
+        svc = DispatchService(
+            tracker_factory=MockTrackerFactory([tracker]),
+            volundr_factory=PrincipalOnlyFactory(MockVolundr()),
+            saga_repo=saga_repo,
+            dispatcher_repo=dispatcher_repo,
+            config=DispatchConfig(),
+        )
+        principal = Principal(
+            user_id="dev-user",
+            email="dev@example.com",
+            tenant_id="tenant-a",
+            roles=["volundr:developer"],
+        )
+
+        items = await svc.find_ready_issues("dev-user", principal=principal)
+
+        assert {item.identifier for item in items} == {"ALPHA-1", "ALPHA-3"}
 
     @pytest.mark.asyncio
     async def test_sorted_by_priority(self, service: DispatchService):
@@ -674,6 +716,70 @@ class TestDispatchIssues:
         assert len(results) == 2
         assert all(r.status == "spawned" for r in results)
         assert len(volundr.spawned) == 2
+
+    @pytest.mark.asyncio
+    async def test_uses_saga_assigned_target_when_no_explicit_connection(
+        self,
+        tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+        dispatcher_repo: MockDispatcherRepo,
+    ):
+        class TargetVolundr(MockVolundr):
+            def __init__(self, target_id: str) -> None:
+                super().__init__()
+                self._target_id = target_id
+
+            @property
+            def name(self) -> str:
+                return self._target_id
+
+            @property
+            def target_id(self) -> str:
+                return self._target_id
+
+        default = TargetVolundr("default-instance")
+        assigned = TargetVolundr("assigned-instance")
+        saga = saga_repo.sagas[0]
+        saga_repo.sagas[0] = Saga(
+            id=saga.id,
+            tracker_id=saga.tracker_id,
+            tracker_type=saga.tracker_type,
+            slug=saga.slug,
+            name=saga.name,
+            repos=saga.repos,
+            feature_branch=saga.feature_branch,
+            status=saga.status,
+            confidence=saga.confidence,
+            created_at=saga.created_at,
+            base_branch=saga.base_branch,
+            owner_id=saga.owner_id,
+            workflow_id=saga.workflow_id,
+            workflow_version=saga.workflow_version,
+            workflow_snapshot=saga.workflow_snapshot,
+            instance_id="assigned-instance",
+        )
+        svc = DispatchService(
+            tracker_factory=MockTrackerFactory([tracker]),
+            volundr_factory=MockVolundrFactory(adapters=[default, assigned]),
+            saga_repo=saga_repo,
+            dispatcher_repo=dispatcher_repo,
+            config=DispatchConfig(),
+        )
+
+        results = await svc.dispatch_issues(
+            owner_id="dev-user",
+            items=[
+                DispatchItem(
+                    saga_id=str(saga_repo.sagas[0].id),
+                    issue_id="i-1",
+                    repo="org/repo-a",
+                )
+            ],
+        )
+
+        assert results[0].status == "spawned"
+        assert default.spawned == []
+        assert len(assigned.spawned) == 1
 
     @pytest.mark.asyncio
     async def test_no_volundr_returns_all_failed(

@@ -10,6 +10,7 @@ from importlib.metadata import metadata
 from fastapi import FastAPI
 
 from niuu.cors import apply_cors_middleware
+from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_database import database_pool
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -38,6 +39,7 @@ from volundr.adapters.inbound.rest_presets import create_presets_router
 from volundr.adapters.inbound.rest_profiles import create_profiles_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
+from volundr.adapters.outbound.bifrost_catalog_http import HttpBifrostCatalogAdapter
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.config_profiles import ConfigProfileProvider
 from volundr.adapters.outbound.config_templates import ConfigTemplateProvider
@@ -87,6 +89,28 @@ BROADCAST_INTERVAL = 30
 logger = logging.getLogger(__name__)
 
 
+async def _load_bifrost_catalog(
+    pricing_provider: HardcodedPricingProvider,
+    bifrost_catalog: HttpBifrostCatalogAdapter,
+) -> None:
+    delay_seconds = 0.1
+    while True:
+        try:
+            models = await bifrost_catalog.list_models()
+            pricing_provider.replace_models(models)
+            logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
+            return
+        except Exception:
+            logger.warning(
+                "Bifrost catalog not ready yet at %s; retrying in %.1fs",
+                bifrost_catalog._base_url,  # noqa: SLF001
+                delay_seconds,
+                exc_info=True,
+            )
+            await asyncio.sleep(delay_seconds)
+            delay_seconds = min(delay_seconds * 2, 5.0)
+
+
 def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
     """Create the PodManager adapter from dynamic config."""
     pm_cfg = settings.pod_manager
@@ -115,6 +139,13 @@ def _create_gateway_adapter(settings: Settings) -> "GatewayPort":  # noqa: F821
     instance = cls(**kwargs)
     logger.info("Gateway adapter: %s", gw_cfg.adapter.rsplit(".", 1)[-1])
     return instance
+
+
+def _create_http_auth_adapter(config) -> HttpAuthPort:
+    """Create a dynamic outbound HTTP auth adapter."""
+    cls = import_class(config.adapter)
+    kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+    return cls(**kwargs)
 
 
 def _create_secret_injection_adapter(settings: Settings) -> "SecretInjectionPort":  # noqa: F821
@@ -412,6 +443,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Identity & authorization adapters (dynamic adapter pattern)
             tenant_repository = PostgresTenantRepository(pool)
             user_repository = PostgresUserRepository(pool)
+            tenant_service = TenantService(tenant_repository, user_repository)
 
             resource_provider = _create_resource_provider(settings)
             storage_adapter = _create_storage_adapter(settings)
@@ -419,6 +451,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 settings,
                 user_repository,
                 storage=storage_adapter,
+                tenant_service=tenant_service,
             )
             authorization_adapter = _create_authorization_adapter(settings)
 
@@ -427,7 +460,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.authorization = authorization_adapter
 
             # Tenant service + ensure default tenant exists
-            tenant_service = TenantService(tenant_repository, user_repository)
             await tenant_service.ensure_default_tenant()
 
             # Create adapters
@@ -453,7 +485,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pass  # Not running via CLI
 
             gateway_adapter = _create_gateway_adapter(settings)
-            pricing_provider = HardcodedPricingProvider(list(settings.bifrost.models))
+            bifrost_auth = _create_http_auth_adapter(settings.bifrost.auth)
+            bifrost_catalog = HttpBifrostCatalogAdapter(
+                base_url=settings.bifrost.url,
+                auth=bifrost_auth,
+                timeout_seconds=settings.bifrost.timeout_seconds,
+            )
+            pricing_provider = HardcodedPricingProvider()
+            bifrost_catalog_task = asyncio.create_task(
+                _load_bifrost_catalog(
+                    pricing_provider,
+                    bifrost_catalog,
+                )
+            )
             git_registry = create_git_registry(settings.git)
 
             # Sleipnir integration (optional — enabled via sleipnir.enabled config)
@@ -840,6 +884,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 yield
             finally:
+                if bifrost_catalog_task is not None:
+                    bifrost_catalog_task.cancel()
+                    await asyncio.gather(bifrost_catalog_task, return_exceptions=True)
                 await telegram_ingress.stop()
                 background_task.cancel()
                 try:

@@ -1,5 +1,5 @@
 import { useRef, useCallback, useEffect } from 'react';
-import { getAccessToken } from '@niuulabs/query';
+import { withAuthQuery } from '@niuulabs/query';
 
 interface UseWebSocketOptions {
   onOpen?: () => void;
@@ -101,12 +101,7 @@ export function useWebSocket(
     const doConnect = (wsUrl: string) => {
       clearReconnectTimer();
 
-      let finalUrl = wsUrl;
-      const token = getAccessToken();
-      if (token) {
-        const sep = wsUrl.includes('?') ? '&' : '?';
-        finalUrl = `${wsUrl}${sep}access_token=${encodeURIComponent(token)}`;
-      }
+      const finalUrl = withAuthQuery(wsUrl);
 
       const parsed = new URL(finalUrl);
       if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {

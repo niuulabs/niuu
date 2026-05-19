@@ -147,11 +147,15 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "credentials-api": "credentials",
     "features-api": "features",
     "forge-api": "volundr",
+    "guild-instances-api": "guild",
+    "guild-volundr-api": "guild",
     "git-api": "volundr",
     "identity-api": "identity",
     "integrations-api": "integrations",
     "mimir-api": "mimir",
     "niuu-api": "niuu",
+    "niuu-repos-api": "niuu",
+    "niuu-shared-api": "niuu",
     "observatory-api": "observatory",
     "observatory-events-api": "observatory",
     "observatory-registry-api": "observatory",
@@ -629,9 +633,29 @@ def build_root_app(
                 async with ws_client.connect(
                     f"ws://127.0.0.1:{port}/session",
                     additional_headers={
-                        k.decode(): v.decode()
-                        for k, v in websocket.headers.raw
-                        if k.decode().lower() in ("authorization", "cookie", "x-auth-user-id")
+                        **{
+                            k.decode(): v.decode()
+                            for k, v in websocket.headers.raw
+                            if k.decode().lower()
+                            in (
+                                "authorization",
+                                "cookie",
+                                "x-auth-user-id",
+                                "x-auth-email",
+                                "x-auth-tenant",
+                                "x-auth-roles",
+                            )
+                        },
+                        **{
+                            header: value
+                            for query_key, header in (
+                                ("devUserId", "x-auth-user-id"),
+                                ("devEmail", "x-auth-email"),
+                                ("devTenantId", "x-auth-tenant"),
+                                ("devRoles", "x-auth-roles"),
+                            )
+                            if (value := websocket.query_params.get(query_key))
+                        },
                     },
                 ) as skuld_ws:
 

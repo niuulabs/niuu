@@ -83,6 +83,7 @@ function makeSession(
     personaName: overrides.personaName,
     templateId: overrides.templateId ?? 'tpl-default',
     clusterId: overrides.clusterId ?? 'cluster-a',
+    clusterName: overrides.clusterName,
     state: overrides.state,
     startedAt: overrides.startedAt ?? new Date('2026-05-01T00:00:00.000Z').toISOString(),
     readyAt: overrides.readyAt,
@@ -211,6 +212,32 @@ describe('SessionsPage', () => {
     expect(screen.queryByTestId('pod-entry-ds-1')).not.toBeInTheDocument();
   });
 
+  it('filters sidebar entries by forge name', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({
+        id: 'alpha-1',
+        personaName: 'alpha one',
+        state: 'running',
+        clusterId: 'guild-alpha',
+        clusterName: 'Guild Alpha',
+      }),
+      makeSession({
+        id: 'beta-1',
+        personaName: 'beta one',
+        state: 'idle',
+        clusterId: 'guild-beta',
+        clusterName: 'Guild Beta',
+      }),
+    ]);
+
+    wrap(store);
+    await waitFor(() => expect(screen.getByTestId('pod-search')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('pod-search'), { target: { value: 'guild beta' } });
+
+    await waitFor(() => expect(screen.getByTestId('pod-entry-beta-1')).toBeInTheDocument());
+    expect(screen.queryByTestId('pod-entry-alpha-1')).not.toBeInTheDocument();
+  });
+
   it('can group sessions by repo', async () => {
     const store = createSessionStoreWithSessions([
       makeSession({
@@ -243,6 +270,41 @@ describe('SessionsPage', () => {
     expect(screen.queryByTestId('pod-group-active')).not.toBeInTheDocument();
   });
 
+  it('can group sessions by forge', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({
+        id: 'alpha-1',
+        personaName: 'alpha one',
+        state: 'running',
+        clusterId: 'guild-alpha',
+        clusterName: 'Guild Alpha',
+      }),
+      makeSession({
+        id: 'alpha-2',
+        personaName: 'alpha two',
+        state: 'idle',
+        clusterId: 'guild-alpha',
+        clusterName: 'Guild Alpha',
+      }),
+      makeSession({
+        id: 'beta-1',
+        personaName: 'beta one',
+        state: 'failed',
+        clusterId: 'guild-beta',
+        clusterName: 'Guild Beta',
+      }),
+    ]);
+
+    wrap(store);
+    await waitFor(() => expect(screen.getByTestId('pod-group-mode-forge')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('pod-group-mode-forge'));
+
+    await waitFor(() => expect(screen.getByTestId('pod-group-guild-alpha')).toBeInTheDocument());
+    expect(screen.getByTestId('pod-group-guild-alpha-count')).toHaveTextContent('2');
+    expect(screen.getByTestId('pod-group-guild-beta')).toBeInTheDocument();
+    expect(screen.queryByTestId('pod-group-active')).not.toBeInTheDocument();
+  });
+
   it('shows loading state initially', () => {
     const slowStore: ISessionStore = {
       ...createMockSessionStore(),
@@ -260,6 +322,24 @@ describe('SessionsPage', () => {
     const row = screen.getByTestId('pod-entry-laptop-volundr-local');
     expect(row).toHaveTextContent(/reading volundr/i);
     expect(row).toHaveTextContent(/ago/i);
+  });
+
+  it('renders the forge label when a session has an instance name', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({
+        id: 'forge-1',
+        personaName: 'forge test',
+        state: 'running',
+        clusterId: 'guild-alpha',
+        clusterName: 'Guild Alpha',
+      }),
+    ]);
+
+    wrap(store);
+    await waitFor(() => expect(screen.getByTestId('pod-entry-forge-1')).toBeInTheDocument());
+    const row = screen.getByTestId('pod-entry-forge-1');
+    expect(row).toHaveTextContent(/forge/i);
+    expect(row).toHaveTextContent('Guild Alpha');
   });
 
   it('shows archive-all-stopped action and calls the service', async () => {

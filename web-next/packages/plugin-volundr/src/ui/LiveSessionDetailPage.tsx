@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
-import { getAccessToken } from '@niuulabs/query';
+import { getAuthHeaders } from '@niuulabs/query';
 import {
   Dialog,
   DialogContent,
@@ -104,6 +104,10 @@ function formatEventTime(value: number): string {
   const minutes = Math.floor(value / 60);
   const seconds = value % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function sessionForgeLabel(session: VolundrSession | null | undefined): string {
+  return session?.instanceName ?? session?.instanceId ?? session?.hostname ?? 'shared';
 }
 
 function eventTone(type: SessionChronicle['events'][number]['type']) {
@@ -878,8 +882,7 @@ interface DiffData {
 type DiffBase = 'last-commit' | 'default-branch';
 
 function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return Object.fromEntries(getAuthHeaders().entries());
 }
 
 function useLiveDiffViewer(chatEndpoint: string | null) {
@@ -1528,7 +1531,7 @@ export function LiveSessionDetailPage({
             <HeaderDivider />
             <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
             <HeaderDivider />
-            <HeaderMetric label="Mode" value={liveSession?.taskType ?? 'forge'} />
+            <HeaderMetric label="Forge" value={sessionForgeLabel(liveSession)} />
           </div>
         </div>
         <div

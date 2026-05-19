@@ -8,6 +8,12 @@ const { getAccessTokenMock } = vi.hoisted(() => ({
 
 vi.mock('@niuulabs/query', () => ({
   getAccessToken: getAccessTokenMock,
+  withAuthQuery: (url: string) => {
+    const token = getAccessTokenMock();
+    if (!token) return url;
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}access_token=${encodeURIComponent(token)}`;
+  },
 }));
 
 class MockWebSocket {

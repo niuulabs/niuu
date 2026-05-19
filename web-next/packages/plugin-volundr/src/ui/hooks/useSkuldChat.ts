@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getAccessToken } from '@niuulabs/query';
+import { getAuthHeaders } from '@niuulabs/query';
 import { extractOutcomeBlock } from '@niuulabs/ui';
 import type {
   AgentInternalEvent,
@@ -678,9 +678,7 @@ export function useSkuldChat(
     }
 
     let cancelled = false;
-    const headers: Record<string, string> = {};
-    const token = getAccessToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
+    const headers = Object.fromEntries(getAuthHeaders().entries());
 
     const base = httpBase.endsWith('/') ? httpBase : `${httpBase}/`;
     const historyUrl = new URL('api/conversation/history', base);

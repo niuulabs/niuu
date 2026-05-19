@@ -38,9 +38,11 @@ export function buildSessionColumns({
     },
     cluster: {
       key: 'cluster',
-      header: 'Cluster',
+      header: 'Forge',
       render: (s) => (
-        <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">{s.clusterId}</span>
+        <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">
+          {s.clusterName ?? s.clusterId}
+        </span>
       ),
     },
     state: {

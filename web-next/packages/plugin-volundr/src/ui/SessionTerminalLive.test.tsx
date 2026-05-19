@@ -10,6 +10,11 @@ import {
 
 vi.mock('@niuulabs/query', () => ({
   getAccessToken: vi.fn(() => 'token-123'),
+  getAuthHeaders: vi.fn((headers?: HeadersInit) => {
+    const next = new Headers(headers);
+    next.set('Authorization', 'Bearer token-123');
+    return next;
+  }),
 }));
 
 vi.mock('./hooks/useWebSocket', () => ({
@@ -96,7 +101,7 @@ describe('SessionTerminalLive helpers', () => {
     ]);
 
     expect(global.fetch).toHaveBeenLastCalledWith('https://example.com/api/terminal/sessions', {
-      headers: { Authorization: 'Bearer token-123' },
+      headers: { authorization: 'Bearer token-123' },
     });
   });
 
@@ -116,8 +121,8 @@ describe('SessionTerminalLive helpers', () => {
     expect(global.fetch).toHaveBeenCalledWith('https://example.com/api/terminal/spawn', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer token-123',
+        'content-type': 'application/json',
+        authorization: 'Bearer token-123',
       },
       body: JSON.stringify({ cli_type: 'shell' }),
     });
@@ -131,8 +136,8 @@ describe('SessionTerminalLive helpers', () => {
     expect(global.fetch).toHaveBeenCalledWith('https://example.com/api/terminal/kill', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer token-123',
+        'content-type': 'application/json',
+        authorization: 'Bearer token-123',
       },
       body: JSON.stringify({ terminalId: 'term-9' }),
     });

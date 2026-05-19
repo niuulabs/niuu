@@ -40,35 +40,39 @@ class HardcodedPricingProvider(PricingProvider):
         self._models: list[Model] = []
         self._pricing: dict[str, float] = {}
 
-        if model_configs:
-            for cfg in model_configs:
-                model_id = str(getattr(cfg, "id", "") or "").strip()
-                if not model_id:
-                    continue
-                cost = getattr(cfg, "cost_per_million_tokens", None)
-                if cost is not None:
-                    self._pricing[model_id] = float(cost)
-                self._models.append(
-                    Model(
-                        id=model_id,
-                        name=str(getattr(cfg, "name", "") or model_id).strip(),
-                        description=str(getattr(cfg, "description", "") or "").strip(),
-                        provider=_model_provider(getattr(cfg, "provider", "")),
-                        vendor=(
-                            str(getattr(cfg, "vendor", "") or "").strip().lower()
-                            or str(getattr(cfg, "provider", "") or "").strip().lower()
-                        ),
-                        tier=_model_tier(getattr(cfg, "tier", "")),
-                        color=str(getattr(cfg, "color", "") or "#2563EB"),
-                        cost_per_million_tokens=float(cost) if cost is not None else None,
-                        vram_required=(
-                            str(getattr(cfg, "vram_required", "") or "").strip() or None
-                        ),
-                        session_definition=(
-                            str(getattr(cfg, "session_definition", "") or "").strip() or None
-                        ),
-                    )
+        self.replace_models(model_configs or [])
+
+    def replace_models(self, model_configs: list[Any]) -> None:
+        """Replace the projected catalog with a fresh Bifrost snapshot."""
+        self._models = []
+        self._pricing = {}
+
+        for cfg in model_configs:
+            model_id = str(getattr(cfg, "id", "") or "").strip()
+            if not model_id:
+                continue
+            cost = getattr(cfg, "cost_per_million_tokens", None)
+            if cost is not None:
+                self._pricing[model_id] = float(cost)
+            self._models.append(
+                Model(
+                    id=model_id,
+                    name=str(getattr(cfg, "name", "") or model_id).strip(),
+                    description=str(getattr(cfg, "description", "") or "").strip(),
+                    provider=_model_provider(getattr(cfg, "provider", "")),
+                    vendor=(
+                        str(getattr(cfg, "vendor", "") or "").strip().lower()
+                        or str(getattr(cfg, "provider", "") or "").strip().lower()
+                    ),
+                    tier=_model_tier(getattr(cfg, "tier", "")),
+                    color=str(getattr(cfg, "color", "") or "#2563EB"),
+                    cost_per_million_tokens=float(cost) if cost is not None else None,
+                    vram_required=str(getattr(cfg, "vram_required", "") or "").strip() or None,
+                    session_definition=(
+                        str(getattr(cfg, "session_definition", "") or "").strip() or None
+                    ),
                 )
+            )
 
     def get_price(self, model_id: str) -> float | None:
         return self._pricing.get(model_id)

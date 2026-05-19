@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUN_DIR="${ROOT_DIR}/build/guild-run"
+LOG_DIR="${RUN_DIR}/logs"
+CONFIG_DIR="${ROOT_DIR}/scripts/setups/configs"
+USER_CONFIG_PATH="${HOME}/.niuu/config.yaml"
+MERGED_CONFIG_DIR="${RUN_DIR}/configs"
+
+require_tool() {
+  local tool="$1"
+  if command -v "${tool}" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Missing required tool: ${tool}" >&2
+  exit 1
+}
+
+ensure_uv() {
+  export PATH="${HOME}/.local/bin:${PATH}"
+  if command -v uv >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "uv is required. Run ./start-dev once or install uv first." >&2
+  exit 1
+}
+
+ensure_pnpm() {
+  export PNPM_HOME="${PNPM_HOME:-${HOME}/.local/share/pnpm}"
+  export PATH="${PNPM_HOME}:${PATH}"
+  if command -v pnpm >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "pnpm is required. Run ./start-dev once or install pnpm first." >&2
+  exit 1
+}
+
+wait_for_url() {
+  local url="$1"
+  local label="$2"
+  local attempts="${3:-90}"
+  for ((i = 1; i <= attempts; i++)); do
+    if curl -fsS "${url}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "${label} failed to become ready: ${url}" >&2
+  return 1
+}
+
+launch_instance() {
+  local label="$1"
+  local port="$2"
+  local config_path="$3"
+  local host_profile="$4"
+  local web_mode="$5"
+  local state_dir="${RUN_DIR}/${label}"
+  local pid_file="${RUN_DIR}/${label}.pid"
+  local log_file="${LOG_DIR}/${label}.log"
+  local sdk_port_start
+
+  case "${label}" in
+    guild-alpha) sdk_port_start="9100" ;;
+    guild-beta) sdk_port_start="9200" ;;
+    guild-central) sdk_port_start="9300" ;;
+    *) sdk_port_start="9400" ;;
+  esac
+
+  mkdir -p "${state_dir}/workspaces"
+
+  ROOT_DIR="${ROOT_DIR}" \
+  LABEL="${label}" \
+  PORT="${port}" \
+  CONFIG_PATH="${config_path}" \
+  HOST_PROFILE="${host_profile}" \
+  WEB_MODE="${web_mode}" \
+  STATE_DIR="${state_dir}" \
+  SDK_PORT_START="${sdk_port_start}" \
+  PID_FILE="${pid_file}" \
+  LOG_FILE="${log_file}" \
+  PYTHONUNBUFFERED=1 \
+  python3 - <<'PY'
+import os
+import subprocess
+from pathlib import Path
+
+root_dir = Path(os.environ["ROOT_DIR"])
+label = os.environ["LABEL"]
+port = os.environ["PORT"]
+config_path = os.environ["CONFIG_PATH"]
+host_profile = os.environ["HOST_PROFILE"]
+web_mode = os.environ["WEB_MODE"]
+state_dir = Path(os.environ["STATE_DIR"])
+sdk_port_start = os.environ["SDK_PORT_START"]
+pid_file = Path(os.environ["PID_FILE"])
+log_file = Path(os.environ["LOG_FILE"])
+
+env = os.environ.copy()
+env["PYTHONUNBUFFERED"] = "1"
+env["NIUU_SERVER__HOST"] = "127.0.0.1"
+env["NIUU_SERVER__PORT"] = port
+env["NIUU_CONFIG"] = config_path
+env["NIUU_PGDATA_DIR"] = str(state_dir / "pgdata")
+env["NIUU_POD_MANAGER__WORKSPACES_DIR"] = str(state_dir / "workspaces")
+env["NIUU_POD_MANAGER__STATE_FILE"] = str(state_dir / "forge-state.json")
+env["NIUU_POD_MANAGER__SDK_PORT_START"] = sdk_port_start
+env["NIUU_FORGE_STATE_FILE"] = str(state_dir / "forge-state.json")
+
+command = [
+    "uv",
+    "run",
+    "niuu",
+    "platform",
+    "up",
+    "--skip-preflight",
+    "--host-profile",
+    host_profile,
+]
+if web_mode == "no-web":
+    command.append("--no-web")
+
+with log_file.open("wb") as log_handle:
+    process = subprocess.Popen(
+        command,
+        cwd=root_dir,
+        env=env,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
+PY
+}
+
+require_tool curl
+require_tool make
+require_tool python3
+ensure_uv
+ensure_pnpm
+
+"${ROOT_DIR}/stop-guild" >/dev/null 2>&1 || true
+rm -rf "${RUN_DIR}"
+mkdir -p "${LOG_DIR}"
+
+echo "Preparing guild workspace..."
+uv sync --extra dev
+make -C "${ROOT_DIR}" build-postgres
+pnpm --dir "${ROOT_DIR}/web-next" install
+pnpm --dir "${ROOT_DIR}/web-next" -r --filter "@niuulabs/*" --filter "!@niuulabs/niuu" build
+(
+  cd "${ROOT_DIR}/web-next/apps/niuu"
+  pnpm exec vite build
+)
+
+echo "Merging guild configs with ~/.niuu defaults..."
+uv run python "${ROOT_DIR}/scripts/guild_bootstrap.py" merge-configs \
+  --base-config "${USER_CONFIG_PATH}" \
+  --worker-overlay "${CONFIG_DIR}/guild-worker.yaml" \
+  --central-overlay "${CONFIG_DIR}/guild-central.yaml" \
+  --output-dir "${MERGED_CONFIG_DIR}"
+
+echo "Starting Guild Alpha on :8181..."
+launch_instance "guild-alpha" "8181" "${MERGED_CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
+wait_for_url "http://127.0.0.1:8181/health" "Guild Alpha"
+
+echo "Starting Guild Beta on :8282..."
+launch_instance "guild-beta" "8282" "${MERGED_CONFIG_DIR}/guild-worker.yaml" "api" "no-web"
+wait_for_url "http://127.0.0.1:8282/health" "Guild Beta"
+
+echo "Starting central guild shell on :8080..."
+launch_instance "guild-central" "8080" "${MERGED_CONFIG_DIR}/guild-central.yaml" "full" "web"
+wait_for_url "http://127.0.0.1:8080/health" "Guild shell"
+
+echo "Seeding guild dev integrations..."
+uv run python "${ROOT_DIR}/scripts/guild_bootstrap.py" seed-dev-integrations \
+  --base-url "http://127.0.0.1:8080" \
+  --base-config "${USER_CONFIG_PATH}" \
+  --users-json '[["guild-user-a","tenant-a"],["guild-user-b","tenant-b"]]'
+
+cat <<EOF
+Ready.
+
+Guild shell:
+  http://127.0.0.1:8080/?config=/config.live.json
+  http://127.0.0.1:8080/guild?config=/config.live.json
+  http://127.0.0.1:8080/ting/dispatch?config=/config.live.json
+
+Workers:
+  Guild Alpha: http://127.0.0.1:8181
+  Guild Beta:  http://127.0.0.1:8282
+
+Logs:
+  ${LOG_DIR}/guild-central.log
+  ${LOG_DIR}/guild-alpha.log
+  ${LOG_DIR}/guild-beta.log
+
+Stop:
+  ${ROOT_DIR}/stop-guild
+EOF
