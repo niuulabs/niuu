@@ -65,11 +65,31 @@ jobs:
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
-        with:
-          registry: ${{ inputs.registry }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          max_attempts=5
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            if printf '%s' "${REGISTRY_PASSWORD}" \
+              | docker login "${REGISTRY}" --username "${REGISTRY_USERNAME}" --password-stdin; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "Registry login failed after ${max_attempts} attempts: ${REGISTRY}" >&2
+              exit 1
+            fi
+
+            sleep_seconds=$((attempt * 5))
+            echo "Registry login attempt ${attempt}/${max_attempts} failed for ${REGISTRY}; retrying in ${sleep_seconds}s" >&2
+            sleep "${sleep_seconds}"
+            attempt=$((attempt + 1))
+          done
 
       - name: Build and push
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
@@ -102,11 +122,31 @@ jobs:
           egress-policy: audit
 
       - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
-        with:
-          registry: ${{ inputs.registry }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          max_attempts=5
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            if printf '%s' "${REGISTRY_PASSWORD}" \
+              | docker login "${REGISTRY}" --username "${REGISTRY_USERNAME}" --password-stdin; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "Registry login failed after ${max_attempts} attempts: ${REGISTRY}" >&2
+              exit 1
+            fi
+
+            sleep_seconds=$((attempt * 5))
+            echo "Registry login attempt ${attempt}/${max_attempts} failed for ${REGISTRY}; retrying in ${sleep_seconds}s" >&2
+            sleep "${sleep_seconds}"
+            attempt=$((attempt + 1))
+          done
 
       - name: Create and push manifests
         env:
