@@ -11,12 +11,10 @@ test.beforeEach(async ({ page }) => {
 // ── Forge overview ────────────────────────────────────────────────────────────
 
 test('volundr forge overview matches web2', async ({ page }) => {
-  await page.goto('/volundr');
+  await page.goto('/volundr/forge');
   await page.waitForLoadState('networkidle');
   await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole('navigation', { name: 'Session list' })).toBeVisible({
-    timeout: 10_000,
-  });
+  await expect(page.getByTestId('forge-page')).toBeVisible({ timeout: 10_000 });
   await expect(page).toHaveScreenshot('volundr-forge-overview.png');
 });
 
