@@ -28,12 +28,13 @@ test('volundr templates matches web2', async ({ page }) => {
   await expect(page).toHaveScreenshot('volundr-templates.png');
 });
 
-// ── Clusters ──────────────────────────────────────────────────────────────────
+// ── Guild overview (legacy /volundr/clusters replacement) ───────────────────
 
-test('volundr clusters matches web2', async ({ page }) => {
-  await page.goto('/volundr/clusters');
+test('guild overview matches web2', async ({ page }) => {
+  await page.goto('/guild');
   await page.waitForLoadState('networkidle');
-  await expect(page).toHaveScreenshot('volundr-clusters.png');
+  await expect(page.getByRole('heading', { name: 'Guild' })).toBeVisible({ timeout: 10_000 });
+  await expect(page).toHaveScreenshot('guild-overview.png');
 });
 
 // ── Sessions list ─────────────────────────────────────────────────────────────

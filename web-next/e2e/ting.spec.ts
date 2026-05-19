@@ -20,7 +20,9 @@ test('sagas route renders search, filters, and actions', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Import saga from tracker' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Export sagas as JSON' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create new saga' })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Saga list' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Auth Rewrite/i })).toBeVisible();
+  await expect(page.getByText('feat/auth-rewrite').first()).toBeVisible();
+  await expect(page.getByText(/1\/3 runs/i).first()).toBeVisible();
 });
 
 test('saga detail route shows phase content', async ({ page }) => {

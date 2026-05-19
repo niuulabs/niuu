@@ -59,38 +59,13 @@ test('/volundr/templates — bifrost-gateway surfaces its MCP server detail', as
 });
 
 // ---------------------------------------------------------------------------
-// /volundr/clusters — Clusters page
+// /volundr/clusters — Legacy redirect to Guild
 // ---------------------------------------------------------------------------
 
-test('/volundr/clusters renders the clusters page', async ({ page }) => {
+test('/volundr/clusters redirects to guild', async ({ page }) => {
   await page.goto('/volundr/clusters');
-  await expect(page.getByRole('heading', { name: /clusters/i })).toBeVisible();
-});
-
-test('/volundr/clusters shows cluster cards', async ({ page }) => {
-  await page.goto('/volundr/clusters');
-  await expect(page.getByTestId('clusters-sidebar')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByRole('button', { name: 'Eitri' })).toBeVisible({ timeout: 5_000 });
-});
-
-test('/volundr/clusters shows cluster names', async ({ page }) => {
-  await page.goto('/volundr/clusters');
-  await expect(page.getByRole('heading', { name: 'Valaskjálf' })).toBeVisible({
-    timeout: 5_000,
-  });
-  await expect(page.getByRole('button', { name: /Eitri/i })).toBeVisible({ timeout: 5_000 });
-});
-
-test('/volundr/clusters shows capacity bars', async ({ page }) => {
-  await page.goto('/volundr/clusters');
-  await expect(page.getByText('CPU').first()).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText('MEMORY').first()).toBeVisible({ timeout: 5_000 });
-});
-
-test('/volundr/clusters shows node list', async ({ page }) => {
-  await page.goto('/volundr/clusters');
-  await expect(page.getByRole('heading', { name: 'Nodes' })).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText(/valaskjalf-/i).first()).toBeVisible({ timeout: 5_000 });
+  await page.waitForURL('**/guild');
+  await expect(page.getByRole('heading', { name: 'Guild' })).toBeVisible({ timeout: 5_000 });
 });
 
 // ---------------------------------------------------------------------------
