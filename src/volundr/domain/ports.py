@@ -1070,6 +1070,7 @@ class SecretInjectionPort(ABC):
         user_id: str,
         credential_mappings: list[CredentialMapping],
         session_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Create or update backend resources to mount the given credentials.
 

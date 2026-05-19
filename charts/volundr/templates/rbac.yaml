@@ -80,10 +80,16 @@ rules:
     resources: ["persistentvolumeclaims"]
     verbs: ["create", "delete", "get", "list", "watch"]
   {{- end }}
-  {{- if contains "InfisicalAgent" .Values.secretInjection.adapter }}
-  # Cluster-wide access to ConfigMaps in session namespace (agent injector config)
+  {{- if or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) }}
+  # Cluster-wide access to injector coordination resources in the session namespace
   - apiGroups: [""]
     resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
+  {{- if contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter }}
+  # OpenBao session injection creates a dedicated ServiceAccount per session
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   {{- end }}
   # Namespace listing for multi-namespace deployments

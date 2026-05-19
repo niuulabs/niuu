@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer
 from niuu.domain.models import Principal
 from niuu.domain.services.pat import PATService
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
+from volundr.domain.ports import IdentityPort, UserProvisioningError
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,19 @@ def create_pats_router(
         tags=["Personal Access Tokens"],
     )
 
+    async def ensure_user(request: Request, principal: Principal) -> None:
+        identity: IdentityPort | None = getattr(request.app.state, "identity", None)
+        if identity is None:
+            return
+        try:
+            await identity.get_or_provision_user(principal)
+        except UserProvisioningError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="User provisioning in progress, retry later",
+                headers={"Retry-After": "5"},
+            ) from exc
+
     @router.post(
         "",
         response_model=CreatePATResponse,
@@ -119,6 +133,7 @@ def create_pats_router(
                     canonical_path=canonical_prefix,
                 ),
             )
+        await ensure_user(request, principal)
         service: PATService = request.app.state.pat_service
         # Extract the user's current access token for IDP token exchange
         auth_header = request.headers.get("authorization", "")
@@ -152,6 +167,7 @@ def create_pats_router(
                     canonical_path=canonical_prefix,
                 ),
             )
+        await ensure_user(request, principal)
         service: PATService = request.app.state.pat_service
         pats = await service.list(principal.user_id)
         return [
@@ -184,6 +200,7 @@ def create_pats_router(
                     canonical_path=f"{canonical_prefix}/{pat_id}",
                 ),
             )
+        await ensure_user(request, principal)
         service: PATService = request.app.state.pat_service
         try:
             parsed_id = UUID(pat_id)

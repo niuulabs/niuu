@@ -148,11 +148,18 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     )
 
     app.include_router(mimir_router.router, prefix="/mimir")
+    app.include_router(mimir_router.router, prefix="/api/v1/mimir", include_in_schema=False)
     app.include_router(mcp_server.router(), prefix="/mcp")
+    app.include_router(mcp_server.router(), prefix="/api/v1/mimir/mcp", include_in_schema=False)
     app.state.mimir_config = config
 
     @app.get("/settings", response_model=SettingsProviderSchema)
     @app.get("/mimir/settings", response_model=SettingsProviderSchema, include_in_schema=False)
+    @app.get(
+        "/api/v1/mimir/settings",
+        response_model=SettingsProviderSchema,
+        include_in_schema=False,
+    )
     async def settings() -> SettingsProviderSchema:
         categories = ", ".join(config.categories or ["all"])
         return SettingsProviderSchema(

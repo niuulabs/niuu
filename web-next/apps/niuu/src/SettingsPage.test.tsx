@@ -183,6 +183,7 @@ function wrap(children: ReactNode) {
 
 describe('SettingsPage', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     installDefaultGetMock();
   });
 
@@ -621,5 +622,87 @@ describe('SettingsPage', () => {
       ),
     ).toBeTruthy();
     expect(await screen.findByText('Expected endpoint:')).toBeTruthy();
+  });
+
+  it('only loads the active remote provider schema', async () => {
+    routerMocks.params = { providerId: 'ting', sectionId: 'general' };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Ting',
+          subtitle: 'saga coordinator settings',
+          scope: 'service',
+          sections: [
+            {
+              id: 'general',
+              label: 'General',
+              description: 'Core service bindings for the coordinator.',
+              fields: [
+                {
+                  key: 'service_name',
+                  label: 'Service',
+                  type: 'text',
+                  value: 'Ting',
+                  readOnly: true,
+                },
+              ],
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+
+    render(
+      <ConfigProvider
+        value={{
+          theme: 'ice',
+          plugins: {
+            ting: { enabled: true, order: 1 },
+            ravn: { enabled: true, order: 2 },
+          },
+          services: {
+            ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+            ravn: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn' },
+          },
+        }}
+      >
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage />
+        </QueryClientProvider>
+      </ConfigProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'General' })).toBeTruthy();
+    expect(apiMocks.get.mock.calls.filter(([path]) => path === '/settings')).toHaveLength(1);
+  });
+
+  it.each([
+    [401, 'This service rejected the current token while loading its settings schema.'],
+    [403, 'You do not have permission to view this service settings surface.'],
+    [404, 'This service is mounted, but it does not expose the expected settings route.'],
+    [503, 'This service is configured, but it is not currently available.'],
+  ])('renders the remote provider error copy for HTTP %i', async (status, expectedCopy) => {
+    routerMocks.params = { providerId: 'ting', sectionId: '' };
+    apiMocks.get.mockRejectedValueOnce({
+      name: 'ApiClientError',
+      message: `HTTP ${status}`,
+      status,
+      detail: 'upstream detail',
+    });
+
+    wrap(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
+    expect(await screen.findByText(expectedCopy)).toBeTruthy();
+    expect(await screen.findByText('Response detail:')).toBeTruthy();
   });
 });

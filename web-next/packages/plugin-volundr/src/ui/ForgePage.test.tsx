@@ -293,6 +293,82 @@ describe('ForgePage', () => {
     );
   });
 
+  it('falls back to the raw cluster id and requested label for requested sessions', async () => {
+    const session: Session = {
+      id: 'req-sess',
+      ravnId: 'r-req',
+      personaName: 'planner',
+      templateId: 'tpl-default',
+      clusterId: 'cl-unknown',
+      state: 'requested',
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      resources: {
+        cpuRequest: 1,
+        cpuLimit: 0,
+        cpuUsed: 0,
+        memRequestMi: 512,
+        memLimitMi: 0,
+        memUsedMi: 0,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [{ id: 'evt-1', at: new Date().toISOString(), body: 'Waiting for capacity' }],
+    };
+
+    const store = createMockSessionStore();
+    const overriddenStore: ISessionStore = {
+      ...store,
+      listSessions: async () => [session],
+      subscribe: (cb) => {
+        cb([session]);
+        return () => {};
+      },
+    };
+
+    wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
+    await waitFor(() => expect(screen.getAllByText('req-sess').length).toBeGreaterThan(0));
+    expect(screen.getByText('cl-unknown')).toBeInTheDocument();
+    expect(screen.getAllByText('requested').length).toBeGreaterThan(0);
+  });
+
+  it('falls back to the latest event body when no preview is available', async () => {
+    const session: Session = {
+      id: 'evt-sess',
+      ravnId: 'r-evt',
+      personaName: 'planner',
+      templateId: 'tpl-default',
+      clusterId: 'cl-unknown',
+      state: 'running',
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      resources: {
+        cpuRequest: 1,
+        cpuLimit: 2,
+        cpuUsed: 0.1,
+        memRequestMi: 512,
+        memLimitMi: 1024,
+        memUsedMi: 128,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [{ id: 'evt-1', at: new Date().toISOString(), body: 'Waiting for capacity' }],
+    };
+
+    const store = createMockSessionStore();
+    const overriddenStore: ISessionStore = {
+      ...store,
+      listSessions: async () => [session],
+      subscribe: (cb) => {
+        cb([session]);
+        return () => {};
+      },
+    };
+
+    wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
+    await waitFor(() => expect(screen.getAllByText('evt-sess').length).toBeGreaterThan(0));
+    expect(screen.getByText('cl-unknown')).toBeInTheDocument();
+    expect(screen.getAllByText('Waiting for capacity').length).toBeGreaterThan(0);
+  });
+
   it('renders all sessions link in inflight header', async () => {
     wrap();
     await waitFor(() => expect(screen.getByTestId('all-sessions-link')).toBeInTheDocument());

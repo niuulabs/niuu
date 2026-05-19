@@ -12,12 +12,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
-from niuu.domain.models import (
-    InstanceKind,
-    InstanceVisibility,
-    Principal,
-    RegisteredInstance,
-)
+from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
 
 
 def _instance(

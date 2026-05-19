@@ -24,15 +24,6 @@ from niuu.domain.services.instances import (
 )
 
 
-def _principal() -> Principal:
-    return Principal(
-        user_id="user-a",
-        email="user-a@example.com",
-        tenant_id="tenant-a",
-        roles=[],
-    )
-
-
 def _instance(
     instance_id: str,
     *,

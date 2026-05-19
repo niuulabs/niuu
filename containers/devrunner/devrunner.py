@@ -534,7 +534,7 @@ def _source_secrets() -> None:
 
 
 def _source_env_file() -> None:
-    """Source env vars rendered by Infisical Agent Injector."""
+    """Source env vars rendered by the configured secret injector."""
     env_file = Path("/run/secrets/env.sh")
     if not env_file.exists():
         return

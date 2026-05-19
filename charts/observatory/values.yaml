@@ -71,7 +71,7 @@ guild:
   url: ""
   timeoutSeconds: 10.0
   auth:
-    adapter: "niuu.adapters.outbound.http_auth.NoAuthHttpAuthAdapter"
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
     kwargs: {}
     secretKwargs: []
 

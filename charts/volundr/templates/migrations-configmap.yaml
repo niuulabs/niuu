@@ -1033,6 +1033,70 @@ data:
     DROP INDEX IF EXISTS idx_ravn_personas_owner_updated;
     DROP TABLE IF EXISTS ravn_personas;
 
+  000035_sessions_workload_type.up.sql: |
+    ALTER TABLE sessions
+        ADD COLUMN IF NOT EXISTS workload_type VARCHAR(100) NOT NULL DEFAULT 'session';
+
+  000035_sessions_workload_type.down.sql: |
+    ALTER TABLE sessions
+        DROP COLUMN IF EXISTS workload_type;
+
+  000036_communication_routes.up.sql: |
+    CREATE TABLE IF NOT EXISTS communication_routes (
+        id UUID PRIMARY KEY,
+        platform TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        thread_id TEXT,
+        session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        owner_id TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'room',
+        default_target TEXT,
+        active BOOLEAN NOT NULL DEFAULT true,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_comm_routes_session_id
+        ON communication_routes(session_id);
+
+    CREATE INDEX IF NOT EXISTS idx_comm_routes_owner_id
+        ON communication_routes(owner_id);
+
+    CREATE INDEX IF NOT EXISTS idx_comm_routes_active_lookup
+        ON communication_routes(platform, conversation_id, thread_id, active);
+
+  000036_communication_routes.down.sql: |
+    DROP INDEX IF EXISTS idx_comm_routes_active_lookup;
+    DROP INDEX IF EXISTS idx_comm_routes_owner_id;
+    DROP INDEX IF EXISTS idx_comm_routes_session_id;
+    DROP TABLE IF EXISTS communication_routes;
+
+  000037_communication_cursors.up.sql: |
+    CREATE TABLE IF NOT EXISTS communication_cursors (
+        platform TEXT NOT NULL,
+        consumer_key TEXT NOT NULL,
+        cursor TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (platform, consumer_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_comm_cursors_updated_at
+        ON communication_cursors(updated_at);
+
+  000037_communication_cursors.down.sql: |
+    DROP TABLE IF EXISTS communication_cursors;
+
+  000039_observatory_registry.up.sql: |
+    CREATE TABLE IF NOT EXISTS observatory_registries (
+        registry_key TEXT PRIMARY KEY,
+        version BIGINT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        payload JSONB NOT NULL
+    );
+
+  000039_observatory_registry.down.sql: |
+    DROP TABLE IF EXISTS observatory_registries;
   000040_niuu_instances.up.sql: |
     -- Shared runtime instance registry for multi-instance Niuu deployments.
 
