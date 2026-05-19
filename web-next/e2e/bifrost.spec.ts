@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 test('/bifrost renders the LLM control-plane catalog', async ({ page }) => {
   await page.goto('/bifrost');
 
-  await expect(page.getByRole('heading', { name: 'LLM control plane' })).toBeVisible({
+  await expect(page.getByRole('heading', { name: 'Bifröst' })).toBeVisible({
     timeout: 5000,
   });
   await expect(page.getByText('Enabled models')).toBeVisible();
