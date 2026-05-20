@@ -262,11 +262,38 @@ export interface ITingIntegrationService {
 /**
  * Workflow management service — list, fetch, save, and delete Workflow DAGs.
  */
+export interface WorkflowLaunchRequest {
+  prompt: string;
+  slug?: string;
+  sessionName?: string;
+  repo?: string;
+  branch?: string;
+  baseBranch?: string;
+  model?: string;
+  definition?: string;
+  profileName?: string;
+  integrationIds?: string[];
+  connectionId?: string;
+  mimirPath?: string;
+  context?: Record<string, unknown>;
+}
+
+export interface WorkflowLaunchResult {
+  workflowId: string;
+  workflowName: string;
+  slug: string;
+  sessionId: string;
+  sessionName: string;
+  status: string;
+  clusterName: string;
+}
+
 export interface IWorkflowService {
   listWorkflows(): Promise<Workflow[]>;
   getWorkflow(id: string): Promise<Workflow | null>;
   saveWorkflow(workflow: Workflow): Promise<Workflow>;
   deleteWorkflow(id: string): Promise<void>;
+  launchWorkflow(workflowId: string, request: WorkflowLaunchRequest): Promise<WorkflowLaunchResult>;
 }
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,8 @@ import type {
   DispatchApprovalResult,
   DispatchCluster,
   IWorkflowService,
+  WorkflowLaunchRequest,
+  WorkflowLaunchResult,
   ITingSettingsService,
   IAuditLogService,
   DispatcherActivityEvent,
@@ -263,6 +265,21 @@ interface RawWorkflow {
   edges: Workflow['edges'];
   resourceBindings?: Workflow['resourceBindings'];
   resource_bindings?: Workflow['resourceBindings'];
+}
+
+interface RawWorkflowLaunchResult {
+  workflowId?: string;
+  workflow_id?: string;
+  workflowName?: string;
+  workflow_name?: string;
+  slug: string;
+  sessionId?: string;
+  session_id?: string;
+  sessionName?: string;
+  session_name?: string;
+  status: string;
+  clusterName?: string;
+  cluster_name?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +576,36 @@ function toWorkflowBody(workflow: Workflow): Record<string, unknown> {
     nodes: workflow.nodes,
     edges: workflow.edges,
     resourceBindings: workflow.resourceBindings ?? [],
+  };
+}
+
+function toWorkflowLaunchBody(request: WorkflowLaunchRequest): Record<string, unknown> {
+  return {
+    prompt: request.prompt,
+    slug: request.slug,
+    sessionName: request.sessionName,
+    repo: request.repo,
+    branch: request.branch,
+    baseBranch: request.baseBranch,
+    model: request.model,
+    definition: request.definition,
+    profileName: request.profileName,
+    integrationIds: request.integrationIds,
+    connectionId: request.connectionId,
+    mimirPath: request.mimirPath,
+    context: request.context ?? {},
+  };
+}
+
+function toWorkflowLaunchResult(raw: RawWorkflowLaunchResult): WorkflowLaunchResult {
+  return {
+    workflowId: raw.workflowId ?? raw.workflow_id ?? '',
+    workflowName: raw.workflowName ?? raw.workflow_name ?? '',
+    slug: raw.slug,
+    sessionId: raw.sessionId ?? raw.session_id ?? '',
+    sessionName: raw.sessionName ?? raw.session_name ?? '',
+    status: raw.status,
+    clusterName: raw.clusterName ?? raw.cluster_name ?? '',
   };
 }
 
@@ -923,6 +970,14 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
 
     async deleteWorkflow(id: string) {
       await client.delete<void>(`/workflows/${encodeURIComponent(id)}`);
+    },
+
+    async launchWorkflow(workflowId: string, request: WorkflowLaunchRequest) {
+      const raw = await client.post<RawWorkflowLaunchResult>(
+        `/workflows/${encodeURIComponent(workflowId)}/launch`,
+        toWorkflowLaunchBody(request),
+      );
+      return toWorkflowLaunchResult(raw);
     },
   };
 }

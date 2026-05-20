@@ -13,6 +13,7 @@ import type {
   ITrackerBrowserService,
   ITingIntegrationService,
   IWorkflowService,
+  WorkflowLaunchRequest,
   IDispatchBus,
   DispatchResult,
   ITingSettingsService,
@@ -1656,6 +1657,28 @@ export function createMockWorkflowService(): IWorkflowService {
 
     async deleteWorkflow(id: string) {
       workflows.delete(id);
+    },
+
+    async launchWorkflow(workflowId: string, request: WorkflowLaunchRequest) {
+      const workflow = workflows.get(workflowId);
+      if (!workflow) {
+        throw new Error(`Workflow ${workflowId} not found`);
+      }
+      const slugSource = request.slug || request.prompt || workflow.name;
+      const slug = slugSource
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 96);
+      return {
+        workflowId,
+        workflowName: workflow.name,
+        slug: slug || 'workflow',
+        sessionId: `mock-session-${workflowId}`,
+        sessionName: request.sessionName || `${workflow.name}-${slug || 'workflow'}`,
+        status: 'starting',
+        clusterName: 'mock',
+      };
     },
   };
 }

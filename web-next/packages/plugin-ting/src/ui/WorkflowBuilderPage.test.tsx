@@ -180,4 +180,41 @@ describe('WorkflowBuilderPage', () => {
     fireEvent.click(screen.getByTestId(`delete-workflow-${wf1.id}`));
     await waitFor(() => expect(svc.deleteWorkflow).toHaveBeenCalledWith(wf1.id));
   });
+
+  it('opens the launch modal and submits a workflow launch', async () => {
+    const assign = vi.fn();
+    Object.defineProperty(window, 'location', {
+      value: { assign },
+      writable: true,
+    });
+
+    const svc = {
+      listWorkflows: vi.fn().mockResolvedValue([wf1]),
+      launchWorkflow: vi.fn().mockResolvedValue({
+        workflowId: wf1.id,
+        workflowName: wf1.name,
+        slug: 'test-workflow',
+        sessionId: 'sess-123',
+        sessionName: 'test-workflow',
+        status: 'starting',
+        clusterName: 'valhalla',
+      }),
+    };
+
+    render(<WorkflowBuilderPage />, { wrapper: wrap({ 'ting.workflows': svc }) });
+    await waitFor(() => expect(screen.getByTestId('launch-workflow')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('launch-workflow'));
+    fireEvent.change(screen.getByPlaceholderText('Describe what this workflow should do.'), {
+      target: { value: 'Run this workflow on a fresh prompt.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+
+    await waitFor(() =>
+      expect(svc.launchWorkflow).toHaveBeenCalledWith(
+        wf1.id,
+        expect.objectContaining({ prompt: 'Run this workflow on a fresh prompt.' }),
+      ),
+    );
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('/volundr/sessions/sess-123'));
+  });
 });

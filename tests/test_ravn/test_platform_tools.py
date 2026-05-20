@@ -457,9 +457,11 @@ class TestTingWorkflowTool:
                 "action": "launch",
                 "workflow_id": workflow_id,
                 "prompt": "Research whether Germany is a good expansion market.",
-                "mode": "evaluative",
                 "slug": "germany-market",
-                "seed_urls": ["https://example.com"],
+                "context": {
+                    "mode": "evaluative",
+                    "seed_urls": ["https://example.com"],
+                },
             }
         )
         assert not result.is_error

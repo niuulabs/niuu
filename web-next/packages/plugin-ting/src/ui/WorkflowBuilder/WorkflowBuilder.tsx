@@ -42,6 +42,10 @@ export interface WorkflowBuilderProps {
   models?: WorkflowStageModelOption[];
   /** Registry-backed Mimir mounts available for drag/drop in the workflow editor. */
   registryMounts?: WorkflowRegistryMount[];
+  /** Called when the user wants to launch the current workflow. */
+  onLaunch?: (workflow: Workflow) => void;
+  /** Optional loading flag for workflow launch actions. */
+  launchPending?: boolean;
 }
 
 const VIEWS: WorkflowView[] = ['graph', 'pipeline', 'yaml'];
@@ -62,6 +66,8 @@ export function WorkflowBuilder({
   personas,
   models = [],
   registryMounts = [],
+  onLaunch,
+  launchPending = false,
 }: WorkflowBuilderProps) {
   const builder = useWorkflowBuilder(initialWorkflow, personas ?? DEFAULT_PERSONAS, models);
   const {
@@ -117,6 +123,10 @@ export function WorkflowBuilder({
 
   function handleSave() {
     onSave?.(workflow);
+  }
+
+  function handleLaunch() {
+    onLaunch?.(workflow);
   }
 
   return (
@@ -204,6 +214,17 @@ export function WorkflowBuilder({
               onClick={handleSave}
             >
               Save as…
+            </button>
+          )}
+          {onLaunch && (
+            <button
+              type="button"
+              className={ACTION_BTN}
+              data-testid="launch-workflow"
+              onClick={handleLaunch}
+              disabled={launchPending}
+            >
+              {launchPending ? 'Launching…' : 'Launch…'}
             </button>
           )}
           <button

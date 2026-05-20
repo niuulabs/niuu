@@ -148,6 +148,11 @@ describe('WorkflowBuilder', () => {
     expect(screen.getByTestId('save-workflow')).toBeInTheDocument();
   });
 
+  it('renders launch button when onLaunch is provided', () => {
+    render(<WorkflowBuilder initialWorkflow={makeWorkflow()} onLaunch={vi.fn()} />);
+    expect(screen.getByTestId('launch-workflow')).toBeInTheDocument();
+  });
+
   it('calls onSave with current workflow when save button clicked', () => {
     const onSave = vi.fn();
     render(<WorkflowBuilder initialWorkflow={makeWorkflow()} onSave={onSave} />);
@@ -155,6 +160,15 @@ describe('WorkflowBuilder', () => {
     expect(onSave).toHaveBeenCalledTimes(1);
     const saved = onSave.mock.calls[0]![0] as Workflow;
     expect(saved.id).toBe('00000000-0000-0000-0000-000000000001');
+  });
+
+  it('calls onLaunch with current workflow when launch button clicked', () => {
+    const onLaunch = vi.fn();
+    render(<WorkflowBuilder initialWorkflow={makeWorkflow()} onLaunch={onLaunch} />);
+    fireEvent.click(screen.getByTestId('launch-workflow'));
+    expect(onLaunch).toHaveBeenCalledTimes(1);
+    const launched = onLaunch.mock.calls[0]![0] as Workflow;
+    expect(launched.id).toBe('00000000-0000-0000-0000-000000000001');
   });
 
   it('always renders the ValidationPanel', () => {

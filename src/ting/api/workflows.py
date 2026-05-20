@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -61,17 +62,8 @@ class WorkflowResponse(BaseModel):
 
 class WorkflowLaunchBody(BaseModel):
     prompt: str = Field(min_length=1, max_length=100_000)
-    mode: Literal["exploratory", "evaluative", "investigative", "monitoring"] = (
-        "exploratory"
-    )
     slug: str | None = Field(default=None, max_length=120)
-    session_name: str | None = Field(default=None, max_length=63)
-    audience: str = Field(default="", max_length=255)
-    deliverable: str = Field(default="", max_length=255)
-    constraints: list[str] = Field(default_factory=list)
-    success_criteria: list[str] = Field(default_factory=list, alias="successCriteria")
-    seed_urls: list[str] = Field(default_factory=list, alias="seedUrls")
-    extra_context: dict[str, Any] = Field(default_factory=dict, alias="extraContext")
+    session_name: str | None = Field(default=None, max_length=63, alias="sessionName")
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="main", max_length=255)
     base_branch: str = Field(default="", max_length=255, alias="baseBranch")
@@ -81,6 +73,7 @@ class WorkflowLaunchBody(BaseModel):
     integration_ids: list[str] = Field(default_factory=list, alias="integrationIds")
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
     mimir_path: str | None = Field(default=None, max_length=2048, alias="mimirPath")
+    context: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
 
@@ -236,7 +229,7 @@ def create_workflows_router() -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        initiative_context = _build_research_initiative_context(
+        initiative_context = _build_workflow_initiative_context(
             workflow=workflow,
             launch=body,
             slug=launch_slug,
@@ -267,7 +260,7 @@ def create_workflows_router() -> APIRouter:
                 branch=body.branch,
                 base_branch=body.base_branch,
                 model=resolved_model,
-                tracker_issue_id=f"research:{launch_slug}",
+                tracker_issue_id=f"workflow:{launch_slug}",
                 tracker_issue_url="",
                 system_prompt="",
                 initial_prompt=initiative_context,
@@ -360,8 +353,8 @@ def _launch_response(
 
 def _resolve_launch_slug(body: WorkflowLaunchBody, workflow: WorkflowDefinition) -> str:
     if body.slug:
-        return _slugify(body.slug)[:96] or "research"
-    return _slugify(body.prompt)[:96] or _slugify(workflow.name)[:96] or "research"
+        return _slugify(body.slug)[:96] or "workflow"
+    return _slugify(body.prompt)[:96] or _slugify(workflow.name)[:96] or "workflow"
 
 
 def _resolve_launch_session_name(
@@ -424,68 +417,86 @@ def _apply_mimir_path_override(
     return mutated
 
 
-def _build_research_initiative_context(
+def _build_workflow_initiative_context(
     *,
     workflow: WorkflowDefinition,
     launch: WorkflowLaunchBody,
     slug: str,
 ) -> str:
     lines = [
-        "# Research Workflow Launch",
+        "# Workflow Launch",
         "",
         f"Workflow: {workflow.name}",
-        f"Mode: {launch.mode}",
         f"Slug: {slug}",
     ]
-    if launch.audience.strip():
-        lines.append(f"Audience: {launch.audience.strip()}")
-    if launch.deliverable.strip():
-        lines.append(f"Deliverable: {launch.deliverable.strip()}")
     lines.extend(
         [
             "",
-            "## Research Question",
+            "## Prompt",
             launch.prompt.strip(),
         ]
     )
-    if launch.constraints:
-        lines.extend(["", "## Constraints"])
-        lines.extend(f"- {constraint}" for constraint in launch.constraints if constraint.strip())
-    if launch.success_criteria:
-        lines.extend(["", "## Success Criteria"])
-        lines.extend(
-            f"- {criterion}"
-            for criterion in launch.success_criteria
-            if criterion.strip()
-        )
-    if launch.seed_urls:
-        lines.extend(["", "## Seed URLs"])
-        lines.extend(f"- {url}" for url in launch.seed_urls if url.strip())
-    if launch.extra_context:
-        lines.extend(["", "## Extra Context", str(launch.extra_context)])
+    if launch.context:
+        lines.extend(_format_launch_context_sections(launch.context))
     lines.extend(
         [
             "",
             "## Expectations",
             (
-                "- Research deeply and follow the most promising threads instead of "
-                "stopping at the first neat answer."
+                "- Follow the workflow graph and respect the personas, "
+                "resources, and event flow it defines."
             ),
             (
-                "- Use the workflow artifacts to stay legible, but keep the reasoning "
-                "path flexible."
+                "- Use workflow artifacts to keep the work legible while "
+                "still adapting to the task at hand."
             ),
             (
-                "- Ingest every source you materially rely on before you cite it in "
-                "durable outputs."
-            ),
-            (
-                "- Preserve uncertainty honestly and leave follow-ups where the work "
-                "is not truly finished."
+                "- Preserve uncertainty honestly and leave durable outputs "
+                "that help the next pass continue well."
             ),
         ]
     )
     return "\n".join(lines)
+
+
+def _format_launch_context_sections(context: dict[str, Any]) -> list[str]:
+    lines: list[str] = ["", "## Launch Context"]
+
+    scalar_labels = (
+        ("mode", "Mode"),
+        ("audience", "Audience"),
+        ("deliverable", "Deliverable"),
+    )
+    consumed_keys: set[str] = set()
+    for key, label in scalar_labels:
+        value = str(context.get(key, "") or "").strip()
+        if not value:
+            continue
+        lines.append(f"{label}: {value}")
+        consumed_keys.add(key)
+
+    list_labels = (
+        ("constraints", "Constraints"),
+        ("success_criteria", "Success Criteria"),
+        ("seed_urls", "Seed URLs"),
+    )
+    for key, label in list_labels:
+        value = context.get(key)
+        if not isinstance(value, list):
+            continue
+        items = [str(item).strip() for item in value if str(item).strip()]
+        if not items:
+            continue
+        lines.extend(["", f"### {label}"])
+        lines.extend(f"- {item}" for item in items)
+        consumed_keys.add(key)
+
+    remaining = {key: value for key, value in context.items() if key not in consumed_keys}
+    if remaining:
+        lines.extend(
+            ["", "### Additional Context", json.dumps(remaining, indent=2, sort_keys=True)]
+        )
+    return lines
 
 
 def _owner_id_for_scope(scope: WorkflowScope, principal: Principal) -> str | None:

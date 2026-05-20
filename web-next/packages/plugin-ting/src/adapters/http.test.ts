@@ -534,6 +534,45 @@ describe('buildWorkflowHttpAdapter', () => {
       },
     ]);
   });
+
+  it('launches a workflow through the direct launch endpoint', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      workflowId: rawWorkflow.id,
+      workflowName: rawWorkflow.name,
+      slug: 'knowledge-flow',
+      sessionId: 'sess-123',
+      sessionName: 'knowledge-flow',
+      status: 'starting',
+      clusterName: 'valhalla',
+    });
+
+    const result = await buildWorkflowHttpAdapter(client).launchWorkflow(rawWorkflow.id, {
+      prompt: 'Run the workflow against this topic.',
+      sessionName: 'knowledge-flow',
+      context: { mode: 'exploratory' },
+    });
+
+    expect(client.post).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(rawWorkflow.id)}/launch`,
+      {
+        prompt: 'Run the workflow against this topic.',
+        slug: undefined,
+        sessionName: 'knowledge-flow',
+        repo: undefined,
+        branch: undefined,
+        baseBranch: undefined,
+        model: undefined,
+        definition: undefined,
+        profileName: undefined,
+        integrationIds: undefined,
+        connectionId: undefined,
+        mimirPath: undefined,
+        context: { mode: 'exploratory' },
+      },
+    );
+    expect(result.sessionId).toBe('sess-123');
+  });
 });
 
 // ---------------------------------------------------------------------------

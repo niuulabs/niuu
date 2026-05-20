@@ -14,17 +14,20 @@ import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
 import { StateDot, cn } from '@niuulabs/ui';
 import type { Workflow } from '../domain/workflow';
+import type { WorkflowLaunchRequest } from '../ports';
 import {
   useWorkflows,
   useCreateWorkflow,
   useDeleteWorkflow,
   useSaveWorkflow,
+  useLaunchWorkflow,
 } from './useWorkflows';
 import { usePersonasBrowser } from './settings/usePersonasBrowser';
 import { WorkflowBuilder } from './WorkflowBuilder';
 import type { PersonaEntry } from './WorkflowBuilder/LibraryPanel';
 import type { WorkflowStageModelOption } from './WorkflowBuilder/useWorkflowBuilder';
 import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
+import { WorkflowLaunchModal } from './WorkflowLaunchModal';
 
 function formatModelOption(
   id: string,
@@ -49,6 +52,8 @@ export function WorkflowBuilderPage() {
   const createMutation = useCreateWorkflow();
   const saveMutation = useSaveWorkflow();
   const deleteMutation = useDeleteWorkflow();
+  const launchMutation = useLaunchWorkflow();
+  const [showLaunchModal, setShowLaunchModal] = useState(false);
 
   const displayed = activeWorkflow ?? workflows?.[0] ?? null;
   const activeCount = workflows?.length ?? 0;
@@ -82,6 +87,15 @@ export function WorkflowBuilderPage() {
     deleteMutation.mutate(id, {
       onSuccess: () => setActiveWorkflow(null),
     });
+  }
+
+  async function handleLaunch(request: WorkflowLaunchRequest) {
+    if (!displayed) return;
+    const result = await launchMutation.mutateAsync({ workflowId: displayed.id, request });
+    setShowLaunchModal(false);
+    if (typeof window !== 'undefined') {
+      window.location.assign(`/volundr/sessions/${encodeURIComponent(result.sessionId)}`);
+    }
   }
 
   return (
@@ -206,11 +220,20 @@ export function WorkflowBuilderPage() {
             personas={workflowPersonas}
             models={workflowModels}
             registryMounts={registryMounts}
+            onLaunch={() => setShowLaunchModal(true)}
+            launchPending={launchMutation.isPending}
             onSave={(updated) =>
               saveMutation.mutate(updated, {
                 onSuccess: (saved) => setActiveWorkflow(saved),
               })
             }
+          />
+          <WorkflowLaunchModal
+            open={showLaunchModal}
+            onOpenChange={setShowLaunchModal}
+            workflow={displayed}
+            launching={launchMutation.isPending}
+            onLaunch={handleLaunch}
           />
         </div>
       )}

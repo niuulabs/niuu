@@ -717,11 +717,6 @@ class TingWorkflowTool(ToolPort):
                     "type": "string",
                     "description": "Launch prompt describing the work to do (required for launch).",
                 },
-                "mode": {
-                    "type": "string",
-                    "enum": ["exploratory", "evaluative", "investigative", "monitoring"],
-                    "description": "Optional research mode hint for launch.",
-                },
                 "slug": {
                     "type": "string",
                     "description": "Optional slug for the launched workflow run.",
@@ -730,32 +725,13 @@ class TingWorkflowTool(ToolPort):
                     "type": "string",
                     "description": "Optional explicit Volundr session name for launch.",
                 },
-                "audience": {
-                    "type": "string",
-                    "description": "Optional intended audience for the output.",
-                },
-                "deliverable": {
-                    "type": "string",
-                    "description": "Optional desired deliverable shape.",
-                },
-                "constraints": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional research constraints.",
-                },
-                "success_criteria": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional success criteria for launch.",
-                },
-                "seed_urls": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional URLs to seed the research with.",
-                },
-                "extra_context": {
+                "context": {
                     "type": "object",
-                    "description": "Optional extra structured launch context.",
+                    "description": (
+                        "Optional structured workflow launch context. "
+                        "Use this for workflow-specific inputs without "
+                        "changing the generic launch API."
+                    ),
                 },
                 "repo": {
                     "type": "string",
@@ -846,11 +822,8 @@ class TingWorkflowTool(ToolPort):
 
         body: dict[str, object] = {"prompt": prompt}
         scalar_keys = (
-            "mode",
             "slug",
             "session_name",
-            "audience",
-            "deliverable",
             "repo",
             "branch",
             "base_branch",
@@ -865,12 +838,10 @@ class TingWorkflowTool(ToolPort):
             if value not in (None, ""):
                 body[key] = value
 
-        for key in ("constraints", "success_criteria", "seed_urls", "integration_ids"):
-            value = input.get(key)
-            if value:
-                body[key] = value
-        if extra_context := input.get("extra_context"):
-            body["extra_context"] = extra_context
+        if integration_ids := input.get("integration_ids"):
+            body["integration_ids"] = integration_ids
+        if context := input.get("context"):
+            body["context"] = context
 
         try:
             resp = await client.post(f"{_TING_WORKFLOWS_PATH}/{workflow_id}/launch", json=body)

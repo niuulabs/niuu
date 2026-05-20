@@ -503,10 +503,12 @@ class TestWorkflowCatalogAPI:
             headers=_headers(roles="ting:admin"),
             json={
                 "prompt": "Research whether AI grief companions are a credible product category.",
-                "mode": "exploratory",
                 "slug": "grief-companions",
-                "constraints": ["Focus on real demand and ethics."],
-                "successCriteria": ["Useful answer with durable citations."],
+                "context": {
+                    "mode": "exploratory",
+                    "constraints": ["Focus on real demand and ethics."],
+                    "success_criteria": ["Useful answer with durable citations."],
+                },
                 "mimirPath": "/tmp/mimir",
             },
         )
@@ -520,11 +522,11 @@ class TestWorkflowCatalogAPI:
         spawn = adapter.requests[0]
         assert spawn.definition == "skuldCodexExec"
         assert spawn.workload_type == "ravn_flock"
-        assert spawn.tracker_issue_id == "research:grief-companions"
+        assert spawn.tracker_issue_id == "workflow:grief-companions"
         assert spawn.workload_config["workflow"]["name"] == "Research Campaign"
         assert spawn.workload_config["personas"][0]["name"] == "research-framer"
         assert spawn.workload_config["mimir"]["registry_refs"][0]["path"] == "/tmp/mimir"
-        assert "Research Workflow Launch" in spawn.initial_prompt
+        assert "Workflow Launch" in spawn.initial_prompt
         assert "Mode: exploratory" in spawn.initial_prompt
 
     def test_launch_workflow_respects_connection_selection(self) -> None:

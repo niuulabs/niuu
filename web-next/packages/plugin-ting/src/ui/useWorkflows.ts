@@ -7,7 +7,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { randomId } from '@niuulabs/ui';
-import type { IWorkflowService } from '../ports';
+import type { IWorkflowService, WorkflowLaunchRequest, WorkflowLaunchResult } from '../ports';
 import type { Workflow } from '../domain/workflow';
 
 export function useWorkflows() {
@@ -67,5 +67,16 @@ export function useDeleteWorkflow() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ting', 'workflows'] });
     },
+  });
+}
+
+export function useLaunchWorkflow() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  return useMutation<
+    WorkflowLaunchResult,
+    Error,
+    { workflowId: string; request: WorkflowLaunchRequest }
+  >({
+    mutationFn: ({ workflowId, request }) => svc.launchWorkflow(workflowId, request),
   });
 }
