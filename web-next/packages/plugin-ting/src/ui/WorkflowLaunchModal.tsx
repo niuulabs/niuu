@@ -51,10 +51,6 @@ export function WorkflowLaunchModal({
 
   async function handleLaunch() {
     if (!workflow) return;
-    if (!prompt.trim()) {
-      setError('Prompt is required.');
-      return;
-    }
 
     let context: Record<string, unknown> | undefined;
     if (contextText.trim()) {

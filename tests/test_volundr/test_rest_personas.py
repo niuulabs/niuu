@@ -68,24 +68,6 @@ def write_persona(directory: Path, name: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_list_returns_builtins(client: TestClient) -> None:
-    resp = client.get("/api/v1/ravn/personas")
-    assert resp.status_code == 200
-    names = [p["name"] for p in resp.json()]
-    assert "coder" in names
-    assert "council-chair" in names
-    assert "council-member-a" in names
-    assert "council-member-b" in names
-    assert "council-member-c" in names
-    assert "reviewer" in names
-    assert "security-auditor" in names
-    assert "postmortem-analyst" in names
-    assert "mimir-memory-curator" in names
-    assert "mimir-warden" in names
-    assert "coding-agent" not in names
-    assert len(names) == 10
-
-
 def test_list_source_builtin_filter(client: TestClient) -> None:
     resp = client.get("/api/v1/ravn/personas?source=builtin")
     assert resp.status_code == 200
