@@ -36,6 +36,58 @@ describe('WorkflowLaunchModal', () => {
     expect(screen.getByRole('button', { name: 'Launch' })).toBeEnabled();
   });
 
+  it('keeps the modal reset branch inert while closed and resets when reopened', () => {
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <WorkflowLaunchModal
+        open={false}
+        onOpenChange={onOpenChange}
+        workflow={workflow}
+        repos={repos}
+        onLaunch={vi.fn()}
+      />,
+    );
+
+    rerender(
+      <WorkflowLaunchModal
+        open
+        onOpenChange={onOpenChange}
+        workflow={workflow}
+        repos={repos}
+        onLaunch={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Describe what this workflow should do.'), {
+      target: { value: 'Investigate this topic deeply.' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Optional override'), {
+      target: { value: 'research-run' },
+    });
+
+    rerender(
+      <WorkflowLaunchModal
+        open={false}
+        onOpenChange={onOpenChange}
+        workflow={workflow}
+        repos={repos}
+        onLaunch={vi.fn()}
+      />,
+    );
+    rerender(
+      <WorkflowLaunchModal
+        open
+        onOpenChange={onOpenChange}
+        workflow={workflow}
+        repos={repos}
+        onLaunch={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByPlaceholderText('Describe what this workflow should do.')).toHaveValue('');
+    expect(screen.getByPlaceholderText('Optional override')).toHaveValue('');
+  });
+
   it('submits prompt, name, repo, and branch from the repo pickers', async () => {
     const onLaunch = vi.fn().mockResolvedValue(undefined);
     render(
@@ -98,6 +150,52 @@ describe('WorkflowLaunchModal', () => {
         branch: 'feature/research',
       }),
     );
+  });
+
+  it('clears the branch when the repo selection is reset', async () => {
+    const onLaunch = vi.fn().mockResolvedValue(undefined);
+    render(
+      <WorkflowLaunchModal
+        open
+        onOpenChange={vi.fn()}
+        workflow={workflow}
+        repos={repos}
+        onLaunch={onLaunch}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Describe what this workflow should do.'), {
+      target: { value: 'Investigate this topic deeply.' },
+    });
+    fireEvent.change(screen.getByTestId('workflow-launch-repo-select'), {
+      target: { value: 'https://github.com/niuulabs/volundr.git' },
+    });
+    fireEvent.change(screen.getByTestId('workflow-launch-repo-select'), {
+      target: { value: '' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+
+    await waitFor(() =>
+      expect(onLaunch).toHaveBeenCalledWith({
+        prompt: 'Investigate this topic deeply.',
+      }),
+    );
+  });
+
+  it('keeps launch inert when the workflow is missing', () => {
+    render(<WorkflowLaunchModal open onOpenChange={vi.fn()} workflow={null} onLaunch={vi.fn()} />);
+
+    fireEvent.change(screen.getByPlaceholderText('Describe what this workflow should do.'), {
+      target: { value: 'Investigate this topic deeply.' },
+    });
+
+    const launchButton = screen.getByRole('button', { name: 'Launch' });
+    expect(launchButton).toBeDisabled();
+    launchButton.removeAttribute('disabled');
+    fireEvent.click(launchButton);
+
+    expect(screen.getByText('Launch workflow')).toBeInTheDocument();
   });
 
   it('surfaces launch errors', async () => {
