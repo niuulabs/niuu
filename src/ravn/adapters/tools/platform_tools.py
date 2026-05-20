@@ -27,6 +27,7 @@ _FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 _FORGE_REPOS_PATH = "/api/v1/forge/repos"
 _NIUU_REPOS_PATH = "/api/v1/niuu/repos"
 _TRACKER_ISSUES_PATH = "/api/v1/tracker/issues"
+_TING_WORKFLOWS_PATH = "/api/v1/ting/workflows"
 
 
 def _client(base_url: str, timeout: float, pat_token: str = "") -> httpx.AsyncClient:
@@ -654,6 +655,229 @@ class TingSagaTool(ToolPort):
             return _ok(resp.json())
         except Exception as exc:
             return _err(f"Failed to list active runs: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# ting_workflow
+# ---------------------------------------------------------------------------
+
+
+class TingWorkflowTool(ToolPort):
+    """List, inspect, and launch Ting workflows.
+
+    Actions:
+    - ``list``   — list workflows visible to the current token.
+    - ``get``    — get workflow details (requires ``workflow_id``).
+    - ``launch`` — start a workflow-backed Volundr flock session.
+    """
+
+    def __init__(
+        self,
+        base_url: str = _DEFAULT_BASE_URL,
+        timeout: float = _DEFAULT_TIMEOUT,
+        pat_token: str = "",
+    ) -> None:
+        self._base_url = base_url
+        self._timeout = timeout
+        self._pat_token = pat_token
+
+    @property
+    def name(self) -> str:
+        return "ting_workflow"
+
+    @property
+    def description(self) -> str:
+        return (
+            "List, inspect, and launch Ting workflows. "
+            "Use list to discover available workflows, get to inspect one in detail, "
+            "and launch to start a workflow-backed Volundr flock session without "
+            "creating a saga first."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "get", "launch"],
+                    "description": "Operation to perform.",
+                },
+                "workflow_id": {
+                    "type": "string",
+                    "description": "Workflow UUID (required for get and launch).",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "system", "user"],
+                    "description": "Optional workflow scope filter for list (default: all).",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Launch prompt describing the work to do (required for launch).",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["exploratory", "evaluative", "investigative", "monitoring"],
+                    "description": "Optional research mode hint for launch.",
+                },
+                "slug": {
+                    "type": "string",
+                    "description": "Optional slug for the launched workflow run.",
+                },
+                "session_name": {
+                    "type": "string",
+                    "description": "Optional explicit Volundr session name for launch.",
+                },
+                "audience": {
+                    "type": "string",
+                    "description": "Optional intended audience for the output.",
+                },
+                "deliverable": {
+                    "type": "string",
+                    "description": "Optional desired deliverable shape.",
+                },
+                "constraints": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional research constraints.",
+                },
+                "success_criteria": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional success criteria for launch.",
+                },
+                "seed_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional URLs to seed the research with.",
+                },
+                "extra_context": {
+                    "type": "object",
+                    "description": "Optional extra structured launch context.",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "Optional repo URL or org/repo to mount in the session.",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Optional repo branch for the session (default: main).",
+                },
+                "base_branch": {
+                    "type": "string",
+                    "description": "Optional base branch override for the session.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model override.",
+                },
+                "definition": {
+                    "type": "string",
+                    "description": "Optional Volundr session definition override.",
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name override for the launched session.",
+                },
+                "integration_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional integration IDs to attach to the session.",
+                },
+                "connection_id": {
+                    "type": "string",
+                    "description": "Optional explicit Volundr connection target.",
+                },
+                "mimir_path": {
+                    "type": "string",
+                    "description": "Optional Mimir path override for workflow artifacts.",
+                },
+            },
+            "required": ["action"],
+        }
+
+    @property
+    def required_permission(self) -> str:
+        return _PERMISSION_PLATFORM
+
+    async def execute(self, input: dict) -> ToolResult:
+        action = input.get("action", "")
+        async with _client(self._base_url, self._timeout, self._pat_token) as client:
+            match action:
+                case "list":
+                    return await self._list(client, input)
+                case "get":
+                    return await self._get(client, input.get("workflow_id", ""))
+                case "launch":
+                    return await self._launch(client, input)
+                case _:
+                    return _err(f"Unknown action: {action!r}")
+
+    async def _list(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        params: dict[str, str] = {}
+        if scope := str(input.get("scope", "") or "").strip():
+            params["scope"] = scope
+        try:
+            resp = await client.get(_TING_WORKFLOWS_PATH, params=params or None)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to list workflows: {exc}")
+
+    async def _get(self, client: httpx.AsyncClient, workflow_id: str) -> ToolResult:
+        if not workflow_id:
+            return _err("workflow_id is required for get action")
+        try:
+            resp = await client.get(f"{_TING_WORKFLOWS_PATH}/{workflow_id}")
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to get workflow {workflow_id}: {exc}")
+
+    async def _launch(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        workflow_id = str(input.get("workflow_id", "") or "").strip()
+        prompt = str(input.get("prompt", "") or "").strip()
+        if not workflow_id:
+            return _err("workflow_id is required for launch action")
+        if not prompt:
+            return _err("prompt is required for launch action")
+
+        body: dict[str, object] = {"prompt": prompt}
+        scalar_keys = (
+            "mode",
+            "slug",
+            "session_name",
+            "audience",
+            "deliverable",
+            "repo",
+            "branch",
+            "base_branch",
+            "model",
+            "definition",
+            "profile_name",
+            "connection_id",
+            "mimir_path",
+        )
+        for key in scalar_keys:
+            value = input.get(key)
+            if value not in (None, ""):
+                body[key] = value
+
+        for key in ("constraints", "success_criteria", "seed_urls", "integration_ids"):
+            value = input.get(key)
+            if value:
+                body[key] = value
+        if extra_context := input.get("extra_context"):
+            body["extra_context"] = extra_context
+
+        try:
+            resp = await client.post(f"{_TING_WORKFLOWS_PATH}/{workflow_id}/launch", json=body)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to launch workflow {workflow_id}: {exc}")
 
 
 # ---------------------------------------------------------------------------

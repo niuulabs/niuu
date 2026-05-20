@@ -326,6 +326,16 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "pat_token": s.gateway.platform.pat_token,
         },
     ),
+    "ting_workflow": BuiltinToolDef(
+        adapter="ravn.adapters.tools.platform_tools.TingWorkflowTool",
+        groups=frozenset({"platform"}),
+        condition=lambda s: s.gateway.platform.enabled,
+        kwargs_fn=lambda s, ctx: {
+            "base_url": s.gateway.platform.base_url,
+            "timeout": s.gateway.platform.timeout,
+            "pat_token": s.gateway.platform.pat_token,
+        },
+    ),
     "tracker_issue": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TrackerIssueTool",
         groups=frozenset({"platform"}),
