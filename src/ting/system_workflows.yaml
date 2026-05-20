@@ -287,3 +287,319 @@
         access: read_write
         writePrefixes: [research/, learnings/, followups/]
         readPriority: 1
+- name: Specification Stack
+  description: End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with explicit review and approval gates between each artifact.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: spec-request
+        kind: trigger
+        label: Start specification stack
+        source: user specification request
+        dispatchEvent: spec.requested
+        position:
+          x: 96
+          y: 344
+      - id: spec-memory
+        kind: resource
+        label: Specification Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir
+        path: /tmp/mimir
+        role: shared
+        categories: [specifications, product, design, planning]
+        position:
+          x: 320
+          y: 624
+      - id: spec-frame
+        kind: stage
+        label: Frame initiative
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-framer
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [spec.requested]
+        position:
+          x: 320
+          y: 344
+      - id: spec-prd
+        kind: stage
+        label: Draft PRD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-prd-author
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [spec.framed, spec.prd.changes_requested]
+        position:
+          x: 608
+          y: 344
+      - id: spec-prd-review
+        kind: stage
+        label: Review PRD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-prd-critic
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [spec.prd.drafted]
+        position:
+          x: 896
+          y: 232
+      - id: spec-prd-gate
+        kind: stage
+        label: PRD approval gate
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-prd-gate-dummy
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [spec.prd.ready_for_gate]
+        position:
+          x: 896
+          y: 456
+      - id: spec-srd
+        kind: stage
+        label: Draft SRD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-srd-author
+            budget: 22
+            model: gpt-5.5
+            consumesEventTypes: [spec.prd.approved, spec.srd.changes_requested]
+        position:
+          x: 1184
+          y: 344
+      - id: spec-srd-review
+        kind: stage
+        label: Review SRD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-srd-critic
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [spec.srd.drafted]
+        position:
+          x: 1472
+          y: 232
+      - id: spec-srd-gate
+        kind: stage
+        label: SRD approval gate
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-srd-gate-dummy
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [spec.srd.ready_for_gate]
+        position:
+          x: 1472
+          y: 456
+      - id: spec-sdd
+        kind: stage
+        label: Draft SDD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-sdd-author
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [spec.srd.approved, spec.sdd.changes_requested]
+        position:
+          x: 1760
+          y: 344
+      - id: spec-sdd-review
+        kind: stage
+        label: Review SDD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-sdd-critic
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [spec.sdd.drafted]
+        position:
+          x: 2048
+          y: 232
+      - id: spec-sdd-gate
+        kind: stage
+        label: SDD approval gate
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-sdd-gate-dummy
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [spec.sdd.ready_for_gate]
+        position:
+          x: 2048
+          y: 456
+      - id: spec-breakdown
+        kind: stage
+        label: Draft breakdown
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-breakdown-planner
+            budget: 22
+            model: gpt-5.5
+            consumesEventTypes: [spec.sdd.approved, spec.breakdown.changes_requested]
+        position:
+          x: 2336
+          y: 344
+      - id: spec-breakdown-review
+        kind: stage
+        label: Review breakdown
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-breakdown-critic
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [spec.breakdown.drafted]
+        position:
+          x: 2624
+          y: 232
+      - id: spec-breakdown-gate
+        kind: stage
+        label: Breakdown approval gate
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-breakdown-gate-dummy
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [spec.breakdown.ready_for_gate]
+        position:
+          x: 2624
+          y: 456
+      - id: spec-publish
+        kind: stage
+        label: Publish specification pack
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-publisher
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [spec.breakdown.approved]
+        position:
+          x: 2912
+          y: 344
+      - id: spec-complete
+        kind: end
+        label: Specification stack complete
+        joinMode: all
+        completionEvent: spec.completed
+        position:
+          x: 3200
+          y: 344
+    edges:
+      - id: edge-spec-request-to-frame
+        source: spec-request
+        target: spec-frame
+        label: spec.requested -> spec.requested
+      - id: edge-frame-to-prd
+        source: spec-frame
+        target: spec-prd
+        label: spec.framed -> spec.framed
+      - id: edge-prd-to-review
+        source: spec-prd
+        target: spec-prd-review
+        label: spec.prd.drafted -> spec.prd.drafted
+      - id: edge-prd-review-to-prd
+        source: spec-prd-review
+        target: spec-prd
+        label: spec.prd.changes_requested -> spec.prd.changes_requested
+      - id: edge-prd-review-to-gate
+        source: spec-prd-review
+        target: spec-prd-gate
+        label: spec.prd.ready_for_gate -> spec.prd.ready_for_gate
+      - id: edge-prd-gate-to-prd
+        source: spec-prd-gate
+        target: spec-prd
+        label: spec.prd.changes_requested -> spec.prd.changes_requested
+      - id: edge-prd-gate-to-srd
+        source: spec-prd-gate
+        target: spec-srd
+        label: spec.prd.approved -> spec.prd.approved
+      - id: edge-srd-to-review
+        source: spec-srd
+        target: spec-srd-review
+        label: spec.srd.drafted -> spec.srd.drafted
+      - id: edge-srd-review-to-srd
+        source: spec-srd-review
+        target: spec-srd
+        label: spec.srd.changes_requested -> spec.srd.changes_requested
+      - id: edge-srd-review-to-gate
+        source: spec-srd-review
+        target: spec-srd-gate
+        label: spec.srd.ready_for_gate -> spec.srd.ready_for_gate
+      - id: edge-srd-gate-to-srd
+        source: spec-srd-gate
+        target: spec-srd
+        label: spec.srd.changes_requested -> spec.srd.changes_requested
+      - id: edge-srd-gate-to-sdd
+        source: spec-srd-gate
+        target: spec-sdd
+        label: spec.srd.approved -> spec.srd.approved
+      - id: edge-sdd-to-review
+        source: spec-sdd
+        target: spec-sdd-review
+        label: spec.sdd.drafted -> spec.sdd.drafted
+      - id: edge-sdd-review-to-sdd
+        source: spec-sdd-review
+        target: spec-sdd
+        label: spec.sdd.changes_requested -> spec.sdd.changes_requested
+      - id: edge-sdd-review-to-gate
+        source: spec-sdd-review
+        target: spec-sdd-gate
+        label: spec.sdd.ready_for_gate -> spec.sdd.ready_for_gate
+      - id: edge-sdd-gate-to-sdd
+        source: spec-sdd-gate
+        target: spec-sdd
+        label: spec.sdd.changes_requested -> spec.sdd.changes_requested
+      - id: edge-sdd-gate-to-breakdown
+        source: spec-sdd-gate
+        target: spec-breakdown
+        label: spec.sdd.approved -> spec.sdd.approved
+      - id: edge-breakdown-to-review
+        source: spec-breakdown
+        target: spec-breakdown-review
+        label: spec.breakdown.drafted -> spec.breakdown.drafted
+      - id: edge-breakdown-review-to-breakdown
+        source: spec-breakdown-review
+        target: spec-breakdown
+        label: spec.breakdown.changes_requested -> spec.breakdown.changes_requested
+      - id: edge-breakdown-review-to-gate
+        source: spec-breakdown-review
+        target: spec-breakdown-gate
+        label: spec.breakdown.ready_for_gate -> spec.breakdown.ready_for_gate
+      - id: edge-breakdown-gate-to-breakdown
+        source: spec-breakdown-gate
+        target: spec-breakdown
+        label: spec.breakdown.changes_requested -> spec.breakdown.changes_requested
+      - id: edge-breakdown-gate-to-publish
+        source: spec-breakdown-gate
+        target: spec-publish
+        label: spec.breakdown.approved -> spec.breakdown.approved
+      - id: edge-publish-to-end
+        source: spec-publish
+        target: spec-complete
+        label: spec.completed -> spec.completed
+    resourceBindings:
+      - id: binding-spec-memory
+        resourceNodeId: spec-memory
+        targetType: workflow
+        targetId: specification-stack
+        access: read_write
+        writePrefixes: [specifications/]
+        readPriority: 1

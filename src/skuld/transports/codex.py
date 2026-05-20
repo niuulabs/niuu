@@ -44,6 +44,8 @@ _CODEX_TOOL_MAP: dict[str, str] = {
     "search_files": "Grep",
 }
 
+_CODEX_STDOUT_CHUNK_BYTES = 65536
+
 
 def _map_codex_tool(codex_name: str) -> str:
     """Map a Codex CLI tool name to its normalized equivalent."""
@@ -163,12 +165,7 @@ class CodexSubprocessTransport(CLITransport):
             if process.stdout is None:
                 raise RuntimeError("Codex CLI stdout not available")
 
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
-
-                raw = line.decode().strip()
+            async for raw in self._iter_stdout_records(process.stdout):
                 if not raw:
                     continue
 
@@ -199,6 +196,21 @@ class CodexSubprocessTransport(CLITransport):
             if not stderr_task.done():
                 stderr_task.cancel()
             self._process = None
+
+    async def _iter_stdout_records(self, stdout: asyncio.StreamReader):
+        """Yield newline-delimited Codex stdout records without line-length limits."""
+        buffer = b""
+        while True:
+            chunk = await stdout.read(_CODEX_STDOUT_CHUNK_BYTES)
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                yield line.decode().strip()
+
+        if buffer:
+            yield buffer.decode().strip()
 
     async def _handle_codex_event(self, data: dict) -> None:
         """Normalize a Codex CLI JSON event to the broker's common format."""

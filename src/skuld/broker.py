@@ -795,6 +795,7 @@ class Broker:
         self._pending_explicit_human_response_count = 0
         self._chronicle_watcher: ChronicleWatcher | None = None
         self._peer_watchdog_task: asyncio.Task[None] | None = None
+        self._workflow_trigger_task: asyncio.Task[None] | None = None
         self._peer_watches: dict[str, PeerWatchState] = {}
         self._peer_pending_commands: dict[str, list[str]] = {}
         self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None
@@ -1091,7 +1092,7 @@ class Broker:
         timeout_s: float,
         *,
         poll_interval_s: float = 0.05,
-    ) -> None:
+    ) -> bool:
         """Wait until the initial workflow-trigger consumers are connected.
 
         Workflow kickoff events are pub/sub outcomes. If we publish them before
@@ -1102,7 +1103,7 @@ class Broker:
         """
         required_peers = self._workflow_trigger_consumer_peer_ids(event_type)
         if not required_peers or self._room_bridge is None:
-            return
+            return True
 
         deadline = time.monotonic() + max(0.0, timeout_s)
         missing = {
@@ -1127,13 +1128,13 @@ class Broker:
             }
 
         if missing:
-            logger.warning(
-                "Workflow trigger dispatch continuing with missing consumers "
+            logger.error(
+                "Workflow trigger consumers failed to connect before dispatch "
                 "event_type=%s peers=%s",
                 event_type,
                 sorted(missing),
             )
-            return
+            return False
 
         # Give newly connected peers one short beat to finish their channel
         # registration/subscription handshake before the first pub/sub event.
@@ -1143,6 +1144,7 @@ class Broker:
             event_type,
             sorted(required_peers),
         )
+        return True
 
     async def _publish_workflow_trigger(self) -> None:
         """Publish the initial Ting task into the flock as a mesh outcome event."""
@@ -1152,8 +1154,19 @@ class Broker:
         from ravn.domain.events import RavnEvent, RavnEventType
 
         cfg = self._settings.workflow_trigger
-        wait_timeout_s = max(float(cfg.startup_delay_s or 0.0), 6.0)
-        await self._wait_for_workflow_trigger_consumers(cfg.event_type, wait_timeout_s)
+        # Workflow kickoff is a required dependency for flock-backed workflows.
+        # Large flocks can take several seconds to finish peer startup, so we
+        # give them a more realistic readiness window and fail closed rather
+        # than silently dropping the first workflow event.
+        wait_timeout_s = max(float(cfg.startup_delay_s or 0.0), 20.0)
+        consumers_ready = await self._wait_for_workflow_trigger_consumers(
+            cfg.event_type,
+            wait_timeout_s,
+        )
+        if not consumers_ready:
+            raise RuntimeError(
+                f"workflow trigger consumers for {cfg.event_type} did not connect"
+            )
 
         delay_s = max(0.0, float(cfg.startup_delay_s or 0.0))
         if delay_s and not self._workflow_trigger_consumer_peer_ids(cfg.event_type):
@@ -1188,6 +1201,16 @@ class Broker:
             cfg.event_type,
             cfg.node_id,
         )
+
+    async def _run_workflow_trigger_task(self) -> None:
+        """Dispatch the initial workflow trigger after broker startup completes."""
+        try:
+            await self._publish_workflow_trigger()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Workflow trigger dispatch failed")
+            raise
 
     def _build_transport_kwargs(self) -> dict:
         """Return superset of kwargs that any transport constructor might need."""
@@ -1325,7 +1348,9 @@ class Broker:
         if self._settings.mesh.enabled:
             await self._start_mesh_adapter()
             if self._has_workflow_trigger():
-                await self._publish_workflow_trigger()
+                self._workflow_trigger_task = asyncio.create_task(
+                    self._run_workflow_trigger_task()
+                )
         elif self._has_workflow_trigger():
             logger.warning("Workflow trigger configured but mesh is disabled — skipping dispatch")
 
@@ -1348,6 +1373,11 @@ class Broker:
             self._peer_watchdog_task.cancel()
             await asyncio.gather(self._peer_watchdog_task, return_exceptions=True)
             self._peer_watchdog_task = None
+
+        if self._workflow_trigger_task is not None:
+            self._workflow_trigger_task.cancel()
+            await asyncio.gather(self._workflow_trigger_task, return_exceptions=True)
+            self._workflow_trigger_task = None
 
         # Report chronicle BEFORE stopping the transport (CLI must be alive)
         await self._report_chronicle()

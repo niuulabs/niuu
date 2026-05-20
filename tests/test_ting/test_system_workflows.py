@@ -43,6 +43,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert names == {
         "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
+        "Specification Stack",
     }
 
     run_flow = next(
@@ -79,6 +80,28 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert research_resources["Research Memory"]["bindingMode"] == "registry"
     assert research_resources["Research Memory"]["path"] == "/tmp/mimir"
 
+    specification_flow = next(
+        workflow for workflow in workflows if workflow.name == "Specification Stack"
+    )
+    specification_stage_labels = [
+        node["label"] for node in specification_flow.graph["nodes"] if node.get("kind") == "stage"
+    ]
+    assert specification_stage_labels[:3] == [
+        "Frame initiative",
+        "Draft PRD",
+        "Review PRD",
+    ]
+    assert "PRD approval gate" in specification_stage_labels
+    assert "Draft SRD" in specification_stage_labels
+    assert "SDD approval gate" in specification_stage_labels
+    assert specification_stage_labels[-1] == "Publish specification pack"
+    specification_resources = {
+        node["label"]: node
+        for node in specification_flow.graph["nodes"]
+        if node.get("kind") == "resource"
+    }
+    assert specification_resources["Specification Memory"]["path"] == "/tmp/mimir"
+
 
 @pytest.mark.asyncio
 async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> None:
@@ -113,9 +136,10 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
     assert names == {
         "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
+        "Specification Stack",
     }
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names
-    assert len(current_catalog) == 2
+    assert len(current_catalog) == 3
     assert all(workflow.id in {seed.id for seed in seeds} for workflow in current_catalog)
