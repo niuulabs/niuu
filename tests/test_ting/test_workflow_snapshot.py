@@ -22,7 +22,6 @@ def test_build_workflow_snapshot_preserves_mimir_resource_data() -> None:
         version="1.0.0",
         scope=WorkflowScope.USER,
         owner_id="user-1",
-        definition_yaml="name: Knowledge Flow",
         graph={
             "nodes": [
                 {
@@ -134,7 +133,6 @@ def test_build_workflow_snapshot_preserves_concrete_registry_mount_metadata() ->
         version="1.0.0",
         scope=WorkflowScope.USER,
         owner_id="user-1",
-        definition_yaml="name: Knowledge Flow",
         graph={
             "nodes": [
                 {

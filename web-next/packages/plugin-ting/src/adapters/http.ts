@@ -263,8 +263,6 @@ interface RawWorkflow {
   edges: Workflow['edges'];
   resourceBindings?: Workflow['resourceBindings'];
   resource_bindings?: Workflow['resourceBindings'];
-  definition_yaml: string | null;
-  compile_errors: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -546,8 +544,6 @@ function toWorkflow(raw: RawWorkflow): Workflow {
     version: raw.version || undefined,
     scope: raw.scope,
     ownerId: raw.owner_id,
-    definitionYaml: raw.definition_yaml,
-    compileErrors: raw.compile_errors ?? [],
     nodes,
     edges,
     resourceBindings: raw.resourceBindings ?? raw.resource_bindings ?? [],
@@ -563,7 +559,6 @@ function toWorkflowBody(workflow: Workflow): Record<string, unknown> {
     nodes: workflow.nodes,
     edges: workflow.edges,
     resourceBindings: workflow.resourceBindings ?? [],
-    definition_yaml: workflow.definitionYaml ?? null,
   };
 }
 

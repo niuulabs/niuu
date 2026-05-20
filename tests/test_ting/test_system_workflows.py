@@ -63,7 +63,6 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     edge_labels = {edge["label"] for edge in run_flow.graph["edges"]}
     assert "security.completed -> security.completed" in edge_labels
     assert "mimir.curated -> mimir.curated" in edge_labels
-    assert run_flow.definition_yaml is None
 
     research_flow = next(
         workflow for workflow in workflows if workflow.name == "Research Council + Human Input"
@@ -79,7 +78,6 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     }
     assert research_resources["Council Scratch Board"]["bindingMode"] == "ephemeral_local"
     assert research_resources["Permanent Research Memory"]["bindingMode"] == "registry"
-    assert research_flow.definition_yaml is None
 
 
 @pytest.mark.asyncio
@@ -93,7 +91,6 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
         version="0.9.0",
         scope=WorkflowScope.SYSTEM,
         owner_id=None,
-        definition_yaml="name: old",
         graph={"nodes": [], "edges": []},
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
@@ -105,7 +102,6 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
         version="0.9.0",
         scope=WorkflowScope.SYSTEM,
         owner_id=None,
-        definition_yaml="name: old",
         graph={"nodes": [], "edges": []},
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),

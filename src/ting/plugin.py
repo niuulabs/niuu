@@ -102,9 +102,8 @@ class TingPlugin(ServicePlugin):
                 prefixes=(
                     "/api/v1/ting/flock",
                     "/api/v1/ting/flock_flows",
-                    "/api/v1/ting/pipelines",
                 ),
-                description="Flock configuration, flow library, and pipeline execution routes.",
+                description="Flock configuration and flow library routes.",
             ),
             APIRouteDomain(
                 name="settings-api",

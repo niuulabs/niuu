@@ -1316,7 +1316,6 @@ class TestResolveWorkflowSnapshot:
             version="1.0.0",
             scope=WorkflowScope.USER,
             owner_id="owner-1",
-            definition_yaml="name: Review Flow\nstages: []",
             graph={"nodes": [], "edges": []},
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),

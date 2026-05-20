@@ -82,7 +82,6 @@ def _workflow(*, executable: bool = True) -> WorkflowDefinition:
         version="1.0.0",
         scope=WorkflowScope.USER,
         owner_id="dev-user",
-        definition_yaml="name: Review Flow\nstages: []" if executable else None,
         graph={
             "nodes": [
                 {"id": "trigger-1", "kind": "trigger", "label": "Start"},
@@ -482,7 +481,6 @@ class TestGetSaga:
                 "workflow_id": str(workflow.id),
                 "name": workflow.name,
                 "version": workflow.version,
-                "definition_yaml": workflow.definition_yaml,
                 "graph": workflow.graph,
                 "scope": workflow.scope.value,
             },
@@ -528,7 +526,7 @@ class TestAssignWorkflow:
         assert body["workflow"] == workflow.name
         assert body["workflow_version"] == workflow.version
 
-    def test_assigns_workflow_even_without_compiled_definition(
+    def test_assigns_graph_backed_workflow_without_compiled_artifacts(
         self,
         mock_tracker: MockTracker,
         saga_repo: MockSagaRepo,
@@ -560,7 +558,6 @@ class TestAssignWorkflow:
             version="1.0.0",
             scope=WorkflowScope.SYSTEM,
             owner_id=None,
-            definition_yaml="name: Ting Run Flow + Security + Memory Curation",
             graph={
                 "nodes": [
                     {

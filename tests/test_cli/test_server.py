@@ -1275,7 +1275,6 @@ class TestRootServerBuildApp:
                         prefixes=(
                             "/api/v1/ting/flock",
                             "/api/v1/ting/flock_flows",
-                            "/api/v1/ting/pipelines",
                         ),
                     ),
                 )

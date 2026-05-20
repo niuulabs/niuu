@@ -266,7 +266,7 @@ class TestUpdateSagaWorkflow:
     ) -> None:
         saga_id = uuid4()
         workflow_id = uuid4()
-        snapshot = {"name": "Review Flow", "definition_yaml": "name: Review"}
+        snapshot = {"name": "Review Flow"}
 
         await repo.update_saga_workflow(
             saga_id,

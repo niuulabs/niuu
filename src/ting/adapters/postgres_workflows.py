@@ -73,16 +73,24 @@ class PostgresWorkflowRepository(WorkflowRepository):
         await self._pool.execute(
             """
             INSERT INTO workflows
-                (id, name, description, version, scope, owner_id, definition_yaml,
-                 graph_json, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+                (
+                    id,
+                    name,
+                    description,
+                    version,
+                    scope,
+                    owner_id,
+                    graph_json,
+                    created_at,
+                    updated_at
+                )
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 description = EXCLUDED.description,
                 version = EXCLUDED.version,
                 scope = EXCLUDED.scope,
                 owner_id = EXCLUDED.owner_id,
-                definition_yaml = EXCLUDED.definition_yaml,
                 graph_json = EXCLUDED.graph_json,
                 updated_at = EXCLUDED.updated_at
             """,
@@ -92,7 +100,6 @@ class PostgresWorkflowRepository(WorkflowRepository):
             workflow.version,
             workflow.scope.value,
             workflow.owner_id,
-            workflow.definition_yaml,
             json.dumps(workflow.graph),
             workflow.created_at,
             workflow.updated_at,
@@ -121,7 +128,6 @@ class PostgresWorkflowRepository(WorkflowRepository):
             version=row.get("version") or "draft",
             scope=WorkflowScope(row.get("scope") or WorkflowScope.USER.value),
             owner_id=row.get("owner_id"),
-            definition_yaml=row.get("definition_yaml"),
             graph=graph,
             created_at=row.get("created_at") or datetime.now(UTC),
             updated_at=row.get("updated_at") or datetime.now(UTC),

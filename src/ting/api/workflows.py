@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_principal
 from ting.domain.models import WorkflowDefinition, WorkflowScope
-from ting.domain.workflow_compiler import compile_workflow_graph
 from ting.ports.workflow_repository import WorkflowRepository
 
 
@@ -28,7 +27,6 @@ class WorkflowBody(BaseModel):
         alias="resourceBindings",
         serialization_alias="resourceBindings",
     )
-    definition_yaml: str | None = None
     model_config = {"populate_by_name": True}
 
 
@@ -45,15 +43,8 @@ class WorkflowResponse(BaseModel):
         default_factory=list,
         serialization_alias="resourceBindings",
     )
-    definition_yaml: str | None
-    compile_errors: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
-
-
-class WorkflowCompileResponse(BaseModel):
-    definition_yaml: str | None
-    compile_errors: list[str]
 
 
 async def resolve_workflow_repo() -> WorkflowRepository:
@@ -65,20 +56,6 @@ async def resolve_workflow_repo() -> WorkflowRepository:
 
 def create_workflows_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1/ting/workflows", tags=["Workflows"])
-
-    @router.post("/compile", response_model=WorkflowCompileResponse)
-    async def compile_workflow(
-        body: WorkflowBody,
-        _principal: Principal = Depends(extract_principal),
-    ) -> WorkflowCompileResponse:
-        compiled = compile_workflow_graph(
-            body.name,
-            _body_to_graph(body),
-        )
-        return WorkflowCompileResponse(
-            definition_yaml=compiled.definition_yaml,
-            compile_errors=compiled.errors,
-        )
 
     @router.get("", response_model=list[WorkflowResponse])
     async def list_workflows(
@@ -113,7 +90,6 @@ def create_workflows_router() -> APIRouter:
         scope = WorkflowScope(body.scope)
         _assert_can_manage_scope(scope, principal)
         graph = _body_to_graph(body)
-        compiled = compile_workflow_graph(body.name, graph)
 
         now = datetime.now(UTC)
         workflow = WorkflowDefinition(
@@ -123,7 +99,6 @@ def create_workflows_router() -> APIRouter:
             version=body.version,
             scope=scope,
             owner_id=_owner_id_for_scope(scope, principal),
-            definition_yaml=compiled.definition_yaml or body.definition_yaml,
             graph=graph,
             created_at=now,
             updated_at=now,
@@ -146,7 +121,6 @@ def create_workflows_router() -> APIRouter:
         _assert_can_manage_existing(existing, principal)
         _assert_can_manage_scope(scope, principal)
         graph = _body_to_graph(body)
-        compiled = compile_workflow_graph(body.name, graph)
 
         saved = await repo.save_workflow(
             WorkflowDefinition(
@@ -156,7 +130,6 @@ def create_workflows_router() -> APIRouter:
                 version=body.version,
                 scope=scope,
                 owner_id=_owner_id_for_scope(scope, principal),
-                definition_yaml=compiled.definition_yaml or body.definition_yaml,
                 graph=graph,
                 created_at=existing.created_at,
                 updated_at=datetime.now(UTC),
@@ -197,7 +170,6 @@ def _body_to_graph(body: WorkflowBody) -> dict[str, Any]:
 
 def _to_response(workflow: WorkflowDefinition) -> WorkflowResponse:
     graph = workflow.graph or {}
-    compiled = compile_workflow_graph(workflow.name, graph)
     return WorkflowResponse(
         id=str(workflow.id),
         name=workflow.name,
@@ -210,8 +182,6 @@ def _to_response(workflow: WorkflowDefinition) -> WorkflowResponse:
         resource_bindings=list(
             graph.get("resourceBindings") or graph.get("resource_bindings") or []
         ),
-        definition_yaml=workflow.definition_yaml,
-        compile_errors=compiled.errors,
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
     )

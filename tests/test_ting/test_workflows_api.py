@@ -66,7 +66,6 @@ def _make_workflow(
         version="1.0.0",
         scope=scope,
         owner_id=owner_id,
-        definition_yaml="name: Workflow",
         graph={"nodes": [{"id": "n1", "kind": "stage"}], "edges": []},
         created_at=now,
         updated_at=now,
@@ -164,8 +163,6 @@ class TestWorkflowCatalogAPI:
         assert body["scope"] == "user"
         node_ids = {node["id"] for node in body["nodes"]}
         assert node_ids == {"trigger-1", "stage-1", "end-1"}
-        assert "stages:" in body["definition_yaml"]
-        assert body["compile_errors"] == []
 
     def test_non_admin_cannot_create_system_workflow(self) -> None:
         repo = InMemoryWorkflowRepository()
@@ -215,34 +212,6 @@ class TestWorkflowCatalogAPI:
         )
 
         assert response.status_code == 404
-
-    def test_compile_endpoint_returns_errors_for_conditional_nodes(self) -> None:
-        repo = InMemoryWorkflowRepository()
-        client = _make_client(repo)
-
-        response = client.post(
-            "/api/v1/ting/workflows/compile",
-            headers=_headers(),
-            json={
-                "name": "Conditional Flow",
-                "scope": "user",
-                "nodes": [
-                    {"id": "trigger-1", "kind": "trigger", "label": "Start", "source": "manual"},
-                    {
-                        "id": "cond-1",
-                        "kind": "cond",
-                        "label": "Branch",
-                        "predicate": "stages.review.verdict == pass",
-                    },
-                ],
-                "edges": [],
-            },
-        )
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["definition_yaml"] is None
-        assert body["compile_errors"]
 
     def test_create_workflow_preserves_resource_bindings(self) -> None:
         repo = InMemoryWorkflowRepository()

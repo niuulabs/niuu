@@ -20,7 +20,6 @@ def build_workflow_snapshot(workflow: WorkflowDefinition) -> dict[str, Any]:
         "name": workflow.name,
         "version": workflow.version,
         "scope": workflow.scope.value,
-        "definition_yaml": workflow.definition_yaml,
         "graph": workflow.graph,
         "personas": personas,
         "resource_nodes": resource_nodes,

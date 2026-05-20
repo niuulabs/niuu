@@ -490,7 +490,6 @@ def _workflow() -> WorkflowDefinition:
         version="1.2.3",
         scope=WorkflowScope.USER,
         owner_id="dev-user",
-        definition_yaml=None,
         graph={"nodes": [], "edges": []},
         created_at=now,
         updated_at=now,

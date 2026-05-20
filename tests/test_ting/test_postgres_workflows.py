@@ -37,7 +37,6 @@ def workflow() -> WorkflowDefinition:
         version="1.0.0",
         scope=WorkflowScope.USER,
         owner_id="user-1",
-        definition_yaml="name: Review",
         graph={"nodes": [{"id": "n1"}], "edges": []},
         created_at=now,
         updated_at=now,
@@ -59,7 +58,7 @@ class TestSaveWorkflow:
         assert "INSERT INTO workflows" in call_args[0][0]
         assert call_args[0][1] == workflow.id
         assert call_args[0][5] == workflow.scope.value
-        assert call_args[0][8] == json.dumps(workflow.graph)
+        assert call_args[0][7] == json.dumps(workflow.graph)
 
 
 class TestListWorkflows:
@@ -78,7 +77,6 @@ class TestListWorkflows:
                 "version": workflow.version,
                 "scope": workflow.scope.value,
                 "owner_id": workflow.owner_id,
-                "definition_yaml": workflow.definition_yaml,
                 "graph_json": workflow.graph,
                 "created_at": workflow.created_at,
                 "updated_at": workflow.updated_at,
@@ -139,7 +137,6 @@ class TestGetWorkflow:
             "version": workflow.version,
             "scope": WorkflowScope.SYSTEM.value,
             "owner_id": None,
-            "definition_yaml": workflow.definition_yaml,
             "graph_json": json.dumps(workflow.graph),
             "created_at": workflow.created_at,
             "updated_at": workflow.updated_at,

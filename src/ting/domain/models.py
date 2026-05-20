@@ -232,7 +232,6 @@ class WorkflowDefinition:
     version: str
     scope: WorkflowScope
     owner_id: str | None
-    definition_yaml: str | None
     graph: dict[str, Any]
     created_at: datetime
     updated_at: datetime
@@ -326,45 +325,6 @@ class PhaseSpec:
 class SagaStructure:
     name: str
     phases: list[PhaseSpec]
-
-
-# ---------------------------------------------------------------------------
-# Pipeline definition models (used by PipelineExecutor)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class PipelineParticipant:
-    """A single participant (persona + prompt) within a pipeline stage."""
-
-    persona: str
-    prompt: str
-    declared_files: list[str] = field(default_factory=list)
-    estimate_hours: float = 1.0
-
-
-@dataclass
-class PipelineStage:
-    """A stage within a pipeline definition."""
-
-    name: str
-    participants: list[PipelineParticipant]
-    parallel: bool = False
-    fan_in: str = "merge"  # all_must_pass | any_pass | majority | merge
-    condition: str | None = None
-    gate: str | None = None  # "human" for human approval gate
-    notify: list[str] = field(default_factory=list)
-
-
-@dataclass
-class Pipeline:
-    """A complete pipeline definition (parsed from YAML)."""
-
-    name: str
-    repos: list[str]
-    feature_branch: str
-    base_branch: str
-    stages: list[PipelineStage]
 
 
 # ---------------------------------------------------------------------------

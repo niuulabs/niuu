@@ -59,7 +59,6 @@ from ting.api.flock_flows import (
 from ting.api.health import create_health_router
 from ting.api.persona_names import build_persona_names_dependency
 from ting.api.phases import create_saga_phases_router
-from ting.api.pipelines import create_pipelines_router, resolve_pipeline_executor
 from ting.api.runs import create_runs_router, resolve_git, resolve_run_repo
 from ting.api.runs import resolve_tracker as resolve_runs_tracker
 from ting.api.runs import resolve_volundr as resolve_runs_volundr
@@ -353,7 +352,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(create_audit_router())
     app.include_router(create_sessions_router())
     app.include_router(create_settings_router())
-    app.include_router(create_pipelines_router())
     app.include_router(create_workflows_router())
     app.include_router(create_flock_flows_router())
     app.include_router(create_flock_config_router())
@@ -894,27 +892,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await ravn_outcome_handler.start()
                 app.state.ravn_outcome_handler = ravn_outcome_handler
                 logger.info("RavnOutcomeHandler started")
-
-            # Wire PipelineExecutor (dynamic pipeline creation via API)
-            from ting.domain.pipeline_executor import TemplateAwarePipelineExecutor  # noqa: PLC0415
-
-            pipeline_executor = TemplateAwarePipelineExecutor(
-                saga_repo=saga_repo,
-                volundr_factory=app.state.volundr_factory,
-                event_bus=event_bus,
-                flow_provider=flow_provider,
-                owner_id=settings.event_triggers.owner_id
-                if settings.event_triggers.enabled
-                else "api",
-                default_model=settings.dispatch.default_model,
-                initial_confidence=settings.review.initial_confidence,
-            )
-            app.state.pipeline_executor = pipeline_executor
-
-            async def _resolve_pipeline_executor() -> TemplateAwarePipelineExecutor:
-                return pipeline_executor
-
-            app.dependency_overrides[resolve_pipeline_executor] = _resolve_pipeline_executor
 
             logger.info("Ting started — database pool ready")
             yield

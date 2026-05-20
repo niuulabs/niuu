@@ -10,7 +10,6 @@ from uuid import UUID, uuid5
 import yaml
 
 from ting.domain.models import WorkflowDefinition, WorkflowScope
-from ting.domain.workflow_compiler import compile_workflow_graph
 from ting.ports.workflow_repository import WorkflowRepository
 
 _SYSTEM_WORKFLOW_NAMESPACE = UUID("1ff2db43-b5f4-49ec-a945-d9a2b4b2bd3f")
@@ -37,7 +36,6 @@ def load_system_workflows(path: Path = BUNDLED_SYSTEM_WORKFLOWS_PATH) -> list[Wo
         description = str(entry.get("description") or "").strip()
         version = str(entry.get("version") or "1.0.0").strip() or "1.0.0"
         graph = dict(entry.get("graph") or {})
-        compiled = compile_workflow_graph(name, graph)
         workflow_id = uuid5(_SYSTEM_WORKFLOW_NAMESPACE, name)
         workflows.append(
             WorkflowDefinition(
@@ -47,7 +45,6 @@ def load_system_workflows(path: Path = BUNDLED_SYSTEM_WORKFLOWS_PATH) -> list[Wo
                 version=version,
                 scope=WorkflowScope.SYSTEM,
                 owner_id=None,
-                definition_yaml=compiled.definition_yaml,
                 graph=graph,
                 created_at=now,
                 updated_at=now,

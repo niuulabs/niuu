@@ -233,8 +233,6 @@ const rawWorkflow = {
       readPriority: 3,
     },
   ],
-  definition_yaml: 'name: Knowledge Flow',
-  compile_errors: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -473,8 +471,6 @@ describe('buildWorkflowHttpAdapter', () => {
       version: rawWorkflow.version,
       scope: rawWorkflow.scope,
       ownerId: rawWorkflow.owner_id,
-      definitionYaml: rawWorkflow.definition_yaml,
-      compileErrors: [],
       nodes: rawWorkflow.nodes,
       edges: rawWorkflow.edges,
       resourceBindings: rawWorkflow.resourceBindings,
