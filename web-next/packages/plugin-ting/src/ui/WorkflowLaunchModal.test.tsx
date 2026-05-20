@@ -13,12 +13,7 @@ const workflow: Workflow = {
 describe('WorkflowLaunchModal', () => {
   it('disables launch until a prompt is provided', () => {
     render(
-      <WorkflowLaunchModal
-        open
-        onOpenChange={vi.fn()}
-        workflow={workflow}
-        onLaunch={vi.fn()}
-      />,
+      <WorkflowLaunchModal open onOpenChange={vi.fn()} workflow={workflow} onLaunch={vi.fn()} />,
     );
 
     expect(screen.getByRole('button', { name: 'Launch' })).toBeDisabled();
@@ -108,9 +103,7 @@ describe('WorkflowLaunchModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Context must be a JSON object.',
-    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('Context must be a JSON object.');
     expect(onLaunch).not.toHaveBeenCalled();
   });
 

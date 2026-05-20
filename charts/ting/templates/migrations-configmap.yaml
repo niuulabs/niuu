@@ -1368,4 +1368,12 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_sagas_instance_id ON sagas(instance_id);
 
+  000028_workflow_graph_only.down.sql: |
+    ALTER TABLE workflows
+        ADD COLUMN IF NOT EXISTS definition_yaml TEXT;
+
+  000028_workflow_graph_only.up.sql: |
+    ALTER TABLE workflows
+        DROP COLUMN IF EXISTS definition_yaml;
+
 {{- end }}
