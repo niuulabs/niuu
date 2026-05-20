@@ -582,18 +582,9 @@ function toWorkflowBody(workflow: Workflow): Record<string, unknown> {
 function toWorkflowLaunchBody(request: WorkflowLaunchRequest): Record<string, unknown> {
   return {
     prompt: request.prompt,
-    slug: request.slug,
     sessionName: request.sessionName,
     repo: request.repo,
     branch: request.branch,
-    baseBranch: request.baseBranch,
-    model: request.model,
-    definition: request.definition,
-    profileName: request.profileName,
-    integrationIds: request.integrationIds,
-    connectionId: request.connectionId,
-    mimirPath: request.mimirPath,
-    context: request.context ?? {},
   };
 }
 

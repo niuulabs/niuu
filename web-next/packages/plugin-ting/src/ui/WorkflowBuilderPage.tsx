@@ -12,7 +12,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
-import { StateDot, cn } from '@niuulabs/ui';
+import { StateDot, cn, type RepoRecord } from '@niuulabs/ui';
 import type { Workflow } from '../domain/workflow';
 import type { WorkflowLaunchRequest } from '../ports';
 import {
@@ -29,6 +29,10 @@ import type { WorkflowStageModelOption } from './WorkflowBuilder/useWorkflowBuil
 import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
 import { WorkflowLaunchModal } from './WorkflowLaunchModal';
 
+type RepoCatalogService = {
+  getRepos(): Promise<RepoRecord[]>;
+};
+
 function formatModelOption(
   id: string,
   model?: { name?: string; vendor?: string; provider?: string; tier?: string },
@@ -41,12 +45,17 @@ function formatModelOption(
 
 export function WorkflowBuilderPage() {
   const bifrost = useService<IBifrostService>('bifrost');
+  const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const { data: workflows, isLoading, isError, error } = useWorkflows();
   const { data: personas } = usePersonasBrowser();
   const { data: registryMounts = [] } = useWorkflowRegistryMounts();
   const modelsQuery = useQuery({
     queryKey: ['bifrost', 'models'],
     queryFn: () => bifrost.getModelCatalog(),
+  });
+  const reposQuery = useQuery({
+    queryKey: ['niuu', 'repos'],
+    queryFn: () => repoCatalog.getRepos(),
   });
   const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
   const createMutation = useCreateWorkflow();
@@ -232,6 +241,7 @@ export function WorkflowBuilderPage() {
             open={showLaunchModal}
             onOpenChange={setShowLaunchModal}
             workflow={displayed}
+            repos={reposQuery.data ?? []}
             launching={launchMutation.isPending}
             onLaunch={handleLaunch}
           />

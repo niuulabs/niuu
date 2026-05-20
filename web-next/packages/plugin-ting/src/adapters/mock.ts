@@ -1664,7 +1664,7 @@ export function createMockWorkflowService(): IWorkflowService {
       if (!workflow) {
         throw new Error(`Workflow ${workflowId} not found`);
       }
-      const slugSource = request.slug || request.prompt || workflow.name;
+      const slugSource = request.prompt || workflow.name;
       const slug = (slugSource.toLowerCase().match(/[a-z0-9]+/g) ?? []).join('-').slice(0, 96);
       return {
         workflowId,

@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { RepoRecord } from '@niuulabs/ui';
 import { describe, expect, it, vi } from 'vitest';
-import { WorkflowLaunchModal } from './WorkflowLaunchModal';
 import type { Workflow } from '../domain/workflow';
+import { WorkflowLaunchModal } from './WorkflowLaunchModal';
 
 const workflow: Workflow = {
   id: '00000000-0000-0000-0000-000000000001',
@@ -9,6 +10,18 @@ const workflow: Workflow = {
   nodes: [],
   edges: [],
 };
+
+const repos: RepoRecord[] = [
+  {
+    provider: 'github',
+    org: 'niuulabs',
+    name: 'volundr',
+    url: 'https://github.com/niuulabs/volundr',
+    cloneUrl: 'https://github.com/niuulabs/volundr.git',
+    defaultBranch: 'main',
+    branches: ['main', 'feat/research'],
+  },
+];
 
 describe('WorkflowLaunchModal', () => {
   it('disables launch until a prompt is provided', () => {
@@ -23,10 +36,16 @@ describe('WorkflowLaunchModal', () => {
     expect(screen.getByRole('button', { name: 'Launch' })).toBeEnabled();
   });
 
-  it('submits trimmed fields and parsed structured context', async () => {
+  it('submits prompt, name, repo, and branch from the repo pickers', async () => {
     const onLaunch = vi.fn().mockResolvedValue(undefined);
     render(
-      <WorkflowLaunchModal open onOpenChange={vi.fn()} workflow={workflow} onLaunch={onLaunch} />,
+      <WorkflowLaunchModal
+        open
+        onOpenChange={vi.fn()}
+        workflow={workflow}
+        repos={repos}
+        onLaunch={onLaunch}
+      />,
     );
 
     fireEvent.change(screen.getByPlaceholderText('Describe what this workflow should do.'), {
@@ -35,20 +54,11 @@ describe('WorkflowLaunchModal', () => {
     fireEvent.change(screen.getByPlaceholderText('Optional override'), {
       target: { value: '  research-run  ' },
     });
-    fireEvent.change(screen.getByPlaceholderText('Optional model override'), {
-      target: { value: '  gpt-5.5  ' },
+    fireEvent.change(screen.getByTestId('workflow-launch-repo-select'), {
+      target: { value: 'https://github.com/niuulabs/volundr.git' },
     });
-    fireEvent.change(screen.getByPlaceholderText('Optional repo or org/repo'), {
-      target: { value: '  niuulabs/volundr  ' },
-    });
-    fireEvent.change(screen.getByPlaceholderText('main'), {
-      target: { value: '  feature/research  ' },
-    });
-    fireEvent.change(screen.getByPlaceholderText('Optional resource path override'), {
-      target: { value: '  /tmp/mimir  ' },
-    });
-    fireEvent.change(screen.getByLabelText('Structured context'), {
-      target: { value: '{"mode":"exploratory","seed_urls":["https://example.com"]}' },
+    fireEvent.change(screen.getByTestId('workflow-launch-branch-select'), {
+      target: { value: 'feat/research' },
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
@@ -57,20 +67,14 @@ describe('WorkflowLaunchModal', () => {
       expect(onLaunch).toHaveBeenCalledWith({
         prompt: 'Investigate this topic deeply.',
         sessionName: 'research-run',
-        repo: 'niuulabs/volundr',
-        branch: 'feature/research',
-        model: 'gpt-5.5',
-        mimirPath: '/tmp/mimir',
-        context: {
-          mode: 'exploratory',
-          seed_urls: ['https://example.com'],
-        },
+        repo: 'https://github.com/niuulabs/volundr.git',
+        branch: 'feat/research',
       }),
     );
   });
 
-  it('rejects invalid JSON context', async () => {
-    const onLaunch = vi.fn();
+  it('falls back to manual repo and branch entry without catalog data', async () => {
+    const onLaunch = vi.fn().mockResolvedValue(undefined);
     render(
       <WorkflowLaunchModal open onOpenChange={vi.fn()} workflow={workflow} onLaunch={onLaunch} />,
     );
@@ -78,33 +82,22 @@ describe('WorkflowLaunchModal', () => {
     fireEvent.change(screen.getByPlaceholderText('Describe what this workflow should do.'), {
       target: { value: 'Investigate this topic deeply.' },
     });
-    fireEvent.change(screen.getByLabelText('Structured context'), {
-      target: { value: '{"mode":' },
+    fireEvent.change(screen.getByPlaceholderText('Optional repo or org/repo'), {
+      target: { value: '  niuulabs/volundr  ' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Optional branch'), {
+      target: { value: '  feature/research  ' },
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Context must be valid JSON.');
-    expect(onLaunch).not.toHaveBeenCalled();
-  });
-
-  it('rejects non-object context payloads', async () => {
-    const onLaunch = vi.fn();
-    render(
-      <WorkflowLaunchModal open onOpenChange={vi.fn()} workflow={workflow} onLaunch={onLaunch} />,
+    await waitFor(() =>
+      expect(onLaunch).toHaveBeenCalledWith({
+        prompt: 'Investigate this topic deeply.',
+        repo: 'niuulabs/volundr',
+        branch: 'feature/research',
+      }),
     );
-
-    fireEvent.change(screen.getByPlaceholderText('Describe what this workflow should do.'), {
-      target: { value: 'Investigate this topic deeply.' },
-    });
-    fireEvent.change(screen.getByLabelText('Structured context'), {
-      target: { value: '["not","an","object"]' },
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('Context must be a JSON object.');
-    expect(onLaunch).not.toHaveBeenCalled();
   });
 
   it('surfaces launch errors', async () => {

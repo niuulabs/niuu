@@ -550,25 +550,17 @@ describe('buildWorkflowHttpAdapter', () => {
     const result = await buildWorkflowHttpAdapter(client).launchWorkflow(rawWorkflow.id, {
       prompt: 'Run the workflow against this topic.',
       sessionName: 'knowledge-flow',
-      context: { mode: 'exploratory' },
+      repo: 'https://github.com/niuulabs/volundr.git',
+      branch: 'feat/workflow-launch',
     });
 
     expect(client.post).toHaveBeenCalledWith(
       `/workflows/${encodeURIComponent(rawWorkflow.id)}/launch`,
       {
         prompt: 'Run the workflow against this topic.',
-        slug: undefined,
         sessionName: 'knowledge-flow',
-        repo: undefined,
-        branch: undefined,
-        baseBranch: undefined,
-        model: undefined,
-        definition: undefined,
-        profileName: undefined,
-        integrationIds: undefined,
-        connectionId: undefined,
-        mimirPath: undefined,
-        context: { mode: 'exploratory' },
+        repo: 'https://github.com/niuulabs/volundr.git',
+        branch: 'feat/workflow-launch',
       },
     );
     expect(result.sessionId).toBe('sess-123');

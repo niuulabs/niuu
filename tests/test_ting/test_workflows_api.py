@@ -503,13 +503,9 @@ class TestWorkflowCatalogAPI:
             headers=_headers(roles="ting:admin"),
             json={
                 "prompt": "Research whether AI grief companions are a credible product category.",
-                "slug": "grief-companions",
-                "context": {
-                    "mode": "exploratory",
-                    "constraints": ["Focus on real demand and ethics."],
-                    "success_criteria": ["Useful answer with durable citations."],
-                },
-                "mimirPath": "/tmp/mimir",
+                "sessionName": "grief-companions",
+                "repo": "https://github.com/niuulabs/volundr.git",
+                "branch": "feat/research",
             },
         )
 
@@ -522,14 +518,15 @@ class TestWorkflowCatalogAPI:
         spawn = adapter.requests[0]
         assert spawn.definition == "skuldCodexExec"
         assert spawn.workload_type == "ravn_flock"
+        assert spawn.name == "grief-companions"
+        assert spawn.repo == "https://github.com/niuulabs/volundr.git"
+        assert spawn.branch == "feat/research"
         assert spawn.tracker_issue_id == "workflow:grief-companions"
         assert spawn.workload_config["workflow"]["name"] == "Research Campaign"
         assert spawn.workload_config["personas"][0]["name"] == "research-framer"
-        assert spawn.workload_config["mimir"]["registry_refs"][0]["path"] == "/tmp/mimir"
         assert "Workflow Launch" in spawn.initial_prompt
-        assert "Mode: exploratory" in spawn.initial_prompt
 
-    def test_launch_workflow_respects_connection_selection(self) -> None:
+    def test_launch_workflow_uses_first_available_connection(self) -> None:
         workflow = _make_research_workflow()
         repo = InMemoryWorkflowRepository([workflow])
         primary = RecordingVolundrPort(name="primary", target_id="primary")
@@ -544,10 +541,9 @@ class TestWorkflowCatalogAPI:
             headers=_headers(roles="ting:admin"),
             json={
                 "prompt": "Research slow productivity systems for knowledge workers.",
-                "connectionId": "secondary",
             },
         )
 
         assert response.status_code == 201
-        assert len(primary.requests) == 0
-        assert len(secondary.requests) == 1
+        assert len(primary.requests) == 1
+        assert len(secondary.requests) == 0

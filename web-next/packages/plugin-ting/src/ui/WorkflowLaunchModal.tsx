@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Modal } from '@niuulabs/ui';
+import { BranchSelect, RepoSelect, type RepoRecord } from '@niuulabs/ui';
 import type { Workflow } from '../domain/workflow';
 import type { WorkflowLaunchRequest } from '../ports';
 
@@ -7,19 +8,16 @@ export interface WorkflowLaunchModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   workflow: Workflow | null;
+  repos?: RepoRecord[];
   launching?: boolean;
   onLaunch: (request: WorkflowLaunchRequest) => Promise<void> | void;
-}
-
-function prettyContext(value: Record<string, unknown> | undefined): string {
-  if (!value || Object.keys(value).length === 0) return '';
-  return JSON.stringify(value, null, 2);
 }
 
 export function WorkflowLaunchModal({
   open,
   onOpenChange,
   workflow,
+  repos = [],
   launching = false,
   onLaunch,
 }: WorkflowLaunchModalProps) {
@@ -27,9 +25,6 @@ export function WorkflowLaunchModal({
   const [sessionName, setSessionName] = useState('');
   const [repo, setRepo] = useState('');
   const [branch, setBranch] = useState('');
-  const [model, setModel] = useState('');
-  const [mimirPath, setMimirPath] = useState('');
-  const [contextText, setContextText] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -38,9 +33,6 @@ export function WorkflowLaunchModal({
     setSessionName('');
     setRepo('');
     setBranch('');
-    setModel('');
-    setMimirPath('');
-    setContextText('');
     setError('');
   }, [open, workflow?.id]);
 
@@ -52,21 +44,6 @@ export function WorkflowLaunchModal({
   async function handleLaunch() {
     if (!workflow) return;
 
-    let context: Record<string, unknown> | undefined;
-    if (contextText.trim()) {
-      try {
-        const parsed = JSON.parse(contextText);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          setError('Context must be a JSON object.');
-          return;
-        }
-        context = parsed as Record<string, unknown>;
-      } catch {
-        setError('Context must be valid JSON.');
-        return;
-      }
-    }
-
     setError('');
     try {
       await onLaunch({
@@ -74,9 +51,6 @@ export function WorkflowLaunchModal({
         ...(sessionName.trim() ? { sessionName: sessionName.trim() } : {}),
         ...(repo.trim() ? { repo: repo.trim() } : {}),
         ...(branch.trim() ? { branch: branch.trim() } : {}),
-        ...(model.trim() ? { model: model.trim() } : {}),
-        ...(mimirPath.trim() ? { mimirPath: mimirPath.trim() } : {}),
-        ...(context ? { context } : {}),
       });
     } catch (launchError) {
       setError(launchError instanceof Error ? launchError.message : 'Launch failed.');
@@ -125,61 +99,50 @@ export function WorkflowLaunchModal({
             />
           </label>
           <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-            <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">Model</span>
-            <input
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              placeholder="Optional model override"
-              className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
-            />
-          </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
             <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">Repo</span>
-            <input
-              value={repo}
-              onChange={(event) => setRepo(event.target.value)}
-              placeholder="Optional repo or org/repo"
-              className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
-            />
+            {repos.length > 0 ? (
+              <RepoSelect
+                repos={repos}
+                value={repo}
+                onChange={(value) => {
+                  const selectedRepo = repos.find((item) => item.cloneUrl === value);
+                  setRepo(value);
+                  setBranch(selectedRepo?.defaultBranch ?? '');
+                }}
+                placeholder="Select repository"
+                valueMode="cloneUrl"
+                testId="workflow-launch-repo-select"
+              />
+            ) : (
+              <input
+                value={repo}
+                onChange={(event) => setRepo(event.target.value)}
+                placeholder="Optional repo or org/repo"
+                className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+              />
+            )}
           </label>
           <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
             <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">Branch</span>
-            <input
-              value={branch}
-              onChange={(event) => setBranch(event.target.value)}
-              placeholder="main"
-              className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
-            />
-          </label>
-          <label className="niuu-col-span-2 niuu-flex niuu-flex-col niuu-gap-1.5">
-            <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">
-              Mimir path
-            </span>
-            <input
-              value={mimirPath}
-              onChange={(event) => setMimirPath(event.target.value)}
-              placeholder="Optional resource path override"
-              className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
-            />
+            {repo && repos.length > 0 ? (
+              <BranchSelect
+                repos={repos}
+                selectedRepos={repo}
+                value={branch}
+                onChange={setBranch}
+                placeholder="Select branch"
+                testId="workflow-launch-branch-select"
+              />
+            ) : (
+              <input
+                value={branch}
+                onChange={(event) => setBranch(event.target.value)}
+                placeholder="Optional branch"
+                className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+              />
+            )}
           </label>
         </div>
-
-        <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-          <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">
-            Structured context
-          </span>
-          <textarea
-            value={contextText}
-            onChange={(event) => setContextText(event.target.value)}
-            rows={7}
-            placeholder={prettyContext({
-              mode: 'exploratory',
-              constraints: ['Focus on demand and ethics.'],
-              seed_urls: ['https://example.com'],
-            })}
-            className="niuu-min-h-[148px] niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-xs niuu-text-text-primary"
-          />
-        </label>
 
         {error ? (
           <p className="niuu-m-0 niuu-text-sm niuu-text-critical" role="alert">

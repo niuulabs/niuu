@@ -264,18 +264,9 @@ export interface ITingIntegrationService {
  */
 export interface WorkflowLaunchRequest {
   prompt: string;
-  slug?: string;
   sessionName?: string;
   repo?: string;
   branch?: string;
-  baseBranch?: string;
-  model?: string;
-  definition?: string;
-  profileName?: string;
-  integrationIds?: string[];
-  connectionId?: string;
-  mimirPath?: string;
-  context?: Record<string, unknown>;
 }
 
 export interface WorkflowLaunchResult {

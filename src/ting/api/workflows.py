@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import copy
-import json
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -62,18 +60,9 @@ class WorkflowResponse(BaseModel):
 
 class WorkflowLaunchBody(BaseModel):
     prompt: str = Field(min_length=1, max_length=100_000)
-    slug: str | None = Field(default=None, max_length=120)
     session_name: str | None = Field(default=None, max_length=63, alias="sessionName")
     repo: str = Field(default="", max_length=500)
-    branch: str = Field(default="main", max_length=255)
-    base_branch: str = Field(default="", max_length=255, alias="baseBranch")
-    model: str = Field(default="", max_length=100)
-    definition: str | None = Field(default=None, max_length=100)
-    profile_name: str | None = Field(default=None, max_length=255, alias="profileName")
-    integration_ids: list[str] = Field(default_factory=list, alias="integrationIds")
-    connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
-    mimir_path: str | None = Field(default=None, max_length=2048, alias="mimirPath")
-    context: dict[str, Any] = Field(default_factory=dict)
+    branch: str = Field(default="", max_length=255)
 
     model_config = {"populate_by_name": True}
 
@@ -213,7 +202,6 @@ def create_workflows_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="Workflow not found")
 
         workflow_snapshot = build_workflow_snapshot(workflow)
-        workflow_snapshot = _apply_mimir_path_override(workflow_snapshot, body.mimir_path)
         launch_slug = _resolve_launch_slug(body, workflow)
         session_name = _resolve_launch_session_name(body, workflow, launch_slug)
         settings = request.app.state.settings
@@ -221,8 +209,8 @@ def create_workflows_router() -> APIRouter:
         try:
             resolved_model, resolved_definition, workflow_personas = _resolve_workflow_execution(
                 workflow_snapshot,
-                fallback_model=body.model or settings.dispatch.default_model,
-                requested_definition=body.definition or _DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
+                fallback_model=settings.dispatch.default_model,
+                requested_definition=_DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
                 session_definitions=settings.session_definitions,
                 configured_models=list(settings.bifrost.models),
             )
@@ -241,11 +229,9 @@ def create_workflows_router() -> APIRouter:
             ),
             registry_path=settings.dispatch.flock.mimir_registry_path,
         )
-
         target_adapter = await _resolve_target_adapter(
             volundr_factory=volundr_factory,
             principal=principal,
-            connection_id=body.connection_id,
         )
         if target_adapter is None:
             raise HTTPException(
@@ -258,7 +244,7 @@ def create_workflows_router() -> APIRouter:
                 name=session_name,
                 repo=body.repo,
                 branch=body.branch,
-                base_branch=body.base_branch,
+                base_branch="",
                 model=resolved_model,
                 tracker_issue_id=f"workflow:{launch_slug}",
                 tracker_issue_url="",
@@ -291,8 +277,6 @@ def create_workflows_router() -> APIRouter:
                     ),
                 },
                 definition=resolved_definition,
-                profile=body.profile_name,
-                integration_ids=body.integration_ids,
             ),
             auth_token=bearer_token,
             principal=principal,
@@ -352,8 +336,8 @@ def _launch_response(
 
 
 def _resolve_launch_slug(body: WorkflowLaunchBody, workflow: WorkflowDefinition) -> str:
-    if body.slug:
-        return _slugify(body.slug)[:96] or "workflow"
+    if body.session_name:
+        return _slugify(body.session_name)[:96] or "workflow"
     return _slugify(body.prompt)[:96] or _slugify(workflow.name)[:96] or "workflow"
 
 
@@ -371,50 +355,11 @@ async def _resolve_target_adapter(
     *,
     volundr_factory: VolundrFactory,
     principal: Principal,
-    connection_id: str | None,
 ):
     adapters = await volundr_factory.for_principal(principal)
     if not adapters:
         return None
-    if connection_id:
-        for adapter in adapters:
-            if getattr(adapter, "target_id", "") == connection_id:
-                return adapter
-        raise HTTPException(status_code=404, detail="Requested Volundr connection not found")
     return adapters[0]
-
-
-def _apply_mimir_path_override(
-    snapshot: dict[str, Any],
-    mimir_path: str | None,
-) -> dict[str, Any]:
-    path = str(mimir_path or "").strip()
-    if not path:
-        return snapshot
-
-    mutated = copy.deepcopy(snapshot)
-    mutated.pop("mimir", None)
-    graph = mutated.get("graph")
-    if not isinstance(graph, dict):
-        return mutated
-    nodes = list(graph.get("nodes") or [])
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        if str(node.get("kind") or "") != "resource":
-            continue
-        if str(node.get("resourceType") or "") != "mimir":
-            continue
-        if str(node.get("bindingMode") or "registry") != "registry":
-            continue
-        node["path"] = path
-    for node in list(mutated.get("resource_nodes") or []):
-        if not isinstance(node, dict):
-            continue
-        if str(node.get("bindingMode") or "registry") != "registry":
-            continue
-        node["path"] = path
-    return mutated
 
 
 def _build_workflow_initiative_context(
@@ -436,8 +381,6 @@ def _build_workflow_initiative_context(
             launch.prompt.strip(),
         ]
     )
-    if launch.context:
-        lines.extend(_format_launch_context_sections(launch.context))
     lines.extend(
         [
             "",
@@ -457,46 +400,6 @@ def _build_workflow_initiative_context(
         ]
     )
     return "\n".join(lines)
-
-
-def _format_launch_context_sections(context: dict[str, Any]) -> list[str]:
-    lines: list[str] = ["", "## Launch Context"]
-
-    scalar_labels = (
-        ("mode", "Mode"),
-        ("audience", "Audience"),
-        ("deliverable", "Deliverable"),
-    )
-    consumed_keys: set[str] = set()
-    for key, label in scalar_labels:
-        value = str(context.get(key, "") or "").strip()
-        if not value:
-            continue
-        lines.append(f"{label}: {value}")
-        consumed_keys.add(key)
-
-    list_labels = (
-        ("constraints", "Constraints"),
-        ("success_criteria", "Success Criteria"),
-        ("seed_urls", "Seed URLs"),
-    )
-    for key, label in list_labels:
-        value = context.get(key)
-        if not isinstance(value, list):
-            continue
-        items = [str(item).strip() for item in value if str(item).strip()]
-        if not items:
-            continue
-        lines.extend(["", f"### {label}"])
-        lines.extend(f"- {item}" for item in items)
-        consumed_keys.add(key)
-
-    remaining = {key: value for key, value in context.items() if key not in consumed_keys}
-    if remaining:
-        lines.extend(
-            ["", "### Additional Context", json.dumps(remaining, indent=2, sort_keys=True)]
-        )
-    return lines
 
 
 def _owner_id_for_scope(scope: WorkflowScope, principal: Principal) -> str | None:
