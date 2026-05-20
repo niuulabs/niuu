@@ -139,197 +139,151 @@
         access: read_write
         writePrefixes: [postmortems/]
         readPriority: 1
-- name: Research Council + Human Input
-  description: Repo-less LLM council workflow that can pause on chair escalation and resume from a directed human reply before publishing durable research memory.
+- name: Research Campaign
+  description: Flexible deep-research workflow that frames a question, explores the evidence deeply, challenges the thesis, and distills durable memory into Mimir.
   version: 1.0.0
   graph:
     nodes:
       - id: research-request
         kind: trigger
-        label: Start research council
+        label: Start research campaign
         source: user research
         dispatchEvent: research.requested
         position:
           x: 96
-          y: 248
-      - id: research-scratch
-        kind: resource
-        label: Council Scratch Board
-        resourceType: mimir
-        bindingMode: ephemeral_local
-        role: local
-        categories: [research, council, scratch]
-        position:
-          x: 304
-          y: 520
+          y: 280
       - id: research-memory
         kind: resource
-        label: Permanent Research Memory
+        label: Research Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir-test
-        path: /tmp/mimir-test
+        registryEntryId: tmp-mimir
+        path: /tmp/mimir
         role: shared
-        categories: [research, memory]
+        categories: [research, memory, sources]
         position:
-          x: 560
+          x: 320
           y: 520
-      - id: chair-brief
+      - id: research-frame
         kind: stage
-        label: Brief the council
+        label: Frame the inquiry
         executionMode: sequential
         joinMode: any
         stageMembers:
-          - personaId: council-chair
-            budget: 18
-            model: claude-sonnet-4-6
+          - personaId: research-framer
+            budget: 16
+            model: gpt-5.5
             consumesEventTypes: [research.requested]
         position:
-          x: 304
-          y: 248
-      - id: member-a-opinion
+          x: 320
+          y: 280
+      - id: research-explore
         kind: stage
-        label: Seat A first opinion
+        label: Explore the evidence
         executionMode: sequential
         joinMode: any
         stageMembers:
-          - personaId: council-member-a
-            budget: 16
-            model: claude-sonnet-4-6
-            consumesEventTypes: [council.briefed]
-        position:
-          x: 560
-          y: 160
-      - id: member-b-opinion
-        kind: stage
-        label: Seat B first opinion
-        executionMode: sequential
-        joinMode: any
-        stageMembers:
-          - personaId: council-member-b
+          - personaId: research-explorer
             budget: 16
             model: gpt-5.5
-            consumesEventTypes: [council.briefed]
+            consumesEventTypes: [research.framed]
         position:
-          x: 560
-          y: 336
-      - id: chair-review-packet
+          x: 608
+          y: 280
+      - id: research-challenge
         kind: stage
-        label: Build anonymized review packet
-        executionMode: sequential
-        joinMode: all
-        stageMembers:
-          - personaId: council-chair
-            budget: 18
-            model: claude-sonnet-4-6
-            consumesEventTypes:
-              - council.a.opinion.submitted
-              - council.b.opinion.submitted
-        position:
-          x: 816
-          y: 248
-      - id: member-a-review
-        kind: stage
-        label: Seat A review packet
+        label: Challenge the thesis
         executionMode: sequential
         joinMode: any
         stageMembers:
-          - personaId: council-member-a
-            budget: 16
-            model: claude-sonnet-4-6
-            consumesEventTypes: [council.review.requested]
+          - personaId: research-skeptic
+            budget: 14
+            model: gpt-5.5
+            consumesEventTypes: [research.explored]
         position:
-          x: 1072
-          y: 160
-      - id: member-b-review
+          x: 928
+          y: 280
+      - id: research-synthesis
         kind: stage
-        label: Seat B review packet
+        label: Synthesize the research
         executionMode: sequential
         joinMode: any
         stageMembers:
-          - personaId: council-member-b
+          - personaId: research-synthesist
             budget: 16
             model: gpt-5.5
-            consumesEventTypes: [council.review.requested]
+            consumesEventTypes: [research.challenged]
         position:
-          x: 1072
-          y: 336
-      - id: chair-synthesis
+          x: 1216
+          y: 280
+      - id: research-curation
         kind: stage
-        label: Synthesize or ask operator
+        label: Curate learnings and follow-ups
         executionMode: sequential
-        joinMode: all
+        joinMode: any
         stageMembers:
-          - personaId: council-chair
-            budget: 18
-            model: claude-sonnet-4-6
-            consumesEventTypes:
-              - council.a.review.submitted
-              - council.b.review.submitted
+          - personaId: research-curator
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [research.synthesized]
         position:
-          x: 1328
-          y: 248
+          x: 1504
+          y: 280
+      - id: research-publish
+        kind: stage
+        label: Publish to Mimir
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: research-publisher
+            budget: 10
+            model: gpt-5.5
+            consumesEventTypes: [research.curated]
+        position:
+          x: 1792
+          y: 280
       - id: research-complete
         kind: end
         label: Research complete
         joinMode: all
         completionEvent: research.completed
         position:
-          x: 1584
-          y: 248
+          x: 2080
+          y: 280
     edges:
-      - id: edge-research-request-to-chair
+      - id: edge-research-request-to-frame
         source: research-request
-        target: chair-brief
+        target: research-frame
         label: research.requested -> research.requested
-      - id: edge-chair-to-seat-a
-        source: chair-brief
-        target: member-a-opinion
-        label: council.briefed -> council.briefed
-      - id: edge-chair-to-seat-b
-        source: chair-brief
-        target: member-b-opinion
-        label: council.briefed -> council.briefed
-      - id: edge-seat-a-opinion-to-chair
-        source: member-a-opinion
-        target: chair-review-packet
-        label: council.a.opinion.submitted -> council.a.opinion.submitted
-      - id: edge-seat-b-opinion-to-chair
-        source: member-b-opinion
-        target: chair-review-packet
-        label: council.b.opinion.submitted -> council.b.opinion.submitted
-      - id: edge-chair-packet-to-seat-a
-        source: chair-review-packet
-        target: member-a-review
-        label: council.review.requested -> council.review.requested
-      - id: edge-chair-packet-to-seat-b
-        source: chair-review-packet
-        target: member-b-review
-        label: council.review.requested -> council.review.requested
-      - id: edge-seat-a-review-to-chair
-        source: member-a-review
-        target: chair-synthesis
-        label: council.a.review.submitted -> council.a.review.submitted
-      - id: edge-seat-b-review-to-chair
-        source: member-b-review
-        target: chair-synthesis
-        label: council.b.review.submitted -> council.b.review.submitted
-      - id: edge-chair-synthesis-to-end
-        source: chair-synthesis
+      - id: edge-frame-to-explore
+        source: research-frame
+        target: research-explore
+        label: research.framed -> research.framed
+      - id: edge-explore-to-challenge
+        source: research-explore
+        target: research-challenge
+        label: research.explored -> research.explored
+      - id: edge-challenge-to-synthesis
+        source: research-challenge
+        target: research-synthesis
+        label: research.challenged -> research.challenged
+      - id: edge-synthesis-to-curation
+        source: research-synthesis
+        target: research-curation
+        label: research.synthesized -> research.synthesized
+      - id: edge-curation-to-publish
+        source: research-curation
+        target: research-publish
+        label: research.curated -> research.curated
+      - id: edge-publish-to-end
+        source: research-publish
         target: research-complete
         label: research.completed -> research.completed
     resourceBindings:
-      - id: binding-research-scratch
-        resourceNodeId: research-scratch
-        targetType: workflow
-        targetId: research-council-human-input
-        access: read_write
-        writePrefixes: [council/]
-        readPriority: 1
       - id: binding-research-memory
         resourceNodeId: research-memory
         targetType: workflow
-        targetId: research-council-human-input
+        targetId: research-campaign
         access: read_write
-        writePrefixes: [research/]
-        readPriority: 2
+        writePrefixes: [research/, learnings/, followups/]
+        readPriority: 1

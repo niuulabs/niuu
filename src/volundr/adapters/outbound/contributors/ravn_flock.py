@@ -756,6 +756,12 @@ class RavnFlockContributor(SessionContributor):
             skuld_env.extend(
                 [
                     {
+                        # Workflow-backed flock stages are long-running initiative tasks
+                        # and need a higher ceiling than the generic 120s mesh default.
+                        "name": "SKULD__MESH__DEFAULT_WORK_TIMEOUT_S",
+                        "value": "420",
+                    },
+                    {
                         "name": "SKULD__MESH__CONSUMES_EVENT_TYPES",
                         "value": "[]",
                     },

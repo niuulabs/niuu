@@ -18,6 +18,7 @@ from niuu.adapters.cli.runtime import (
 )
 from niuu.ports.cli import CLITransport
 from skuld.transports.mcp_config import build_codex_mcp_overrides
+from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
@@ -101,11 +102,19 @@ class CodexSubprocessTransport(CLITransport):
         self.workspace_dir = workspace_dir
         self._model = model
         self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
+        self._mcp_servers = list(mcp_servers or [])
         self._process: asyncio.subprocess.Process | None = None
         self._last_result: dict | None = None
         self._pending_text: list[str] = []
+        self._env = dict(os.environ)
 
     async def start(self) -> None:
+        _, shim_env = ensure_codex_tool_shims(
+            self.workspace_dir,
+            mcp_servers=self._mcp_servers,
+        )
+        if shim_env:
+            self._env.update(shim_env)
         logger.info(
             "CodexSubprocessTransport configured for %s (model: %s)",
             self.workspace_dir,
@@ -142,6 +151,7 @@ class CodexSubprocessTransport(CLITransport):
         process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=self.workspace_dir,
+            env=self._env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

@@ -42,7 +42,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     names = {workflow.name for workflow in workflows}
     assert names == {
         "Ting Run Flow + Security + Memory Curation",
-        "Research Council + Human Input",
+        "Research Campaign",
     }
 
     run_flow = next(
@@ -64,20 +64,20 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert "security.completed -> security.completed" in edge_labels
     assert "mimir.curated -> mimir.curated" in edge_labels
 
-    research_flow = next(
-        workflow for workflow in workflows if workflow.name == "Research Council + Human Input"
-    )
+    research_flow = next(workflow for workflow in workflows if workflow.name == "Research Campaign")
     research_stage_labels = [
         node["label"] for node in research_flow.graph["nodes"] if node.get("kind") == "stage"
     ]
-    assert research_stage_labels[-1] == "Synthesize or ask operator"
+    assert research_stage_labels[0] == "Frame the inquiry"
+    assert "Curate learnings and follow-ups" in research_stage_labels
+    assert research_stage_labels[-1] == "Publish to Mimir"
     research_resources = {
         node["label"]: node
         for node in research_flow.graph["nodes"]
         if node.get("kind") == "resource"
     }
-    assert research_resources["Council Scratch Board"]["bindingMode"] == "ephemeral_local"
-    assert research_resources["Permanent Research Memory"]["bindingMode"] == "registry"
+    assert research_resources["Research Memory"]["bindingMode"] == "registry"
+    assert research_resources["Research Memory"]["path"] == "/tmp/mimir"
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
     names = {workflow.name for workflow in saved}
     assert names == {
         "Ting Run Flow + Security + Memory Curation",
-        "Research Council + Human Input",
+        "Research Campaign",
     }
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)

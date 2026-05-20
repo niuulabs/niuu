@@ -600,6 +600,10 @@ class RoomBridge:
         """Return True if *peer_id* is already a registered participant."""
         return peer_id in self._participants
 
+    def is_connected(self, peer_id: str) -> bool:
+        """Return True if *peer_id* currently has an active WebSocket."""
+        return peer_id in self._websockets
+
     # ------------------------------------------------------------------
     # Chronicle timeline reporting
     # ------------------------------------------------------------------

@@ -1073,6 +1073,77 @@ class Broker:
         """
         return bool(self._has_workflow_trigger() and self._settings.room.enabled)
 
+    def _workflow_trigger_consumer_peer_ids(self, event_type: str) -> set[str]:
+        """Return flock peer ids that subscribe to the workflow trigger event."""
+        if self._room_bridge is None or not event_type:
+            return set()
+        peer_ids: set[str] = set()
+        for participant in self._room_bridge.participants.values():
+            if participant.participant_type == "skuld":
+                continue
+            if event_type in participant.subscribes_to:
+                peer_ids.add(participant.peer_id)
+        return peer_ids
+
+    async def _wait_for_workflow_trigger_consumers(
+        self,
+        event_type: str,
+        timeout_s: float,
+        *,
+        poll_interval_s: float = 0.05,
+    ) -> None:
+        """Wait until the initial workflow-trigger consumers are connected.
+
+        Workflow kickoff events are pub/sub outcomes. If we publish them before
+        the first consumer peer finishes its WebSocket registration, the event
+        can be dropped and the flock stalls indefinitely. We treat the trigger
+        subscribers as required startup dependencies and wait briefly for them
+        to connect before dispatching the initial event.
+        """
+        required_peers = self._workflow_trigger_consumer_peer_ids(event_type)
+        if not required_peers or self._room_bridge is None:
+            return
+
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        missing = {
+            peer_id
+            for peer_id in required_peers
+            if not self._room_bridge.is_connected(peer_id)
+        }
+        if missing:
+            logger.info(
+                "Workflow trigger waiting for consumers event_type=%s peers=%s timeout=%.1fs",
+                event_type,
+                sorted(missing),
+                max(0.0, timeout_s),
+            )
+
+        while missing and time.monotonic() < deadline:
+            await asyncio.sleep(poll_interval_s)
+            missing = {
+                peer_id
+                for peer_id in required_peers
+                if not self._room_bridge.is_connected(peer_id)
+            }
+
+        if missing:
+            logger.warning(
+                "Workflow trigger dispatch continuing with missing consumers "
+                "event_type=%s peers=%s",
+                event_type,
+                sorted(missing),
+            )
+            return
+
+        # Give newly connected peers one short beat to finish their channel
+        # registration/subscription handshake before the first pub/sub event.
+        await asyncio.sleep(poll_interval_s)
+        logger.info(
+            "Workflow trigger consumers ready event_type=%s peers=%s",
+            event_type,
+            sorted(required_peers),
+        )
+
     async def _publish_workflow_trigger(self) -> None:
         """Publish the initial Ting task into the flock as a mesh outcome event."""
         if self._mesh_adapter is None or not self._has_workflow_trigger():
@@ -1081,8 +1152,11 @@ class Broker:
         from ravn.domain.events import RavnEvent, RavnEventType
 
         cfg = self._settings.workflow_trigger
+        wait_timeout_s = max(float(cfg.startup_delay_s or 0.0), 6.0)
+        await self._wait_for_workflow_trigger_consumers(cfg.event_type, wait_timeout_s)
+
         delay_s = max(0.0, float(cfg.startup_delay_s or 0.0))
-        if delay_s:
+        if delay_s and not self._workflow_trigger_consumer_peer_ids(cfg.event_type):
             logger.info(
                 "Workflow trigger waiting %.1fs for flock subscribers before mesh dispatch",
                 delay_s,

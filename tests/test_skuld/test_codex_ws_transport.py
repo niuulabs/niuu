@@ -1725,6 +1725,27 @@ class TestItemCompletedEdgeCases:
         assert len(text_deltas) == 0
 
     @pytest.mark.asyncio
+    async def test_command_completed_none_output_no_text_block(self, tmp_path):
+        """Command with null aggregated output should still emit stop and not crash."""
+        t = _make_transport(tmp_path)
+        emit = _collect_emits(t)
+
+        await t._handle_item_completed(
+            {"type": "commandExecution", "id": "cmd-1", "aggregatedOutput": None, "exitCode": 0}
+        )
+
+        events = _emitted_events(emit)
+        stops = _events_of_type(emit, "content_block_stop")
+        assert len(stops) == 1
+        text_deltas = [
+            e
+            for e in events
+            if e.get("type") == "content_block_delta"
+            and e.get("delta", {}).get("type") == "text_delta"
+        ]
+        assert len(text_deltas) == 0
+
+    @pytest.mark.asyncio
     async def test_unknown_item_completed_no_emit(self, tmp_path):
         """An unknown item type completing should not emit anything."""
         t = _make_transport(tmp_path)

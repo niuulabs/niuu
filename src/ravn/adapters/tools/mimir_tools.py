@@ -1,4 +1,4 @@
-"""Mímir agent tools — six tools for the persistent knowledge base (NIU-540).
+"""Mímir agent tools for the persistent knowledge base (NIU-540).
 
 Tools:
   mimir_ingest  — ingest a URL or raw text into the wiki
@@ -6,6 +6,7 @@ Tools:
   mimir_query   — search the wiki and synthesise an answer
   mimir_read    — read a specific wiki page
   mimir_write   — create or update a wiki page
+  mimir_publish_files — publish workspace markdown files into the wiki
   mimir_search  — full-text search, returns list of matching pages
   mimir_lint    — health-check: orphans, contradictions, staleness, gaps
 """
@@ -15,11 +16,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from niuu.domain.mimir import MimirSource, compute_content_hash
 from ravn.adapters.tools.entity_extractor import EntityExtractor
+from ravn.adapters.tools.file_security import PathSecurityError, resolve_safe
 from ravn.domain.models import ToolResult
 from ravn.ports.mimir import MimirPort
 from ravn.ports.tool import ToolPort
@@ -33,6 +36,17 @@ _MIMIR_SOURCE_INGESTED_EVENT = "mimir.source.ingested"
 
 def _source_id_from_content(title: str, content: str) -> str:
     return "src_" + compute_content_hash(f"{title}:{content}")[:16]
+
+
+def _is_provenance_optional_research_path(path: str) -> bool:
+    normalized = path.strip().lstrip("/")
+    optional_suffixes = (
+        "/brief.md",
+        "/plan.md",
+        "/manifest.md",
+        "/sources.md",
+    )
+    return normalized.startswith("research/") and normalized.endswith(optional_suffixes)
 
 
 def _string_list(value: Any) -> list[str]:
@@ -51,6 +65,55 @@ def _resolve_ingest_mount_names(adapter: MimirPort, explicit: str | None = None)
     if explicit:
         return [explicit]
     return []
+
+
+async def _validate_research_page_provenance(
+    adapter: MimirPort,
+    *,
+    path: str,
+    content: str,
+) -> str | None:
+    if not path.startswith("research/"):
+        return None
+    if _is_provenance_optional_research_path(path):
+        return None
+
+    page = parse_compiled_truth_page(content)
+    source_ids = [
+        stripped_id for source_id in page.source_ids if (stripped_id := str(source_id).strip())
+    ]
+    if not source_ids:
+        return (
+            "research pages must include non-empty frontmatter 'source_ids' that point to "
+            "ingested raw sources; call mimir_ingest on the sources you actually used first"
+        )
+
+    resolved_sources: list[MimirSource] = []
+    missing: list[str] = []
+    for source_id in source_ids:
+        source = await adapter.read_source(source_id)
+        if source is None:
+            missing.append(source_id)
+            continue
+        resolved_sources.append(source)
+
+    if missing:
+        return (
+            "research page references missing source_ids: "
+            + ", ".join(missing)
+            + "; ingest those sources before writing the page"
+        )
+
+    stripped_content = content.strip()
+    if resolved_sources and all(
+        source.content.strip() == stripped_content for source in resolved_sources
+    ):
+        return (
+            "research page provenance only points to the page content itself; ingest the "
+            "actual source material you relied on, not the final synthesized page"
+        )
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -456,52 +519,6 @@ class MimirWriteTool(ToolPort):
     def required_permission(self) -> str:
         return _PERMISSION
 
-    async def _validate_research_page_provenance(
-        self,
-        *,
-        path: str,
-        content: str,
-    ) -> str | None:
-        if not path.startswith("research/"):
-            return None
-
-        page = parse_compiled_truth_page(content)
-        source_ids = [
-            stripped_id for source_id in page.source_ids if (stripped_id := str(source_id).strip())
-        ]
-        if not source_ids:
-            return (
-                "research pages must include non-empty frontmatter 'source_ids' that point to "
-                "ingested raw sources; call mimir_ingest on the sources you actually used first"
-            )
-
-        resolved_sources: list[MimirSource] = []
-        missing: list[str] = []
-        for source_id in source_ids:
-            source = await self._adapter.read_source(source_id)
-            if source is None:
-                missing.append(source_id)
-                continue
-            resolved_sources.append(source)
-
-        if missing:
-            return (
-                "research page references missing source_ids: "
-                + ", ".join(missing)
-                + "; ingest those sources before writing the page"
-            )
-
-        stripped_content = content.strip()
-        if resolved_sources and all(
-            source.content.strip() == stripped_content for source in resolved_sources
-        ):
-            return (
-                "research page provenance only points to the page content itself; ingest the "
-                "actual source material you relied on, not the final synthesized page"
-            )
-
-        return None
-
     async def execute(self, input: dict) -> ToolResult:
         path = input.get("path", "").strip()
         content = input.get("content", "").strip()
@@ -518,7 +535,8 @@ class MimirWriteTool(ToolPort):
                 is_error=True,
             )
 
-        provenance_error = await self._validate_research_page_provenance(
+        provenance_error = await _validate_research_page_provenance(
+            self._adapter,
             path=path,
             content=content,
         )
@@ -532,6 +550,119 @@ class MimirWriteTool(ToolPort):
         await self._adapter.upsert_page(path, content, mimir=mimir)
         suffix = f" (routed to: {mimir})" if mimir else ""
         return ToolResult(tool_call_id="", content=f"Page written: {path}{suffix}")
+
+
+# ---------------------------------------------------------------------------
+# mimir_publish_files
+# ---------------------------------------------------------------------------
+
+
+class MimirPublishFilesTool(ToolPort):
+    """Publish one or more workspace markdown files into Mimir."""
+
+    def __init__(self, adapter: MimirPort, workspace: Path) -> None:
+        self._adapter = adapter
+        self._workspace = workspace
+
+    @property
+    def name(self) -> str:
+        return "mimir_publish_files"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Publish markdown files from the current workspace into Mimir using the same "
+            "relative paths. Useful when a workflow keeps working artifacts locally and "
+            "needs a deterministic durable publication step."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Workspace-relative markdown paths to publish into Mimir. "
+                        "Each file is published to the same relative path."
+                    ),
+                },
+                "mimir": {
+                    "type": "string",
+                    "description": (
+                        "Optional named Mimir mount to publish into deterministically."
+                    ),
+                },
+            },
+            "required": ["paths"],
+        }
+
+    @property
+    def required_permission(self) -> str:
+        return _PERMISSION
+
+    async def execute(self, input: dict) -> ToolResult:
+        raw_paths = input.get("paths")
+        mimir = input.get("mimir")
+        if not isinstance(raw_paths, list) or not raw_paths:
+            return ToolResult(
+                tool_call_id="",
+                content="paths must be a non-empty array of workspace-relative markdown files",
+                is_error=True,
+            )
+
+        published: list[str] = []
+        for raw_path in raw_paths:
+            path = str(raw_path or "").strip()
+            if not path:
+                continue
+            if not path.endswith(".md"):
+                return ToolResult(
+                    tool_call_id="",
+                    content=f"path must end with .md: {path}",
+                    is_error=True,
+                )
+            candidate = Path(path)
+            if not candidate.is_absolute():
+                candidate = self._workspace / candidate
+            try:
+                safe_path = resolve_safe(candidate, self._workspace)
+            except PathSecurityError as exc:
+                return ToolResult(tool_call_id="", content=str(exc), is_error=True)
+            if not safe_path.exists() or not safe_path.is_file():
+                return ToolResult(
+                    tool_call_id="",
+                    content=f"Workspace file not found: {path}",
+                    is_error=True,
+                )
+
+            content = safe_path.read_text(encoding="utf-8", errors="replace")
+            provenance_error = await _validate_research_page_provenance(
+                self._adapter,
+                path=path,
+                content=content,
+            )
+            if provenance_error is not None:
+                return ToolResult(tool_call_id="", content=provenance_error, is_error=True)
+
+            await self._adapter.upsert_page(path, content, mimir=mimir)
+            await self._adapter.get_page(path)
+            published.append(path)
+
+        if not published:
+            return ToolResult(
+                tool_call_id="",
+                content="no publishable markdown files found",
+                is_error=True,
+            )
+
+        suffix = f" (routed to: {mimir})" if mimir else ""
+        return ToolResult(
+            tool_call_id="",
+            content="Published pages:\n- " + "\n- ".join(published) + suffix,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -679,6 +810,7 @@ class MimirLintTool(ToolPort):
 
 def build_mimir_tools(
     adapter: MimirPort,
+    workspace: Path | None = None,
     entity_extractor: EntityExtractor | None = None,
     event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
 ) -> list[ToolPort]:
@@ -687,7 +819,7 @@ def build_mimir_tools(
     When *entity_extractor* is provided it is wired into :class:`MimirIngestTool`
     so that LLM-based entity detection runs automatically on every ingest.
     """
-    return [
+    tools: list[ToolPort] = [
         MimirIngestTool(adapter, entity_extractor=entity_extractor, event_emitter=event_emitter),
         MimirQueryTool(adapter),
         MimirReadTool(adapter),
@@ -696,3 +828,6 @@ def build_mimir_tools(
         MimirSearchTool(adapter),
         MimirLintTool(adapter),
     ]
+    if workspace is not None:
+        tools.append(MimirPublishFilesTool(adapter, workspace))
+    return tools

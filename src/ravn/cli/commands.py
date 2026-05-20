@@ -810,6 +810,7 @@ def _build_tools(
         tools.extend(
             build_mimir_tools(
                 mimir,
+                workspace=workspace,
                 entity_extractor=entity_extractor,
                 event_emitter=mimir_event_emitter,
             )

@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
@@ -245,6 +247,55 @@ class TestBroker:
             and call.args[0].get("content") == "Implement the requested change"
             for call in mock_channel.send_event.await_args_list
         )
+
+    @pytest.mark.asyncio
+    async def test_publish_workflow_trigger_waits_for_connected_consumers(self, tmp_path):
+        settings = SkuldSettings(
+            session={
+                "id": "wf-session-2",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Research the topic deeply",
+            },
+            mesh={"enabled": True, "peer_id": "skuld-wf"},
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "label": "Dispatch",
+                "source": "manual dispatch",
+                "event_type": "research.requested",
+                "startup_delay_s": 0.0,
+            },
+            chronicle_watcher_enabled=False,
+        )
+        broker = Broker(settings=settings)
+        broker._mesh_adapter = MagicMock(peer_id="skuld-wf", publish=AsyncMock())
+
+        consumer = SimpleNamespace(
+            peer_id="flock-research-framer",
+            participant_type="ravn",
+            subscribes_to=("research.requested",),
+        )
+        connected = False
+
+        room_bridge = MagicMock()
+        room_bridge.participants = {"flock-research-framer": consumer}
+        room_bridge.is_connected.side_effect = lambda peer_id: connected
+        broker._room_bridge = room_bridge
+
+        async def connect_later() -> None:
+            nonlocal connected
+            await asyncio.sleep(0.02)
+            connected = True
+
+        waiter = asyncio.create_task(connect_later())
+        started = time.monotonic()
+        await broker._publish_workflow_trigger()
+        elapsed = time.monotonic() - started
+        await waiter
+
+        assert elapsed >= 0.02
+        broker._mesh_adapter.publish.assert_awaited_once()
+        room_bridge.is_connected.assert_called()
 
     @pytest.mark.asyncio
     async def test_shutdown_stops_transport(self, test_broker):

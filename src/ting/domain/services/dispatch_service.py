@@ -139,6 +139,14 @@ def _resolve_workflow_execution(
         )
     personas: list[dict[str, Any]] = []
     resolved_definitions: set[str] = set()
+    requested_transport_adapter = (
+        transport_adapter_for_session_definition(
+            requested_definition,
+            session_definitions=session_definitions,
+        )
+        if requested_definition
+        else None
+    )
     for persona in workflow_personas_from_snapshot(workflow_snapshot):
         if not isinstance(persona, dict):
             continue
@@ -148,27 +156,30 @@ def _resolve_workflow_execution(
             llm = dict(runtime_persona.get("llm") or {})
             llm["model"] = model
             runtime_persona["llm"] = llm
-            resolved_definition, runtime_error = session_definition_for_model(
-                model,
-                session_definitions=session_definitions,
-                configured_models=configured_models,
-            )
-            if runtime_error:
-                raise ValueError(
-                    f"Persona '{runtime_persona.get('name', 'unknown')}' model '{model}': "
-                    f"{runtime_error}"
+            resolved_definition = requested_definition
+            transport_adapter = requested_transport_adapter
+            if not resolved_definition:
+                resolved_definition, runtime_error = session_definition_for_model(
+                    model,
+                    session_definitions=session_definitions,
+                    configured_models=configured_models,
                 )
-            if resolved_definition:
-                resolved_definitions.add(resolved_definition)
+                if runtime_error:
+                    raise ValueError(
+                        f"Persona '{runtime_persona.get('name', 'unknown')}' model '{model}': "
+                        f"{runtime_error}"
+                    )
                 transport_adapter = transport_adapter_for_session_definition(
                     resolved_definition,
                     session_definitions=session_definitions,
                 )
-                if transport_adapter:
-                    runtime_persona["executor"] = {
-                        "adapter": _CLI_TRANSPORT_EXECUTOR,
-                        "kwargs": {"transport_adapter": transport_adapter},
-                    }
+            if resolved_definition:
+                resolved_definitions.add(resolved_definition)
+            if transport_adapter:
+                runtime_persona["executor"] = {
+                    "adapter": _CLI_TRANSPORT_EXECUTOR,
+                    "kwargs": {"transport_adapter": transport_adapter},
+                }
         personas.append(runtime_persona)
 
     if len(resolved_definitions) == 1:

@@ -222,7 +222,23 @@ class SkuldMeshAdapter:
         )
 
         try:
-            result_text = await self._execute_prompt(prompt, request_id)
+            timeout_s = float(self._config.default_work_timeout_s)
+            result_text = await asyncio.wait_for(
+                self._execute_prompt(prompt, request_id),
+                timeout=timeout_s,
+            )
+        except TimeoutError:
+            logger.warning(
+                "mesh adapter: outcome event handling timed out (event_type=%s, timeout=%.0fs)",
+                event_type,
+                timeout_s,
+            )
+            result_text = (
+                "---outcome---\n"
+                "verdict: blocked\n"
+                f"summary: Timed out after {int(timeout_s)}s while handling {event_type}.\n"
+                "---end---"
+            )
         except Exception as exc:
             logger.error("mesh adapter: outcome event handling failed: %s", exc)
             result_text = f"Error: {exc}"

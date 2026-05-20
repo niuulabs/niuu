@@ -711,7 +711,9 @@ class CodexWebSocketTransport(CLITransport):
             # Close the tool_use block, then emit the output as a tool_result
             # paired by id so the UI groups it under the call.
             await self._emit_content_block_stop()
-            output = item.get("aggregatedOutput", "")
+            output = item.get("aggregatedOutput") or ""
+            if not isinstance(output, str):
+                output = str(output)
             exit_code = item.get("exitCode", 0)
             if output or exit_code != 0:
                 prefix = "" if exit_code == 0 else f"[exit code {exit_code}] "

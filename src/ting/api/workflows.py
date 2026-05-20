@@ -1,18 +1,30 @@
-"""REST API for persisted Ting workflow catalogs."""
+"""REST API for persisted Ting workflow catalogs and direct workflow launches."""
 
 from __future__ import annotations
 
+import copy
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
-from ting.adapters.inbound.auth import extract_principal
+from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
+from ting.api.dispatch import resolve_volundr_factory
 from ting.domain.models import WorkflowDefinition, WorkflowScope
+from ting.domain.services.dispatch_service import (
+    _normalize_mimir_workload_config,
+    _resolve_mimir_registry_refs,
+    _resolve_workflow_execution,
+)
+from ting.domain.utils import _session_name, _slugify
+from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
+from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrSession
 from ting.ports.workflow_repository import WorkflowRepository
+
+_DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodexExec"
 
 
 class WorkflowBody(BaseModel):
@@ -45,6 +57,44 @@ class WorkflowResponse(BaseModel):
     )
     created_at: datetime
     updated_at: datetime
+
+
+class WorkflowLaunchBody(BaseModel):
+    prompt: str = Field(min_length=1, max_length=100_000)
+    mode: Literal["exploratory", "evaluative", "investigative", "monitoring"] = (
+        "exploratory"
+    )
+    slug: str | None = Field(default=None, max_length=120)
+    session_name: str | None = Field(default=None, max_length=63)
+    audience: str = Field(default="", max_length=255)
+    deliverable: str = Field(default="", max_length=255)
+    constraints: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list, alias="successCriteria")
+    seed_urls: list[str] = Field(default_factory=list, alias="seedUrls")
+    extra_context: dict[str, Any] = Field(default_factory=dict, alias="extraContext")
+    repo: str = Field(default="", max_length=500)
+    branch: str = Field(default="main", max_length=255)
+    base_branch: str = Field(default="", max_length=255, alias="baseBranch")
+    model: str = Field(default="", max_length=100)
+    definition: str | None = Field(default=None, max_length=100)
+    profile_name: str | None = Field(default=None, max_length=255, alias="profileName")
+    integration_ids: list[str] = Field(default_factory=list, alias="integrationIds")
+    connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
+    mimir_path: str | None = Field(default=None, max_length=2048, alias="mimirPath")
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkflowLaunchResponse(BaseModel):
+    workflow_id: str = Field(serialization_alias="workflowId")
+    workflow_name: str = Field(serialization_alias="workflowName")
+    slug: str
+    session_id: str = Field(serialization_alias="sessionId")
+    session_name: str = Field(serialization_alias="sessionName")
+    status: str
+    cluster_name: str = Field(default="", serialization_alias="clusterName")
+
+    model_config = {"populate_by_name": True}
 
 
 async def resolve_workflow_repo() -> WorkflowRepository:
@@ -151,6 +201,111 @@ def create_workflows_router() -> APIRouter:
         if not await repo.delete_workflow(workflow_id):
             raise HTTPException(status_code=404, detail="Workflow not found")
 
+    @router.post(
+        "/{workflow_id}/launch",
+        response_model=WorkflowLaunchResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def launch_workflow(
+        body: WorkflowLaunchBody,
+        request: Request,
+        workflow_id: UUID = Path(description="Workflow UUID"),
+        principal: Principal = Depends(extract_principal),
+        bearer_token: str | None = Depends(extract_bearer_token),
+        repo: WorkflowRepository = Depends(resolve_workflow_repo),
+        volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+    ) -> WorkflowLaunchResponse:
+        workflow = await repo.get_workflow(workflow_id)
+        if workflow is None or not _can_view_workflow(workflow, principal):
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        workflow_snapshot = build_workflow_snapshot(workflow)
+        workflow_snapshot = _apply_mimir_path_override(workflow_snapshot, body.mimir_path)
+        launch_slug = _resolve_launch_slug(body, workflow)
+        session_name = _resolve_launch_session_name(body, workflow, launch_slug)
+        settings = request.app.state.settings
+
+        try:
+            resolved_model, resolved_definition, workflow_personas = _resolve_workflow_execution(
+                workflow_snapshot,
+                fallback_model=body.model or settings.dispatch.default_model,
+                requested_definition=body.definition or _DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
+                session_definitions=settings.session_definitions,
+                configured_models=list(settings.bifrost.models),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        initiative_context = _build_research_initiative_context(
+            workflow=workflow,
+            launch=body,
+            slug=launch_slug,
+        )
+        workflow_mimir = _resolve_mimir_registry_refs(
+            _normalize_mimir_workload_config(
+                workflow_mimir_from_snapshot(workflow_snapshot),
+                hosted_url=settings.dispatch.flock.mimir_hosted_url,
+            ),
+            registry_path=settings.dispatch.flock.mimir_registry_path,
+        )
+
+        target_adapter = await _resolve_target_adapter(
+            volundr_factory=volundr_factory,
+            principal=principal,
+            connection_id=body.connection_id,
+        )
+        if target_adapter is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No Volundr connection is available for this user",
+            )
+
+        session = await target_adapter.spawn_session(
+            SpawnRequest(
+                name=session_name,
+                repo=body.repo,
+                branch=body.branch,
+                base_branch=body.base_branch,
+                model=resolved_model,
+                tracker_issue_id=f"research:{launch_slug}",
+                tracker_issue_url="",
+                system_prompt="",
+                initial_prompt=initiative_context,
+                workload_type="ravn_flock",
+                workload_config={
+                    "personas": workflow_personas,
+                    "initiative_context": initiative_context,
+                    "workflow": workflow_snapshot,
+                    **({"mimir": workflow_mimir} if workflow_mimir else {}),
+                    **(
+                        {
+                            "sleipnir_publish_urls": list(
+                                settings.dispatch.flock.sleipnir_publish_urls
+                            )
+                        }
+                        if settings.dispatch.flock.sleipnir_publish_urls
+                        else {}
+                    ),
+                    **(
+                        {"daily_budget_usd": settings.dispatch.flock.daily_budget_usd}
+                        if settings.dispatch.flock.daily_budget_usd > 0
+                        else {}
+                    ),
+                    **(
+                        {"llm_config": settings.dispatch.flock.llm_config}
+                        if settings.dispatch.flock.llm_config
+                        else {}
+                    ),
+                },
+                definition=resolved_definition,
+                profile=body.profile_name,
+                integration_ids=body.integration_ids,
+            ),
+            auth_token=bearer_token,
+            principal=principal,
+        )
+        return _launch_response(workflow, launch_slug, session)
+
     return router
 
 
@@ -185,6 +340,152 @@ def _to_response(workflow: WorkflowDefinition) -> WorkflowResponse:
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
     )
+
+
+def _launch_response(
+    workflow: WorkflowDefinition,
+    slug: str,
+    session: VolundrSession,
+) -> WorkflowLaunchResponse:
+    return WorkflowLaunchResponse(
+        workflow_id=str(workflow.id),
+        workflow_name=workflow.name,
+        slug=slug,
+        session_id=session.id,
+        session_name=session.name,
+        status=session.status,
+        cluster_name=session.cluster_name,
+    )
+
+
+def _resolve_launch_slug(body: WorkflowLaunchBody, workflow: WorkflowDefinition) -> str:
+    if body.slug:
+        return _slugify(body.slug)[:96] or "research"
+    return _slugify(body.prompt)[:96] or _slugify(workflow.name)[:96] or "research"
+
+
+def _resolve_launch_session_name(
+    body: WorkflowLaunchBody,
+    workflow: WorkflowDefinition,
+    slug: str,
+) -> str:
+    if body.session_name:
+        return _session_name(body.session_name)
+    return _session_name(f"{workflow.name}-{slug}")
+
+
+async def _resolve_target_adapter(
+    *,
+    volundr_factory: VolundrFactory,
+    principal: Principal,
+    connection_id: str | None,
+):
+    adapters = await volundr_factory.for_principal(principal)
+    if not adapters:
+        return None
+    if connection_id:
+        for adapter in adapters:
+            if getattr(adapter, "target_id", "") == connection_id:
+                return adapter
+        raise HTTPException(status_code=404, detail="Requested Volundr connection not found")
+    return adapters[0]
+
+
+def _apply_mimir_path_override(
+    snapshot: dict[str, Any],
+    mimir_path: str | None,
+) -> dict[str, Any]:
+    path = str(mimir_path or "").strip()
+    if not path:
+        return snapshot
+
+    mutated = copy.deepcopy(snapshot)
+    mutated.pop("mimir", None)
+    graph = mutated.get("graph")
+    if not isinstance(graph, dict):
+        return mutated
+    nodes = list(graph.get("nodes") or [])
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("kind") or "") != "resource":
+            continue
+        if str(node.get("resourceType") or "") != "mimir":
+            continue
+        if str(node.get("bindingMode") or "registry") != "registry":
+            continue
+        node["path"] = path
+    for node in list(mutated.get("resource_nodes") or []):
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("bindingMode") or "registry") != "registry":
+            continue
+        node["path"] = path
+    return mutated
+
+
+def _build_research_initiative_context(
+    *,
+    workflow: WorkflowDefinition,
+    launch: WorkflowLaunchBody,
+    slug: str,
+) -> str:
+    lines = [
+        "# Research Workflow Launch",
+        "",
+        f"Workflow: {workflow.name}",
+        f"Mode: {launch.mode}",
+        f"Slug: {slug}",
+    ]
+    if launch.audience.strip():
+        lines.append(f"Audience: {launch.audience.strip()}")
+    if launch.deliverable.strip():
+        lines.append(f"Deliverable: {launch.deliverable.strip()}")
+    lines.extend(
+        [
+            "",
+            "## Research Question",
+            launch.prompt.strip(),
+        ]
+    )
+    if launch.constraints:
+        lines.extend(["", "## Constraints"])
+        lines.extend(f"- {constraint}" for constraint in launch.constraints if constraint.strip())
+    if launch.success_criteria:
+        lines.extend(["", "## Success Criteria"])
+        lines.extend(
+            f"- {criterion}"
+            for criterion in launch.success_criteria
+            if criterion.strip()
+        )
+    if launch.seed_urls:
+        lines.extend(["", "## Seed URLs"])
+        lines.extend(f"- {url}" for url in launch.seed_urls if url.strip())
+    if launch.extra_context:
+        lines.extend(["", "## Extra Context", str(launch.extra_context)])
+    lines.extend(
+        [
+            "",
+            "## Expectations",
+            (
+                "- Research deeply and follow the most promising threads instead of "
+                "stopping at the first neat answer."
+            ),
+            (
+                "- Use the workflow artifacts to stay legible, but keep the reasoning "
+                "path flexible."
+            ),
+            (
+                "- Ingest every source you materially rely on before you cite it in "
+                "durable outputs."
+            ),
+            (
+                "- Preserve uncertainty honestly and leave follow-ups where the work "
+                "is not truly finished."
+            ),
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _owner_id_for_scope(scope: WorkflowScope, principal: Principal) -> str | None:

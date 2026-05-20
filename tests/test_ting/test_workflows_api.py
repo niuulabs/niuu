@@ -8,9 +8,12 @@ from uuid import UUID, uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.domain.models import Principal
+from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflows import create_workflows_router, resolve_workflow_repo
 from ting.config import AuthConfig, Settings
 from ting.domain.models import WorkflowDefinition, WorkflowScope
+from ting.ports.volundr import SpawnRequest, VolundrPort, VolundrSession
 from ting.ports.workflow_repository import WorkflowRepository
 
 
@@ -51,6 +54,89 @@ class InMemoryWorkflowRepository(WorkflowRepository):
         return removed is not None
 
 
+class RecordingVolundrPort(VolundrPort):
+    def __init__(self, *, name: str = "local", target_id: str = "local") -> None:
+        self._name = name
+        self._target_id = target_id
+        self.requests: list[SpawnRequest] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def target_id(self) -> str:
+        return self._target_id
+
+    async def spawn_session(
+        self,
+        request: SpawnRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        self.requests.append(request)
+        return VolundrSession(
+            id="session-123",
+            name=request.name,
+            status="starting",
+            tracker_issue_id=request.tracker_issue_id,
+            cluster_name=self._name,
+            repo=request.repo,
+            branch=request.branch,
+            base_branch=request.base_branch,
+            workload_type=request.workload_type,
+        )
+
+    async def get_session(self, session_id: str, *, auth_token=None, principal=None):
+        return None
+
+    async def list_sessions(self, *, auth_token=None, principal=None):
+        return []
+
+    async def get_pr_status(self, session_id: str):
+        raise NotImplementedError
+
+    async def get_chronicle_summary(self, session_id: str) -> str:
+        raise NotImplementedError
+
+    async def send_message(self, session_id: str, message: str, *, auth_token=None, principal=None):
+        raise NotImplementedError
+
+    async def stop_session(self, session_id: str, *, auth_token=None, principal=None) -> None:
+        raise NotImplementedError
+
+    async def list_integration_ids(self, *, auth_token=None, principal=None):
+        return []
+
+    async def list_repos(self, *, auth_token=None, principal=None):
+        return []
+
+    async def get_last_assistant_message(self, session_id: str) -> str:
+        raise NotImplementedError
+
+    async def get_conversation(self, session_id: str) -> dict:
+        raise NotImplementedError
+
+    async def subscribe_activity(self):
+        if False:
+            yield None
+
+
+class RecordingVolundrFactory:
+    def __init__(self, adapters: list[VolundrPort]) -> None:
+        self._adapters = adapters
+
+    async def for_owner(self, owner_id: str) -> list[VolundrPort]:
+        return list(self._adapters)
+
+    async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
+        return self._adapters[0] if self._adapters else None
+
+    async def for_principal(self, principal: Principal) -> list[VolundrPort]:
+        return list(self._adapters)
+
+
 def _make_workflow(
     *,
     workflow_id: UUID | None = None,
@@ -72,6 +158,62 @@ def _make_workflow(
     )
 
 
+def _make_research_workflow() -> WorkflowDefinition:
+    now = datetime.now(UTC)
+    return WorkflowDefinition(
+        id=uuid4(),
+        name="Research Campaign",
+        description="Research workflow",
+        version="1.0.0",
+        scope=WorkflowScope.SYSTEM,
+        owner_id=None,
+        graph={
+            "nodes": [
+                {
+                    "id": "trigger-1",
+                    "kind": "trigger",
+                    "dispatchEvent": "research.requested",
+                },
+                {
+                    "id": "memory",
+                    "kind": "resource",
+                    "resourceType": "mimir",
+                    "bindingMode": "registry",
+                    "registryEntryId": "tmp-mimir",
+                    "path": "/tmp/mimir",
+                },
+                {
+                    "id": "stage-1",
+                    "kind": "stage",
+                    "label": "Frame",
+                    "stageMembers": [
+                        {
+                            "personaId": "research-framer",
+                            "budget": 12,
+                            "model": "gpt-5.5",
+                            "consumesEventTypes": ["research.requested"],
+                        }
+                    ],
+                },
+            ],
+            "edges": [{"id": "e1", "source": "trigger-1", "target": "stage-1"}],
+            "resourceBindings": [
+                {
+                    "id": "binding-1",
+                    "resourceNodeId": "memory",
+                    "targetType": "workflow",
+                    "targetId": "research-campaign",
+                    "access": "read_write",
+                    "writePrefixes": ["research/", "learnings/", "followups/"],
+                    "readPriority": 1,
+                }
+            ],
+        },
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def _headers(
     *,
     user_id: str = "user-1",
@@ -83,11 +225,17 @@ def _headers(
     }
 
 
-def _make_client(repo: WorkflowRepository) -> TestClient:
+def _make_client(
+    repo: WorkflowRepository,
+    *,
+    volundr_factory: RecordingVolundrFactory | None = None,
+) -> TestClient:
     app = FastAPI()
     app.include_router(create_workflows_router())
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.dependency_overrides[resolve_workflow_repo] = lambda: repo
+    if volundr_factory is not None:
+        app.dependency_overrides[resolve_volundr_factory] = lambda: volundr_factory
     return TestClient(app)
 
 
@@ -343,3 +491,61 @@ class TestWorkflowCatalogAPI:
         )
 
         assert response.status_code == 403
+
+    def test_launch_workflow_spawns_direct_flock_session(self) -> None:
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort()
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "Research whether AI grief companions are a credible product category.",
+                "mode": "exploratory",
+                "slug": "grief-companions",
+                "constraints": ["Focus on real demand and ethics."],
+                "successCriteria": ["Useful answer with durable citations."],
+                "mimirPath": "/tmp/mimir",
+            },
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["workflowId"] == str(workflow.id)
+        assert body["slug"] == "grief-companions"
+        assert body["sessionId"] == "session-123"
+        assert len(adapter.requests) == 1
+        spawn = adapter.requests[0]
+        assert spawn.definition == "skuldCodexExec"
+        assert spawn.workload_type == "ravn_flock"
+        assert spawn.tracker_issue_id == "research:grief-companions"
+        assert spawn.workload_config["workflow"]["name"] == "Research Campaign"
+        assert spawn.workload_config["personas"][0]["name"] == "research-framer"
+        assert spawn.workload_config["mimir"]["registry_refs"][0]["path"] == "/tmp/mimir"
+        assert "Research Workflow Launch" in spawn.initial_prompt
+        assert "Mode: exploratory" in spawn.initial_prompt
+
+    def test_launch_workflow_respects_connection_selection(self) -> None:
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        primary = RecordingVolundrPort(name="primary", target_id="primary")
+        secondary = RecordingVolundrPort(name="secondary", target_id="secondary")
+        client = _make_client(
+            repo,
+            volundr_factory=RecordingVolundrFactory([primary, secondary]),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "Research slow productivity systems for knowledge workers.",
+                "connectionId": "secondary",
+            },
+        )
+
+        assert response.status_code == 201
+        assert len(primary.requests) == 0
+        assert len(secondary.requests) == 1

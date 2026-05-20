@@ -237,6 +237,25 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 },
             },
         ),
+        "skuldCodexExec": SessionDefinitionConfig(
+            enabled=True,
+            display_name="OpenAI Codex (Batch)",
+            description=(
+                "OpenAI Codex — subprocess transport tuned for autonomous workflow "
+                "execution"
+            ),
+            labels=["session", "codex", "batch"],
+            default_model="",
+            compatible_providers=["openai"],
+            defaults={
+                "broker": {
+                    "cliType": "codex",
+                    "transportAdapter": "skuld.transports.codex.CodexSubprocessTransport",
+                    "skipPermissions": True,
+                    "agentTeams": False,
+                },
+            },
+        ),
         "skuldOpenCode": SessionDefinitionConfig(
             enabled=True,
             display_name="OpenCode",

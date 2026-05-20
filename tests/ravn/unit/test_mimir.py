@@ -30,6 +30,7 @@ from ravn.adapters.mimir.markdown import (
 from ravn.adapters.tools.mimir_tools import (
     MimirIngestTool,
     MimirLintTool,
+    MimirPublishFilesTool,
     MimirQueryTool,
     MimirReadSourceTool,
     MimirReadTool,
@@ -759,6 +760,51 @@ async def test_mimir_write_tool_missing_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mimir_publish_files_tool_publishes_workspace_markdown(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    research_dir = workspace / "research" / "campaigns" / "demo"
+    research_dir.mkdir(parents=True)
+    source = _make_source(
+        title="Reference",
+        content="Original source material.",
+        source_type="research",
+    )
+    await adapter.ingest(source)
+    content = (
+        "---\n"
+        "type: research\n"
+        "confidence: medium\n"
+        f"source_ids: [{source.source_id}]\n"
+        "---\n\n"
+        "# Demo\n\n"
+        "## Compiled Truth\n\n"
+        "Body."
+    )
+    (research_dir / "final.md").write_text(content, encoding="utf-8")
+
+    tool = MimirPublishFilesTool(adapter, workspace)
+    result = await tool.execute({"paths": ["research/campaigns/demo/final.md"]})
+
+    assert not result.is_error
+    assert "research/campaigns/demo/final.md" in result.content
+    page_path = tmp_path / "mimir" / "wiki" / "research" / "campaigns" / "demo" / "final.md"
+    assert page_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_mimir_publish_files_tool_rejects_missing_workspace_file(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = MimirPublishFilesTool(adapter, workspace)
+    result = await tool.execute({"paths": ["research/campaigns/demo/final.md"]})
+    assert result.is_error
+    assert "Workspace file not found" in result.content
+
+
+@pytest.mark.asyncio
 async def test_mimir_search_tool_success(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     await adapter.upsert_page("technical/ravn/memory.md", "# Memory\n\nEpisodic storage.")
@@ -813,8 +859,8 @@ async def test_mimir_lint_tool_reports_issues(tmp_path: Path) -> None:
 
 def test_build_mimir_tools_returns_seven(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
-    tools = build_mimir_tools(adapter)
-    assert len(tools) == 7
+    tools = build_mimir_tools(adapter, workspace=tmp_path)
+    assert len(tools) == 8
     names = {t.name for t in tools}
     assert names == {
         "mimir_ingest",
@@ -822,6 +868,7 @@ def test_build_mimir_tools_returns_seven(tmp_path: Path) -> None:
         "mimir_read",
         "mimir_read_source",
         "mimir_write",
+        "mimir_publish_files",
         "mimir_search",
         "mimir_lint",
     }
