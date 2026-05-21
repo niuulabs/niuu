@@ -62,6 +62,24 @@ describe('RawSourcePane', () => {
     expect(screen.getByText(/plain text with no wikilinks/i)).toBeInTheDocument();
   });
 
+  it('renders markdown structure for non-wikilink sources', () => {
+    render(
+      <RawSourcePane
+        sources={[
+          {
+            id: 'src-003',
+            title: 'Postmortem',
+            originType: 'file',
+            content: '# Postmortem\n\n## Goal\n\n- Verify artifact',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByRole('heading', { name: 'Postmortem', level: 1 })).toBeInTheDocument();
+    expect(screen.getByText('Goal')).toBeInTheDocument();
+    expect(screen.getByText('Verify artifact')).toBeInTheDocument();
+  });
+
   it('has aria-label on the root container', () => {
     render(<RawSourcePane sources={SOURCES} />);
     const container = screen.getByLabelText('raw sources');

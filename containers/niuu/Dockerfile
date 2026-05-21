@@ -33,7 +33,7 @@ WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable
+RUN uv sync --frozen --no-dev --no-editable --extra k8s
 
 # ---------------------------------------------------------------------------
 # Runtime — minimal image with no build tools or pip
@@ -42,7 +42,7 @@ FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7
 
 
 LABEL org.opencontainers.image.title="niuu"
-LABEL org.opencontainers.image.description="Niuu — shared platform services"
+LABEL org.opencontainers.image.description="Niuu — unified Python control plane services"
 LABEL org.opencontainers.image.vendor="Niuu Labs"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
@@ -54,6 +54,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
+    git \
     python3.12 \
     python3.12-venv \
     && rm -rf /var/lib/apt/lists/*
@@ -72,6 +73,9 @@ RUN chmod +x /app/entrypoint.sh
 
 # Set working directory
 WORKDIR /app
+
+# Shared runtime paths used by the unified control-plane services.
+RUN mkdir -p /data/mimir && chown niuu:niuu /data/mimir
 
 # Switch to non-root user
 USER niuu

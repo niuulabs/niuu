@@ -12,8 +12,8 @@ from copy import deepcopy
 from datetime import UTC, datetime
 
 REGISTRY: dict[str, object] = {
-    "version": 7,
-    "updatedAt": "2026-04-15T09:24:11Z",
+    "version": 8,
+    "updatedAt": "2026-05-14T12:00:00Z",
     "types": [
         {
             "id": "realm",
@@ -51,7 +51,7 @@ REGISTRY: dict[str, object] = {
             "color": "ice-200",
             "size": 14,
             "border": "dashed",
-            "canContain": ["service", "raid", "tyr", "bifrost", "volundr", "valkyrie", "mimir"],
+            "canContain": ["service", "run", "ting", "bifrost", "volundr", "valkyrie", "mimir"],
             "parentTypes": ["realm"],
             "category": "topology",
             "description": "A runtime cluster nested inside a realm.",
@@ -106,8 +106,8 @@ REGISTRY: dict[str, object] = {
             ],
         },
         {
-            "id": "ravn_raid",
-            "label": "Raid Ravn",
+            "id": "ravn_run",
+            "label": "Run Ravn",
             "rune": "ᚲ",
             "icon": "bird",
             "shape": "triangle",
@@ -115,9 +115,9 @@ REGISTRY: dict[str, object] = {
             "size": 8,
             "border": "solid",
             "canContain": [],
-            "parentTypes": ["raid"],
+            "parentTypes": ["run"],
             "category": "agent",
-            "description": "Ephemeral raven conscripted into a raid.",
+            "description": "Ephemeral raven conscripted into a run.",
             "fields": [
                 {
                     "key": "role",
@@ -138,9 +138,9 @@ REGISTRY: dict[str, object] = {
             "size": 9,
             "border": "solid",
             "canContain": [],
-            "parentTypes": ["raid", "cluster"],
+            "parentTypes": ["run", "cluster"],
             "category": "agent",
-            "description": "WebSocket broker paired to a raid for chat fan-out.",
+            "description": "WebSocket broker paired to a run for chat fan-out.",
             "fields": [],
         },
         {
@@ -167,9 +167,9 @@ REGISTRY: dict[str, object] = {
             ],
         },
         {
-            "id": "tyr",
-            "label": "Týr",
-            "rune": "ᛃ",
+            "id": "ting",
+            "label": "Ting",
+            "rune": "✦",
             "icon": "git-branch",
             "shape": "square",
             "color": "brand",
@@ -178,10 +178,10 @@ REGISTRY: dict[str, object] = {
             "canContain": [],
             "parentTypes": ["cluster", "realm"],
             "category": "coordinator",
-            "description": "Saga and raid orchestrator.",
+            "description": "Saga and run orchestrator.",
             "fields": [
                 {"key": "activeSagas", "label": "Active sagas", "type": "number"},
-                {"key": "pendingRaids", "label": "Pending raids", "type": "number"},
+                {"key": "pendingRuns", "label": "Pending runs", "type": "number"},
                 {
                     "key": "mode",
                     "label": "Mode",
@@ -236,29 +236,15 @@ REGISTRY: dict[str, object] = {
             "color": "ice-100",
             "size": 42,
             "border": "solid",
-            "canContain": ["mimir_sub"],
+            "canContain": [],
             "parentTypes": ["cluster", "realm"],
             "category": "knowledge",
             "description": "Primary knowledge and memory index.",
             "fields": [
                 {"key": "pages", "label": "Pages", "type": "number"},
                 {"key": "writes", "label": "Writes", "type": "number"},
+                {"key": "mountCount", "label": "Mounts", "type": "number"},
             ],
-        },
-        {
-            "id": "mimir_sub",
-            "label": "Sub-Mímir",
-            "rune": "ᛗ",
-            "icon": "book-marked",
-            "shape": "mimir-small",
-            "color": "ice-200",
-            "size": 18,
-            "border": "solid",
-            "canContain": [],
-            "parentTypes": ["mimir"],
-            "category": "knowledge",
-            "description": "Domain-scoped Mimir shard.",
-            "fields": [{"key": "purpose", "label": "Purpose", "type": "string"}],
         },
         {
             "id": "service",
@@ -366,15 +352,15 @@ REGISTRY: dict[str, object] = {
             "fields": [],
         },
         {
-            "id": "raid",
-            "label": "Raid",
+            "id": "run",
+            "label": "Run",
             "rune": "ᚷ",
             "icon": "users",
             "shape": "halo",
             "color": "brand",
             "size": 50,
             "border": "dashed",
-            "canContain": ["ravn_raid", "skuld"],
+            "canContain": ["ravn_run", "skuld"],
             "parentTypes": ["cluster"],
             "category": "composite",
             "description": "Ephemeral flock executing a saga.",
@@ -440,16 +426,16 @@ _SEED_NODES = [
         "activity": "idle",
     },
     {
-        "id": "tyr-0",
-        "typeId": "tyr",
-        "label": "tyr-0",
+        "id": "ting-0",
+        "typeId": "ting",
+        "label": "ting-0",
         "parentId": "cluster-valaskjalf",
         "status": "healthy",
         "zone": "asgard",
         "cluster": "valaskjalf",
         "mode": "active",
         "activeSagas": 3,
-        "pendingRaids": 2,
+        "pendingRuns": 2,
         "activity": "thinking",
     },
     {
@@ -488,9 +474,9 @@ _SEED_NODES = [
         "activity": "reading",
     },
     {
-        "id": "raid-0",
-        "typeId": "raid",
-        "label": "raid-omega",
+        "id": "run-0",
+        "typeId": "run",
+        "label": "run-omega",
         "parentId": "cluster-valaskjalf",
         "status": "observing",
         "zone": "asgard",
@@ -528,8 +514,8 @@ _SEED_NODES = [
 ]
 
 _SEED_EDGES = [
-    {"id": "e-tyr-volundr", "sourceId": "tyr-0", "targetId": "volundr-0", "kind": "solid"},
-    {"id": "e-tyr-raid", "sourceId": "tyr-0", "targetId": "raid-0", "kind": "dashed-anim"},
+    {"id": "e-ting-volundr", "sourceId": "ting-0", "targetId": "volundr-0", "kind": "solid"},
+    {"id": "e-ting-run", "sourceId": "ting-0", "targetId": "run-0", "kind": "dashed-anim"},
     {
         "id": "e-huginn-mimir",
         "sourceId": "ravn-huginn",
@@ -537,23 +523,23 @@ _SEED_EDGES = [
         "kind": "dashed-long",
     },
     {"id": "e-bifrost-mimir", "sourceId": "bifrost-0", "targetId": "mimir-0", "kind": "soft"},
-    {"id": "e-raid-huginn", "sourceId": "raid-0", "targetId": "ravn-huginn", "kind": "raid"},
+    {"id": "e-run-huginn", "sourceId": "run-0", "targetId": "ravn-huginn", "kind": "run"},
 ]
 
 _SEED_EVENTS = [
     {
         "id": "ev-1",
         "time": "00:00:01",
-        "type": "RAID",
-        "subject": "raid-omega",
-        "body": 'tyr dispatched raid · "refactor bifrost rule engine"',
+        "type": "RUN",
+        "subject": "run-omega",
+        "body": 'ting dispatched run · "refactor bifrost rule engine"',
     },
     {
         "id": "ev-2",
         "time": "00:00:05",
         "type": "RAVN",
         "subject": "huginn",
-        "body": "huginn joined raid-omega as coord",
+        "body": "huginn joined run-omega as coord",
     },
     {
         "id": "ev-3",

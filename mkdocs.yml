@@ -1,5 +1,5 @@
-site_name: Volundr
-site_description: Self-hosted remote development platform on Kubernetes
+site_name: Niuu
+site_description: Self-hosted platform for AI coding sessions, workflows, memory, and LLM operations
 site_url: https://niuulabs.github.io/volundr/
 repo_url: https://github.com/niuulabs/volundr
 repo_name: niuulabs/volundr
@@ -23,9 +23,10 @@ theme:
         icon: material/brightness-7
         name: Switch to dark mode
   font: false
+  logo: images/logo-knot.svg
+  favicon: images/logo-knot.svg
   icon:
     repo: fontawesome/brands/github
-    logo: material/hammer-wrench
   features:
     - navigation.sections
     - navigation.expand
@@ -44,104 +45,6 @@ extra_css:
 
 nav:
   - Home: index.md
-  - Getting Started:
-      - Quick Start: getting-started/quick-start.md
-      - Local Quickstart: getting-started/local-quickstart.md
-      - Installation: getting-started/installation.md
-      - Your First Session: getting-started/first-session.md
-      - Configuration: getting-started/configuration.md
-      - Running: getting-started/running.md
-      - Troubleshooting: getting-started/troubleshooting.md
-  - User Guide:
-      - Sessions: user-guide/sessions.md
-      - Templates & Profiles: user-guide/templates.md
-      - Presets: user-guide/presets.md
-      - Chronicles: user-guide/chronicles.md
-      - Git Workflows: user-guide/git-workflows.md
-      - Credentials & Secrets: user-guide/credentials.md
-      - Integrations: user-guide/integrations.md
-      - Web UI: user-guide/web-ui.md
-      - CLI Reference: user-guide/cli.md
-  - Installation Guide:
-      - Overview: installation/overview.md
-      - Local Development (k3d): installation/local-k3d.md
-      - Single-Node (k3s): installation/single-node.md
-      - Production Kubernetes: installation/kubernetes.md
-      - Helm Values Reference: installation/helm-reference.md
-      - Production Checklist: installation/production.md
-  - Configuration:
-      - Overview: configuration/overview.md
-      - Dynamic Adapters: configuration/adapters.md
-      - Git Providers: configuration/git.md
-      - Identity & Auth: configuration/identity.md
-      - Secret Management: configuration/secrets.md
-      - Storage: configuration/storage.md
-      - Event Pipeline: configuration/events.md
-      - Session Contributors: configuration/contributors.md
-      - Session Gateway: configuration/gateway.md
-      - Issue Trackers: configuration/trackers.md
-  - Setup Guide:
-      - AI-Agent Setup: setup/agent-guide.md
-  - Architecture:
-      - Overview: architecture/overview.md
-      - Components: architecture/components.md
-      - Session Lifecycle: architecture/session-lifecycle.md
-      - Hexagonal Design: architecture/hexagonal.md
-  - API Reference:
-      - OpenAPI Spec: api/openapi.md
-      - Sessions: api/sessions.md
-      - Chronicles: api/chronicles.md
-      - Git Workflows: api/git.md
-      - Profiles & Templates: api/profiles.md
-      - Presets: api/presets.md
-      - Prompts: api/prompts.md
-      - Tenants & Users: api/tenants.md
-      - Credentials: api/credentials.md
-      - Secrets: api/secrets.md
-      - Events: api/events.md
-      - Integrations: api/integrations.md
-      - Issue Tracker: api/tracker.md
-  - Ravn (Agent):
-      - Overview: ravn/index.md
-      - Getting Started:
-          - Quick Start: ravn/getting-started/quick-start.md
-      - Configuration:
-          - Reference: ravn/configuration/reference.md
-      - CLI:
-          - Reference: ravn/cli/reference.md
-      - Tools:
-          - Reference: ravn/tools/reference.md
-      - Personas:
-          - Reference: ravn/personas/reference.md
-      - Platform Services:
-          - Bifrost — LLM Proxy: ravn/platform/bifrost.md
-          - Mímir — Knowledge Base: ravn/platform/mimir.md
-          - MCP Integration: ravn/platform/mcp.md
-      - Advanced Features:
-          - Cascade & Parallel Execution: ravn/advanced/cascade.md
-          - Flock / Mesh Networking: ravn/advanced/flock.md
-          - Drive Loop & Triggers: ravn/advanced/drive-loop.md
-          - Memory & Knowledge Systems: ravn/advanced/memory.md
-          - Skill System: ravn/advanced/skills.md
-          - Context Management: ravn/advanced/context.md
-          - Extended Thinking: ravn/advanced/thinking.md
-      - Operations:
-          - Sleipnir Event Backbone: ravn/operations/sleipnir.md
-          - Gateway Channels: ravn/operations/gateway.md
-          - Security & Permissions: ravn/operations/security.md
-          - Hooks: ravn/operations/hooks.md
-          - Self-Improvement / Evolution: ravn/operations/evolution.md
-          - Deployment: ravn/operations/deployment.md
-          - Checkpointing & Resume: ravn/operations/checkpointing.md
-      - Developer Reference:
-          - Architecture: ravn/developer/architecture.md
-          - Adding a New Tool: ravn/developer/new-tool.md
-          - Adding a New LLM Provider: ravn/developer/new-provider.md
-          - Adding a New Channel: ravn/developer/new-channel.md
-  - Contributing:
-      - Development: contributing/development.md
-      - Code Style: contributing/code-style.md
-      - Testing: contributing/testing.md
 
 markdown_extensions:
   - admonition

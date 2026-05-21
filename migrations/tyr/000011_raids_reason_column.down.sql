@@ -1,1 +1,0 @@
-ALTER TABLE raids DROP COLUMN IF EXISTS reason;

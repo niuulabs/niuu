@@ -54,7 +54,7 @@ if (!Element.prototype.releasePointerCapture) {
 
 // jsdom doesn't implement HTMLCanvasElement.prototype.getContext.
 // Return a minimal stub so canvas-based components (e.g. AmbientTopology,
-// RaidMeshCanvas) don't print "Not implemented" warnings during tests.
+// RunMeshCanvas) don't print "Not implemented" warnings during tests.
 if (typeof HTMLCanvasElement !== 'undefined') {
   HTMLCanvasElement.prototype.getContext = () =>
     ({

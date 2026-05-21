@@ -112,7 +112,7 @@ class TestCheckpointModel:
         assert InterruptReason.SIGINT == "sigint"
         assert InterruptReason.SIGTERM == "sigterm"
         assert InterruptReason.BUDGET_EXHAUSTED == "budget_exhausted"
-        assert InterruptReason.TYR_CANCEL == "tyr_cancel"
+        assert InterruptReason.TING_CANCEL == "ting_cancel"
 
     def test_default_created_at_is_utc(self) -> None:
         cp = Checkpoint(
@@ -294,11 +294,11 @@ class TestDiskCheckpointAdapter:
         assert saved_files[0].parent == tmp_path
 
     def test_to_dict_from_dict_roundtrip(self) -> None:
-        cp = _make_checkpoint(interrupted_by=InterruptReason.TYR_CANCEL)
+        cp = _make_checkpoint(interrupted_by=InterruptReason.TING_CANCEL)
         d = _to_dict(cp)
-        assert d["interrupted_by"] == "tyr_cancel"
+        assert d["interrupted_by"] == "ting_cancel"
         restored = _from_dict(d)
-        assert restored.interrupted_by == InterruptReason.TYR_CANCEL
+        assert restored.interrupted_by == InterruptReason.TING_CANCEL
         assert restored.created_at == cp.created_at
 
     def test_from_dict_none_interrupted_by(self) -> None:
@@ -424,7 +424,7 @@ async def test_checkpoint_written_on_budget_exhausted() -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_event_stops_loop_and_checkpoints() -> None:
-    """When agent.interrupt() is called, the loop stops with TYR_CANCEL reason."""
+    """When agent.interrupt() is called, the loop stops with TING_CANCEL reason."""
     store = InMemoryCheckpointAdapter()
 
     # Tool call triggers first iteration; we call interrupt before the second.
@@ -468,13 +468,13 @@ async def test_cancel_event_stops_loop_and_checkpoints() -> None:
     )
 
     # Signal cancellation before the second iteration fires.
-    agent.interrupt(InterruptReason.TYR_CANCEL)
+    agent.interrupt(InterruptReason.TING_CANCEL)
     with pytest.raises(MaxIterationsError):
         await agent.run_turn("do work")
 
     assert "cancel_task" in store._store
     cp = store._store["cancel_task"]
-    assert cp.interrupted_by == InterruptReason.TYR_CANCEL
+    assert cp.interrupted_by == InterruptReason.TING_CANCEL
 
 
 @pytest.mark.asyncio

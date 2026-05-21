@@ -9,7 +9,6 @@ import type {
   VolundrFeatures,
   VolundrSession,
   VolundrStats,
-  VolundrModel,
   VolundrRepo,
   VolundrMessage,
   VolundrLog,
@@ -43,6 +42,7 @@ import type {
   VolundrProvisioningResult,
   SessionSource,
   SessionDefinition,
+  VolundrTarget,
   AdminSettings,
   AdminStorageSettings,
   FeatureModule,
@@ -50,7 +50,32 @@ import type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
+  VolundrWorkflowGate,
 } from '../models/volundr.model';
+
+export interface VolundrConversationTurn {
+  id: string;
+  role: string;
+  content: string;
+  parts?: Array<Record<string, unknown>>;
+  created_at: string;
+  metadata?: Record<string, unknown>;
+  participant_id?: string;
+  participant_meta?: Record<string, unknown>;
+  thread_id?: string;
+  visibility?: 'visible' | 'internal';
+}
+
+export interface VolundrConversationHistory {
+  turns: VolundrConversationTurn[];
+  last_activity?: string;
+}
+
+export interface ResolveWorkflowGateRequest {
+  decision: 'APPROVE' | 'CHANGES_REQUESTED';
+  notes?: string;
+  source?: string;
+}
 
 export interface IVolundrService {
   // Feature flags
@@ -64,8 +89,8 @@ export interface IVolundrService {
   getSession(id: string): Promise<VolundrSession | null>;
   getActiveSessions(): Promise<VolundrSession[]>;
   getStats(): Promise<VolundrStats>;
-  getModels(): Promise<Record<string, VolundrModel>>;
   getRepos(): Promise<VolundrRepo[]>;
+  getTargets(): Promise<VolundrTarget[]>;
 
   /** Subscribe to live session updates via SSE. Returns an unsubscribe function. */
   subscribe(callback: (sessions: VolundrSession[]) => void): () => void;
@@ -105,6 +130,7 @@ export interface IVolundrService {
     taskType?: string;
     trackerIssue?: TrackerIssue;
     terminalRestricted?: boolean;
+    instanceId?: string | null;
     workspaceId?: string;
     credentialNames?: string[];
     integrationIds?: string[];
@@ -122,10 +148,18 @@ export interface IVolundrService {
   resumeSession(sessionId: string): Promise<void>;
   deleteSession(sessionId: string, cleanup?: string[]): Promise<void>;
   archiveSession(sessionId: string): Promise<void>;
+  archiveStoppedSessions(): Promise<string[]>;
   restoreSession(sessionId: string): Promise<void>;
   listArchivedSessions(): Promise<VolundrSession[]>;
 
   // Messaging
+  getConversationHistory(sessionId: string): Promise<VolundrConversationHistory>;
+  getWorkflowGates(sessionId: string): Promise<VolundrWorkflowGate[]>;
+  resolveWorkflowGate(
+    sessionId: string,
+    gateId: string,
+    request: ResolveWorkflowGateRequest,
+  ): Promise<VolundrWorkflowGate>;
   getMessages(sessionId: string): Promise<VolundrMessage[]>;
   sendMessage(sessionId: string, content: string): Promise<VolundrMessage>;
   subscribeMessages(sessionId: string, callback: (message: VolundrMessage) => void): () => void;

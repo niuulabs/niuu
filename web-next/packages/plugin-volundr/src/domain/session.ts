@@ -16,6 +16,7 @@ export type SessionState =
   | 'idle'
   | 'terminating'
   | 'terminated'
+  | 'archived'
   | 'failed';
 
 export interface SessionResources {
@@ -49,9 +50,10 @@ export interface Session {
   ravnId: string;
   personaName: string;
   sagaId?: string;
-  raidId?: string;
+  runId?: string;
   templateId: string;
   clusterId: string;
+  clusterName?: string;
   state: SessionState;
   startedAt: string;
   readyAt?: string;
@@ -85,6 +87,7 @@ const VALID_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   idle: ['running', 'terminating', 'failed'],
   terminating: ['terminated', 'failed'],
   terminated: [],
+  archived: [],
   failed: ['terminated'],
 };
 

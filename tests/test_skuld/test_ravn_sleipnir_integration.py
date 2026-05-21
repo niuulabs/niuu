@@ -9,7 +9,7 @@ Test scenarios
 1. Turn start → ``ravn.turn.start`` received by audit-log subscriber
 2. Tool call sequence → ``ravn.tool.start`` then ``ravn.tool.complete`` in order
 3. Tool failure → ``ravn.tool.error`` received with error payload
-4. Task complete → ``ravn.task.complete`` received by Tyr subscriber
+4. Task complete → ``ravn.task.complete`` received by Ting subscriber
 5. Decision required → ``ravn.decision.required`` with urgency ≥ 0.8
 6. correlation_id groups all events from one task across all event types
 
@@ -272,14 +272,14 @@ class TestScenario1TurnStart:
         assert len(received) == 1
         assert received[0].event_type == RAVN_TURN_START
 
-    async def test_turn_start_not_delivered_to_tyr_subscriber(self, bus):
+    async def test_turn_start_not_delivered_to_ting_subscriber(self, bus):
         ravn_event = _make_ravn_event(RavnEventType.TURN_START)
         received: list[SleipnirEvent] = []
 
         async def handler(evt: SleipnirEvent) -> None:
             received.append(evt)
 
-        await bus.subscribe(["tyr.*"], handler)
+        await bus.subscribe(["ting.*"], handler)
         await bus.publish(TRANSLATOR.translate(ravn_event))
         await bus.flush()
         await asyncio.sleep(0.05)
@@ -395,7 +395,7 @@ class TestScenario3ToolError:
 
 
 # ---------------------------------------------------------------------------
-# Scenario 4: Task complete → ravn.task.complete received by Tyr subscriber
+# Scenario 4: Task complete → ravn.task.complete received by Ting subscriber
 # ---------------------------------------------------------------------------
 
 
@@ -413,7 +413,7 @@ class TestScenario4TaskComplete:
         assert evt.event_type == RAVN_TASK_COMPLETE
         assert evt.source == _SOURCE
 
-    async def test_task_complete_received_by_wildcard_tyr_subscriber(self, bus):
+    async def test_task_complete_received_by_wildcard_ting_subscriber(self, bus):
         """Validate that a subscriber using '*' (all events) also receives task.complete."""
         ravn_event = _make_ravn_event(RavnEventType.TASK_COMPLETE)
         received = await _publish_and_collect(bus, ravn_event, ["*"])

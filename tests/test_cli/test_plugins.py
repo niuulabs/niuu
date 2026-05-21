@@ -1,4 +1,4 @@
-"""Tests for volundr.plugin, tyr.plugin, and the plugin registry."""
+"""Tests for volundr.plugin, ting.plugin, and the plugin registry."""
 
 from __future__ import annotations
 
@@ -9,14 +9,20 @@ import respx
 import typer
 from typer.testing import CliRunner
 
+from audit.plugin import AuditPlugin
 from bifrost.plugin import BifrostPlugin
 from cli.registry import PluginRegistry
+from credentials.plugin import CredentialsPlugin
+from features.plugin import FeaturesPlugin
+from identity.plugin import IdentityPlugin
+from integrations.plugin import IntegrationsPlugin
 from mimir.plugin import MimirPlugin
-from niuu.ports.plugin import ServiceDefinition
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition
 from observatory.plugin import ObservatoryPlugin
 from personas.plugin import PersonasPlugin
 from ravn.plugin import RavnPlugin
-from tyr.plugin import TyrPlugin
+from ting.plugin import TingPlugin
+from tracker.plugin import TrackerPlugin
 from volundr.plugin import VolundrPlugin
 
 runner = CliRunner()
@@ -87,69 +93,26 @@ class TestVolundrPlugin:
         route_domains = plugin.api_route_domains()
         assert route_domains
         assert [route_domain.name for route_domain in route_domains] == [
-            "audit-api",
             "admin-api",
-            "features-api",
-            "features-legacy-api",
-            "credentials-api",
-            "credentials-legacy-api",
             "forge-api",
-            "forge-legacy-api",
             "session-api",
-            "session-legacy-api",
             "workspace-api",
-            "workspace-legacy-api",
             "catalog-api",
-            "catalog-legacy-api",
             "git-api",
-            "git-legacy-api",
-            "volundr-api",
-            "identity-api",
-            "identity-legacy-api",
-            "integrations-api",
-            "integrations-legacy-api",
-            "tenancy-api",
-            "tracker-api",
-            "tokens-api",
-            "tokens-legacy-api",
         ]
         domains = {route_domain.name: route_domain.prefixes for route_domain in route_domains}
-        assert domains["audit-api"] == ("/api/v1/audit", "/audit")
-        assert domains["features-api"] == ("/api/v1/features",)
-        assert domains["features-legacy-api"] == ("/api/v1/volundr/features",)
-        assert domains["credentials-api"] == ("/api/v1/credentials",)
-        assert domains["credentials-legacy-api"] == (
-            "/api/v1/volundr/credentials",
-            "/api/v1/volundr/secrets",
-        )
+        assert domains["admin-api"] == ("/api/v1/forge/admin", "/api/v1/forge/settings")
         assert domains["forge-api"][:3] == (
             "/api/v1/forge/sessions",
             "/api/v1/forge/chronicles",
             "/api/v1/forge/events",
-        )
-        assert domains["forge-legacy-api"][:3] == (
-            "/api/v1/volundr/sessions",
-            "/api/v1/volundr/chronicles",
-            "/api/v1/volundr/events",
         )
         assert domains["session-api"] == (
             "/api/v1/forge/sessions",
             "/api/v1/forge/chronicles",
             "/api/v1/forge/events",
         )
-        assert domains["session-legacy-api"] == (
-            "/api/v1/volundr/sessions",
-            "/api/v1/volundr/chronicles",
-            "/api/v1/volundr/events",
-        )
         assert domains["workspace-api"] == ("/api/v1/forge/workspaces",)
-        assert domains["workspace-legacy-api"] == ("/api/v1/volundr/workspaces",)
-        assert domains["identity-api"] == ("/api/v1/identity",)
-        assert domains["identity-legacy-api"] == ("/api/v1/volundr/me", "/api/v1/volundr/identity")
-        assert domains["integrations-api"] == ("/api/v1/integrations",)
-        assert domains["integrations-legacy-api"] == ("/api/v1/volundr/integrations",)
-        assert domains["tokens-api"] == ("/api/v1/tokens",)
-        assert domains["tokens-legacy-api"] == ("/api/v1/users/tokens", "/api/v1/volundr/tokens")
 
     def test_registers_sessions_group(self) -> None:
         plugin = VolundrPlugin()
@@ -240,95 +203,167 @@ class TestVolundrPlugin:
         assert "Chat" in names
 
 
-class TestTyrPlugin:
+class TestVolundrDomainPlugins:
+    def test_audit_plugin_route_domains(self) -> None:
+        plugin = AuditPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="audit-api",
+                prefixes=("/api/v1/audit", "/audit"),
+                description="Canonical audit log query routes.",
+            ),
+        )
+
+    def test_identity_plugin_route_domains(self) -> None:
+        plugin = IdentityPlugin()
+        route_domains = plugin.api_route_domains()
+        assert [route_domain.name for route_domain in route_domains] == [
+            "identity-api",
+            "tenancy-api",
+            "tokens-api",
+        ]
+        assert route_domains[0].prefixes == (
+            "/api/v1/identity/me",
+            "/api/v1/identity/settings",
+            "/api/v1/identity/auth/config",
+            "/api/v1/identity/users",
+        )
+        assert route_domains[1].prefixes == ("/api/v1/identity/tenants",)
+        assert route_domains[2].prefixes == ("/api/v1/tokens",)
+
+    def test_features_plugin_route_domains(self) -> None:
+        plugin = FeaturesPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="features-api",
+                prefixes=("/api/v1/features",),
+                description="Canonical feature catalog and preferences routes.",
+            ),
+        )
+
+    def test_credentials_plugin_route_domains(self) -> None:
+        plugin = CredentialsPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="credentials-api",
+                prefixes=("/api/v1/credentials",),
+                description="Canonical credential and secret-type routes.",
+            ),
+        )
+
+    def test_integrations_plugin_route_domains(self) -> None:
+        plugin = IntegrationsPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="integrations-api",
+                prefixes=("/api/v1/integrations",),
+                description="Canonical integrations and OAuth routes.",
+            ),
+        )
+
+    def test_tracker_plugin_route_domains(self) -> None:
+        plugin = TrackerPlugin()
+        assert plugin.api_route_domains() == (
+            APIRouteDomain(
+                name="tracker-api",
+                prefixes=(
+                    "/api/v1/tracker/status",
+                    "/api/v1/tracker/issues",
+                    "/api/v1/tracker/repo-mappings",
+                ),
+                description="Canonical tracker issue, status, and repo mapping routes.",
+            ),
+        )
+
+
+class TestTingPlugin:
     def test_name(self) -> None:
-        plugin = TyrPlugin()
-        assert plugin.name == "tyr"
+        plugin = TingPlugin()
+        assert plugin.name == "ting"
 
     def test_description(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         desc = plugin.description.lower()
         assert "saga" in desc or "coordinator" in desc
 
     def test_register_service_returns_definition(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         svc_def = plugin.register_service()
         assert isinstance(svc_def, ServiceDefinition)
-        assert svc_def.name == "tyr"
+        assert svc_def.name == "ting"
         assert svc_def.default_enabled is True
 
     def test_register_service_depends_on_volundr(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         svc_def = plugin.register_service()
         assert svc_def is not None
         assert "volundr" in svc_def.depends_on
 
     def test_depends_on_volundr_via_service_definition(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         assert "volundr" in plugin.depends_on()
 
     def test_create_service_returns_service(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         svc = plugin.create_service()
         assert svc is not None
 
     def test_api_route_domains_declared(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         route_domains = plugin.api_route_domains()
         assert route_domains
         assert [route_domain.name for route_domain in route_domains] == [
-            "tracker-api",
+            "tracker-intake-api",
             "saga-api",
             "review-api",
             "dispatch-api",
             "workflow-api",
             "settings-api",
-            "integrations-api",
+            "ting-channel-api",
             "event-api",
-            "tyr-api",
+            "ting-api",
         ]
         assert route_domains[0].prefixes == ("/api/v1/tracker/projects", "/api/v1/tracker/import")
         assert route_domains[4].prefixes == (
-            "/api/v1/tyr/flock",
-            "/api/v1/tyr/flock_flows",
-            "/api/v1/tyr/pipelines",
+            "/api/v1/ting/flock",
+            "/api/v1/ting/flock_flows",
         )
-        assert route_domains[5].prefixes == ("/api/v1/tyr/settings",)
+        assert route_domains[5].prefixes == ("/api/v1/ting/settings",)
 
     def test_registers_sagas_group(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         app = typer.Typer()
         plugin.register_commands(app)
         group_names = [g.name for g in app.registered_groups]
         assert "sagas" in group_names
 
-    def test_registers_raids_group(self) -> None:
-        plugin = TyrPlugin()
+    def test_registers_runs_group(self) -> None:
+        plugin = TingPlugin()
         app = typer.Typer()
         plugin.register_commands(app)
         group_names = [g.name for g in app.registered_groups]
-        assert "raids" in group_names
+        assert "runs" in group_names
 
     @respx.mock
     def test_sagas_list_command(self) -> None:
-        respx.get(f"{BASE}/api/v1/tyr/sagas").mock(return_value=httpx.Response(200, json=[]))
-        plugin = TyrPlugin()
+        respx.get(f"{BASE}/api/v1/ting/sagas").mock(return_value=httpx.Response(200, json=[]))
+        plugin = TingPlugin()
         app = typer.Typer(no_args_is_help=False)
         plugin.register_commands(app)
         result = runner.invoke(app, ["sagas", "list"])
         assert result.exit_code == 0
 
     @respx.mock
-    def test_raids_active_command(self) -> None:
-        respx.get(f"{BASE}/api/v1/tyr/raids/active").mock(return_value=httpx.Response(200, json=[]))
-        plugin = TyrPlugin()
+    def test_runs_active_command(self) -> None:
+        respx.get(f"{BASE}/api/v1/ting/runs/active").mock(return_value=httpx.Response(200, json=[]))
+        plugin = TingPlugin()
         app = typer.Typer(no_args_is_help=False)
         plugin.register_commands(app)
-        result = runner.invoke(app, ["raids", "active"])
+        result = runner.invoke(app, ["runs", "active"])
         assert result.exit_code == 0
 
     def test_api_client_returns_instance(self) -> None:
-        plugin = TyrPlugin()
+        plugin = TingPlugin()
         client = plugin.create_api_client()
         assert client is not None
 
@@ -654,7 +689,9 @@ class TestObservatoryPlugin:
         plugin = ObservatoryPlugin()
         sentinel = object()
 
-        def fake_create_app():
+        def fake_create_app(**kwargs):
+            assert "discovery_service" in kwargs
+            assert kwargs["discovery_service"] is not None
             return sentinel
 
         monkeypatch.setattr("observatory.app.create_app", fake_create_app)
@@ -691,9 +728,9 @@ class TestPluginDiscovery:
     def test_both_plugins_register(self) -> None:
         registry = PluginRegistry()
         registry.register(VolundrPlugin())
-        registry.register(TyrPlugin())
+        registry.register(TingPlugin())
         assert "volundr" in registry.plugins
-        assert "tyr" in registry.plugins
+        assert "ting" in registry.plugins
 
     def test_ravn_plugin_registers(self) -> None:
         registry = PluginRegistry()
@@ -701,15 +738,15 @@ class TestPluginDiscovery:
         assert "ravn" in registry.plugins
 
     def test_dependency_order(self) -> None:
-        """Tyr depends on volundr — verify start order."""
+        """Ting depends on volundr — verify start order."""
         from cli.services.manager import ServiceManager
 
         registry = PluginRegistry()
         registry.register(VolundrPlugin())
-        registry.register(TyrPlugin())
+        registry.register(TingPlugin())
         manager = ServiceManager(registry=registry)
         order = manager.resolve_start_order()
-        assert order.index("volundr") < order.index("tyr")
+        assert order.index("volundr") < order.index("ting")
 
     def test_plugin_without_register_service_works(self) -> None:
         """A plugin that does not implement register_service() still works."""

@@ -39,7 +39,7 @@ async def test_handler_not_called_for_non_matching_event():
         received.append(evt)
 
     await bus.subscribe(["ravn.*"], handler)
-    await bus.publish(make_event(event_type="tyr.saga.created"))
+    await bus.publish(make_event(event_type="ting.saga.created"))
     await bus.flush()
 
     assert received == []
@@ -52,15 +52,15 @@ async def test_multiple_patterns_any_match_triggers_handler():
     async def handler(evt: SleipnirEvent) -> None:
         received.append(evt)
 
-    await bus.subscribe(["tyr.*", "ravn.*"], handler)
+    await bus.subscribe(["ting.*", "ravn.*"], handler)
     await bus.publish(make_event(event_type="ravn.tool.complete"))
-    await bus.publish(make_event(event_type="tyr.saga.created"))
+    await bus.publish(make_event(event_type="ting.saga.created"))
     await bus.publish(make_event(event_type="volundr.pr.opened"))
     await bus.flush()
 
     assert len(received) == 2
     types = {e.event_type for e in received}
-    assert types == {"ravn.tool.complete", "tyr.saga.created"}
+    assert types == {"ravn.tool.complete", "ting.saga.created"}
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ async def test_publish_batch_delivers_all_events():
     await bus.subscribe(["*"], handler)
     events = [
         make_event(event_type="ravn.tool.complete", event_id="e1"),
-        make_event(event_type="tyr.saga.created", event_id="e2"),
+        make_event(event_type="ting.saga.created", event_id="e2"),
         make_event(event_type="volundr.pr.opened", event_id="e3"),
     ]
     await bus.publish_batch(events)
@@ -240,7 +240,7 @@ async def test_global_wildcard_receives_all_namespaces():
     await bus.subscribe(["*"], handler)
     for et in [
         "ravn.tool.complete",
-        "tyr.saga.created",
+        "ting.saga.created",
         "volundr.pr.opened",
         "bifrost.connection.open",
         "system.health.ping",

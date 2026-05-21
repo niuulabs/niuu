@@ -37,6 +37,8 @@ def _make_app(pat_service: AsyncMock) -> tuple[FastAPI, TestClient]:
     """Build a minimal FastAPI app with the PAT router mounted."""
     app = FastAPI()
     app.state.pat_service = pat_service
+    app.state.identity = AsyncMock()
+    app.state.identity.get_or_provision_user = AsyncMock()
 
     async def extract_principal() -> Principal:
         return _make_principal()
@@ -47,9 +49,11 @@ def _make_app(pat_service: AsyncMock) -> tuple[FastAPI, TestClient]:
 
 
 def _make_dual_router_app(pat_service: AsyncMock) -> TestClient:
-    """Build an app with both canonical and legacy PAT routes mounted."""
+    """Build an app with canonical and deprecated PAT routes mounted."""
     app = FastAPI()
     app.state.pat_service = pat_service
+    app.state.identity = AsyncMock()
+    app.state.identity.get_or_provision_user = AsyncMock()
 
     async def extract_principal() -> Principal:
         return _make_principal()
@@ -66,7 +70,7 @@ def _make_dual_router_app(pat_service: AsyncMock) -> TestClient:
     app.include_router(
         create_pats_router(
             extract_principal,
-            prefix="/api/v1/volundr/tokens",
+            prefix="/api/v1/users/tokens",
             deprecated=True,
             canonical_prefix="/api/v1/tokens",
         )
@@ -124,7 +128,7 @@ class TestCreatePATsRouter:
             return _make_principal()
 
         router = create_pats_router(extract)
-        assert router.prefix == "/api/v1/users/tokens"
+        assert router.prefix == "/api/v1/tokens"
 
     def test_creates_router_with_custom_prefix(self) -> None:
         async def extract() -> Principal:
@@ -154,7 +158,7 @@ class TestCreateToken:
 
         _, client = _make_app(service)
         resp = client.post(
-            "/api/v1/users/tokens",
+            "/api/v1/tokens",
             json={"name": "my-pat"},
             headers={"Authorization": "Bearer user-access-token"},
         )
@@ -163,6 +167,27 @@ class TestCreateToken:
         assert data["name"] == "my-pat"
         assert data["token"] == "raw.jwt.token"
         assert data["createdAt"] == data["created_at"]
+
+    def test_create_provisions_user_before_issuing_pat(self) -> None:
+        pat_id = uuid4()
+        now = datetime.now(UTC)
+
+        mock_pat = AsyncMock()
+        mock_pat.id = pat_id
+        mock_pat.name = "my-pat"
+        mock_pat.created_at = now
+
+        service = AsyncMock()
+        service.create = AsyncMock(return_value=(mock_pat, "raw.jwt.token"))
+
+        app, client = _make_app(service)
+        resp = client.post(
+            "/api/v1/tokens",
+            json={"name": "my-pat"},
+            headers={"Authorization": "Bearer user-access-token"},
+        )
+        assert resp.status_code == 201
+        app.state.identity.get_or_provision_user.assert_awaited_once()
 
     def test_create_passes_subject_token(self) -> None:
         pat_id = uuid4()
@@ -178,7 +203,7 @@ class TestCreateToken:
 
         _, client = _make_app(service)
         client.post(
-            "/api/v1/users/tokens",
+            "/api/v1/tokens",
             json={"name": "tok"},
             headers={"Authorization": "Bearer my-subject-token"},
         )
@@ -199,7 +224,7 @@ class TestCreateToken:
         service.create = AsyncMock(return_value=(mock_pat, "raw"))
 
         _, client = _make_app(service)
-        client.post("/api/v1/users/tokens", json={"name": "tok"})
+        client.post("/api/v1/tokens", json={"name": "tok"})
         service.create.assert_called_once()
         call_kwargs = service.create.call_args[1]
         assert call_kwargs["subject_token"] == ""
@@ -219,7 +244,7 @@ class TestListTokens:
         service.list = AsyncMock(return_value=[mock_pat])
 
         _, client = _make_app(service)
-        resp = client.get("/api/v1/users/tokens")
+        resp = client.get("/api/v1/tokens")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
@@ -227,12 +252,21 @@ class TestListTokens:
         assert data[0]["createdAt"] == data[0]["created_at"]
         assert data[0]["lastUsedAt"] == data[0]["last_used_at"]
 
+    def test_list_provisions_user_before_listing(self) -> None:
+        service = AsyncMock()
+        service.list = AsyncMock(return_value=[])
+
+        app, client = _make_app(service)
+        resp = client.get("/api/v1/tokens")
+        assert resp.status_code == 200
+        app.state.identity.get_or_provision_user.assert_awaited_once()
+
     def test_list_empty_returns_empty_list(self) -> None:
         service = AsyncMock()
         service.list = AsyncMock(return_value=[])
 
         _, client = _make_app(service)
-        resp = client.get("/api/v1/users/tokens")
+        resp = client.get("/api/v1/tokens")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -244,8 +278,18 @@ class TestRevokeToken:
 
         pat_id = str(uuid4())
         _, client = _make_app(service)
-        resp = client.delete(f"/api/v1/users/tokens/{pat_id}")
+        resp = client.delete(f"/api/v1/tokens/{pat_id}")
         assert resp.status_code == 204
+
+    def test_revoke_provisions_user_before_revoking(self) -> None:
+        service = AsyncMock()
+        service.revoke = AsyncMock(return_value=True)
+
+        pat_id = str(uuid4())
+        app, client = _make_app(service)
+        resp = client.delete(f"/api/v1/tokens/{pat_id}")
+        assert resp.status_code == 204
+        app.state.identity.get_or_provision_user.assert_awaited_once()
 
     def test_revoke_not_found_returns_404(self) -> None:
         service = AsyncMock()
@@ -253,13 +297,13 @@ class TestRevokeToken:
 
         pat_id = str(uuid4())
         _, client = _make_app(service)
-        resp = client.delete(f"/api/v1/users/tokens/{pat_id}")
+        resp = client.delete(f"/api/v1/tokens/{pat_id}")
         assert resp.status_code == 404
 
     def test_revoke_invalid_uuid_returns_404(self) -> None:
         service = AsyncMock()
         _, client = _make_app(service)
-        resp = client.delete("/api/v1/users/tokens/not-a-uuid")
+        resp = client.delete("/api/v1/tokens/not-a-uuid")
         assert resp.status_code == 404
 
 
@@ -326,7 +370,7 @@ class TestCanonicalTokenRoutes:
             expected_status=201,
         )
 
-    def test_volundr_scoped_list_matches_canonical_route(self) -> None:
+    def test_user_scoped_list_matches_canonical_route(self) -> None:
         now = datetime.now(UTC)
 
         mock_pat = AsyncMock()
@@ -339,12 +383,12 @@ class TestCanonicalTokenRoutes:
         service.list = AsyncMock(return_value=[mock_pat])
 
         client = _make_dual_router_app(service)
-        legacy = client.get("/api/v1/volundr/tokens")
+        legacy = client.get("/api/v1/users/tokens")
         assert legacy.headers["Deprecation"] == "true"
         assert legacy.headers["Link"] == '</api/v1/tokens>; rel="successor-version"'
 
         assert_route_equivalence(
             client,
-            legacy=RouteCallSpec(path="/api/v1/volundr/tokens"),
+            legacy=RouteCallSpec(path="/api/v1/users/tokens"),
             canonical=RouteCallSpec(path="/api/v1/tokens"),
         )

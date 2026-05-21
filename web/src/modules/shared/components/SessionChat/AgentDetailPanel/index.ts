@@ -1,1 +1,0 @@
-export { AgentDetailPanel } from './AgentDetailPanel';

@@ -131,7 +131,7 @@ class TestSleipnirBridgeForwarding:
         registry.add(ch2)
 
         async with SleipnirBridge(bus, registry):
-            await bus.publish(make_event(event_type="tyr.saga.created"))
+            await bus.publish(make_event(event_type="ting.saga.created"))
             await bus.flush()
 
         ch1.send_event.assert_awaited_once()
@@ -229,15 +229,15 @@ class TestSleipnirBridgePatterns:
         ch = _make_ws_channel()
         registry.add(ch)
 
-        bridge = SleipnirBridge(bus, registry, event_patterns=["tyr.*"])
+        bridge = SleipnirBridge(bus, registry, event_patterns=["ting.*"])
         async with bridge:
             await bus.publish(make_event(event_type="ravn.tool.complete"))  # not matched
-            await bus.publish(make_event(event_type="tyr.saga.created"))  # matched
+            await bus.publish(make_event(event_type="ting.saga.created"))  # matched
             await bus.flush()
 
         assert ch.send_event.await_count == 1
         wire = ch.send_event.call_args[0][0]
-        assert wire["event_type"] == "tyr.saga.created"
+        assert wire["event_type"] == "ting.saga.created"
 
 
 # ---------------------------------------------------------------------------

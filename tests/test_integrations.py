@@ -9,9 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.helpers.http_contracts import RouteCallSpec, assert_route_equivalence
 from volundr.adapters.inbound.rest_integrations import (
-    create_canonical_integrations_router,
     create_integrations_router,
 )
 from volundr.adapters.outbound.jira import JiraAdapter
@@ -369,10 +367,7 @@ def integration_client(
     async def mock_extract_principal():
         return mock_principal
 
-    canonical_router = create_canonical_integrations_router(integration_repo, tracker_factory)
-    app.include_router(canonical_router)
-    router = create_integrations_router(integration_repo, tracker_factory)
-    app.include_router(router)
+    app.include_router(create_integrations_router(integration_repo, tracker_factory))
 
     # Override the dependency
     from volundr.adapters.inbound.auth import extract_principal
@@ -386,11 +381,9 @@ class TestIntegrationEndpoints:
     """Tests for integration REST endpoints."""
 
     def test_list_empty(self, integration_client: TestClient):
-        response = integration_client.get("/api/v1/volundr/integrations")
+        response = integration_client.get("/api/v1/integrations")
         assert response.status_code == 200
         assert response.json() == []
-        assert response.headers["Deprecation"] == "true"
-        assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/integrations"
 
     def test_list_preserves_boolean_config_values(
         self,
@@ -402,7 +395,7 @@ class TestIntegrationEndpoints:
             id="conn-bool",
             owner_id="user-1",
             integration_type="messaging",
-            adapter="tyr.adapters.telegram_notification.TelegramNotificationAdapter",
+            adapter="ting.adapters.telegram_notification.TelegramNotificationAdapter",
             credential_name="telegram-main",
             config={"notify_only": True},
             enabled=True,
@@ -414,7 +407,7 @@ class TestIntegrationEndpoints:
 
         asyncio.run(integration_repo.save_connection(connection))
 
-        response = integration_client.get("/api/v1/volundr/integrations")
+        response = integration_client.get("/api/v1/integrations")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 1
@@ -422,7 +415,7 @@ class TestIntegrationEndpoints:
 
     def test_create_integration(self, integration_client: TestClient):
         response = integration_client.post(
-            "/api/v1/volundr/integrations",
+            "/api/v1/integrations",
             json={
                 "integration_type": "issue_tracker",
                 "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
@@ -449,7 +442,7 @@ class TestIntegrationEndpoints:
         integration_client: TestClient,
     ):
         response = integration_client.post(
-            "/api/v1/volundr/integrations",
+            "/api/v1/integrations",
             json={
                 "integrationType": "issue_tracker",
                 "type": "issue_tracker",
@@ -466,14 +459,14 @@ class TestIntegrationEndpoints:
 
     def test_create_and_list(self, integration_client: TestClient):
         integration_client.post(
-            "/api/v1/volundr/integrations",
+            "/api/v1/integrations",
             json={
                 "integration_type": "issue_tracker",
                 "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
                 "credential_name": "key",
             },
         )
-        response = integration_client.get("/api/v1/volundr/integrations")
+        response = integration_client.get("/api/v1/integrations")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 1
@@ -482,7 +475,7 @@ class TestIntegrationEndpoints:
 
     def test_delete_integration(self, integration_client: TestClient):
         create_resp = integration_client.post(
-            "/api/v1/volundr/integrations",
+            "/api/v1/integrations",
             json={
                 "integration_type": "issue_tracker",
                 "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
@@ -492,22 +485,22 @@ class TestIntegrationEndpoints:
         conn_id = create_resp.json()["id"]
 
         delete_resp = integration_client.delete(
-            f"/api/v1/volundr/integrations/{conn_id}",
+            f"/api/v1/integrations/{conn_id}",
         )
         assert delete_resp.status_code == 204
 
-        list_resp = integration_client.get("/api/v1/volundr/integrations")
+        list_resp = integration_client.get("/api/v1/integrations")
         assert len(list_resp.json()) == 0
 
     def test_delete_not_found(self, integration_client: TestClient):
         response = integration_client.delete(
-            "/api/v1/volundr/integrations/nonexistent",
+            "/api/v1/integrations/nonexistent",
         )
         assert response.status_code == 404
 
     def test_update_integration(self, integration_client: TestClient):
         create_resp = integration_client.post(
-            "/api/v1/volundr/integrations",
+            "/api/v1/integrations",
             json={
                 "integration_type": "issue_tracker",
                 "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
@@ -518,7 +511,7 @@ class TestIntegrationEndpoints:
         conn_id = create_resp.json()["id"]
 
         update_resp = integration_client.put(
-            f"/api/v1/volundr/integrations/{conn_id}",
+            f"/api/v1/integrations/{conn_id}",
             json={"enabled": False},
         )
         assert update_resp.status_code == 200
@@ -529,7 +522,7 @@ class TestIntegrationEndpoints:
         integration_client: TestClient,
     ):
         create_resp = integration_client.post(
-            "/api/v1/volundr/integrations",
+            "/api/v1/integrations",
             json={
                 "integration_type": "issue_tracker",
                 "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
@@ -540,7 +533,7 @@ class TestIntegrationEndpoints:
         conn_id = create_resp.json()["id"]
 
         update_resp = integration_client.put(
-            f"/api/v1/volundr/integrations/{conn_id}",
+            f"/api/v1/integrations/{conn_id}",
             json={"credentialName": "renamed-key"},
         )
         assert update_resp.status_code == 200
@@ -548,14 +541,14 @@ class TestIntegrationEndpoints:
 
     def test_update_not_found(self, integration_client: TestClient):
         response = integration_client.put(
-            "/api/v1/volundr/integrations/nonexistent",
+            "/api/v1/integrations/nonexistent",
             json={"enabled": False},
         )
         assert response.status_code == 404
 
     def test_test_integration(self, integration_client: TestClient):
         create_resp = integration_client.post(
-            "/api/v1/volundr/integrations",
+            "/api/v1/integrations",
             json={
                 "integration_type": "issue_tracker",
                 "adapter": "volundr.adapters.outbound.linear.LinearAdapter",
@@ -566,7 +559,7 @@ class TestIntegrationEndpoints:
 
         # Test will fail since we're not actually connecting
         response = integration_client.post(
-            f"/api/v1/volundr/integrations/{conn_id}/test",
+            f"/api/v1/integrations/{conn_id}/test",
         )
         assert response.status_code == 200
         data = response.json()
@@ -576,11 +569,11 @@ class TestIntegrationEndpoints:
 
     def test_test_not_found(self, integration_client: TestClient):
         response = integration_client.post(
-            "/api/v1/volundr/integrations/nonexistent/test",
+            "/api/v1/integrations/nonexistent/test",
         )
         assert response.status_code == 404
 
-    def test_canonical_list_matches_legacy(
+    def test_list_after_seeded_connection(
         self,
         integration_client: TestClient,
         integration_repo: InMemoryIntegrationRepository,
@@ -590,13 +583,11 @@ class TestIntegrationEndpoints:
 
         asyncio.run(integration_repo.save_connection(sample_connection))
 
-        assert_route_equivalence(
-            integration_client,
-            legacy=RouteCallSpec(path="/api/v1/volundr/integrations"),
-            canonical=RouteCallSpec(path="/api/v1/integrations"),
-        )
+        response = integration_client.get("/api/v1/integrations")
+        assert response.status_code == 200
+        assert response.json()[0]["id"] == sample_connection.id
 
-    def test_canonical_test_matches_legacy(
+    def test_test_endpoint_after_seeded_connection(
         self,
         integration_client: TestClient,
         integration_repo: InMemoryIntegrationRepository,
@@ -606,19 +597,13 @@ class TestIntegrationEndpoints:
 
         asyncio.run(integration_repo.save_connection(sample_connection))
 
-        assert_route_equivalence(
-            integration_client,
-            legacy=RouteCallSpec(
-                path=f"/api/v1/volundr/integrations/{sample_connection.id}/test",
-                method="POST",
-            ),
-            canonical=RouteCallSpec(
-                path=f"/api/v1/integrations/{sample_connection.id}/test",
-                method="POST",
-            ),
+        response = integration_client.post(
+            f"/api/v1/integrations/{sample_connection.id}/test",
         )
+        assert response.status_code == 200
+        assert "success" in response.json()
 
-    def test_legacy_catalog_returns_catalog_entries_with_mcp_and_oauth_metadata(
+    def test_catalog_returns_catalog_entries_with_mcp_and_oauth_metadata(
         self,
         integration_repo: InMemoryIntegrationRepository,
         tracker_factory: TrackerFactory,
@@ -670,10 +655,8 @@ class TestIntegrationEndpoints:
         app.dependency_overrides[extract_principal] = mock_extract_principal
         client = TestClient(app)
 
-        response = client.get("/api/v1/volundr/integrations/catalog")
+        response = client.get("/api/v1/integrations/catalog")
         assert response.status_code == 200
-        assert response.headers["Deprecation"] == "true"
-        assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/integrations/catalog"
         data = response.json()
         assert data == [
             {
@@ -697,11 +680,11 @@ class TestIntegrationEndpoints:
             }
         ]
 
-    def test_legacy_catalog_returns_empty_without_registry(
+    def test_catalog_returns_empty_without_registry(
         self,
         integration_client: TestClient,
     ):
-        response = integration_client.get("/api/v1/volundr/integrations/catalog")
+        response = integration_client.get("/api/v1/integrations/catalog")
         assert response.status_code == 200
         assert response.json() == []
 
@@ -749,7 +732,7 @@ class TestIntegrationTestEndpointBranches:
         )
         await integration_repo.save_connection(conn)
 
-        resp = client.post("/api/v1/volundr/integrations/sc-1/test")
+        resp = client.post("/api/v1/integrations/sc-1/test")
         assert resp.status_code == 200
         assert resp.json()["success"] is True
 
@@ -793,7 +776,7 @@ class TestIntegrationTestEndpointBranches:
         )
         await integration_repo.save_connection(conn)
 
-        resp = client.post("/api/v1/volundr/integrations/ai-1/test")
+        resp = client.post("/api/v1/integrations/ai-1/test")
         assert resp.status_code == 200
         assert resp.json()["success"] is False
         assert resp.json()["error"] == "Credential not found"
@@ -834,7 +817,7 @@ class TestIntegrationTestEndpointBranches:
         )
         await integration_repo.save_connection(conn)
 
-        resp = client.post("/api/v1/volundr/integrations/sc-2/test")
+        resp = client.post("/api/v1/integrations/sc-2/test")
         assert resp.status_code == 200
         assert resp.json()["success"] is False
         assert resp.json()["error"] == "Credential store not configured"
@@ -875,7 +858,7 @@ class TestIntegrationTestEndpointBranches:
         )
         await integration_repo.save_connection(conn)
 
-        resp = client.post("/api/v1/volundr/integrations/msg-1/test")
+        resp = client.post("/api/v1/integrations/msg-1/test")
         assert resp.status_code == 200
         assert resp.json()["success"] is False
         assert "not supported" in resp.json()["error"]
@@ -917,7 +900,7 @@ class TestIntegrationTestEndpointBranches:
         )
         await integration_repo.save_connection(conn)
 
-        resp = client.post("/api/v1/volundr/integrations/it-1/test")
+        resp = client.post("/api/v1/integrations/it-1/test")
         assert resp.status_code == 200
         assert resp.json()["success"] is False
         assert resp.json()["error"] == "tracker exploded"

@@ -1,1 +1,0 @@
-export { MentionPill } from './MentionPill';

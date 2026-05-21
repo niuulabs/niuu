@@ -104,11 +104,11 @@ class TestVolundrSettings:
         assert settings.database.host == "explicit-host"
 
 
-class TestTyrSettings:
-    """Verify tyr_settings fixture creates valid Settings."""
+class TestTingSettings:
+    """Verify ting_settings fixture creates valid Settings."""
 
     def test_settings_use_test_database(self) -> None:
-        from tyr.config import AuthConfig, DatabaseConfig, Settings
+        from ting.config import AuthConfig, DatabaseConfig, Settings
 
         settings = Settings(
             database=DatabaseConfig(
@@ -125,7 +125,7 @@ class TestTyrSettings:
         assert settings.auth.allow_anonymous_dev is True
 
     def test_anonymous_dev_enabled(self) -> None:
-        from tyr.config import AuthConfig, Settings
+        from ting.config import AuthConfig, Settings
 
         settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
         assert settings.auth.allow_anonymous_dev is True

@@ -1,12 +1,12 @@
-"""NIU-617 — End-to-end raiding party integration tests.
+"""NIU-617 — End-to-end runing party integration tests.
 
 Validates the full loop:
-    Tyr dispatches raid
+    Ting dispatches run
     → SkuldMeshAdapter receives work_request
     → MockCLITransport returns outcome block
-    → ravn.task.completed published on InProcessBus
+    → ravn.session.ended published on InProcessBus
     → RavnOutcomeHandler routes to ReviewEngine
-    → Raid state transitions correctly
+    → Run state transitions correctly
 
 Test scenarios
 --------------
@@ -29,21 +29,21 @@ from tests.test_flock.harness import (
     OUTCOME_RETRY,
     FlockTestHarness,
 )
-from tests.test_tyr.stubs import make_raid
-from tyr.domain.models import Raid, RaidStatus
+from tests.test_ting.stubs import make_run
+from ting.domain.models import Run, RunStatus
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_running_raid(
-    tracker_id: str = "raid-001",
+def _make_running_run(
+    tracker_id: str = "run-001",
     session_id: str = "sess-001",
     retry_count: int = 0,
-) -> Raid:
-    return make_raid(
-        status=RaidStatus.RUNNING,
+) -> Run:
+    return make_run(
+        status=RunStatus.RUNNING,
         confidence=0.5,
         session_id=session_id,
         retry_count=retry_count,
@@ -57,11 +57,11 @@ def _make_running_raid(
 
 
 async def test_happy_path_approve_to_merged() -> None:
-    """Raid with approve verdict and tests_passing=true reaches MERGED state."""
+    """Run with approve verdict and tests_passing=true reaches MERGED state."""
     async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.MERGED)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        await h.assert_run_state(run.tracker_id, RunStatus.MERGED)
 
 
 async def test_happy_path_outcome_handler_subscribed() -> None:
@@ -73,8 +73,8 @@ async def test_happy_path_outcome_handler_subscribed() -> None:
 async def test_happy_path_skuld_receives_prompt() -> None:
     """Skuld feeds the work_request prompt to the CLI transport."""
     async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
+        run = _make_running_run()
+        await h.dispatch_run(run)
         assert len(h.cli.received_prompts) == 1
         assert "Implement:" in h.cli.received_prompts[0]
 
@@ -82,9 +82,9 @@ async def test_happy_path_skuld_receives_prompt() -> None:
 async def test_happy_path_confidence_event_recorded() -> None:
     """CI_PASS confidence event is recorded in the tracker after approve."""
     async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        events = await h.tracker.get_confidence_events(raid.tracker_id)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        events = await h.tracker.get_confidence_events(run.tracker_id)
         event_types = [e.event_type for e in events]
         assert any(et.value == "ci_pass" for et in event_types), (
             f"Expected ci_pass confidence event; got {event_types}"
@@ -97,43 +97,43 @@ async def test_happy_path_confidence_event_recorded() -> None:
 
 
 async def test_retry_path_first_attempt_sets_pending() -> None:
-    """First attempt with retry verdict transitions raid to PENDING."""
+    """First attempt with retry verdict transitions run to PENDING."""
     async with FlockTestHarness(cli_responses=[OUTCOME_RETRY, OUTCOME_APPROVE]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.PENDING)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        await h.assert_run_state(run.tracker_id, RunStatus.PENDING)
 
 
 async def test_retry_path_second_attempt_merges() -> None:
     """Two dispatches: retry then approve → final state is MERGED."""
     async with FlockTestHarness(cli_responses=[OUTCOME_RETRY, OUTCOME_APPROVE]) as h:
         # First attempt
-        raid = _make_running_raid(session_id="sess-001")
-        await h.dispatch_raid(raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.PENDING)
+        run = _make_running_run(session_id="sess-001")
+        await h.dispatch_run(run)
+        await h.assert_run_state(run.tracker_id, RunStatus.PENDING)
 
-        # Simulate re-dispatch: raid PENDING → RUNNING with new session_id
-        retry_raid = await h.tracker.update_raid_progress(
-            raid.tracker_id,
-            status=RaidStatus.RUNNING,
+        # Simulate re-dispatch: run PENDING → RUNNING with new session_id
+        retry_run = await h.tracker.update_run_progress(
+            run.tracker_id,
+            status=RunStatus.RUNNING,
             session_id="sess-002",
         )
-        await h.dispatch_raid(retry_raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.MERGED)
+        await h.dispatch_run(retry_run)
+        await h.assert_run_state(run.tracker_id, RunStatus.MERGED)
 
 
 async def test_retry_path_cli_called_twice() -> None:
-    """CLI transport is invoked once per dispatch_raid call."""
+    """CLI transport is invoked once per dispatch_run call."""
     async with FlockTestHarness(cli_responses=[OUTCOME_RETRY, OUTCOME_APPROVE]) as h:
-        raid = _make_running_raid(session_id="sess-001")
-        await h.dispatch_raid(raid)
+        run = _make_running_run(session_id="sess-001")
+        await h.dispatch_run(run)
 
-        retry_raid = await h.tracker.update_raid_progress(
-            raid.tracker_id,
-            status=RaidStatus.RUNNING,
+        retry_run = await h.tracker.update_run_progress(
+            run.tracker_id,
+            status=RunStatus.RUNNING,
             session_id="sess-002",
         )
-        await h.dispatch_raid(retry_raid)
+        await h.dispatch_run(retry_run)
 
         assert h.cli._call_index == 2
 
@@ -144,30 +144,30 @@ async def test_retry_path_cli_called_twice() -> None:
 
 
 async def test_escalation_path_escalated_state() -> None:
-    """Raid with escalate verdict and tests_passing=false reaches ESCALATED."""
+    """Run with escalate verdict and tests_passing=false reaches ESCALATED."""
     async with FlockTestHarness(cli_responses=[OUTCOME_ESCALATE]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.ESCALATED)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        await h.assert_run_state(run.tracker_id, RunStatus.ESCALATED)
 
 
 async def test_escalation_path_confidence_reduced() -> None:
     """Escalation path: CI_FAIL confidence event recorded."""
     async with FlockTestHarness(cli_responses=[OUTCOME_ESCALATE]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        events = await h.tracker.get_confidence_events(raid.tracker_id)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        events = await h.tracker.get_confidence_events(run.tracker_id)
         event_types = [e.event_type.value for e in events]
         assert "ci_fail" in event_types, f"Expected ci_fail confidence event; got {event_types}"
 
 
-async def test_escalation_path_raid_not_merged() -> None:
-    """Escalated raid is NOT in MERGED state."""
+async def test_escalation_path_run_not_merged() -> None:
+    """Escalated run is NOT in MERGED state."""
     async with FlockTestHarness(cli_responses=[OUTCOME_ESCALATE]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        current = await h.get_raid(raid.tracker_id)
-        assert current.status != RaidStatus.MERGED
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        current = await h.get_run(run.tracker_id)
+        assert current.status != RunStatus.MERGED
 
 
 # ---------------------------------------------------------------------------
@@ -245,32 +245,32 @@ async def test_mimir_read_merges_both_mounts() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_event_type_ravn_task_completed_consumed() -> None:
-    """RavnOutcomeHandler consumes ravn.task.completed events (not other types)."""
+async def test_outcome_handler_ignores_irrelevant_event_types() -> None:
+    """RavnOutcomeHandler ignores unrelated events and only reacts to completion events."""
     from datetime import UTC, datetime
 
     from sleipnir.domain.events import SleipnirEvent
 
     async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE]) as h:
-        raid = _make_running_raid()
-        await h.tracker.create_raid(raid)
+        run = _make_running_run()
+        await h.tracker.create_run(run)
 
         # Publish an irrelevant event — outcome handler should ignore it
         irrelevant = SleipnirEvent(
-            event_type="tyr.saga.created",
-            source="tyr",
+            event_type="ting.saga.created",
+            source="ting",
             payload={},
             summary="irrelevant",
             urgency=0.1,
             domain="business",
             timestamp=datetime.now(UTC),
-            correlation_id=raid.session_id,
+            correlation_id=run.session_id,
         )
         await h.bus.publish(irrelevant)
         await h.bus.flush()
 
-        # Raid should still be RUNNING (outcome handler didn't act on it)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.RUNNING)
+        # Run should still be RUNNING (outcome handler didn't act on it)
+        await h.assert_run_state(run.tracker_id, RunStatus.RUNNING)
 
 
 async def test_outcome_handler_ignores_missing_correlation_id() -> None:
@@ -292,11 +292,11 @@ async def test_outcome_handler_ignores_missing_correlation_id() -> None:
         )
         await h.bus.publish(orphan)
         await h.bus.flush()
-        # No raid → no crash. Harness teardown should succeed cleanly.
+        # No run → no crash. Harness teardown should succeed cleanly.
 
 
 async def test_outcome_handler_ignores_unknown_session() -> None:
-    """Events with unknown correlation_id (no matching raid) are dropped."""
+    """Events with unknown correlation_id (no matching run) are dropped."""
     from datetime import UTC, datetime
 
     from sleipnir.domain.events import SleipnirEvent
@@ -322,16 +322,16 @@ async def test_outcome_handler_ignores_unknown_session() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_harness_reusable_across_raids() -> None:
-    """A single harness instance can process multiple sequential raids."""
+async def test_harness_reusable_across_runs() -> None:
+    """A single harness instance can process multiple sequential runs."""
     async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE]) as h:
         for i in range(3):
-            raid = _make_running_raid(
-                tracker_id=f"raid-{i:03d}",
+            run = _make_running_run(
+                tracker_id=f"run-{i:03d}",
                 session_id=f"sess-{i:03d}",
             )
-            await h.dispatch_raid(raid)
-            await h.assert_raid_state(raid.tracker_id, RaidStatus.MERGED)
+            await h.dispatch_run(run)
+            await h.assert_run_state(run.tracker_id, RunStatus.MERGED)
 
 
 async def test_harness_cleanup_stops_all_components() -> None:
@@ -466,9 +466,9 @@ async def test_stub_git_all_methods() -> None:
     assert files == []
 
 
-async def test_dispatch_raid_not_started_raises() -> None:
-    """dispatch_raid raises RuntimeError when harness is not started."""
+async def test_dispatch_run_not_started_raises() -> None:
+    """dispatch_run raises RuntimeError when harness is not started."""
     h = FlockTestHarness(cli_responses=[OUTCOME_APPROVE])
-    raid = _make_running_raid()
+    run = _make_running_run()
     with pytest.raises(RuntimeError, match="start"):
-        await h.dispatch_raid(raid)
+        await h.dispatch_run(run)

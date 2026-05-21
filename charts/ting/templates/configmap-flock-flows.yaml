@@ -1,0 +1,11 @@
+{{- if .Values.flockFlows.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ting.fullname" . }}-flock-flows
+  labels:
+    {{- include "ting.labels" . | nindent 4 }}
+data:
+  flows.yaml: |
+    {{- .Values.flockFlows.flows | toYaml | nindent 4 }}
+{{- end }}

@@ -72,7 +72,7 @@ def flock_template():
             "mimir": {"hosted_url": "https://mimir.niuu.internal/api/v1"},
             "sleipnir": {
                 "publish_urls": [
-                    "http://tyr:8080/sleipnir/events",
+                    "http://ting:8080/sleipnir/events",
                     "http://volundr:8000/sleipnir/events",
                 ]
             },
@@ -89,7 +89,7 @@ def flock_profile():
             "personas": ["coordinator", "reviewer"],
             "mesh": {"transport": "nng"},
             "mimir": {},
-            "sleipnir": {"publish_urls": ["http://tyr:8080/sleipnir/events"]},
+            "sleipnir": {"publish_urls": ["http://ting:8080/sleipnir/events"]},
         },
     )
 
@@ -283,6 +283,31 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW_TRIGGER__ENABLED"] == "true"
         assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "code.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "trigger-1"
+        assert env_names["SKULD__WORKFLOW__WORKFLOW_ID"] == "wf-1"
+        assert env_names["SKULD__WORKFLOW__NAME"] == "Code"
+        assert "\"trigger-1\"" in env_names["SKULD__WORKFLOW__GRAPH"]
+
+    async def test_skuld_generic_trigger_env_present_for_plain_coordinator_flock(
+        self, session
+    ):
+        template = WorkspaceTemplate(
+            name="plain-flock",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["coordinator", "coder", "reviewer"],
+                "initiative_context": "Implement NIU-805",
+            },
+        )
+        provider = MagicMock()
+        provider.get.return_value = template
+        c = RavnFlockContributor(template_provider=provider)
+        result = await c.contribute(session, SessionContext(template_name="plain-flock"))
+
+        env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
+        assert env_names["SKULD__MESH__CONSUMES_EVENT_TYPES"] == "[]"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__ENABLED"] == "true"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "run.requested"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "dispatch-root"
 
     async def test_mimir_volume_not_added_without_explicit_local(self, session, flock_template):
         provider = MagicMock()
@@ -338,7 +363,7 @@ class TestContributorOutput:
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
         assert "SLEIPNIR_PUBLISH_URLS" in env_names
-        assert "tyr:8080" in env_names["SLEIPNIR_PUBLISH_URLS"]
+        assert "ting:8080" in env_names["SLEIPNIR_PUBLISH_URLS"]
 
     async def test_sleipnir_publish_urls_in_ravn_env(self, session, flock_template):
         provider = MagicMock()
@@ -1454,6 +1479,26 @@ class TestPerPersonaLLMOverrides:
         assert reviewer_parsed["persona_overrides"]["iteration_budget"] == 40
         assert "iteration_budget" not in coordinator_cfg
 
+    async def test_consumes_event_types_embedded_in_persona_overrides(self, session):
+        """consumes_event_types is written to persona_overrides for sidecar startup."""
+        c = RavnFlockContributor()
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [
+                    {"name": "reviewer", "consumes_event_types": ["review.requested"]},
+                    {"name": "run-executor"},
+                ],
+            },
+        )
+        result = await c.contribute(session, ctx)
+
+        reviewer_cfg = _extract_mounted_config(result.pod_spec, "reviewer")
+        reviewer_parsed = yaml.safe_load(reviewer_cfg)
+        assert reviewer_parsed["persona_overrides"]["consumes_event_types"] == [
+            "review.requested"
+        ]
+
     async def test_per_persona_max_concurrent_tasks(self, session):
         """max_concurrent_tasks from persona override replaces global value in initiative."""
         c = RavnFlockContributor()
@@ -1479,6 +1524,30 @@ class TestPerPersonaLLMOverrides:
 
         assert reviewer_parsed["initiative"]["max_concurrent_tasks"] == 1
         assert coordinator_parsed["initiative"]["max_concurrent_tasks"] == 5
+
+    async def test_daily_budget_is_written_to_ravn_configs(self, session):
+        """daily_budget_usd from workload_config becomes ravn budget.daily_cap_usd."""
+        c = RavnFlockContributor()
+        ctx = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [{"name": "reviewer"}, {"name": "coordinator"}],
+                "daily_budget_usd": 25.0,
+            },
+        )
+        result = await c.contribute(session, ctx)
+
+        reviewer_cfg = _extract_mounted_config(result.pod_spec, "reviewer")
+        coordinator_cfg = _extract_mounted_config(result.pod_spec, "coordinator")
+
+        import yaml as _yaml
+
+        reviewer_parsed = _yaml.safe_load(reviewer_cfg)
+        coordinator_parsed = _yaml.safe_load(coordinator_cfg)
+
+        assert reviewer_parsed["budget"]["daily_cap_usd"] == 25.0
+        assert coordinator_parsed["budget"]["daily_cap_usd"] == 25.0
+        assert result.values["flock"]["daily_budget_usd"] == 25.0
 
     async def test_no_persona_overrides_block_when_no_extra(self, session):
         """No persona_overrides block emitted when system_prompt_extra is absent."""

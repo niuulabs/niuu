@@ -23,9 +23,9 @@ from sleipnir.domain.catalog import (
     ravn_session_ended,
     ravn_session_started,
     ravn_task_completed,
-    tyr_raid_needs_approval,
-    tyr_saga_completed,
-    tyr_saga_created,
+    ting_run_needs_approval,
+    ting_saga_completed,
+    ting_saga_created,
     volundr_session_failed,
     volundr_session_started,
 )
@@ -158,55 +158,55 @@ def test_volundr_session_failed_has_high_urgency():
 
 
 # ---------------------------------------------------------------------------
-# tyr.saga.created
+# ting.saga.created
 # ---------------------------------------------------------------------------
 
 
-def test_tyr_saga_created_fields():
-    evt = tyr_saga_created(
+def test_ting_saga_created_fields():
+    evt = ting_saga_created(
         saga_id="saga-1",
         template="default",
         trigger_event="api.commit_saga",
-        source="tyr",
+        source="ting",
     )
-    assert evt.event_type == registry.TYR_SAGA_CREATED
+    assert evt.event_type == registry.TING_SAGA_CREATED
     assert evt.payload["saga_id"] == "saga-1"
     assert evt.payload["template"] == "default"
     assert evt.domain == "code"
 
 
 # ---------------------------------------------------------------------------
-# tyr.saga.completed
+# ting.saga.completed
 # ---------------------------------------------------------------------------
 
 
-def test_tyr_saga_completed_fields():
-    evt = tyr_saga_completed(
+def test_ting_saga_completed_fields():
+    evt = ting_saga_completed(
         saga_id="saga-2",
         outcome="success",
         phases_completed=3,
-        source="tyr",
+        source="ting",
     )
-    assert evt.event_type == registry.TYR_SAGA_COMPLETED
+    assert evt.event_type == registry.TING_SAGA_COMPLETED
     assert evt.payload["phases_completed"] == 3
     assert "saga-2" in evt.summary
 
 
 # ---------------------------------------------------------------------------
-# tyr.raid.needs_approval
+# ting.run.needs_approval
 # ---------------------------------------------------------------------------
 
 
-def test_tyr_raid_needs_approval_high_urgency():
-    evt = tyr_raid_needs_approval(
-        raid_id="raid-1",
+def test_ting_run_needs_approval_high_urgency():
+    evt = ting_run_needs_approval(
+        run_id="run-1",
         saga_id="saga-1",
         description="PR ready for review",
-        source="tyr",
+        source="ting",
     )
-    assert evt.event_type == registry.TYR_RAID_NEEDS_APPROVAL
+    assert evt.event_type == registry.TING_RUN_NEEDS_APPROVAL
     assert evt.urgency >= 0.7
-    assert evt.payload["raid_id"] == "raid-1"
+    assert evt.payload["run_id"] == "run-1"
     assert "PR ready" in evt.summary
 
 
@@ -324,9 +324,9 @@ async def test_integration_all_catalog_events_subscribed_via_wildcard():
         ravn_task_completed(task_id="t", persona="p", outcome="ok", source="t"),
         volundr_session_started(session_id="s", user_id="u", repo="r", branch="b", source="t"),
         volundr_session_failed(session_id="s", error="e", user_id="u", source="t"),
-        tyr_saga_created(saga_id="s", template="tmpl", trigger_event="ev", source="t"),
-        tyr_saga_completed(saga_id="s", outcome="ok", phases_completed=1, source="t"),
-        tyr_raid_needs_approval(raid_id="r", saga_id="s", description="d", source="t"),
+        ting_saga_created(saga_id="s", template="tmpl", trigger_event="ev", source="t"),
+        ting_saga_completed(saga_id="s", outcome="ok", phases_completed=1, source="t"),
+        ting_run_needs_approval(run_id="r", saga_id="s", description="d", source="t"),
         bifrost_budget_degraded(
             tenant_id="t", current_spend=0.8, cap=1.0, downgraded_to="h", source="t"
         ),
@@ -345,9 +345,9 @@ async def test_integration_all_catalog_events_subscribed_via_wildcard():
         registry.RAVN_TASK_COMPLETED,
         registry.VOLUNDR_SESSION_STARTED,
         registry.VOLUNDR_SESSION_FAILED,
-        registry.TYR_SAGA_CREATED,
-        registry.TYR_SAGA_COMPLETED,
-        registry.TYR_RAID_NEEDS_APPROVAL,
+        registry.TING_SAGA_CREATED,
+        registry.TING_SAGA_COMPLETED,
+        registry.TING_RUN_NEEDS_APPROVAL,
         registry.BIFROST_BUDGET_DEGRADED,
         registry.MIMIR_PAGE_WRITTEN,
         registry.MIMIR_DREAM_COMPLETED,

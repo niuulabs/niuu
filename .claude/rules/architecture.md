@@ -45,7 +45,7 @@ No Redis. No external state store. Just nng for communication and files for pers
 
 ### Exception: Personal Access Tokens (PATs)
 
-PATs are an intentional exception to the "no custom tokens" rule. Tyr's autonomous
+PATs are an intentional exception to the "no custom tokens" rule. Ting's autonomous
 dispatcher must call Volundr as a specific user without an active browser session.
 PATs are long-lived JWTs signed with the same symmetric key that Envoy validates,
 so they integrate with the existing infrastructure without requiring IDP changes.

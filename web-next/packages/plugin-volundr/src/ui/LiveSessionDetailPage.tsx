@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from '@tanstack/react-router';
+import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
-import { getAccessToken } from '@niuulabs/query';
+import { getAuthHeaders } from '@niuulabs/query';
 import {
   Dialog,
   DialogContent,
@@ -9,6 +11,7 @@ import {
   LoadingState,
   SessionChat,
   cn,
+  type MeshNotificationEvent,
   type PermissionBehavior,
 } from '@niuulabs/ui';
 import {
@@ -35,9 +38,15 @@ import type {
 } from '../models/volundr.model';
 import { useSessionDetail } from './hooks/useSessionStore';
 import { SessionFilesWorkspace } from './SessionFilesWorkspace';
-import { useSkuldChat } from './hooks/useSkuldChat';
+import {
+  meshEventsFromTurns,
+  participantsFromTurns,
+  transformTurns,
+  useSkuldChat,
+} from './hooks/useSkuldChat';
 import { deriveTerminalWsUrl, normalizeSessionUrl, wsUrlToHttpBase } from './liveSessionTransport';
 import { SessionTerminalLive } from './SessionTerminalLive';
+import { StructuredLogViewer } from './components/StructuredLogViewer';
 import './LiveSessionDetailPage.css';
 
 type SessionTab = 'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'logs';
@@ -97,6 +106,112 @@ function formatEventTime(value: number): string {
   const minutes = Math.floor(value / 60);
   const seconds = value % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function sessionForgeLabel(session: VolundrSession | null | undefined): string {
+  return session?.instanceName ?? session?.instanceId ?? session?.hostname ?? 'shared';
+}
+
+function WorkflowHumanGateCard({
+  title,
+  summary,
+  reason,
+  recommendation,
+  onApprove,
+  onRequestChanges,
+}: {
+  title: string;
+  summary: string;
+  reason?: string;
+  recommendation?: string;
+  onApprove: (notes: string) => void;
+  onRequestChanges: (notes: string) => void;
+}) {
+  const [notes, setNotes] = useState('');
+
+  return (
+    <section className="niuu-m-3 niuu-mb-0 niuu-rounded-xl niuu-border niuu-border-amber-500/35 niuu-bg-amber-500/8 niuu-p-4 niuu-shadow-[0_18px_40px_-24px_rgba(245,158,11,0.45)]">
+      <div className="niuu-flex niuu-items-start niuu-gap-3">
+        <div className="niuu-mt-0.5 niuu-rounded-full niuu-bg-amber-500/16 niuu-p-2 niuu-text-amber-300">
+          <AlertTriangle className="niuu-h-4 niuu-w-4" />
+        </div>
+        <div className="niuu-flex-1 niuu-space-y-3">
+          <div className="niuu-space-y-1">
+            <div className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-amber-200/80">
+              Human Gate Requested
+            </div>
+            <h3 className="niuu-text-[15px] niuu-font-semibold niuu-text-text-primary">{title}</h3>
+            <p className="niuu-text-sm niuu-leading-6 niuu-text-text-secondary">{summary}</p>
+          </div>
+          {(reason || recommendation) && (
+            <dl className="niuu-grid niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-white/8 niuu-bg-black/10 niuu-p-3">
+              {reason ? (
+                <div className="niuu-grid niuu-gap-1">
+                  <dt className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+                    Reason
+                  </dt>
+                  <dd className="niuu-text-sm niuu-text-text-secondary">{reason}</dd>
+                </div>
+              ) : null}
+              {recommendation ? (
+                <div className="niuu-grid niuu-gap-1">
+                  <dt className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+                    Recommendation
+                  </dt>
+                  <dd className="niuu-text-sm niuu-text-text-secondary">{recommendation}</dd>
+                </div>
+              ) : null}
+            </dl>
+          )}
+          <div className="niuu-space-y-2">
+            <label
+              htmlFor="workflow-human-gate-notes"
+              className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted"
+            >
+              Reply Notes
+            </label>
+            <textarea
+              id="workflow-human-gate-notes"
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              rows={4}
+              placeholder="Optional context for the gate decision."
+              className="niuu-w-full niuu-rounded-lg niuu-border niuu-border-border niuu-bg-bg-primary niuu-px-3 niuu-py-2.5 niuu-text-sm niuu-text-text-primary placeholder:niuu-text-text-muted"
+            />
+          </div>
+          <div className="niuu-flex niuu-flex-wrap niuu-items-center niuu-justify-between niuu-gap-3">
+            <p className="niuu-text-xs niuu-text-text-muted">
+              This reply resolves the pending workflow gate and resumes the workflow.
+            </p>
+            <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onRequestChanges(notes.trim());
+                  setNotes('');
+                }}
+                className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary hover:niuu-bg-bg-secondary"
+              >
+                <FilePenLine className="niuu-h-4 niuu-w-4" />
+                Request changes
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onApprove(notes.trim());
+                  setNotes('');
+                }}
+                className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-bg-brand niuu-px-3 niuu-py-2 niuu-text-sm niuu-font-medium niuu-text-bg-primary hover:niuu-opacity-90"
+              >
+                <Check className="niuu-h-4 niuu-w-4" />
+                Approve
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function eventTone(type: SessionChronicle['events'][number]['type']) {
@@ -191,34 +306,6 @@ async function copyText(text: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function downloadText(filename: string, text: string): void {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return;
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-  const url = window.URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  window.URL.revokeObjectURL(url);
-}
-
-function formatLogTimestamp(value: number): string {
-  const date = new Date(value);
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(
-    2,
-    '0',
-  )}:${String(date.getSeconds()).padStart(2, '0')}`;
-}
-
-function serializeAggregatedLogs(lines: VolundrAggregatedLog[]): string {
-  return lines
-    .map(
-      (line) =>
-        `${new Date(line.timestamp).toISOString()} ${line.level.toUpperCase()} ${line.participant} ${line.source} ${line.message}`,
-    )
-    .join('\n');
 }
 
 function normalizeRepoLink(source: VolundrSession['source'] | null | undefined) {
@@ -535,7 +622,6 @@ function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolu
     participants: VolundrLogParticipant[];
   }>({ lines: [], participants: [] });
   const [loading, setLoading] = useState(true);
-  const [selectedParticipant, setSelectedParticipant] = useState('all');
   const [level, setLevel] = useState('DEBUG');
 
   useEffect(() => {
@@ -585,163 +671,18 @@ function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolu
     return Array.from(seen.values());
   }, [logs.lines, logs.participants]);
 
-  useEffect(() => {
-    if (selectedParticipant === 'all') return;
-    if (participants.some((participant) => participant.id === selectedParticipant)) return;
-    setSelectedParticipant('all');
-  }, [participants, selectedParticipant]);
-
-  const filteredLogs = useMemo(
-    () =>
-      selectedParticipant === 'all'
-        ? logs.lines
-        : logs.lines.filter((line) => line.participant === selectedParticipant),
-    [logs.lines, selectedParticipant],
-  );
-
-  const lineCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const line of logs.lines) {
-      counts.set(line.participant, (counts.get(line.participant) ?? 0) + 1);
-    }
-    return counts;
-  }, [logs.lines]);
-
   return (
     <div className="niuu-flex niuu-h-full niuu-flex-col" data-testid="live-logs-tab">
-      <div
-        className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-4 niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-3"
-        data-testid="live-logs-toolbar"
-      >
-        <div className="niuu-flex niuu-flex-1 niuu-flex-wrap niuu-gap-2">
-          <button
-            type="button"
-            className={cn(
-              'niuu-rounded-full niuu-border niuu-px-3 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em]',
-              selectedParticipant === 'all'
-                ? 'niuu-border-brand/60 niuu-bg-brand/10 niuu-text-brand'
-                : 'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-secondary',
-            )}
-            onClick={() => setSelectedParticipant('all')}
-          >
-            All
-            <span className="niuu-ml-2 niuu-text-text-faint">{logs.lines.length}</span>
-          </button>
-          {participants.map((participant) => (
-            <button
-              key={participant.id}
-              type="button"
-              className={cn(
-                'niuu-rounded-full niuu-border niuu-px-3 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em]',
-                selectedParticipant === participant.id
-                  ? 'niuu-border-brand/60 niuu-bg-brand/10 niuu-text-brand'
-                  : 'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-secondary',
-              )}
-              onClick={() => setSelectedParticipant(participant.id)}
-              data-testid={`log-participant-${participant.id}`}
-            >
-              {participant.label}
-              <span className="niuu-ml-2 niuu-text-text-faint">
-                {lineCounts.get(participant.id) ?? 0}
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="niuu-flex niuu-items-center niuu-gap-2">
-          <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em] niuu-text-text-faint">
-            <span>Level</span>
-            <select
-              className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-2 niuu-py-1 niuu-text-[11px] niuu-text-text-secondary"
-              value={level}
-              onChange={(event) => setLevel(event.target.value)}
-            >
-              <option value="DEBUG">Debug</option>
-              <option value="INFO">Info</option>
-              <option value="WARNING">Warn</option>
-              <option value="ERROR">Error</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em] niuu-text-text-secondary hover:niuu-text-text-primary"
-            onClick={() =>
-              downloadText(
-                `${sessionId}-${selectedParticipant}-logs.log`,
-                serializeAggregatedLogs(filteredLogs),
-              )
-            }
-          >
-            Download
-          </button>
-        </div>
-      </div>
-      <div
-        className="niuu-grid niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-2 niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-faint"
-        style={{ gridTemplateColumns: '84px 84px minmax(180px, 0.9fr) minmax(0, 3.1fr)' }}
-      >
-        <div>Time</div>
-        <div>Level</div>
-        <div>Source</div>
-        <div>Message</div>
-      </div>
-      <div className="niuu-flex-1 niuu-overflow-auto niuu-bg-bg-primary">
-        {loading && filteredLogs.length === 0 && (
-          <div className="niuu-p-4 niuu-text-center niuu-text-sm niuu-text-text-muted">
-            Loading logs…
-          </div>
-        )}
-        {!loading && filteredLogs.length === 0 && (
-          <div className="niuu-p-4 niuu-text-center niuu-text-sm niuu-text-text-muted">
-            No log entries yet.
-          </div>
-        )}
-        {filteredLogs.map((line) => (
-          <div
-            key={line.id}
-            className="niuu-grid niuu-gap-0 niuu-border-b niuu-border-border-subtle niuu-px-4 niuu-py-2 niuu-font-mono niuu-text-[12px]"
-            style={{ gridTemplateColumns: '84px 84px minmax(180px, 0.9fr) minmax(0, 3.1fr)' }}
-          >
-            <span className="niuu-text-text-muted">{formatLogTimestamp(line.timestamp)}</span>
-            <span
-              className={cn(
-                'niuu-uppercase',
-                line.level === 'error'
-                  ? 'niuu-text-rose-300'
-                  : line.level === 'warn'
-                    ? 'niuu-text-amber-300'
-                    : line.level === 'debug'
-                      ? 'niuu-text-text-faint'
-                      : 'niuu-text-sky-300',
-              )}
-            >
-              {line.level}
-            </span>
-            <div className="niuu-flex niuu-min-w-0 niuu-items-center niuu-gap-2">
-              <span
-                className={cn(
-                  'niuu-rounded-full niuu-border niuu-px-2 niuu-py-0.5 niuu-text-[10px] niuu-uppercase niuu-tracking-[0.14em]',
-                  line.participantKind === 'broker'
-                    ? 'niuu-border-sky-500/40 niuu-bg-sky-500/10 niuu-text-sky-300'
-                    : line.participantKind === 'service'
-                      ? 'niuu-border-emerald-500/40 niuu-bg-emerald-500/10 niuu-text-emerald-300'
-                      : 'niuu-border-violet-500/40 niuu-bg-violet-500/10 niuu-text-violet-300',
-                )}
-              >
-                {line.participantLabel}
-              </span>
-              <span
-                className="niuu-truncate niuu-text-text-faint"
-                title={`${line.source} · ${line.stream}`}
-              >
-                {line.source}
-              </span>
-            </div>
-            <span className="niuu-whitespace-pre-wrap niuu-break-words niuu-text-text-primary">
-              {line.message}
-            </span>
-          </div>
-        ))}
-      </div>
+      <StructuredLogViewer
+        logs={logs.lines}
+        participants={participants}
+        loading={loading}
+        initialLevel={level as 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'}
+        level={level as 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'}
+        onLevelChange={setLevel}
+        downloadFilename={`${sessionId}-logs.log`}
+        toolbarTestId="live-logs-toolbar"
+      />
     </div>
   );
 }
@@ -800,9 +741,7 @@ function LiveChroniclesTab({
   if (!chronicle) {
     return (
       <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
-        {sessionStatus === 'running'
-          ? 'No chronicle data yet.'
-          : 'Start the session to view its chronicle.'}
+        {sessionStatus === 'running' ? 'No chronicle data yet.' : 'No saved chronicle yet.'}
       </div>
     );
   }
@@ -1047,8 +986,7 @@ interface DiffData {
 type DiffBase = 'last-commit' | 'default-branch';
 
 function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return Object.fromEntries(getAuthHeaders().entries());
 }
 
 function useLiveDiffViewer(chatEndpoint: string | null) {
@@ -1056,6 +994,9 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
     () => (chatEndpoint ? wsUrlToHttpBase(chatEndpoint) : null),
     [chatEndpoint],
   );
+  const mountedRef = useRef(true);
+  const filesAbortRef = useRef<AbortController | null>(null);
+  const diffAbortRef = useRef<AbortController | null>(null);
   const [files, setFiles] = useState<SessionFile[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [diff, setDiff] = useState<DiffData | null>(null);
@@ -1064,37 +1005,62 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [diffBase, setDiffBaseState] = useState<DiffBase>('last-commit');
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      filesAbortRef.current?.abort();
+      diffAbortRef.current?.abort();
+    };
+  }, []);
+
   const fetchFiles = useCallback(async () => {
+    filesAbortRef.current?.abort();
     if (!apiBase) {
-      setFiles([]);
+      if (mountedRef.current) {
+        setFiles([]);
+        setFilesLoading(false);
+      }
       return;
     }
+    const controller = new AbortController();
+    filesAbortRef.current = controller;
     setFilesLoading(true);
     try {
       const params = new URLSearchParams({ base: diffBase });
       const response = await fetch(`${apiBase}/api/diff/files?${params}`, {
         headers: authHeaders(),
+        signal: controller.signal,
       });
       if (!response.ok) {
         throw new Error(`Failed to fetch diff files: ${response.status}`);
       }
       const data = (await response.json()) as { files?: SessionFile[] };
+      if (!mountedRef.current || filesAbortRef.current !== controller) return;
       setFiles(data.files ?? []);
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (!mountedRef.current || filesAbortRef.current !== controller) return;
       setFiles([]);
     } finally {
-      setFilesLoading(false);
+      if (mountedRef.current && filesAbortRef.current === controller) {
+        filesAbortRef.current = null;
+        setFilesLoading(false);
+      }
     }
   }, [apiBase, diffBase]);
 
   const selectFile = useCallback(
     async (filePath: string) => {
+      diffAbortRef.current?.abort();
       if (!apiBase) {
         setSelectedFile(filePath);
         setDiff(null);
         setDiffError(new Error('No session endpoint available'));
         return;
       }
+      const controller = new AbortController();
+      diffAbortRef.current = controller;
       setSelectedFile(filePath);
       setDiffLoading(true);
       setDiffError(null);
@@ -1102,16 +1068,23 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
         const params = new URLSearchParams({ file: filePath, base: diffBase });
         const response = await fetch(`${apiBase}/api/diff?${params}`, {
           headers: authHeaders(),
+          signal: controller.signal,
         });
         if (!response.ok) {
           throw new Error(`Failed to fetch diff: ${response.status}`);
         }
+        if (!mountedRef.current || diffAbortRef.current !== controller) return;
         setDiff((await response.json()) as DiffData);
       } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        if (!mountedRef.current || diffAbortRef.current !== controller) return;
         setDiff(null);
         setDiffError(error instanceof Error ? error : new Error('Failed to fetch diff'));
       } finally {
-        setDiffLoading(false);
+        if (mountedRef.current && diffAbortRef.current === controller) {
+          diffAbortRef.current = null;
+          setDiffLoading(false);
+        }
       }
     },
     [apiBase, diffBase],
@@ -1370,10 +1343,15 @@ export function LiveSessionDetailPage({
 }) {
   const [activeTab, setActiveTab] = useState<SessionTab>('chat');
   const [tabWasManuallySelected, setTabWasManuallySelected] = useState(false);
-  const [actionBusy, setActionBusy] = useState<'start' | 'stop' | 'delete' | null>(null);
+  const [actionBusy, setActionBusy] = useState<
+    'start' | 'stop' | 'archive' | 'restore' | 'delete' | null
+  >(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [dismissedHumanGateIds, setDismissedHumanGateIds] = useState<Set<string>>(new Set());
   const volundr = useService<IVolundrService>('volundr');
+  const bifrost = useService<IBifrostService>('bifrost');
   const filesystem = useService<IFileSystemPort>('filesystem');
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const sessionQuery = useSessionDetail(sessionId);
   const liveSessionQuery = useQuery({
@@ -1392,8 +1370,8 @@ export function LiveSessionDetailPage({
     staleTime: 30_000,
   });
   const modelsQuery = useQuery({
-    queryKey: ['volundr', 'models'],
-    queryFn: () => volundr.getModels(),
+    queryKey: ['bifrost', 'models'],
+    queryFn: () => bifrost.getModelCatalog(),
     staleTime: 30_000,
   });
 
@@ -1402,8 +1380,26 @@ export function LiveSessionDetailPage({
   const isRunning = sessionStatus === 'running';
   const chatEndpoint = normalizeSessionUrl(liveSession?.chatEndpoint ?? null);
   const isReady = isRunning && Boolean(chatEndpoint);
+  const canReplayTranscript =
+    readOnly ||
+    sessionStatus === 'stopped' ||
+    sessionStatus === 'archived' ||
+    sessionStatus === 'failed' ||
+    sessionStatus === 'error';
   const terminalUrl = deriveTerminalWsUrl(chatEndpoint);
   const chat = useSkuldChat(chatEndpoint);
+  const workflowGatesQuery = useQuery({
+    queryKey: ['volundr', 'workflow-gates', sessionId],
+    queryFn: () => volundr.getWorkflowGates(sessionId),
+    enabled: Boolean(sessionId) && isRunning,
+    refetchInterval: isRunning ? 5_000 : false,
+  });
+  const transcriptQuery = useQuery({
+    queryKey: ['volundr', 'conversation-history', sessionId],
+    queryFn: () => volundr.getConversationHistory(sessionId),
+    enabled: Boolean(sessionId) && canReplayTranscript,
+    staleTime: 5_000,
+  });
   const sessionName = sessionQuery.data?.personaName ?? liveSession?.name ?? sessionId;
   const sessionFeatures = useMemo(
     () => sessionFeaturesQuery.data ?? [],
@@ -1413,6 +1409,69 @@ export function LiveSessionDetailPage({
   const modelCatalog = modelsQuery.data ?? {};
   const modelInfo = liveSession?.model ? modelCatalog[liveSession.model] : undefined;
   const modelLabel = modelInfo?.name ?? liveSession?.model ?? 'unknown';
+  const transcriptTurns = useMemo(() => transcriptQuery.data?.turns ?? [], [transcriptQuery.data]);
+  const replayMessages = useMemo(() => transformTurns(transcriptTurns), [transcriptTurns]);
+  const replayParticipants = useMemo(
+    () => participantsFromTurns(transcriptTurns),
+    [transcriptTurns],
+  );
+  const replayMeshEvents = useMemo(() => meshEventsFromTurns(transcriptTurns), [transcriptTurns]);
+  const workflowGates = useMemo(() => workflowGatesQuery.data ?? [], [workflowGatesQuery.data]);
+  const activeHumanGate = useMemo(() => {
+    const nativeGate = workflowGates.find(
+      (gate) =>
+        gate.status === 'pending' &&
+        gate.pending_behavior === 'help_needed' &&
+        !dismissedHumanGateIds.has(gate.id),
+    );
+    if (nativeGate) {
+      return {
+        source: 'native' as const,
+        eventId: nativeGate.id,
+        gate: nativeGate,
+        summary:
+          nativeGate.summary ||
+          `${nativeGate.label} is waiting for human approval before the workflow can continue.`,
+        reason: nativeGate.condition || undefined,
+        recommendation: 'Approve to continue or request changes to send the workflow back.',
+      };
+    }
+
+    const latest = [...chat.meshEvents]
+      .reverse()
+      .find(
+        (event): event is MeshNotificationEvent =>
+          event.type === 'notification' && event.notificationType === 'help_needed',
+      );
+    if (!latest) return null;
+    const eventId =
+      latest.id ||
+      [
+        latest.participantId,
+        latest.type,
+        latest.notificationType,
+        latest.timestamp.toISOString(),
+      ].join(':');
+    if (dismissedHumanGateIds.has(eventId)) return null;
+    const participant = chat.participants.get(latest.participantId);
+    if (!participant) return null;
+    return {
+      source: 'legacy' as const,
+      eventId,
+      event: {
+        summary: latest.summary || 'Workflow gate is waiting for human approval.',
+        reason: latest.reason,
+        recommendation: latest.recommendation,
+        persona: latest.persona,
+      },
+      participant: {
+        peerId: participant.peerId,
+        displayName: participant.displayName,
+        persona: participant.persona,
+        participantType: participant.participantType,
+      },
+    };
+  }, [chat.meshEvents, chat.participants, dismissedHumanGateIds, workflowGates]);
 
   const tabs = useMemo(() => {
     const prefMap = new Map(featurePrefs.map((pref) => [pref.featureKey, pref]));
@@ -1443,7 +1502,39 @@ export function LiveSessionDetailPage({
   useEffect(() => {
     setTabWasManuallySelected(false);
     setActiveTab('chat');
+    setDismissedHumanGateIds(new Set());
   }, [sessionId]);
+
+  const handleHumanGateReply = useCallback(
+    (decision: 'APPROVE' | 'CHANGES_REQUESTED', notes: string) => {
+      if (!activeHumanGate) return;
+      setDismissedHumanGateIds((current) => {
+        const next = new Set(current);
+        next.add(activeHumanGate.eventId);
+        return next;
+      });
+      if (activeHumanGate.source === 'native') {
+        void volundr
+          .resolveWorkflowGate(sessionId, activeHumanGate.gate.id, {
+            decision,
+            notes,
+            source: 'human',
+          })
+          .then(() =>
+            queryClient.invalidateQueries({
+              queryKey: ['volundr', 'workflow-gates', sessionId],
+            }),
+          );
+        return;
+      }
+      void chat.sendDirectedMessages(
+        [activeHumanGate.participant],
+        notes ? `${decision}\n\n${notes}` : decision,
+        [],
+      );
+    },
+    [activeHumanGate, chat, queryClient, sessionId, volundr],
+  );
 
   useEffect(() => {
     if (!tabs.some((tab) => tab.id === activeTab)) {
@@ -1502,8 +1593,10 @@ export function LiveSessionDetailPage({
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['volundr', 'raw-session', sessionId] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'raw-session', 'logs', sessionId] }),
+      queryClient.invalidateQueries({ queryKey: ['volundr', 'conversation-history', sessionId] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-session', sessionId] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
+      queryClient.invalidateQueries({ queryKey: ['volundr', 'history'] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'filetree', sessionId] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'session-list'] }),
       queryClient.invalidateQueries({ queryKey: ['volundr', 'stats'] }),
@@ -1536,8 +1629,50 @@ export function LiveSessionDetailPage({
     if (!liveSession || actionBusy) return;
     setActionBusy('delete');
     try {
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: ['volundr', 'raw-session', sessionId] }),
+        queryClient.cancelQueries({ queryKey: ['volundr', 'raw-session', 'logs', sessionId] }),
+        queryClient.cancelQueries({ queryKey: ['volundr', 'conversation-history', sessionId] }),
+        queryClient.cancelQueries({ queryKey: ['volundr', 'domain-session', sessionId] }),
+        queryClient.cancelQueries({ queryKey: ['volundr', 'filetree', sessionId] }),
+        queryClient.cancelQueries({ queryKey: ['volundr', 'workflow-gates', sessionId] }),
+      ]);
       await volundr.deleteSession(liveSession.id, cleanup);
       setDeleteDialogOpen(false);
+      queryClient.removeQueries({ queryKey: ['volundr', 'raw-session', sessionId] });
+      queryClient.removeQueries({ queryKey: ['volundr', 'raw-session', 'logs', sessionId] });
+      queryClient.removeQueries({ queryKey: ['volundr', 'conversation-history', sessionId] });
+      queryClient.removeQueries({ queryKey: ['volundr', 'domain-session', sessionId] });
+      queryClient.removeQueries({ queryKey: ['volundr', 'filetree', sessionId] });
+      queryClient.removeQueries({ queryKey: ['volundr', 'workflow-gates', sessionId] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
+        queryClient.invalidateQueries({ queryKey: ['volundr', 'history'] }),
+        queryClient.invalidateQueries({ queryKey: ['volundr', 'session-list'] }),
+        queryClient.invalidateQueries({ queryKey: ['volundr', 'stats'] }),
+      ]);
+      await navigate({ to: '/volundr/sessions', replace: true });
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleArchiveSession() {
+    if (!liveSession || actionBusy) return;
+    setActionBusy('archive');
+    try {
+      await volundr.archiveSession(liveSession.id);
+      await refreshSessionData();
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleRestoreSession() {
+    if (!liveSession || actionBusy) return;
+    setActionBusy('restore');
+    try {
+      await volundr.restoreSession(liveSession.id);
       await refreshSessionData();
     } finally {
       setActionBusy(null);
@@ -1616,7 +1751,7 @@ export function LiveSessionDetailPage({
             <HeaderDivider />
             <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
             <HeaderDivider />
-            <HeaderMetric label="Mode" value={liveSession?.taskType ?? 'forge'} />
+            <HeaderMetric label="Forge" value={sessionForgeLabel(liveSession)} />
           </div>
         </div>
         <div
@@ -1661,32 +1796,61 @@ export function LiveSessionDetailPage({
             })(),
           )}
         </div>
-        {!readOnly && liveSession && (
+        {liveSession && (
           <div className="niuu-ml-auto niuu-flex niuu-flex-shrink-0 niuu-items-center niuu-gap-2 niuu-pr-1">
-            {liveSession.status === 'running' ? (
+            {!readOnly &&
+              (liveSession.status === 'running' ? (
+                <IconActionButton
+                  label={actionBusy === 'stop' ? '■ stopping' : '■ stop'}
+                  title="Stop session"
+                  onClick={() => void handleStopSession()}
+                  disabled={actionBusy !== null}
+                  tone="critical"
+                />
+              ) : liveSession.status === 'stopped' ? (
+                <>
+                  <IconActionButton
+                    label={actionBusy === 'start' ? '▶ starting' : '▶ start'}
+                    title="Start session"
+                    onClick={() => void handleResumeSession()}
+                    disabled={actionBusy !== null}
+                    tone="brand"
+                  />
+                  <IconActionButton
+                    label={actionBusy === 'archive' ? '⤓ archiving' : '⤓ archive'}
+                    title="Archive session"
+                    onClick={() => void handleArchiveSession()}
+                    disabled={actionBusy !== null}
+                    tone="neutral"
+                  />
+                </>
+              ) : liveSession.status === 'archived' ? null : (
+                <IconActionButton
+                  label={actionBusy === 'start' ? '▶ starting' : '▶ start'}
+                  title="Start session"
+                  onClick={() => void handleResumeSession()}
+                  disabled={actionBusy !== null}
+                  tone="brand"
+                />
+              ))}
+            {liveSession.status === 'archived' && (
               <IconActionButton
-                label={actionBusy === 'stop' ? '■ stopping' : '■ stop'}
-                title="Stop session"
-                onClick={() => void handleStopSession()}
-                disabled={actionBusy !== null}
-                tone="critical"
-              />
-            ) : (
-              <IconActionButton
-                label={actionBusy === 'start' ? '▶ starting' : '▶ start'}
-                title="Start session"
-                onClick={() => void handleResumeSession()}
+                label={actionBusy === 'restore' ? '↺ restoring' : '↺ restore'}
+                title="Restore archived session"
+                onClick={() => void handleRestoreSession()}
                 disabled={actionBusy !== null}
                 tone="brand"
               />
             )}
-            <IconActionButton
-              label="⌫ delete"
-              title="Delete session"
-              onClick={() => setDeleteDialogOpen(true)}
-              disabled={actionBusy !== null}
-              tone="neutral"
-            />
+            {!readOnly && (
+              <IconActionButton
+                label="⌫ delete"
+                title="Delete session"
+                onClick={() => setDeleteDialogOpen(true)}
+                disabled={actionBusy !== null}
+                tone="neutral"
+              />
+            )}
           </div>
         )}
       </div>
@@ -1704,35 +1868,90 @@ export function LiveSessionDetailPage({
         {activeTab === 'chat' && (
           <div role="tabpanel" className="niuu-flex niuu-h-full niuu-min-h-0 niuu-flex-col">
             {isReady && chatEndpoint ? (
+              <>
+                {activeHumanGate && (
+                  <WorkflowHumanGateCard
+                    title={
+                      activeHumanGate.source === 'native'
+                        ? activeHumanGate.gate.label
+                        : activeHumanGate.participant.displayName ||
+                          activeHumanGate.participant.persona ||
+                          activeHumanGate.event.persona ||
+                          'Workflow gate'
+                    }
+                    summary={
+                      activeHumanGate.source === 'native'
+                        ? activeHumanGate.summary
+                        : activeHumanGate.event.summary || 'Workflow gate'
+                    }
+                    reason={
+                      activeHumanGate.source === 'native'
+                        ? activeHumanGate.reason
+                        : activeHumanGate.event.reason
+                    }
+                    recommendation={
+                      activeHumanGate.source === 'native'
+                        ? activeHumanGate.recommendation
+                        : activeHumanGate.event.recommendation
+                    }
+                    onApprove={(notes) => handleHumanGateReply('APPROVE', notes)}
+                    onRequestChanges={(notes) => handleHumanGateReply('CHANGES_REQUESTED', notes)}
+                  />
+                )}
+                <SessionChat
+                  className="niuu-h-full"
+                  messages={chat.messages}
+                  streamingContent={chat.streamingContent}
+                  streamingParts={chat.streamingParts}
+                  streamingModel={chat.streamingModel}
+                  connected={chat.connected}
+                  historyLoaded={chat.historyLoaded}
+                  participants={chat.participants}
+                  meshEvents={chat.meshEvents}
+                  agentEvents={chat.agentEvents}
+                  pendingPermissions={chat.pendingPermissions}
+                  capabilities={chat.capabilities}
+                  chatEndpoint={chatEndpoint}
+                  sessionName={sessionName}
+                  onSend={chat.sendMessage}
+                  onSendDirected={chat.sendDirectedMessages}
+                  onStop={chat.sendInterrupt}
+                  onClear={chat.clearMessages}
+                  onSetInternalVisibility={chat.sendSetInternalVisibility}
+                  onSetModel={chat.sendSetModel}
+                  onSetThinkingTokens={chat.sendSetThinkingTokens}
+                  onRewindFiles={chat.sendRewindFiles}
+                  onPermissionRespond={chat.respondToPermission}
+                  renderPermissions={permissionRenderer}
+                />
+              </>
+            ) : canReplayTranscript && transcriptQuery.isLoading ? (
+              <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
+                Loading saved transcript…
+              </div>
+            ) : canReplayTranscript && transcriptQuery.isError ? (
+              <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-critical">
+                Failed to load saved transcript.
+              </div>
+            ) : canReplayTranscript && replayMessages.length > 0 ? (
               <SessionChat
                 className="niuu-h-full"
-                messages={chat.messages}
-                streamingContent={chat.streamingContent}
-                streamingParts={chat.streamingParts}
-                streamingModel={chat.streamingModel}
-                connected={chat.connected}
-                historyLoaded={chat.historyLoaded}
-                participants={chat.participants}
-                meshEvents={chat.meshEvents}
-                agentEvents={chat.agentEvents}
-                pendingPermissions={chat.pendingPermissions}
-                capabilities={chat.capabilities}
-                chatEndpoint={chatEndpoint}
+                messages={replayMessages}
+                connected={false}
+                historyLoaded={!transcriptQuery.isLoading}
+                participants={replayParticipants}
+                meshEvents={replayMeshEvents}
                 sessionName={sessionName}
-                onSend={chat.sendMessage}
-                onSendDirected={chat.sendDirectedMessages}
-                onStop={chat.sendInterrupt}
-                onClear={chat.clearMessages}
-                onSetInternalVisibility={chat.sendSetInternalVisibility}
-                onSetModel={chat.sendSetModel}
-                onSetThinkingTokens={chat.sendSetThinkingTokens}
-                onRewindFiles={chat.sendRewindFiles}
-                onPermissionRespond={chat.respondToPermission}
-                renderPermissions={permissionRenderer}
+                onSend={() => {}}
+                onStop={() => {}}
               />
             ) : isSessionBooting(sessionStatus) ? (
               <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
                 Session is starting…
+              </div>
+            ) : canReplayTranscript ? (
+              <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
+                No saved transcript yet.
               </div>
             ) : (
               <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">

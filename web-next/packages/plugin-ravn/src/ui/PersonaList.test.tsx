@@ -82,9 +82,37 @@ describe('PersonaList', () => {
     });
     await waitFor(() => expect(screen.getByTestId('persona-list')).toBeInTheDocument());
 
-    // Personas with hasOverride show OVR badge
     const ovrBadges = screen.getAllByText('OVR');
     expect(ovrBadges.length).toBeGreaterThan(0);
+  });
+
+  it('does not show OVR for custom personas that only live in user storage', async () => {
+    const service = {
+      listPersonas: async () => [
+        {
+          name: 'custom-agent',
+          role: 'build',
+          letter: 'C',
+          color: 'var(--color-accent-indigo)',
+          summary: 'Custom agent',
+          permissionMode: 'default',
+          allowedTools: ['read'],
+          iterationBudget: 10,
+          isBuiltin: false,
+          hasOverride: true,
+          producesEvent: '',
+          consumesEvents: [],
+        },
+      ],
+    };
+
+    render(<PersonaList selectedName={null} onSelect={() => {}} />, {
+      wrapper: wrap({ 'ravn.personas': service }),
+    });
+    await waitFor(() => expect(screen.getByTestId('persona-list')).toBeInTheDocument());
+
+    expect(screen.getByText('USR')).toBeInTheDocument();
+    expect(screen.queryByText('OVR')).not.toBeInTheDocument();
   });
 
   it('renders role group headers with data-role attribute', async () => {

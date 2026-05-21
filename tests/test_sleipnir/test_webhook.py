@@ -145,7 +145,7 @@ def mock_client():
 def pub_with_mock(mock_client):
     """WebhookPublisher wired to a mock httpx.AsyncClient."""
     pub = WebhookPublisher(
-        publish_urls=["http://tyr:8080/sleipnir/events"],
+        publish_urls=["http://ting:8080/sleipnir/events"],
         max_attempts=DEFAULT_MAX_ATTEMPTS,
         retry_base_delay=DEFAULT_RETRY_BASE_DELAY,
     )
@@ -179,7 +179,7 @@ async def test_publisher_publish_posts_to_url(pub_with_mock, mock_client):
     await pub_with_mock.publish(event)
     mock_client.post.assert_awaited_once()
     call_kwargs = mock_client.post.call_args
-    assert call_kwargs[0][0] == "http://tyr:8080/sleipnir/events"
+    assert call_kwargs[0][0] == "http://ting:8080/sleipnir/events"
     assert call_kwargs[1]["headers"]["Content-Type"] == "application/json"
 
 
@@ -188,7 +188,7 @@ async def test_publisher_publish_multiple_urls():
     client = _make_mock_client()
     pub = WebhookPublisher(
         publish_urls=[
-            "http://tyr:8080/sleipnir/events",
+            "http://ting:8080/sleipnir/events",
             "http://volundr:8000/sleipnir/events",
         ]
     )
@@ -196,7 +196,7 @@ async def test_publisher_publish_multiple_urls():
     await pub.publish(make_event())
     assert client.post.await_count == 2
     urls = [c[0][0] for c in client.post.call_args_list]
-    assert "http://tyr:8080/sleipnir/events" in urls
+    assert "http://ting:8080/sleipnir/events" in urls
     assert "http://volundr:8000/sleipnir/events" in urls
 
 
@@ -366,7 +366,7 @@ async def test_subscriber_does_not_dispatch_non_matching_event(subscriber):
         received.append(event)
 
     async with subscriber:
-        await subscriber.subscribe(["tyr.*"], handler)
+        await subscriber.subscribe(["ting.*"], handler)
 
         event = make_event(event_type="ravn.tool.complete")
         body = _encode_event(event)
@@ -399,7 +399,7 @@ async def test_subscriber_pattern_matching_wildcard(subscriber):
     async with subscriber:
         await subscriber.subscribe(["*"], handler)
 
-        for event_type in ["ravn.tool.complete", "tyr.saga.created", "system.health.ping"]:
+        for event_type in ["ravn.tool.complete", "ting.saga.created", "system.health.ping"]:
             event = make_event(event_type=event_type)
             request = MagicMock()
             request.body = AsyncMock(return_value=_encode_event(event))
@@ -604,7 +604,7 @@ async def test_publisher_to_subscriber_integration():
 
     async with subscriber:
         await subscriber.subscribe(["ravn.*"], handler)
-        await subscriber.subscribe(["tyr.*"], handler)
+        await subscriber.subscribe(["ting.*"], handler)
 
         # Use httpx ASGITransport to send requests directly into the ASGI app.
         transport = httpx.ASGITransport(app=app)  # type: ignore[attr-defined]
@@ -619,14 +619,14 @@ async def test_publisher_to_subscriber_integration():
             assert resp.status_code == 204
 
             # Another namespace
-            event_tyr = make_event(
-                event_id="int-tyr-01",
-                event_type="tyr.saga.created",
-                source="tyr:dispatcher",
+            event_ting = make_event(
+                event_id="int-ting-01",
+                event_type="ting.saga.created",
+                source="ting:dispatcher",
             )
             resp = await client.post(
                 DEFAULT_ENDPOINT_PATH,
-                content=_encode_event(event_tyr),
+                content=_encode_event(event_ting),
                 headers={"Content-Type": "application/json"},
             )
             assert resp.status_code == 204
@@ -642,11 +642,11 @@ async def test_publisher_to_subscriber_integration():
 
         await subscriber.flush()
 
-    # ravn.* and tyr.* handlers each receive one event; system.health.ping not matched
+    # ravn.* and ting.* handlers each receive one event; system.health.ping not matched
     assert len(received) == 2
     event_ids = {e.event_id for e in received}
     assert "int-ravn-01" in event_ids
-    assert "int-tyr-01" in event_ids
+    assert "int-ting-01" in event_ids
     assert "int-other-01" not in event_ids
 
 

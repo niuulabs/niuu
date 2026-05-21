@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]  # stable semver only, skip prerelease (v*-dev.*)
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"] # stable semver only, skip prerelease (v*-dev.*)
 
 permissions: read-all
 
@@ -43,7 +43,7 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [volundr, skuld, devrunner, volundr-web, niuu-web, tyr, niuu, mimir, bifrost]
+        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
@@ -102,7 +102,7 @@ jobs:
       id-token: write
     strategy:
       matrix:
-        container: [volundr, skuld, devrunner, volundr-web, niuu-web, tyr, niuu, mimir, bifrost]
+        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
@@ -183,7 +183,7 @@ jobs:
       packages: read
     strategy:
       matrix:
-        container: [volundr, skuld, devrunner, volundr-web, niuu-web, tyr, niuu, mimir, bifrost]
+        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
@@ -283,11 +283,16 @@ jobs:
         run: uv python install 3.12
 
       - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-next/pnpm-lock.yaml
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
+        with:
+          version: 9
 
       - name: Install dependencies
         run: uv sync --python 3.12 --extra cli --extra dev
@@ -386,41 +391,25 @@ jobs:
         run: |
           VERSION="${{ needs.version.outputs.version }}"
 
-          # Update skuld chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/skuld/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/skuld/Chart.yaml
-
-          # Update volundr chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/volundr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/volundr/Chart.yaml
-
-          # Update tyr chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/tyr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/tyr/Chart.yaml
-
-          # Update skuld-planner chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/skuld-planner/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/skuld-planner/Chart.yaml
-
-          # Update niuu-shared chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu-shared/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu-shared/Chart.yaml
-
-          # Update niuu umbrella chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu/Chart.yaml
+          for CHART in bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu; do
+            sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
+            sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
+          done
 
           # Update pyproject.toml
           sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
 
       - name: Package Helm charts
         run: |
+          helm package charts/bifrost -d .helm-packages/
+          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
-          helm package charts/tyr -d .helm-packages/
+          helm package charts/ting -d .helm-packages/
           helm package charts/niuu-shared -d .helm-packages/
-          helm dependency build charts/niuu
+          rm -f charts/niuu/Chart.lock
+          helm dependency update charts/niuu
           helm package charts/niuu -d .helm-packages/
 
       - name: Log in to Container Registry
@@ -432,64 +421,29 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-0*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-planner-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/tyr-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-0*.tgz ${{ env.CHART_REPO }}
-
-  # ---------------------------------------------------------------------------
-  # npm package
-  # ---------------------------------------------------------------------------
-  publish-web-package:
-    name: Publish Web Package
-    needs: [version]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with:
-          node-version: 24
-          registry-url: https://npm.pkg.github.com
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Update package version
-        run: npm version ${{ needs.version.outputs.version }} --no-git-tag-version
-
-      - name: Build library
-        run: npm run build:lib
-        env:
-          NODE_OPTIONS: --max-old-space-size=6144
-
-      - name: Publish to GitHub Packages
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
   # GitHub Release
   # ---------------------------------------------------------------------------
   release:
     name: Create Release
-    needs: [version, merge-container-manifests, scan-containers, build-charts, build-cli, build-ravn, publish-web-package]
+    needs:
+      [
+        version,
+        merge-container-manifests,
+        scan-containers,
+        build-charts,
+        build-cli,
+        build-ravn,
+      ]
     runs-on: ubuntu-latest
     permissions:
       contents: read

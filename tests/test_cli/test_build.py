@@ -116,7 +116,19 @@ class TestConstants:
         assert "__main__" in DEFAULT_ENTRY_POINT
 
     def test_include_packages_has_all_five(self):
-        required = {"cli", "niuu", "volundr", "tyr", "skuld"}
+        required = {
+            "audit",
+            "cli",
+            "credentials",
+            "features",
+            "identity",
+            "integrations",
+            "niuu",
+            "skuld",
+            "tracker",
+            "ting",
+            "volundr",
+        }
         assert required.issubset(set(INCLUDE_PACKAGES))
 
     def test_nofollow_excludes_test_frameworks(self):

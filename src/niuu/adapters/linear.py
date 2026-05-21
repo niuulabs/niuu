@@ -1,7 +1,7 @@
 """Linear GraphQL client adapter.
 
 Concrete implementation of GraphQLClientPort for the Linear API.
-Used by both Volundr's LinearAdapter and Tyr's LinearTrackerAdapter.
+Used by both Volundr's LinearAdapter and Ting's LinearTrackerAdapter.
 """
 
 from __future__ import annotations

@@ -945,9 +945,27 @@ class ArchiveStorePort(ABC):
         self,
         *,
         session_id: str,
-        workspace_dir: str | Path,
+        workspace_dir: str | Path | None = None,
     ) -> dict[str, Any] | None:
         """Load an archive manifest if one has already been materialized."""
+
+    @abstractmethod
+    def load_transcript(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> dict[str, Any] | None:
+        """Load an archived transcript payload if one exists."""
+
+    @abstractmethod
+    def load_aggregated_logs(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> dict[str, Any] | None:
+        """Load archived aggregate logs if they exist."""
 
     @abstractmethod
     def write_archive(
@@ -968,7 +986,7 @@ class ArchiveStorePort(ABC):
         self,
         *,
         session_id: str,
-        workspace_dir: str | Path,
+        workspace_dir: str | Path | None = None,
     ) -> Path:
         """Return the local JSON transcript artifact path."""
 
@@ -977,7 +995,7 @@ class ArchiveStorePort(ABC):
         self,
         *,
         session_id: str,
-        workspace_dir: str | Path,
+        workspace_dir: str | Path | None = None,
     ) -> Path:
         """Return the local Markdown transcript artifact path."""
 
@@ -986,7 +1004,7 @@ class ArchiveStorePort(ABC):
         self,
         *,
         session_id: str,
-        workspace_dir: str | Path,
+        workspace_dir: str | Path | None = None,
     ) -> Path:
         """Return the root directory for a session archive."""
 
@@ -1052,6 +1070,7 @@ class SecretInjectionPort(ABC):
         user_id: str,
         credential_mappings: list[CredentialMapping],
         session_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Create or update backend resources to mount the given credentials.
 

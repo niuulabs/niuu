@@ -80,6 +80,7 @@ class RoomBridge:
         self._observe_peer_event = observe_peer_event
         self._participants: dict[str, ParticipantMeta] = {}
         self._websockets: dict[str, WebSocket] = {}
+        self._pending_help_context: dict[str, dict[str, Any]] = {}
         self._color_cycle = itertools.cycle(list(config.participant_colors))
         self._timeline_started_at = time.monotonic()
         self._known_files: set[str] = set()
@@ -184,6 +185,7 @@ class RoomBridge:
         """Remove a participant and broadcast ``participant_left``."""
         self._participants.pop(peer_id, None)
         self._websockets.pop(peer_id, None)
+        self._pending_help_context.pop(peer_id, None)
         logger.info("RoomBridge: participant unregistered peer_id=%s", peer_id)
 
         await self._channels.broadcast({"type": "participant_left", "participantId": peer_id})
@@ -225,7 +227,8 @@ class RoomBridge:
             return
 
         if event_type == "outcome":
-            await self._handle_outcome_frame(meta, frame)
+            if not (isinstance(data, dict) and data.get("routing_only")):
+                await self._handle_outcome_frame(meta, frame)
             # Outcome is emitted mid-turn; the agent may still produce a
             # response afterward — don't reset status here.
             await self._notify_peer_event(meta.peer_id, event_type, frame)
@@ -386,6 +389,18 @@ class RoomBridge:
         context = data.get("context")
         if context:
             notification["context"] = context
+        if isinstance(context, dict):
+            self._pending_help_context[meta.peer_id] = {
+                "help_summary": notification["summary"],
+                "help_reason": notification["reason"],
+                "help_attempted": list(notification.get("attempted") or []),
+                "help_recommendation": notification.get("recommendation", ""),
+                "help_context": context,
+                "workflow_parent_event_id": str(context.get("workflow_parent_event_id") or ""),
+                "workflow_node_id": str(context.get("workflow_node_id") or ""),
+                "root_correlation_id": str(context.get("root_correlation_id") or ""),
+                "session_id": str(context.get("session_id") or frame.get("session_id") or ""),
+            }
 
         await self._channels.broadcast(notification)
         logger.info(
@@ -526,6 +541,8 @@ class RoomBridge:
         self,
         target_peer_id: str,
         content: str,
+        *,
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         """Forward a directed message from the browser to a specific Ravn WebSocket.
 
@@ -540,8 +557,15 @@ class RoomBridge:
             return False
 
         try:
-            payload = json.dumps({"type": "directed_message", "content": content})
+            merged_metadata = dict(self._pending_help_context.get(target_peer_id, {}))
+            if isinstance(metadata, dict):
+                merged_metadata.update(metadata)
+            payload_dict: dict[str, Any] = {"type": "directed_message", "content": content}
+            if merged_metadata:
+                payload_dict["metadata"] = merged_metadata
+            payload = json.dumps(payload_dict)
             await ws.send_text(payload)
+            self._pending_help_context.pop(target_peer_id, None)
             logger.debug("RoomBridge: directed_message sent to peer_id=%s", target_peer_id)
             return True
         except Exception:
@@ -576,6 +600,10 @@ class RoomBridge:
     def has_participant(self, peer_id: str) -> bool:
         """Return True if *peer_id* is already a registered participant."""
         return peer_id in self._participants
+
+    def is_connected(self, peer_id: str) -> bool:
+        """Return True if *peer_id* currently has an active WebSocket."""
+        return peer_id in self._websockets
 
     # ------------------------------------------------------------------
     # Chronicle timeline reporting

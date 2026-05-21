@@ -18,5 +18,5 @@ flags:
     carryforward: true
   web:
     paths:
-      - web/src/
+      - web-next/
     carryforward: true

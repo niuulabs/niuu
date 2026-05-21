@@ -257,9 +257,13 @@ class ErrorResponse(BaseModel):
 # --- Router factory ---
 
 
-def create_presets_router(preset_service: PresetService) -> APIRouter:
+def create_presets_router(
+    preset_service: PresetService,
+    *,
+    prefix: str = "/api/v1/forge",
+) -> APIRouter:
     """Create FastAPI router for preset endpoints."""
-    router = APIRouter(prefix="/api/v1/volundr")
+    router = APIRouter(prefix=prefix)
 
     @router.get("/presets", response_model=list[PresetResponse], tags=["Presets"])
     async def list_presets(

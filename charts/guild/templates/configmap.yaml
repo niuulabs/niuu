@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "guild.fullname" . }}
+  labels:
+    {{- include "guild.labels" . | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.logLevel | default "info" | quote }}
+  LOG_FORMAT: {{ .Values.config.logFormat | default "json" | quote }}
+  HOST: {{ .Values.config.host | default "0.0.0.0" | quote }}
+  PORT: {{ .Values.service.targetPort | default 8084 | quote }}
+  {{- with .Values.config.extra }}
+  {{- range $key, $value := . }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  {{- end }}
+
+  config.yaml: |
+    logging:
+      level: {{ .Values.config.logLevel | default "info" | quote }}
+      format: {{ .Values.config.logFormat | default "json" | quote }}
+
+    cors:
+      allowed_origins:
+        {{- range .Values.config.cors.allowedOrigins }}
+        - {{ . | quote }}
+        {{- end }}
+      allow_credentials: {{ .Values.config.cors.allowCredentials | default true }}
+      allow_methods:
+        - "*"
+      allow_headers:
+        - "*"
+
+    database:
+      min_pool_size: {{ .Values.database.minPoolSize | default 5 }}
+      max_pool_size: {{ .Values.database.maxPoolSize | default 20 }}
+
+    niuu:
+      {{- if .Values.registry.instances }}
+      instances:
+        {{- range .Values.registry.instances }}
+        - {{ . | toJson }}
+        {{- end }}
+      {{- else }}
+      instances: []
+      {{- end }}
+      {{- if .Values.registry.catalog }}
+      catalog:
+        {{- range .Values.registry.catalog }}
+        - {{ . | toJson }}
+        {{- end }}
+      {{- end }}

@@ -171,6 +171,16 @@ async def test_get_workspace_by_session_nonexistent(
     assert entry is None
 
 
+async def test_resolve_session_workspace_path_reconstructs_from_configured_base(
+    adapter: LocalStorageAdapter,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspaces" / "sess-lookup"
+    workspace.mkdir(parents=True)
+
+    assert adapter.resolve_session_workspace_path("sess-lookup") == str(workspace)
+
+
 # ------------------------------------------------------------------
 # get_user_storage_usage
 # ------------------------------------------------------------------

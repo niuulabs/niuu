@@ -8,50 +8,19 @@ accessed via :mod:`importlib.resources`.
 from __future__ import annotations
 
 import importlib.resources
-import os
 from pathlib import Path
-
-
-def web_ui_variant() -> str:
-    """Return the requested web UI variant.
-
-    Supported values are ``"new"``, ``"old"``, and ``"auto"``.
-    Defaults to ``"auto"`` when the environment variable is unset.
-    """
-
-    raw = os.getenv("NIUU_WEB_UI", "auto").strip().lower()
-    if raw in {"", "auto"}:
-        return "auto"
-    if raw in {"new", "old"}:
-        return raw
-
-    msg = "Invalid NIUU_WEB_UI value — expected 'old', 'new', or 'auto'"
-    raise ValueError(msg)
 
 
 def web_dist_dir() -> Path:
     """Return the path to the bundled web UI ``dist/`` directory.
 
-    Falls back to source-tree web builds when running from source.
+    Falls back to the source-tree ``web-next`` build when running from source.
     """
     repo_root = Path(__file__).resolve().parents[2]
-    variant = web_ui_variant()
-    if variant == "new":
-        repo_candidates = (
-            repo_root / "web-next" / "apps" / "niuu" / "dist",
-            repo_root / "src" / "cli" / "web" / "dist",
-        )
-    elif variant == "old":
-        repo_candidates = (
-            repo_root / "web" / "dist",
-            repo_root / "src" / "cli" / "web" / "dist",
-        )
-    else:
-        repo_candidates = (
-            repo_root / "web-next" / "apps" / "niuu" / "dist",
-            repo_root / "web" / "dist",
-            repo_root / "src" / "cli" / "web" / "dist",
-        )
+    repo_candidates = (
+        repo_root / "web-next" / "apps" / "niuu" / "dist",
+        repo_root / "src" / "cli" / "web" / "dist",
+    )
     for candidate in repo_candidates:
         if candidate.is_dir():
             return candidate
@@ -71,11 +40,11 @@ def migration_dir(variant: str = "volundr") -> Path:
     Parameters
     ----------
     variant:
-        ``"volundr"`` (default) for main migrations, ``"tyr"`` for Tyr.
+        ``"volundr"`` (default) for main migrations, ``"ting"`` for Ting.
     """
     # Prefer repo-relative migrations (source of truth when running from source)
-    if variant == "tyr":
-        repo_dir = Path(__file__).resolve().parents[2] / "migrations" / "tyr"
+    if variant == "ting":
+        repo_dir = Path(__file__).resolve().parents[2] / "migrations" / "ting"
     else:
         repo_dir = Path(__file__).resolve().parents[2] / "migrations"
 
@@ -83,8 +52,8 @@ def migration_dir(variant: str = "volundr") -> Path:
         return repo_dir
 
     # Fallback: bundled package data (Nuitka binary)
-    if variant == "tyr":
-        pkg_dir = importlib.resources.files("cli") / "migrations" / "tyr"
+    if variant == "ting":
+        pkg_dir = importlib.resources.files("cli") / "migrations" / "ting"
     else:
         pkg_dir = importlib.resources.files("cli") / "migrations" / "volundr"
 
@@ -94,6 +63,20 @@ def migration_dir(variant: str = "volundr") -> Path:
 
     msg = f"Migration files not found for variant={variant!r}"
     raise FileNotFoundError(msg)
+
+
+def ordered_migration_files(mig_dir: Path) -> list[Path]:
+    """Return migration files in execution order.
+
+    Legacy compatibility migrations must run before the normal numbered set so
+    older developer databases can be healed before newer DDL expects run-era
+    table and column names.
+    """
+
+    def _sort_key(path: Path) -> tuple[int, str]:
+        return (0, path.name) if "legacy_schema_compat" in path.name else (1, path.name)
+
+    return sorted(mig_dir.glob("*.up.sql"), key=_sort_key)
 
 
 def _resource_path(traversable: importlib.resources.abc.Traversable) -> Path:

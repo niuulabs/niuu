@@ -13,6 +13,8 @@
  */
 
 import { useState } from 'react';
+import { useNavigate } from '@tanstack/react-router';
+import { usePluginCtx } from '@niuulabs/plugin-sdk';
 import { KpiStrip, KpiCard, StateDot, relTime } from '@niuulabs/ui';
 import { useMimirMounts } from './useMimirMounts';
 import { useMimirRecentWrites } from './useMimirSources';
@@ -39,10 +41,17 @@ const FEED_KIND_COLOR: Record<string, string> = {
 };
 
 export function OverviewView() {
+  const navigate = useNavigate();
+  const ctx = usePluginCtx();
   const [expandedMount, setExpandedMount] = useState<string | null>(null);
   const { data: mounts, isLoading: mountsLoading, error: mountsError } = useMimirMounts();
   const { data: feed } = useMimirRecentWrites(FEED_LIMIT);
   const { data: ravns = [] } = useRavns();
+
+  function openWarden(wardenId: string) {
+    ctx.setTweak('mimir.selectedWardenId', wardenId);
+    void navigate({ to: '/mimir/ravns' });
+  }
 
   const totalPages = mounts?.reduce((a, m) => a + m.pages, 0) ?? 0;
   const totalSources = mounts?.reduce((a, m) => a + m.sources, 0) ?? 0;
@@ -245,7 +254,14 @@ export function OverviewView() {
                 {ravns.map((ravn) => (
                   <div
                     key={ravn.ravnId}
-                    className="niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-p-3 niuu-flex niuu-flex-col niuu-gap-3"
+                    className="niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-p-3 niuu-flex niuu-flex-col niuu-gap-3 niuu-cursor-pointer niuu-transition-colors hover:niuu-border-border focus-visible:niuu-outline focus-visible:niuu-outline-2 focus-visible:niuu-outline-brand focus-visible:niuu-outline-offset-2"
+                    onClick={() => openWarden(ravn.ravnId)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') openWarden(ravn.ravnId);
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open warden ${ravn.ravnId}`}
                   >
                     {/* Identity row */}
                     <div className="niuu-flex niuu-items-center niuu-gap-2">

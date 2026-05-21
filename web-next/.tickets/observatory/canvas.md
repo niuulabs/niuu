@@ -119,6 +119,6 @@ itself references obsolete positioning from a pre-Shell era.
 5. EventLog anchored at bottom, spanning full width minus drawer area (right offset 320px)
 6. EntityDrawer slides in from right, width 340px, full height
 7. TopologyCanvas fills available space with `cursor: grab`
-8. Topbar stats (realms/ravens/raids) visible in screenshot
+8. Topbar stats (realms/ravens/runs) visible in screenshot
 9. Visual test passes at <= 5% pixel diff against web2 baseline
 10. All existing unit tests continue to pass

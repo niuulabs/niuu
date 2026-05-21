@@ -31,7 +31,7 @@ from tests.test_sleipnir.conftest import DEFAULT_TIMESTAMP, make_event
     "pattern,expected",
     [
         ("ravn.*", True),
-        ("tyr.task.*", True),
+        ("ting.task.*", True),
         ("*", False),  # no prefix — not a simple prefix pattern
         ("ravn.tool.complete", False),  # no wildcard
         ("ravn.*.complete", False),  # wildcard in middle
@@ -107,11 +107,11 @@ def test_build_query_all_filters():
     ts_from = DEFAULT_TIMESTAMP
     ts_to = DEFAULT_TIMESTAMP + timedelta(hours=1)
     q = AuditQuery(
-        event_type_pattern="tyr.*",
+        event_type_pattern="ting.*",
         from_ts=ts_from,
         to_ts=ts_to,
         correlation_id="corr",
-        source="tyr:disp",
+        source="ting:disp",
         limit=25,
     )
     sql, params = _build_query(q)
@@ -141,7 +141,7 @@ def test_apply_filter_pattern():
     events = [
         make_event(event_id="a", event_type="ravn.tool.complete"),
         make_event(event_id="b", event_type="ravn.step.start"),
-        make_event(event_id="c", event_type="tyr.task.started"),
+        make_event(event_id="c", event_type="ting.task.started"),
     ]
     result = apply_event_type_filter(events, "ravn.*")
     ids = {e.event_id for e in result}
@@ -150,7 +150,7 @@ def test_apply_filter_pattern():
 
 def test_apply_filter_no_match():
     events = [make_event(event_id="a", event_type="ravn.tool.complete")]
-    result = apply_event_type_filter(events, "tyr.*")
+    result = apply_event_type_filter(events, "ting.*")
     assert result == []
 
 
@@ -321,7 +321,7 @@ async def test_postgres_query_complex_pattern_filters_results():
         _make_row(event_id="a", event_type="ravn.tool.complete"),
         _make_row(event_id="b", event_type="ravn.step.complete"),
         _make_row(event_id="c", event_type="ravn.tool.started"),  # no match
-        _make_row(event_id="d", event_type="tyr.task.complete"),  # no match
+        _make_row(event_id="d", event_type="ting.task.complete"),  # no match
     ]
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=rows)

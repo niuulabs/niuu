@@ -25,12 +25,15 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from bifrost.config import BifrostConfig
 from niuu.config import (
     CorsConfig,
     GitHubConfig,  # noqa: F401
     GitHubInstance,  # noqa: F401
     GitLabConfig,  # noqa: F401
     GitLabInstance,  # noqa: F401
+    HttpAuthAdapterConfig,
+    InstanceRegistryConfig,
 )
 from ravn.config import PersonaSourceConfig
 from volundr.domain.models import IntegrationType, SecretType
@@ -229,6 +232,25 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "broker": {
                     "cliType": "codex-ws",
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                    "skipPermissions": True,
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldCodexExec": SessionDefinitionConfig(
+            enabled=True,
+            display_name="OpenAI Codex (Batch)",
+            description=(
+                "OpenAI Codex — subprocess transport tuned for autonomous workflow "
+                "execution"
+            ),
+            labels=["session", "codex", "batch"],
+            default_model="",
+            compatible_providers=["openai"],
+            defaults={
+                "broker": {
+                    "cliType": "codex",
+                    "transportAdapter": "skuld.transports.codex.CodexSubprocessTransport",
                     "skipPermissions": True,
                     "agentTeams": False,
                 },
@@ -453,11 +475,11 @@ class CredentialStoreConfig(BaseModel):
     Example YAML::
 
         credential_store:
-          adapter: "volundr.adapters.outbound.vault_credential_store.VaultCredentialStore"
+          adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
           kwargs:
-            url: "http://vault:8200"
-            auth_method: "kubernetes"
-            mount_path: "secret"
+            url: "http://openbao:8200"
+            mount_path: "volundr"
+            auth_method: "token"
     """
 
     adapter: str = Field(
@@ -519,7 +541,7 @@ class SecretInjectionConfig(BaseModel):
         secret_injection:
           adapter: >-
             volundr.adapters.outbound.infisical_secret_injection
-            .InfisicalCSISecretInjectionAdapter
+            .InfisicalAgentInjectionAdapter
           kwargs:
             infisical_url: "https://infisical.example.com"
             client_id: "..."
@@ -1067,8 +1089,8 @@ def _default_feature_modules() -> list[FeatureModuleConfig]:
             order=30,
         ),
         FeatureModuleConfig(
-            key="tyr-connections",
-            label="Tyr Connections",
+            key="ting-connections",
+            label="Ting Connections",
             icon="Compass",
             scope="user",
             default_enabled=True,
@@ -1186,73 +1208,54 @@ class GitConfig(BaseModel):
     workflow: GitWorkflowConfig = Field(default_factory=GitWorkflowConfig)
 
 
-class AIModelConfig(BaseModel):
-    """Available AI model — configured via Helm values.
-
-    Mirrors niuu.domain.models.AIModelConfig but as a pydantic model
-    for settings deserialization.
-    """
-
-    id: str
-    name: str
-    provider: str = Field(
-        default="",
-        description=(
-            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google'). "
-            "Used to filter the model dropdown by the chosen session runtime."
-        ),
-    )
-    cost_per_million_tokens: float = 0.0
-
-
-def _default_models() -> list[AIModelConfig]:
-    """Built-in model catalog so the wizard works without Helm config."""
-    return [
-        AIModelConfig(
-            id="claude-opus-4-7", name="Claude Opus 4.7",
-            provider="anthropic", cost_per_million_tokens=15.0,
-        ),
-        AIModelConfig(
-            id="claude-opus-4-6", name="Claude Opus 4.6",
-            provider="anthropic", cost_per_million_tokens=15.0,
-        ),
-        AIModelConfig(
-            id="claude-sonnet-4-6", name="Claude Sonnet 4.6",
-            provider="anthropic", cost_per_million_tokens=3.0,
-        ),
-        AIModelConfig(
-            id="claude-haiku-4-5-20251001", name="Claude Haiku 4.5",
-            provider="anthropic", cost_per_million_tokens=1.0,
-        ),
-        AIModelConfig(
-            id="gpt-5.5", name="GPT-5.5", provider="openai", cost_per_million_tokens=10.0,
-        ),
-        AIModelConfig(
-            id="gpt-5.4", name="GPT-5.4", provider="openai", cost_per_million_tokens=5.0,
-        ),
-        AIModelConfig(
-            id="o4-mini", name="o4-mini", provider="openai", cost_per_million_tokens=1.1,
-        ),
-        AIModelConfig(
-            id="o3", name="o3", provider="openai", cost_per_million_tokens=10.0,
-        ),
-    ]
-
-
 class TelegramIngressConfig(BaseModel):
     """Toggle for the Volundr-side Telegram update poller.
 
     Volundr's TelegramIngressService runs ``getUpdates`` long-polling on every
     enabled MESSAGING integration to route inbound Telegram messages into
     Skuld session rooms. Telegram allows only one active poller per bot
-    token, so this conflicts with Tyr's polling shim (``telegram.polling``)
-    when both target the same bot. Disable here when Tyr's shim is the
+    token, so this conflicts with Ting's polling shim (``telegram.polling``)
+    when both target the same bot. Disable here when Ting's shim is the
     intended consumer (``./start-dev`` solo dev). Defaults to True for
     backwards compatibility with deployed environments that rely on the
     in-session reply feature.
     """
 
     enabled: bool = Field(default=True)
+
+
+class VolundrBifrostConfig(BifrostConfig):
+    """Volundr-facing Bifrost dependency configuration."""
+
+    url: str = Field(
+        default="http://localhost:8080",
+        description="Base URL for the mounted Bifrost API host.",
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        description="HTTP timeout for Bifrost catalog calls.",
+    )
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
+
+
+class ObservatoryGuildConfig(BaseModel):
+    """Guild dependency config consumed by the host-mounted Observatory app."""
+
+    url: str = Field(
+        default="http://localhost:8080",
+        description="Base URL for the mounted Guild/niuu API host.",
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        description="HTTP timeout for Observatory Guild discovery calls.",
+    )
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
+
+
+class ObservatoryConfig(BaseModel):
+    """Observatory plugin configuration."""
+
+    guild: ObservatoryGuildConfig = Field(default_factory=ObservatoryGuildConfig)
 
 
 class Settings(BaseSettings):
@@ -1280,6 +1283,7 @@ class Settings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     git: GitConfig = Field(default_factory=GitConfig)
+    niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
@@ -1306,12 +1310,11 @@ class Settings(BaseSettings):
         default_factory=_default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
     )
+    bifrost: VolundrBifrostConfig = Field(default_factory=VolundrBifrostConfig)
     default_definition: str = Field(
         default="skuldClaude",
         description="Fallback definition key when no explicit definition is specified.",
     )
-
-    models: list[AIModelConfig] = Field(default_factory=_default_models)
     profiles: list[ProfileConfig] = Field(default_factory=list)
     templates: list[TemplateConfig] = Field(default_factory=list)
     mcp_servers: list[MCPServerEntry] = Field(default_factory=list)
@@ -1320,6 +1323,7 @@ class Settings(BaseSettings):
         description="Feature module catalog — defines available UI modules.",
     )
     ravn: RavnConfig = Field(default_factory=RavnConfig)
+    observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)
 
     @classmethod
     def settings_customise_sources(

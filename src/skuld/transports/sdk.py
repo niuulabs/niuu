@@ -418,15 +418,26 @@ class SDKTransport(CLITransport):
                 await client.rewind_files(user_message_id)
             return
 
-        if subtype in {"steer", "redirect"}:
+        if subtype == "steer":
             content = str(kwargs.get("content") or "").strip()
             if not content:
                 return
             if not self._turn_active:
-                if subtype == "redirect":
-                    await self.send_message(content)
-                else:
-                    logger.info("Claude SDK transport: steer requested without an active turn")
+                logger.info("Claude SDK transport: steer requested without an active turn")
+                return
+            self._pending_steers.append(content)
+            if self._steer_interrupt_requested:
+                return
+            self._steer_interrupt_requested = True
+            await client.interrupt()
+            return
+
+        if subtype == "redirect":
+            content = str(kwargs.get("content") or "").strip()
+            if not content:
+                return
+            if not self._turn_active:
+                await self.send_message(content)
                 return
             self._pending_steers.append(content)
             if self._steer_interrupt_requested:

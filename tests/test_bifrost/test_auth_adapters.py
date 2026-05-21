@@ -172,12 +172,12 @@ class TestMeshAuthAdapter:
         assert identity.tenant_id == "prod"
 
     def test_xfcc_takes_priority_over_x_agent_id(self):
-        xfcc = "URI=spiffe://cluster.local/ns/default/sa/tyr"
+        xfcc = "URI=spiffe://cluster.local/ns/default/sa/ting"
         adapter = MeshAuthAdapter()
         identity = adapter.extract(
             _req({"x-forwarded-client-cert": xfcc, "x-agent-id": "should-be-ignored"})
         )
-        assert identity.agent_id == "tyr"
+        assert identity.agent_id == "ting"
 
     def test_falls_back_to_x_agent_id_when_xfcc_unparseable(self):
         adapter = MeshAuthAdapter()
@@ -204,8 +204,8 @@ class TestParseSpiffeWorkload:
         assert _parse_spiffe_workload(xfcc) == "volundr"
 
     def test_handles_trailing_slash(self):
-        xfcc = "URI=spiffe://cluster.local/ns/default/sa/tyr/"
-        assert _parse_spiffe_workload(xfcc) == "tyr"
+        xfcc = "URI=spiffe://cluster.local/ns/default/sa/ting/"
+        assert _parse_spiffe_workload(xfcc) == "ting"
 
     def test_returns_none_when_no_uri_field(self):
         assert _parse_spiffe_workload("By=spiffe://…;Hash=abc123") is None

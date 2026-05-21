@@ -7,6 +7,7 @@
  */
 
 import { StateDot } from '@niuulabs/ui';
+import { useActiveMount } from '../application/useActiveMount';
 import { useGraph } from '../application/useGraph';
 import type { MimirGraph, GraphNode } from '../domain/api-types';
 import './GraphPage.css';
@@ -241,9 +242,10 @@ function GraphLegend({ categories }: LegendProps) {
 interface InfoCardProps {
   nodeCount: number;
   edgeCount: number;
+  mountLabel: string;
 }
 
-function GraphInfo({ nodeCount, edgeCount }: InfoCardProps) {
+function GraphInfo({ nodeCount, edgeCount, mountLabel }: InfoCardProps) {
   return (
     <div className="niuu-graph-overlay niuu-graph-overlay--info" data-testid="graph-info">
       <span className="niuu-text-[10px] niuu-uppercase niuu-tracking-widest niuu-text-text-muted niuu-font-semibold">
@@ -252,7 +254,7 @@ function GraphInfo({ nodeCount, edgeCount }: InfoCardProps) {
       <span className="niuu-text-sm niuu-font-semibold niuu-text-text-primary niuu-font-mono">
         {nodeCount} pages · {edgeCount} edges
       </span>
-      <span className="niuu-text-xs niuu-text-brand-300 niuu-font-mono">all mounts</span>
+      <span className="niuu-text-xs niuu-text-brand-300 niuu-font-mono">{mountLabel}</span>
     </div>
   );
 }
@@ -262,7 +264,9 @@ function GraphInfo({ nodeCount, edgeCount }: InfoCardProps) {
 // ---------------------------------------------------------------------------
 
 export function GraphPage() {
-  const { graph, focusId, setFocusId, isLoading, isError, error } = useGraph();
+  const { activeMount, mountName } = useActiveMount();
+  const { graph, focusId, setFocusId, isLoading, isError, error } = useGraph(mountName);
+  const mountLabel = activeMount === 'all' ? 'all mounts' : activeMount;
 
   const displayGraph = graph;
   const categories = displayGraph
@@ -292,7 +296,11 @@ export function GraphPage() {
   return (
     <div className="niuu-graph-wrap">
       <GraphLegend categories={categories} />
-      <GraphInfo nodeCount={displayGraph.nodes.length} edgeCount={displayGraph.edges.length} />
+      <GraphInfo
+        nodeCount={displayGraph.nodes.length}
+        edgeCount={displayGraph.edges.length}
+        mountLabel={mountLabel}
+      />
       <GraphSvg
         graph={displayGraph}
         focusId={focusId}

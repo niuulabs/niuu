@@ -64,7 +64,7 @@ def client_no_chronicles(app_no_chronicles: FastAPI) -> TestClient:
 
 
 class TestChronicleEndpointCreate:
-    """Tests for POST /api/v1/volundr/chronicles."""
+    """Tests for POST /api/v1/forge/chronicles."""
 
     async def test_create_chronicle_success(
         self, client: TestClient, session_service: SessionService
@@ -77,7 +77,7 @@ class TestChronicleEndpointCreate:
         )
 
         response = client.post(
-            "/api/v1/volundr/chronicles",
+            "/api/v1/forge/chronicles",
             json={"session_id": str(session.id)},
         )
 
@@ -92,7 +92,7 @@ class TestChronicleEndpointCreate:
         """Returns 404 for nonexistent session."""
         fake_id = uuid4()
         response = client.post(
-            "/api/v1/volundr/chronicles",
+            "/api/v1/forge/chronicles",
             json={"session_id": str(fake_id)},
         )
         assert response.status_code == 404
@@ -100,7 +100,7 @@ class TestChronicleEndpointCreate:
 
 
 class TestChronicleEndpointGet:
-    """Tests for GET /api/v1/volundr/chronicles/{id}."""
+    """Tests for GET /api/v1/forge/chronicles/{id}."""
 
     async def test_get_chronicle_success(
         self,
@@ -116,7 +116,7 @@ class TestChronicleEndpointGet:
         )
         chronicle = await chronicle_svc.create_chronicle(session.id)
 
-        response = client.get(f"/api/v1/volundr/chronicles/{chronicle.id}")
+        response = client.get(f"/api/v1/forge/chronicles/{chronicle.id}")
 
         assert response.status_code == 200
         data = response.json()
@@ -126,17 +126,17 @@ class TestChronicleEndpointGet:
     def test_get_chronicle_not_found(self, client: TestClient):
         """Returns 404 for nonexistent chronicle."""
         fake_id = uuid4()
-        response = client.get(f"/api/v1/volundr/chronicles/{fake_id}")
+        response = client.get(f"/api/v1/forge/chronicles/{fake_id}")
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
 
 class TestChronicleEndpointList:
-    """Tests for GET /api/v1/volundr/chronicles."""
+    """Tests for GET /api/v1/forge/chronicles."""
 
     def test_list_chronicles_empty(self, client: TestClient):
         """Returns empty list when no chronicles exist."""
-        response = client.get("/api/v1/volundr/chronicles")
+        response = client.get("/api/v1/forge/chronicles")
         assert response.status_code == 200
         assert response.json() == []
 
@@ -160,7 +160,7 @@ class TestChronicleEndpointList:
         await chronicle_svc.create_chronicle(s1.id)
         await chronicle_svc.create_chronicle(s2.id)
 
-        response = client.get("/api/v1/volundr/chronicles")
+        response = client.get("/api/v1/forge/chronicles")
 
         assert response.status_code == 200
         data = response.json()
@@ -168,7 +168,7 @@ class TestChronicleEndpointList:
 
 
 class TestChronicleEndpointUpdate:
-    """Tests for PATCH /api/v1/volundr/chronicles/{id}."""
+    """Tests for PATCH /api/v1/forge/chronicles/{id}."""
 
     async def test_update_chronicle_success(
         self,
@@ -185,7 +185,7 @@ class TestChronicleEndpointUpdate:
         chronicle = await chronicle_svc.create_chronicle(session.id)
 
         response = client.patch(
-            f"/api/v1/volundr/chronicles/{chronicle.id}",
+            f"/api/v1/forge/chronicles/{chronicle.id}",
             json={
                 "summary": "Updated summary",
                 "tags": ["python", "fix"],
@@ -203,14 +203,14 @@ class TestChronicleEndpointUpdate:
         """Returns 404 for nonexistent chronicle."""
         fake_id = uuid4()
         response = client.patch(
-            f"/api/v1/volundr/chronicles/{fake_id}",
+            f"/api/v1/forge/chronicles/{fake_id}",
             json={"summary": "new"},
         )
         assert response.status_code == 404
 
 
 class TestChronicleEndpointDelete:
-    """Tests for DELETE /api/v1/volundr/chronicles/{id}."""
+    """Tests for DELETE /api/v1/forge/chronicles/{id}."""
 
     async def test_delete_chronicle_success(
         self,
@@ -226,23 +226,23 @@ class TestChronicleEndpointDelete:
         )
         chronicle = await chronicle_svc.create_chronicle(session.id)
 
-        response = client.delete(f"/api/v1/volundr/chronicles/{chronicle.id}")
+        response = client.delete(f"/api/v1/forge/chronicles/{chronicle.id}")
 
         assert response.status_code == 204
 
         # Verify deleted
-        get_response = client.get(f"/api/v1/volundr/chronicles/{chronicle.id}")
+        get_response = client.get(f"/api/v1/forge/chronicles/{chronicle.id}")
         assert get_response.status_code == 404
 
     def test_delete_chronicle_not_found(self, client: TestClient):
         """Returns 404 for nonexistent chronicle."""
         fake_id = uuid4()
-        response = client.delete(f"/api/v1/volundr/chronicles/{fake_id}")
+        response = client.delete(f"/api/v1/forge/chronicles/{fake_id}")
         assert response.status_code == 404
 
 
 class TestChronicleEndpointReforge:
-    """Tests for POST /api/v1/volundr/chronicles/{id}/reforge."""
+    """Tests for POST /api/v1/forge/chronicles/{id}/reforge."""
 
     async def test_reforge_success(
         self,
@@ -258,7 +258,7 @@ class TestChronicleEndpointReforge:
         )
         chronicle = await chronicle_svc.create_chronicle(session.id)
 
-        response = client.post(f"/api/v1/volundr/chronicles/{chronicle.id}/reforge")
+        response = client.post(f"/api/v1/forge/chronicles/{chronicle.id}/reforge")
 
         assert response.status_code == 200
         data = response.json()
@@ -271,12 +271,12 @@ class TestChronicleEndpointReforge:
     def test_reforge_not_found(self, client: TestClient):
         """Returns 404 for nonexistent chronicle."""
         fake_id = uuid4()
-        response = client.post(f"/api/v1/volundr/chronicles/{fake_id}/reforge")
+        response = client.post(f"/api/v1/forge/chronicles/{fake_id}/reforge")
         assert response.status_code == 404
 
 
 class TestChronicleEndpointChain:
-    """Tests for GET /api/v1/volundr/chronicles/{id}/chain."""
+    """Tests for GET /api/v1/forge/chronicles/{id}/chain."""
 
     async def test_get_chain_success(
         self,
@@ -292,7 +292,7 @@ class TestChronicleEndpointChain:
         )
         chronicle = await chronicle_svc.create_chronicle(session.id)
 
-        response = client.get(f"/api/v1/volundr/chronicles/{chronicle.id}/chain")
+        response = client.get(f"/api/v1/forge/chronicles/{chronicle.id}/chain")
 
         assert response.status_code == 200
         data = response.json()
@@ -302,13 +302,13 @@ class TestChronicleEndpointChain:
     def test_get_chain_empty_for_nonexistent(self, client: TestClient):
         """Returns empty list for nonexistent chronicle."""
         fake_id = uuid4()
-        response = client.get(f"/api/v1/volundr/chronicles/{fake_id}/chain")
+        response = client.get(f"/api/v1/forge/chronicles/{fake_id}/chain")
         assert response.status_code == 200
         assert response.json() == []
 
 
 class TestChronicleEndpointGetBySession:
-    """Tests for GET /api/v1/volundr/sessions/{id}/chronicle."""
+    """Tests for GET /api/v1/forge/sessions/{id}/chronicle."""
 
     async def test_get_session_chronicle_success(
         self,
@@ -324,7 +324,7 @@ class TestChronicleEndpointGetBySession:
         )
         chronicle = await chronicle_svc.create_chronicle(session.id)
 
-        response = client.get(f"/api/v1/volundr/sessions/{session.id}/chronicle")
+        response = client.get(f"/api/v1/forge/sessions/{session.id}/chronicle")
 
         assert response.status_code == 200
         data = response.json()
@@ -334,13 +334,13 @@ class TestChronicleEndpointGetBySession:
     def test_get_session_chronicle_not_found(self, client: TestClient):
         """Returns 404 when no chronicle exists for session."""
         fake_id = uuid4()
-        response = client.get(f"/api/v1/volundr/sessions/{fake_id}/chronicle")
+        response = client.get(f"/api/v1/forge/sessions/{fake_id}/chronicle")
         assert response.status_code == 404
         assert "no chronicle found" in response.json()["detail"].lower()
 
 
 class TestChronicleEndpointBrokerReport:
-    """Tests for POST /api/v1/volundr/sessions/{id}/chronicle."""
+    """Tests for POST /api/v1/forge/sessions/{id}/chronicle."""
 
     async def test_broker_report_creates_chronicle(
         self,
@@ -355,7 +355,7 @@ class TestChronicleEndpointBrokerReport:
         )
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{session.id}/chronicle",
+            f"/api/v1/forge/sessions/{session.id}/chronicle",
             json={
                 "summary": "Implemented feature X",
                 "key_changes": ["main.py: added handler"],
@@ -369,7 +369,7 @@ class TestChronicleEndpointBrokerReport:
         assert data["summary"] == "Implemented feature X"
         assert data["key_changes"] == ["main.py: added handler"]
         assert data["duration_seconds"] == 120
-        assert data["status"] == "draft"
+        assert data["status"] == "complete"
 
     async def test_broker_report_enriches_existing_draft(
         self,
@@ -386,7 +386,7 @@ class TestChronicleEndpointBrokerReport:
         existing = await chronicle_svc.create_chronicle(session.id)
 
         response = client.post(
-            f"/api/v1/volundr/sessions/{session.id}/chronicle",
+            f"/api/v1/forge/sessions/{session.id}/chronicle",
             json={
                 "summary": "Broker-generated summary",
                 "unfinished_work": "Need more tests",
@@ -403,7 +403,7 @@ class TestChronicleEndpointBrokerReport:
         """Returns 404 for nonexistent session."""
         fake_id = uuid4()
         response = client.post(
-            f"/api/v1/volundr/sessions/{fake_id}/chronicle",
+            f"/api/v1/forge/sessions/{fake_id}/chronicle",
             json={"summary": "test"},
         )
         assert response.status_code == 404
@@ -415,7 +415,7 @@ class TestChronicleEndpointBrokerReport:
         """Returns 404 for a nonexistent session even with empty payload."""
         fake_id = uuid4()
         response = client.post(
-            f"/api/v1/volundr/sessions/{fake_id}/chronicle",
+            f"/api/v1/forge/sessions/{fake_id}/chronicle",
             json={},
         )
         assert response.status_code == 404
@@ -424,7 +424,7 @@ class TestChronicleEndpointBrokerReport:
         """Returns 503 when chronicle service is not configured."""
         fake_id = uuid4()
         response = client_no_chronicles.post(
-            f"/api/v1/volundr/sessions/{fake_id}/chronicle",
+            f"/api/v1/forge/sessions/{fake_id}/chronicle",
             json={"summary": "test"},
         )
         assert response.status_code == 503
@@ -436,14 +436,14 @@ class TestChronicleServiceUnavailable:
 
     def test_list_chronicles_unavailable(self, client_no_chronicles: TestClient):
         """GET /chronicles returns 503 when service is None."""
-        response = client_no_chronicles.get("/api/v1/volundr/chronicles")
+        response = client_no_chronicles.get("/api/v1/forge/chronicles")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
     def test_create_chronicle_unavailable(self, client_no_chronicles: TestClient):
         """POST /chronicles returns 503 when service is None."""
         response = client_no_chronicles.post(
-            "/api/v1/volundr/chronicles",
+            "/api/v1/forge/chronicles",
             json={"session_id": str(uuid4())},
         )
         assert response.status_code == 503
@@ -451,14 +451,14 @@ class TestChronicleServiceUnavailable:
 
     def test_get_chronicle_unavailable(self, client_no_chronicles: TestClient):
         """GET /chronicles/{id} returns 503 when service is None."""
-        response = client_no_chronicles.get(f"/api/v1/volundr/chronicles/{uuid4()}")
+        response = client_no_chronicles.get(f"/api/v1/forge/chronicles/{uuid4()}")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
     def test_update_chronicle_unavailable(self, client_no_chronicles: TestClient):
         """PATCH /chronicles/{id} returns 503 when service is None."""
         response = client_no_chronicles.patch(
-            f"/api/v1/volundr/chronicles/{uuid4()}",
+            f"/api/v1/forge/chronicles/{uuid4()}",
             json={"summary": "test"},
         )
         assert response.status_code == 503
@@ -466,24 +466,24 @@ class TestChronicleServiceUnavailable:
 
     def test_delete_chronicle_unavailable(self, client_no_chronicles: TestClient):
         """DELETE /chronicles/{id} returns 503 when service is None."""
-        response = client_no_chronicles.delete(f"/api/v1/volundr/chronicles/{uuid4()}")
+        response = client_no_chronicles.delete(f"/api/v1/forge/chronicles/{uuid4()}")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
     def test_reforge_chronicle_unavailable(self, client_no_chronicles: TestClient):
         """POST /chronicles/{id}/reforge returns 503 when service is None."""
-        response = client_no_chronicles.post(f"/api/v1/volundr/chronicles/{uuid4()}/reforge")
+        response = client_no_chronicles.post(f"/api/v1/forge/chronicles/{uuid4()}/reforge")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
     def test_chain_chronicle_unavailable(self, client_no_chronicles: TestClient):
         """GET /chronicles/{id}/chain returns 503 when service is None."""
-        response = client_no_chronicles.get(f"/api/v1/volundr/chronicles/{uuid4()}/chain")
+        response = client_no_chronicles.get(f"/api/v1/forge/chronicles/{uuid4()}/chain")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
     def test_get_session_chronicle_unavailable(self, client_no_chronicles: TestClient):
         """GET /sessions/{id}/chronicle returns 503 when service is None."""
-        response = client_no_chronicles.get(f"/api/v1/volundr/sessions/{uuid4()}/chronicle")
+        response = client_no_chronicles.get(f"/api/v1/forge/sessions/{uuid4()}/chronicle")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()

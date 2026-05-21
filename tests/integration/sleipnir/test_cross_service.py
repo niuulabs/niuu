@@ -229,12 +229,12 @@ async def test_multi_publisher_single_subscriber(transport):
             summary="from-volundr",
         )
     )
-    # Simulate Tyr publishing
+    # Simulate Ting publishing
     await transport.publish(
         make_event(
-            event_type="tyr.saga.created",
-            source="tyr:event-bridge",
-            summary="from-tyr",
+            event_type="ting.saga.created",
+            source="ting:event-bridge",
+            summary="from-ting",
         )
     )
 
@@ -242,4 +242,4 @@ async def test_multi_publisher_single_subscriber(transport):
 
     sources = {e.source for e in received}
     assert "volundr:event-sink" in sources
-    assert "tyr:event-bridge" in sources
+    assert "ting:event-bridge" in sources

@@ -51,6 +51,62 @@ data:
         {{- else }}
         instances: []
         {{- end }}
+
+    database:
+      min_pool_size: {{ .Values.database.minPoolSize | default 5 }}
+      max_pool_size: {{ .Values.database.maxPoolSize | default 20 }}
+
+    storage:
+      adapter: {{ .Values.storageAdapter.adapter | quote }}
+      kwargs: {{ .Values.storageAdapter.kwargs | toJson }}
+      {{- if .Values.storageAdapter.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.storageAdapter.secretKwargs }}
+        {{ .kwarg }}: STORAGE_ADAPTER_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+
+    identity:
+      adapter: {{ .Values.identity.adapter | quote }}
+      kwargs: {{ .Values.identity.kwargs | toJson }}
+      {{- if .Values.identity.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.identity.secretKwargs }}
+        {{ .kwarg }}: IDENTITY_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+      {{- if .Values.identity.roleMapping }}
+      role_mapping:
+        {{- range $key, $value := .Values.identity.roleMapping }}
+        {{ $key }}: {{ $value | quote }}
+        {{- end }}
+      {{- end }}
+
+    auth_discovery:
+      issuer: {{ .Values.authDiscovery.issuer | default "" | quote }}
+      cli_client_id: {{ .Values.authDiscovery.cliClientId | default "volundr-cli" | quote }}
+      scopes: {{ .Values.authDiscovery.scopes | default "openid profile email" | quote }}
+
+    gateway:
+      adapter: {{ .Values.gateway.adapter | quote }}
+      kwargs: {{ .Values.gateway.kwargs | toJson }}
+      {{- if .Values.gateway.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.gateway.secretKwargs }}
+        {{ .kwarg }}: GATEWAY_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+
+    pat:
+      token_issuer_adapter: {{ .Values.pat.token_issuer_adapter | quote }}
+      token_issuer_kwargs: {{ .Values.pat.token_issuer_kwargs | toJson }}
+      ttl_days: {{ .Values.pat.ttl_days | default 365 }}
       gitlab:
         enabled: {{ .Values.git.gitlab.enabled }}
         base_url: "https://gitlab.com"

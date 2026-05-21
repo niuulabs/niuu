@@ -13,16 +13,18 @@ daemon instances.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from niuu.domain.mimir import ThreadState
-from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.channels.capture import CaptureChannel, TaskResult, TaskResultStore
 from ravn.adapters.channels.composite import CompositeChannel
@@ -54,6 +56,148 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+_SUCCESS_VERDICT_PREFERENCE = (
+    "pass",
+    "complete",
+    "completed",
+    "approve",
+    "approved",
+    "ok",
+    "success",
+    "succeeded",
+    "clean",
+)
+_MIMIR_PAGE_WRITTEN_OUTCOME = "mimir.page.written"
+
+
+def _default_success_verdict(produces: object) -> str:
+    """Return the best success verdict to synthesize for a persona outcome."""
+    event_type_map = getattr(produces, "event_type_map", {}) or {}
+    if isinstance(event_type_map, dict):
+        for candidate in _SUCCESS_VERDICT_PREFERENCE:
+            if candidate in event_type_map:
+                return candidate
+
+    schema = getattr(produces, "schema", {}) or {}
+    if isinstance(schema, dict):
+        verdict_schema = schema.get("verdict")
+        values: list[str] = []
+        if isinstance(verdict_schema, dict):
+            raw_values = verdict_schema.get("values", [])
+            if isinstance(raw_values, list):
+                values = [str(value).strip() for value in raw_values if str(value).strip()]
+        else:
+            raw_values = getattr(verdict_schema, "enum_values", None)
+            if isinstance(raw_values, list):
+                values = [str(value).strip() for value in raw_values if str(value).strip()]
+
+        if values:
+            normalized = {value.lower(): value for value in values}
+            for candidate in _SUCCESS_VERDICT_PREFERENCE:
+                chosen = normalized.get(candidate)
+                if chosen:
+                    return chosen
+
+    return ""
+
+
+def _known_verdict_tokens(produces: object) -> set[str]:
+    """Collect known verdict tokens for a persona outcome contract."""
+    tokens: set[str] = set()
+
+    event_type_map = getattr(produces, "event_type_map", {}) or {}
+    if isinstance(event_type_map, dict):
+        tokens.update(str(key).strip() for key in event_type_map if str(key).strip())
+
+    schema = getattr(produces, "schema", {}) or {}
+    if isinstance(schema, dict):
+        verdict_schema = schema.get("verdict")
+        if isinstance(verdict_schema, dict):
+            raw_values = verdict_schema.get("values", [])
+            if isinstance(raw_values, list):
+                tokens.update(str(value).strip() for value in raw_values if str(value).strip())
+        else:
+            raw_values = getattr(verdict_schema, "enum_values", None)
+            if isinstance(raw_values, list):
+                tokens.update(str(value).strip() for value in raw_values if str(value).strip())
+
+    success_verdict = _default_success_verdict(produces)
+    if success_verdict:
+        tokens.add(success_verdict)
+
+    return tokens
+
+
+def _normalize_outcome_verdict(raw_verdict: object, produces: object) -> str:
+    """Normalize wrapped verdict tokens back onto the declared contract."""
+    verdict = str(raw_verdict or "").strip()
+    if not verdict:
+        return ""
+
+    known = _known_verdict_tokens(produces)
+    if not known:
+        return verdict
+
+    folded = " ".join(verdict.split())
+    candidates: list[str] = []
+    for candidate in (
+        verdict,
+        folded,
+        re.sub(r"\s+", "_", folded),
+        re.sub(r"\s+", "", folded),
+    ):
+        candidate = candidate.strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    known_by_lower = {token.lower(): token for token in known}
+    for candidate in candidates:
+        resolved = known_by_lower.get(candidate.lower())
+        if resolved:
+            return resolved
+
+    return verdict
+
+
+def _infer_tool_written_verdict(
+    *,
+    allowed_topics: set[str] | None,
+    event_type_map: dict[str, str],
+) -> str:
+    """Infer a workflow verdict when one alias outcome is unambiguously allowed."""
+    if not allowed_topics or len(allowed_topics) != 1 or not event_type_map:
+        return ""
+
+    matches = [
+        verdict
+        for verdict, topic in event_type_map.items()
+        if str(topic).strip() and topic in allowed_topics
+    ]
+    if len(matches) != 1:
+        return ""
+    return matches[0]
+
+
+def _parse_outcome_for_persona(
+    response_text: str,
+    persona_config: PersonaConfig | None,
+):
+    """Parse outcome text with persona schema when one is declared."""
+    if not response_text:
+        return None
+    produces = getattr(persona_config, "produces", None)
+    schema_fields = getattr(produces, "schema", None)
+    if schema_fields:
+        try:
+            return parse_outcome_block(response_text, OutcomeSchema(fields=schema_fields))
+        except Exception:
+            logger.warning(
+                "drive_loop: schema-aware outcome parsing failed; falling back to generic parse",
+                exc_info=True,
+            )
+    return parse_outcome_block(response_text)
+
+
 # Type alias for the mesh RPC handler callable
 MeshRpcHandler = Callable[[dict], Awaitable[dict]]
 
@@ -82,6 +226,7 @@ class FanInSlot:
 class _FanInResult:
     """Returned by FanInBuffer when a slot completes."""
 
+    consumer_key: str
     persona_name: str
     merged_context: str
     root_correlation_id: str
@@ -128,23 +273,28 @@ class FanInBuffer:
         persona_name: str,
         consumes_event_types: list[str],
         strategy: str,
+        consumer_key: str | None = None,
     ) -> _FanInResult | None:
         """Accept an event for consumer-side fan-in.
 
         Returns a ``_FanInResult`` when all required events have arrived,
         otherwise ``None``.  For ``merge`` strategy returns immediately.
         """
-        # Act immediately when: merge strategy, single event type, or no
-        # fan-in contributors registered (solo persona in the flock).
-        if strategy == "merge" or len(consumes_event_types) <= 1 or not self._contributor_names:
+        # Act immediately when:
+        # - merge strategy (plain event subscription)
+        # - any_pass strategy (alternate triggers / OR semantics)
+        # - single event type
+        # - no fan-in contributors registered (solo persona in the flock)
+        if strategy in {"merge", "any_pass"} or len(consumes_event_types) <= 1:
             return _FanInResult(
+                consumer_key=consumer_key or persona_name,
                 persona_name=persona_name,
                 merged_context=self._format_single_event(event_type, event_payload),
                 root_correlation_id=root_correlation_id,
                 triggered_by=f"mesh:outcome:{event_type}",
             )
 
-        group_key = f"consumer:{persona_name}:{root_correlation_id}"
+        group_key = f"consumer:{consumer_key or persona_name}:{root_correlation_id}"
         slot = self._slots.get(group_key)
         now = datetime.now(UTC)
 
@@ -363,6 +513,7 @@ class FanInBuffer:
 
         triggered_by_types = list(slot.required_event_types)
         return _FanInResult(
+            consumer_key=slot.group_key.split(":", 2)[1],
             persona_name=slot.persona_name,
             merged_context="\n".join(context_parts),
             root_correlation_id=slot.root_correlation_id,
@@ -408,6 +559,7 @@ class DriveLoop:
         # (priority, counter, AgentTask)
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=config.task_queue_max)
         self._active_tasks: dict[str, asyncio.Task] = {}
+        self._active_task_contexts: dict[str, AgentTask] = {}
         self._active_agents: dict[str, object] = {}
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
         self._journal_path = Path(config.queue_journal_path).expanduser()
@@ -418,7 +570,14 @@ class DriveLoop:
         self._completion_events: dict[str, asyncio.Event] = {}
         self._mesh: MeshPort | None = None
         self._persona_config: PersonaConfig | None = None
+        self._workflow_allowed_outcomes_resolver: (
+            Callable[[AgentTask, PersonaConfig], set[str] | None] | None
+        ) = None
         self._fan_in = FanInBuffer()
+        self._current_task_var: contextvars.ContextVar[AgentTask | None] = contextvars.ContextVar(
+            "ravn_current_task",
+            default=None,
+        )
         budget_cfg = getattr(settings, "budget", None)
         if isinstance(budget_cfg, BudgetConfig):
             _cap = budget_cfg.daily_cap_usd
@@ -602,6 +761,119 @@ class DriveLoop:
             self._skuld_channel._emits = list(dict.fromkeys(emits))  # dedupe, preserve order
             self._skuld_channel._tools = persona_config.allowed_tools
 
+    def set_workflow_allowed_outcomes_resolver(
+        self,
+        resolver: Callable[[AgentTask, PersonaConfig], set[str] | None] | None,
+    ) -> None:
+        """Register a resolver for node-scoped workflow outcome topics."""
+        self._workflow_allowed_outcomes_resolver = resolver
+
+    def current_task(self) -> AgentTask | None:
+        """Return the task currently executing in this context, if any."""
+        return self._current_task_var.get()
+
+    def resolve_task_context(self, task_id: str | None = None) -> AgentTask | None:
+        """Resolve the task context for tool-originated workflow events."""
+        if task_id:
+            task = self._active_task_contexts.get(task_id)
+            if task is not None:
+                return task
+        current = self.current_task()
+        if current is not None:
+            return current
+        if len(self._active_task_contexts) == 1:
+            return next(iter(self._active_task_contexts.values()))
+        return None
+
+    def record_tool_outcome_fields(
+        self,
+        *,
+        task: AgentTask,
+        event_type: str,
+        fields: dict[str, object],
+    ) -> None:
+        """Remember deterministic tool metadata for the task's final outcome."""
+        if not event_type or not fields:
+            return
+        existing = task.tool_outcomes.get(event_type) or {}
+        merged = dict(existing)
+        merged.update(fields)
+        task.tool_outcomes[event_type] = merged
+
+    def _default_mimir_mount_fields(self) -> dict[str, object]:
+        """Infer the active Mimir mount names from runtime config when unambiguous."""
+        mimir_cfg = getattr(self._settings, "mimir", None)
+        if mimir_cfg is None:
+            return {}
+
+        mount_names = [
+            str(name).strip()
+            for name in getattr(getattr(mimir_cfg, "write_routing", None), "default", []) or []
+            if str(name).strip()
+        ]
+        if not mount_names:
+            mount_names = [
+                str(instance.name).strip()
+                for instance in getattr(mimir_cfg, "instances", []) or []
+                if str(getattr(instance, "name", "")).strip()
+            ]
+        if not mount_names:
+            return {}
+
+        fields: dict[str, object] = {"mount_names": mount_names}
+        if len(mount_names) == 1:
+            fields["mount_name"] = mount_names[0]
+        return fields
+
+    @staticmethod
+    def _artifact_publish_paths(outcome_fields: dict[str, object]) -> list[str]:
+        """Collect markdown artifact paths declared in an outcome block."""
+        paths: list[str] = []
+        for key, value in outcome_fields.items():
+            if not str(key).endswith("_path"):
+                continue
+            path = str(value or "").strip()
+            if not path or not path.endswith(".md"):
+                continue
+            paths.append(path)
+        return list(dict.fromkeys(paths))
+
+    async def _maybe_publish_workflow_artifacts(
+        self,
+        task: AgentTask,
+        outcome_fields: dict[str, object],
+    ) -> None:
+        """Mirror workflow-authored markdown artifacts into the active Mimir mount."""
+        if self._mimir is None:
+            return
+        if not str(task.workflow_node_id or "").strip():
+            return
+        paths = self._artifact_publish_paths(outcome_fields)
+        if not paths:
+            return
+
+        from ravn.adapters.tools.mimir_tools import MimirPublishFilesTool  # noqa: PLC0415
+
+        workspace_root = Path(
+            str(getattr(getattr(self._settings, "permission", None), "workspace_root", "")).strip()
+            or Path.cwd()
+        )
+        tool = MimirPublishFilesTool(self._mimir, workspace_root)
+        result = await tool.execute({"paths": paths})
+        if result.is_error:
+            logger.warning(
+                "drive_loop: failed to publish workflow artifacts to Mimir for task %s: %s",
+                task.task_id,
+                result.content,
+            )
+            return
+        outcome_fields.setdefault("published_paths", paths)
+        logger.info(
+            "drive_loop: published workflow artifacts to Mimir for task %s: %s",
+            task.task_id,
+            paths,
+        )
+
     async def handle_rpc(self, message: dict) -> dict:
         """Dispatch an incoming mesh RPC message to the registered handler.
 
@@ -615,7 +887,46 @@ class DriveLoop:
             logger.error("drive_loop: rpc handler raised: %s", exc)
             return {"error": str(exc)}
 
-    async def _handle_directed_message(self, content: str) -> None:
+    @staticmethod
+    def _directed_message_context(
+        content: str,
+        metadata: dict[str, Any] | None,
+    ) -> str:
+        """Render a directed human reply as initiative context for the target persona."""
+        trimmed = content.strip()
+        if not metadata:
+            return trimmed
+
+        help_summary = str(metadata.get("help_summary") or "").strip()
+        help_reason = str(metadata.get("help_reason") or "").strip()
+        help_recommendation = str(metadata.get("help_recommendation") or "").strip()
+        attempted = metadata.get("help_attempted")
+        context = metadata.get("help_context")
+
+        parts = [
+            "This is a directed human reply for an in-progress workflow turn.",
+        ]
+        if help_summary:
+            parts.append(f"Pending help summary: {help_summary}")
+        if help_reason:
+            parts.append(f"Reason: {help_reason}")
+        if isinstance(attempted, list):
+            attempted_items = [str(item).strip() for item in attempted if str(item).strip()]
+            if attempted_items:
+                parts.append("Already attempted:")
+                parts.extend(f"  - {item}" for item in attempted_items[:6])
+        if help_recommendation:
+            parts.append(f"Previous recommendation: {help_recommendation}")
+        if isinstance(context, dict) and context:
+            parts.append(f"Workflow context: {json.dumps(context, sort_keys=True)}")
+        parts.append(f"Human reply: {trimmed}")
+        return "\n".join(parts)
+
+    async def _handle_directed_message(
+        self,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         """Enqueue a directed message from the browser as an agent task."""
         if await self._try_steer_active_agent(content):
             return
@@ -627,17 +938,30 @@ class DriveLoop:
         task = AgentTask(
             task_id=task_id,
             title="Directed message from user",
-            initiative_context=content,
+            initiative_context=self._directed_message_context(content, metadata),
             triggered_by="skuld:directed_message",
             output_mode=OutputMode.SURFACE,
             persona=persona,
             priority=1,  # high priority — user is waiting
         )
+        if metadata:
+            root_correlation_id = str(metadata.get("root_correlation_id") or "").strip()
+            workflow_parent_event_id = str(metadata.get("workflow_parent_event_id") or "").strip()
+            workflow_node_id = str(metadata.get("workflow_node_id") or "").strip()
+            session_id = str(metadata.get("session_id") or "").strip()
+            if root_correlation_id:
+                task.root_correlation_id = root_correlation_id
+            if workflow_parent_event_id:
+                task.workflow_parent_event_id = workflow_parent_event_id
+            if workflow_node_id:
+                task.workflow_node_id = workflow_node_id
+            if session_id:
+                task.session_id = session_id
         logger.info("drive_loop: directed message enqueued as task %s", task_id)
         await self.enqueue(task)
 
     async def _try_steer_active_agent(self, content: str) -> bool:
-        """Attempt to steer the current active agent instead of queueing work."""
+        """Attempt to steer the currently active agent instead of queueing a new task."""
         if not content.strip():
             return False
 
@@ -807,7 +1131,6 @@ class DriveLoop:
                 channel = SilentChannel()
         agent = self._agent_factory(channel, task.task_id, task.persona, task.triggered_by)
         prompt = build_initiative_prompt(task)
-        self._active_agents[task.task_id] = agent
 
         logger.info(
             "drive_loop: executing task %s (%r) triggered_by=%r",
@@ -843,8 +1166,11 @@ class DriveLoop:
             )
         )
 
+        success = False
+        token = self._current_task_var.set(task)
+        self._active_task_contexts[task.task_id] = task
+        self._active_agents[task.task_id] = agent
         try:
-            success = False
             try:
                 turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
                 success = True
@@ -904,10 +1230,10 @@ class DriveLoop:
                     await emit_fn(outcome)
                 except Exception:
                     logger.warning("emit_session_ended failed; continuing", exc_info=True)
-            await self._emit_sleipnir_task_completed(task, outcome)
+            response_text = capture_channel.response_text if capture_channel else ""
+            await self._emit_sleipnir_task_completed(task, outcome, response_text=response_text)
 
             # Publish outcome event to mesh for other agents to consume
-            response_text = capture_channel.response_text if capture_channel else ""
             await self._emit_mesh_outcome_event(task, response_text, success)
 
             await self._event_publisher.publish(
@@ -946,6 +1272,8 @@ class DriveLoop:
                 await self._finalise_thread(thread_path, success)
         finally:
             self._active_agents.pop(task.task_id, None)
+            self._active_task_contexts.pop(task.task_id, None)
+            self._current_task_var.reset(token)
 
     def _format_task_error(self, task: AgentTask, exc: Exception) -> str:
         """Render a user-visible task failure message for live room chat."""
@@ -956,36 +1284,148 @@ class DriveLoop:
             )
         return f"{type(exc).__name__}: {exc}"
 
-    async def _emit_sleipnir_task_completed(self, task: AgentTask, outcome: str) -> None:
+    async def _emit_sleipnir_task_completed(
+        self,
+        task: AgentTask,
+        outcome: str,
+        *,
+        response_text: str = "",
+    ) -> None:
         """Publish ravn.task.completed to Sleipnir (no-op when publisher absent)."""
         if self._sleipnir_publisher is None or _sleipnir_task_completed is None:
             return
         try:
             persona = getattr(task, "persona", "") or ""
+            correlation_id = task.session_id or task.task_id
             event = _sleipnir_task_completed(
                 task_id=task.task_id,
                 persona=persona,
                 outcome=outcome,
                 source=self._source_id,
-                correlation_id=task.task_id,
+                correlation_id=correlation_id,
             )
+            if task.session_id:
+                event.payload["session_id"] = task.session_id
+
+            parsed = _parse_outcome_for_persona(response_text, self._persona_config)
+            if parsed is not None:
+                event.payload["structured_outcome"] = parsed.fields
+                event.payload["outcome_valid"] = parsed.valid
+                for key in (
+                    "verdict",
+                    "tests_passing",
+                    "scope_adherence",
+                    "pr_url",
+                    "summary",
+                    "files_changed",
+                ):
+                    if key in parsed.fields:
+                        event.payload[key] = parsed.fields[key]
             await self._sleipnir_publisher.publish(event)
         except Exception:
             logger.warning("Failed to emit ravn.task.completed; continuing.", exc_info=True)
 
+    async def emit_tool_outcome_event(
+        self,
+        *,
+        task: AgentTask,
+        persona_name: str,
+        event_type: str,
+        fields: dict[str, object],
+    ) -> None:
+        """Publish a canonical workflow outcome emitted deterministically by a tool.
+
+        This keeps tool-originated workflow events on the same mesh/Skuld path
+        as persona outcomes, which makes them visible to downstream subscribers,
+        room/session timelines, and Ting's outer orchestration without inventing
+        a second signaling mechanism.
+        """
+        if not event_type:
+            return
+
+        if self._workflow_allowed_outcomes_resolver is not None:
+            allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
+            if allowed_topics is not None and event_type not in allowed_topics:
+                logger.info(
+                    (
+                        "drive_loop: suppressing tool outcome event_type=%s "
+                        "workflow_node=%s allowed=%s"
+                    ),
+                    event_type,
+                    task.workflow_node_id or "-",
+                    sorted(allowed_topics),
+                )
+                return
+
+        root_corr = task.root_correlation_id or task.task_id
+        payload: dict[str, object] = {
+            "persona": persona_name,
+            "success": True,
+            "outcome": fields,
+            "fields": fields,
+            "valid": True,
+            "task_id": task.task_id,
+            "workflow_node_id": task.workflow_node_id,
+            "event_type": event_type,
+            "bubble_up": True,
+            "room_bridge_skip": self._skuld_channel is not None,
+        }
+        if task.workflow_parent_event_id:
+            payload["workflow_parent_event_id"] = task.workflow_parent_event_id
+        summary = fields.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            payload["summary"] = summary.strip()
+
+        event = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source=self._source_id,
+            payload=payload,
+            timestamp=datetime.now(UTC),
+            urgency=0.3,
+            correlation_id=task.task_id,
+            session_id=task.session_id or "",
+            task_id=task.task_id,
+            root_correlation_id=root_corr,
+        )
+
+        if self._mesh is not None:
+            try:
+                logger.info(
+                    "drive_loop: publishing tool outcome event_type=%s task_id=%s",
+                    event_type,
+                    task.task_id,
+                )
+                await self._mesh.publish(event, topic=event_type)
+            except Exception:
+                logger.warning(
+                    "Failed to publish tool-originated mesh outcome event; continuing.",
+                    exc_info=True,
+                )
+
+        if self._skuld_channel is not None:
+            try:
+                await self._skuld_channel.emit(event)
+            except Exception:
+                logger.warning(
+                    "Failed to emit tool-originated outcome to skuld; continuing.",
+                    exc_info=True,
+                )
+
     async def _emit_mesh_outcome_event(
         self, task: AgentTask, response_text: str, success: bool
     ) -> None:
-        """Publish persona outcome to mesh for other agents to consume.
+        """Publish persona outcomes for both routing and outward visibility.
 
-        If the persona declares a produces.event_type, this publishes the task
-        outcome to the mesh so other agents can react to it. For example:
-        - Coder finishes with produces.event_type="code.completed"
-        - Reviewer (who consumes code.changed) can pick up the event
+        Canonical outcome events always keep the persona's declared
+        ``produces.event_type``. Those canonical outcomes are what we bubble up
+        to Skuld/Volundr/Ting so session history and higher-level orchestration
+        see a stable contract.
 
-        This is fully generic — any persona with produces.event_type participates.
+        Verdict-specific aliases from ``event_type_map`` remain valid, but they
+        are published as routing-only mesh topics so downstream personas can
+        react without replacing the canonical outward event.
         """
-        if self._mesh is None or self._persona_config is None:
+        if self._persona_config is None:
             return
         if not success:
             logger.info(
@@ -996,39 +1436,107 @@ class DriveLoop:
             return
 
         # Parse outcome block from response
-        parsed = parse_outcome_block(response_text)
-        outcome_fields = parsed.fields if parsed and parsed.valid else {}
-
-        # Determine event type: check event_type_map first, fall back to default
-        event_type = self._persona_config.produces.event_type
-        event_type_map = self._persona_config.produces.event_type_map
-        if event_type_map:
-            # Look for verdict field to determine which event to publish
-            verdict = outcome_fields.get("verdict", "")
-            if verdict and verdict in event_type_map:
-                event_type = event_type_map[verdict]
-                logger.debug(
-                    "drive_loop: mapped verdict=%s to event_type=%s",
-                    verdict,
-                    event_type,
-                )
-
-        if not event_type:
+        parsed = _parse_outcome_for_persona(response_text, self._persona_config)
+        outcome_fields = dict(parsed.fields) if parsed is not None else {}
+        canonical_event_type = self._persona_config.produces.event_type
+        if not canonical_event_type:
             return
+        tool_fields = task.tool_outcomes.get(canonical_event_type) or {}
+        for key, value in tool_fields.items():
+            outcome_fields.setdefault(key, value)
+        if canonical_event_type == "mimir.source.ingested":
+            for key, value in self._default_mimir_mount_fields().items():
+                outcome_fields.setdefault(key, value)
 
-        # Create proper RavnEvent for hexagonal compliance
-        # Propagate root_correlation_id through the event chain so downstream
-        # fan-in consumers can group related events from the same trigger.
+        event_type_map = self._persona_config.produces.event_type_map
+        success_verdict = _default_success_verdict(self._persona_config.produces)
+        synthesized_pass = False
         root_corr = task.root_correlation_id or task.task_id
-        event = RavnEvent(
+        allowed_topics: set[str] | None = None
+        if self._workflow_allowed_outcomes_resolver is not None:
+            allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
+
+        page_write_fields = task.tool_outcomes.get(_MIMIR_PAGE_WRITTEN_OUTCOME) or {}
+        verdict = str(outcome_fields.get("verdict", "") or "").strip()
+        valid = bool(parsed.valid) if parsed is not None else False
+        synthesized_from_tool_write = False
+        if not verdict and page_write_fields:
+            inferred_verdict = _infer_tool_written_verdict(
+                allowed_topics=allowed_topics,
+                event_type_map=event_type_map,
+            )
+            if inferred_verdict:
+                verdict = inferred_verdict
+                outcome_fields.setdefault("verdict", inferred_verdict)
+                for key, value in page_write_fields.items():
+                    outcome_fields.setdefault(key, value)
+                page_path = str(outcome_fields.get("page_path", "") or "").strip()
+                if page_path and not str(outcome_fields.get("summary", "") or "").strip():
+                    outcome_fields["summary"] = f"Wrote {page_path}"
+                synthesized_from_tool_write = True
+                valid = True
+        if not verdict and success and success_verdict:
+            verdict = success_verdict
+            outcome_fields.setdefault("verdict", verdict)
+            synthesized_pass = True
+        elif verdict:
+            normalized_verdict = _normalize_outcome_verdict(verdict, self._persona_config.produces)
+            if normalized_verdict != verdict:
+                verdict = normalized_verdict
+                outcome_fields["verdict"] = normalized_verdict
+        summary = str(outcome_fields.get("summary", "") or "").strip()
+        files_changed = outcome_fields.get("files_changed")
+        if (synthesized_pass or synthesized_from_tool_write) and not valid:
+            valid = True
+
+        await self._maybe_publish_workflow_artifacts(task, outcome_fields)
+
+        base_payload: dict[str, object] = {
+            "persona": self._persona_config.name,
+            "success": success,
+            "outcome": outcome_fields,
+            "fields": outcome_fields,
+            "valid": valid,
+            "task_id": task.task_id,
+            "workflow_node_id": task.workflow_node_id,
+        }
+        if task.workflow_parent_event_id:
+            base_payload["workflow_parent_event_id"] = task.workflow_parent_event_id
+        if verdict:
+            base_payload["verdict"] = verdict
+        if summary:
+            base_payload["summary"] = summary
+        if isinstance(files_changed, list) and files_changed:
+            base_payload["files_changed"] = files_changed
+
+        alias_event_type = ""
+        if verdict and verdict in event_type_map:
+            alias_event_type = event_type_map[verdict]
+
+        if allowed_topics is not None:
+            canonical_allowed = canonical_event_type in allowed_topics or (
+                bool(alias_event_type) and alias_event_type in allowed_topics
+            )
+            if verdict == "help_needed":
+                canonical_allowed = True
+            if not canonical_allowed:
+                logger.info(
+                    "drive_loop: suppressing outcome event_type=%s workflow_node=%s allowed=%s",
+                    canonical_event_type,
+                    task.workflow_node_id or "-",
+                    sorted(allowed_topics),
+                )
+                return
+
+        canonical_payload = dict(base_payload)
+        canonical_payload["event_type"] = canonical_event_type
+        canonical_payload["bubble_up"] = True
+        canonical_payload["room_bridge_skip"] = self._skuld_channel is not None
+
+        canonical_event = RavnEvent(
             type=RavnEventType.OUTCOME,
             source=self._source_id,
-            payload={
-                "event_type": event_type,
-                "persona": self._persona_config.name,
-                "success": success,
-                "outcome": outcome_fields,
-            },
+            payload=canonical_payload,
             timestamp=datetime.now(UTC),
             urgency=0.3,
             correlation_id=task.task_id,
@@ -1037,24 +1545,126 @@ class DriveLoop:
             root_correlation_id=root_corr,
         )
 
+        if self._mesh is not None:
+            try:
+                logger.info(
+                    "drive_loop: publishing canonical outcome event_type=%s task_id=%s",
+                    canonical_event_type,
+                    task.task_id,
+                )
+                await self._mesh.publish(canonical_event, topic=canonical_event_type)
+            except Exception:
+                logger.warning(
+                    "Failed to publish canonical mesh outcome event; continuing.",
+                    exc_info=True,
+                )
+
+        if self._skuld_channel is not None:
+            try:
+                await self._skuld_channel.emit(canonical_event)
+            except Exception:
+                logger.warning(
+                    "Failed to emit canonical outcome to skuld; continuing.",
+                    exc_info=True,
+                )
+
+        if self._mesh is None:
+            mesh_available = False
+        else:
+            mesh_available = True
+
+        if verdict == "help_needed":
+            attempted = outcome_fields.get("attempted")
+            if not isinstance(attempted, list):
+                attempted = []
+            help_context = outcome_fields.get("context")
+            if not isinstance(help_context, dict):
+                help_context = {}
+            help_context = {
+                **help_context,
+                "root_correlation_id": root_corr,
+                "workflow_parent_event_id": task.workflow_parent_event_id,
+                "workflow_node_id": task.workflow_node_id,
+                "session_id": task.session_id,
+            }
+            help_event = RavnEvent.help_needed(
+                source=self._source_id,
+                persona=self._persona_config.name,
+                reason=str(outcome_fields.get("reason") or "needs_context"),
+                summary=summary or "Agent requested human input before continuing.",
+                attempted=[str(item) for item in attempted if str(item).strip()],
+                recommendation=str(
+                    outcome_fields.get("recommendation")
+                    or "Reply directly to this agent with the missing guidance."
+                ),
+                correlation_id=task.task_id,
+                session_id=task.session_id or "",
+                task_id=task.task_id,
+                context=help_context,
+            )
+            if mesh_available:
+                try:
+                    await self._mesh.publish(help_event, topic=str(RavnEventType.HELP_NEEDED))
+                except Exception:
+                    logger.warning(
+                        "Failed to publish help_needed mesh event; continuing.",
+                        exc_info=True,
+                    )
+            if self._skuld_channel is not None:
+                try:
+                    await self._skuld_channel.emit(help_event)
+                except Exception:
+                    logger.warning(
+                        "Failed to emit help_needed to skuld; continuing.",
+                        exc_info=True,
+                    )
+
+        if not mesh_available:
+            return
+
+        if not alias_event_type or alias_event_type == canonical_event_type:
+            return
+
+        alias_payload = dict(base_payload)
+        alias_payload["event_type"] = alias_event_type
+        alias_payload["canonical_event_type"] = canonical_event_type
+        alias_payload["routing_only"] = True
+        alias_payload["bubble_up"] = False
+        alias_payload["room_bridge_skip"] = True
+
+        alias_event = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source=self._source_id,
+            payload=alias_payload,
+            timestamp=datetime.now(UTC),
+            urgency=0.3,
+            correlation_id=task.task_id,
+            session_id=task.session_id or "",
+            task_id=task.task_id,
+            root_correlation_id=root_corr,
+        )
         try:
             logger.info(
-                "drive_loop: publishing outcome event_type=%s task_id=%s",
-                event_type,
+                "drive_loop: publishing routing outcome alias=%s canonical=%s task_id=%s",
+                alias_event_type,
+                canonical_event_type,
                 task.task_id,
             )
-            await self._mesh.publish(event, topic=event_type)
+            await self._mesh.publish(alias_event, topic=alias_event_type)
         except Exception:
-            logger.warning("Failed to publish mesh outcome event; continuing.", exc_info=True)
+            logger.warning(
+                "Failed to publish routing mesh outcome alias; continuing.",
+                exc_info=True,
+            )
 
-        # In flock mode, live browser activity/response flows directly over the
-        # Skuld websocket channel. Outcomes stay on the mesh to avoid duplicate
-        # room_outcome cards when both direct streaming and RoomMeshBridge exist.
-        if self._skuld_channel is not None and self._mesh is None:
+        if self._skuld_channel is not None:
             try:
-                await self._skuld_channel.emit(event)
+                await self._skuld_channel.emit(alias_event)
             except Exception:
-                logger.warning("Failed to emit outcome to skuld; continuing.", exc_info=True)
+                logger.warning(
+                    "Failed to emit routing outcome alias to skuld; continuing.",
+                    exc_info=True,
+                )
 
     def _save_task_output(self, task: AgentTask, channel: ChannelPort) -> None:
         """Persist agent response to ``task.output_path`` when set (cron tasks)."""
@@ -1230,6 +1840,9 @@ class DriveLoop:
                         "deadline": task.deadline.isoformat() if task.deadline else None,
                         "output_path": str(task.output_path) if task.output_path else None,
                         "root_correlation_id": task.root_correlation_id,
+                        "workflow_parent_event_id": task.workflow_parent_event_id,
+                        "workflow_node_id": task.workflow_node_id,
+                        "tool_outcomes": task.tool_outcomes,
                         "created_at": task.created_at.isoformat(),
                     }
                 )
@@ -1280,6 +1893,9 @@ class DriveLoop:
                     deadline=deadline,
                     output_path=Path(output_path_str) if output_path_str else None,
                     root_correlation_id=rec.get("root_correlation_id", ""),
+                    workflow_parent_event_id=rec.get("workflow_parent_event_id", ""),
+                    workflow_node_id=rec.get("workflow_node_id", ""),
+                    tool_outcomes=rec.get("tool_outcomes", {}) or {},
                     created_at=created_at,
                 )
                 if deadline is not None and datetime.now(UTC) > deadline:

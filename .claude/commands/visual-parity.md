@@ -1,7 +1,7 @@
 ---
 name: visual-parity
 description: Compare a web-next plugin page against its web2 baseline screenshot and fix visual differences. Use when a page needs to match its web2 prototype.
-argument-hint: <plugin>/<page> (e.g. mimir/lint, mimir/graph, tyr/dashboard)
+argument-hint: <plugin>/<page> (e.g. mimir/lint, mimir/graph, ting/dashboard)
 ---
 
 # Visual Parity: $0

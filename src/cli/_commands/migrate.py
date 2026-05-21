@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cli.resources import migration_dir
+from cli.resources import migration_dir, ordered_migration_files
 
 
 def execute(target: str = "latest") -> int:
@@ -13,7 +13,7 @@ def execute(target: str = "latest") -> int:
         print(f"Error: {exc}")
         return 1
 
-    sql_files = sorted(mig_dir.glob("*.up.sql"))
+    sql_files = ordered_migration_files(mig_dir)
     if not sql_files:
         print("No migration files found.")
         return 1

@@ -100,6 +100,32 @@ class TestAllMustPassStrategy:
         )
         assert buf.pending_count == 2
 
+    def test_consumer_key_keeps_same_persona_groups_separate(self):
+        buf = FanInBuffer()
+        first = buf.try_accept_consumer(
+            event_type="review.passed",
+            event_payload={"persona": "reviewer", "outcome": {"verdict": "pass"}},
+            root_correlation_id="root1",
+            persona_name="coordinator",
+            consumes_event_types=["review.passed", "security.passed"],
+            strategy="all_must_pass",
+            consumer_key="coordinator-finish",
+        )
+        assert first is None
+
+        second = buf.try_accept_consumer(
+            event_type="run.requested",
+            event_payload={"persona": "dispatch-root", "outcome": {"verdict": "pass"}},
+            root_correlation_id="root1",
+            persona_name="coordinator",
+            consumes_event_types=["run.requested"],
+            strategy="merge",
+            consumer_key="coordinator-start",
+        )
+        assert second is not None
+        assert second.consumer_key == "coordinator-start"
+        assert buf.pending_count == 1
+
     def test_fail_verdict_shows_in_context(self):
         buf = self._make_buffer()
         buf.try_accept_consumer(
@@ -125,9 +151,8 @@ class TestAllMustPassStrategy:
 class TestAnyPassStrategy:
     def test_any_pass_with_one_passing(self):
         buf = FanInBuffer()
-        # Register contributors so the buffer accumulates instead of returning immediately
         buf.set_contributors("some.target", ["coder", "reviewer"])
-        buf.try_accept_consumer(
+        result = buf.try_accept_consumer(
             event_type="code.changed",
             event_payload={"persona": "coder", "outcome": {"verdict": "fail"}},
             root_correlation_id="root1",
@@ -135,16 +160,9 @@ class TestAnyPassStrategy:
             consumes_event_types=["code.changed", "review.completed"],
             strategy="any_pass",
         )
-        result = buf.try_accept_consumer(
-            event_type="review.completed",
-            event_payload={"persona": "reviewer", "outcome": {"verdict": "pass"}},
-            root_correlation_id="root1",
-            persona_name="qa-agent",
-            consumes_event_types=["code.changed", "review.completed"],
-            strategy="any_pass",
-        )
         assert result is not None
-        assert "PASS" in result.merged_context
+        assert "Event type: code.changed" in result.merged_context
+        assert buf.pending_count == 0
 
 
 class TestProducerAggregation:

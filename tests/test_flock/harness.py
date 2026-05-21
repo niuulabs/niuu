@@ -1,4 +1,4 @@
-"""FlockTestHarness — in-process smoke test harness for the raiding party loop.
+"""FlockTestHarness — in-process smoke test harness for the runing party loop.
 
 Wires up the full integration path without K8s, real CLI, or real LLM:
 
@@ -14,9 +14,9 @@ Usage::
 
     harness = FlockTestHarness(cli_responses=["verdict: approve\\ntests_passing: true\\n..."])
     async with harness:
-        raid = make_raid(status=RaidStatus.RUNNING, session_id="sess-001")
-        await harness.dispatch_raid(raid)
-        await harness.assert_raid_state(raid.tracker_id, RaidStatus.MERGED)
+        run = make_run(status=RunStatus.RUNNING, session_id="sess-001")
+        await harness.dispatch_run(run)
+        await harness.assert_run_state(run.tracker_id, RunStatus.MERGED)
 """
 
 from __future__ import annotations
@@ -45,18 +45,18 @@ from skuld.config import MeshConfig
 from skuld.mesh_adapter import SkuldMeshAdapter
 from skuld.transports import CLITransport, TransportCapabilities
 from sleipnir.adapters.in_process import InProcessBus
-from sleipnir.domain.events import SleipnirEvent
-from tests.test_tyr.stubs import (
+from sleipnir.domain.catalog import ravn_session_ended
+from tests.test_ting.stubs import (
     StubTracker,
     StubTrackerFactory,
     StubVolundrFactory,
     StubVolundrPort,
 )
-from tyr.adapters.ravn_outcome_handler import RavnOutcomeHandler
-from tyr.config import ReviewConfig
-from tyr.domain.models import PRStatus, Raid, RaidStatus
-from tyr.domain.services.review_engine import ReviewEngine
-from tyr.ports.git import GitPort
+from ting.adapters.ravn_outcome_handler import RavnOutcomeHandler
+from ting.config import ReviewConfig
+from ting.domain.models import PRStatus, Run, RunStatus
+from ting.domain.services.review_engine import ReviewEngine
+from ting.ports.git import GitPort
 
 logger = logging.getLogger(__name__)
 
@@ -358,7 +358,7 @@ _REVIEW_CONFIG_AUTO_APPROVE = ReviewConfig(
 
 
 class FlockTestHarness:
-    """In-process test harness for the raiding party integration loop.
+    """In-process test harness for the runing party integration loop.
 
     Wires SkuldMeshAdapter, RavnOutcomeHandler, ReviewEngine, and
     CompositeMimirAdapter together using in-process transports.
@@ -366,12 +366,12 @@ class FlockTestHarness:
     Parameters
     ----------
     cli_responses:
-        Ordered list of canned CLI responses.  Each call to ``dispatch_raid``
+        Ordered list of canned CLI responses.  Each call to ``dispatch_run``
         consumes the next response; the last response is repeated once
         exhausted.  Use the module-level constants ``OUTCOME_APPROVE``,
         ``OUTCOME_RETRY``, ``OUTCOME_ESCALATE``, or provide custom text.
     owner_id:
-        Owner ID used by RavnOutcomeHandler when looking up raids.
+        Owner ID used by RavnOutcomeHandler when looking up runs.
     skuld_session_id:
         Session ID given to SkuldMeshAdapter.
     scope_adherence_threshold:
@@ -494,29 +494,29 @@ class FlockTestHarness:
     # Core test methods
     # ------------------------------------------------------------------
 
-    async def dispatch_raid(self, raid: Raid) -> None:
-        """Trigger the full raiding party flow for *raid*.
+    async def dispatch_run(self, run: Run) -> None:
+        """Trigger the full runing party flow for *run*.
 
         Steps:
-        1. Register raid in StubTracker.
+        1. Register run in StubTracker.
         2. Send a ``work_request`` to Skuld via the in-process mesh
            (simulates coordinator delegating coding work).
         3. Skuld feeds the prompt to MockCLITransport and collects the result.
         4. Extract outcome fields from the work_request response.
-        5. Publish ``ravn.task.completed`` on Sleipnir with the outcome
-           payload and ``correlation_id=raid.session_id``.
+        5. Publish canonical ``ravn.session.ended`` on Sleipnir with the
+           structured outcome payload and run/session identifiers.
         6. Flush Sleipnir bus so RavnOutcomeHandler processes synchronously.
         """
         if not self._started:
             raise RuntimeError("Call harness.start() or use `async with harness` first")
 
-        await self.tracker.create_raid(raid)
+        await self.tracker.create_run(run)
 
         work_request = {
             "type": "work_request",
-            "prompt": f"Implement: {raid.description}",
+            "prompt": f"Implement: {run.description}",
             "event_type": "code.requested",
-            "request_id": f"req-{raid.tracker_id}",
+            "request_id": f"req-{run.tracker_id}",
             "timeout_s": 10.0,
         }
         response = await self.mesh.send(_DEFAULT_SKULD_PEER, work_request, timeout_s=15.0)
@@ -527,26 +527,28 @@ class FlockTestHarness:
         elif response.get("status") != "complete":
             logger.warning("work_request response status=%s", response.get("status"))
 
-        sleipnir_event = SleipnirEvent(
-            event_type="ravn.task.completed",
-            source="ravn:coordinator",
-            payload=outcome_payload,
-            summary="task completed",
-            urgency=0.8,
-            domain="code",
-            timestamp=datetime.now(UTC),
-            correlation_id=raid.session_id,
+        sleipnir_event = ravn_session_ended(
+            session_id=run.session_id or run.tracker_id,
+            persona="run-executor",
+            outcome="success" if outcome_payload.get("verdict") == "approve" else "partial",
+            token_count=0,
+            duration_s=0.0,
+            source="skuld:test",
+            correlation_id=run.session_id,
         )
+        sleipnir_event.payload["run_id"] = str(run.id)
+        sleipnir_event.payload["structured_outcome"] = dict(outcome_payload)
+        sleipnir_event.payload["outcome_valid"] = bool(outcome_payload)
         await self.bus.publish(sleipnir_event)
         await self.bus.flush()
 
-    async def assert_raid_state(self, tracker_id: str, expected: RaidStatus) -> None:
-        """Assert that *tracker_id* has the *expected* RaidStatus."""
-        raid = await self.tracker.get_raid(tracker_id)
-        actual = raid.status
+    async def assert_run_state(self, tracker_id: str, expected: RunStatus) -> None:
+        """Assert that *tracker_id* has the *expected* RunStatus."""
+        run = await self.tracker.get_run(tracker_id)
+        actual = run.status
         assert actual == expected, (
-            f"Raid {tracker_id}: expected status {expected!r} but got {actual!r}"
+            f"Run {tracker_id}: expected status {expected!r} but got {actual!r}"
         )
 
-    async def get_raid(self, tracker_id: str) -> Raid:
-        return await self.tracker.get_raid(tracker_id)
+    async def get_run(self, tracker_id: str) -> Run:
+        return await self.tracker.get_run(tracker_id)

@@ -7,6 +7,7 @@ import { TopologyCanvas } from './TopologyCanvas';
 import { EntityDrawer } from './overlays/EntityDrawer';
 import { EventLog } from './overlays/EventLog';
 import { Minimap } from './overlays/Minimap';
+import { humanizeObservatoryText } from './displayLabels';
 
 /**
  * Observatory page — full-viewport topology canvas.
@@ -61,7 +62,7 @@ export function ObservatoryPage() {
               onClick={() => handleNodeClick(node.id)}
               aria-pressed={selectedId === node.id}
             >
-              {node.label}
+              {humanizeObservatoryText(node.label)}
             </button>
           </li>
         ))}

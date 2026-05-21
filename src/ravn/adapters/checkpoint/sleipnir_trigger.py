@@ -1,6 +1,6 @@
 """Sleipnir-triggered checkpoint listener (NIU-537).
 
-Subscribes to ``ravn.task.checkpoint_requested`` events published by Tyr
+Subscribes to ``ravn.task.checkpoint_requested`` events published by Ting
 (or any other Sleipnir producer) and triggers a named snapshot on the
 running agent.
 
@@ -170,6 +170,6 @@ class SleipnirCheckpointListener:
 
         logger.info("Checkpoint requested via Sleipnir for task_id=%r", task_id)
         try:
-            await callback(label or "tyr_requested", tags)
+            await callback(label or "ting_requested", tags)
         except Exception as exc:
             logger.warning("Checkpoint callback for task_id=%r raised: %s", task_id, exc)

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from niuu.domain.outcome import OutcomeField
 from ravn.adapters.personas.loader import (
+    _ARCHIVED_BUILTIN_PERSONAS_DIR,
     _BUILTIN_PERSONAS_DIR,
     FilesystemPersonaAdapter,
     PersonaConfig,
@@ -574,6 +575,7 @@ class TestPersonaContractE2E:
         """Loading research-agent (no produces) → no outcome block in system prompt."""
         loader = FilesystemPersonaAdapter()
         persona = loader.load("research-agent")
+        assert persona is not None
         assert "---outcome---" not in persona.system_prompt_template
 
 
@@ -590,11 +592,11 @@ class TestFindConsumersProducers:
         assert "reviewer" in names
         assert "security-auditor" in names
 
-    def test_find_consumers_review_completed_returns_qa_agent(self) -> None:
+    def test_find_consumers_review_completed_returns_postmortem_analyst(self) -> None:
         loader = FilesystemPersonaAdapter()
         consumers = loader.find_consumers("review.completed")
         names = [p.name for p in consumers]
-        assert "qa-agent" in names
+        assert names == ["postmortem-analyst"]
 
     def test_find_consumers_unknown_event_returns_empty(self) -> None:
         loader = FilesystemPersonaAdapter()
@@ -607,11 +609,11 @@ class TestFindConsumersProducers:
         names = [p.name for p in producers]
         assert "reviewer" in names
 
-    def test_find_producers_qa_completed_returns_qa_agent(self) -> None:
+    def test_find_producers_mimir_curated_returns_memory_curator(self) -> None:
         loader = FilesystemPersonaAdapter()
-        producers = loader.find_producers("qa.completed")
+        producers = loader.find_producers("mimir.curated")
         names = [p.name for p in producers]
-        assert "qa-agent" in names
+        assert names == ["mimir-memory-curator"]
 
     def test_find_producers_unknown_event_returns_empty(self) -> None:
         loader = FilesystemPersonaAdapter()
@@ -635,11 +637,10 @@ class TestFindConsumersProducers:
         assert "reviewer" in names
         assert "custom-reviewer" in names
 
-    def test_find_producers_dream_completed_returns_mimir_curator(self) -> None:
+    def test_find_producers_dream_completed_returns_empty_for_archived_curator(self) -> None:
         loader = FilesystemPersonaAdapter()
         producers = loader.find_producers("dream.completed")
-        names = [p.name for p in producers]
-        assert "mimir-curator" in names
+        assert producers == []
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +652,10 @@ class TestBuiltinSpecialistContracts:
     _loader = FilesystemPersonaAdapter()
 
     def _load(self, name: str) -> PersonaConfig:
-        cfg = self._loader.load_from_file(_BUILTIN_PERSONAS_DIR / f"{name}.yaml")
+        path = _BUILTIN_PERSONAS_DIR / f"{name}.yaml"
+        if not path.is_file():
+            path = _ARCHIVED_BUILTIN_PERSONAS_DIR / f"{name}.yaml"
+        cfg = self._loader.load_from_file(path)
         assert cfg is not None, f"Failed to load built-in persona {name!r}"
         return cfg
 

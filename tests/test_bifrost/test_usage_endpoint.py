@@ -72,7 +72,7 @@ class TestUsageEndpoint:
             m.return_value = response
             for _ in range(n):
                 client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": "claude-sonnet-4-6",
                         "max_tokens": 10,
@@ -81,7 +81,7 @@ class TestUsageEndpoint:
                 )
 
     def test_empty_usage_returns_zero_summary(self, client):
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         assert resp.status_code == 200
         data = resp.json()
         assert data["summary"]["total_requests"] == 0
@@ -90,7 +90,7 @@ class TestUsageEndpoint:
 
     def test_usage_counts_after_requests(self, client):
         self._seed(client, 3)
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         assert resp.status_code == 200
         data = resp.json()
         assert data["summary"]["total_requests"] == 3
@@ -111,7 +111,7 @@ class TestUsageEndpoint:
         with patch("bifrost.router.ModelRouter.complete", new_callable=AsyncMock) as m:
             m.return_value = response
             client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 headers={"x-agent-id": "agent-A"},
                 json={
                     "model": "claude-sonnet-4-6",
@@ -120,7 +120,7 @@ class TestUsageEndpoint:
                 },
             )
             client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 headers={"x-agent-id": "agent-B"},
                 json={
                     "model": "claude-sonnet-4-6",
@@ -129,7 +129,7 @@ class TestUsageEndpoint:
                 },
             )
 
-        resp = client.get("/v1/usage", params={"agent_id": "agent-A"})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"agent_id": "agent-A"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["summary"]["total_requests"] == 1
@@ -137,36 +137,36 @@ class TestUsageEndpoint:
 
     def test_filter_by_model(self, client):
         self._seed(client, 2)
-        resp = client.get("/v1/usage", params={"model": "claude-sonnet-4-6"})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"model": "claude-sonnet-4-6"})
         data = resp.json()
         assert data["summary"]["total_requests"] == 2
 
-        resp2 = client.get("/v1/usage", params={"model": "gpt-4o"})
+        resp2 = client.get("/api/v1/bifrost/v1/usage", params={"model": "gpt-4o"})
         data2 = resp2.json()
         assert data2["summary"]["total_requests"] == 0
 
     def test_filter_by_time_range(self, client):
         self._seed(client, 2)
         far_future = (datetime.now(UTC) + timedelta(days=10)).isoformat()
-        resp = client.get("/v1/usage", params={"since": far_future})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"since": far_future})
         data = resp.json()
         assert data["summary"]["total_requests"] == 0
 
     def test_invalid_since_returns_422(self, client):
-        resp = client.get("/v1/usage", params={"since": "not-a-date"})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"since": "not-a-date"})
         assert resp.status_code == 422
 
     def test_invalid_until_returns_422(self, client):
-        resp = client.get("/v1/usage", params={"until": "bad-date"})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"until": "bad-date"})
         assert resp.status_code == 422
 
     def test_invalid_granularity_returns_422(self, client):
-        resp = client.get("/v1/usage", params={"granularity": "minute"})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"granularity": "minute"})
         assert resp.status_code == 422
 
     def test_response_includes_per_model_breakdown(self, client):
         self._seed(client, 2)
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         data = resp.json()
         by_model = data["summary"]["by_model"]
         assert "claude-sonnet-4-6" in by_model
@@ -174,7 +174,7 @@ class TestUsageEndpoint:
 
     def test_response_includes_per_provider_breakdown(self, client):
         self._seed(client, 2)
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         data = resp.json()
         by_provider = data["summary"]["by_provider"]
         # Provider is looked up as "anthropic" for claude-sonnet-4-6.
@@ -183,7 +183,7 @@ class TestUsageEndpoint:
 
     def test_cost_is_tracked_and_returned(self, client):
         self._seed(client, 1)
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         data = resp.json()
         # claude-sonnet-4-6: 100 input + 50 output tokens
         # 100 * 3.0/1M + 50 * 15.0/1M = 0.0003 + 0.00075 = 0.00105
@@ -191,7 +191,7 @@ class TestUsageEndpoint:
 
     def test_records_have_required_fields(self, client):
         self._seed(client, 1)
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         data = resp.json()
         record = data["records"][0]
         required_fields = [
@@ -217,28 +217,28 @@ class TestUsageEndpoint:
 
     def test_records_include_streaming_flag(self, client):
         self._seed(client, 1)
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         data = resp.json()
         record = data["records"][0]
         assert isinstance(record["streaming"], bool)
 
     def test_records_include_latency_ms(self, client):
         self._seed(client, 1)
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         data = resp.json()
         record = data["records"][0]
         assert isinstance(record["latency_ms"], int | float)
 
     def test_records_include_provider(self, client):
         self._seed(client, 1)
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         data = resp.json()
         record = data["records"][0]
         assert record["provider"] == "anthropic"
 
     def test_limit_parameter_respected(self, client):
         self._seed(client, 5)
-        resp = client.get("/v1/usage", params={"limit": 2})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"limit": 2})
         data = resp.json()
         assert len(data["records"]) <= 2
         # Summary still reflects all records (no limit on summary).
@@ -246,7 +246,7 @@ class TestUsageEndpoint:
 
     def test_granularity_hour_returns_timeseries(self, client):
         self._seed(client, 2)
-        resp = client.get("/v1/usage", params={"granularity": "hour"})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"granularity": "hour"})
         assert resp.status_code == 200
         data = resp.json()
         assert "timeseries" in data
@@ -261,7 +261,7 @@ class TestUsageEndpoint:
 
     def test_granularity_day_returns_timeseries(self, client):
         self._seed(client, 3)
-        resp = client.get("/v1/usage", params={"granularity": "day"})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"granularity": "day"})
         assert resp.status_code == 200
         data = resp.json()
         assert "timeseries" in data
@@ -271,13 +271,13 @@ class TestUsageEndpoint:
 
     def test_no_granularity_no_timeseries(self, client):
         self._seed(client, 1)
-        resp = client.get("/v1/usage")
+        resp = client.get("/api/v1/bifrost/v1/usage")
         data = resp.json()
         assert "timeseries" not in data
 
     def test_timeseries_bucket_format(self, client):
         self._seed(client, 1)
-        resp = client.get("/v1/usage", params={"granularity": "hour"})
+        resp = client.get("/api/v1/bifrost/v1/usage", params={"granularity": "hour"})
         data = resp.json()
         bucket = data["timeseries"][0]["bucket"]
         # Must be parseable as ISO-8601.

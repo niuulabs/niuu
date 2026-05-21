@@ -66,8 +66,7 @@ class PostgresIntegrationRepository(IntegrationRepository):
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         query = (
-            "SELECT * FROM integration_connections"
-            f"{where} ORDER BY owner_id ASC, created_at DESC"
+            f"SELECT * FROM integration_connections{where} ORDER BY owner_id ASC, created_at DESC"
         )
         rows = await self._pool.fetch(query, *params)
         return [self._row_to_connection(row) for row in rows]
@@ -94,6 +93,9 @@ class PostgresIntegrationRepository(IntegrationRepository):
                  config, enabled, slug, created_at, updated_at)
             VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
             ON CONFLICT (id) DO UPDATE SET
+                owner_id = EXCLUDED.owner_id,
+                integration_type = EXCLUDED.integration_type,
+                adapter = EXCLUDED.adapter,
                 credential_name = EXCLUDED.credential_name,
                 config = EXCLUDED.config,
                 enabled = EXCLUDED.enabled,

@@ -28,6 +28,9 @@ export function buildObservatoryRegistryHttpAdapter(client: ApiClient): IRegistr
     async getRegistry(): Promise<Registry> {
       return client.get<Registry>('/registry');
     },
+    async saveRegistry(registry: Registry): Promise<Registry> {
+      return client.put<Registry>('/registry', registry);
+    },
   };
 }
 

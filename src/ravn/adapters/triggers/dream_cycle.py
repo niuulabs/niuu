@@ -123,6 +123,7 @@ class DreamCycleTrigger(TriggerPort):
     ) -> None:
         """Build the dream cycle initiative context and enqueue an AgentTask."""
         since_str = self._last_dream_at.isoformat() if self._last_dream_at else "the beginning"
+        warden_id = self._state_dir.parent.name or "mimir"
 
         initiative_context = (
             f"Dream cycle run — {now.isoformat()}\n"
@@ -163,7 +164,8 @@ class DreamCycleTrigger(TriggerPort):
             f"\n"
             f"**Step 7 — Log and emit**\n"
             f"Append a dream cycle summary entry to `wiki/log.md` with: timestamp, "
-            f"pages_updated count, entities_created count, lint_fixes count.\n"
+            f"`ravn={warden_id}`, pages_updated count, entities_created count, "
+            f"lint_fixes count.\n"
             f"Then call `sleipnir_publish` to emit a `mimir.dream.completed` event "
             f"with those three counts.\n"
             f"\n"

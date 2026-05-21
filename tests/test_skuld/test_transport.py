@@ -51,6 +51,8 @@ class TestTransportCapabilities:
         assert caps.session_resume is True
         assert caps.cli_websocket is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -71,6 +73,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is True
         assert caps.session_resume is True
         assert caps.interrupt is True
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is True
         assert caps.set_thinking_tokens is True
         assert caps.set_permission_mode is True
@@ -87,6 +91,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is False
         assert caps.session_resume is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -107,6 +113,8 @@ class TestTransportCapabilities:
         caps = TransportCapabilities(interrupt=True, set_model=True)
         assert caps.interrupt is True
         assert caps.set_model is True
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.cli_websocket is False
         assert caps.session_resume is False
 
@@ -1491,7 +1499,7 @@ class TestCodexSubprocessTransport:
     async def test_send_message_spawns_codex(self, transport):
         """send_message spawns codex with correct arguments."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1516,7 +1524,8 @@ class TestCodexSubprocessTransport:
             assert call_args[1] == "exec"
             assert "--model" in call_args
             assert "o4-mini" in call_args
-            assert "--full-auto" in call_args
+            assert "--sandbox" in call_args
+            assert "workspace-write" in call_args
             assert "--json" in call_args
             assert "--quiet" not in call_args
             assert "refactor the auth module" in call_args
@@ -1534,7 +1543,7 @@ class TestCodexSubprocessTransport:
             ],
         )
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1571,7 +1580,7 @@ class TestCodexSubprocessTransport:
         )
 
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[response_line, b""])
+        mock_stdout.read = AsyncMock(side_effect=[response_line, b""])
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1601,7 +1610,7 @@ class TestCodexSubprocessTransport:
     async def test_send_message_emits_plain_text_as_delta(self, transport):
         """Plain text lines (non-JSON) are emitted as content_block_delta."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[b"Refactoring complete.\n", b""])
+        mock_stdout.read = AsyncMock(side_effect=[b"Refactoring complete.\n", b""])
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1623,6 +1632,47 @@ class TestCodexSubprocessTransport:
         assert "content_block_delta" in types
 
     @pytest.mark.asyncio
+    async def test_send_message_handles_large_single_line_json_output(self, transport):
+        """Large JSON lines are buffered across chunks instead of using readline()."""
+        large_text = "A" * 70000
+        response_line = (
+            json.dumps(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": large_text,
+                }
+            ).encode()
+            + b"\n"
+        )
+
+        midpoint = len(response_line) // 2
+        mock_stdout = AsyncMock()
+        mock_stdout.read = AsyncMock(
+            side_effect=[response_line[:midpoint], response_line[midpoint:], b""]
+        )
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        callback = AsyncMock()
+        transport.on_event(callback)
+
+        with patch(
+            "skuld.transports.codex.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_process
+            await transport.send_message("hello")
+
+        delta_call = next(
+            c for c in callback.call_args_list if c[0][0]["type"] == "content_block_delta"
+        )
+        assert delta_call[0][0]["delta"]["text"] == large_text
+
+    @pytest.mark.asyncio
     async def test_send_message_normalizes_tool_call(self, transport):
         """Tool call events are normalized to assistant/tool_use format."""
         tool_event = (
@@ -1639,7 +1689,7 @@ class TestCodexSubprocessTransport:
         )
 
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[tool_event, b""])
+        mock_stdout.read = AsyncMock(side_effect=[tool_event, b""])
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1679,7 +1729,7 @@ class TestCodexSubprocessTransport:
         )
 
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[done_event, b""])
+        mock_stdout.read = AsyncMock(side_effect=[done_event, b""])
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1705,10 +1755,63 @@ class TestCodexSubprocessTransport:
         assert usage["outputTokens"] == 120
 
     @pytest.mark.asyncio
+    async def test_send_message_normalizes_item_completed_agent_message(self, transport):
+        """Current Codex CLI agent_message items are normalized to assistant text."""
+        events = [
+            (
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"id": "item_0", "type": "agent_message", "text": "READY"},
+                    }
+                ).encode()
+                + b"\n"
+            ),
+            (
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 12, "output_tokens": 2},
+                    }
+                ).encode()
+                + b"\n"
+            ),
+            b"",
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.read = AsyncMock(side_effect=events)
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        callback = AsyncMock()
+        transport.on_event(callback)
+
+        with patch(
+            "skuld.transports.codex.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_process
+            await transport.send_message("task")
+
+        assistant_calls = [c for c in callback.call_args_list if c[0][0].get("type") == "assistant"]
+        assert len(assistant_calls) == 1
+        assert assistant_calls[0][0][0]["message"]["content"] == "READY"
+        assert transport.last_result is not None
+        assert transport.last_result["type"] == "result"
+        usage = transport.last_result["modelUsage"]["o4-mini"]
+        assert usage["inputTokens"] == 12
+        assert usage["outputTokens"] == 2
+
+    @pytest.mark.asyncio
     async def test_send_message_synthesizes_result_on_clean_exit(self, transport):
         """A synthetic result is emitted when Codex exits without a done event."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1734,7 +1837,7 @@ class TestCodexSubprocessTransport:
     async def test_send_message_synthesizes_error_result_on_nonzero_exit(self, transport):
         """Nonzero exit code sets stop_reason to error in synthetic result."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1758,7 +1861,7 @@ class TestCodexSubprocessTransport:
     async def test_send_message_cleans_up_process(self, transport):
         """Process reference is cleared after send_message completes."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout

@@ -5,6 +5,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import WebSocketDisconnect
 
 from skuld.channels import (
     ChannelRegistry,
@@ -49,6 +50,12 @@ class TestWebSocketChannel:
         event = {"type": "assistant", "content": "hello"}
         await channel.send_event(event)
         mock_ws.send_text.assert_called_once_with(json.dumps(event))
+
+    @pytest.mark.asyncio
+    async def test_send_event_marks_channel_closed_on_disconnect(self, channel, mock_ws):
+        mock_ws.send_text = AsyncMock(side_effect=WebSocketDisconnect())
+        await channel.send_event({"type": "assistant", "content": "hello"})
+        assert channel.is_open is False
 
     @pytest.mark.asyncio
     async def test_send_event_after_close_is_noop(self, channel, mock_ws):
@@ -373,8 +380,8 @@ class TestFormatTelegramEvent:
         assert result == "Nested hello"
 
     def test_user_confirmed_event(self):
-        event = {"type": "user_confirmed", "content": "Kick off the raid"}
-        assert format_telegram_event(event) == "[prompt] Kick off the raid"
+        event = {"type": "user_confirmed", "content": "Kick off the run"}
+        assert format_telegram_event(event) == "[prompt] Kick off the run"
 
     def test_user_confirmed_external_source_skipped(self):
         event = {

@@ -1,5 +1,5 @@
 # Runs on every push to dev:
-# 1. Full test suite (lint, unit tests, integration tests, e2e, web tests, helm lint)
+# 1. Full test suite (lint, unit tests, integration tests, e2e, web-next tests, helm lint)
 # 2. Builds all container images with "dev" + "dev-<sha>" tags
 # 3. Determines next version from conventional commits and creates a v*-dev.N prerelease tag
 # 4. Packages Helm charts with the dev version
@@ -26,7 +26,7 @@ concurrency:
 jobs:
   # ---------------------------------------------------------------------------
   # Python — lint + unit tests. Delegated to reusable workflow.
-  # Includes volundr, tyr, AND ravn — previously ravn was missing here.
+  # Includes volundr, ting, AND ravn — previously ravn was missing here.
   # ---------------------------------------------------------------------------
   python:
     name: Python
@@ -74,8 +74,8 @@ jobs:
           uv run pytest tests/integration/volundr/ -v --tb=short -m integration \
             --override-ini="addopts="
 
-  python-integration-test-tyr:
-    name: "Python: Integration Test Tyr"
+  python-integration-test-ting:
+    name: "Python: Integration Test Ting"
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -109,7 +109,7 @@ jobs:
           TEST_DATABASE_PASSWORD: volundr_test
           TEST_DATABASE_NAME: volundr_test
         run: |
-          uv run pytest tests/integration/tyr/ -v --tb=short -m integration \
+          uv run pytest tests/integration/ting/ -v --tb=short -m integration \
             --override-ini="addopts="
 
   # ---------------------------------------------------------------------------
@@ -143,20 +143,25 @@ jobs:
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
 
-      - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-next/pnpm-lock.yaml
 
       - name: Install web dependencies
-        run: npm ci
-        working-directory: web
+        run: pnpm install --frozen-lockfile
+        working-directory: web-next
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: web-next
 
       - name: Start backend
         env:
@@ -168,43 +173,33 @@ jobs:
         run: |
           uv run uvicorn volundr.main:app --port 8080 &
 
-      - name: Start frontend
-        run: |
-          npm run dev -- --port 5174 &
-        working-directory: web
-
-      - name: Wait for servers
+      - name: Wait for backend
         run: |
           timeout 30 bash -c '
             until curl -sf http://localhost:8080/health > /dev/null 2>&1; do
               sleep 1
             done
           '
-          timeout 30 bash -c '
-            until curl -sf http://localhost:5174 > /dev/null 2>&1; do
-              sleep 1
-            done
-          '
-          echo "Both servers are ready"
+          echo "Backend is ready"
 
       - name: Run Playwright tests
-        run: npx playwright test
-        working-directory: web
+        run: pnpm test:e2e
+        working-directory: web-next
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
         with:
-          name: playwright-report
-          path: web/playwright-report/
+          name: web-next-playwright-report
+          path: web-next/playwright-report/
           retention-days: 7
 
   # ---------------------------------------------------------------------------
-  # Web — lint + unit tests. Delegated to reusable workflow.
+  # web-next — lint + unit tests. Delegated to reusable workflow.
   # ---------------------------------------------------------------------------
-  web:
-    name: Web
-    uses: ./.github/workflows/reusable-web-lint-test.yaml
+  web-next:
+    name: web-next
+    uses: ./.github/workflows/reusable-web-next-lint-test.yaml
     secrets: inherit
 
   # ---------------------------------------------------------------------------
@@ -225,7 +220,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["volundr","skuld","devrunner","volundr-web","niuu-web","tyr","niuu","mimir","bifrost"]'
+      containers: '["skuld","devrunner","volundr-web","niuu-web","niuu"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
@@ -249,7 +244,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["volundr","skuld","devrunner","volundr-web","niuu-web","tyr","niuu","mimir","bifrost"]'
+      containers: '["skuld","devrunner","volundr-web","niuu-web","niuu"]'
       tag: dev
 
   # ---------------------------------------------------------------------------
@@ -362,32 +357,22 @@ jobs:
         run: |
           VERSION="${{ needs.tag.outputs.version }}"
 
-          sed -i "s/^version:.*/version: $VERSION/" charts/skuld/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/skuld/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/volundr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/volundr/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/tyr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/tyr/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu-shared/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu-shared/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/skuld-planner/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/skuld-planner/Chart.yaml
+          for CHART in bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner; do
+            sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
+            sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
+          done
 
       - name: Package Helm charts
         run: |
+          helm package charts/bifrost -d .helm-packages/
+          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
-          helm package charts/tyr -d .helm-packages/
+          helm package charts/ting -d .helm-packages/
           helm package charts/niuu-shared -d .helm-packages/
-          helm dependency build charts/niuu
+          rm -f charts/niuu/Chart.lock
+          helm dependency update charts/niuu
           helm package charts/niuu -d .helm-packages/
 
       - name: Log in to Container Registry
@@ -399,10 +384,12 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-0*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-planner-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/tyr-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-0*.tgz ${{ env.CHART_REPO }}
 
@@ -444,11 +431,16 @@ jobs:
           extras: "--python 3.12 --extra cli --extra dev"
 
       - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-next/pnpm-lock.yaml
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
+        with:
+          version: 9
 
       - name: Build
         run: make build

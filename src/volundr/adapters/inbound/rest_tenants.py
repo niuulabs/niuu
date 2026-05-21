@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_serializer
 
-from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
+    SettingsTokensResourceSchema,
 )
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.domain.models import Principal, TenantRole, TenantTier
@@ -303,24 +303,39 @@ def _storage_from_request(request: Request):
 def _register_identity_routes(
     router: APIRouter,
     service: IdentityService,
-    *,
-    legacy: bool,
 ) -> APIRouter:
+    async def get_auth_config(request: Request) -> dict:
+        """Return public auth discovery metadata for CLI and external clients."""
+        settings = request.app.state.settings
+
+        issuer = settings.auth_discovery.issuer
+        if not issuer:
+            issuer = settings.gateway.kwargs.get("issuer_url", "")
+
+        if not issuer:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Auth discovery not configured",
+            )
+
+        return {
+            "issuer": issuer,
+            "client_id": settings.auth_discovery.cli_client_id,
+            "scopes": settings.auth_discovery.scopes,
+            "device_authorization_supported": True,
+        }
+
+    router.add_api_route(
+        "/auth/config",
+        get_auth_config,
+        methods=["GET"],
+        tags=["Identity"],
+    )
+
     async def get_me(
-        request: Request,
-        response: Response,
         principal: Principal = Depends(extract_principal),
     ):
         """Get the current authenticated user's identity."""
-        if legacy:
-            warn_on_legacy_route(
-                request,
-                response,
-                LegacyRouteNotice(
-                    legacy_path=request.url.path,
-                    canonical_path="/api/v1/identity/me",
-                ),
-            )
         return _build_me_response(await service.current_principal(principal))
 
     router.add_api_route(
@@ -330,14 +345,6 @@ def _register_identity_routes(
         response_model=MeResponse,
         tags=["Identity"],
     )
-    if legacy:
-        router.add_api_route(
-            "/identity",
-            get_me,
-            methods=["GET"],
-            response_model=MeResponse,
-            tags=["Identity"],
-        )
 
     async def get_identity_settings(
         principal: Principal = Depends(extract_principal),
@@ -390,7 +397,29 @@ def _register_identity_routes(
                             read_only=True,
                         ),
                     ],
-                )
+                ),
+                SettingsSectionSchema(
+                    id="tokens",
+                    label="Personal access tokens",
+                    description=(
+                        "Create and revoke personal access tokens for scripts, "
+                        "local tools, and automation."
+                    ),
+                    fields=[],
+                    resources=[
+                        SettingsTokensResourceSchema(
+                            id="personal_access_tokens",
+                            label="Personal access tokens",
+                            description=(
+                                "Tokens are shown once when created. "
+                                "Revoke anything you no longer use."
+                            ),
+                            list_path="/api/v1/tokens",
+                            create_path="/api/v1/tokens",
+                            delete_path="/api/v1/tokens/{id}",
+                        )
+                    ],
+                ),
             ],
         )
 
@@ -403,73 +432,35 @@ def _register_identity_routes(
     )
 
     async def list_users(
-        request: Request,
-        response: Response,
         _: Principal = Depends(require_role("volundr:admin")),
     ):
         """List all users (admin only)."""
         users = await service.list_users()
-        if legacy and request.url.path.endswith("/users") and "/admin/" not in request.url.path:
-            warn_on_legacy_route(
-                request,
-                response,
-                LegacyRouteNotice(
-                    legacy_path="/api/v1/volundr/users",
-                    canonical_path="/api/v1/volundr/admin/users",
-                ),
-            )
         return [_user_to_response(u) for u in users]
 
     router.add_api_route(
-        "/users" if not legacy else "/admin/users",
+        "/users",
         list_users,
         methods=["GET"],
         response_model=list[UserResponse],
         tags=["Users"],
     )
-    if legacy:
-        router.add_api_route(
-            "/users",
-            list_users,
-            methods=["GET"],
-            response_model=list[UserResponse],
-            tags=["Users"],
-        )
 
     async def reprovision_user(
         user_id: str,
         request: Request,
-        response: Response,
         _: Principal = Depends(require_role("volundr:admin")),
     ):
         """Re-provision storage for a user (admin only)."""
         result = await service.reprovision_user(user_id, storage=_storage_from_request(request))
-        if legacy:
-            is_legacy_path = request.url.path.endswith(f"/users/{user_id}/reprovision")
-            if is_legacy_path and "/admin/" not in request.url.path:
-                warn_on_legacy_route(
-                    request,
-                    response,
-                    LegacyRouteNotice(
-                        legacy_path=f"/api/v1/volundr/users/{user_id}/reprovision",
-                        canonical_path=f"/api/v1/volundr/admin/users/{user_id}/reprovision",
-                    ),
-                )
         return _provisioning_result_to_payload(result)
 
     router.add_api_route(
-        "/users/{user_id}/reprovision" if not legacy else "/admin/users/{user_id}/reprovision",
+        "/users/{user_id}/reprovision",
         reprovision_user,
         methods=["POST"],
         status_code=status.HTTP_202_ACCEPTED,
     )
-    if legacy:
-        router.add_api_route(
-            "/users/{user_id}/reprovision",
-            reprovision_user,
-            methods=["POST"],
-            status_code=status.HTTP_202_ACCEPTED,
-        )
 
     async def list_tenants(
         parent_id: str | None = Query(default=None, description="Filter by parent tenant ID"),
@@ -537,8 +528,6 @@ def _register_identity_routes(
     async def update_tenant(
         tenant_id: str,
         body: TenantUpdate,
-        request: Request,
-        response: Response,
         _: Principal = Depends(require_role("volundr:admin")),
     ):
         """Update tenant settings (admin only)."""
@@ -553,15 +542,6 @@ def _register_identity_routes(
             )
         except TenantNotFoundError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-        if legacy and request.method.upper() == "PUT":
-            warn_on_legacy_route(
-                request,
-                response,
-                LegacyRouteNotice(
-                    legacy_path=f"/api/v1/volundr/tenants/{tenant_id}",
-                    canonical_path=f"/api/v1/volundr/tenants/{tenant_id}",
-                ),
-            )
         return TenantResponse.from_tenant(tenant)
 
     router.add_api_route(
@@ -570,13 +550,6 @@ def _register_identity_routes(
         methods=["PATCH"],
         response_model=TenantResponse,
     )
-    if legacy:
-        router.add_api_route(
-            "/tenants/{tenant_id}",
-            update_tenant,
-            methods=["PUT"],
-            response_model=TenantResponse,
-        )
 
     async def delete_tenant(
         tenant_id: str,
@@ -678,12 +651,12 @@ def _register_identity_routes(
 
 
 def create_tenants_router(tenant_service: TenantService) -> APIRouter:
-    """Create the tenants router."""
-    router = APIRouter(prefix="/api/v1/volundr", tags=["Tenants"])
-    return _register_identity_routes(router, IdentityService(tenant_service), legacy=True)
+    """Create the identity/tenant router."""
+    router = APIRouter(prefix="/api/v1/identity", tags=["Identity"])
+    return _register_identity_routes(router, IdentityService(tenant_service))
 
 
 def create_identity_router(tenant_service: TenantService) -> APIRouter:
     """Create the canonical identity router."""
     router = APIRouter(prefix="/api/v1/identity", tags=["Identity"])
-    return _register_identity_routes(router, IdentityService(tenant_service), legacy=False)
+    return _register_identity_routes(router, IdentityService(tenant_service))

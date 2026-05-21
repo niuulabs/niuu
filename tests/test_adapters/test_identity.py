@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
+from volundr.adapters.outbound.identity import AllowAllIdentityAdapter, EnvoyHeaderIdentityAdapter
 from volundr.domain.models import Principal, User, UserStatus
 from volundr.domain.ports import InvalidTokenError
 
@@ -68,3 +68,28 @@ class TestAllowAllIdentityAdapter:
         user = await adapter.get_or_provision_user(principal)
         assert user.id == "dev-user"
         user_repo.create.assert_called_once()
+
+
+class TestEnvoyHeaderIdentityAdapter:
+    """Tests for EnvoyHeaderIdentityAdapter."""
+
+    async def test_validate_headers_falls_back_to_default_tenant_when_header_blank(self):
+        user_repo = AsyncMock()
+        adapter = EnvoyHeaderIdentityAdapter(
+            user_repository=user_repo,
+            default_tenant_id="default",
+        )
+
+        principal = await adapter.validate_headers(
+            {
+                "x-auth-user-id": "svc-user",
+                "x-auth-email": "svc@example.com",
+                "x-auth-tenant": "",
+                "x-auth-roles": "",
+            }
+        )
+
+        assert principal.user_id == "svc-user"
+        assert principal.email == "svc@example.com"
+        assert principal.tenant_id == "default"
+        assert principal.roles == ["volundr:developer"]

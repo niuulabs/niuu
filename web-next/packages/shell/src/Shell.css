@@ -244,9 +244,8 @@
     border-color var(--transition-normal);
 }
 .niuu-shell__subnav--collapsed {
-  width: 0;
-  min-width: 0;
-  border-right-color: transparent;
+  width: 48px;
+  min-width: 48px;
 }
 .niuu-shell__subnav:empty {
   width: 0;

@@ -5,7 +5,7 @@ Fixtures
 db_pool       (session) — real asyncpg pool; migrations applied once.
 txn_pool      (function) — per-test transactional wrapper; rolled back after each test.
 volundr_settings (function) — ``volundr.config.Settings`` pointing at the test DB.
-tyr_settings     (function) — ``tyr.config.Settings`` pointing at the test DB.
+ting_settings     (function) — ``ting.config.Settings`` pointing at the test DB.
 auth_headers     (function) — factory that returns Envoy-style header dicts.
 
 Environment variables
@@ -47,13 +47,13 @@ _DB_NAME = os.environ.get("TEST_DATABASE_NAME", "volundr_test")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _MIGRATIONS_DIR = _REPO_ROOT / "migrations"
-_TYR_MIGRATIONS_DIR = _REPO_ROOT / "migrations" / "tyr"
+_TING_MIGRATIONS_DIR = _REPO_ROOT / "migrations" / "ting"
 
 
-async def _apply_tyr_migrations(pool: asyncpg.Pool, migrations_dir: Path) -> None:
-    """Apply Tyr migrations tolerantly.
+async def _apply_ting_migrations(pool: asyncpg.Pool, migrations_dir: Path) -> None:
+    """Apply Ting migrations tolerantly.
 
-    Tyr and Volundr share some tables (integration_connections,
+    Ting and Volundr share some tables (integration_connections,
     personal_access_tokens).  When both migration sets run against the same
     test database, index/column conflicts on already-migrated shared tables
     are expected and safe to skip.
@@ -90,8 +90,8 @@ async def db_pool() -> asyncpg.Pool:
     assert pool is not None
 
     await apply_migrations(pool, _MIGRATIONS_DIR)
-    if _TYR_MIGRATIONS_DIR.is_dir():
-        await _apply_tyr_migrations(pool, _TYR_MIGRATIONS_DIR)
+    if _TING_MIGRATIONS_DIR.is_dir():
+        await _apply_ting_migrations(pool, _TING_MIGRATIONS_DIR)
 
     yield pool
 
@@ -153,12 +153,12 @@ def volundr_settings() -> Any:
 
 
 @pytest.fixture
-def tyr_settings() -> Any:
-    """Return ``tyr.config.Settings`` pointing at the test database.
+def ting_settings() -> Any:
+    """Return ``ting.config.Settings`` pointing at the test database.
 
     Enables anonymous dev mode so no real IDP is needed.
     """
-    from tyr.config import AuthConfig, DatabaseConfig, Settings
+    from ting.config import AuthConfig, DatabaseConfig, Settings
 
     return Settings(
         database=DatabaseConfig(

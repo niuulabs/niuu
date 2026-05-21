@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { ConfigProvider, resolveSafeConfigEndpoint, useConfig } from './ConfigProvider';
 
 function ConfigReader() {
@@ -22,6 +22,23 @@ describe('ConfigProvider', () => {
       </ConfigProvider>,
     );
     expect(screen.getByTestId('theme').textContent).toBe('ice');
+  });
+
+  it('updates the provided config value on rerender without fetching', () => {
+    const { rerender } = render(
+      <ConfigProvider value={{ theme: 'ice', plugins: {}, services: {} }}>
+        <ConfigReader />
+      </ConfigProvider>,
+    );
+
+    rerender(
+      <ConfigProvider value={{ theme: 'ember', plugins: {}, services: {} }}>
+        <ConfigReader />
+      </ConfigProvider>,
+    );
+
+    expect(screen.getByTestId('theme').textContent).toBe('ember');
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('fetches and validates config from the endpoint', async () => {
@@ -77,6 +94,63 @@ describe('ConfigProvider', () => {
 
     await waitFor(() => expect(screen.getByTestId('err')).toHaveTextContent('current origin'));
   });
+
+  it('renders the default error fallback when the endpoint is unsupported', async () => {
+    render(
+      <ConfigProvider endpoint=" /config.live.json ">
+        <ConfigReader />
+      </ConfigProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('default /config.json'),
+    );
+  });
+
+  it('normalizes non-Error fetch failures into an Error instance', async () => {
+    const mock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    mock.mockRejectedValueOnce('network exploded');
+
+    render(
+      <ConfigProvider
+        endpoint="/config.json"
+        errorFallback={(e) => <span data-testid="err">{e.message}</span>}
+      >
+        <ConfigReader />
+      </ConfigProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('err')).toHaveTextContent('network exploded'));
+  });
+
+  it('does not update state after unmounting while a fetch is still in flight', async () => {
+    let resolveFetch: ((value: unknown) => void) | undefined;
+    const mock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    mock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+
+    const { unmount } = render(
+      <ConfigProvider endpoint="/config.json" fallback={<span>loading</span>}>
+        <ConfigReader />
+      </ConfigProvider>,
+    );
+
+    expect(screen.getByText('loading')).toBeInTheDocument();
+    unmount();
+
+    await act(async () => {
+      resolveFetch?.({
+        ok: true,
+        json: async () => ({ theme: 'ice', plugins: {}, services: {} }),
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('theme')).not.toBeInTheDocument();
+  });
 });
 
 describe('resolveSafeConfigEndpoint', () => {
@@ -86,6 +160,10 @@ describe('resolveSafeConfigEndpoint', () => {
 
   it('normalizes an empty endpoint back to the default path', () => {
     expect(resolveSafeConfigEndpoint('')).toBe('/config.json');
+  });
+
+  it('normalizes a whitespace-padded default endpoint back to the default path', () => {
+    expect(resolveSafeConfigEndpoint('   /config.json   ')).toBe('/config.json');
   });
 
   it('rejects same-origin non-default URLs', () => {

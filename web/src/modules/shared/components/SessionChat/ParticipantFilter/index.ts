@@ -1,1 +1,0 @@
-export { ParticipantFilter } from './ParticipantFilter';

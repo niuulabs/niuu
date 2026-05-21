@@ -5,7 +5,7 @@ config YAML (dynamic adapter pattern with fully-qualified class paths).
 Each plugin brings its own commands, services, API clients, and TUI pages.
 
 The plugin ABCs (ServicePlugin, Service, TUIPageSpec) live in
-niuu.ports.plugin so that volundr/tyr can implement them without
+niuu.ports.plugin so that volundr/ting can implement them without
 importing from cli. They are re-exported here for convenience.
 """
 

@@ -32,18 +32,18 @@ def test_ravn_constants_present():
     assert registry.RAVN_INTERRUPT == "ravn.interrupt"
 
 
-def test_tyr_constants_present():
-    assert registry.TYR_TASK_QUEUED == "tyr.task.queued"
-    assert registry.TYR_TASK_STARTED == "tyr.task.started"
-    assert registry.TYR_TASK_COMPLETE == "tyr.task.complete"
-    assert registry.TYR_TASK_FAILED == "tyr.task.failed"
-    assert registry.TYR_TASK_CANCELLED == "tyr.task.cancelled"
-    assert registry.TYR_SAGA_CREATED == "tyr.saga.created"
-    assert registry.TYR_SAGA_STEP == "tyr.saga.step"
-    assert registry.TYR_SAGA_COMPLETE == "tyr.saga.complete"
-    assert registry.TYR_SAGA_FAILED == "tyr.saga.failed"
-    assert registry.TYR_SESSION_START == "tyr.session.start"
-    assert registry.TYR_SESSION_END == "tyr.session.end"
+def test_ting_constants_present():
+    assert registry.TING_TASK_QUEUED == "ting.task.queued"
+    assert registry.TING_TASK_STARTED == "ting.task.started"
+    assert registry.TING_TASK_COMPLETE == "ting.task.complete"
+    assert registry.TING_TASK_FAILED == "ting.task.failed"
+    assert registry.TING_TASK_CANCELLED == "ting.task.cancelled"
+    assert registry.TING_SAGA_CREATED == "ting.saga.created"
+    assert registry.TING_SAGA_STEP == "ting.saga.step"
+    assert registry.TING_SAGA_COMPLETE == "ting.saga.complete"
+    assert registry.TING_SAGA_FAILED == "ting.saga.failed"
+    assert registry.TING_SESSION_START == "ting.session.start"
+    assert registry.TING_SESSION_END == "ting.session.end"
 
 
 def test_volundr_constants_present():

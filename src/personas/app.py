@@ -54,7 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Persona Registry API",
-        description="Canonical persona registry surface for Ravn, Tyr, and runtime consumers.",
+        description="Canonical persona registry surface for Ravn, Ting, and runtime consumers.",
         version="0.1.0",
         docs_url=None,
         redoc_url=None,

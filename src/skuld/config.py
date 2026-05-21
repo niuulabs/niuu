@@ -14,6 +14,7 @@ Environment variable override format:
   SESSION_ID, MODEL, HOST, PORT, VOLUNDR_API_URL, SERVICE_USER_ID, WORKSPACE_DIR
 """
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,31 @@ class WorkflowTriggerConfig(BaseModel):
     startup_delay_s: float = Field(default=3.0)
 
 
+class WorkflowRuntimeConfig(BaseModel):
+    """Workflow graph metadata injected into Skuld-backed flock sessions."""
+
+    workflow_id: str = Field(default="")
+    name: str = Field(default="")
+    version: str = Field(default="")
+    scope: str = Field(default="")
+    initial_context: str = Field(default="")
+    graph: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_graph_json(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        graph = value.get("graph")
+        if isinstance(graph, str) and graph.strip():
+            try:
+                value = dict(value)
+                value["graph"] = json.loads(graph)
+            except Exception:
+                pass
+        return value
+
+
 class RoomConfig(BaseModel):
     """Multi-agent room chat configuration.
 
@@ -141,6 +167,24 @@ class TelegramConfig(BaseModel):
     message_thread_id: int | None = Field(default=None)
 
 
+class PeerWatchdogConfig(BaseModel):
+    """Silence watchdog settings for workflow flock peers."""
+
+    enabled: bool = Field(default=True)
+    poll_seconds: float = Field(
+        default=5.0,
+        description="Seconds between silence watchdog checks.",
+    )
+    silence_seconds: float = Field(
+        default=300.0,
+        description="Seconds of no visible peer progress before warning in normal execution.",
+    )
+    tool_silence_seconds: float = Field(
+        default=300.0,
+        description="Seconds of no visible peer progress before warning while a tool is running.",
+    )
+
+
 class SkuldSessionConfig(BaseModel):
     """Per-session configuration (set by Volundr at pod creation)."""
 
@@ -151,7 +195,7 @@ class SkuldSessionConfig(BaseModel):
     system_prompt: str = Field(default="")
     initial_prompt: str = Field(default="")
     saga_id: str | None = Field(default=None)
-    raid_id: str | None = Field(default=None)
+    run_id: str | None = Field(default=None)
 
 
 class ArchiveStoreConfig(BaseModel):
@@ -208,9 +252,11 @@ class SkuldSettings(BaseSettings):
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)
     workflow_trigger: WorkflowTriggerConfig = Field(default_factory=WorkflowTriggerConfig)
+    workflow: WorkflowRuntimeConfig = Field(default_factory=WorkflowRuntimeConfig)
 
     @model_validator(mode="after")
     def _apply_legacy_env_vars(self) -> "SkuldSettings":

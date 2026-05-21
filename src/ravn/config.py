@@ -924,11 +924,11 @@ class SkuldChannelConfig(BaseModel):
 
 
 class PlatformToolsConfig(BaseModel):
-    """Platform integration tools (Volundr sessions, git, Tyr sagas, tracker)."""
+    """Platform integration tools (Volundr sessions, git, Ting sagas, tracker)."""
 
     enabled: bool = Field(
         default=False,
-        description="Register platform tools (requires Volundr/Tyr backend).",
+        description="Register platform tools (requires Volundr/Ting backend).",
     )
     base_url: str = Field(default="http://localhost:8080")
     timeout: float = Field(default=30.0)
@@ -1121,7 +1121,7 @@ class SleipnirConfig(BaseModel):
     """Sleipnir event-backbone publishing configuration (NIU-438).
 
     When enabled, Ravn publishes every RavnEvent to a RabbitMQ topic exchange
-    so the rest of ODIN (Valkyrie attention model, Tyr, monitoring) can consume
+    so the rest of ODIN (Valkyrie attention model, Ting, monitoring) can consume
     agent output without being coupled to a specific session.
 
     The AMQP URL is read from an environment variable (default:
@@ -2426,14 +2426,29 @@ class PersonaOverridesConfig(BaseModel):
         default=0,
         description=("Override the persona's iteration budget (0 = use persona default)."),
     )
+    consumes_event_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional replacement event subscription list for the resolved persona. "
+            "Empty keeps the persona's built-in consumes.event_types."
+        ),
+    )
+    executor: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Optional executor override applied to the resolved persona at runtime. "
+            "Used by workflow dispatch to select the session transport independently "
+            "from the persona definition."
+        ),
+    )
 
 
 class WorkflowRuntimeConfig(BaseModel):
     """Workflow graph metadata injected into flocked Ravn daemons.
 
-    This is a passive runtime contract for now: Tyr/Volundr pass the workflow
+    This is a passive runtime contract for now: Ting/Volundr pass the workflow
     graph into the flock session so mesh-aware runtime code can consume it
-    without depending on Tyr's pipeline compiler.
+    without depending on Ting's pipeline compiler.
     """
 
     workflow_id: str = ""

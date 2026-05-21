@@ -62,6 +62,10 @@ class TestSkuldSettings:
         assert s.session.name == "unknown"
         assert s.session.model == "claude-sonnet-4-6"
         assert s.persistence_mount_path == "/volundr/sessions"
+        assert s.peer_watchdog.enabled is True
+        assert s.peer_watchdog.poll_seconds == 5.0
+        assert s.peer_watchdog.silence_seconds == 300.0
+        assert s.peer_watchdog.tool_silence_seconds == 300.0
 
     def test_workspace_path_computed(self, monkeypatch):
         """Test workspace_path computed from session ID when workspace_dir is None."""
@@ -97,6 +101,14 @@ class TestSkuldSettings:
         s = SkuldSettings()
         assert s.session.id == "nested-id"
         assert s.session.model == "opus"
+
+    def test_peer_watchdog_nested_env_vars(self, monkeypatch):
+        monkeypatch.setenv("SKULD__PEER_WATCHDOG__SILENCE_SECONDS", "600")
+        monkeypatch.setenv("SKULD__PEER_WATCHDOG__TOOL_SILENCE_SECONDS", "900")
+
+        s = SkuldSettings()
+        assert s.peer_watchdog.silence_seconds == 600.0
+        assert s.peer_watchdog.tool_silence_seconds == 900.0
 
     def test_mcp_servers_from_env(self, monkeypatch):
         monkeypatch.setenv(

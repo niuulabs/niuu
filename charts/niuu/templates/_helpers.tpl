@@ -82,14 +82,20 @@ as literal service names to keep the route table extensible.
 {{ printf "%s-web" (include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr)) }}
 {{- else if eq $service "volundr-web-next" -}}
 {{ printf "%s-web-next" (include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr)) }}
-{{- else if eq $service "tyr" -}}
-{{ include "niuu.componentFullname" (dict "root" $root "name" "tyr" "values" $root.Values.tyr) }}
+{{- else if eq $service "ting" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "ting" "values" $root.Values.ting) }}
 {{- else if eq $service "niuu-shared" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "niuu-shared" "values" (index $root.Values "niuu-shared")) }}
+{{- else if eq $service "guild" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "guild" "values" $root.Values.guild) }}
 {{- else if eq $service "bifrost" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "bifrost" "values" $root.Values.bifrost) }}
+{{- else if eq $service "observatory" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "observatory" "values" $root.Values.observatory) }}
 {{- else if eq $service "mimir-shared" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-shared" "values" (index $root.Values "mimir-shared")) }}
+{{- else if eq $service "ravn" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "ravn" "values" $root.Values.ravn) }}
 {{- else if eq $service "mimir-kanuck" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-kanuck" "values" (index $root.Values "mimir-kanuck")) }}
 {{- else if eq $service "mimir-research" -}}

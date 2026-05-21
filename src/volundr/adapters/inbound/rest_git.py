@@ -168,9 +168,11 @@ class ErrorResponse(BaseModel):
 
 def create_git_router(
     git_workflow_service: GitWorkflowService,
+    *,
+    prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router for git workflow endpoints."""
-    router = APIRouter(prefix="/api/v1/volundr")
+    router = APIRouter(prefix=prefix)
 
     @router.post(
         "/repos/prs",

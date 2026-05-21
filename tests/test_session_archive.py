@@ -7,7 +7,9 @@ import pytest
 from volundr.session_archive import (
     archive_manifest_path,
     archive_transcript_markdown_path,
+    load_archive_logs,
     load_archive_manifest,
+    load_archive_transcript,
     load_workspace_transcript,
     render_transcript_markdown,
     write_session_archive,
@@ -140,6 +142,51 @@ def test_write_session_archive_without_optional_sources(tmp_path):
 
 def test_load_archive_manifest_returns_none_when_missing(tmp_path):
     assert load_archive_manifest(tmp_path) is None
+
+
+def test_load_archive_payloads_can_use_config_root_without_workspace_dir(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    niuu_home = tmp_path / ".niuu"
+    monkeypatch.setenv("NIUU_HOME", str(niuu_home))
+
+    transcript = {"turns": [{"role": "assistant", "content": "archived"}]}
+    logs = {"lines": [{"message": "archived log"}]}
+
+    write_session_archive(
+        session_id="sess-config",
+        workspace_dir=workspace,
+        transcript_payload=transcript,
+        aggregated_logs=logs,
+        archive_location="config",
+        archive_path="archives-store",
+    )
+
+    loaded_transcript = load_archive_transcript(
+        None,
+        session_id="sess-config",
+        archive_location="config",
+        archive_path="archives-store",
+    )
+    loaded_logs = load_archive_logs(
+        None,
+        session_id="sess-config",
+        archive_location="config",
+        archive_path="archives-store",
+    )
+    loaded_manifest = load_archive_manifest(
+        None,
+        session_id="sess-config",
+        archive_location="config",
+        archive_path="archives-store",
+    )
+
+    assert loaded_transcript is not None
+    assert loaded_transcript["turns"][0]["content"] == "archived"
+    assert loaded_logs is not None
+    assert loaded_logs["lines"][0]["message"] == "archived log"
+    assert loaded_manifest is not None
+    assert loaded_manifest["session_id"] == "sess-config"
 
 
 def test_write_session_archive_can_target_config_root(tmp_path, monkeypatch):

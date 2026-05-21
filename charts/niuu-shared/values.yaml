@@ -71,6 +71,95 @@ git:
     # -- Key in existingSecret containing the token
     tokenKey: "token"
 
+database:
+  name: volundr
+  minPoolSize: 5
+  maxPoolSize: 20
+  createSecret: false
+  existingSecret: ""
+  userKey: username
+  passwordKey: password
+  username: ""
+  password: "CHANGE_ME"
+  extraSecretData: {}
+  secretAnnotations: {}
+  external:
+    enabled: true
+    host: postgresql.default.svc.cluster.local
+    port: 5432
+
+storageAdapter:
+  adapter: "volundr.adapters.outbound.k8s_storage.InMemoryStorageAdapter"
+  kwargs: {}
+  secretKwargs: []
+
+identity:
+  adapter: "volundr.adapters.outbound.identity.AllowAllIdentityAdapter"
+  kwargs: {}
+  secretKwargs: []
+  roleMapping:
+    admin: "volundr:admin"
+    developer: "volundr:developer"
+    viewer: "volundr:viewer"
+
+authDiscovery:
+  issuer: ""
+  cliClientId: "volundr-cli"
+  scopes: "openid profile email"
+
+gateway:
+  adapter: "volundr.adapters.outbound.k8s_gateway.InMemoryGatewayAdapter"
+  kwargs: {}
+  secretKwargs: []
+
+envoy:
+  enabled: false
+  image:
+    repository: envoyproxy/envoy
+    tag: "v1.32-latest"
+    pullPolicy: IfNotPresent
+  port: 8443
+  adminPort: 9901
+  connectTimeout: "0.25s"
+  upstreamTimeout: "60s"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  headerNames:
+    userId: x-auth-user-id
+    email: x-auth-email
+    tenant: x-auth-tenant
+    roles: x-auth-roles
+  jwt:
+    enabled: false
+    issuer: ""
+    audiences: []
+    jwksUri: ""
+    jwksTimeout: "5s"
+    jwksCacheDurationSeconds: 300
+    tenantClaim: "tenant_id"
+    rolesClaim: "resource_access.volundr-api.roles"
+    keycloakHost: ""
+    keycloakPort: 8080
+    keycloakTls: false
+    extraClaimHeaders: []
+    bypassPrefixes:
+      - /api/v1/identity/auth/config
+      - /health
+  extraHttpFilters: []
+  extraClusters: []
+
+pat:
+  token_issuer_adapter: "niuu.adapters.memory_token_issuer.MemoryTokenIssuer"
+  token_issuer_kwargs: {}
+  ttl_days: 365
+  issuerSecretName: ""
+  issuerSecretKey: "client-secret"
+
 livenessProbe:
   enabled: true
   path: "/health"

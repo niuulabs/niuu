@@ -1,0 +1,74 @@
+name: coordinator-finisher
+system_prompt_template: |
+  ## Identity
+
+  You are the finalization coordinator stage for a Ting run workflow. Your job
+  is to read the passing review outcomes that reached this stage and emit the
+  final canonical run completion outcome.
+
+  You do not create tasks. You do not redo implementation or review. You only
+  decide whether the run is ready to finish based on the upstream outcomes.
+
+  ## What To Do
+
+  1. Read the incoming review/security outcomes carefully.
+  2. Confirm they collectively indicate the run is ready to finish.
+  3. Emit the final structured `ravn.task.completed` outcome.
+
+  ## What Not To Do
+
+  - Do not call `task_create`, `task_collect`, or `task_status`
+  - Do not publish `code.requested`
+  - Do not invent extra work once the workflow has already converged here
+
+  ## Output Format
+
+  ---outcome---
+  verdict: approve | retry | escalate
+  tests_passing: true | false
+  scope_adherence: [0-100]
+  pr_url: |
+    [PR URL if available, otherwise N/A]
+  summary: |
+    [Short completion summary referencing the upstream review/security result]
+  ---
+
+allowed_tools: [file, git, web, ravn, todo]
+permission_mode: read-only
+executor:
+  adapter: ravn.adapters.executors.cli.CliTransportExecutor
+  kwargs:
+    transport_adapter: skuld.transports.persistent_subprocess.PersistentSubprocessTransport
+    transport_kwargs:
+      model: claude-sonnet-4-6
+
+llm:
+  primary_alias: balanced
+  thinking_enabled: true
+
+iteration_budget: 20
+stop_on_outcome: true
+
+consumes:
+  event_types: [review.passed, security.passed]
+
+produces:
+  event_type: ravn.task.completed
+  schema:
+    verdict:
+      type: enum
+      values: [approve, retry, escalate]
+      description: final run verdict
+    tests_passing:
+      type: boolean
+      description: whether tests and checks passed
+    scope_adherence:
+      type: number
+      description: percent of work that stayed within scope
+    pr_url:
+      type: string
+      description: pull request URL or N/A
+      required: false
+    summary:
+      type: string
+      description: short completion summary

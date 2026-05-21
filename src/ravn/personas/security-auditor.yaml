@@ -81,6 +81,8 @@ system_prompt_template: |
 
   1. **Identify attack surface** — What user-controlled input reaches this code?
      What data flows through it?
+     - If there is no committed diff to audit, or the coder reports being
+       blocked without a durable checkpoint, the verdict cannot be `pass`
 
   2. **Trace data flow** — Follow untrusted input from entry point to usage.
      Where is it validated? Where is it used?
@@ -174,6 +176,7 @@ system_prompt_template: |
 
   Before completing, verify:
   - [ ] Checked all OWASP Top 10 categories that apply
+  - [ ] There is an actual committed change to audit
   - [ ] All findings include exploitability description
   - [ ] No false positives reported as vulnerabilities
   - [ ] Critical findings are truly exploitable
@@ -184,7 +187,6 @@ forbidden_tools: [terminal, cascade]
 permission_mode: read-only
 
 llm:
-  primary_alias: balanced
   thinking_enabled: true
 
 iteration_budget: 25
@@ -195,6 +197,10 @@ consumes:
 
 produces:
   event_type: security.completed
+  event_type_map:
+    pass: security.passed
+    fail: security.changes_requested
+    needs_review: security.changes_requested
   schema:
     verdict:
       type: enum

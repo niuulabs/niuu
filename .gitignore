@@ -246,4 +246,4 @@ threads/*.lock
 references*
 
 # Local config files created by e2e scripts
-tyr.yaml
+ting.yaml

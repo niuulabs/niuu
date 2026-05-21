@@ -20,14 +20,14 @@ describe('FeatureCatalog — config-only (no service)', () => {
         value={{
           theme: 'ice',
           plugins: {
-            tyr: { enabled: true, order: 4 },
+            ting: { enabled: true, order: 4 },
             mimir: { enabled: false, order: 2 },
           },
           services: {},
         }}
       >
         <FeatureCatalogProvider>
-          <Reader id="tyr" />
+          <Reader id="ting" />
         </FeatureCatalogProvider>
       </ConfigProvider>,
     );
@@ -110,15 +110,15 @@ describe('FeatureCatalog — service-driven', () => {
 
     render(
       <ConfigProvider
-        value={{ theme: 'ice', plugins: { tyr: { enabled: true, order: 4 } }, services: {} }}
+        value={{ theme: 'ice', plugins: { ting: { enabled: true, order: 4 } }, services: {} }}
       >
         <FeatureCatalogProvider service={service}>
-          <Reader id="tyr" />
+          <Reader id="ting" />
         </FeatureCatalogProvider>
       </ConfigProvider>,
     );
 
-    // Service resolves with empty list; tyr falls back to config
+    // Service resolves with empty list; ting falls back to config
     await waitFor(() => expect(screen.getByTestId('out').textContent).toBe('true-4'));
   });
 

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -18,7 +16,6 @@ from cli.commands.platform import (
     _build_preflight_config,
     _build_up_callback,
     _collect_service_definitions,
-    _legacy_route_hits_url,
     _prompt_mode_selection,
     _resolve_enabled_services,
     _route_inventory_payload,
@@ -74,10 +71,10 @@ class TestCollectServiceDefinitions:
     def test_collects_from_plugins_with_register_service(self) -> None:
         registry = PluginRegistry()
         registry.register(_ServicePlugin(_make_svc_def("volundr")))
-        registry.register(_ServicePlugin(_make_svc_def("tyr")))
+        registry.register(_ServicePlugin(_make_svc_def("ting")))
         defs = _collect_service_definitions(registry)
         assert "volundr" in defs
-        assert "tyr" in defs
+        assert "ting" in defs
 
     def test_skips_plugins_without_register_service(self) -> None:
         registry = PluginRegistry()
@@ -100,12 +97,12 @@ class TestResolveEnabledServices:
     def test_default_enabled_only(self) -> None:
         service_defs = {
             "volundr": _make_svc_def("volundr", default_enabled=True),
-            "tyr": _make_svc_def("tyr", default_enabled=True),
+            "ting": _make_svc_def("ting", default_enabled=True),
             "skuld": _make_svc_def("skuld", default_enabled=False),
         }
         enabled = _resolve_enabled_services(service_defs, CLISettings(), False, {})
         assert "volundr" in enabled
-        assert "tyr" in enabled
+        assert "ting" in enabled
         assert "skuld" not in enabled
 
     def test_cli_flag_adds_disabled_service(self) -> None:
@@ -117,10 +114,10 @@ class TestResolveEnabledServices:
 
     def test_cli_flag_removes_enabled_service(self) -> None:
         service_defs = {
-            "tyr": _make_svc_def("tyr", default_enabled=True),
+            "ting": _make_svc_def("ting", default_enabled=True),
         }
-        enabled = _resolve_enabled_services(service_defs, CLISettings(), False, {"tyr": False})
-        assert "tyr" not in enabled
+        enabled = _resolve_enabled_services(service_defs, CLISettings(), False, {"ting": False})
+        assert "ting" not in enabled
 
     def test_start_all_enables_everything(self) -> None:
         service_defs = {
@@ -137,30 +134,30 @@ class TestResolveEnabledServices:
         assert "skuld" in enabled
 
     def test_config_override_disables(self) -> None:
-        service_defs = {"tyr": _make_svc_def("tyr", default_enabled=True)}
-        settings = CLISettings(service_overrides={"tyr": PerServiceConfig(enabled=False)})
+        service_defs = {"ting": _make_svc_def("ting", default_enabled=True)}
+        settings = CLISettings(service_overrides={"ting": PerServiceConfig(enabled=False)})
         enabled = _resolve_enabled_services(service_defs, settings, False, {})
-        assert "tyr" not in enabled
+        assert "ting" not in enabled
 
     def test_cli_flag_wins_over_config_override(self) -> None:
         """CLI flag has the highest priority."""
-        service_defs = {"tyr": _make_svc_def("tyr", default_enabled=False)}
-        settings = CLISettings(service_overrides={"tyr": PerServiceConfig(enabled=False)})
-        enabled = _resolve_enabled_services(service_defs, settings, False, {"tyr": True})
-        assert "tyr" in enabled
+        service_defs = {"ting": _make_svc_def("ting", default_enabled=False)}
+        settings = CLISettings(service_overrides={"ting": PerServiceConfig(enabled=False)})
+        enabled = _resolve_enabled_services(service_defs, settings, False, {"ting": True})
+        assert "ting" in enabled
 
     def test_start_all_overrides_no_flags(self) -> None:
         """--all takes highest precedence even when --no-service is set."""
-        service_defs = {"tyr": _make_svc_def("tyr", default_enabled=True)}
-        enabled = _resolve_enabled_services(service_defs, CLISettings(), True, {"tyr": False})
-        assert "tyr" in enabled
+        service_defs = {"ting": _make_svc_def("ting", default_enabled=True)}
+        enabled = _resolve_enabled_services(service_defs, CLISettings(), True, {"ting": False})
+        assert "ting" in enabled
 
 
 class TestDynamicUpCallback:
     def test_up_callback_has_service_flags(self) -> None:
         service_defs = {
             "volundr": _make_svc_def("volundr"),
-            "tyr": _make_svc_def("tyr"),
+            "ting": _make_svc_def("ting"),
         }
         manager = MagicMock()
         settings = CLISettings()
@@ -170,7 +167,7 @@ class TestDynamicUpCallback:
 
         sig = inspect.signature(up_fn)
         assert "volundr" in sig.parameters
-        assert "tyr" in sig.parameters
+        assert "ting" in sig.parameters
         assert "skip_preflight" in sig.parameters
         assert "all" in sig.parameters
         assert "host_profile" in sig.parameters
@@ -270,9 +267,12 @@ class TestDynamicUpCallback:
             assert os.environ["LOCAL_MOUNTS__ENABLED"] == "true"
             assert os.environ["LOCAL_MOUNTS__MINI_MODE"] == "true"
             assert os.environ["POD_MANAGER__ADAPTER"] == settings.pod_manager.adapter
-            assert (
-                os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"]
-                == "~/.niuu/workspaces"
+            assert os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "~/.niuu/workspaces"
+            assert os.environ["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == str(
+                Path("~/.niuu/workspaces").expanduser()
+            )
+            assert os.environ["STORAGE__KWARGS__HOME_MOUNT_PATH"] == str(
+                Path("~/.niuu/home").expanduser()
             )
             assert os.environ["POD_MANAGER__KWARGS__CLAUDE_BINARY"] == "claude"
             assert os.environ["POD_MANAGER__KWARGS__MAX_CONCURRENT"] == "4"
@@ -311,6 +311,8 @@ class TestDynamicUpCallback:
             )
 
             assert os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "/tmp/mini-workspaces"
+            assert os.environ["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == "/tmp/mini-workspaces"
+            assert os.environ["STORAGE__KWARGS__HOME_MOUNT_PATH"] == "/tmp/home"
 
         assert startup.await_count == 1
         called_settings = startup.await_args.args[1]
@@ -431,20 +433,20 @@ class TestCreatePlatformCommands:
 
 
 class TestDependencyResolutionViaEnabledServices:
-    async def test_tyr_dep_pulls_in_volundr(self) -> None:
+    async def test_ting_dep_pulls_in_volundr(self) -> None:
         registry = PluginRegistry()
         registry.register(_ServicePlugin(_make_svc_def("volundr")))
-        registry.register(_ServicePlugin(_make_svc_def("tyr", depends_on=["volundr"])))
+        registry.register(_ServicePlugin(_make_svc_def("ting", depends_on=["volundr"])))
         manager = ServiceManager(
             registry=registry,
             health_check_interval=0.01,
             health_check_timeout=0.5,
             health_check_max_retries=1,
         )
-        order = manager.resolve_start_order(enabled_services={"tyr"})
+        order = manager.resolve_start_order(enabled_services={"ting"})
         assert "volundr" in order
-        assert "tyr" in order
-        assert order.index("volundr") < order.index("tyr")
+        assert "ting" in order
+        assert order.index("volundr") < order.index("ting")
 
 
 class TestBuildPreflightConfig:
@@ -532,14 +534,6 @@ class TestRouteInventoryPayload:
                 "plugin": "niuu",
             }
         ]
-
-
-class TestLegacyRouteHitsUrl:
-    def test_normalizes_server_base(self) -> None:
-        assert (
-            _legacy_route_hits_url("http://127.0.0.1:8080/")
-            == "http://127.0.0.1:8080/api/v1/niuu/compat/legacy-routes"
-        )
 
 
 class TestInitOverwriteProtection:
@@ -789,81 +783,3 @@ class TestPlatformInventoryCommand:
         assert result.exit_code == 0
         assert out_path.exists()
         assert '"name": "niuu-api"' in out_path.read_text()
-
-
-class TestPlatformLegacyRoutesCommand:
-    def _make_platform(self) -> tuple:
-        registry = PluginRegistry()
-        settings = CLISettings()
-        manager = ServiceManager(
-            registry=registry,
-            health_check_interval=0.01,
-            health_check_timeout=0.5,
-            health_check_max_retries=1,
-        )
-        platform = create_platform_commands(registry, settings, manager)
-        return platform, registry, settings, manager
-
-    def test_legacy_routes_json_output(self) -> None:
-        platform, *_ = self._make_platform()
-        payload = {
-            "items": [
-                {
-                    "legacyPath": "/api/v1/volundr/me",
-                    "canonicalPath": "/api/v1/identity/me",
-                    "method": "GET",
-                    "hits": 2,
-                }
-            ],
-            "totalHits": 2,
-        }
-        request = httpx.Request("GET", "http://127.0.0.1:8080/api/v1/niuu/compat/legacy-routes")
-        response = httpx.Response(200, json=payload, request=request)
-
-        with patch("cli.commands.platform.httpx.get", return_value=response) as get:
-            result = runner.invoke(platform, ["legacy-routes", "--json"])
-
-        assert result.exit_code == 0
-        assert json.dumps(payload, indent=2) in result.output
-        get.assert_called_once_with(
-            "http://127.0.0.1:8080/api/v1/niuu/compat/legacy-routes",
-            timeout=5.0,
-        )
-
-    def test_legacy_routes_handles_http_errors(self) -> None:
-        platform, *_ = self._make_platform()
-        request = httpx.Request("GET", "http://127.0.0.1:8080/api/v1/niuu/compat/legacy-routes")
-        response = httpx.Response(404, request=request)
-
-        with patch("cli.commands.platform.httpx.get", return_value=response):
-            result = runner.invoke(platform, ["legacy-routes"])
-
-        assert result.exit_code == 1
-        assert "Failed to fetch legacy-route usage" in result.output
-
-    def test_legacy_routes_can_clear_snapshot(self) -> None:
-        platform, *_ = self._make_platform()
-        payload = {
-            "items": [
-                {
-                    "legacyPath": "/api/v1/volundr/me",
-                    "canonicalPath": "/api/v1/identity/me",
-                    "method": "GET",
-                    "hits": 2,
-                }
-            ],
-            "totalHits": 2,
-            "cleared": True,
-        }
-        request = httpx.Request("DELETE", "http://127.0.0.1:8080/api/v1/niuu/compat/legacy-routes")
-        response = httpx.Response(200, json=payload, request=request)
-
-        with patch("cli.commands.platform.httpx.delete", return_value=response) as delete:
-            result = runner.invoke(platform, ["legacy-routes", "--clear"])
-
-        assert result.exit_code == 0
-        assert "Cleared legacy route hits: 2" in result.output
-        delete.assert_called_once_with(
-            "http://127.0.0.1:8080/api/v1/niuu/compat/legacy-routes",
-            timeout=5.0,
-        )

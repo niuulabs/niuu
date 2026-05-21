@@ -3,10 +3,14 @@
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
+import httpx
+import pytest
 from fastapi import FastAPI
 
+from niuu.domain.model_catalog import ManagedModel
+from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.config import Settings
-from volundr.main import create_app
+from volundr.main import _load_bifrost_catalog, create_app
 
 
 class TestCreateApp:
@@ -95,11 +99,270 @@ class TestLifespan:
         with (
             patch("volundr.main.database_pool", _mock_db_pool),
             patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
                 "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
                 new=AsyncMock(),
             ),
             patch(
                 "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                response = client.get("/health")
+                assert response.status_code == 200
+
+    def test_lifespan_mounts_shared_api_routes(self):
+        """Volundr hosts the shared credentials, integrations, tracker, and audit APIs."""
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        with (
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                paths = client.get("/openapi.json").json()["paths"]
+
+        assert "/api/v1/credentials/user" in paths
+        assert "/api/v1/integrations" in paths
+        assert "/api/v1/integrations/catalog" in paths
+        assert "/api/v1/tracker/status" in paths
+        assert "/api/v1/tracker/issues" in paths
+        assert "/api/v1/audit/events" in paths
+
+    def test_lifespan_seeds_integrations_and_starts_audit_subscriber(self):
+        """Lifespan runs the shared seeders and audit subscriber when enabled."""
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        settings = Settings()
+        settings.integrations.seed_connections = [{"owner_id": "u1"}]
+        settings.linear.enabled = True
+        settings.linear.api_key = "lin-test"
+        settings.telegram_ingress.enabled = False
+        settings.sleipnir.enabled = True
+        settings.sleipnir.adapter = "tests.test_main.DummySleipnir"
+
+        seed_integrations = AsyncMock()
+        seed_linear = AsyncMock()
+        subscriber = AsyncMock()
+        subscriber.start = AsyncMock()
+        subscriber.stop = AsyncMock()
+
+        class DummySleipnir:
+            def __init__(self, **_kwargs):
+                pass
+
+        from niuu.utils import import_class as real_import_class
+
+        def selective_import(path: str):
+            if path == "tests.test_main.DummySleipnir":
+                return DummySleipnir
+            return real_import_class(path)
+
+        with (
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch("volundr.main.import_class", side_effect=selective_import),
+            patch("volundr.main._seed_configured_integrations", seed_integrations),
+            patch("volundr.main._seed_linear_integration", seed_linear),
+            patch("volundr.main._has_seeded_linear_integration", return_value=False),
+            patch("volundr.main.AuditSubscriber", return_value=subscriber),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app(settings)
+            with TestClient(app) as client:
+                response = client.get("/health")
+                assert response.status_code == 200
+
+        seed_integrations.assert_awaited_once()
+        seed_linear.assert_awaited_once()
+        subscriber.start.assert_awaited_once()
+        subscriber.stop.assert_awaited_once()
+
+    def test_lifespan_swallows_audit_subscriber_start_failures(self):
+        """Audit subscriber start failures do not prevent app startup."""
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        settings = Settings()
+        settings.telegram_ingress.enabled = False
+        settings.sleipnir.enabled = True
+        settings.sleipnir.adapter = "tests.test_main.DummySleipnir"
+
+        class DummySleipnir:
+            def __init__(self, **_kwargs):
+                pass
+
+        from niuu.utils import import_class as real_import_class
+
+        def selective_import(path: str):
+            if path == "tests.test_main.DummySleipnir":
+                return DummySleipnir
+            return real_import_class(path)
+
+        subscriber = AsyncMock()
+        subscriber.start = AsyncMock(side_effect=RuntimeError("boom"))
+        subscriber.stop = AsyncMock()
+
+        with (
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch("volundr.main.import_class", side_effect=selective_import),
+            patch("volundr.main.AuditSubscriber", return_value=subscriber),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app(settings)
+            with TestClient(app) as client:
+                response = client.get("/health")
+                assert response.status_code == 200
+
+        subscriber.start.assert_awaited_once()
+        subscriber.stop.assert_awaited_once()
+
+class TestBifrostCatalogLoading:
+    """Tests for background Bifrost catalog refresh behavior."""
+
+    @pytest.mark.asyncio
+    async def test_load_bifrost_catalog_populates_provider(self):
+        provider = HardcodedPricingProvider()
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(
+                    return_value=[ManagedModel(id="gpt-5", name="GPT-5", vendor="openai")]
+                ),
+            },
+        )()
+
+        await _load_bifrost_catalog(provider, catalog)
+
+        assert [model.id for model in provider.list_models()] == ["gpt-5"]
+
+    @pytest.mark.asyncio
+    async def test_load_bifrost_catalog_retries_until_catalog_is_ready(self):
+        provider = HardcodedPricingProvider()
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(
+                    side_effect=[
+                        httpx.ConnectError("not ready"),
+                        [ManagedModel(id="gpt-5.5", name="GPT-5.5", vendor="openai")],
+                    ]
+                ),
+            },
+        )()
+
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch("volundr.main.asyncio.sleep", side_effect=fake_sleep):
+            await _load_bifrost_catalog(provider, catalog)
+
+        assert sleep_calls == [0.1]
+        assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
+
+    def test_lifespan_does_not_block_on_unavailable_bifrost_catalog_startup(self):
+        """Volundr should boot and keep retrying when Bifrost is not ready yet."""
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        with (
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(side_effect=httpx.ConnectError("not ready")),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
                 new=AsyncMock(),
             ),
         ):

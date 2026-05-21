@@ -1,7 +1,7 @@
 /**
  * Mock adapters for Völundr ports — used in tests and dev mode.
  */
-import type { IVolundrService } from '../ports/IVolundrService';
+import type { IVolundrService, ResolveWorkflowGateRequest } from '../ports/IVolundrService';
 import type { IClusterAdapter } from '../ports/IClusterAdapter';
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { ITemplateStore } from '../ports/ITemplateStore';
@@ -19,11 +19,11 @@ import type {
   IntegrationConnection,
   ClusterResourceInfo,
   McpServerConfig,
-  VolundrModel,
   VolundrPreset,
   VolundrRepo,
   TrackerIssue,
   VolundrWorkspace,
+  VolundrWorkflowGate,
 } from '../models/volundr.model';
 import type { Cluster } from '../domain/cluster';
 import type { Session } from '../domain/session';
@@ -180,23 +180,6 @@ const SEED_CREDENTIALS: StoredCredential[] = [
     updatedAt: '3mo ago',
   },
 ];
-
-const SEED_MODELS: Record<string, VolundrModel> = {
-  'sonnet-primary': {
-    name: 'Claude Sonnet',
-    provider: 'cloud',
-    tier: 'balanced',
-    color: '#e7d2b4',
-    cost: '$$$',
-  },
-  'gpt-5-codex': {
-    name: 'GPT-5 Codex',
-    provider: 'cloud',
-    tier: 'execution',
-    color: '#b9d8ff',
-    cost: '$$$',
-  },
-};
 
 const SEED_REPOS: VolundrRepo[] = [
   {
@@ -1251,32 +1234,28 @@ const SEED_TEMPLATES: Template[] = [
 
 const SEED_SESSION_DEFINITIONS: SessionDefinition[] = [
   {
-    key: 'skuld-claude',
+    key: 'skuldClaude',
     displayName: 'Claude Code',
     description: 'Anthropic Claude-powered coding agent with full tool access.',
     labels: ['anthropic', 'coding'],
-    defaultModel: 'sonnet-primary',
+    defaultModel: 'claude-sonnet-4-6',
+    compatibleProviders: ['anthropic'],
   },
   {
-    key: 'skuld-codex',
+    key: 'skuldCodex',
     displayName: 'Codex',
     description: 'OpenAI Codex-powered coding agent for autonomous tasks.',
     labels: ['openai', 'coding'],
-    defaultModel: 'gpt-5-codex',
+    defaultModel: 'gpt-5.5',
+    compatibleProviders: ['openai'],
   },
   {
-    key: 'skuld-gemini',
-    displayName: 'Gemini',
-    description: 'Google Gemini-powered coding agent with multimodal support.',
-    labels: ['google', 'coding', 'multimodal'],
-    defaultModel: 'gemini-primary',
-  },
-  {
-    key: 'skuld-aider',
-    displayName: 'Aider',
-    description: 'Aider CLI coding assistant — model-agnostic pair programmer.',
-    labels: ['open-source', 'coding'],
-    defaultModel: 'sonnet-primary',
+    key: 'skuldOpenCode',
+    displayName: 'OpenCode',
+    description: 'Model-neutral AI coding agent — Claude, OpenAI, Gemini, local',
+    labels: ['session', 'opencode'],
+    defaultModel: '',
+    compatibleProviders: [],
   },
 ];
 
@@ -1288,6 +1267,7 @@ export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
   const credentials = new Map(SEED_CREDENTIALS.map((credential) => [credential.name, credential]));
   const presets = [...SEED_PRESETS];
+  const workflowGates = new Map<string, VolundrWorkflowGate[]>();
 
   return {
     getFeatures: async () => ({
@@ -1307,9 +1287,18 @@ export function createMockVolundrService(): IVolundrService {
 
     getStats: async () => ({ ...SEED_STATS }),
 
-    getModels: async () => ({ ...SEED_MODELS }),
-
     getRepos: async () => [...SEED_REPOS],
+    getTargets: async () => [
+      {
+        id: 'mock-volundr-default',
+        slug: 'mock-volundr-default',
+        name: 'Mock Volundr',
+        baseUrl: 'http://127.0.0.1:8181',
+        enabled: true,
+        isDefault: true,
+        visibility: 'system',
+      },
+    ],
 
     subscribe: (callback) => {
       callback(sessions);
@@ -1402,6 +1391,8 @@ export function createMockVolundrService(): IVolundrService {
       lastActive: Date.now(),
       messageCount: 0,
       tokensUsed: 0,
+      instanceId: config.instanceId ?? 'mock-volundr-default',
+      instanceName: config.instanceId ? 'Selected Mock Volundr' : 'Mock Volundr',
     }),
 
     connectSession: async (config) => ({
@@ -1423,9 +1414,54 @@ export function createMockVolundrService(): IVolundrService {
     resumeSession: async () => {},
     deleteSession: async () => {},
     archiveSession: async () => {},
+    archiveStoppedSessions: async () => [],
     restoreSession: async () => {},
     listArchivedSessions: async () => [],
 
+    getConversationHistory: async () => ({ turns: [] }),
+    getWorkflowGates: async (sessionId) => workflowGates.get(sessionId) ?? [],
+    resolveWorkflowGate: async (
+      sessionId: string,
+      gateId: string,
+      request: ResolveWorkflowGateRequest,
+    ) => {
+      const gates = workflowGates.get(sessionId) ?? [];
+      const index = gates.findIndex((gate) => gate.id === gateId);
+      const resolved: VolundrWorkflowGate = {
+        ...(index >= 0
+          ? gates[index]!
+          : {
+              id: gateId,
+              node_id: 'gate',
+              activation_id: sessionId,
+              label: 'Workflow gate',
+              condition: '',
+              status: 'pending',
+              pending_behavior: 'help_needed',
+              approvers: [],
+              auto_forward_after: '30m',
+              requested_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              triggered_by_event_type: '',
+              approval_event_type: '',
+              changes_requested_event_type: '',
+              attempt: 1,
+              summary: '',
+            }),
+        status: request.decision === 'APPROVE' ? 'approved' : 'changes_requested',
+        decision: request.decision,
+        notes: request.notes ?? '',
+        source: request.source ?? 'human',
+        updated_at: new Date().toISOString(),
+      };
+      if (index >= 0) {
+        gates[index] = resolved;
+      } else {
+        gates.push(resolved);
+      }
+      workflowGates.set(sessionId, gates);
+      return resolved;
+    },
     getMessages: async () => [],
     sendMessage: async (_sessionId, content): Promise<VolundrMessage> => ({
       id: `msg-${Date.now()}`,

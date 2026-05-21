@@ -87,7 +87,7 @@ def _sample_sessions() -> list[SessionData]:
             name="fix/bug",
             status="stopped",
             model="claude-opus-4",
-            repo="niuu/tyr",
+            repo="niuu/ting",
             tokens_used=50_000,
             context_key="dev",
         ),

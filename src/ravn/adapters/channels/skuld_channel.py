@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import websockets
 import websockets.exceptions
@@ -36,7 +37,7 @@ _DEFAULT_RECONNECT_DELAY_SECONDS = 2.0
 _DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 
-DirectedMessageHandler = Callable[[str], Awaitable[None]]
+DirectedMessageHandler = Callable[[str, dict[str, Any] | None], Awaitable[None]]
 
 
 class SkuldChannel(ChannelPort):
@@ -159,8 +160,11 @@ class SkuldChannel(ChannelPort):
                 frame = json.loads(raw)
                 if frame.get("type") == "directed_message" and self._on_directed_message:
                     content = frame.get("content", "")
+                    metadata = frame.get("metadata")
+                    if not isinstance(metadata, dict):
+                        metadata = None
                     if content:
-                        await self._on_directed_message(content)
+                        await self._on_directed_message(content, metadata)
             except websockets.exceptions.ConnectionClosed:
                 logger.info("SkuldChannel: recv loop — connection closed, waiting for reconnect.")
                 await asyncio.sleep(self._reconnect_delay)
@@ -286,7 +290,10 @@ class SkuldChannel(ChannelPort):
             case RavnEventType.OUTCOME:
                 # Mesh outcome event — RoomBridge translates to room_outcome
                 data = payload
-                metadata = {"event_type": payload.get("event_type", "")}
+                metadata = {
+                    "event_type": payload.get("event_type", ""),
+                    "task_id": event.task_id or payload.get("task_id", ""),
+                }
             case RavnEventType.HELP_NEEDED:
                 # Help needed event — RoomBridge translates to room_notification
                 data = payload

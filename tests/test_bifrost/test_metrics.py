@@ -269,9 +269,9 @@ class TestHelpers:
     def test_record_quota_rejection(self) -> None:
         import bifrost.metrics as m
 
-        record_quota_rejection(agent_id="tyr")
+        record_quota_rejection(agent_id="ting")
         data = m.quota_rejections_total.collect()
-        assert data[LabelKey(("tyr",))] == 1.0
+        assert data[LabelKey(("ting",))] == 1.0
 
     def test_record_rule_hit(self) -> None:
         import bifrost.metrics as m

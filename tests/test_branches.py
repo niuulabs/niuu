@@ -179,7 +179,7 @@ class TestBranchesEndpoint:
         app = _make_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get(
-                "/api/v1/volundr/repos/branches",
+                "/api/v1/forge/repos/branches",
                 params={"repo_url": "https://github.com/org/repo"},
             )
 
@@ -194,7 +194,7 @@ class TestBranchesEndpoint:
         app = _make_app(provider=provider)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get(
-                "/api/v1/volundr/repos/branches",
+                "/api/v1/forge/repos/branches",
                 params={"repo_url": "https://github.com/org/private"},
             )
 
@@ -209,7 +209,7 @@ class TestBranchesEndpoint:
         app = _make_app(provider=provider)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get(
-                "/api/v1/volundr/repos/branches",
+                "/api/v1/forge/repos/branches",
                 params={"repo_url": "https://github.com/org/gone"},
             )
 
@@ -221,7 +221,7 @@ class TestBranchesEndpoint:
         app = _make_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get(
-                "/api/v1/volundr/repos/branches",
+                "/api/v1/forge/repos/branches",
                 params={"repo_url": "https://unknown.host/org/repo"},
             )
 
@@ -232,7 +232,7 @@ class TestBranchesEndpoint:
     async def test_list_branches_missing_param_returns_422(self):
         app = _make_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/api/v1/volundr/repos/branches")
+            resp = await client.get("/api/v1/forge/repos/branches")
 
         assert resp.status_code == 422
 
@@ -241,7 +241,7 @@ class TestBranchesEndpoint:
         app = _make_app(repo_service=None)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get(
-                "/api/v1/volundr/repos/branches",
+                "/api/v1/forge/repos/branches",
                 params={"repo_url": "https://github.com/org/repo"},
             )
 

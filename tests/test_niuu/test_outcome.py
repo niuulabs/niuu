@@ -8,6 +8,10 @@ from niuu.adapters.outcome.block_parser import BlockParserAdapter
 from niuu.domain.outcome import (
     OutcomeField,
     OutcomeSchema,
+    _coerce_simple_scalar,
+    _join_soft_wrapped_parts,
+    _merge_soft_wrapped_key_line,
+    _parse_soft_wrapped_mapping,
     generate_outcome_instruction,
     parse_outcome_block,
 )
@@ -93,6 +97,13 @@ def test_parse_raw_contains_yaml_content() -> None:
 
 def test_parse_case_insensitive_markers() -> None:
     text = "---OUTCOME---\nstatus: ok\n---END---"
+    result = parse_outcome_block(text)
+    assert result is not None
+    assert result.fields == {"status": "ok"}
+
+
+def test_parse_soft_wrapped_markers_with_spaced_letters() -> None:
+    text = "--- o u t c o m e ---\nstatus: ok\n--- e n d ---"
     result = parse_outcome_block(text)
     assert result is not None
     assert result.fields == {"status": "ok"}
@@ -196,6 +207,96 @@ def test_validate_boolean_rejected_for_number_field(simple_schema: OutcomeSchema
     assert any("findings_count" in e for e in result.errors)
 
 
+def test_soft_wrapped_scalar_before_next_key_uses_schema_to_recover_verdict() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "verdict": OutcomeField(
+                type="enum",
+                description="workflow verdict",
+                enum_values=["opinion_submitted", "review_submitted", "blocked"],
+            ),
+            "summary": OutcomeField(type="string", description="one-line summary"),
+            "page_path": OutcomeField(type="string", description="written page path"),
+        }
+    )
+    text = """\
+---outcome---
+ver
+dict: opinion_sub
+mitted
+summary:
+ Recommended lightweight human approval by
+ default for final council publication
+, with autonomous scratch
+ work and risk-based graduation
+ conditions.
+page_path: council
+/niu-906
+-human-approval-gate
+/opinions/opinion
+-b.md
+---
+end---
+"""
+    result = parse_outcome_block(text, schema)
+    assert result is not None
+    assert result.valid is True
+    assert result.fields["verdict"] == "opinion_submitted"
+    assert result.fields["summary"].startswith("Recommended lightweight human approval")
+    assert result.fields["page_path"] == "council/niu-906-human-approval-gate/opinions/opinion-b.md"
+
+
+def test_schema_recovery_prefers_salvaged_wrapped_codex_outcome() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "verdict": OutcomeField(
+                type="enum",
+                description="workflow verdict",
+                enum_values=["opinion_submitted", "review_submitted", "blocked"],
+            ),
+            "summary": OutcomeField(type="string", description="one-line summary"),
+            "page_path": OutcomeField(type="string", description="written page path"),
+        }
+    )
+    text = """\
+---outcome---
+ver
+dict: opinion
+_submitted
+summary
+: Wrote
+ Opinion B recommending Q
+wen3.
+6-35B
+-A3B as
+ the Spark-first
+ default, with Deep
+Seek-V4
+-Flash as the
+ long-context research
+ tier and larger models
+ rejected for operational
+ fit.
+page_path
+: council/
+niu-929-local
+-model-eval
+/opinions/op
+inion-b.md
+
+---end---
+"""
+    result = parse_outcome_block(text, schema)
+    assert result is not None
+    assert result.valid is True
+    assert result.fields["verdict"] == "opinion_submitted"
+    assert result.fields["summary"].startswith("Wrote Opinion B recommending Qwen3. 6-35B-A3B")
+    assert (
+        result.fields["page_path"]
+        == "council/niu-929-local-model-eval/opinions/opinion-b.md"
+    )
+
+
 def test_validate_boolean_field() -> None:
     schema = OutcomeSchema(
         fields={
@@ -220,6 +321,81 @@ def test_validate_boolean_field_wrong_type() -> None:
     assert result is not None
     assert result.valid is False
     assert any("passed" in e for e in result.errors)
+
+
+def test_join_soft_wrapped_parts_handles_punctuation_and_compact_keys() -> None:
+    assert (
+        _join_soft_wrapped_parts(["hello", ",", "world", "!", "(test", ")"])
+        == "hello,world! (test)"
+    )
+    assert _join_soft_wrapped_parts(["opinion_", "submitted"], compact=True) == "opinion_submitted"
+
+
+@pytest.mark.parametrize(
+    ("key", "parts", "expected"),
+    [
+        ("flag", ["true"], True),
+        ("flag", ["false"], False),
+        ("count", ["-12"], -12),
+        ("ratio", ["3.5"], 3.5),
+        ("summary", ["hello", "world"], "hello world"),
+        ("page_path", ["council", "/example", "/page", ".md"], "council/example/page.md"),
+    ],
+)
+def test_coerce_simple_scalar_recovers_common_scalar_shapes(
+    key: str,
+    parts: list[str],
+    expected: object,
+) -> None:
+    assert _coerce_simple_scalar(key, parts) == expected
+
+
+def test_merge_soft_wrapped_key_line_handles_inline_colon_and_fragments() -> None:
+    assert _merge_soft_wrapped_key_line(["summary: hello"], 0) == ("summary: hello", 1)
+    assert _merge_soft_wrapped_key_line(["sum", "mary: hello"], 0) == ("summary: hello", 2)
+    assert _merge_soft_wrapped_key_line(["verdict", ": pass"], 0) == ("verdict: pass", 2)
+    assert _merge_soft_wrapped_key_line(["not a key", "ignored"], 0) == ("not a key", 1)
+
+
+def test_parse_soft_wrapped_mapping_supports_lists_and_schema_guardrails() -> None:
+    parsed = _parse_soft_wrapped_mapping(
+        "\n".join(
+            [
+                "ver",
+                "dict: needs_",
+                "changes",
+                "attempted:",
+                "- checked the happy path",
+                "continued evidence",
+                "- inspected edge cases",
+                "summary",
+                ": still needs fixes",
+            ]
+        ),
+        expected_keys={"verdict", "attempted", "summary"},
+    )
+    assert parsed == {
+        "verdict": "needs_changes",
+        "attempted": ["checked the happy path continued evidence", "inspected edge cases"],
+        "summary": "still needs fixes",
+    }
+
+
+def test_parse_soft_wrapped_mapping_keeps_fragment_as_scalar_when_next_key_is_expected() -> None:
+    parsed = _parse_soft_wrapped_mapping(
+        "\n".join(
+            [
+                "summary: keep the overview",
+                "page",
+                "verdict: pass",
+            ]
+        ),
+        expected_keys={"summary", "verdict"},
+    )
+    assert parsed == {
+        "summary": "keep the overview page",
+        "verdict": "pass",
+    }
 
 
 def test_optional_field_can_be_missing() -> None:

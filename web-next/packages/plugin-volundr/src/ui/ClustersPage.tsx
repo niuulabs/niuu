@@ -78,6 +78,7 @@ const SESSION_STATE_ORDER: Record<SessionState, number> = {
   failed: 5,
   terminating: 6,
   terminated: 7,
+  archived: 8,
 };
 
 const PANEL_SURFACE_STYLE = {
@@ -141,7 +142,7 @@ const CLUSTER_PRESENTATION: Record<string, ClusterPresentation> = {
         connectionType: null,
       },
       {
-        id: 'tyr-raid-cohesion',
+        id: 'ting-run-cohesion',
         status: 'idle',
         cpuLabel: '0.3c',
         memoryLabel: '3.2Gi',
@@ -251,6 +252,7 @@ function statusToDotState(status: Cluster['status'] | ClusterNode['status'] | Se
     case 'cordoned':
       return 'idle';
     case 'terminated':
+    case 'archived':
       return 'archived';
     case 'terminating':
       return 'degraded';

@@ -24,6 +24,11 @@ const queryMocks = vi.hoisted(() => ({
     put: vi.fn().mockResolvedValue({}),
   })),
   getAccessToken: vi.fn(() => 'token-123'),
+  getAuthHeaders: vi.fn((headers?: HeadersInit) => {
+    const next = new Headers(headers);
+    next.set('Authorization', 'Bearer token-123');
+    return next;
+  }),
 }));
 
 vi.mock('@niuulabs/query', async () => {
@@ -32,6 +37,7 @@ vi.mock('@niuulabs/query', async () => {
     ...actual,
     createApiClient: queryMocks.createApiClient,
     getAccessToken: queryMocks.getAccessToken,
+    getAuthHeaders: queryMocks.getAuthHeaders,
   };
 });
 
@@ -65,6 +71,7 @@ afterEach(() => {
   vi.useRealTimers();
   queryMocks.createApiClient.mockClear();
   queryMocks.getAccessToken.mockClear();
+  queryMocks.getAuthHeaders.mockClear();
 });
 
 describe('buildVolundrFileSystemHttpAdapter', () => {
@@ -140,6 +147,115 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/sessions');
   });
 
+  it('getConversationHistory calls GET /sessions/:id/conversation', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      turns: [{ id: 'turn-1', role: 'assistant', content: 'archived reply' }],
+    });
+
+    const history = await buildVolundrHttpAdapter(client).getConversationHistory('sess-1');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/conversation');
+    expect(history.turns[0]).toMatchObject({ id: 'turn-1', role: 'assistant' });
+  });
+
+  it('getWorkflowGates calls GET /sessions/:id/workflow/gates', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({
+      gates: [
+        {
+          id: 'gate-1',
+          node_id: 'spec-prd-gate',
+          activation_id: 'activation-1',
+          label: 'PRD approval gate',
+          condition: 'Review the PRD',
+          status: 'pending',
+          pending_behavior: 'help_needed',
+          approvers: ['human'],
+          auto_forward_after: '30m',
+          requested_at: '2026-05-20T12:00:00Z',
+          updated_at: '2026-05-20T12:00:00Z',
+          triggered_by_event_type: 'spec.prd.ready_for_gate',
+          approval_event_type: 'spec.prd.approved',
+          changes_requested_event_type: 'spec.prd.changes_requested',
+          attempt: 1,
+          summary: 'Please review the PRD.',
+        },
+      ],
+    });
+
+    const gates = await buildVolundrHttpAdapter(client).getWorkflowGates('sess-1');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/workflow/gates');
+    expect(gates).toEqual([
+      expect.objectContaining({
+        id: 'gate-1',
+        node_id: 'spec-prd-gate',
+        pending_behavior: 'help_needed',
+      }),
+    ]);
+  });
+
+  it('resolveWorkflowGate posts the human decision', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValueOnce({
+      id: 'gate-1',
+      node_id: 'spec-prd-gate',
+      activation_id: 'activation-1',
+      label: 'PRD approval gate',
+      condition: 'Review the PRD',
+      status: 'approved',
+      pending_behavior: 'help_needed',
+      approvers: ['human'],
+      auto_forward_after: '30m',
+      requested_at: '2026-05-20T12:00:00Z',
+      updated_at: '2026-05-20T12:02:00Z',
+      triggered_by_event_type: 'spec.prd.ready_for_gate',
+      approval_event_type: 'spec.prd.approved',
+      changes_requested_event_type: 'spec.prd.changes_requested',
+      attempt: 1,
+      decision: 'APPROVE',
+      notes: 'Looks good.',
+      source: 'human',
+      summary: 'PRD approved by human reviewer.',
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'gate-1',
+        node_id: 'spec-prd-gate',
+        label: 'PRD approval gate',
+        status: 'approved',
+        decision: 'APPROVE',
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const gate = await buildVolundrHttpAdapter(client).resolveWorkflowGate('sess-1', 'gate-1', {
+      decision: 'APPROVE',
+      notes: 'Looks good.',
+      source: 'human',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/forge/sessions/sess-1/workflow/gates/gate-1/resolve',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          decision: 'APPROVE',
+          notes: 'Looks good.',
+          source: 'human',
+        }),
+      }),
+    );
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers as HeadersInit);
+    expect(headers.get('x-niuu-workflow-gate-intent')).toBe('resolve');
+    expect(gate.status).toBe('approved');
+    expect(gate.decision).toBe('APPROVE');
+  });
+
   it('getSession calls GET /sessions/:id', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).getSession('s1');
@@ -186,6 +302,212 @@ describe('buildVolundrHttpAdapter', () => {
     expect(sharedClient.get).toHaveBeenCalledWith('/features');
   });
 
+  it('getCredentials forwards the optional secret type and applies the fallback type', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1');
+    const service = buildVolundrHttpAdapter(client);
+    const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
+    credentialsClient.get.mockResolvedValueOnce({
+      credentials: [
+        {
+          id: 'cred-1',
+          name: 'aws-prod',
+          keys: ['AWS_ACCESS_KEY_ID'],
+          metadata: {},
+        },
+      ],
+    });
+
+    const credentials = await service.getCredentials('aws_env');
+
+    expect(credentialsClient.get).toHaveBeenCalledWith('/user?secret_type=aws_env');
+    expect(credentials).toEqual([
+      expect.objectContaining({
+        id: 'cred-1',
+        secretType: 'aws_env',
+      }),
+    ]);
+  });
+
+  it('getCredential normalizes both camelCase and snake_case credential payloads', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1');
+    const service = buildVolundrHttpAdapter(client);
+    const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
+
+    credentialsClient.get
+      .mockResolvedValueOnce({
+        id: 'cred-camel',
+        name: 'camel',
+        secretType: 'gcp_service_account',
+        keys: ['project_id'],
+        metadata: { scope: 'prod' },
+        createdAt: '2026-05-20T00:00:00Z',
+        updatedAt: '2026-05-20T01:00:00Z',
+      })
+      .mockResolvedValueOnce({
+        id: 'cred-snake',
+        name: 'snake',
+        secret_type: 'aws_env',
+        keys: ['AWS_ACCESS_KEY_ID'],
+        created_at: '2026-05-20T02:00:00Z',
+        updated_at: '2026-05-20T03:00:00Z',
+      });
+
+    const camel = await service.getCredential('camel');
+    const snake = await service.getCredential('snake');
+
+    expect(camel).toMatchObject({
+      id: 'cred-camel',
+      secretType: 'gcp_service_account',
+      metadata: { scope: 'prod' },
+      createdAt: '2026-05-20T00:00:00Z',
+      updatedAt: '2026-05-20T01:00:00Z',
+    });
+    expect(snake).toMatchObject({
+      id: 'cred-snake',
+      secretType: 'aws_env',
+      metadata: {},
+      createdAt: '2026-05-20T02:00:00Z',
+      updatedAt: '2026-05-20T03:00:00Z',
+    });
+  });
+
+  it('getCredentialTypes normalizes legacy field aliases and default mount types', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1');
+    const service = buildVolundrHttpAdapter(client);
+    const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
+    credentialsClient.get.mockResolvedValueOnce([
+      {
+        type: 'generic',
+        label: 'Generic',
+        description: 'Generic secret',
+        fields: [{ name: 'api_key', required: true }],
+        default_mount_type: 'file',
+      },
+      {
+        type: 'aws_env',
+        label: 'AWS',
+        description: 'AWS env secret',
+        fields: [{ key: 'region', label: 'Region', type: 'text', required: false }],
+        defaultMountType: 'env',
+      },
+      {
+        type: 'template_secret',
+        label: 'Template secret',
+        description: 'Template mounted secret',
+        fields: [{ key: 'token', required: true }],
+        default_mount_type: 'template',
+      },
+      {
+        type: 'env_secret',
+        label: 'Env secret',
+        description: 'Environment mounted secret',
+        fields: [{ key: 'endpoint', name: 'legacy-endpoint' }],
+        default_mount_type: 'env_file',
+      },
+    ]);
+
+    const types = await service.getCredentialTypes();
+
+    expect(credentialsClient.get).toHaveBeenCalledWith('/types');
+    expect(types).toEqual([
+      expect.objectContaining({
+        type: 'generic',
+        defaultMountType: 'file',
+        fields: [
+          expect.objectContaining({
+            key: 'api_key',
+            label: 'api_key',
+            type: 'text',
+            required: true,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        type: 'aws_env',
+        defaultMountType: 'env',
+        fields: [
+          expect.objectContaining({
+            key: 'region',
+            label: 'Region',
+            type: 'text',
+            required: false,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        type: 'template_secret',
+        defaultMountType: 'template',
+        fields: [
+          expect.objectContaining({
+            key: 'token',
+            label: 'token',
+            type: 'text',
+            required: true,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        type: 'env_secret',
+        defaultMountType: 'env',
+        fields: [
+          expect.objectContaining({
+            key: 'endpoint',
+            label: 'endpoint',
+            type: 'text',
+            required: false,
+          }),
+        ],
+      }),
+    ]);
+  });
+
+  it('derives forge, shared, niuu, and credentials clients from a shared api base', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1');
+    const service = buildVolundrHttpAdapter(client);
+
+    await service.getSessionDefinitions();
+    await service.getFeatures();
+    await service.getTargets();
+    await service.getCredentials();
+
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/forge');
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/credentials',
+    );
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1');
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
+
+    const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
+    const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
+    const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu');
+    const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
+
+    expect(forgeClient.get).toHaveBeenCalledWith('/session-definitions');
+    expect(sharedClient.get).toHaveBeenCalledWith('/features');
+    expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+    expect(credentialsClient.get).toHaveBeenCalledWith('/user');
+  });
+
+  it('derives shared and niuu clients from a legacy niuu volundr base', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/niuu/volundr');
+    const service = buildVolundrHttpAdapter(client);
+
+    await service.getFeatures();
+    await service.getTargets();
+
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1');
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
+    expect(queryMocks.createApiClient).not.toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/niuu/volundr/forge',
+    );
+
+    const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
+    const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu');
+
+    expect(sharedClient.get).toHaveBeenCalledWith('/features');
+    expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+  });
+
   it('getSessionDefinitions calls GET /session-definitions and normalizes snake_case', async () => {
     const client = makeClient();
     client.get.mockResolvedValueOnce([
@@ -206,12 +528,13 @@ describe('buildVolundrHttpAdapter', () => {
         description: 'Anthropic Claude agent',
         labels: ['anthropic'],
         defaultModel: 'sonnet-primary',
+        compatibleProviders: [],
       },
     ]);
   });
 
   it('getRepos uses the shared niuu repo catalog and normalizes grouped provider payloads', async () => {
-    const client = makeClientWithBase('http://localhost:8080/api/v1/volundr');
+    const client = makeClientWithBase('http://localhost:8080/api/v1/forge');
     const svc = buildVolundrHttpAdapter(client);
     const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu')!;
     expect(niuuClient).toBeDefined();
@@ -244,6 +567,36 @@ describe('buildVolundrHttpAdapter', () => {
     ]);
   });
 
+  it('getTargets uses the shared niuu registry when mounted at /api/v1/niuu/volundr', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/niuu/volundr');
+    const svc = buildVolundrHttpAdapter(client);
+    const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu')!;
+    expect(niuuClient).toBeDefined();
+    niuuClient.get.mockResolvedValue([
+      {
+        id: 'inst-alpha',
+        name: 'Guild Alpha',
+        slug: 'guild-alpha',
+        baseUrl: 'http://127.0.0.1:8181',
+        visibility: 'tenant',
+        enabled: true,
+        isDefault: true,
+      },
+    ]);
+
+    const targets = await svc.getTargets();
+
+    expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+    expect(targets).toEqual([
+      expect.objectContaining({
+        id: 'inst-alpha',
+        name: 'Guild Alpha',
+        baseUrl: 'http://127.0.0.1:8181',
+        isDefault: true,
+      }),
+    ]);
+  });
+
   it('startSession calls POST /sessions', async () => {
     const client = makeClient();
     const config = {
@@ -252,11 +605,14 @@ describe('buildVolundrHttpAdapter', () => {
       model: 'claude-sonnet',
     };
     await buildVolundrHttpAdapter(client).startSession(config);
-    expect(client.post).toHaveBeenCalledWith('/sessions', config);
+    expect(client.post).toHaveBeenCalledWith('/sessions', {
+      ...config,
+      instance_id: null,
+    });
   });
 
-  it('derives a canonical forge client for session launch when the main base is legacy volundr', async () => {
-    const client = makeClientWithBase('http://localhost:8080/api/v1/volundr');
+  it('uses the configured forge client directly for session launch when the base is canonical', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/forge');
     const config = {
       name: 'test',
       source: { type: 'git' as const, repo: 'r', branch: 'main' },
@@ -265,19 +621,20 @@ describe('buildVolundrHttpAdapter', () => {
 
     await buildVolundrHttpAdapter(client).startSession(config);
 
-    const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
-    expect(forgeClient.post).toHaveBeenCalledWith('/sessions', config);
-    expect(client.post).not.toHaveBeenCalledWith('/sessions', config);
+    expect(getDerivedClient('http://localhost:8080/api/v1/forge')).toBeUndefined();
+    expect(client.post).toHaveBeenCalledWith('/sessions', {
+      ...config,
+      instance_id: null,
+    });
   });
 
-  it('derives a canonical forge client for session reads when the main base is legacy volundr', async () => {
-    const client = makeClientWithBase('http://localhost:8080/api/v1/volundr');
+  it('uses the configured forge client directly for session reads when the base is canonical', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/forge');
 
     await buildVolundrHttpAdapter(client).getSessions();
 
-    const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
-    expect(forgeClient.get).toHaveBeenCalledWith('/sessions');
-    expect(client.get).not.toHaveBeenCalledWith('/sessions');
+    expect(getDerivedClient('http://localhost:8080/api/v1/forge')).toBeUndefined();
+    expect(client.get).toHaveBeenCalledWith('/sessions');
   });
 
   it('stopSession calls POST /sessions/:id/stop', async () => {
@@ -289,13 +646,25 @@ describe('buildVolundrHttpAdapter', () => {
   it('deleteSession calls DELETE /sessions/:id without cleanup', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).deleteSession('s1');
-    expect(client.delete).toHaveBeenCalledWith('/sessions/s1');
+    expect(client.delete).toHaveBeenCalledWith('/sessions/s1', { cleanup: [] });
   });
 
-  it('deleteSession includes cleanup param when provided', async () => {
+  it('deleteSession sends cleanup targets in the request body when provided', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).deleteSession('s1', ['workspace']);
-    expect(client.delete).toHaveBeenCalledWith('/sessions/s1?cleanup=workspace');
+    expect(client.delete).toHaveBeenCalledWith('/sessions/s1', { cleanup: ['workspace'] });
+  });
+
+  it('archiveSession calls PATCH /sessions/:id/archive', async () => {
+    const client = makeClient();
+    await buildVolundrHttpAdapter(client).archiveSession('s1');
+    expect(client.patch).toHaveBeenCalledWith('/sessions/s1/archive', undefined);
+  });
+
+  it('restoreSession calls PATCH /sessions/:id/restore', async () => {
+    const client = makeClient();
+    await buildVolundrHttpAdapter(client).restoreSession('s1');
+    expect(client.patch).toHaveBeenCalledWith('/sessions/s1/restore', undefined);
   });
 
   it('sendMessage calls POST /sessions/:id/messages', async () => {
@@ -498,11 +867,11 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.put).toHaveBeenCalledWith('/presets/p1', preset);
   });
 
-  it('getIdentity calls GET /identity', async () => {
+  it('getIdentity calls GET /identity/me', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).getIdentity();
     const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
-    expect(sharedClient.get).toHaveBeenCalledWith('/identity');
+    expect(sharedClient.get).toHaveBeenCalledWith('/identity/me');
   });
 
   it('listArchivedSessions uses the archived status query instead of a synthetic sub-route', async () => {
@@ -916,7 +1285,6 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
 
     // GET methods
     await svc.getFeatures();
-    await svc.getModels();
     await svc.getRepos();
     await svc.getTemplates();
     await svc.getTemplate('tpl-1');
@@ -958,6 +1326,7 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
     await svc.connectSession({ name: 'c', hostname: 'host.example.com' });
     await svc.resumeSession('sess-1');
     await svc.archiveSession('sess-1');
+    await svc.archiveStoppedSessions();
     await svc.restoreSession('sess-1');
     await svc.createTenant({ name: 'acme' });
     await svc.reprovisionUser('u1');

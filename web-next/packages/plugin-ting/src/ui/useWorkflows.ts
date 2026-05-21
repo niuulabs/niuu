@@ -1,0 +1,82 @@
+/**
+ * useWorkflows — React Query wrappers for IWorkflowService.
+ *
+ * Owner: plugin-ting.
+ */
+
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useService } from '@niuulabs/plugin-sdk';
+import { randomId } from '@niuulabs/ui';
+import type { IWorkflowService, WorkflowLaunchRequest, WorkflowLaunchResult } from '../ports';
+import type { Workflow } from '../domain/workflow';
+
+export function useWorkflows() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  return useQuery({
+    queryKey: ['ting', 'workflows'],
+    queryFn: () => svc.listWorkflows(),
+  });
+}
+
+export function useWorkflow(id: string) {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  return useQuery({
+    queryKey: ['ting', 'workflows', id],
+    queryFn: () => svc.getWorkflow(id),
+    enabled: !!id,
+  });
+}
+
+export function useCreateWorkflow() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  const queryClient = useQueryClient();
+  return useMutation<Workflow, Error, Partial<Workflow> | undefined>({
+    mutationFn: (seed): Promise<Workflow> => {
+      const newWf: Workflow = {
+        id: randomId(),
+        name: 'New Workflow',
+        nodes: [],
+        edges: [],
+        ...seed,
+      };
+      return svc.saveWorkflow(newWf);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['ting', 'workflows'] });
+    },
+  });
+}
+
+export function useSaveWorkflow() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  const queryClient = useQueryClient();
+  return useMutation<Workflow, Error, Workflow>({
+    mutationFn: (workflow: Workflow) => svc.saveWorkflow(workflow),
+    onSuccess: (saved) => {
+      queryClient.setQueryData(['ting', 'workflows', saved.id], saved);
+      void queryClient.invalidateQueries({ queryKey: ['ting', 'workflows'] });
+    },
+  });
+}
+
+export function useDeleteWorkflow() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, string>({
+    mutationFn: (id: string) => svc.deleteWorkflow(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['ting', 'workflows'] });
+    },
+  });
+}
+
+export function useLaunchWorkflow() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  return useMutation<
+    WorkflowLaunchResult,
+    Error,
+    { workflowId: string; request: WorkflowLaunchRequest }
+  >({
+    mutationFn: ({ workflowId, request }) => svc.launchWorkflow(workflowId, request),
+  });
+}

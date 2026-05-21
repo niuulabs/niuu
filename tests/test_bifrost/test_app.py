@@ -50,7 +50,7 @@ class TestMessagesEndpoint:
         mock_complete.return_value = _make_response("World!")
         with self._client() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 json={
                     "model": "gpt-4o",
                     "max_tokens": 100,
@@ -67,7 +67,7 @@ class TestMessagesEndpoint:
         mock_complete.return_value = _make_response()
         with self._client() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 json={
                     "model": "smart",  # alias → gpt-4o
                     "max_tokens": 100,
@@ -79,7 +79,7 @@ class TestMessagesEndpoint:
     def test_invalid_request_body_returns_422(self):
         with self._client() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 json={"not_a_valid_field": True},
             )
         assert resp.status_code == 422
@@ -87,7 +87,7 @@ class TestMessagesEndpoint:
     def test_malformed_json_returns_422(self):
         with self._client() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 content=b"not json",
                 headers={"content-type": "application/json"},
             )
@@ -100,7 +100,7 @@ class TestMessagesEndpoint:
         mock_complete.side_effect = RouterError("no provider for model")
         with self._client() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 json={
                     "model": "gpt-4o",
                     "max_tokens": 100,
@@ -112,7 +112,7 @@ class TestMessagesEndpoint:
     def test_unknown_model_returns_502(self):
         with self._client() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 json={
                     "model": "no-such-model-xyz",
                     "max_tokens": 100,
@@ -131,7 +131,7 @@ class TestMessagesEndpoint:
 
         with self._client() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 json={
                     "model": "gpt-4o",
                     "max_tokens": 100,
@@ -147,7 +147,7 @@ class TestMessagesEndpoint:
         mock_complete.return_value = _make_response()
         with self._client() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 json={
                     "model": "gpt-4o",
                     "max_tokens": 100,

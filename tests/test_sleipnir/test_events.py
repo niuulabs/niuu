@@ -247,7 +247,7 @@ def test_validate_numeric_first_char():
         # Wildcard namespace match
         ("ravn.*", "ravn.tool.complete", True),
         ("ravn.*", "ravn.step.start", True),
-        ("ravn.*", "tyr.saga.created", False),
+        ("ravn.*", "ting.saga.created", False),
         # Sub-namespace wildcard
         ("ravn.tool.*", "ravn.tool.complete", True),
         ("ravn.tool.*", "ravn.tool.start", True),
@@ -259,7 +259,7 @@ def test_validate_numeric_first_char():
         ("*", "ravn.tool.complete", True),
         ("*", "system.health.ping", True),
         # No match across namespaces
-        ("tyr.*", "ravn.tool.complete", False),
+        ("ting.*", "ravn.tool.complete", False),
         ("volundr.*", "bifrost.connection.open", False),
     ],
 )

@@ -62,7 +62,7 @@ class MeshPort(Protocol):
     ) -> dict:
         """Send a message directly to a specific peer and await its reply.
 
-        This is the cascade delegation primitive. When Tyr dispatches a raid
+        This is the cascade delegation primitive. When Ting dispatches a run
         to a specific Ravn, it goes through this method. The reply contains
         the task receipt or an error.
 

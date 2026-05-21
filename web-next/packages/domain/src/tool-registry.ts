@@ -4,7 +4,7 @@ import { z } from 'zod';
  * Provider group a tool belongs to.
  * Used to bucket tools in the ToolPicker modal (Ravn persona form).
  *
- * Owner: **Ravn**. Consumed by: **Tyr** (persona library in the workflow editor).
+ * Owner: **Ravn**. Consumed by: **Ting** (persona library in the workflow editor).
  */
 export const toolGroupSchema = z.enum([
   'fs',
@@ -25,7 +25,7 @@ export type ToolGroup = z.infer<typeof toolGroupSchema>;
  * the persona editor; destructive-flag UI logic lives in ToolPicker).
  *
  * **Consumed by:**
- * - `plugin-tyr` — workflow inspector shows tool access summary per persona.
+ * - `plugin-ting` — workflow inspector shows tool access summary per persona.
  * - Any plugin rendering a `ToolPicker` or tool allowlist.
  */
 export const toolSchema = z.object({
@@ -55,7 +55,7 @@ export type Tool = z.infer<typeof toolSchema>;
  * **Canonical owner:** `plugin-ravn`.
  *
  * **Consumed by:**
- * - `plugin-tyr` — validates that personas referenced in a workflow have
+ * - `plugin-ting` — validates that personas referenced in a workflow have
  *   the tools required by their stage.
  * - `plugin-mimir` — ravn-bindings screen shows tool access per raven.
  */

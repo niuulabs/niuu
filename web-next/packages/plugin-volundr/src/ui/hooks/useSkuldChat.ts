@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getAccessToken } from '@niuulabs/query';
+import { getAuthHeaders } from '@niuulabs/query';
+import { extractOutcomeBlock } from '@niuulabs/ui';
 import type {
   AgentInternalEvent,
   AttachmentMeta,
@@ -105,7 +106,7 @@ type CliStreamEvent = {
   fields?: Record<string, unknown>;
 };
 
-interface ConversationTurn {
+export interface ConversationTurn {
   id: string;
   role: string;
   content: string;
@@ -146,7 +147,7 @@ interface UseSkuldChatResult {
 }
 
 const SINGLE_PARTICIPANT_ID = 'skuld-primary';
-const STORAGE_PREFIX = 'niuu.skuldChat.';
+const STORAGE_PREFIX = 'niuu.skuldChat.v2.';
 
 type PersistedAgentEvent = Omit<AgentInternalEvent, 'timestamp'> & { timestamp?: string };
 type PersistedChatState = {
@@ -336,6 +337,81 @@ export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
   }));
 }
 
+export function participantsFromTurns(turns: ConversationTurn[]): Map<string, RoomParticipant> {
+  const next = new Map<string, RoomParticipant>();
+  for (const turn of turns) {
+    const participant = parseParticipantMeta(
+      turn.participant_meta as Record<string, unknown> | undefined,
+    );
+    if (participant?.peerId) {
+      next.set(participant.peerId, participant);
+    }
+  }
+  const hasSkuldObserver = Array.from(next.values()).some(
+    (participant) => participant.participantType === 'skuld',
+  );
+  const hasRavnPeer = Array.from(next.values()).some(
+    (participant) => participant.participantType === 'ravn',
+  );
+  if (!hasSkuldObserver && hasRavnPeer) {
+    const observer = makeSingleParticipant();
+    next.set(observer.peerId, observer);
+  }
+  return next;
+}
+
+function parseOutcomeFields(raw: string): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const match = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line.trim());
+    if (!match) continue;
+    const key = match[1] ?? '';
+    const value = match[2]?.trim() ?? '';
+    if (!key) continue;
+    fields[key] = value;
+  }
+  return fields;
+}
+
+function normalizeOutcomeSummaryText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.replace(/([,;:!?])(?=[A-Za-z0-9])/g, '$1 ');
+}
+
+export function meshEventsFromTurns(turns: ConversationTurn[]): MeshEvent[] {
+  const events: MeshEvent[] = [];
+  for (const turn of turns) {
+    if (turn.role !== 'assistant') continue;
+    const participant = parseParticipantMeta(
+      turn.participant_meta as Record<string, unknown> | undefined,
+    );
+    if (!participant?.peerId) continue;
+    const outcome = extractOutcomeBlock(turn.content ?? '');
+    if (!outcome) continue;
+    const fields = parseOutcomeFields(outcome.raw);
+    events.push({
+      type: 'outcome',
+      id: `history-${turn.id}`,
+      timestamp: new Date(turn.created_at),
+      participantId: participant.peerId,
+      participant: { color: participant.color },
+      persona: participant.persona,
+      eventType:
+        (typeof fields.event_type === 'string' && fields.event_type) ||
+        (typeof fields.eventType === 'string' && fields.eventType) ||
+        'outcome',
+      verdict:
+        typeof fields.verdict === 'string'
+          ? (fields.verdict as MeshOutcomeEvent['verdict'])
+          : undefined,
+      summary: normalizeOutcomeSummaryText(fields.summary),
+      fields,
+      valid: true,
+    });
+  }
+  return events;
+}
+
 export function stringifyOutcomeValue(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'string') return value;
@@ -368,7 +444,11 @@ export function formatOutcomeContent(event: CliStreamEvent): string {
 
   const lines: string[] = [];
   pushOutcomeField(lines, 'verdict', event.verdict ?? fields.verdict);
-  pushOutcomeField(lines, 'summary', event.summary ?? fields.summary);
+  pushOutcomeField(
+    lines,
+    'summary',
+    normalizeOutcomeSummaryText(event.summary) ?? normalizeOutcomeSummaryText(fields.summary),
+  );
 
   for (const [key, value] of Object.entries(fields)) {
     if (key === 'verdict' || key === 'summary' || key === 'success') continue;
@@ -423,7 +503,15 @@ export function parseEvent(raw: string): CliStreamEvent | null {
   }
 }
 
-export function useSkuldChat(url: string | null): UseSkuldChatResult {
+interface UseSkuldChatOptions {
+  historyMode?: 'session' | 'none';
+}
+
+export function useSkuldChat(
+  url: string | null,
+  options: UseSkuldChatOptions = {},
+): UseSkuldChatResult {
+  const { historyMode = 'session' } = options;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [participants, setParticipants] = useState<Map<string, RoomParticipant>>(new Map());
   const [meshEvents, setMeshEvents] = useState<MeshEvent[]>([]);
@@ -440,6 +528,7 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
   const participantsRef = useRef(participants);
   const agentEventsRef = useRef(agentEvents);
   const internalStreamsRef = useRef<Map<string, InternalParticipantStream>>(new Map());
+  const optimisticUserMessagesRef = useRef<Map<string, string>>(new Map());
   const toolJsonRef = useRef('');
   const toolIdRef = useRef('');
   const streamingMessageIdRef = useRef<string | null>(null);
@@ -577,6 +666,10 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
 
   useEffect(() => {
     if (!url || historyLoaded) return;
+    if (historyMode === 'none') {
+      setHistoryLoadedForUrl(url);
+      return;
+    }
 
     const httpBase = wsUrlToHttpBase(url);
     if (!httpBase) {
@@ -585,9 +678,7 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
     }
 
     let cancelled = false;
-    const headers: Record<string, string> = {};
-    const token = getAccessToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
+    const headers = Object.fromEntries(getAuthHeaders().entries());
 
     const base = httpBase.endsWith('/') ? httpBase : `${httpBase}/`;
     const historyUrl = new URL('api/conversation/history', base);
@@ -603,6 +694,8 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
         if (cancelled) return;
         clearHistoryRetryTimer();
         const nextMessages = data.turns?.length ? transformTurns(data.turns) : [];
+        const historyParticipants = data.turns?.length ? participantsFromTurns(data.turns) : null;
+        const historyMeshEvents = data.turns?.length ? meshEventsFromTurns(data.turns) : null;
         if (
           nextMessages.some((message) => message.role === 'assistant') &&
           !nextMessages.some((message) => message.participant) &&
@@ -616,6 +709,12 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
           );
         } else {
           setMessages(nextMessages);
+        }
+        if (historyParticipants && historyParticipants.size > 0) {
+          setParticipants(historyParticipants);
+        }
+        if (historyMeshEvents && historyMeshEvents.length > 0) {
+          setMeshEvents(historyMeshEvents);
         }
         setHistoryLoadedForUrl(url);
       })
@@ -633,7 +732,7 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
       cancelled = true;
       clearHistoryRetryTimer();
     };
-  }, [clearHistoryRetryTimer, ensureSingleParticipant, historyLoaded, url]);
+  }, [clearHistoryRetryTimer, ensureSingleParticipant, historyLoaded, historyMode, url]);
 
   useEffect(() => {
     if (!url) return;
@@ -906,6 +1005,10 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
           }
           case 'conversation_history': {
             const nextMessages = event.turns?.length ? transformTurns(event.turns) : [];
+            const historyParticipants = event.turns?.length
+              ? participantsFromTurns(event.turns)
+              : null;
+            const historyMeshEvents = event.turns?.length ? meshEventsFromTurns(event.turns) : null;
             if (
               nextMessages.some((message) => message.role === 'assistant') &&
               !nextMessages.some((message) => message.participant) &&
@@ -919,6 +1022,12 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
               );
             } else {
               setMessages(nextMessages);
+            }
+            if (historyParticipants && historyParticipants.size > 0) {
+              setParticipants(historyParticipants);
+            }
+            if (historyMeshEvents && historyMeshEvents.length > 0) {
+              setMeshEvents(historyMeshEvents);
             }
             if (url) {
               setHistoryLoadedForUrl(url);
@@ -934,7 +1043,37 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
                   : generateId();
             const content = typeof event.content === 'string' ? event.content : '';
             if (!content) break;
+            const requestId =
+              typeof event.request_id === 'string' && event.request_id ? event.request_id : null;
+            const optimisticMessageId = requestId
+              ? optimisticUserMessagesRef.current.get(requestId)
+              : undefined;
+            if (requestId && optimisticMessageId) {
+              optimisticUserMessagesRef.current.delete(requestId);
+            }
             setMessages((prev) => {
+              if (optimisticMessageId) {
+                return prev.map((message) =>
+                  message.id === optimisticMessageId
+                    ? {
+                        ...message,
+                        id: messageId,
+                        createdAt: event.created_at
+                          ? new Date(event.created_at)
+                          : message.createdAt,
+                        status: 'done',
+                        visibility: event.visibility ?? message.visibility,
+                        metadata:
+                          event.metadata && typeof event.metadata === 'object'
+                            ? ({
+                                ...(message.metadata ?? {}),
+                                ...(event.metadata as ChatMessage['metadata']),
+                              } as ChatMessage['metadata'])
+                            : message.metadata,
+                      }
+                    : message,
+                );
+              }
               if (prev.some((message) => message.id === messageId)) {
                 return prev;
               }
@@ -1047,7 +1186,9 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
                 persona: event.persona ?? participant?.persona ?? '',
                 eventType: event.eventType ?? '',
                 verdict: event.verdict as MeshOutcomeEvent['verdict'],
-                summary: event.summary,
+                summary:
+                  normalizeOutcomeSummaryText(event.summary) ??
+                  normalizeOutcomeSummaryText(event.fields?.summary),
                 fields: event.fields,
                 valid: event.valid === false ? false : true,
               },
@@ -1228,13 +1369,15 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
       if (!trimmed && attachments.length === 0) return;
 
       Promise.all(attachments.map(attachmentToWireContent)).then((converted) => {
+        const requestId = generateId();
         const valid = converted.filter(
           (value): value is NonNullable<typeof value> => value !== null,
         );
+        optimisticUserMessagesRef.current.set(requestId, requestId);
         setMessages((prev) => [
           ...prev,
           {
-            id: generateId(),
+            id: requestId,
             role: 'user',
             content: trimmed,
             createdAt: new Date(),
@@ -1247,11 +1390,11 @@ export function useSkuldChat(url: string | null): UseSkuldChatResult {
           const blocks: Array<{ type: 'text'; text: string } | ContentBlock> = [];
           if (trimmed) blocks.push({ type: 'text', text: trimmed });
           blocks.push(...valid.map((item) => item.block));
-          sendJson({ type: 'user', content: blocks });
+          sendJson({ type: 'user', content: blocks, request_id: requestId });
           return;
         }
 
-        sendJson({ type: 'user', content: trimmed });
+        sendJson({ type: 'user', content: trimmed, request_id: requestId });
       });
     },
     [sendJson],

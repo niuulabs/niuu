@@ -19,6 +19,10 @@ from volundr.domain.ports import (
 logger = logging.getLogger(__name__)
 
 
+def _split_roles(raw: str) -> list[str]:
+    return [role.strip() for role in raw.split(",") if role.strip()]
+
+
 async def extract_principal(request: Request) -> Principal:
     """FastAPI dependency: validate identity and extract Principal.
 
@@ -27,10 +31,74 @@ async def extract_principal(request: Request) -> Principal:
     - Token mode (allow-all / dev): validates the Authorization header
     """
     identity: IdentityPort = request.app.state.identity
+    from volundr.adapters.outbound.identity import (
+        AllowAllIdentityAdapter,
+        EnvoyHeaderIdentityAdapter,
+    )
+
+    # Shared local shells forward explicit developer identity through
+    # x-auth-* headers. Honor those first so proxied browser flows preserve
+    # tenant/user ownership even when the worker is running in allow-all mode.
+    #
+    # When the configured identity adapter understands trusted headers, route
+    # the forwarded payload through that adapter so claim role mappings stay
+    # consistent with the normal Envoy-backed path.
+    forwarded_user_id = request.headers.get("x-auth-user-id", "").strip()
+    if forwarded_user_id:
+        if isinstance(identity, EnvoyHeaderIdentityAdapter):
+            header_items = request.headers.items()
+            if inspect.iscoroutine(header_items):
+                header_items.close()
+                header_items = ()
+            elif inspect.isawaitable(header_items):
+                header_items = ()
+            headers = {k.lower(): v for k, v in header_items}
+            try:
+                return await identity.validate_headers(headers)
+            except InvalidTokenError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=str(e),
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        return Principal(
+            user_id=forwarded_user_id,
+            email=request.headers.get("x-auth-email", "").strip(),
+            tenant_id=request.headers.get("x-auth-tenant", "").strip() or "default",
+            roles=_split_roles(request.headers.get("x-auth-roles", "volundr:developer")),
+        )
+
+    dev_user_id = request.query_params.get("devUserId", "").strip()
+    if dev_user_id:
+        return Principal(
+            user_id=dev_user_id,
+            email=request.query_params.get("devEmail", "").strip(),
+            tenant_id=request.query_params.get("devTenantId", "").strip(),
+            roles=_split_roles(request.query_params.get("devRoles", "volundr:developer")),
+        )
+
+    # Shared local shells forward explicit developer identity through
+    # x-auth-* headers. Honor those first so proxied browser flows preserve
+    # tenant/user ownership even when the worker is running in allow-all mode.
+    forwarded_user_id = request.headers.get("x-auth-user-id", "").strip()
+    if forwarded_user_id:
+        return Principal(
+            user_id=forwarded_user_id,
+            email=request.headers.get("x-auth-email", "").strip(),
+            tenant_id=request.headers.get("x-auth-tenant", "").strip(),
+            roles=_split_roles(request.headers.get("x-auth-roles", "volundr:developer")),
+        )
+
+    dev_user_id = request.query_params.get("devUserId", "").strip()
+    if dev_user_id:
+        return Principal(
+            user_id=dev_user_id,
+            email=request.query_params.get("devEmail", "").strip(),
+            tenant_id=request.query_params.get("devTenantId", "").strip(),
+            roles=_split_roles(request.query_params.get("devRoles", "volundr:developer")),
+        )
 
     # If the adapter supports header-based auth (Envoy mode), use it
-    from volundr.adapters.outbound.identity import EnvoyHeaderIdentityAdapter
-
     if isinstance(identity, EnvoyHeaderIdentityAdapter):
         header_items = request.headers.items()
         if inspect.iscoroutine(header_items):
@@ -49,8 +117,6 @@ async def extract_principal(request: Request) -> Principal:
             )
 
     # Allow-all mode: skip token validation entirely
-    from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
-
     if isinstance(identity, AllowAllIdentityAdapter):
         return await identity.validate_token("allow-all")
 

@@ -6,10 +6,10 @@ import './ObservatorySubnav.css';
 
 // ── Filter section config ─────────────────────────────────────────────────────
 
-const AGENT_KINDS = new Set(['ravn_long', 'ravn_raid', 'valkyrie', 'skuld']);
-const SERVICE_KINDS = new Set(['service', 'bifrost', 'tyr', 'volundr', 'mimir']);
+const AGENT_KINDS = new Set(['ravn_long', 'ravn_run', 'valkyrie', 'skuld']);
+const SERVICE_KINDS = new Set(['service', 'bifrost', 'ting', 'volundr', 'mimir']);
 const DEVICE_KINDS = new Set(['printer', 'vaettir', 'beacon']);
-const RAID_KIND = 'raid';
+const RUN_KIND = 'run';
 
 interface FilterRow {
   id: ObservatoryFilter;
@@ -32,10 +32,10 @@ const FILTER_ROWS: FilterRow[] = [
     count: (nodes) => nodes.filter((n) => AGENT_KINDS.has(n.typeId)).length,
   },
   {
-    id: 'raids',
-    label: 'Raids',
+    id: 'runs',
+    label: 'Runs',
     color: 'var(--brand-500, var(--color-brand))',
-    count: (nodes) => nodes.filter((n) => n.typeId === RAID_KIND).length,
+    count: (nodes) => nodes.filter((n) => n.typeId === RUN_KIND).length,
   },
   {
     id: 'services',
@@ -51,9 +51,9 @@ const FILTER_ROWS: FilterRow[] = [
   },
 ];
 
-// ── Raid state → dot color ─────────────────────────────────────────────────
+// ── Run state → dot color ─────────────────────────────────────────────────
 
-function raidDotColor(state: string | undefined): string {
+function runDotColor(state: string | undefined): string {
   if (state === 'forming') return 'var(--brand-200, var(--color-brand))';
   if (state === 'working') return 'var(--brand-500, var(--color-brand))';
   return 'var(--color-text-muted)';
@@ -72,9 +72,9 @@ export function ObservatorySubnav() {
 
   const clusters = useMemo(() => nodes.filter((n) => n.typeId === 'cluster'), [nodes]);
 
-  const allRaids = useMemo(() => nodes.filter((n) => n.typeId === 'raid'), [nodes]);
+  const allRuns = useMemo(() => nodes.filter((n) => n.typeId === 'run'), [nodes]);
 
-  const activeRaids = useMemo(() => allRaids.slice(0, 6), [allRaids]);
+  const activeRuns = useMemo(() => allRuns.slice(0, 6), [allRuns]);
 
   return (
     <div className="obs-subnav" data-testid="observatory-subnav">
@@ -135,7 +135,7 @@ export function ObservatorySubnav() {
         ))}
       </div>
 
-      {/* Section 3: Clusters + Active raids */}
+      {/* Section 3: Clusters + Active runs */}
       <div className="obs-subnav__section">
         <div className="obs-subnav__label">
           Clusters <span className="obs-subnav__count">{clusters.length}</span>
@@ -161,28 +161,28 @@ export function ObservatorySubnav() {
           </button>
         ))}
 
-        {activeRaids.length > 0 && (
+        {activeRuns.length > 0 && (
           <>
             <div className="obs-subnav__label obs-subnav__label--sub">
-              Active raids <span className="obs-subnav__count">{allRaids.length}</span>
+              Active runs <span className="obs-subnav__count">{allRuns.length}</span>
             </div>
-            {activeRaids.map((raid) => {
-              const color = raidDotColor(raid.state);
+            {activeRuns.map((run) => {
+              const color = runDotColor(run.state);
               return (
                 <button
-                  key={raid.id}
+                  key={run.id}
                   className="obs-subnav__row"
-                  data-testid={`raid-${raid.id}`}
-                  onClick={() => store.setSelected(raid.id)}
+                  data-testid={`run-${run.id}`}
+                  onClick={() => store.setSelected(run.id)}
                 >
                   <span
                     className="obs-subnav__dot"
                     style={{ background: color, boxShadow: `0 0 6px ${color}` }}
                   />
                   <span className="obs-subnav__name obs-subnav__name--mono">
-                    {raid.purpose ?? raid.label}
+                    {run.purpose ?? run.label}
                   </span>
-                  <span className="obs-subnav__count">{raid.state?.slice(0, 4) ?? '—'}</span>
+                  <span className="obs-subnav__count">{run.state?.slice(0, 4) ?? '—'}</span>
                 </button>
               );
             })}

@@ -534,10 +534,10 @@ def create_flow_via_rest(
     *,
     token: str = "",
 ) -> None:
-    """POST a flock flow definition to the Tyr REST API.
+    """POST a flock flow definition to the Ting REST API.
 
     Args:
-        base_url: Base URL of the Tyr service.
+        base_url: Base URL of the Ting service.
         flow_payload: Dict matching the FlockFlowCreate schema.
         token: Optional PAT.
 

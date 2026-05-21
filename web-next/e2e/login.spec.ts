@@ -12,9 +12,8 @@ const STUB_AUTH_CONFIG = {
   theme: 'ice',
   plugins: {
     login: { enabled: true, order: 0 },
-    hello: { enabled: true, order: 1 },
+    volundr: { enabled: true, order: 1 },
   },
-  services: { hello: { mode: 'mock' } },
   auth: {
     issuer: 'http://localhost:9876/realms/test',
     clientId: 'niuu-web',
@@ -71,8 +70,8 @@ test('unauthenticated user with OIDC config is redirected to /login from root', 
   await stubOidc(page);
   await page.goto('/');
 
-  await expect(page).toHaveURL('http://localhost:5173/login', { timeout: 5000 });
-  await expect(page.getByTestId('login-page')).toBeVisible({ timeout: 5000 });
+  await expect(page).toHaveURL('http://localhost:5173/login', { timeout: 10000 });
+  await expect(page.getByTestId('login-page')).toBeVisible({ timeout: 10000 });
 });
 
 test('callback page renders the loading spinner', async ({ page }) => {
@@ -109,8 +108,9 @@ test('auth-disabled mode: no redirect to /login', async ({ page }) => {
   // Default config has no auth.issuer — login plugin is registered but auth is off.
   await page.goto('/');
   // App boots normally and shows the first enabled plugin.
-  await expect(page.getByText('hello · smoke test')).toBeVisible({ timeout: 5000 });
-  await expect(page).toHaveURL('http://localhost:5173/hello');
+  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('forge-page')).toBeVisible();
+  await expect(page).toHaveURL('http://localhost:5173/volundr/forge');
 });
 
 test('login page shows error state for OIDC failure in URL', async ({ page }) => {

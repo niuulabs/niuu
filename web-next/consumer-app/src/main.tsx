@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import '@niuulabs/design-tokens/tokens.css';
 import '@niuulabs/ui/styles.css';
 import '@niuulabs/shell/styles.css';
-import '@niuulabs/plugin-tyr/styles.css';
+import '@niuulabs/plugin-ting/styles.css';
 import { App } from './App';
 
 const el = document.getElementById('root');

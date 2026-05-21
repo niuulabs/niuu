@@ -1,4 +1,4 @@
-"""RavnFlockContributor — pod spec builder for raiding party (flock) pods.
+"""RavnFlockContributor — pod spec builder for runing party (flock) pods.
 
 When workload_type == "ravn_flock", this contributor replaces the default
 single-CLI layout with:
@@ -19,6 +19,7 @@ Port allocation (mirrors ravn/cli/flock.py via niuu.mesh):
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -332,6 +333,7 @@ def _build_ravn_config(
     skuld_peer_id: str,
     mimir_config: dict[str, Any],
     sleipnir_publish_urls: list[str],
+    daily_budget_usd: float | None = None,
     global_max_concurrent_tasks: int = _DEFAULT_MAX_CONCURRENT_TASKS,
     mesh_host: str = "0.0.0.0",
     persona_source_mode: str = _PERSONA_SOURCE_FILESYSTEM,
@@ -389,6 +391,9 @@ def _build_ravn_config(
         "logging": {"level": "INFO"},
     }
 
+    if daily_budget_usd and daily_budget_usd > 0:
+        config["budget"] = {"daily_cap_usd": float(daily_budget_usd)}
+
     # Merge LLM config: global override → per-persona override (last wins).
     effective_llm = merge_llm(
         defaults=None,
@@ -410,6 +415,19 @@ def _build_ravn_config(
     if budget:
         po["iteration_budget"] = int(budget)
         config["initiative"]["iteration_budget"] = int(budget)
+    consumes_event_types = persona_override.get("consumes_event_types") or []
+    if consumes_event_types:
+        po["consumes_event_types"] = [str(event_type) for event_type in consumes_event_types]
+    executor_override = persona_override.get("executor")
+    if isinstance(executor_override, dict) and executor_override:
+        po["executor"] = {
+            "adapter": str(executor_override.get("adapter") or ""),
+            "kwargs": (
+                dict(executor_override.get("kwargs") or {})
+                if isinstance(executor_override.get("kwargs"), dict)
+                else {}
+            ),
+        }
     if po:
         config["persona_overrides"] = po
 
@@ -502,6 +520,32 @@ def _workflow_trigger_config(workflow: dict[str, Any] | None) -> dict[str, str] 
     }
 
 
+def _default_flock_trigger_config(
+    *,
+    initiative_context: str,
+    persona_dicts: list[dict[str, Any]],
+) -> dict[str, str] | None:
+    """Return the generic startup trigger for plain coordinator-led flocks."""
+    if not initiative_context.strip():
+        return None
+
+    persona_names = {
+        str(persona.get("name") or "").strip()
+        for persona in persona_dicts
+        if isinstance(persona, dict)
+    }
+    if not {"run-executor", "coordinator"} & persona_names:
+        return None
+
+    return {
+        "enabled": "true",
+        "node_id": "dispatch-root",
+        "label": "Dispatch run",
+        "source": "ting dispatch",
+        "event_type": "run.requested",
+    }
+
+
 class RavnFlockContributor(SessionContributor):
     """Contributes flock pod spec when workload_type == 'ravn_flock'.
 
@@ -587,9 +631,15 @@ class RavnFlockContributor(SessionContributor):
             "max_concurrent_tasks", _DEFAULT_MAX_CONCURRENT_TASKS
         )
         global_llm: dict | None = wc.get("llm_config") or None
+        raw_daily_budget_usd = wc.get("daily_budget_usd")
+        try:
+            daily_budget_usd = float(raw_daily_budget_usd)
+        except (TypeError, ValueError):
+            daily_budget_usd = None
+        initiative_context = str(wc.get("initiative_context") or "")
         workflow_cfg = _normalize_workflow_config(
             wc.get("workflow"),
-            str(wc.get("initiative_context") or ""),
+            initiative_context,
         )
 
         values, pod_spec = self._build_flock_spec(
@@ -600,6 +650,8 @@ class RavnFlockContributor(SessionContributor):
             sleipnir_publish_urls=sleipnir_publish_urls,
             global_max_concurrent_tasks=global_max_concurrent_tasks,
             global_llm=global_llm,
+            daily_budget_usd=daily_budget_usd,
+            initiative_context=initiative_context,
             persona_source_mode=self._persona_source_mode,
             persona_source_configmap_name=self._persona_source_configmap_name,
             persona_source_mount_path=self._persona_source_mount_path,
@@ -636,6 +688,8 @@ class RavnFlockContributor(SessionContributor):
         sleipnir_publish_urls: list[str],
         global_max_concurrent_tasks: int,
         global_llm: dict | None = None,
+        daily_budget_usd: float | None = None,
+        initiative_context: str = "",
         persona_source_mode: str = _PERSONA_SOURCE_FILESYSTEM,
         persona_source_configmap_name: str = _PERSONA_CM_DEFAULT_NAME,
         persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
@@ -662,9 +716,51 @@ class RavnFlockContributor(SessionContributor):
             {"name": "MESH_HANDSHAKE_PORT", "value": str(skuld_hs)},
         ]
         workflow_trigger = _workflow_trigger_config(workflow)
+        if workflow_trigger is None:
+            workflow_trigger = _default_flock_trigger_config(
+                initiative_context=initiative_context,
+                persona_dicts=persona_dicts,
+            )
+        if workflow is not None:
+            workflow_graph = workflow.get("graph")
+            if isinstance(workflow_graph, dict):
+                skuld_env.extend(
+                    [
+                        {
+                            "name": "SKULD__WORKFLOW__WORKFLOW_ID",
+                            "value": str(workflow.get("workflow_id") or ""),
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__NAME",
+                            "value": str(workflow.get("name") or ""),
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__VERSION",
+                            "value": str(workflow.get("version") or ""),
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__SCOPE",
+                            "value": str(workflow.get("scope") or ""),
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__INITIAL_CONTEXT",
+                            "value": initiative_context,
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__GRAPH",
+                            "value": json.dumps(workflow_graph),
+                        },
+                    ]
+                )
         if workflow_trigger is not None:
             skuld_env.extend(
                 [
+                    {
+                        # Workflow-backed flock stages are long-running initiative tasks
+                        # and need a higher ceiling than the generic 120s mesh default.
+                        "name": "SKULD__MESH__DEFAULT_WORK_TIMEOUT_S",
+                        "value": "420",
+                    },
                     {
                         "name": "SKULD__MESH__CONSUMES_EVENT_TYPES",
                         "value": "[]",
@@ -762,6 +858,7 @@ class RavnFlockContributor(SessionContributor):
                 skuld_peer_id=skuld_peer_id,
                 mimir_config=mimir_config,
                 sleipnir_publish_urls=sleipnir_publish_urls,
+                daily_budget_usd=daily_budget_usd,
                 global_max_concurrent_tasks=global_max_concurrent_tasks,
                 mesh_host=self._mesh_host,
                 persona_source_mode=persona_source_mode,
@@ -861,6 +958,8 @@ class RavnFlockContributor(SessionContributor):
                 "max_concurrent_tasks": global_max_concurrent_tasks,
             },
         }
+        if daily_budget_usd and daily_budget_usd > 0:
+            values["flock"]["daily_budget_usd"] = float(daily_budget_usd)
         if workflow:
             values["workflow"] = workflow
 

@@ -144,9 +144,11 @@ def create_local_git_router(
     git_workspace: GitWorkspacePort,
     session_repository: SessionRepository,
     sessions_base: str = DEFAULT_SESSIONS_BASE,
+    *,
+    prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router for local git workspace endpoints."""
-    router = APIRouter(prefix="/api/v1/volundr")
+    router = APIRouter(prefix=prefix)
 
     @router.get(
         "/sessions/{session_id}/pr",

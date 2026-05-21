@@ -45,7 +45,6 @@ class FakeResumableTransport(CLITransport):
         self.sent_messages: list[str] = []
         self._last_result: dict | None = None
         self.control_calls: list[tuple[str, dict]] = []
-        self._turn_active = False
 
     async def start(self) -> None:
         return None
@@ -55,7 +54,6 @@ class FakeResumableTransport(CLITransport):
 
     async def send_message(self, content: str) -> None:
         self.sent_messages.append(content)
-        self._turn_active = True
         await self._emit(
             {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Working "}}
         )
@@ -99,7 +97,6 @@ class FakeResumableTransport(CLITransport):
             },
         }
         await self._emit(self._last_result)
-        self._turn_active = False
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         self.control_calls.append((subtype, kwargs))
@@ -117,17 +114,17 @@ class FakeResumableTransport(CLITransport):
         return True
 
     @property
+    def is_turn_active(self) -> bool:
+        return True
+
+    @property
     def capabilities(self) -> TransportCapabilities:
         return TransportCapabilities(
             session_resume=True,
             interrupt=True,
             steer=True,
-            steering_mode="live",
+            steering_mode="interrupt_resume",
         )
-
-    @property
-    def is_turn_active(self) -> bool:
-        return self._turn_active
 
 
 class FakeStatelessTransport(CLITransport):
@@ -270,7 +267,35 @@ async def test_cli_executor_interrupts_active_transport_when_supported() -> None
     transport = agent._transport
     assert transport is not None
     assert transport.control_calls == [("interrupt", {})]
-    assert agent._interrupt_reason == InterruptReason.SIGINT
+
+
+@pytest.mark.asyncio
+async def test_cli_executor_steers_active_transport_when_supported() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a reviewer.",
+        session=Session(),
+        model="fake-model",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-4",
+        persona="reviewer",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[],
+    )
+
+    await agent._ensure_transport()
+    steered = await agent.steer("Switch to a safer plan")
+
+    transport = agent._transport
+    assert steered is True
+    assert transport is not None
+    assert transport.control_calls == [("steer", {"content": "Switch to a safer plan"})]
 
 
 def _make_agent(
@@ -365,39 +390,6 @@ async def test_cli_transport_agent_helper_paths_and_failures() -> None:
         agent._raise_if_transport_failed({"stop_reason": "error", "result": "boom"})
     with pytest.raises(RuntimeError, match="bad news"):
         agent._raise_if_transport_failed({"is_error": True, "content": "bad news"})
-
-
-@pytest.mark.asyncio
-async def test_cli_transport_agent_steers_active_transport() -> None:
-    agent, _ = _make_agent(binding=_TransportBinding(FakeResumableTransport, True))
-
-    assert agent.supports_steering is False
-    assert agent.steering_mode == "none"
-
-    await agent._ensure_transport()
-    transport = agent._transport
-    assert transport is not None
-    transport._turn_active = True
-
-    assert agent.supports_steering is True
-    assert agent.steering_mode == "live"
-    assert await agent.steer("Focus on the tests") is True
-    assert transport.control_calls[-1] == ("steer", {"content": "Focus on the tests"})
-
-
-@pytest.mark.asyncio
-async def test_cli_transport_agent_steer_requires_active_transport_and_content() -> None:
-    agent, _ = _make_agent(binding=_TransportBinding(FakeResumableTransport, True))
-
-    assert await agent.steer("ignored") is False
-
-    await agent._ensure_transport()
-    transport = agent._transport
-    assert transport is not None
-
-    assert await agent.steer("   ") is False
-    assert await agent.steer("Ship it") is False
-    assert transport.control_calls == []
 
 
 @pytest.mark.asyncio

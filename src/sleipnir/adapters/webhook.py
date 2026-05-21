@@ -36,7 +36,7 @@ Configuration example
       transport: webhook
       webhook:
         publish_urls:
-          - http://tyr:8080/sleipnir/events
+          - http://ting:8080/sleipnir/events
           - http://volundr:8000/sleipnir/events
         listen_port: 8090
 
@@ -144,7 +144,7 @@ class WebhookPublisher(SleipnirPublisher):
 
     Usage::
 
-        pub = WebhookPublisher(publish_urls=["http://tyr:8080/sleipnir/events"])
+        pub = WebhookPublisher(publish_urls=["http://ting:8080/sleipnir/events"])
         async with pub:
             await pub.publish(event)
     """
@@ -412,7 +412,7 @@ class WebhookTransport(SleipnirPublisher, SleipnirSubscriber):
     Usage::
 
         transport = WebhookTransport(
-            publish_urls=["http://tyr:8080/sleipnir/events"],
+            publish_urls=["http://ting:8080/sleipnir/events"],
             listen_port=8090,
         )
         async with transport:

@@ -17,7 +17,6 @@ import type { Message } from './domain/message';
 // ---------------------------------------------------------------------------
 
 export interface PersonaLLM {
-  primaryAlias: string;
   thinkingEnabled: boolean;
   maxTokens: number;
   temperature?: number;
@@ -44,11 +43,6 @@ export interface PersonaFanIn {
   params: Record<string, unknown>;
 }
 
-export interface PersonaExecutor {
-  adapter: string;
-  kwargs: Record<string, unknown>;
-}
-
 export interface PersonaSummary {
   name: string;
   role: PersonaRole;
@@ -68,7 +62,6 @@ export interface PersonaDetail extends PersonaSummary {
   description: string;
   systemPromptTemplate: string;
   forbiddenTools: string[];
-  executor?: PersonaExecutor;
   llm: PersonaLLM;
   produces: PersonaProduces;
   consumes: PersonaConsumes;
@@ -89,9 +82,7 @@ export interface PersonaCreateRequest {
   allowedTools: string[];
   forbiddenTools: string[];
   permissionMode: string;
-  executor?: PersonaExecutor;
   iterationBudget: number;
-  llmPrimaryAlias: string;
   llmThinkingEnabled: boolean;
   llmMaxTokens: number;
   llmTemperature?: number;
@@ -149,4 +140,153 @@ export interface ITriggerStore {
 export interface IBudgetStream {
   getBudget(ravnId: string): Promise<BudgetState>;
   getFleetBudget(): Promise<BudgetState>;
+}
+
+export interface WardenFeatures {
+  wakefulnessEnabled: boolean;
+  dreamCycleEnabled: boolean;
+  threadQueueEnabled: boolean;
+  threadEnricherEnabled: boolean;
+  recapEnabled: boolean;
+  sourceTriggerEnabled: boolean;
+  stalenessTriggerEnabled: boolean;
+}
+
+export interface WardenScheduleConfig {
+  dreamCycleCronExpression: string;
+  dreamCyclePollIntervalSeconds: number;
+  sourceTriggerPollIntervalSeconds: number;
+  stalenessTriggerScheduleHours: number;
+}
+
+export interface WardenConsole {
+  enabled: boolean;
+  host: string;
+  port: number;
+  publicHost?: string;
+  authMode: 'noop' | 'token';
+}
+
+export interface WardenDreamSummary {
+  id: string;
+  timestamp: string;
+  ravn: string;
+  mounts: string[];
+  pagesUpdated: number;
+  entitiesCreated: number;
+  lintFixes: number;
+  durationMs: number;
+}
+
+export interface WardenRuntime {
+  state?: 'active' | 'idle' | 'offline';
+  pagesTouched?: number;
+  lastStartedAt?: string;
+  lastDream?: WardenDreamSummary | null;
+}
+
+export interface WardenSupervisor {
+  installed: boolean;
+  serviceLabel?: string;
+  serviceFile?: string;
+  configFile?: string;
+  startCommand?: string;
+  stdoutLog?: string;
+  stderrLog?: string;
+  lastInstallAt?: string;
+  observation?: WardenObservation;
+}
+
+export interface WardenObservedField {
+  label: string;
+  value: string;
+}
+
+export interface WardenObservation {
+  status: 'running' | 'idle' | 'missing' | 'degraded' | 'unknown';
+  detail?: string;
+  source?: string;
+  checkedAt?: string;
+  fields?: WardenObservedField[];
+}
+
+export interface WardenOperator {
+  rune?: string;
+  bio?: string;
+  expertise?: string[];
+  tools?: string[];
+  role?: PersonaRole;
+}
+
+export interface WardenSummary {
+  id: string;
+  name: string;
+  persona: string;
+  profile: string;
+  model: string;
+  deployment: string;
+  deploymentKwargs?: Record<string, unknown>;
+  mountNames: string[];
+  writeMount: string;
+  readMountNames: string[];
+  writeMountNames: string[];
+  categoryScope: string[];
+  features: WardenFeatures;
+  schedules: WardenScheduleConfig;
+  console: WardenConsole;
+  autostart: boolean;
+  createdAt: string;
+  createdBy: string;
+  runtime?: WardenRuntime;
+  supervisor?: WardenSupervisor;
+  operator?: WardenOperator;
+}
+
+export interface WardenLogEntry {
+  id: string;
+  source: 'stdout' | 'stderr' | string;
+  lineNumber: number;
+  raw: string;
+  timestamp?: string;
+  level?: string;
+  logger?: string;
+  message: string;
+}
+
+export type WardenListener = (warden: WardenSummary) => void;
+
+export interface WardenCreateRequest {
+  name: string;
+  persona?: string;
+  profile?: string;
+  model?: string;
+  deployment?: string;
+  deploymentKwargs?: Record<string, unknown>;
+  mountNames?: string[];
+  writeMount?: string;
+  readMountNames?: string[];
+  writeMountNames?: string[];
+  categoryScope?: string[];
+  features?: Partial<WardenFeatures>;
+  schedules?: Partial<WardenScheduleConfig>;
+  console?: Partial<WardenConsole>;
+  autostart?: boolean;
+  createdBy?: string;
+}
+
+export interface IWardenStore {
+  listWardens(): Promise<WardenSummary[]>;
+  getWarden(id: string): Promise<WardenSummary>;
+  createWarden(req: WardenCreateRequest): Promise<WardenSummary>;
+  subscribeWarden(id: string, listener: WardenListener): () => void;
+  observeWarden(id: string): Promise<WardenSummary>;
+  installWarden(id: string): Promise<WardenSummary>;
+  startWarden(id: string): Promise<WardenSummary>;
+  stopWarden(id: string): Promise<WardenSummary>;
+  uninstallWarden(id: string): Promise<WardenSummary>;
+  getWardenLogs(
+    id: string,
+    options?: { stream?: 'stdout' | 'stderr'; limit?: number },
+  ): Promise<WardenLogEntry[]>;
+  getWardenActivity(id: string, limit?: number): Promise<WardenLogEntry[]>;
 }

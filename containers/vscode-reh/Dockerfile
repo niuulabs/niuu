@@ -24,9 +24,9 @@ RUN echo "Building for TARGETARCH=${TARGETARCH}" && \
 WORKDIR /build
 
 # Install only the @codingame/monaco-vscode-api package to read the VS Code
-# commit hash — no other dependencies are needed in this stage.
-COPY web/package.json web/package-lock.json ./
-RUN npm ci --ignore-scripts
+# commit hash — no frontend source tree is required for this image build.
+RUN npm init -y >/dev/null 2>&1 && \
+    npm install --ignore-scripts --no-fund --no-audit @codingame/monaco-vscode-api@28.4.1
 
 # Download the REH binary matching the npm package commit
 COPY containers/skuld/download-reh.sh ./download-reh.sh

@@ -1,6 +1,6 @@
 """Shared FastAPI REST adapter for personal access token management.
 
-Both Tyr and Volundr mount this router, each passing their own
+Both Ting and Volundr mount this router, each passing their own
 ``extract_principal`` auth dependency.
 """
 
@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer
 from niuu.domain.models import Principal
 from niuu.domain.services.pat import PATService
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
+from volundr.domain.ports import IdentityPort, UserProvisioningError
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class CreatePATResponse(BaseModel):
 
 def create_pats_router(
     extract_principal: Callable[..., Awaitable[Principal]],
-    prefix: str = "/api/v1/users/tokens",
+    prefix: str = "/api/v1/tokens",
     *,
     deprecated: bool = False,
     canonical_prefix: str | None = None,
@@ -91,12 +92,25 @@ def create_pats_router(
     extract_principal:
         FastAPI-compatible dependency that returns a ``Principal``.
     prefix:
-        URL prefix for the router (default ``/api/v1/users/tokens``).
+        URL prefix for the router (default ``/api/v1/tokens``).
     """
     router = APIRouter(
         prefix=prefix,
         tags=["Personal Access Tokens"],
     )
+
+    async def ensure_user(request: Request, principal: Principal) -> None:
+        identity: IdentityPort | None = getattr(request.app.state, "identity", None)
+        if identity is None:
+            return
+        try:
+            await identity.get_or_provision_user(principal)
+        except UserProvisioningError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="User provisioning in progress, retry later",
+                headers={"Retry-After": "5"},
+            ) from exc
 
     @router.post(
         "",
@@ -119,6 +133,7 @@ def create_pats_router(
                     canonical_path=canonical_prefix,
                 ),
             )
+        await ensure_user(request, principal)
         service: PATService = request.app.state.pat_service
         # Extract the user's current access token for IDP token exchange
         auth_header = request.headers.get("authorization", "")
@@ -152,6 +167,7 @@ def create_pats_router(
                     canonical_path=canonical_prefix,
                 ),
             )
+        await ensure_user(request, principal)
         service: PATService = request.app.state.pat_service
         pats = await service.list(principal.user_id)
         return [
@@ -184,6 +200,7 @@ def create_pats_router(
                     canonical_path=f"{canonical_prefix}/{pat_id}",
                 ),
             )
+        await ensure_user(request, principal)
         service: PATService = request.app.state.pat_service
         try:
             parsed_id = UUID(pat_id)

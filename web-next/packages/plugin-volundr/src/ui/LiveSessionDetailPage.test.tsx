@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
+import * as chatHooks from './hooks/useSkuldChat';
 import {
   createMockVolundrService,
   createMockSessionStore,
@@ -17,6 +19,12 @@ import type { VolundrSession } from '../models/volundr.model';
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
+
+const navigate = vi.fn();
+
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => navigate,
+}));
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: vi.fn().mockImplementation(() => ({
@@ -56,11 +64,12 @@ const RUNNING_SESSION: VolundrSession = {
   name: 'test-session',
   source: { type: 'git', repo: 'niuulabs/volundr', branch: 'main' },
   status: 'running',
-  model: 'claude-sonnet',
+  model: 'claude-sonnet-4-6',
   lastActive: Date.now() - 60_000,
   messageCount: 10,
   tokensUsed: 5000,
   hostname: 'skuld-test.local',
+  instanceName: 'Guild Alpha',
   chatEndpoint: 'wss://skuld-test.local/session',
 };
 
@@ -81,6 +90,8 @@ const ERROR_SESSION: VolundrSession = {
   status: 'error',
   error: 'OOMKilled',
 };
+
+const originalFetch = global.fetch;
 
 // ---------------------------------------------------------------------------
 // Wrapper
@@ -159,15 +170,6 @@ function buildVolundrService(session: VolundrSession | null = RUNNING_SESSION): 
   return {
     ...base,
     getSession: vi.fn().mockResolvedValue(session),
-    getModels: vi.fn().mockResolvedValue({
-      'claude-sonnet': {
-        name: 'Claude Sonnet',
-        provider: 'cloud',
-        tier: 'balanced',
-        color: '#f59e0b',
-        cost: '$3/MTok',
-      },
-    }),
     getFeatureModules: vi.fn().mockResolvedValue(SESSION_FEATURES),
     getUserFeaturePreferences: vi.fn().mockResolvedValue([]),
     getChronicle: vi.fn().mockResolvedValue(null),
@@ -200,15 +202,21 @@ function buildSessionStore(session: VolundrSession | null = RUNNING_SESSION): IS
 
 function wrap(
   sessionId: string,
-  opts: { readOnly?: boolean; session?: VolundrSession | null } = {},
+  opts: {
+    readOnly?: boolean;
+    session?: VolundrSession | null;
+    volundr?: Partial<IVolundrService>;
+  } = {},
 ) {
   const session = opts.session === undefined ? RUNNING_SESSION : opts.session;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const volundr = { ...buildVolundrService(session), ...opts.volundr } as IVolundrService;
   return render(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
-          volundr: buildVolundrService(session),
+          bifrost: createMockBifrostService(),
+          volundr,
           ptyStream: buildPtyStream(),
           filesystem: buildFilesystem(),
           sessionStore: buildSessionStore(session),
@@ -228,6 +236,186 @@ function wrap(
 describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    navigate.mockReset();
+    global.fetch = vi.fn(async (input: string | URL | Request) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+      if (url.includes('/api/diff/files')) {
+        return new Response(JSON.stringify({ files: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url.includes('/api/diff?')) {
+        return new Response(JSON.stringify({ filePath: 'README.md', hunks: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    global.fetch = originalFetch;
+  });
+
+  it('surfaces native workflow gates and resolves them through Volundr', async () => {
+    const resolveWorkflowGate = vi.fn().mockResolvedValue({
+      id: 'gate-1',
+      node_id: 'spec-prd-gate',
+      activation_id: 'activation-1',
+      label: 'PRD approval gate',
+      condition: 'Review the PRD and decide whether it is strong enough to unlock SRD drafting.',
+      status: 'approved',
+      pending_behavior: 'help_needed',
+      approvers: ['human'],
+      auto_forward_after: '30m',
+      requested_at: '2026-05-20T12:00:00Z',
+      updated_at: '2026-05-20T12:02:00Z',
+      triggered_by_event_type: 'spec.prd.ready_for_gate',
+      approval_event_type: 'spec.prd.approved',
+      changes_requested_event_type: 'spec.prd.changes_requested',
+      attempt: 1,
+      decision: 'APPROVE',
+      notes: 'The scope is right; proceed.',
+      source: 'human',
+      summary: 'PRD approved by human reviewer.',
+    });
+    vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+      messages: [],
+      streamingContent: undefined,
+      streamingParts: undefined,
+      streamingModel: undefined,
+      connected: true,
+      historyLoaded: true,
+      participants: new Map(),
+      meshEvents: [],
+      agentEvents: new Map(),
+      pendingPermissions: [],
+      capabilities: {},
+      sendMessage: vi.fn(),
+      sendDirectedMessages: vi.fn(),
+      respondToPermission: vi.fn(),
+      sendInterrupt: vi.fn(),
+      sendSetModel: vi.fn(),
+      sendSetThinkingTokens: vi.fn(),
+      sendRewindFiles: vi.fn(),
+      sendSetInternalVisibility: vi.fn(),
+      clearMessages: vi.fn(),
+    });
+
+    wrap('test-session-id-1234', {
+      volundr: {
+        getWorkflowGates: vi.fn().mockResolvedValue([
+          {
+            id: 'gate-1',
+            node_id: 'spec-prd-gate',
+            activation_id: 'activation-1',
+            label: 'PRD approval gate',
+            condition:
+              'Review the PRD and decide whether it is strong enough to unlock SRD drafting.',
+            status: 'pending',
+            pending_behavior: 'help_needed',
+            approvers: ['human'],
+            auto_forward_after: '30m',
+            requested_at: '2026-05-20T12:00:00Z',
+            updated_at: '2026-05-20T12:00:00Z',
+            triggered_by_event_type: 'spec.prd.ready_for_gate',
+            approval_event_type: 'spec.prd.approved',
+            changes_requested_event_type: 'spec.prd.changes_requested',
+            attempt: 1,
+            notes: '',
+            source: 'workflow',
+            summary: 'Please approve or request changes on the PRD.',
+          },
+        ]),
+        resolveWorkflowGate,
+      },
+    });
+
+    await screen.findByTestId('live-session-detail-page');
+    await screen.findByText('Human Gate Requested');
+    expect(screen.getByText(/Please approve or request changes on the PRD/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Reply Notes'), {
+      target: { value: 'The scope is right; proceed.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    await waitFor(() => {
+      expect(resolveWorkflowGate).toHaveBeenCalledWith('test-session-id-1234', 'gate-1', {
+        decision: 'APPROVE',
+        notes: 'The scope is right; proceed.',
+        source: 'human',
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
+    });
+  });
+
+  it('hides the gate card once the latest gate verdict is already resolved', async () => {
+    vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+      messages: [],
+      streamingContent: undefined,
+      streamingParts: undefined,
+      streamingModel: undefined,
+      connected: true,
+      historyLoaded: true,
+      participants: new Map(),
+      meshEvents: [],
+      agentEvents: new Map(),
+      pendingPermissions: [],
+      capabilities: {},
+      sendMessage: vi.fn(),
+      sendDirectedMessages: vi.fn(),
+      respondToPermission: vi.fn(),
+      sendInterrupt: vi.fn(),
+      sendSetModel: vi.fn(),
+      sendSetThinkingTokens: vi.fn(),
+      sendRewindFiles: vi.fn(),
+      sendSetInternalVisibility: vi.fn(),
+      clearMessages: vi.fn(),
+    });
+
+    wrap('test-session-id-1234', {
+      volundr: {
+        getWorkflowGates: vi.fn().mockResolvedValue([
+          {
+            id: 'gate-1',
+            node_id: 'spec-prd-gate',
+            activation_id: 'activation-1',
+            label: 'PRD approval gate',
+            condition: 'Review the PRD',
+            status: 'approved',
+            pending_behavior: 'help_needed',
+            approvers: ['human'],
+            auto_forward_after: '30m',
+            requested_at: '2026-05-20T12:00:00Z',
+            updated_at: '2026-05-20T12:01:00Z',
+            triggered_by_event_type: 'spec.prd.ready_for_gate',
+            approval_event_type: 'spec.prd.approved',
+            changes_requested_event_type: 'spec.prd.changes_requested',
+            attempt: 1,
+            decision: 'APPROVE',
+            notes: '',
+            source: 'human',
+            summary: 'PRD approved by human reviewer.',
+          },
+        ]),
+      },
+    });
+
+    await screen.findByTestId('live-session-detail-page');
+    expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
   });
 
   describe('loading and error states', () => {
@@ -258,7 +446,7 @@ describe('LiveSessionDetailPage', () => {
     it('shows model label', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Claude Sonnet')).toBeInTheDocument();
+      expect(screen.getByText('Claude Sonnet 4.6')).toBeInTheDocument();
     });
 
     it('shows repo and branch for git source', async () => {
@@ -345,6 +533,238 @@ describe('LiveSessionDetailPage', () => {
         expect(screen.getByTestId('diffs-tab')).toBeInTheDocument();
       });
     });
+
+    it('shows a starting message in the terminal tab while a session boots', async () => {
+      wrap('test-session-id-1234', { session: STARTING_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
+      await waitFor(() => {
+        expect(screen.getByText('Session is starting…')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a stopped message in the terminal tab when no live terminal is available', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
+      await waitFor(() => {
+        expect(screen.getByText('Start the session to access terminal.')).toBeInTheDocument();
+      });
+    });
+
+    it('renders diff file metadata and an empty diff state', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/diff/files')) {
+          return new Response(
+            JSON.stringify({
+              files: [{ path: 'README.md', status: 'mod', ins: 2, del: 1 }],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        if (url.includes('/api/diff?')) {
+          return new Response(JSON.stringify({ filePath: 'README.md', hunks: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      const fileButton = await screen.findByText('README.md');
+      expect(screen.getByText('+2')).toBeInTheDocument();
+      expect(screen.getByText('-1')).toBeInTheDocument();
+
+      fireEvent.click(fileButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('No changes in this file')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a diff error when loading a selected file fails', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/diff/files')) {
+          return new Response(
+            JSON.stringify({
+              files: [{ path: 'README.md', status: 'new', ins: 1, del: 0 }],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        if (url.includes('/api/diff?')) {
+          return new Response(null, { status: 500 });
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      fireEvent.click(await screen.findByText('README.md'));
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Failed to load diff: Failed to fetch diff: 500'),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('renders diff hunks and resets selection when switching diff base', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/diff/files')) {
+          const params = new URL(url).searchParams;
+          const base = params.get('base');
+          const files =
+            base === 'default-branch'
+              ? [{ path: 'src/app.ts', status: 'remove', ins: 0, del: 4 }]
+              : [{ path: 'src/app.ts', status: 'mod', ins: 3, del: 1 }];
+          return new Response(JSON.stringify({ files }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (url.includes('/api/diff?')) {
+          return new Response(
+            JSON.stringify({
+              filePath: 'src/app.ts',
+              hunks: [
+                {
+                  oldStart: 1,
+                  oldCount: 2,
+                  newStart: 1,
+                  newCount: 3,
+                  lines: [
+                    { type: 'context', content: 'const ready = true;', oldLine: 1, newLine: 1 },
+                    { type: 'remove', content: 'console.log("old");', oldLine: 2 },
+                    { type: 'add', content: 'console.log("new");', newLine: 2 },
+                    { type: 'add', content: '', newLine: 3 },
+                  ],
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      fireEvent.click(await screen.findByText('src/app.ts'));
+
+      await waitFor(() => {
+        expect(screen.getByText('@@ -1,2 +1,3 @@')).toBeInTheDocument();
+      });
+      expect(screen.getByText('console.log("old");')).toBeInTheDocument();
+      expect(screen.getByText('console.log("new");')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /default branch/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
+      });
+      expect(screen.getByText('-4')).toBeInTheDocument();
+    });
+
+    it('shows the empty diff state when a session has no live endpoint', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
+      });
+      expect(screen.getAllByText('changed files').length).toBeGreaterThanOrEqual(1);
+      expect(screen.queryByText('Loading files...')).not.toBeInTheDocument();
+    });
+
+    it('renders a saved transcript for stopped sessions', async () => {
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn().mockResolvedValue({
+            turns: [
+              {
+                id: 'turn-user-1',
+                role: 'user',
+                content: 'Can you summarize the last run?',
+                created_at: '2026-05-15T18:00:00Z',
+              },
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                content: 'It finished cleanly and archived the workspace.',
+                created_at: '2026-05-15T18:00:05Z',
+                participant_meta: {
+                  peer_id: 'flock-coder',
+                  persona: 'coder',
+                  display_name: 'Coder',
+                  participant_type: 'ravn',
+                  color: 'brand',
+                },
+              },
+            ],
+          }),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByText('Can you summarize the last run?')).toBeInTheDocument();
+      expect(
+        screen.getByText('It finished cleanly and archived the workspace.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Start the session to chat.')).not.toBeInTheDocument();
+    });
+
+    it('shows an archive-aware chronicle empty state for stopped sessions', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Chronicle/i }));
+      await waitFor(() => {
+        expect(screen.getByText('No saved chronicle yet.')).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByText('Start the session to view its chronicle.'),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe('logs tab', () => {
@@ -377,6 +797,7 @@ describe('LiveSessionDetailPage', () => {
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
+              bifrost: createMockBifrostService(),
               volundr: service,
               ptyStream: buildPtyStream(),
               filesystem: buildFilesystem(),
@@ -439,6 +860,7 @@ describe('LiveSessionDetailPage', () => {
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
+              bifrost: createMockBifrostService(),
               volundr: service,
               ptyStream: buildPtyStream(),
               filesystem: buildFilesystem(),
@@ -489,6 +911,7 @@ describe('LiveSessionDetailPage', () => {
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
+              bifrost: createMockBifrostService(),
               volundr: service,
               ptyStream: buildPtyStream(),
               filesystem: buildFilesystem(),
@@ -523,6 +946,9 @@ describe('LiveSessionDetailPage', () => {
           'chronicles',
         ]);
       });
+      await waitFor(() => {
+        expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions', replace: true });
+      });
     });
   });
 
@@ -555,6 +981,13 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('Tokens')).toBeInTheDocument();
+    });
+
+    it('shows Forge metric with the instance name', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByText('Forge')).toBeInTheDocument();
+      expect(screen.getByText('Guild Alpha')).toBeInTheDocument();
     });
   });
 });

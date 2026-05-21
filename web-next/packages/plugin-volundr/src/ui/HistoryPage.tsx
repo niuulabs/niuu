@@ -11,10 +11,11 @@ import './HistoryPage.css';
 // ---------------------------------------------------------------------------
 
 function outcomeState(state: Session['state']): 'idle' | 'failed' {
-  return state === 'terminated' ? 'idle' : 'failed';
+  return state === 'failed' ? 'failed' : 'idle';
 }
 
 function outcomeLabel(state: Session['state']): string {
+  if (state === 'archived') return 'archived';
   return state === 'terminated' ? 'terminated' : 'failed';
 }
 
@@ -64,7 +65,10 @@ export function HistoryPage() {
   });
 
   const hasFilters = Boolean(ravnId || personaName || sagaId || outcome || dateFrom || dateTo);
-  const terminatedCount = data.filter((session) => session.state === 'terminated').length;
+  const terminatedCount = data.filter(
+    (session) => session.state === 'terminated' || session.state === 'archived',
+  ).length;
+  const archivedCount = data.filter((session) => session.state === 'archived').length;
   const failedCount = data.filter((session) => session.state === 'failed').length;
   const uniqueRavns = new Set(data.map((session) => session.ravnId)).size;
 
@@ -97,6 +101,10 @@ export function HistoryPage() {
           <div className="history-page__summary-card">
             <span className="history-page__summary-label">terminated</span>
             <span className="history-page__summary-value">{terminatedCount}</span>
+          </div>
+          <div className="history-page__summary-card">
+            <span className="history-page__summary-label">archived</span>
+            <span className="history-page__summary-value">{archivedCount}</span>
           </div>
           <div className="history-page__summary-card history-page__summary-card--critical">
             <span className="history-page__summary-label">failed</span>
@@ -152,7 +160,7 @@ export function HistoryPage() {
               role="group"
               aria-label="Filter by outcome"
             >
-              {(['', 'terminated', 'failed'] as const).map((o) => (
+              {(['', 'terminated', 'archived', 'failed'] as const).map((o) => (
                 <button
                   key={o || 'all'}
                   className={[
@@ -239,7 +247,15 @@ export function HistoryPage() {
                 <td>
                   <div className="history-page__outcome">
                     <StateDot state={outcomeState(session.state)} />
-                    <Chip tone={session.state === 'terminated' ? 'default' : 'critical'}>
+                    <Chip
+                      tone={
+                        session.state === 'failed'
+                          ? 'critical'
+                          : session.state === 'archived'
+                            ? 'muted'
+                            : 'default'
+                      }
+                    >
                       {outcomeLabel(session.state)}
                     </Chip>
                   </div>

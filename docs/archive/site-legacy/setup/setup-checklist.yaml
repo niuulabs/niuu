@@ -1,0 +1,157 @@
+volundr_setup:
+  version: "1.0"
+
+  prerequisites:
+    - tool: kubectl
+      check: "kubectl version --client"
+      install_url: "https://kubernetes.io/docs/tasks/tools/"
+    - tool: helm
+      check: "helm version"
+      install: "curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
+    - tool: k3s
+      check: "k3s --version"
+      install: "curl -sfL https://get.k3s.io | sh -"
+      required_for: [single-node]
+    - tool: k3d
+      check: "k3d version"
+      install: "curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash"
+      required_for: [local-k3d]
+
+  questions:
+    - key: deployment_target
+      question: "Where will Volundr run?"
+      options: [single-node, existing-cluster, local-k3d]
+      required: true
+    - key: domain
+      question: "What domain/hostname for Volundr?"
+      default: "volundr.local"
+      used_in:
+        - "ingress.hosts[0].host"
+        - "sessionContributors[0].kwargs.base_domain"
+    - key: database_mode
+      question: "Deploy PostgreSQL in-cluster or use external?"
+      options: [in-cluster, external]
+      default: "in-cluster"
+    - key: db_host
+      question: "External database hostname?"
+      required_when: "database_mode == external"
+      used_in: ["database.external.host"]
+    - key: db_port
+      question: "Database port?"
+      default: "5432"
+      required_when: "database_mode == external"
+    - key: db_password
+      question: "Database password?"
+      required: true
+      secret: true
+    - key: anthropic_api_key
+      question: "Anthropic API key (sk-ant-...)?"
+      required: true
+      secret: true
+      used_in: ["existingSecrets.anthropic"]
+    - key: github_enabled
+      question: "Enable GitHub integration?"
+      type: boolean
+      default: false
+    - key: github_token
+      question: "GitHub personal access token?"
+      required_when: "github_enabled == true"
+      secret: true
+    - key: github_orgs
+      question: "GitHub organizations to list repos from?"
+      type: list
+      required_when: "github_enabled == true"
+    - key: gitlab_enabled
+      question: "Enable GitLab integration?"
+      type: boolean
+      default: false
+    - key: storage_class
+      question: "Kubernetes storage class (RWX capable)?"
+      default: "local-path"
+      used_in:
+        - "storage.sessions.storageClass"
+        - "storage.home.storageClass"
+    - key: auth_mode
+      question: "Authentication mode?"
+      options: [none, oidc]
+      default: "none"
+    - key: oidc_issuer
+      question: "OIDC issuer URL?"
+      required_when: "auth_mode == oidc"
+      used_in: ["envoy.jwt.issuer"]
+    - key: oidc_client_id
+      question: "OIDC client ID?"
+      required_when: "auth_mode == oidc"
+    - key: tls_enabled
+      question: "Enable TLS?"
+      type: boolean
+      default: false
+    - key: gpu_enabled
+      question: "GPU workloads needed?"
+      type: boolean
+      default: false
+
+  phases:
+    - name: cluster-setup
+      applies_to: [single-node]
+      steps:
+        - command: "curl -sfL https://get.k3s.io | sh -"
+          description: "Install k3s"
+          verify: "kubectl get nodes"
+        - command: "mkdir -p ~/.kube && sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config && sudo chown $(id -u):$(id -g) ~/.kube/config"
+          description: "Configure kubeconfig"
+          verify: "kubectl cluster-info"
+
+    - name: namespace
+      steps:
+        - command: "kubectl create namespace volundr"
+          description: "Create Volundr namespace"
+          verify: "kubectl get namespace volundr"
+
+    - name: secrets
+      steps:
+        - command: "kubectl create secret generic volundr-anthropic-api -n volundr --from-literal=ANTHROPIC_API_KEY=${anthropic_api_key}"
+          description: "Create Anthropic API secret"
+          verify: "kubectl get secret volundr-anthropic-api -n volundr"
+        - command: "kubectl create secret generic volundr-db -n volundr --from-literal=username=volundr --from-literal=password=${db_password}"
+          description: "Create database credentials"
+          verify: "kubectl get secret volundr-db -n volundr"
+        - command: "kubectl create secret generic github-token -n volundr --from-literal=token=${github_token}"
+          description: "Create GitHub token secret"
+          when: "github_enabled == true"
+          verify: "kubectl get secret github-token -n volundr"
+
+    - name: database
+      when: "database_mode == in-cluster"
+      steps:
+        - command: "helm install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql -n volundr --set auth.username=volundr --set auth.password=${db_password} --set auth.database=volundr"
+          description: "Deploy in-cluster PostgreSQL"
+          verify: "kubectl get pods -n volundr -l app.kubernetes.io/name=postgresql"
+          wait_for: "pod/postgresql-0 condition=Ready timeout=120s"
+
+    - name: deploy
+      steps:
+        - description: "Generate values file from answers"
+          template: "values-generated.yaml"
+        - command: "helm install volundr oci://ghcr.io/niuulabs/charts/volundr -n volundr -f values-generated.yaml"
+          description: "Install Volundr Helm chart"
+          verify: "kubectl get pods -n volundr -l app.kubernetes.io/name=volundr"
+          wait_for: "deployment/volundr condition=Available timeout=180s"
+
+    - name: verify
+      steps:
+        - command: "kubectl get pods -n volundr"
+          description: "Check all pods are running"
+          expect: "all pods Running"
+        - command: "curl -sf http://${domain}/health"
+          description: "Health check API endpoint"
+          expect: '{"status":"healthy"}'
+        - command: "kubectl logs -n volundr deployment/volundr -c migrate"
+          description: "Verify database migrations"
+          expect: "no errors"
+        - command: "curl -s -X POST http://${domain}/api/v1/forge/sessions -H 'Content-Type: application/json' -d '{\"name\": \"test-session\", \"model\": \"claude-sonnet-4-20250514\"}'"
+          description: "Create a test session"
+          expect: "JSON with session ID and status created"
+        - command: "curl -s -o /dev/null -w '%{http_code}' http://${domain}/"
+          description: "Verify web UI loads"
+          expect: "200"

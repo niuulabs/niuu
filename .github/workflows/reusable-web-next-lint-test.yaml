@@ -56,6 +56,8 @@ jobs:
   test:
     name: "web-next: Test"
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: "--max-old-space-size=4096"
     defaults:
       run:
         working-directory: web-next
@@ -99,7 +101,7 @@ jobs:
 
   e2e:
     name: "web-next: E2E"
-    if: false  # Temporarily disabled — re-enable when visual baselines are stabilized
+    if: false # Temporarily disabled — re-enable when visual baselines are stabilized
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:

@@ -8,7 +8,7 @@
 import type { ApiClient } from '@niuulabs/query';
 import type { Mount } from '@niuulabs/domain';
 import type { IMimirService, SearchMode, RecentWrite } from '../ports';
-import type { PageMeta, Page, SearchResult } from '../domain/page';
+import type { PageMeta, Page, SearchResult, Zone } from '../domain/page';
 import type { Source, OriginType } from '../domain/source';
 import type {
   LintReport,
@@ -81,6 +81,7 @@ interface RawPageMeta {
 }
 
 interface RawPage extends RawPageMeta {
+  content: string;
   related: string[];
   zones?: Array<{
     kind: string;
@@ -263,7 +264,167 @@ function toPage(raw: RawPage): Page {
   return {
     ...toPageMeta(raw),
     related: raw.related,
+    zones: normalizeZones(raw),
   };
+}
+
+function normalizeZones(raw: RawPage): Zone[] | undefined {
+  const explicit = raw.zones
+    ?.map((zone) => toZone(zone))
+    .filter((zone): zone is Zone => zone !== null);
+  if (explicit && explicit.length > 0) return explicit;
+  return deriveZonesFromContent(raw.content, raw.path);
+}
+
+function toZone(raw: NonNullable<RawPage['zones']>[number]): Zone | null {
+  switch (raw.kind) {
+    case 'key-facts':
+      return { kind: 'key-facts', items: asStringArray(raw.items) };
+    case 'relationships':
+      return {
+        kind: 'relationships',
+        items: asRelationshipItems(raw.items),
+      };
+    case 'assessment':
+      return { kind: 'assessment', text: typeof raw.text === 'string' ? raw.text : '' };
+    case 'timeline':
+      return { kind: 'timeline', items: asTimelineItems(raw.items) };
+    default:
+      return null;
+  }
+}
+
+function asStringArray(items: unknown[] | undefined): string[] {
+  return (items ?? []).filter((item): item is string => typeof item === 'string');
+}
+
+function asRelationshipItems(items: unknown[] | undefined): Array<{ slug: string; note: string }> {
+  return (items ?? [])
+    .map((item) => {
+      if (
+        item &&
+        typeof item === 'object' &&
+        typeof (item as { slug?: unknown }).slug === 'string'
+      ) {
+        return {
+          slug: (item as { slug: string }).slug,
+          note:
+            typeof (item as { note?: unknown }).note === 'string'
+              ? (item as { note: string }).note
+              : '',
+        };
+      }
+      return null;
+    })
+    .filter((item): item is { slug: string; note: string } => item !== null);
+}
+
+function asTimelineItems(
+  items: unknown[] | undefined,
+): Array<{ date: string; note: string; source: string }> {
+  return (items ?? [])
+    .map((item) => {
+      if (
+        item &&
+        typeof item === 'object' &&
+        typeof (item as { date?: unknown }).date === 'string' &&
+        typeof (item as { note?: unknown }).note === 'string'
+      ) {
+        return {
+          date: (item as { date: string }).date,
+          note: (item as { note: string }).note,
+          source:
+            typeof (item as { source?: unknown }).source === 'string'
+              ? (item as { source: string }).source
+              : '',
+        };
+      }
+      return null;
+    })
+    .filter((item): item is { date: string; note: string; source: string } => item !== null);
+}
+
+function deriveZonesFromContent(content: string, path: string): Zone[] | undefined {
+  const withoutFrontmatter = stripFrontmatter(content);
+  const compiledTruth = extractSection(withoutFrontmatter, '## Compiled Truth');
+  const timeline = extractSection(withoutFrontmatter, '## Timeline');
+  const zones: Zone[] = [];
+
+  if (compiledTruth || timeline !== null) {
+    if (compiledTruth?.trim()) {
+      zones.push({ kind: 'assessment', text: compiledTruth.trim() });
+    }
+    if (timeline !== null) {
+      zones.push({ kind: 'timeline', items: parseTimelineItems(timeline) });
+    }
+    return zones.length > 0 ? zones : undefined;
+  }
+
+  const fallback = stripLeadingTitle(stripSourceFooter(withoutFrontmatter), path).trim();
+  if (!fallback) return undefined;
+  return [{ kind: 'assessment', text: fallback }];
+}
+
+function stripFrontmatter(content: string): string {
+  return content.replace(/^---\n[\s\S]*?\n---\n?/, '');
+}
+
+function extractSection(content: string, heading: string): string | null {
+  const match = content.match(
+    new RegExp(
+      `(?:^|\\r?\\n)${escapeRegExp(heading)}[^\\S\\r\\n]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n##\\s|$)`,
+    ),
+  );
+  return match ? (match[1] ?? '') : null;
+}
+
+function parseTimelineItems(
+  timeline: string,
+): Array<{ date: string; note: string; source: string }> {
+  return timeline
+    .split('\n')
+    .map((line) => line.trim())
+    .map((line) => {
+      const match = line.match(/^- (\d{4}-\d{2}-\d{2}):\s*(.+)$/);
+      if (!match) return null;
+      const date = match[1]!;
+      const rest = match[2]!;
+      const sourceMatch = rest.match(/\[Source:\s*([^\]]+)\]/);
+      const note = (sourceMatch ? rest.slice(0, sourceMatch.index) : rest)
+        .trim()
+        .replace(/[. ]+$/, '');
+      return {
+        date,
+        note,
+        source: sourceMatch?.[1]?.trim() ?? '',
+      };
+    })
+    .filter((item): item is { date: string; note: string; source: string } => item !== null);
+}
+
+function stripSourceFooter(content: string): string {
+  return content.replace(/\n?<!--\s*sources:[\s\S]*?-->\s*$/m, '').trim();
+}
+
+function stripLeadingTitle(content: string, path: string): string {
+  const lines = content.split('\n');
+  if (lines[0]?.startsWith('# ')) {
+    return lines.slice(1).join('\n').trim();
+  }
+  if (lines[0]?.trim() === inferTitleFromPath(path)) {
+    return lines.slice(1).join('\n').trim();
+  }
+  return content;
+}
+
+function inferTitleFromPath(path: string): string {
+  const leaf = path.split('/').pop() ?? path;
+  const stem = leaf.replace(/\.md$/i, '');
+  return stem.replace(/[-_]+/g, ' ').replace(/\b([a-z])/g, (m) => m.toUpperCase());
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function toLintIssue(raw: RawLintIssue): LintIssue {
@@ -636,10 +797,14 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
         await client.put<void>('/page', body);
       },
 
-      async search(query: string, mode: SearchMode = 'hybrid'): Promise<SearchResult[]> {
-        const raw = await client.get<RawSearchResult[]>(
-          `/search?q=${encodeURIComponent(query)}&mode=${mode}`,
-        );
+      async search(
+        query: string,
+        mode: SearchMode = 'hybrid',
+        mountName?: string,
+      ): Promise<SearchResult[]> {
+        const params = new URLSearchParams({ q: query, mode });
+        if (mountName) params.set('mount', mountName);
+        const raw = await client.get<RawSearchResult[]>(`/search?${params.toString()}`);
         return raw.map((r) => ({
           path: r.path,
           title: r.title,
@@ -647,6 +812,7 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
           category: r.category,
           type: (r.type ?? inferPageType(r.path, r.category)) as SearchResult['type'],
           confidence: (r.confidence ?? 'medium') as SearchResult['confidence'],
+          mounts: mountName ? [mountName] : undefined,
         }));
       },
 

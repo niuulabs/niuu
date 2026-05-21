@@ -51,6 +51,10 @@ spec:
         - name: bifrost
           image: {{ include "bifrost.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          {{- with .Values.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -141,12 +145,48 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if .Values.envoy.enabled }}
+        - name: envoy
+          image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
+          imagePullPolicy: {{ .Values.envoy.image.pullPolicy }}
+          ports:
+            - name: envoy
+              containerPort: {{ .Values.envoy.port }}
+              protocol: TCP
+          {{- with .Values.envoy.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.envoy.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 1
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.envoy.port }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 1
+            failureThreshold: 3
+        {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "bifrost.fullname" . }}
         - name: tmp
           emptyDir: {}
+        {{- if .Values.envoy.enabled }}
+        - name: envoy-config
+          configMap:
+            name: {{ include "bifrost.fullname" . }}-envoy
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

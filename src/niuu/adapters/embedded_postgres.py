@@ -157,24 +157,16 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
 
         # Start server
         self._socket_dir = _choose_socket_dir(self._data_dir)
-        await loop.run_in_executor(None, self._start_server)
+        uri = f"postgresql://postgres:@/postgres?host={self._socket_dir}"
+        existing_conn = await self._try_connect_existing(uri)
+        if existing_conn is None:
+            await loop.run_in_executor(None, self._start_server)
+            existing_conn = await self._connect(uri)
 
         # Build connection info
-        uri = f"postgresql://postgres:@/postgres?host={self._socket_dir}"
         info = self._parse_uri(uri)
         self._connection_info = info
-
-        try:
-            import asyncpg  # noqa: PLC0415
-        except ImportError as exc:
-            raise RuntimeError(
-                "asyncpg is not installed. Install it with: pip install asyncpg"
-            ) from exc
-
-        self._conn = await asyncio.wait_for(
-            asyncpg.connect(dsn=uri),
-            timeout=self._startup_timeout_s,
-        )
+        self._conn = existing_conn
         logger.info("Embedded PG started — %s", uri)
         return info
 
@@ -336,3 +328,30 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
         user = parsed.username or "postgres"
 
         return ConnectionInfo(host=host, port=port, dbname=dbname, user=user)
+
+    async def _connect(self, uri: str):
+        """Open an asyncpg connection using the configured startup timeout."""
+        try:
+            import asyncpg  # noqa: PLC0415
+        except ImportError as exc:
+            raise RuntimeError(
+                "asyncpg is not installed. Install it with: pip install asyncpg"
+            ) from exc
+
+        return await asyncio.wait_for(
+            asyncpg.connect(dsn=uri),
+            timeout=self._startup_timeout_s,
+        )
+
+    async def _try_connect_existing(self, uri: str):
+        """Return an existing connection when the embedded cluster is already running."""
+        if self._data_dir is None or not (self._data_dir / "postmaster.pid").exists():
+            return None
+
+        try:
+            conn = await self._connect(uri)
+        except Exception:
+            return None
+
+        logger.info("Reusing existing embedded PostgreSQL instance — %s", uri)
+        return conn

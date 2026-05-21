@@ -157,7 +157,7 @@ The following subsystems use this pattern:
 | `ingress.enabled` | bool | `false` | Enable ingress |
 | `ingress.className` | string | `""` | Ingress class name (`nginx`, `traefik`, `haproxy`, etc.) |
 | `ingress.annotations` | object | `{}` | Ingress annotations (controller-specific). See values.yaml for examples per controller |
-| `ingress.hosts` | list | See below | Ingress hosts. Default: `api.example.com` at `/api/v1/volundr` |
+| `ingress.hosts` | list | See below | Ingress hosts. Default: `api.example.com` at `/api/v1` |
 | `ingress.tls` | list | `[]` | Ingress TLS configuration |
 
 ### Storage (Shared PVCs)
@@ -455,7 +455,7 @@ Controls how integration credentials (API keys, tokens) are stored and retrieved
 | Adapter | Class | Description |
 |---------|-------|-------------|
 | Memory (default) | `volundr.adapters.outbound.memory_credential_store.MemoryCredentialStore` | In-memory store, credentials lost on restart. Suitable for development |
-| Vault / OpenBao | `volundr.adapters.outbound.vault_credential_store.VaultCredentialStore` | HashiCorp Vault or OpenBao backend |
+| OpenBao | `niuu.adapters.openbao_credential_store.OpenBaoCredentialStore` | OpenBao/Vault-compatible KV v2 backend |
 | Infisical | `volundr.adapters.outbound.infisical_credential_store.InfisicalCredentialStore` | Infisical secrets management backend |
 
 | Key | Type | Default | Description |
@@ -464,15 +464,16 @@ Controls how integration credentials (API keys, tokens) are stored and retrieved
 | `credentialStore.kwargs` | object | `{}` | All kwargs forwarded to the adapter constructor |
 
 <details>
-<summary>VaultCredentialStore kwargs</summary>
+<summary>OpenBaoCredentialStore kwargs</summary>
 
 ```yaml
 credentialStore:
-  adapter: "volundr.adapters.outbound.vault_credential_store.VaultCredentialStore"
+  adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
   kwargs:
-    url: "http://vault:8200"
-    auth_method: "kubernetes"
-    mount_path: "secret"
+    url: "http://openbao:8200"
+    mount_path: "volundr"
+    auth_method: "token"
+    token: ""
 ```
 
 </details>
@@ -501,7 +502,8 @@ Controls how secrets (e.g., CSI volumes) are injected into session pods. Uses th
 | Adapter | Class | Description |
 |---------|-------|-------------|
 | InMemory (default) | `volundr.adapters.outbound.memory_secret_injection.InMemorySecretInjectionAdapter` | No-op adapter for development |
-| Infisical CSI | `volundr.adapters.outbound.infisical_secret_injection.InfisicalCSISecretInjectionAdapter` | Mounts Infisical secrets via CSI driver into session pods |
+| Infisical Agent Injector | `volundr.adapters.outbound.infisical_secret_injection.InfisicalAgentInjectionAdapter` | Creates per-session Infisical identities and agent ConfigMaps |
+| OpenBao Agent Injector | `volundr.adapters.outbound.openbao_secret_injection.OpenBaoAgentInjectionAdapter` | Creates session-scoped OpenBao JWT roles, ServiceAccounts, and agent ConfigMaps |
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -509,13 +511,29 @@ Controls how secrets (e.g., CSI volumes) are injected into session pods. Uses th
 | `secretInjection.kwargs` | object | `{}` | All kwargs forwarded to the adapter constructor |
 
 <details>
-<summary>InfisicalCSISecretInjectionAdapter kwargs</summary>
+<summary>InfisicalAgentInjectionAdapter kwargs</summary>
 
 ```yaml
 secretInjection:
-  adapter: "volundr.adapters.outbound.infisical_secret_injection.InfisicalCSISecretInjectionAdapter"
+  adapter: "volundr.adapters.outbound.infisical_secret_injection.InfisicalAgentInjectionAdapter"
   kwargs:
     infisical_url: "https://infisical.example.com"
+```
+
+</details>
+
+<details>
+<summary>OpenBaoAgentInjectionAdapter kwargs</summary>
+
+```yaml
+secretInjection:
+  adapter: "volundr.adapters.outbound.openbao_secret_injection.OpenBaoAgentInjectionAdapter"
+  kwargs:
+    openbao_url: "https://openbao.ymir.niuu.world"
+    namespace: "skuld"
+    mount_path: "volundr"
+    auth_path: "jwt-valhalla"
+    audience: "https://kubernetes.default.svc.cluster.local"
 ```
 
 </details>
@@ -946,7 +964,7 @@ ingress:
   hosts:
     - host: volundr.example.com
       paths:
-        - path: /api/v1/volundr
+        - path: /api/v1
           pathType: Prefix
   tls:
     - secretName: volundr-tls
@@ -995,11 +1013,11 @@ podManager:
 
 ```yaml
 credentialStore:
-  adapter: "volundr.adapters.outbound.vault_credential_store.VaultCredentialStore"
+  adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
   kwargs:
-    url: "http://vault:8200"
-    auth_method: "kubernetes"
-    mount_path: "secret"
+    url: "http://openbao:8200"
+    mount_path: "volundr"
+    auth_method: "token"
 ```
 
 ## Storage Layout

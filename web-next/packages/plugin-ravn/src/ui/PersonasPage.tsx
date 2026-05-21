@@ -62,9 +62,7 @@ function buildDraftPersona(name: string): PersonaCreateRequest {
     allowedTools: [],
     forbiddenTools: [],
     permissionMode: 'default',
-    executor: undefined,
     iterationBudget: 20,
-    llmPrimaryAlias: 'claude-sonnet-4-6',
     llmThinkingEnabled: false,
     llmMaxTokens: 8192,
     producesEventType: '',
@@ -129,7 +127,7 @@ function PersonaDetailPane({
                 role: <strong>{persona.role}</strong>
                 <span className="rv-pr-head__sep">·</span>
                 {persona.isBuiltin ? 'builtin' : 'user-defined'}
-                {persona.hasOverride && (
+                {persona.isBuiltin && persona.hasOverride && (
                   <>
                     <span className="rv-pr-head__sep">·</span>
                     <span className="rv-pr-head__override">override applied</span>

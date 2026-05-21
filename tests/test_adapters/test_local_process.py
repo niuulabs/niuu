@@ -145,20 +145,21 @@ def _mock_spawn(
 
 class TestInit:
     def test_coerces_string_kwargs_from_env_backed_config(self, tmp_path: Path) -> None:
-        mgr = LocalProcessPodManager(
-            workspaces_dir=str(tmp_path / "workspaces"),
-            claude_binary="claude",
-            max_concurrent="4",
-            sdk_port_start="9200",
-            stop_timeout="15",
-            state_file=str(tmp_path / "state.json"),
-            allowed_mount_prefixes="/repo-a,/repo-b",
-        )
+        with patch.object(SdkPortAllocator, "_is_port_free", return_value=True):
+            mgr = LocalProcessPodManager(
+                workspaces_dir=str(tmp_path / "workspaces"),
+                claude_binary="claude",
+                max_concurrent="4",
+                sdk_port_start="9200",
+                stop_timeout="15",
+                state_file=str(tmp_path / "state.json"),
+                allowed_mount_prefixes="/repo-a,/repo-b",
+            )
 
-        assert mgr._max_concurrent == 4
-        assert mgr._stop_timeout == 15
-        assert mgr._port_allocator.allocate() == 9200
-        assert mgr._allowed_mount_prefixes == ["/repo-a", "/repo-b"]
+            assert mgr._max_concurrent == 4
+            assert mgr._stop_timeout == 15
+            assert mgr._port_allocator.allocate() == 9200
+            assert mgr._allowed_mount_prefixes == ["/repo-a", "/repo-b"]
 
 
 class TestSkuldEnv:
@@ -292,6 +293,17 @@ class TestFlockPortAllocation:
             skuld_rep_port=7485,
             skuld_handshake_port=7584,
         )
+
+    def test_pick_flock_base_port_skips_reserved_ranges(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """Concurrent flock starts should not reuse an already reserved base."""
+        manager._allocated_flock_base_ports.add(7480)
+        with patch.object(SdkPortAllocator, "_is_port_free", return_value=True):
+            base_port = manager._pick_flock_base_port(node_count=1)
+
+        assert base_port == 7481
 
 
 # ------------------------------------------------------------------
@@ -626,12 +638,25 @@ class TestGitClone:
         checkout_proc.communicate = AsyncMock(return_value=(b"", b""))
 
         spec = SessionSpec(
-            values={"git_token": "tok123"},
+            values={
+                "git": {
+                    "cloneUrl": "https://x-access-token:tok123@github.com/org/repo",
+                    "repoUrl": "https://github.com/org/repo",
+                    "branch": "feat",
+                    "baseBranch": "main",
+                }
+            },
             pod_spec=PodSpecAdditions(),
         )
 
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_exec.side_effect = [mock_proc, checkout_proc]
+            mock_exec.side_effect = [
+                mock_proc,
+                checkout_proc,
+                checkout_proc,
+                checkout_proc,
+                checkout_proc,
+            ]
             await manager._clone_repo(source, workspace, spec)
 
         clone_call = mock_exec.call_args_list[0]
@@ -639,7 +664,20 @@ class TestGitClone:
         assert "git" in args
         assert "clone" in args
         assert "--no-single-branch" in args
-        assert "x-access-token:tok123@github.com" in args[5]
+        assert "x-access-token:tok123@github.com/org/repo" in args[5]
+        assert mock_exec.call_args_list[3][0][-4:] == (
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/org/repo",
+        )
+        assert mock_exec.call_args_list[4][0][-5:] == (
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "https://x-access-token:tok123@github.com/org/repo",
+        )
 
     async def test_clone_failure_sanitizes_token(
         self,
@@ -699,7 +737,7 @@ class TestGitClone:
         self,
         manager: LocalProcessPodManager,
     ) -> None:
-        """Falls back to base_branch when feature branch checkout fails."""
+        """Falls back to base_branch and creates the feature branch locally."""
         source = GitSource(
             repo="https://github.com/org/repo",
             branch="feat/missing",
@@ -713,21 +751,32 @@ class TestGitClone:
         clone_proc.returncode = 0
         clone_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-        # First checkout fails (feature branch), second succeeds (base)
+        # Feature branch missing on remote.
         fail_proc = AsyncMock()
         fail_proc.returncode = 1
         fail_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        head_proc = AsyncMock()
+        head_proc.returncode = 0
+        head_proc.communicate = AsyncMock(return_value=(b"origin/main\n", b""))
 
         ok_proc = AsyncMock()
         ok_proc.returncode = 0
         ok_proc.communicate = AsyncMock(return_value=(b"", b""))
 
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_exec.side_effect = [clone_proc, fail_proc, ok_proc]
+            mock_exec.side_effect = [
+                clone_proc,
+                fail_proc,
+                head_proc,
+                ok_proc,
+                ok_proc,
+                ok_proc,
+                ok_proc,
+            ]
             await manager._clone_repo(source, workspace, spec)
 
-        # 3 calls: clone, checkout feat, checkout main
-        assert mock_exec.call_count == 3
+        assert mock_exec.call_args_list[4][0][-3:] == ("checkout", "-b", "feat/missing")
 
 
 # ------------------------------------------------------------------
@@ -1192,6 +1241,8 @@ class TestProcessSpawning:
     ) -> None:
         workspace = tmp_workspaces / "session-with-overrides"
         workspace.mkdir(parents=True)
+        repo_dir = workspace / "repo"
+        (repo_dir / ".git").mkdir(parents=True)
         flock_dir = workspace / ".flock"
         flock_dir.mkdir()
         (flock_dir / "cluster.yaml").write_text("peers: []\n", encoding="utf-8")
@@ -1209,6 +1260,7 @@ class TestProcessSpawning:
                             "llm": {"model": "Qwen/Qwen3.6-35B-A3B-FP8"},
                             "system_prompt_extra": "Be extra careful.",
                             "iteration_budget": 40,
+                            "consumes_event_types": ["review.requested"],
                             "max_concurrent_tasks": 1,
                         }
                     ],
@@ -1217,6 +1269,7 @@ class TestProcessSpawning:
                         "max_tokens": 8192,
                     },
                     "max_concurrent_tasks": 5,
+                    "daily_budget_usd": 25.0,
                 }
             },
             pod_spec=PodSpecAdditions(
@@ -1253,8 +1306,12 @@ class TestProcessSpawning:
         assert "max_concurrent_tasks: 1" in node_config
         assert "system_prompt_extra: Be extra careful." in node_config
         assert "iteration_budget: 40" in node_config
+        assert "consumes_event_types:" in node_config
+        assert "- review.requested" in node_config
+        assert "daily_cap_usd: 25.0" in node_config
         assert "enabled: true" in node_config
         assert "broker_url: ws://127.0.0.1:9101/ws/ravn" in node_config
+        assert f"workspace_root: {repo_dir}" in node_config
 
     async def test_start_flock_materializes_mimir_runtime_and_local_paths(
         self,
@@ -1412,7 +1469,12 @@ class TestProcessSpawning:
                             {
                                 "id": "stage-reviewer",
                                 "kind": "stage",
-                                "personaIds": ["reviewer"],
+                                "stageMembers": [
+                                    {
+                                        "personaId": "reviewer",
+                                        "consumesEventTypes": ["review.requested"],
+                                    }
+                                ],
                             },
                             {
                                 "id": "trigger-1",
@@ -1468,12 +1530,13 @@ class TestProcessSpawning:
                 skuld_port=9101,
             )
 
-        cluster = (flock_dir / "cluster.yaml").read_text(encoding="utf-8")
-        assert "capabilities:" in cluster
-        assert "consumes_event_types:" in cluster
-        assert "emits_event_types:" in cluster
-        assert "code.requested" in cluster
-        assert "code.changed" in cluster
+        cluster = yaml.safe_load((flock_dir / "cluster.yaml").read_text(encoding="utf-8"))
+        assert isinstance(cluster, dict)
+        peers = {peer["persona"]: peer for peer in cluster["peers"]}
+        assert peers["coder"]["capabilities"] == ["file", "git"]
+        assert peers["coder"]["emits_event_types"] == ["code.changed"]
+        assert peers["reviewer"]["capabilities"] == ["file", "ravn"]
+        assert peers["reviewer"]["consumes_event_types"] == ["review.requested"]
 
 
 class TestResolveClaude:

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from volundr.domain.models import (
     EventType,
     GitSource,
+    Session,
     SessionActivityState,
+    SessionStatus,
 )
 from volundr.domain.services import SessionService
 from volundr.domain.services.session import SessionNotFoundError
@@ -124,6 +128,81 @@ class TestUpdateActivity:
             session.id, SessionActivityState.IDLE, {"turn_count": 2}
         )
         assert updated.activity_state == SessionActivityState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_update_activity_auto_stops_completed_ravn_flock(
+        self, service, repository, pod_manager, broadcaster
+    ):
+        """Authoritative ravn_flock completion should stop the session after broadcast."""
+        session = Session(
+            name="Research",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            workload_type="ravn_flock",
+            chat_endpoint="wss://chat.example.com/session",
+            code_endpoint="https://code.example.com/session",
+            pod_name="volundr-test-pod",
+        )
+        created = await repository.create(session)
+        broadcaster._events.clear()
+        broadcaster._session_updated_events.clear()
+
+        updated = await service.update_activity(
+            created.id,
+            SessionActivityState.IDLE,
+            {
+                "completion_source": "ravn_flock",
+                "structured_outcome": {"verdict": "pass", "summary": "published"},
+            },
+        )
+
+        assert updated.activity_state == SessionActivityState.IDLE
+        activity_events = [e for e in broadcaster._events if e.type == EventType.SESSION_ACTIVITY]
+        assert len(activity_events) == 1
+
+        await asyncio.sleep(0)
+
+        persisted = await repository.get(created.id)
+        assert persisted is not None
+        assert persisted.status == SessionStatus.STOPPED
+        assert persisted.chat_endpoint is None
+        assert persisted.code_endpoint is None
+        assert len(pod_manager.stop_calls) == 1
+        assert [event.status for event in broadcaster.session_updated_events] == [
+            SessionStatus.STOPPING,
+            SessionStatus.STOPPED,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_update_activity_does_not_auto_stop_non_terminal_idle(
+        self, service, repository, pod_manager
+    ):
+        """Idle activity without authoritative flock completion should not stop the session."""
+        session = Session(
+            name="Research",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            workload_type="ravn_flock",
+            chat_endpoint="wss://chat.example.com/session",
+            code_endpoint="https://code.example.com/session",
+            pod_name="volundr-test-pod",
+        )
+        created = await repository.create(session)
+
+        await service.update_activity(
+            created.id,
+            SessionActivityState.IDLE,
+            {"completion_source": "manual"},
+        )
+
+        await asyncio.sleep(0)
+
+        persisted = await repository.get(created.id)
+        assert persisted is not None
+        assert persisted.status == SessionStatus.RUNNING
+        assert pod_manager.stop_calls == []
 
 
 class TestSessionActivityState:

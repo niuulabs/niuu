@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ravn.adapters.mcp.client import MCPServerClient, make_tool_prefix
@@ -76,11 +77,15 @@ class MCPManager:
         configs: list[MCPServerConfig],
         *,
         builtin_tool_names: set[str] | None = None,
+        tool_result_hook: (
+            Callable[[str, str, dict[str, Any], Any], Awaitable[None]] | None
+        ) = None,
     ) -> None:
         self._configs = [c for c in configs if c.enabled]
         self._builtin_names: set[str] = builtin_tool_names or set()
         self._clients: list[MCPServerClient] = []
         self._tools: list[MCPTool] = []
+        self._tool_result_hook = tool_result_hook
 
     @property
     def tools(self) -> list[ToolPort]:
@@ -192,6 +197,7 @@ class MCPManager:
                 prefixed_name=prefixed_name,
                 description=description,
                 input_schema=input_schema,
+                post_execute_hook=self._tool_result_hook,
             )
             self._tools.append(mcp_tool)
             logger.debug("Registered MCP tool %r (server: %r)", prefixed_name, client.name)

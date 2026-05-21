@@ -138,6 +138,7 @@ class SessionService:
         self._provisioning_timeout = provisioning_timeout
         self._provisioning_initial_delay = provisioning_initial_delay
         self._provisioning_tasks: dict[UUID, asyncio.Task] = {}
+        self._activity_stop_tasks: set[asyncio.Task[None]] = set()
         self._integration_repo = integration_repo
         self._storage = storage
         self._chronicle_repository = chronicle_repository
@@ -362,7 +363,57 @@ class SessionService:
                     timestamp=updated.updated_at,
                 )
             )
+        if self._should_auto_stop_after_activity(updated, state, metadata):
+            self._schedule_activity_stop(updated.id)
         return updated
+
+    def _should_auto_stop_after_activity(
+        self,
+        session: Session,
+        state: SessionActivityState,
+        metadata: dict,
+    ) -> bool:
+        """Return True when an activity report authoritatively completes a flock session."""
+        if session.status != SessionStatus.RUNNING:
+            return False
+        if session.workload_type != "ravn_flock":
+            return False
+        if state != SessionActivityState.IDLE:
+            return False
+        return metadata.get("completion_source") == "ravn_flock"
+
+    def _schedule_activity_stop(self, session_id: UUID) -> None:
+        """Stop a completed flock session in the background after activity broadcast."""
+        task = asyncio.create_task(
+            self._auto_stop_completed_flock_session(session_id),
+            name=f"auto-stop-{session_id}",
+        )
+        self._activity_stop_tasks.add(task)
+        task.add_done_callback(self._on_activity_stop_done)
+
+    def _on_activity_stop_done(self, task: asyncio.Task[None]) -> None:
+        self._activity_stop_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("Auto-stop after flock completion failed: %s", exc, exc_info=exc)
+
+    async def _auto_stop_completed_flock_session(self, session_id: UUID) -> None:
+        """Stop a flock session that has reported an authoritative terminal outcome."""
+        try:
+            await self.stop_session(session_id)
+        except SessionNotFoundError:
+            logger.debug(
+                "Skipping auto-stop for completed flock session %s because it no longer exists",
+                session_id,
+            )
+        except SessionStateError:
+            logger.debug(
+                "Skipping auto-stop for completed flock session %s because it is no longer "
+                "stoppable",
+                session_id,
+            )
 
     async def list_sessions(
         self,
@@ -1070,6 +1121,45 @@ class SessionService:
             task.add_done_callback(
                 lambda t, sid=session.id: self._provisioning_tasks.pop(sid, None)
             )
+
+    async def reconcile_active_sessions(self) -> None:
+        """Reconcile stored STARTING/RUNNING sessions against the pod manager.
+
+        Local-process sessions can outlive the in-memory Skuld registry after a restart.
+        If the pod manager reports that a supposedly active session is actually stopped
+        or failed, update the persisted session record so browser clients stop trying to
+        attach to dead chat endpoints.
+        """
+        active_sessions = [
+            *await self._repository.list(status=SessionStatus.STARTING),
+            *await self._repository.list(status=SessionStatus.RUNNING),
+        ]
+        for session in active_sessions:
+            actual_status = await self._pod_manager.status(session)
+            if actual_status == session.status:
+                continue
+
+            logger.info(
+                "Reconciling active session %s from %s to %s",
+                session.id,
+                session.status.value,
+                actual_status.value,
+            )
+
+            if actual_status == SessionStatus.STOPPED:
+                updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
+            elif actual_status == SessionStatus.FAILED:
+                updated = (
+                    session.with_status(SessionStatus.FAILED)
+                    .with_cleared_endpoints()
+                    .with_error("Session runtime is no longer available")
+                )
+            else:
+                updated = session.with_status(actual_status)
+
+            final = await self._repository.update(updated)
+            if self._broadcaster is not None:
+                await self._broadcaster.publish_session_updated(final)
 
 
 def _communication_route_id(

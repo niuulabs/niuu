@@ -11,7 +11,7 @@ class TestSessionEventType:
     """Tests for the SessionEventType enum."""
 
     def test_all_event_types_have_values(self):
-        assert len(SessionEventType) == 15
+        assert len(SessionEventType) == 16
 
     def test_event_types_are_lowercase(self):
         for et in SessionEventType:
@@ -35,6 +35,7 @@ class TestSessionEventType:
     def test_lifecycle_types(self):
         assert SessionEventType.SESSION_START == "session_start"
         assert SessionEventType.SESSION_STOP == "session_stop"
+        assert SessionEventType.OUTCOME == "outcome"
 
     def test_from_string(self):
         assert SessionEventType("file_modified") == SessionEventType.FILE_MODIFIED

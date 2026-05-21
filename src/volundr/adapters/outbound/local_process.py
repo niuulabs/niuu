@@ -91,6 +91,7 @@ class ProcessInfo:
     state: ProcessState = ProcessState.STARTING
     error: str | None = None
     flock_dir: str = ""
+    flock_base_port: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-safe dict."""
@@ -109,6 +110,7 @@ class ProcessInfo:
             state=ProcessState(data.get("state", data.get("status", "stopped"))),
             error=data.get("error"),
             flock_dir=data.get("flock_dir", ""),
+            flock_base_port=data.get("flock_base_port"),
         )
 
 
@@ -252,13 +254,24 @@ def _workflow_event_metadata(
 
     nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
     edges = [edge for edge in graph.get("edges", []) if isinstance(edge, dict)]
-    persona_node_ids = {
-        str(node.get("id"))
-        for node in nodes
-        if persona in _stage_personas(node)
-    }
+    persona_node_ids = {str(node.get("id")) for node in nodes if persona in _stage_personas(node)}
     if not persona_node_ids:
         return [], []
+
+    member_override_events: list[str] = []
+    for node in nodes:
+        for member in node.get("stageMembers") or []:
+            if not isinstance(member, dict) or member.get("personaId") != persona:
+                continue
+            consumes_event_types = member.get("consumesEventTypes")
+            if not isinstance(consumes_event_types, list):
+                consumes_event_types = member.get("consumes_event_types")
+            if isinstance(consumes_event_types, list):
+                member_override_events.extend(
+                    str(event_type).strip()
+                    for event_type in consumes_event_types
+                    if str(event_type).strip()
+                )
 
     consumes: list[str] = []
     emits: list[str] = []
@@ -283,6 +296,9 @@ def _workflow_event_metadata(
             if node.get("kind") == "trigger" and node.get("dispatchEvent")
         ]
         consumes.extend(trigger_events)
+
+    if member_override_events:
+        consumes = member_override_events
 
     return _dedupe_preserve_order(consumes), _dedupe_preserve_order(emits)
 
@@ -409,12 +425,16 @@ class LocalProcessPodManager(PodManager):
         self._allowed_mount_prefixes = allowed_mount_prefixes or DEFAULT_ALLOWED_MOUNT_PREFIXES
 
         self._port_allocator = SdkPortAllocator(start_port=int(sdk_port_start))
+        self._allocated_flock_base_ports: set[int] = set()
         self._processes: dict[str, ProcessInfo] = {}
         self._monitors: dict[str, asyncio.Task] = {}
         self._skuld_registry: object | None = None  # Set via set_skuld_registry()
         self._persona_registry: object | None = None  # Set via set_persona_registry()
 
         self._load_state()
+        for info in self._processes.values():
+            if info.state in (ProcessState.STARTING, ProcessState.RUNNING) and info.flock_base_port:
+                self._allocated_flock_base_ports.add(info.flock_base_port)
 
     def set_skuld_registry(self, registry: object) -> None:
         """Inject the SkuldPortRegistry for proxy routing."""
@@ -464,6 +484,7 @@ class LocalProcessPodManager(PodManager):
             port=port,
             workspace=str(workspace),
             state=ProcessState.STARTING,
+            flock_base_port=flock_plan.session_base_port if flock_plan is not None else None,
         )
         self._processes[session_id] = info
         self._persist_state()
@@ -505,6 +526,8 @@ class LocalProcessPodManager(PodManager):
         except Exception:
             info.state = ProcessState.FAILED
             self._port_allocator.release(port)
+            if info.flock_base_port is not None:
+                self._allocated_flock_base_ports.discard(info.flock_base_port)
             self._persist_state()
             raise
 
@@ -545,6 +568,8 @@ class LocalProcessPodManager(PodManager):
 
         if info.port is not None:
             self._port_allocator.release(info.port)
+        if info.flock_base_port is not None:
+            self._allocated_flock_base_ports.discard(info.flock_base_port)
 
         if self._skuld_registry is not None:
             self._skuld_registry.unregister(session_id)
@@ -632,8 +657,15 @@ class LocalProcessPodManager(PodManager):
         spec: SessionSpec,
     ) -> None:
         """Clone a git repository into the workspace."""
+        git_cfg = spec.values.get("git", {})
         token = spec.values.get("git_token", "")
-        clone_url = _inject_token_into_url(source.repo, token)
+        clone_url = str(git_cfg.get("cloneUrl") or "").strip() or _inject_token_into_url(
+            source.repo,
+            token,
+        )
+        repo_url = str(git_cfg.get("repoUrl") or "").strip() or source.repo
+        branch = str(git_cfg.get("branch") or source.branch or "").strip()
+        base_branch = str(git_cfg.get("baseBranch") or source.base_branch or "").strip()
 
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -654,27 +686,64 @@ class LocalProcessPodManager(PodManager):
             raise RuntimeError(f"Git clone failed: {error_msg}")
 
         repo_dir = workspace / "repo"
-        branch = source.branch
-        base_branch = source.base_branch
-
         if branch:
-            checkout_ok = await self._checkout_branch(repo_dir, branch)
-            if not checkout_ok and base_branch:
-                await self._checkout_branch(repo_dir, base_branch)
+            checkout_ok = await self._checkout_tracking_branch(repo_dir, branch)
+            if not checkout_ok:
+                fallback_branch = base_branch or await self._remote_head_branch(repo_dir)
+                if fallback_branch:
+                    fallback_ok = await self._checkout_tracking_branch(repo_dir, fallback_branch)
+                    if fallback_ok:
+                        await self._create_branch(repo_dir, branch)
 
-    async def _checkout_branch(self, repo_dir: Path, branch: str) -> bool:
-        """Attempt to checkout a branch. Returns True on success."""
+        if repo_url:
+            await self._run_git(repo_dir, "remote", "set-url", "origin", repo_url)
+            if clone_url != repo_url:
+                await self._run_git(repo_dir, "remote", "set-url", "--push", "origin", clone_url)
+
+    async def _run_git(self, repo_dir: Path, *args: str) -> tuple[int, str, str]:
+        """Run a git command in *repo_dir* and return (code, stdout, stderr)."""
         proc = await asyncio.create_subprocess_exec(
             "git",
             "-C",
             str(repo_dir),
-            "checkout",
-            branch,
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
-        return proc.returncode == 0
+        stdout, stderr = await proc.communicate()
+        return (
+            proc.returncode,
+            stdout.decode(errors="replace"),
+            stderr.decode(errors="replace"),
+        )
+
+    async def _checkout_tracking_branch(self, repo_dir: Path, branch: str) -> bool:
+        """Check out *branch* from ``origin/<branch>`` when it exists."""
+        code, _, _ = await self._run_git(repo_dir, "rev-parse", "--verify", f"origin/{branch}")
+        if code != 0:
+            return False
+        code, _, _ = await self._run_git(repo_dir, "checkout", "-B", branch, f"origin/{branch}")
+        return code == 0
+
+    async def _create_branch(self, repo_dir: Path, branch: str) -> bool:
+        """Create a new local branch from the current HEAD."""
+        code, _, _ = await self._run_git(repo_dir, "checkout", "-b", branch)
+        return code == 0
+
+    async def _remote_head_branch(self, repo_dir: Path) -> str:
+        """Return the remote HEAD branch name when available."""
+        code, stdout, _ = await self._run_git(
+            repo_dir,
+            "symbolic-ref",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        )
+        if code != 0:
+            return ""
+        value = stdout.strip()
+        if value.startswith("origin/"):
+            return value.removeprefix("origin/")
+        return value
 
     def _setup_local_mounts(
         self,
@@ -720,6 +789,8 @@ class LocalProcessPodManager(PodManager):
         """
         for offset in range(DEFAULT_FLOCK_PORT_SCAN_LIMIT):
             base_port = DEFAULT_FLOCK_BASE_PORT + offset
+            if base_port in self._allocated_flock_base_ports:
+                continue
             required_ports: list[int] = [base_port, base_port + 1, base_port + 100]
             for index in range(node_count):
                 ravn_index = index + 1
@@ -733,6 +804,7 @@ class LocalProcessPodManager(PodManager):
                 )
 
             if all(SdkPortAllocator._is_port_free(port) for port in required_ports):
+                self._allocated_flock_base_ports.add(base_port)
                 return base_port
 
         raise RuntimeError(
@@ -1098,6 +1170,11 @@ class LocalProcessPodManager(PodManager):
         global_llm = flock_cfg.get("llm_config")
         if not isinstance(global_llm, dict):
             global_llm = None
+        raw_daily_budget_usd = flock_cfg.get("daily_budget_usd")
+        try:
+            daily_budget_usd = float(raw_daily_budget_usd)
+        except (TypeError, ValueError):
+            daily_budget_usd = None
         global_max_tasks = flock_cfg.get("max_concurrent_tasks", DEFAULT_MAX_CONCURRENT)
         try:
             global_max_tasks = int(global_max_tasks)
@@ -1108,6 +1185,8 @@ class LocalProcessPodManager(PodManager):
         if not isinstance(workflow_cfg, dict):
             workflow_cfg = None
         mcp_servers = _localize_mcp_servers(spec.values.get("mcpServers"), workspace)
+        repo_workspace = workspace / "repo"
+        workspace_root = repo_workspace if (repo_workspace / ".git").exists() else workspace
 
         try:
             from ravn.adapters.personas.loader import FilesystemPersonaAdapter
@@ -1137,6 +1216,12 @@ class LocalProcessPodManager(PodManager):
             initiative_cfg["max_concurrent_tasks"] = int(
                 persona_override.get("max_concurrent_tasks") or global_max_tasks
             )
+            if daily_budget_usd and daily_budget_usd > 0:
+                budget_cfg = node_config.setdefault("budget", {})
+                budget_cfg["daily_cap_usd"] = float(daily_budget_usd)
+
+            permission_cfg = node_config.setdefault("permission", {})
+            permission_cfg["workspace_root"] = str(workspace_root)
 
             skuld_cfg = node_config.setdefault("skuld", {})
             skuld_cfg["enabled"] = True
@@ -1151,6 +1236,23 @@ class LocalProcessPodManager(PodManager):
             if iteration_budget:
                 initiative_cfg["iteration_budget"] = int(iteration_budget)
                 persona_runtime_overrides["iteration_budget"] = int(iteration_budget)
+
+            consumes_event_types = persona_override.get("consumes_event_types")
+            if isinstance(consumes_event_types, list) and consumes_event_types:
+                persona_runtime_overrides["consumes_event_types"] = [
+                    str(event_type) for event_type in consumes_event_types
+                ]
+
+            executor_override = persona_override.get("executor")
+            if isinstance(executor_override, dict) and executor_override:
+                persona_runtime_overrides["executor"] = {
+                    "adapter": str(executor_override.get("adapter") or ""),
+                    "kwargs": (
+                        dict(executor_override.get("kwargs") or {})
+                        if isinstance(executor_override.get("kwargs"), dict)
+                        else {}
+                    ),
+                }
 
             if persona_runtime_overrides:
                 node_config["persona_overrides"] = persona_runtime_overrides
@@ -1356,6 +1458,8 @@ class LocalProcessPodManager(PodManager):
                 info.state = ProcessState.STOPPED
                 if info.port is not None:
                     self._port_allocator.release(info.port)
+                if info.flock_base_port is not None:
+                    self._allocated_flock_base_ports.discard(info.flock_base_port)
                 self._persist_state()
                 logger.info("Claude process exited pid=%d session=%s", pid, session_id)
         except asyncio.CancelledError:

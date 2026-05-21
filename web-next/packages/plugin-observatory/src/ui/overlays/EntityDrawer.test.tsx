@@ -50,16 +50,16 @@ const HOST_NODE: TopologyNode = {
   cores: 144,
 };
 
-const TYR_NODE: TopologyNode = {
-  id: 'tyr-0',
-  typeId: 'tyr',
-  label: 'tyr-0',
+const TING_NODE: TopologyNode = {
+  id: 'ting-0',
+  typeId: 'ting',
+  label: 'ting-0',
   parentId: 'cluster-valaskjalf',
   status: 'healthy',
   zone: 'asgard',
   mode: 'active',
   activeSagas: 3,
-  pendingRaids: 2,
+  pendingRuns: 2,
   activity: 'thinking',
 };
 
@@ -158,14 +158,14 @@ describe('EntityDrawer', () => {
     expect(screen.getByText(/Cluster · k8s/i)).toBeInTheDocument();
   });
 
-  it('shows entity type label and rune in head for tyr', () => {
-    renderDrawer(TYR_NODE);
-    expect(screen.getByText('ᛃ')).toBeInTheDocument();
-    expect(screen.getByText(/Týr/)).toBeInTheDocument();
+  it('shows entity type label and rune in head for ting', () => {
+    renderDrawer(TING_NODE);
+    expect(screen.getByText('✦')).toBeInTheDocument();
+    expect(screen.getByText(/Ting/)).toBeInTheDocument();
   });
 
-  it('shows node status text for tyr', () => {
-    renderDrawer(TYR_NODE);
+  it('shows node status text for ting', () => {
+    renderDrawer(TING_NODE);
     expect(screen.getByText('healthy')).toBeInTheDocument();
   });
 
@@ -194,7 +194,7 @@ describe('EntityDrawer', () => {
   it('shows cluster members section', () => {
     renderDrawer(CLUSTER_NODE);
     expect(screen.getByText('Members')).toBeInTheDocument();
-    expect(screen.getByText('tyr-0')).toBeInTheDocument();
+    expect(screen.getByText('ting-0')).toBeInTheDocument();
   });
 
   it('shows host residents section', () => {
@@ -203,15 +203,15 @@ describe('EntityDrawer', () => {
     expect(screen.getByText('huginn')).toBeInTheDocument();
   });
 
-  it('shows tyr Properties section', () => {
-    renderDrawer(TYR_NODE);
+  it('shows ting Properties section', () => {
+    renderDrawer(TING_NODE);
     expect(screen.getByText('Properties')).toBeInTheDocument();
     expect(screen.getByText('active sagas')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
   });
 
-  it('shows tyr mode badge', () => {
-    renderDrawer(TYR_NODE);
+  it('shows ting mode badge', () => {
+    renderDrawer(TING_NODE);
     expect(screen.getByText('active')).toBeInTheDocument();
   });
 
@@ -236,20 +236,20 @@ describe('EntityDrawer', () => {
   });
 
   it('shows Identity section for entity nodes', () => {
-    renderDrawer(TYR_NODE);
+    renderDrawer(TING_NODE);
     expect(screen.getByText('Identity')).toBeInTheDocument();
-    // tyr-0 appears as both the drawer title and the identity id — getAllByText handles both
-    expect(screen.getAllByText('tyr-0').length).toBeGreaterThanOrEqual(1);
+    // ting-0 appears as both the drawer title and the identity id — getAllByText handles both
+    expect(screen.getAllByText('ting-0').length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows Actions section for entity nodes', () => {
-    renderDrawer(TYR_NODE);
+    renderDrawer(TING_NODE);
     expect(screen.getByText('Actions')).toBeInTheDocument();
     expect(screen.getByText('Open chat')).toBeInTheDocument();
   });
 
   it('shows activity row when activity is set', () => {
-    renderDrawer(TYR_NODE);
+    renderDrawer(TING_NODE);
     expect(screen.getByText('THINKING')).toBeInTheDocument();
   });
 
@@ -264,9 +264,9 @@ describe('EntityDrawer', () => {
   it('calls onNodeSelect when a member button is clicked (cluster)', () => {
     const onNodeSelect = vi.fn();
     renderDrawer(CLUSTER_NODE, { onNodeSelect });
-    const tyrBtn = screen.getByTestId('resident-tyr-0');
-    fireEvent.click(tyrBtn);
-    expect(onNodeSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'tyr-0' }));
+    const tingBtn = screen.getByTestId('resident-ting-0');
+    fireEvent.click(tingBtn);
+    expect(onNodeSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'ting-0' }));
   });
 
   it('does not show Residents when realm has no children', () => {
@@ -276,7 +276,7 @@ describe('EntityDrawer', () => {
   });
 
   it('calls onClose when drawer close button is clicked', () => {
-    const { onClose } = renderDrawer(TYR_NODE);
+    const { onClose } = renderDrawer(TING_NODE);
     fireEvent.click(screen.getByRole('button', { name: /close/i }));
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -287,8 +287,8 @@ describe('EntityDrawer', () => {
   });
 
   it('handles null registry gracefully (no rune, fallback label)', () => {
-    renderDrawer(TYR_NODE, { registry: null });
-    expect(screen.getByText('tyr')).toBeInTheDocument();
+    renderDrawer(TING_NODE, { registry: null });
+    expect(screen.getByText('ting')).toBeInTheDocument();
   });
 
   it('shows all NodeStatus variants without error', () => {
@@ -319,7 +319,7 @@ describe('EntityDrawer', () => {
   });
 
   it('calls onClose when Escape key is pressed', () => {
-    const { onClose } = renderDrawer(TYR_NODE);
+    const { onClose } = renderDrawer(TING_NODE);
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledOnce();
   });

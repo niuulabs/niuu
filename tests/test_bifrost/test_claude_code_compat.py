@@ -187,7 +187,7 @@ def client(config: BifrostConfig) -> TestClient:
 
 class TestModelResolution:
     def test_models_endpoint_returns_configured_model(self, client: TestClient):
-        resp = client.get("/v1/models")
+        resp = client.get("/api/v1/bifrost/v1/models")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -196,14 +196,14 @@ class TestModelResolution:
         assert _CLAUDE_MODEL in model_ids
 
     def test_models_endpoint_includes_aliases(self, client: TestClient):
-        resp = client.get("/v1/models")
+        resp = client.get("/api/v1/bifrost/v1/models")
 
         body = resp.json()
         model_ids = [m["id"] for m in body["data"]]
         assert "claude-3-5-sonnet-latest" in model_ids
 
     def test_models_endpoint_returns_openai_compatible_structure(self, client: TestClient):
-        resp = client.get("/v1/models")
+        resp = client.get("/api/v1/bifrost/v1/models")
 
         body = resp.json()
         assert "data" in body
@@ -214,7 +214,7 @@ class TestModelResolution:
             assert "owned_by" in model
 
     def test_models_include_multiple_claude_models(self, client: TestClient):
-        resp = client.get("/v1/models")
+        resp = client.get("/api/v1/bifrost/v1/models")
 
         model_ids = [m["id"] for m in resp.json()["data"]]
         assert "claude-opus-4-6" in model_ids
@@ -231,7 +231,7 @@ class TestNonStreamingCompletion:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 1024,
@@ -253,7 +253,7 @@ class TestNonStreamingCompletion:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 512,
@@ -275,7 +275,7 @@ class TestNonStreamingCompletion:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 512,
@@ -294,7 +294,7 @@ class TestNonStreamingCompletion:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": "claude-3-5-sonnet-latest",
                 "max_tokens": 256,
@@ -311,7 +311,7 @@ class TestNonStreamingCompletion:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 256,
@@ -330,7 +330,7 @@ class TestNonStreamingCompletion:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 128,
@@ -346,7 +346,7 @@ class TestNonStreamingCompletion:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 128,
@@ -371,7 +371,7 @@ class TestStreamingCompletion:
         mock_stream.return_value = _anthropic_sse_stream(*_make_stream_events())
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 1024,
@@ -391,7 +391,7 @@ class TestStreamingCompletion:
         mock_stream.return_value = _anthropic_sse_stream(*_make_stream_events("Hello!"))
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 256,
@@ -412,7 +412,7 @@ class TestStreamingCompletion:
         mock_stream.return_value = _anthropic_sse_stream(*_make_stream_events("streamed text"))
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 256,
@@ -433,7 +433,7 @@ class TestStreamingCompletion:
         mock_stream.return_value = _anthropic_sse_stream(*_make_stream_events())
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 256,
@@ -452,7 +452,7 @@ class TestStreamingCompletion:
         mock_stream.return_value = _anthropic_sse_stream(*_make_stream_events())
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 64,
@@ -480,7 +480,7 @@ class TestToolUse:
         mock_complete.return_value = _tool_use_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 1024,
@@ -509,7 +509,7 @@ class TestToolUse:
         mock_complete.return_value = _tool_use_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 512,
@@ -540,7 +540,7 @@ class TestToolUse:
         mock_complete.return_value = _text_response("Based on the file content...")
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 512,
@@ -584,7 +584,7 @@ class TestToolUse:
         mock_complete.return_value = _text_response("I'll create the file.")
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 256,
@@ -632,7 +632,7 @@ class TestMultiTurnContext:
         ]
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={"model": _CLAUDE_MODEL, "max_tokens": 512, "messages": messages},
             headers=_ANTHROPIC_HEADERS,
         )
@@ -655,7 +655,7 @@ class TestMultiTurnContext:
         ]
 
         client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={"model": _CLAUDE_MODEL, "max_tokens": 256, "messages": messages},
             headers=_ANTHROPIC_HEADERS,
         )
@@ -679,7 +679,7 @@ class TestExtendedThinking:
         mock_complete.return_value = _thinking_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 16000,
@@ -700,7 +700,7 @@ class TestExtendedThinking:
         mock_complete.return_value = _thinking_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 16000,
@@ -720,7 +720,7 @@ class TestExtendedThinking:
         mock_complete.return_value = _thinking_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 16000,
@@ -753,7 +753,7 @@ class TestCostTracking:
             mock_complete.return_value = _text_response()
             with TestClient(app) as client:
                 client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": _CLAUDE_MODEL,
                         "max_tokens": 128,
@@ -779,7 +779,7 @@ class TestCostTracking:
             mock_complete.return_value = _text_response()
             with TestClient(app) as client:
                 client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": _CLAUDE_MODEL,
                         "max_tokens": 64,
@@ -802,7 +802,7 @@ class TestCostTracking:
             mock_complete.return_value = _text_response()
             with TestClient(app) as client:
                 client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": _CLAUDE_MODEL,
                         "max_tokens": 64,
@@ -829,7 +829,7 @@ class TestCostTracking:
             mock_complete.return_value = _text_response()
             with TestClient(app) as client:
                 client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": _CLAUDE_MODEL,
                         "max_tokens": 128,
@@ -858,7 +858,7 @@ class TestNoApiKeyLeaks:
 
         with caplog.at_level(logging.DEBUG, logger="bifrost"):
             client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 json={
                     "model": _CLAUDE_MODEL,
                     "max_tokens": 64,
@@ -896,7 +896,7 @@ class TestNoApiKeyLeaks:
         with caplog.at_level(logging.DEBUG, logger="bifrost"):
             with TestClient(app) as client:
                 client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": _CLAUDE_MODEL,
                         "max_tokens": 64,
@@ -923,7 +923,7 @@ class TestPiMode:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 128,
@@ -940,7 +940,7 @@ class TestPiMode:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 128,
@@ -960,7 +960,7 @@ class TestPiMode:
             mock_complete.return_value = _text_response()
             with TestClient(app) as client:
                 client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": _CLAUDE_MODEL,
                         "max_tokens": 64,
@@ -985,7 +985,7 @@ class TestRequestTracing:
         mock_complete.return_value = _text_response()
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 64,
@@ -1005,7 +1005,7 @@ class TestRequestTracing:
         request_id = "my-trace-id-12345"
 
         resp = client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             json={
                 "model": _CLAUDE_MODEL,
                 "max_tokens": 64,

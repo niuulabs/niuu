@@ -244,12 +244,12 @@ class TestCacheStatsEndpoint:
 
     def test_cache_stats_returns_200(self):
         with self._client() as client:
-            resp = client.get("/v1/cache/stats")
+            resp = client.get("/api/v1/bifrost/v1/cache/stats")
         assert resp.status_code == 200
 
     def test_cache_stats_response_shape(self):
         with self._client() as client:
-            resp = client.get("/v1/cache/stats")
+            resp = client.get("/api/v1/bifrost/v1/cache/stats")
         body = resp.json()
         assert "hits" in body
         assert "misses" in body
@@ -261,7 +261,7 @@ class TestCacheStatsEndpoint:
 
     def test_cache_stats_initial_values(self):
         with self._client() as client:
-            resp = client.get("/v1/cache/stats")
+            resp = client.get("/api/v1/bifrost/v1/cache/stats")
         body = resp.json()
         assert body["hits"] == 0
         assert body["misses"] == 0
@@ -996,7 +996,7 @@ class TestAuditIntegrationInRoutes:
             m.return_value = _make_response()
             with TestClient(create_app(cfg)) as client:
                 client.post(
-                    "/v1/messages",
+                    "/api/v1/bifrost/v1/messages",
                     json={
                         "model": "gpt-4o",
                         "max_tokens": 100,
@@ -1010,7 +1010,7 @@ class TestAuditIntegrationInRoutes:
             providers={"openai": ProviderConfig(models=["gpt-4o"])},
         )
         with TestClient(create_app(cfg)) as client:
-            resp = client.get("/v1/cache/stats")
+            resp = client.get("/api/v1/bifrost/v1/cache/stats")
         assert resp.status_code == 200
         body = resp.json()
         assert "hit_rate" in body

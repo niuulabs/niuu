@@ -25,11 +25,11 @@ class TestPermissionsForAgent:
     def test_exact_match_takes_priority_over_glob(self):
         cfg = self._cfg(
             {
-                "tyr": AgentPermissions(allowed_models=["best"]),
-                "tyr-*": AgentPermissions(allowed_models=["fast"]),
+                "ting": AgentPermissions(allowed_models=["best"]),
+                "ting-*": AgentPermissions(allowed_models=["fast"]),
             }
         )
-        perms = cfg.permissions_for_agent("tyr")
+        perms = cfg.permissions_for_agent("ting")
         assert perms.allowed_models == ["best"]
 
     def test_glob_pattern_matches_prefix_wildcard(self):
@@ -58,12 +58,12 @@ class TestPermissionsForAgent:
     def test_first_glob_match_wins(self):
         cfg = self._cfg(
             {
-                "tyr-*": AgentPermissions(allowed_models=["best"]),
-                "tyr-worker-*": AgentPermissions(allowed_models=["fast"]),
+                "ting-*": AgentPermissions(allowed_models=["best"]),
+                "ting-worker-*": AgentPermissions(allowed_models=["fast"]),
             }
         )
-        # tyr-* matches first
-        perms = cfg.permissions_for_agent("tyr-worker-1")
+        # ting-* matches first
+        perms = cfg.permissions_for_agent("ting-worker-1")
         assert perms.allowed_models == ["best"]
 
 
@@ -102,7 +102,7 @@ def _make_app_with_permissions(
 class TestModelAccessWildcard:
     def _post(self, client, agent_id: str = "my-agent", model: str = "claude-sonnet-4-6"):
         return client.post(
-            "/v1/messages",
+            "/api/v1/bifrost/v1/messages",
             headers={"x-agent-id": agent_id},
             json={
                 "model": model,
@@ -149,11 +149,11 @@ class TestAdminReloadKeys:
 
     def test_reload_keys_returns_ok(self):
         with self._client() as client:
-            resp = client.post("/admin/reload-keys")
+            resp = client.post("/api/v1/bifrost/admin/reload-keys")
             assert resp.status_code == 200
             assert resp.json() == {"status": "ok"}
 
     def test_reload_keys_method_not_allowed_on_get(self):
         with self._client() as client:
-            resp = client.get("/admin/reload-keys")
+            resp = client.get("/api/v1/bifrost/admin/reload-keys")
             assert resp.status_code == 405

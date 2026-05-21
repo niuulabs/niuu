@@ -116,6 +116,32 @@ jobs:
           MANIFEST_TAGS: ${{ inputs.manifest-tags }}
         run: |
           set -euo pipefail
+
+          retry_manifest_publish() {
+            local manifest_tag="$1"
+            local max_attempts=5
+            local attempt=1
+
+            while [ "$attempt" -le "$max_attempts" ]; do
+              docker manifest rm "${IMAGE}:${manifest_tag}" >/dev/null 2>&1 || true
+
+              if docker manifest create "${IMAGE}:${manifest_tag}" "${SOURCES[@]}" \
+                && docker manifest push "${IMAGE}:${manifest_tag}"; then
+                return 0
+              fi
+
+              if [ "$attempt" -eq "$max_attempts" ]; then
+                echo "Manifest publish failed after ${max_attempts} attempts: ${IMAGE}:${manifest_tag}" >&2
+                return 1
+              fi
+
+              local sleep_seconds=$((attempt * 5))
+              echo "Manifest publish attempt ${attempt}/${max_attempts} failed for ${IMAGE}:${manifest_tag}; retrying in ${sleep_seconds}s" >&2
+              sleep "${sleep_seconds}"
+              attempt=$((attempt + 1))
+            done
+          }
+
           # Collect per-platform source tags
           SOURCES=()
           for plat in $(echo "${PLATFORMS}" | jq -r '.[]'); do
@@ -125,7 +151,6 @@ jobs:
 
           for tag in ${MANIFEST_TAGS}; do
             echo "::group::manifest ${IMAGE}:${tag}"
-            docker manifest create "${IMAGE}:${tag}" "${SOURCES[@]}"
-            docker manifest push "${IMAGE}:${tag}"
+            retry_manifest_publish "${tag}"
             echo "::endgroup::"
           done

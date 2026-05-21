@@ -107,4 +107,7 @@ Checksum annotations — force pod restarts when config changes
 */}}
 {{- define "bifrost.checksumAnnotations" -}}
 checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.envoy.enabled }}
+checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
+{{- end }}
 {{- end }}

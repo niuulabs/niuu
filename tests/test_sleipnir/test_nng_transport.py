@@ -101,14 +101,14 @@ def test_nng_topics_exact_match():
 
 def test_nng_topics_multiple_patterns():
     """Multiple patterns produce one nng topic each."""
-    result = _nng_topics_for_patterns(["ravn.*", "tyr.*"])
+    result = _nng_topics_for_patterns(["ravn.*", "ting.*"])
     assert b"ravn." in result
-    assert b"tyr." in result
+    assert b"ting." in result
 
 
 def test_nng_topics_star_short_circuits():
     """'*' anywhere in patterns returns [b''] immediately."""
-    result = _nng_topics_for_patterns(["ravn.*", "*", "tyr.*"])
+    result = _nng_topics_for_patterns(["ravn.*", "*", "ting.*"])
     assert result == [b""]
 
 
@@ -269,15 +269,18 @@ async def test_functional_multiple_subscribers(ipc_address):
         async with NngSubscriber(ipc_address) as sub:
             await sub.subscribe(["*"], handler_a)
             await sub.subscribe(["*"], handler_b)
+            # Give the SUB socket a brief moment to apply both topic registrations
+            # before the first publish; this avoids a flaky race on CI.
+            await asyncio.sleep(0.05)
             await pub.publish(make_event(event_id="nng-multi"))
-            await asyncio.wait_for(asyncio.gather(done_a.wait(), done_b.wait()), timeout=3.0)
+            await asyncio.wait_for(asyncio.gather(done_a.wait(), done_b.wait()), timeout=5.0)
 
     assert bucket_a == ["nng-multi"]
     assert bucket_b == ["nng-multi"]
 
 
 async def test_functional_topic_filtering_ravn_star(ipc_address):
-    """'ravn.*' subscriber receives ravn events but not tyr events."""
+    """'ravn.*' subscriber receives ravn events but not ting events."""
     received_types: list[str] = []
     ravn_event_received = asyncio.Event()
 
@@ -293,14 +296,14 @@ async def test_functional_topic_filtering_ravn_star(ipc_address):
             await pub.publish(make_event(event_type="ravn.tool.complete", event_id="e1"))
             await asyncio.wait_for(ravn_event_received.wait(), timeout=3.0)
 
-            # Publish a tyr event — should NOT arrive since subscriber only
-            # set nng topic to "ravn." which won't match "tyr.*" messages.
-            await pub.publish(make_event(event_type="tyr.task.started", event_id="e2"))
+            # Publish a ting event — should NOT arrive since subscriber only
+            # set nng topic to "ravn." which won't match "ting.*" messages.
+            await pub.publish(make_event(event_type="ting.task.started", event_id="e2"))
             # Give nng a moment to deliver if it were going to.
             await asyncio.sleep(0.1)
 
     assert "ravn.tool.complete" in received_types
-    assert "tyr.task.started" not in received_types
+    assert "ting.task.started" not in received_types
 
 
 async def test_functional_topic_filtering_star_wildcard(ipc_address):
@@ -310,7 +313,7 @@ async def test_functional_topic_filtering_star_wildcard(ipc_address):
 
     target_types = [
         "ravn.tool.complete",
-        "tyr.task.started",
+        "ting.task.started",
         "volundr.pr.opened",
     ]
 

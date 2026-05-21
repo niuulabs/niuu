@@ -7,7 +7,7 @@ import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -61,6 +61,7 @@ from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
+WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 
 
 def _public_session_endpoint(endpoint: str | None) -> str | None:
@@ -117,6 +118,26 @@ def _workspace_dir_from_session(session: Session) -> FilePath | None:
         path = FilePath(session.source.local_path)
         return path if path.exists() else None
     return None
+
+
+def _session_proxy_url(base_url: str, *path_segments: str) -> str:
+    """Build a validated session-pod URL from a trusted base and encoded path segments."""
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Session proxy target must be an absolute http(s) URL")
+
+    segments = [quote(segment, safe="") for segment in path_segments]
+    base_path = parsed.path.rstrip("/")
+    suffix = "/".join(segments)
+    if base_path and suffix:
+        path = f"{base_path}/{suffix}"
+    elif base_path:
+        path = base_path
+    elif suffix:
+        path = f"/{suffix}"
+    else:
+        path = "/"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
 def _fallback_workspace_logs(
@@ -261,7 +282,7 @@ class SessionCreate(BaseModel):
     workload_type: str = Field(
         default="session",
         max_length=100,
-        description="Workload type: 'session' (default) or 'ravn_flock' for raiding parties",
+        description="Workload type: 'session' (default) or 'ravn_flock' for runing parties",
     )
     workload_config: dict = Field(
         default_factory=dict,
@@ -500,6 +521,7 @@ class ModelInfo(BaseModel):
     name: str = Field(description="Human-readable model name")
     description: str = Field(description="Model capabilities description")
     provider: ModelProvider = Field(description="Provider type: cloud or local")
+    vendor: str = Field(description="Model vendor/runtime family (e.g. anthropic, openai)")
     tier: ModelTier = Field(description="Model tier classification")
     color: str = Field(description="UI color code for the model badge")
     cost_per_million_tokens: float | None = Field(
@@ -510,6 +532,10 @@ class ModelInfo(BaseModel):
         default=None,
         description="VRAM required for local models (e.g. 24GB)",
     )
+    session_definition: str | None = Field(
+        default=None,
+        description="Resolved model-specific runtime override, when configured.",
+    )
 
     @classmethod
     def from_model(cls, model: Model) -> "ModelInfo":
@@ -519,10 +545,12 @@ class ModelInfo(BaseModel):
             name=model.name,
             description=model.description,
             provider=model.provider,
+            vendor=model.vendor,
             tier=model.tier,
             color=model.color,
             cost_per_million_tokens=model.cost_per_million_tokens,
             vram_required=model.vram_required,
+            session_definition=model.session_definition,
         )
 
 
@@ -548,6 +576,14 @@ class RepoResponse(BaseModel):
     url: str = Field(description="Web URL for the repository")
     default_branch: str = Field(description="Default branch name")
     branches: list[str] = Field(description="Available branch names")
+
+
+class WorkflowGateResolveRequest(BaseModel):
+    """Request body for resolving a live workflow gate."""
+
+    decision: str
+    notes: str = ""
+    source: str = "human"
 
 
 class ErrorResponse(BaseModel):
@@ -964,10 +1000,11 @@ def create_router(
     chronicle_service: ChronicleService | None = None,
     archive_service=None,
     *,
-    prefix: str = "/api/v1/volundr",
+    prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
+    compat_router = APIRouter(prefix="/api/v1/volundr") if prefix == "/api/v1/forge" else None
     forge = ForgeService(
         session_service,
         stats_service=stats_service,
@@ -1004,6 +1041,14 @@ def create_router(
             logger.warning("JIT user provisioning failed for %s", principal.user_id, exc_info=True)
 
         return principal
+
+    def _strict_identity_enabled(request: Request) -> bool:
+        identity = getattr(request.app.state, "identity", None)
+        if identity is None:
+            return False
+        from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
+
+        return not isinstance(identity, AllowAllIdentityAdapter)
 
     @router.get("/feature-flags", tags=["Features"])
     async def get_feature_flags(request: Request) -> dict:
@@ -1049,33 +1094,6 @@ def create_router(
                 detail=str(e),
             )
 
-    @router.get("/auth/config", tags=["Auth"])
-    async def get_auth_config(request: Request) -> dict:
-        """Public auth discovery endpoint for CLI and external clients.
-
-        Returns OIDC configuration so CLI clients can auto-discover how
-        to authenticate. This endpoint does NOT require authentication.
-        """
-        settings = request.app.state.settings
-
-        issuer = settings.auth_discovery.issuer
-        if not issuer:
-            # Fall back to gateway adapter's issuer_url kwarg
-            issuer = settings.gateway.kwargs.get("issuer_url", "")
-
-        if not issuer:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Auth discovery not configured",
-            )
-
-        return {
-            "issuer": issuer,
-            "client_id": settings.auth_discovery.cli_client_id,
-            "scopes": settings.auth_discovery.scopes,
-            "device_authorization_supported": True,
-        }
-
     async def _optional_user_id(request: Request) -> str | None:
         """Extract user_id from auth principal if available, else None."""
         principal = await _optional_principal(request)
@@ -1099,6 +1117,8 @@ def create_router(
     ) -> list[SessionResponse]:
         """List all sessions. Archived sessions are excluded by default."""
         principal = await _optional_principal(request)
+        if principal is None and _strict_identity_enabled(request):
+            return []
         sessions = await forge.list_sessions(
             status=status_filter,
             include_archived=include_archived,
@@ -1405,7 +1425,7 @@ def create_router(
         """Report a session activity state change from Skuld.
 
         Updates the session's activity_state and broadcasts a
-        session_activity SSE event for downstream consumers (e.g. Tyr).
+        session_activity SSE event for downstream consumers (e.g. Ting).
         """
         # Authorization: caller must own the session
         principal = await _optional_principal(request)
@@ -1535,8 +1555,12 @@ def create_router(
         return [ModelInfo.from_model(m) for m in models]
 
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
-    async def get_stats() -> StatsResponse:
+    async def get_stats(request: Request) -> StatsResponse:
         """Get aggregate statistics for the dashboard."""
+        if _strict_identity_enabled(request):
+            principal = await _optional_principal(request)
+            if principal is None:
+                return StatsResponse()
         try:
             stats = await forge.get_stats()
         except RuntimeError as exc:
@@ -1661,7 +1685,7 @@ def create_router(
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    f"{base_url}/api/logs",
+                    _session_proxy_url(base_url, "api", "logs"),
                     params={"lines": lines, "level": level},
                 )
                 response.raise_for_status()
@@ -1725,7 +1749,7 @@ def create_router(
                 _, base_url = await forge.get_session_proxy_target(session_id)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
-                        f"{base_url}/api/logs/aggregate",
+                        _session_proxy_url(base_url, "api", "logs", "aggregate"),
                         params={
                             "lines": lines,
                             "level": level,
@@ -1875,7 +1899,7 @@ def create_router(
 
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
-                        f"{base_url}/api/conversation/history",
+                        _session_proxy_url(base_url, "api", "conversation", "history"),
                         headers=headers,
                     )
                     response.raise_for_status()
@@ -1901,6 +1925,115 @@ def create_router(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e),
+            )
+
+    @router.get(
+        "/sessions/{session_id}/workflow/gates",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def get_workflow_gates(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Return native workflow gate state for a live session."""
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        if not session.chat_endpoint:
+            return {"gates": []}
+
+        try:
+            _, base_url = await forge.get_session_proxy_target(session_id)
+            headers = {}
+            auth = request.headers.get("authorization")
+            if auth:
+                headers["Authorization"] = auth
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    _session_proxy_url(base_url, "api", "workflow", "gates"),
+                    headers=headers,
+                )
+                response.raise_for_status()
+                return response.json()
+        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.warning(
+                "Workflow gate proxy failed for session %s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to fetch workflow gates from session pod: {e}",
+            )
+
+    @router.post(
+        "/sessions/{session_id}/workflow/gates/{gate_id}/resolve",
+        tags=["Sessions"],
+        responses={
+            400: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def resolve_workflow_gate(
+        request: Request,
+        body: WorkflowGateResolveRequest,
+        session_id: UUID = Path(description="Unique session identifier"),
+        gate_id: str = Path(description="Workflow gate identifier"),
+    ) -> dict:
+        """Resolve a pending native workflow gate for a live session."""
+        principal = await extract_principal(request)
+        try:
+            session, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+        if session.owner_id and session.owner_id != principal.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to resolve gates for this session",
+            )
+
+        headers = {}
+        auth = request.headers.get("authorization")
+        if auth:
+            headers["Authorization"] = auth
+        intent = request.headers.get(WORKFLOW_GATE_INTENT_HEADER)
+        if intent:
+            headers[WORKFLOW_GATE_INTENT_HEADER] = intent
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve"),
+                    headers=headers,
+                    json=body.model_dump(),
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            detail = e.response.text[:500]
+            raise HTTPException(status_code=status_code, detail=detail)
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not connect to session pod: {e}",
             )
 
     @router.get(
@@ -2469,7 +2602,7 @@ def create_router(
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
-                    f"{base_url}/api/diff",
+                    _session_proxy_url(base_url, "api", "diff"),
                     params={"file": file, "base": base},
                     headers=proxy_headers,
                 )
@@ -2648,4 +2781,41 @@ def create_router(
                 failed.append({"session_id": sid, "error": "Internal error"})
         return {"deleted": deleted, "failed": failed}
 
-    return router
+    if compat_router is None:
+        return router
+
+    compat_router.add_api_route(
+        "/sessions/{session_id}/logs/aggregate",
+        get_session_logs_aggregate,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    compat_router.add_api_route(
+        "/sessions/{session_id}/messages",
+        send_session_message,
+        methods=["POST"],
+        include_in_schema=False,
+    )
+    compat_router.add_api_route(
+        "/sessions/{session_id}/conversation",
+        get_conversation,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    compat_router.add_api_route(
+        "/sessions/{session_id}/transcript",
+        get_session_transcript,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    compat_router.add_api_route(
+        "/sessions/{session_id}/transcript/download",
+        download_session_transcript,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+
+    combined_router = APIRouter()
+    combined_router.include_router(router)
+    combined_router.include_router(compat_router)
+    return combined_router

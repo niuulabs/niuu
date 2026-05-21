@@ -1,7 +1,7 @@
 /**
  * FooterChip — shared status chip for the shell footer bar.
  *
- * Used by plugin footers (TyrFooter, RavnFooter, etc.) to render
+ * Used by plugin footers (TingFooter, RavnFooter, etc.) to render
  * consistent status indicators: `name ● value`.
  *
  * Separators (`│`) are NOT embedded in the chip — render them at the

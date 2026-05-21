@@ -2,12 +2,12 @@ import { useMemo } from 'react';
 import { useTopology } from '../application/useTopology';
 import './ObservatoryTopbar.css';
 
-const RAVN_KINDS = new Set(['ravn_long', 'ravn_raid']);
+const RAVN_KINDS = new Set(['ravn_long', 'ravn_run']);
 
 /**
  * ObservatoryTopbar — topbar-right slot for the Observatory plugin.
  *
- * Renders three stat chips: realms count, ravens count (accented), raids count (accented).
+ * Renders three stat chips: realms count, ravens count (accented), runs count (accented).
  * Matches the web2 prototype `ObservatoryTopbar` component.
  */
 export function ObservatoryTopbar() {
@@ -18,7 +18,7 @@ export function ObservatoryTopbar() {
     return {
       realms: nodes.filter((n) => n.typeId === 'realm').length,
       ravens: nodes.filter((n) => RAVN_KINDS.has(n.typeId)).length,
-      raids: nodes.filter((n) => n.typeId === 'raid').length,
+      runs: nodes.filter((n) => n.typeId === 'run').length,
     };
   }, [topology]);
 
@@ -33,8 +33,8 @@ export function ObservatoryTopbar() {
         <strong className="obs-topbar__value">{stats.ravens}</strong>
       </div>
       <div className="obs-topbar__stat obs-topbar__stat--accent">
-        <span className="obs-topbar__label">raids</span>
-        <strong className="obs-topbar__value">{stats.raids}</strong>
+        <span className="obs-topbar__label">runs</span>
+        <strong className="obs-topbar__value">{stats.runs}</strong>
       </div>
     </div>
   );

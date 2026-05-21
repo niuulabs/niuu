@@ -51,7 +51,7 @@ export interface Registry extends Omit<TypeRegistry, 'types'> {
 // ── Topology graph ────────────────────────────────────────────────────────────
 
 /** The 5 connection styles in the topology edge taxonomy. */
-export type EdgeKind = 'solid' | 'dashed-anim' | 'dashed-long' | 'soft' | 'raid';
+export type EdgeKind = 'solid' | 'dashed-anim' | 'dashed-long' | 'soft' | 'run';
 
 /** Runtime health status of a topology node. */
 export type NodeStatus = 'healthy' | 'degraded' | 'failed' | 'idle' | 'observing' | 'unknown';
@@ -85,10 +85,10 @@ export interface TopologyNode {
   hostId?: string | null;
   flockId?: string | null;
 
-  // ── tyr ──────────────────────────────────────────────────────────────────
+  // ── ting ──────────────────────────────────────────────────────────────────
   mode?: string;
   activeSagas?: number;
-  pendingRaids?: number;
+  pendingRuns?: number;
 
   // ── bifrost ───────────────────────────────────────────────────────────────
   providers?: string[];
@@ -98,6 +98,12 @@ export interface TopologyNode {
   // ── volundr ───────────────────────────────────────────────────────────────
   activeSessions?: number;
   maxSessions?: number;
+
+  // ── mimir ─────────────────────────────────────────────────────────────────
+  pages?: number;
+  writes?: number;
+  mountCount?: number;
+  mounts?: string[];
 
   // ── ravn_long ─────────────────────────────────────────────────────────────
   persona?: string;
@@ -120,10 +126,10 @@ export interface TopologyNode {
   dns?: string;
   purpose?: string;
 
-  // ── raid ──────────────────────────────────────────────────────────────────
+  // ── run ──────────────────────────────────────────────────────────────────
   state?: string;
 
-  // ── ravn_raid / coord ─────────────────────────────────────────────────────
+  // ── ravn_run / coord ─────────────────────────────────────────────────────
   role?: string;
   confidence?: number;
 
@@ -144,7 +150,7 @@ export interface TopologyNode {
 export type Realm = TopologyNode & { typeId: 'realm' };
 export type Cluster = TopologyNode & { typeId: 'cluster' };
 export type Host = TopologyNode & { typeId: 'host' };
-export type Raid = TopologyNode & { typeId: 'raid' };
+export type Run = TopologyNode & { typeId: 'run' };
 
 /** A directional connection between two topology nodes. */
 export interface TopologyEdge {
@@ -164,7 +170,7 @@ export interface Topology {
 // ── Event log ─────────────────────────────────────────────────────────────────
 
 /** Source subsystem that generated an observatory event (matches web2 type column). */
-export type ObservatoryEventType = 'RAID' | 'RAVN' | 'TYR' | 'MIMIR' | 'BIFROST';
+export type ObservatoryEventType = 'RUN' | 'RAVN' | 'TING' | 'MIMIR' | 'BIFROST';
 
 /**
  * A single entry in the observatory event log.

@@ -216,11 +216,11 @@ class TestHelpOutput:
         assert "config" in result.output
         assert "context" in result.output
 
-    def test_no_volundr_or_tyr_namespaces_at_top_level(self) -> None:
-        """The old niuu volundr / niuu tyr namespaces must be gone."""
+    def test_no_volundr_or_ting_namespaces_at_top_level(self) -> None:
+        """The old niuu volundr / niuu ting namespaces must be gone."""
         app, _, _ = _build_test_app()
         result_v = runner.invoke(app, ["volundr"])
-        result_t = runner.invoke(app, ["tyr"])
+        result_t = runner.invoke(app, ["ting"])
         assert result_v.exit_code != 0
         assert result_t.exit_code != 0
 

@@ -1,6 +1,6 @@
 """Plugin port — shared ABCs for the niuu CLI plugin system.
 
-These live in niuu so that both volundr and tyr can implement
+These live in niuu so that both volundr and ting can implement
 ServicePlugin without importing from cli (which would create a
 bidirectional dependency).
 """
@@ -84,7 +84,7 @@ class APIRouteDomain:
 class ServicePlugin(ABC):
     """Base class for niuu CLI plugins.
 
-    Each package (volundr, tyr, etc.) implements this to register its
+    Each package (volundr, ting, etc.) implements this to register its
     commands, services, API clients, and TUI pages.
     """
 
@@ -125,6 +125,15 @@ class ServicePlugin(ABC):
         Returned app is mounted into the root server. Routes should use
         their own ``/api/v1/<plugin>/`` prefix to avoid collisions.
         Return None if this plugin does not expose HTTP endpoints.
+        """
+        return None
+
+    def shared_api_app_key(self) -> str | None:
+        """Return a cache key for API apps intentionally shared across plugins.
+
+        Plugins that expose separate route domains from the same underlying
+        FastAPI app can return the same key so the host builds that app once
+        and reuses it for each plugin's mount prefixes.
         """
         return None
 

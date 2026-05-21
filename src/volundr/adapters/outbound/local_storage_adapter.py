@@ -189,11 +189,11 @@ class LocalStorageAdapter(StoragePort):
         )
 
     def resolve_session_workspace_path(self, session_id: str) -> str | None:
-        """Return the host path for a local session workspace."""
-        entry = self._session_workspaces.get(session_id)
-        if entry is None:
-            return None
-        return str(self._workspaces_dir / session_id)
+        """Return the host path for a local session workspace from configured storage."""
+        workspace_path = self._workspaces_dir / session_id
+        if workspace_path.exists():
+            return str(workspace_path)
+        return None
 
     # ------------------------------------------------------------------
     # Internal helpers

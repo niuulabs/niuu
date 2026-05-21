@@ -402,7 +402,7 @@ class RavnAgent:
                 logger.debug("system_prompt_block[%d] (first 2000 chars): %s", i, text[:2000])
 
         for iteration in range(self._max_iterations):
-            # Check external interruption (SIGINT/SIGTERM/Tyr cancel via interrupt()).
+            # Check external interruption (SIGINT/SIGTERM/Ting cancel via interrupt()).
             if self._interrupt_reason is not None:
                 await self._write_checkpoint(
                     user_input=user_input,
@@ -1333,7 +1333,10 @@ async def _validate_mimir_outcome_for_persona(
     """
     if persona_config is None or mimir is None:
         return parsed_outcome
-    if persona_config.produces.event_type != "research.completed":
+    produces_research_completed = persona_config.produces.event_type == "research.completed" or (
+        "research.completed" in set(persona_config.produces.event_type_map.values())
+    )
+    if not produces_research_completed:
         return parsed_outcome
 
     page_path = str(parsed_outcome.fields.get("page_path") or "").strip()
@@ -1347,9 +1350,7 @@ async def _validate_mimir_outcome_for_persona(
             errors.append(f"research page not found in Mimir: {page_path}")
         else:
             if not page.meta.produced_by_thread:
-                errors.append(
-                    f"research page {page_path} must include produced_by_thread: true"
-                )
+                errors.append(f"research page {page_path} must include produced_by_thread: true")
 
             source_ids = [
                 stripped_id

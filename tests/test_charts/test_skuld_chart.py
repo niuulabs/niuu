@@ -189,6 +189,11 @@ class TestDeploymentTemplate:
         """Test sessions volume is mounted by multiple containers."""
         assert deployment_yaml.count("name: sessions") >= 2
 
+    def test_git_clone_ensures_dynamic_nginx_include_exists(self, deployment_yaml):
+        """Test session bootstrap always pre-creates .services/nginx.conf."""
+        assert 'mkdir -p "$WORKSPACE/.services"' in deployment_yaml
+        assert 'touch "$WORKSPACE/.services/nginx.conf"' in deployment_yaml
+
     def test_has_no_reh_container(self, deployment_yaml):
         """Test deployment no longer contains the retired REH container."""
         assert "name: vscode-reh" not in deployment_yaml

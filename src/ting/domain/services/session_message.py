@@ -1,0 +1,157 @@
+"""Service for sending messages to running Volundr sessions.
+
+Handles resolving run → session, sending via VolundrPort, persisting
+the message for audit, recording a confidence event, and emitting an
+SSE event.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
+
+from ting.domain.exceptions import RunNotFoundError
+from ting.domain.models import (
+    ConfidenceEvent,
+    ConfidenceEventType,
+    RunStatus,
+    SessionMessage,
+)
+from ting.ports.event_bus import EventBusPort, TingEvent
+from ting.ports.tracker import TrackerPort
+from ting.ports.volundr import VolundrPort
+
+logger = logging.getLogger(__name__)
+
+RUNNING_STATUSES = frozenset({RunStatus.RUNNING, RunStatus.REVIEW, RunStatus.ESCALATED})
+
+
+class NoActiveSessionError(Exception):
+    def __init__(self, run_id: UUID | str) -> None:
+        self.run_id = run_id
+        super().__init__(f"Run {run_id} has no active session")
+
+
+class RunNotRunningError(Exception):
+    def __init__(self, run_id: UUID | str, status: str) -> None:
+        self.run_id = run_id
+        self.status = status
+        super().__init__(f"Run {run_id} is in {status} state, not running")
+
+
+@dataclass(frozen=True)
+class MessageResult:
+    """Outcome of sending a message to a session."""
+
+    message: SessionMessage
+    run_id: UUID
+    session_id: str
+
+
+class SessionMessageService:
+    """Sends messages to running sessions and tracks them for audit."""
+
+    def __init__(
+        self,
+        tracker: TrackerPort,
+        volundr: VolundrPort,
+        event_bus: EventBusPort | None = None,
+    ) -> None:
+        self._tracker = tracker
+        self._volundr = volundr
+        self._event_bus = event_bus
+
+    async def send_message(
+        self,
+        run_id: UUID,
+        content: str,
+        *,
+        sender: str = "user",
+        auth_token: str | None = None,
+        target_peer_id: str | None = None,
+    ) -> MessageResult:
+        """Send a message to the session running a run.
+
+        1. Resolve run → session_id
+        2. Send message via VolundrPort
+        3. Persist audit record
+        4. Record confidence event (zero delta)
+        5. Emit SSE event
+        """
+        run = await self._tracker.get_run_by_id(run_id)
+        if run is None:
+            raise RunNotFoundError(run_id)
+
+        if run.status not in RUNNING_STATUSES:
+            raise RunNotRunningError(run_id, run.status.value)
+
+        # In REVIEW state, prefer the reviewer session; otherwise use the working session
+        target_session = run.reviewer_session_id if run.status == RunStatus.REVIEW else None
+        target_session = target_session or run.session_id
+        if not target_session:
+            raise NoActiveSessionError(run_id)
+
+        # Send the message to Volundr
+        if target_peer_id:
+            await self._volundr.send_directed_room_message(
+                target_session,
+                target_peer_id,
+                content,
+                auth_token=auth_token,
+            )
+        else:
+            await self._volundr.send_message(target_session, content, auth_token=auth_token)
+
+        # Persist audit record
+        now = datetime.now(UTC)
+        msg = SessionMessage(
+            id=uuid4(),
+            run_id=run_id,
+            session_id=target_session,
+            content=content,
+            sender=sender,
+            created_at=now,
+        )
+        await self._tracker.save_session_message(msg)
+
+        # Record confidence event with zero delta (message doesn't change score)
+        event = ConfidenceEvent(
+            id=uuid4(),
+            run_id=run_id,
+            event_type=ConfidenceEventType.MESSAGE_SENT,
+            delta=0.0,
+            score_after=run.confidence,
+            created_at=now,
+        )
+        await self._tracker.add_confidence_event(run.tracker_id, event)
+
+        # Emit SSE event
+        if self._event_bus:
+            await self._event_bus.emit(
+                TingEvent(
+                    event="session.message_sent",
+                    data={
+                        "run_id": str(run_id),
+                        "session_id": run.session_id,
+                        "sender": sender,
+                        "content_length": len(content),
+                        "target_peer_id": target_peer_id or "",
+                    },
+                )
+            )
+
+        logger.info(
+            "Message sent to session %s for run %s (sender=%s, length=%d)",
+            run.session_id,
+            run_id,
+            sender,
+            len(content),
+        )
+
+        return MessageResult(
+            message=msg,
+            run_id=run_id,
+            session_id=target_session,
+        )

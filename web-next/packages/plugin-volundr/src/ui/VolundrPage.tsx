@@ -85,7 +85,7 @@ export function VolundrPage() {
   const domainSessions = useSessionList();
 
   function handleView(sessionId: string) {
-    void navigate({ to: `/volundr/session/$sessionId`, params: { sessionId } });
+    void navigate({ to: `/volundr/sessions/$sessionId`, params: { sessionId } });
   }
 
   const activeCols = buildSessionColumns({

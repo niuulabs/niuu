@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from niuu.adapters.inbound.rest_integration_models import IntegrationResponse
+from niuu.domain.models import SecretType
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.models import (
@@ -39,22 +40,22 @@ class IntegrationCreateRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    integration_type: str = Field(
-        ...,
+    integration_type: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("integration_type", "integrationType", "type"),
         min_length=1,
         max_length=50,
         description="Integration category (source_control, issue_tracker, etc.)",
         examples=["issue_tracker"],
     )
-    adapter: str = Field(
-        default="",
+    adapter: str | None = Field(
+        default=None,
         max_length=500,
         description="Fully-qualified adapter class path (empty for env-only integrations)",
         examples=["volundr.adapters.trackers.linear.LinearAdapter"],
     )
-    credential_name: str = Field(
-        ...,
+    credential_name: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("credential_name", "credentialName"),
         min_length=1,
         max_length=253,
@@ -77,6 +78,34 @@ class IntegrationCreateRequest(BaseModel):
         description="Catalog entry slug (references IntegrationDefinition)",
         examples=["linear"],
     )
+
+    credential: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional inline credential payload. When provided, the integrations service stores"
+            " it before creating the connection."
+        ),
+        examples=[{"name": "linear-main", "data": {"api_key": "lin_api_123"}}],
+    )
+
+
+def _secret_type_for_definition(defn: IntegrationDefinition) -> SecretType:
+    """Choose a stored secret type for an integration definition."""
+
+    if defn.auth_type == "oauth2_authorization_code":
+        return SecretType.OAUTH_TOKEN
+    return SecretType.GENERIC
+
+
+def _validate_required_fields(schema: dict[str, Any], values: dict[str, Any]) -> list[str]:
+    """Validate that all required schema fields are present and non-empty."""
+
+    errors: list[str] = []
+    for key in schema.get("required", []):
+        value = values.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            errors.append(f"'{key}' is required")
+    return errors
 
 
 class IntegrationUpdateRequest(BaseModel):
@@ -293,24 +322,109 @@ def _build_integrations_router(
                     canonical_path=canonical_prefix,
                 ),
             )
+        definition = (
+            registry.get_definition(data.slug) if registry is not None and data.slug else None
+        )
+        integration_type = data.integration_type
+        adapter = data.adapter or ""
+
+        if definition is not None:
+            integration_type = definition.integration_type
+            adapter = definition.adapter
+
+        if not integration_type:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="integration_type is required when slug does not resolve to a definition",
+            )
+
+        credential_name = data.credential_name
+        if data.credential is not None:
+            if credential_store is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Credential storage is not available for inline integration setup",
+                )
+            if definition is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="slug is required when creating inline integration credentials",
+                )
+
+            credential_name = str(data.credential.get("name", "")).strip()
+            credential_data = data.credential.get("data")
+            credential_metadata = data.credential.get("metadata") or {}
+            if not credential_name:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="credential.name is required",
+                )
+            if not isinstance(credential_data, dict) or not credential_data:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="credential.data must be a non-empty object",
+                )
+
+            credential_errors = _validate_required_fields(
+                definition.credential_schema,
+                credential_data,
+            )
+            if credential_errors:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=credential_errors,
+                )
+
+            await credential_store.store(
+                owner_type="user",
+                owner_id=principal.user_id,
+                name=credential_name,
+                secret_type=_secret_type_for_definition(definition),
+                data={str(key): str(value) for key, value in credential_data.items()},
+                metadata={
+                    "source": "integration",
+                    "integration": definition.slug,
+                    "integration_type": str(definition.integration_type),
+                    "auth_type": definition.auth_type,
+                    **(
+                        credential_metadata
+                        if isinstance(credential_metadata, dict)
+                        else {"metadata": str(credential_metadata)}
+                    ),
+                },
+            )
+        elif credential_name and credential_store is not None:
+            existing = await credential_store.get("user", principal.user_id, credential_name)
+            if existing is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Credential not found: {credential_name}",
+                )
+
+        if not credential_name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="credential_name or credential is required",
+            )
+
         now = datetime.now(UTC)
         connection = IntegrationConnection(
             id=str(uuid4()),
             owner_id=principal.user_id,
-            integration_type=IntegrationType(data.integration_type),
-            adapter=data.adapter,
-            credential_name=data.credential_name,
+            integration_type=IntegrationType(integration_type),
+            adapter=adapter,
+            credential_name=credential_name,
             config=data.config,
             enabled=data.enabled,
             created_at=now,
             updated_at=now,
-            slug=data.slug,
+            slug=definition.slug if definition is not None else data.slug,
         )
         saved = await integration_repo.save_connection(connection)
         logger.info(
             "Created integration: type=%s adapter=%s user=%s",
-            _sanitize_log(data.integration_type),
-            _sanitize_log(data.adapter),
+            _sanitize_log(integration_type),
+            _sanitize_log(adapter),
             principal.user_id,
         )
         return IntegrationResponse.from_connection(saved)
@@ -477,13 +591,11 @@ def create_integrations_router(
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
 ) -> APIRouter:
-    """Create the legacy Volundr integrations router."""
+    """Create the canonical shared integrations router."""
     return _build_integrations_router(
         integration_repo,
         tracker_factory,
-        prefix="/api/v1/volundr/integrations",
-        deprecated=True,
-        canonical_prefix="/api/v1/integrations",
+        prefix="/api/v1/integrations",
         registry=registry,
         credential_store=credential_store,
     )
@@ -495,11 +607,10 @@ def create_canonical_integrations_router(
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
 ) -> APIRouter:
-    """Create the canonical shared integrations router."""
-    return _build_integrations_router(
+    """Backward-compatible alias for the canonical shared integrations router."""
+    return create_integrations_router(
         integration_repo,
         tracker_factory,
-        prefix="/api/v1/integrations",
         registry=registry,
         credential_store=credential_store,
     )

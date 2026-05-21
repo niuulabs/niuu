@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -23,7 +24,15 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -39,6 +48,7 @@ from skuld.channels import (
     ChannelRegistry,
     TelegramChannel,
     WebSocketChannel,
+    _is_expected_ws_disconnect,
 )
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.config import SkuldSettings
@@ -51,6 +61,7 @@ from skuld.service_manager import (
 )
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.catalog import ravn_session_ended
+from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
 from volundr.log_aggregate import aggregate_workspace_logs
 
@@ -105,6 +116,8 @@ logger = logging.getLogger("skuld.broker")
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 FORGE_CHRONICLES_PATH = "/api/v1/forge/chronicles"
 FORGE_EVENTS_PATH = "/api/v1/forge/events"
+WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
+WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
 
 
 def _sanitize_log(value: object) -> str:
@@ -129,11 +142,6 @@ _GIT_COMMIT_PREFIXES = ("git commit", "git -c ", "git -C ")
 
 # Matches git commit output like: [main e4f7a21] fix: some message
 _GIT_COMMIT_OUTPUT_RE = re.compile(r"\[[\w/-]+\s+([a-f0-9]{7,})\]\s+(.+)")
-_PEER_WATCHDOG_POLL_SECONDS = 5.0
-_PEER_WATCHDOG_SILENCE_SECONDS = 45.0
-_PEER_WATCHDOG_TOOL_SILENCE_SECONDS = 90.0
-
-
 def _is_git_commit(cmd: str) -> bool:
     """Return True if a Bash command is a git commit invocation."""
     stripped = cmd.lstrip()
@@ -141,6 +149,14 @@ def _is_git_commit(cmd: str) -> bool:
         return True
     # Handle chained commands: git add . && git commit -m "..."
     return "git commit" in stripped
+
+
+def _is_git_push(cmd: str) -> bool:
+    """Return True if a Bash command is a git push invocation."""
+    stripped = cmd.lstrip()
+    if stripped.startswith("git push"):
+        return True
+    return "git push" in stripped
 
 
 def _extract_git_commit_info(output: str) -> tuple[str, str] | None:
@@ -152,6 +168,63 @@ def _extract_git_commit_info(output: str) -> tuple[str, str] | None:
     if not match:
         return None
     return match.group(1), match.group(2)
+
+
+@dataclass
+class GitWorkspaceCheckpoint:
+    """Snapshot of the workspace repo at broker startup."""
+
+    repo_root: Path
+    initial_head: str
+    initial_upstream_head: str | None = None
+
+
+def _git_command_output(repo_root: Path, *args: str) -> str | None:
+    """Return trimmed git command output or None when the command fails."""
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(repo_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    output = result.stdout.strip()
+    return output or None
+
+
+def _capture_git_workspace_checkpoint(workspace_dir: str) -> GitWorkspaceCheckpoint | None:
+    """Capture the startup git state for a workspace-backed session."""
+    repo_root = _resolve_git_workspace_root(workspace_dir)
+    if not (repo_root / ".git").exists():
+        return None
+    head = _git_command_output(repo_root, "rev-parse", "HEAD")
+    if not head:
+        return None
+    upstream_head = _git_command_output(repo_root, "rev-parse", "@{u}")
+    return GitWorkspaceCheckpoint(
+        repo_root=repo_root,
+        initial_head=head,
+        initial_upstream_head=upstream_head,
+    )
+
+
+def _git_workspace_checkpoint_status(
+    checkpoint: GitWorkspaceCheckpoint | None,
+) -> tuple[bool, bool]:
+    """Return (commit_ok, push_ok) relative to the startup workspace checkpoint."""
+    if checkpoint is None:
+        return (False, False)
+
+    current_head = _git_command_output(checkpoint.repo_root, "rev-parse", "HEAD")
+    if not current_head or current_head == checkpoint.initial_head:
+        return (False, False)
+
+    upstream_head = _git_command_output(checkpoint.repo_root, "rev-parse", "@{u}")
+    push_ok = upstream_head == current_head if upstream_head else False
+    return (True, push_ok)
 
 
 @dataclass
@@ -168,7 +241,9 @@ class SessionArtifacts:
     structured_outcome: dict[str, Any] | None = None
     outcome_valid: bool = False
     saga_id: str | None = None
-    raid_id: str | None = None
+    run_id: str | None = None
+    git_commit_count: int = 0
+    git_push_count: int = 0
     _known_files: set[str] = field(default_factory=set)
     _pending_tool_results: dict[str, dict] = field(default_factory=dict)
 
@@ -211,6 +286,8 @@ class SessionArtifacts:
         if _is_git_commit(cmd):
             # Store pending; will be enriched by tool_result
             return {"type": "git", "label": cmd[:80] or "git commit", "_pending_git": True}
+        if _is_git_push(cmd):
+            return {"type": "git_push", "label": cmd[:80] or "git push"}
 
         return {"type": "terminal", "label": cmd[:80] or "bash"}
 
@@ -295,12 +372,20 @@ class SessionArtifacts:
                 if commit_info:
                     event["hash"] = commit_info[0]
                     event["label"] = commit_info[1]
+                event["exit"] = 1 if result_block.get("is_error") else 0
 
-            if event.get("type") == "terminal":
+            if event.get("type") in {"terminal", "git_push"}:
                 # Extract exit code — look for explicit exit code in result
                 exit_code = self._extract_exit_code(result_block)
                 if exit_code is not None:
                     event["exit"] = exit_code
+
+    def observe_tool_event(self, event: dict[str, Any]) -> None:
+        """Track durable git activity from a classified/enriched tool event."""
+        if event.get("type") == "git" and int(event.get("exit", 0)) == 0:
+            self.git_commit_count += 1
+        if event.get("type") == "git_push" and int(event.get("exit", 0)) == 0:
+            self.git_push_count += 1
 
     @staticmethod
     def _extract_exit_code(result_block: dict) -> int | None:
@@ -341,6 +426,357 @@ class PeerWatchState:
     last_progress_at: float
     last_status: str = "busy"
     warned: bool = False
+
+
+_PASSING_VERDICTS = {
+    "approve",
+    "approved",
+    "clean",
+    "complete",
+    "completed",
+    "ok",
+    "pass",
+    "passed",
+    "success",
+    "succeeded",
+}
+_FAILING_VERDICTS = {
+    "blocked",
+    "changes_requested",
+    "error",
+    "errors",
+    "fail",
+    "failed",
+    "needs_changes",
+    "reject",
+    "rejected",
+}
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _split_workflow_edge_label(label: object) -> tuple[str, str]:
+    if not isinstance(label, str):
+        return "", ""
+    parts = label.split("->", 1)
+    if len(parts) != 2:
+        stripped = label.strip()
+        return stripped, stripped
+    return parts[0].strip(), parts[1].strip()
+
+
+@dataclass(frozen=True)
+class WorkflowTerminalNode:
+    node_id: str
+    label: str
+    event_types: list[str]
+    join_mode: str
+    completion_event_type: str
+    require_git_commit: bool = False
+    require_git_push: bool = False
+
+
+@dataclass(frozen=True)
+class WorkflowGateNode:
+    node_id: str
+    label: str
+    condition: str
+    event_types: list[str]
+    mode: str = "human_approval"
+    approval_event_type: str = "gate.approved"
+    changes_requested_event_type: str = "gate.changes_requested"
+    pending_behavior: str = "help_needed"
+    instructions: str = ""
+    auto_forward_after: str = "30m"
+
+
+@dataclass
+class WorkflowGateState:
+    id: str
+    node_id: str
+    activation_id: str
+    label: str
+    condition: str
+    status: str
+    mode: str
+    pending_behavior: str
+    instructions: str
+    auto_forward_after: str
+    requested_at: str
+    updated_at: str
+    triggered_by_event_type: str
+    approval_event_type: str
+    changes_requested_event_type: str
+    attempt: int = 1
+    decision: str | None = None
+    notes: str = ""
+    source: str = "workflow"
+    summary: str = ""
+
+
+def _workflow_terminal_nodes(graph: dict[str, Any] | None) -> list[WorkflowTerminalNode]:
+    if not isinstance(graph, dict):
+        return []
+
+    nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
+    edges = [edge for edge in graph.get("edges", []) if isinstance(edge, dict)]
+    terminal_nodes: list[WorkflowTerminalNode] = []
+
+    for node in nodes:
+        if str(node.get("kind") or "") != "end":
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            continue
+        event_types = _dedupe_preserve_order(
+            [
+                source_event
+                for edge in edges
+                if str(edge.get("target") or "").strip() == node_id
+                for source_event, _target_event in [_split_workflow_edge_label(edge.get("label"))]
+                if source_event and source_event != "complete"
+            ]
+        )
+        if not event_types:
+            continue
+        terminal_nodes.append(
+            WorkflowTerminalNode(
+                node_id=node_id,
+                label=str(node.get("label") or node_id),
+                event_types=event_types,
+                join_mode=str(node.get("joinMode") or "all"),
+                completion_event_type=str(node.get("completionEvent") or "ravn.task.completed"),
+                require_git_commit=bool(
+                    (node.get("completionRules") or {}).get("requireGitCommit")
+                ),
+                require_git_push=bool((node.get("completionRules") or {}).get("requireGitPush")),
+            )
+        )
+
+    return terminal_nodes
+
+
+def _workflow_gate_nodes(graph: dict[str, Any] | None) -> list[WorkflowGateNode]:
+    if not isinstance(graph, dict):
+        return []
+
+    nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
+    edges = [edge for edge in graph.get("edges", []) if isinstance(edge, dict)]
+    gate_nodes: list[WorkflowGateNode] = []
+
+    for node in nodes:
+        if str(node.get("kind") or "") != "gate":
+            continue
+
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            continue
+
+        incoming_event_types = _dedupe_preserve_order(
+            [
+                source_event
+                for edge in edges
+                if str(edge.get("target") or "").strip() == node_id
+                for source_event, _target_event in [_split_workflow_edge_label(edge.get("label"))]
+                if source_event and source_event != "complete"
+            ]
+        )
+        if not incoming_event_types:
+            continue
+
+        outgoing_event_types = _dedupe_preserve_order(
+            [
+                source_event
+                for edge in edges
+                if str(edge.get("source") or "").strip() == node_id
+                for source_event, _target_event in [_split_workflow_edge_label(edge.get("label"))]
+                if source_event and source_event != "complete"
+            ]
+        )
+        explicit_approval_event_type = str(
+            node.get("approvalEvent") or node.get("approval_event") or ""
+        ).strip()
+        explicit_changes_requested_event_type = str(
+            node.get("changesRequestedEvent") or node.get("changes_requested_event") or ""
+        ).strip()
+        approval_event_type = explicit_approval_event_type or next(
+            (
+                event_type
+                for event_type in outgoing_event_types
+                if "approved" in event_type or event_type.endswith(".approve")
+            ),
+            outgoing_event_types[0] if outgoing_event_types else "gate.approved",
+        )
+        changes_requested_event_type = explicit_changes_requested_event_type or next(
+            (
+                event_type
+                for event_type in outgoing_event_types
+                if "changes_requested" in event_type or "changes-requested" in event_type
+            ),
+            next(
+                (
+                    event_type
+                    for event_type in outgoing_event_types
+                    if "changes" in event_type or "rework" in event_type
+                ),
+                outgoing_event_types[1]
+                if len(outgoing_event_types) > 1
+                else "gate.changes_requested",
+            ),
+        )
+        pending_behavior = str(
+            node.get("pendingBehavior") or node.get("pending_behavior") or "help_needed"
+        ).strip() or "help_needed"
+        mode = str(node.get("mode") or "human_approval").strip() or "human_approval"
+        instructions = str(node.get("instructions") or "").strip()
+
+        gate_nodes.append(
+            WorkflowGateNode(
+                node_id=node_id,
+                label=str(node.get("label") or node_id),
+                condition=str(node.get("condition") or ""),
+                event_types=incoming_event_types,
+                mode=mode,
+                approval_event_type=approval_event_type,
+                changes_requested_event_type=changes_requested_event_type,
+                pending_behavior=pending_behavior,
+                instructions=instructions,
+                auto_forward_after=str(node.get("autoForwardAfter") or "30m"),
+            )
+        )
+
+    return gate_nodes
+
+
+def _workflow_outcome_passed(payload: dict[str, Any]) -> bool:
+    if not bool(payload.get("valid", True)):
+        return False
+
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    if verdict in _FAILING_VERDICTS:
+        return False
+    if verdict in _PASSING_VERDICTS:
+        return True
+
+    fields = payload.get("fields")
+    if isinstance(fields, dict):
+        approved = fields.get("approved")
+        if approved is False:
+            return False
+        if approved is True:
+            return True
+        tests_passing = fields.get("tests_passing")
+        if tests_passing is False:
+            return False
+
+    tests_passing = payload.get("tests_passing")
+    if tests_passing is False:
+        return False
+
+    return True
+
+
+def _workflow_join_satisfied(join_mode: str, outcomes: list[dict[str, Any]]) -> bool:
+    if not outcomes:
+        return False
+    passed = [_workflow_outcome_passed(outcome) for outcome in outcomes]
+    match join_mode:
+        case "any":
+            return any(passed)
+        case "merge":
+            return all(passed)
+        case _:
+            return all(passed)
+
+
+def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    summaries: list[str] = []
+    files_changed: list[str] = []
+    seen_files: set[str] = set()
+    tests: list[bool] = []
+    scope_values: list[float] = []
+    checks: list[dict[str, Any]] = []
+
+    for outcome in outcomes:
+        event_type = str(outcome.get("event_type") or "").strip()
+        persona = str(outcome.get("persona") or "").strip()
+        verdict = str(outcome.get("verdict") or "").strip()
+        summary = str(outcome.get("summary") or "").strip()
+        if summary:
+            label = persona or event_type or "outcome"
+            summaries.append(f"{label}: {summary}")
+
+        raw_files = outcome.get("files_changed")
+        if isinstance(raw_files, list):
+            for file_path in raw_files:
+                if not isinstance(file_path, str):
+                    continue
+                normalized = file_path.strip()
+                if not normalized or normalized in seen_files:
+                    continue
+                seen_files.add(normalized)
+                files_changed.append(normalized)
+
+        candidate_tests = outcome.get("tests_passing")
+        if isinstance(candidate_tests, bool):
+            tests.append(candidate_tests)
+
+        candidate_scope = outcome.get("scope_adherence")
+        if isinstance(candidate_scope, (int, float)):
+            scope_values.append(float(candidate_scope))
+
+        checks.append(
+            {
+                "persona": persona,
+                "event_type": event_type,
+                "verdict": verdict,
+                "summary": summary,
+            }
+        )
+
+    merged: dict[str, Any] = {
+        "verdict": "approve",
+        "summary": " | ".join(summaries) if summaries else "Workflow checks passed",
+        "checks": checks,
+        "authoritative": True,
+    }
+    if files_changed:
+        merged["files_changed"] = files_changed
+    if tests:
+        merged["tests_passing"] = all(tests)
+    if scope_values:
+        merged["scope_adherence"] = min(scope_values)
+    return merged
+
+
+def _workflow_terminal_requirements_satisfied(
+    node: WorkflowTerminalNode,
+    artifacts: SessionArtifacts,
+    *,
+    git_checkpoint: GitWorkspaceCheckpoint | None = None,
+) -> bool:
+    """Return True when deterministic completion rules are satisfied."""
+    commit_ok = artifacts.git_commit_count > 0
+    push_ok = artifacts.git_push_count > 0
+    if git_checkpoint is not None:
+        checkpoint_commit_ok, checkpoint_push_ok = _git_workspace_checkpoint_status(git_checkpoint)
+        commit_ok = commit_ok or checkpoint_commit_ok
+        push_ok = push_ok or checkpoint_push_ok
+
+    if node.require_git_commit and not commit_ok:
+        return False
+    if node.require_git_push and not push_ok:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +914,9 @@ class Broker:
         self._sleipnir_publisher: SleipnirPublisher = sleipnir_publisher or InProcessBus()
         self._artifacts = SessionArtifacts(
             saga_id=self._settings.session.saga_id,
-            raid_id=self._settings.session.raid_id,
+            run_id=self._settings.session.run_id,
         )
+        self._flock_completion_reported = False
         self._session_start_reported = False
         self._event_sequence = 0
         self._activity_state: str = "idle"
@@ -493,7 +930,26 @@ class Broker:
         self._pending_explicit_human_response_count = 0
         self._chronicle_watcher: ChronicleWatcher | None = None
         self._peer_watchdog_task: asyncio.Task[None] | None = None
+        self._workflow_trigger_task: asyncio.Task[None] | None = None
         self._peer_watches: dict[str, PeerWatchState] = {}
+        self._peer_pending_commands: dict[str, list[str]] = {}
+        self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None
+        self._workflow_gate_nodes = _workflow_gate_nodes(self._settings.workflow.graph)
+        self._workflow_gate_index: dict[str, list[WorkflowGateNode]] = {}
+        for node in self._workflow_gate_nodes:
+            for event_type in node.event_types:
+                self._workflow_gate_index.setdefault(event_type, []).append(node)
+        self._workflow_gate_slots: dict[tuple[str, str], set[str]] = {}
+        self._workflow_gate_attempts: dict[tuple[str, str], int] = {}
+        self._workflow_gate_state_ids_by_key: dict[tuple[str, str], str] = {}
+        self._workflow_gate_states: dict[str, WorkflowGateState] = {}
+        self._workflow_terminal_nodes = _workflow_terminal_nodes(self._settings.workflow.graph)
+        self._workflow_terminal_index: dict[str, list[WorkflowTerminalNode]] = {}
+        for node in self._workflow_terminal_nodes:
+            for event_type in node.event_types:
+                self._workflow_terminal_index.setdefault(event_type, []).append(node)
+        self._workflow_terminal_slots: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        self._workflow_terminal_emitted: set[tuple[str, str]] = set()
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
@@ -762,16 +1218,102 @@ class Broker:
         """
         return bool(self._has_workflow_trigger() and self._settings.room.enabled)
 
+    def _workflow_trigger_consumer_peer_ids(self, event_type: str) -> set[str]:
+        """Return flock peer ids that subscribe to the workflow trigger event."""
+        if self._room_bridge is None or not event_type:
+            return set()
+        peer_ids: set[str] = set()
+        for participant in self._room_bridge.participants.values():
+            if participant.participant_type == "skuld":
+                continue
+            if event_type in participant.subscribes_to:
+                peer_ids.add(participant.peer_id)
+        return peer_ids
+
+    async def _wait_for_workflow_trigger_consumers(
+        self,
+        event_type: str,
+        timeout_s: float,
+        *,
+        poll_interval_s: float = 0.05,
+    ) -> bool:
+        """Wait until the initial workflow-trigger consumers are connected.
+
+        Workflow kickoff events are pub/sub outcomes. If we publish them before
+        the first consumer peer finishes its WebSocket registration, the event
+        can be dropped and the flock stalls indefinitely. We treat the trigger
+        subscribers as required startup dependencies and wait briefly for them
+        to connect before dispatching the initial event.
+        """
+        required_peers = self._workflow_trigger_consumer_peer_ids(event_type)
+        if not required_peers or self._room_bridge is None:
+            return True
+
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        missing = {
+            peer_id
+            for peer_id in required_peers
+            if not self._room_bridge.is_connected(peer_id)
+        }
+        if missing:
+            logger.info(
+                "Workflow trigger waiting for consumers event_type=%s peers=%s timeout=%.1fs",
+                event_type,
+                sorted(missing),
+                max(0.0, timeout_s),
+            )
+
+        while missing and time.monotonic() < deadline:
+            await asyncio.sleep(poll_interval_s)
+            missing = {
+                peer_id
+                for peer_id in required_peers
+                if not self._room_bridge.is_connected(peer_id)
+            }
+
+        if missing:
+            logger.error(
+                "Workflow trigger consumers failed to connect before dispatch "
+                "event_type=%s peers=%s",
+                event_type,
+                sorted(missing),
+            )
+            return False
+
+        # Give newly connected peers one short beat to finish their channel
+        # registration/subscription handshake before the first pub/sub event.
+        await asyncio.sleep(poll_interval_s)
+        logger.info(
+            "Workflow trigger consumers ready event_type=%s peers=%s",
+            event_type,
+            sorted(required_peers),
+        )
+        return True
+
     async def _publish_workflow_trigger(self) -> None:
-        """Publish the initial Tyr task into the flock as a mesh outcome event."""
+        """Publish the initial Ting task into the flock as a mesh outcome event."""
         if self._mesh_adapter is None or not self._has_workflow_trigger():
             return
 
         from ravn.domain.events import RavnEvent, RavnEventType
 
         cfg = self._settings.workflow_trigger
+        # Workflow kickoff is a required dependency for flock-backed workflows.
+        # Large flocks can take several seconds to finish peer startup, so we
+        # give them a more realistic readiness window and fail closed rather
+        # than silently dropping the first workflow event.
+        wait_timeout_s = max(float(cfg.startup_delay_s or 0.0), 20.0)
+        consumers_ready = await self._wait_for_workflow_trigger_consumers(
+            cfg.event_type,
+            wait_timeout_s,
+        )
+        if not consumers_ready:
+            raise RuntimeError(
+                f"workflow trigger consumers for {cfg.event_type} did not connect"
+            )
+
         delay_s = max(0.0, float(cfg.startup_delay_s or 0.0))
-        if delay_s:
+        if delay_s and not self._workflow_trigger_consumer_peer_ids(cfg.event_type):
             logger.info(
                 "Workflow trigger waiting %.1fs for flock subscribers before mesh dispatch",
                 delay_s,
@@ -803,6 +1345,16 @@ class Broker:
             cfg.event_type,
             cfg.node_id,
         )
+
+    async def _run_workflow_trigger_task(self) -> None:
+        """Dispatch the initial workflow trigger after broker startup completes."""
+        try:
+            await self._publish_workflow_trigger()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Workflow trigger dispatch failed")
+            raise
 
     def _build_transport_kwargs(self) -> dict:
         """Return superset of kwargs that any transport constructor might need."""
@@ -863,17 +1415,13 @@ class Broker:
             t.role == "user" and t.content == prompt for t in self._conversation_turns
         ):
             turn_id = str(uuid.uuid4())
-            self._append_turn(
-                ConversationTurn(id=turn_id, role="user", content=prompt)
-            )
+            self._append_turn(ConversationTurn(id=turn_id, role="user", content=prompt))
             try:
                 await self._channels.broadcast(
                     {"type": "user_confirmed", "id": turn_id, "content": prompt}
                 )
             except Exception:
-                logger.debug(
-                    "Initial-prompt user_confirmed broadcast failed", exc_info=True
-                )
+                logger.debug("Initial-prompt user_confirmed broadcast failed", exc_info=True)
 
         try:
             await self._transport.start()
@@ -905,6 +1453,7 @@ class Broker:
         self.service_manager = ServiceManager(self.workspace_dir)
         await self.service_manager.init()
         logger.info("Service manager initialized")
+        self._git_workspace_checkpoint = _capture_git_workspace_checkpoint(self.workspace_dir)
 
         # Initialize Telegram channel if configured
         await self._init_telegram_channel()
@@ -943,11 +1492,17 @@ class Broker:
         if self._settings.mesh.enabled:
             await self._start_mesh_adapter()
             if self._has_workflow_trigger():
-                await self._publish_workflow_trigger()
+                self._workflow_trigger_task = asyncio.create_task(
+                    self._run_workflow_trigger_task()
+                )
         elif self._has_workflow_trigger():
             logger.warning("Workflow trigger configured but mesh is disabled — skipping dispatch")
 
-        if self._room_bridge is not None and self._settings.mesh.enabled:
+        if (
+            self._room_bridge is not None
+            and self._settings.mesh.enabled
+            and self._settings.peer_watchdog.enabled
+        ):
             self._peer_watchdog_task = asyncio.create_task(self._peer_watchdog_loop())
 
     async def shutdown(self) -> None:
@@ -966,6 +1521,11 @@ class Broker:
             self._peer_watchdog_task.cancel()
             await asyncio.gather(self._peer_watchdog_task, return_exceptions=True)
             self._peer_watchdog_task = None
+
+        if self._workflow_trigger_task is not None:
+            self._workflow_trigger_task.cancel()
+            await asyncio.gather(self._workflow_trigger_task, return_exceptions=True)
+            self._workflow_trigger_task = None
 
         # Report chronicle BEFORE stopping the transport (CLI must be alive)
         await self._report_chronicle()
@@ -1004,6 +1564,14 @@ class Broker:
                 return participant.peer_id
         return ""
 
+    def _refresh_git_workspace_artifacts(self) -> None:
+        """Fold deterministic git workspace state into the session artifact counters."""
+        commit_ok, push_ok = _git_workspace_checkpoint_status(self._git_workspace_checkpoint)
+        if commit_ok:
+            self._artifacts.git_commit_count = max(self._artifacts.git_commit_count, 1)
+        if push_ok:
+            self._artifacts.git_push_count = max(self._artifacts.git_push_count, 1)
+
     async def _observe_room_peer_event(
         self,
         peer_id: str,
@@ -1016,6 +1584,12 @@ class Broker:
         observer_peer_id = self._observer_peer_id()
         if peer_id == observer_peer_id:
             return
+
+        if event_type == "outcome":
+            await self._emit_peer_outcome_pipeline_event(peer_id, frame)
+        elif event_type == "help_needed":
+            await self._report_peer_help_needed_activity(peer_id, frame)
+            await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
 
         now = time.monotonic()
         watch = self._peer_watches.get(peer_id)
@@ -1034,7 +1608,30 @@ class Broker:
             )
             return
 
+        if event_type == "tool_start":
+            metadata = frame.get("metadata", {})
+            tool_input = metadata.get("input") if isinstance(metadata, dict) else {}
+            command = ""
+            if isinstance(tool_input, dict):
+                command = str(tool_input.get("command") or "").strip()
+            if command:
+                self._peer_pending_commands.setdefault(peer_id, []).append(command)
+
+        if event_type == "tool_result":
+            metadata = frame.get("metadata", {})
+            pending = self._peer_pending_commands.get(peer_id, [])
+            command = pending.pop(0) if pending else ""
+            if not pending:
+                self._peer_pending_commands.pop(peer_id, None)
+            if command and not bool(metadata.get("is_error")):
+                if _is_git_commit(command):
+                    self._artifacts.git_commit_count += 1
+                elif _is_git_push(command):
+                    self._artifacts.git_push_count += 1
+
         if watch is None:
+            if event_type == "outcome":
+                await self._maybe_report_flock_completion(peer_id, frame)
             return
 
         watch.last_progress_at = now
@@ -1048,26 +1645,609 @@ class Broker:
         elif event_type == "error":
             watch.last_status = "error"
             self._peer_watches.pop(peer_id, None)
+            self._peer_pending_commands.pop(peer_id, None)
         elif event_type in {"response", "outcome", "help_needed"}:
             self._peer_watches.pop(peer_id, None)
+            self._peer_pending_commands.pop(peer_id, None)
+
+        if event_type == "outcome":
+            await self._maybe_report_flock_completion(peer_id, frame)
+
+    async def _emit_peer_outcome_pipeline_event(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        """Persist a canonical peer outcome into the outer session event stream."""
+        data = frame.get("data", {})
+        if not isinstance(data, dict):
+            return
+
+        metadata = frame.get("metadata", {})
+        event_type = str(metadata.get("event_type") or data.get("event_type") or "").strip()
+        if not event_type:
+            return
+
+        participant = self._room_bridge.participants.get(peer_id)
+        persona = (
+            participant.persona if participant is not None else str(data.get("persona") or "")
+        ).strip()
+
+        fields = data.get("fields")
+        if not isinstance(fields, dict):
+            nested_outcome = data.get("outcome")
+            fields = nested_outcome if isinstance(nested_outcome, dict) else {}
+
+        payload: dict[str, Any] = {
+            "peer_id": peer_id,
+            "persona": persona,
+            "event_type": event_type,
+            "canonical_event_type": str(data.get("canonical_event_type") or event_type),
+            "fields": fields,
+            "valid": bool(data.get("valid", True)),
+        }
+        verdict = data.get("verdict") or fields.get("verdict")
+        if verdict:
+            payload["verdict"] = verdict
+        summary = data.get("summary") or fields.get("summary")
+        if summary:
+            payload["summary"] = summary
+        files_changed = data.get("files_changed") or fields.get("files_changed")
+        if isinstance(files_changed, list) and files_changed:
+            payload["files_changed"] = files_changed
+
+        if not data.get("routing_only") and data.get("bubble_up") is not False:
+            await self._emit_pipeline_event("outcome", payload)
+        await self._maybe_activate_workflow_gate(frame, payload)
+        await self._maybe_emit_workflow_terminal_outcome(peer_id, frame, payload)
+
+    async def _emit_peer_help_needed_sleipnir_event(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        """Publish a canonical help-needed event so Ting can request human input."""
+        payload = self._build_peer_help_needed_payload(peer_id, frame)
+        if payload is None:
+            return
+        session_id = str(payload.get("session_id") or "").strip()
+
+        event = SleipnirEvent(
+            event_type="ravn.help.needed",
+            source=f"ravn:{peer_id}",
+            payload=payload,
+            urgency=float(frame.get("metadata", {}).get("urgency", 0.85)),
+            correlation_id=session_id or self.session_id,
+            summary=f"Help needed ({payload.get('persona') or peer_id}): {payload['summary']}",
+            domain="code",
+            timestamp=SleipnirEvent.now(),
+        )
+        try:
+            await self._sleipnir_publisher.publish(event)
+            logger.info(
+                "Peer help-needed event emitted: peer=%s session=%s run=%s",
+                peer_id,
+                session_id or "-",
+                self._artifacts.run_id or "-",
+            )
+        except Exception:
+            logger.warning("Failed to emit peer help-needed event", exc_info=True)
+
+    def _build_peer_help_needed_payload(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        data = frame.get("data", {})
+        if isinstance(data, str):
+            data = {"summary": data}
+        if not isinstance(data, dict):
+            return None
+
+        participant = self._room_bridge.participants.get(peer_id)
+        persona = (
+            participant.persona if participant is not None else str(data.get("persona") or "")
+        ).strip()
+        context = data.get("context")
+        if not isinstance(context, dict):
+            context = {}
+
+        session_id = str(
+            data.get("session_id")
+            or context.get("session_id")
+            or frame.get("session_id")
+            or self.session_id
+        ).strip()
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "persona": persona,
+            "summary": str(data.get("summary") or "Agent requested human feedback."),
+            "reason": str(data.get("reason") or "needs_context"),
+            "recommendation": str(data.get("recommendation") or ""),
+            "context": context,
+            "target_peer_id": peer_id,
+        }
+        attempted = data.get("attempted")
+        if isinstance(attempted, list):
+            payload["attempted"] = [str(item) for item in attempted if str(item).strip()]
+        if self._artifacts.run_id:
+            payload["run_id"] = self._artifacts.run_id
+        if self._artifacts.saga_id:
+            payload["saga_id"] = self._artifacts.saga_id
+        return payload
+
+    def list_workflow_gates(self) -> list[dict[str, Any]]:
+        """Return workflow gate states ordered from newest to oldest."""
+        states = sorted(
+            self._workflow_gate_states.values(),
+            key=lambda state: (state.updated_at, state.requested_at),
+            reverse=True,
+        )
+        return [asdict(state) for state in states]
+
+    def _workflow_activation_id_from_frame(self, frame: dict[str, Any]) -> str:
+        data = frame.get("data", {})
+        if not isinstance(data, dict):
+            data = {}
+        metadata = frame.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return (
+            str(
+                data.get("workflow_parent_event_id")
+                or data.get("workflow_activation_id")
+                or metadata.get("task_id")
+                or frame.get("root_correlation_id")
+                or self.session_id
+            ).strip()
+            or self.session_id
+        )
+
+    def _build_workflow_gate_help_needed_payload(
+        self,
+        state: WorkflowGateState,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "session_id": self.session_id,
+            "persona": "workflow-gate",
+            "summary": state.summary
+            or f"{state.label} is waiting for human approval before the workflow can continue.",
+            "reason": "needs_human_approval",
+            "recommendation": state.condition
+            or (
+                "Review the pending gate and decide whether to approve "
+                "or request changes."
+            ),
+            "context": {
+                "gate_id": state.id,
+                "gate_label": state.label,
+                "gate_node_id": state.node_id,
+                "gate_status": state.status,
+                "workflow_activation_id": state.activation_id,
+                "mode": state.mode,
+                "pending_behavior": state.pending_behavior,
+                "instructions": state.instructions,
+                "auto_forward_after": state.auto_forward_after,
+            },
+            "target_peer_id": self._observer_peer_id() or "workflow-gate",
+        }
+        if self._artifacts.run_id:
+            payload["run_id"] = self._artifacts.run_id
+        if self._artifacts.saga_id:
+            payload["saga_id"] = self._artifacts.saga_id
+        return payload
+
+    async def _emit_workflow_gate_help_needed_sleipnir_event(
+        self,
+        state: WorkflowGateState,
+    ) -> None:
+        payload = self._build_workflow_gate_help_needed_payload(state)
+        event = SleipnirEvent(
+            event_type="ravn.help.needed",
+            source=f"workflow-gate:{state.node_id}",
+            payload=payload,
+            urgency=0.85,
+            correlation_id=state.activation_id or self.session_id,
+            summary=f"Workflow gate pending ({state.label}): {payload['summary']}",
+            domain="code",
+            timestamp=SleipnirEvent.now(),
+        )
+        try:
+            await self._sleipnir_publisher.publish(event)
+            logger.info(
+                "Workflow gate help-needed emitted: gate=%s activation=%s",
+                state.node_id,
+                state.activation_id,
+            )
+        except Exception:
+            logger.warning("Failed to emit workflow gate help-needed event", exc_info=True)
+
+    async def _activate_workflow_gate(
+        self,
+        node: WorkflowGateNode,
+        activation_id: str,
+        triggering_event_type: str,
+        *,
+        summary: str = "",
+    ) -> WorkflowGateState:
+        key = (node.node_id, activation_id)
+        existing_state_id = self._workflow_gate_state_ids_by_key.get(key)
+        if existing_state_id is not None:
+            existing_state = self._workflow_gate_states.get(existing_state_id)
+            if existing_state is not None and existing_state.status == "pending":
+                return existing_state
+
+        attempt = self._workflow_gate_attempts.get(key, 0) + 1
+        self._workflow_gate_attempts[key] = attempt
+        now = datetime.now(UTC).isoformat()
+        gate_id = f"{node.node_id}:{activation_id}:{attempt}"
+        state = WorkflowGateState(
+            id=gate_id,
+            node_id=node.node_id,
+            activation_id=activation_id,
+            label=node.label,
+            condition=node.condition,
+            status="pending",
+            mode=node.mode,
+            pending_behavior=node.pending_behavior,
+            instructions=node.instructions,
+            auto_forward_after=node.auto_forward_after,
+            requested_at=now,
+            updated_at=now,
+            triggered_by_event_type=triggering_event_type,
+            approval_event_type=node.approval_event_type,
+            changes_requested_event_type=node.changes_requested_event_type,
+            attempt=attempt,
+            summary=summary,
+        )
+        self._workflow_gate_states[gate_id] = state
+        self._workflow_gate_state_ids_by_key[key] = gate_id
+        await self._emit_pipeline_event(
+            "workflow.gate.pending",
+            {
+                "gate_id": state.id,
+                "gate_node_id": state.node_id,
+                "workflow_activation_id": state.activation_id,
+                "label": state.label,
+                "condition": state.condition,
+                "mode": state.mode,
+                "pending_behavior": state.pending_behavior,
+                "instructions": state.instructions,
+                "auto_forward_after": state.auto_forward_after,
+                "triggered_by_event_type": state.triggered_by_event_type,
+                "status": state.status,
+                "summary": state.summary,
+            },
+        )
+        if state.pending_behavior == "help_needed":
+            await self._emit_workflow_gate_help_needed_sleipnir_event(state)
+            await self._report_activity_state(
+                "idle",
+                extra_metadata={
+                    "help_needed": self._build_workflow_gate_help_needed_payload(state)
+                },
+            )
+        return state
+
+    async def resolve_workflow_gate(
+        self,
+        gate_id: str,
+        decision: str,
+        *,
+        notes: str = "",
+        source: str = "human",
+    ) -> dict[str, Any]:
+        state = self._workflow_gate_states.get(gate_id)
+        if state is None:
+            raise LookupError(f"Workflow gate not found: {gate_id}")
+        if state.status != "pending":
+            raise ValueError(f"Workflow gate {gate_id} is already resolved")
+        normalized = decision.strip().upper()
+        if normalized not in {"APPROVE", "CHANGES_REQUESTED"}:
+            raise ValueError("decision must be APPROVE or CHANGES_REQUESTED")
+        if self._mesh_adapter is None:
+            raise RuntimeError("Workflow gate cannot resolve because mesh is not active")
+
+        human_message = normalized if not notes.strip() else f"{normalized}\n\n{notes.strip()}"
+        await self.handle_human_room_message(
+            human_message,
+            source=source,
+            metadata={
+                "workflow_gate_id": state.id,
+                "workflow_gate_node_id": state.node_id,
+                "workflow_activation_id": state.activation_id,
+            },
+            deliver_to_transport=False,
+        )
+
+        now = datetime.now(UTC)
+        state.status = "approved" if normalized == "APPROVE" else "changes_requested"
+        state.updated_at = now.isoformat()
+        state.decision = normalized
+        state.notes = notes.strip()
+        state.source = source
+        event_type = (
+            state.approval_event_type
+            if normalized == "APPROVE"
+            else state.changes_requested_event_type
+        )
+        verdict = "approved" if normalized == "APPROVE" else "changes_requested"
+        summary = (
+            f"{state.label} approved by human reviewer."
+            if normalized == "APPROVE"
+            else f"{state.label} sent back with requested changes."
+        )
+        state.summary = summary
+        payload: dict[str, Any] = {
+            "event_type": event_type,
+            "session_id": self.session_id,
+            "persona": "workflow-gate",
+            "peer_id": f"workflow-gate:{state.node_id}",
+            "workflow_node_id": state.node_id,
+            "workflow_activation_id": state.activation_id,
+            "summary": summary,
+            "verdict": verdict,
+            "valid": True,
+            "fields": {
+                "verdict": verdict,
+                "summary": summary,
+                "approved": normalized == "APPROVE",
+                "gate_id": state.id,
+                "gate_node_id": state.node_id,
+                "gate_label": state.label,
+                "decision_source": source,
+                "notes": state.notes,
+            },
+        }
+        from ravn.domain.events import RavnEvent, RavnEventType
+
+        event = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source=f"workflow-gate:{state.node_id}",
+            payload=payload,
+            timestamp=now,
+            urgency=0.7,
+            correlation_id=state.activation_id,
+            session_id=self.session_id,
+            root_correlation_id=state.activation_id,
+        )
+        await self._mesh_adapter.publish(event, event_type)
+        await self._emit_pipeline_event("outcome", payload)
+        return asdict(state)
+
+    async def _report_peer_help_needed_activity(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        payload = self._build_peer_help_needed_payload(peer_id, frame)
+        if payload is None:
+            return
+        await self._report_activity_state("idle", extra_metadata={"help_needed": payload})
+
+    async def _maybe_activate_workflow_gate(
+        self,
+        frame: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        """Evaluate native gate nodes against bubbled-up workflow outcomes."""
+        event_type = str(payload.get("event_type") or "").strip()
+        if not event_type:
+            return
+
+        matching_nodes = self._workflow_gate_index.get(event_type) or []
+        if not matching_nodes:
+            return
+
+        activation_id = self._workflow_activation_id_from_frame(frame)
+        summary = str(payload.get("summary") or "").strip()
+
+        for node in matching_nodes:
+            key = (node.node_id, activation_id)
+            slot = self._workflow_gate_slots.setdefault(key, set())
+            slot.add(event_type)
+            if not all(required in slot for required in node.event_types):
+                continue
+            self._workflow_gate_slots.pop(key, None)
+            await self._activate_workflow_gate(
+                node,
+                activation_id,
+                event_type,
+                summary=summary,
+            )
+
+    async def _maybe_emit_workflow_terminal_outcome(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        """Evaluate deterministic end nodes against bubbled-up peer outcomes."""
+        event_type = str(payload.get("event_type") or "").strip()
+        if not event_type or event_type == "ravn.task.completed":
+            return
+
+        matching_nodes = self._workflow_terminal_index.get(event_type) or []
+        if not matching_nodes:
+            return
+
+        data = frame.get("data", {})
+        if not isinstance(data, dict):
+            return
+
+        metadata = frame.get("metadata", {})
+        activation_id = str(
+            data.get("workflow_parent_event_id")
+            or data.get("workflow_activation_id")
+            or metadata.get("task_id")
+            or frame.get("root_correlation_id")
+            or self.session_id
+        ).strip()
+        if not activation_id:
+            return
+
+        for node in matching_nodes:
+            key = (node.node_id, activation_id)
+            slot = self._workflow_terminal_slots.setdefault(key, {})
+            slot[event_type] = dict(payload)
+
+            if not all(required in slot for required in node.event_types):
+                continue
+
+            collected = [slot[required] for required in node.event_types if required in slot]
+            self._workflow_terminal_slots.pop(key, None)
+
+            if not _workflow_join_satisfied(node.join_mode, collected):
+                logger.info(
+                    "workflow runtime: terminal node %s rejected activation=%s outcomes=%s",
+                    node.node_id,
+                    activation_id,
+                    [outcome.get("event_type", "") for outcome in collected],
+                )
+                self._workflow_terminal_emitted.discard(key)
+                continue
+
+            self._refresh_git_workspace_artifacts()
+            if not _workflow_terminal_requirements_satisfied(
+                node,
+                self._artifacts,
+                git_checkpoint=self._git_workspace_checkpoint,
+            ):
+                logger.info(
+                    "workflow runtime: terminal node %s waiting for durable checkpoint "
+                    "(commit=%d push=%d activation=%s)",
+                    node.node_id,
+                    self._artifacts.git_commit_count,
+                    self._artifacts.git_push_count,
+                    activation_id,
+                )
+                self._workflow_terminal_emitted.discard(key)
+                continue
+
+            if key in self._workflow_terminal_emitted:
+                continue
+            self._workflow_terminal_emitted.add(key)
+            await self._emit_workflow_terminal_completion(peer_id, node, activation_id, collected)
+
+    async def _emit_workflow_terminal_completion(
+        self,
+        _peer_id: str,
+        node: WorkflowTerminalNode,
+        activation_id: str,
+        outcomes: list[dict[str, Any]],
+    ) -> None:
+        """Emit the deterministic terminal completion for a satisfied end node."""
+        fields = _merge_workflow_terminal_outcomes(outcomes)
+        terminal_peer_id = f"workflow-stop:{node.node_id}"
+        payload: dict[str, Any] = {
+            "peer_id": terminal_peer_id,
+            "persona": "workflow-runtime",
+            "event_type": node.completion_event_type,
+            "canonical_event_type": node.completion_event_type,
+            "workflow_node_id": node.node_id,
+            "workflow_activation_id": activation_id,
+            "fields": fields,
+            "valid": True,
+            "verdict": fields.get("verdict", "approve"),
+            "summary": fields.get("summary", ""),
+        }
+        files_changed = fields.get("files_changed")
+        if isinstance(files_changed, list) and files_changed:
+            payload["files_changed"] = files_changed
+        if "tests_passing" in fields:
+            payload["tests_passing"] = fields["tests_passing"]
+        if "scope_adherence" in fields:
+            payload["scope_adherence"] = fields["scope_adherence"]
+
+        await self._emit_pipeline_event("outcome", payload)
+        logger.info(
+            "workflow runtime: terminal node %s emitted %s activation=%s",
+            node.node_id,
+            node.completion_event_type,
+            activation_id,
+        )
+
+        frame = {
+            "metadata": {"event_type": node.completion_event_type},
+            "data": {
+                "event_type": node.completion_event_type,
+                "fields": fields,
+                "valid": True,
+            },
+        }
+        await self._maybe_report_flock_completion(terminal_peer_id, frame)
+
+    async def _maybe_report_flock_completion(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        """Report authoritative flock completion through Volundr activity metadata.
+
+        Local multi-peer workflows already flow through Skuld -> Volundr SSE -> Ting.
+        Use that existing path for ravn_flock completion instead of relying on an
+        out-of-process Sleipnir transport during co-hosted development runs.
+        """
+        if self._flock_completion_reported or not self._is_room_only_workflow_session():
+            return
+        if self._room_bridge is None:
+            return
+
+        participant = self._room_bridge.participants.get(peer_id)
+        persona = (participant.persona if participant is not None else "").strip()
+
+        metadata = frame.get("metadata", {})
+        outcome_event_type = str(metadata.get("event_type") or "")
+        if outcome_event_type != "ravn.task.completed":
+            return
+
+        data = frame.get("data", {})
+        if isinstance(data, str):
+            return
+
+        fields = data.get("fields", data)
+        if not isinstance(fields, dict) or not fields:
+            return
+        structured_outcome = (
+            fields.get("outcome") if isinstance(fields.get("outcome"), dict) else fields
+        )
+        if not isinstance(structured_outcome, dict) or not structured_outcome:
+            return
+
+        extra_metadata: dict[str, Any] = {
+            "completion_source": "ravn_flock",
+            "completion_event_type": outcome_event_type,
+            "completion_persona": persona,
+            "completion_peer_id": peer_id,
+            "structured_outcome": structured_outcome,
+            "outcome_valid": bool(data.get("valid", True)),
+        }
+        files_changed = structured_outcome.get("files_changed") or fields.get("files_changed")
+        if isinstance(files_changed, list) and files_changed:
+            extra_metadata["files_changed"] = files_changed
+
+        self._flock_completion_reported = True
+        await self._report_activity_state("idle", extra_metadata=extra_metadata)
 
     async def _peer_watchdog_loop(self) -> None:
         """Warn in chat when a flock peer accepted work but goes quiet."""
         try:
             while True:
-                await asyncio.sleep(_PEER_WATCHDOG_POLL_SECONDS)
+                await asyncio.sleep(self._settings.peer_watchdog.poll_seconds)
                 await self._check_peer_watchdog_once()
         except asyncio.CancelledError:
             return
 
     async def _check_peer_watchdog_once(self) -> None:
         """Run one silence-watchdog pass for active flock peers."""
+        if not self._settings.peer_watchdog.enabled:
+            return
         now = time.monotonic()
         for peer_id, watch in list(self._peer_watches.items()):
             threshold = (
-                _PEER_WATCHDOG_TOOL_SILENCE_SECONDS
+                self._settings.peer_watchdog.tool_silence_seconds
                 if watch.last_status == "tool_executing"
-                else _PEER_WATCHDOG_SILENCE_SECONDS
+                else self._settings.peer_watchdog.silence_seconds
             )
             silence_seconds = now - watch.last_progress_at
             if silence_seconds < threshold or watch.warned:
@@ -1086,10 +2266,10 @@ class Broker:
 
         participant = self._room_bridge.participants.get(watch.peer_id)
         peer_name = (
-            participant.display_name
-            or participant.persona
-            or watch.peer_id
-        ) if participant is not None else watch.peer_id
+            (participant.display_name or participant.persona or watch.peer_id)
+            if participant is not None
+            else watch.peer_id
+        )
         status_hint = (
             "while waiting on a tool result"
             if watch.last_status == "tool_executing"
@@ -1252,6 +2432,7 @@ class Broker:
                 # Clean up internal fields before reporting
                 tool_ev.pop("_pending_git", None)
                 tool_ev["t"] = self._artifacts.duration_seconds
+                self._artifacts.observe_tool_event(tool_ev)
                 asyncio.create_task(self._report_timeline_event(tool_ev))
 
                 # Emit to event pipeline
@@ -1458,7 +2639,7 @@ class Broker:
             case "interrupt":
                 await self._transport.send_control("interrupt")
 
-            # Phase 3: steer the active turn with new guidance
+            # Phase 3: steer the current turn with additional user guidance
             case "steer_active_turn":
                 content = str(data.get("content") or "").strip()
                 if content:
@@ -1524,7 +2705,11 @@ class Broker:
                 content = data.get("content", "")
                 if not target or not content:
                     return
-                await self._room_bridge.route_directed_message(target, content)
+                await self._room_bridge.route_directed_message(
+                    target,
+                    content,
+                    metadata=data.get("metadata"),
+                )
 
             # Default: treat as user message (backward compat with {"content": "..."})
             case _:
@@ -1545,6 +2730,8 @@ class Broker:
                 # Record user turn in conversation history
                 content_str = message if isinstance(message, str) else json.dumps(message)
                 msg_id = str(uuid.uuid4())
+                request_id = data.get("request_id")
+                request_id = request_id if isinstance(request_id, str) and request_id else None
                 self._append_turn(
                     ConversationTurn(
                         id=msg_id,
@@ -1561,6 +2748,7 @@ class Broker:
                         "type": "user_confirmed",
                         "id": msg_id,
                         "content": content_str,
+                        "request_id": request_id,
                     }
                 )
 
@@ -1571,10 +2759,10 @@ class Broker:
                     asyncio.create_task(
                         self._safe_transport_control(
                             self._transport,
-                            "steer",
+                            "redirect",
                             content=message,
                         ),
-                        name=f"transport-steer-{msg_id}",
+                        name=f"transport-redirect-{msg_id}",
                     )
                     return
 
@@ -1595,7 +2783,7 @@ class Broker:
         subtype: str,
         **kwargs: object,
     ) -> None:
-        """Wrap background transport control so failures surface to the browser."""
+        """Wrap transport.send_control so background failures surface to the UI."""
         try:
             await transport.send_control(subtype, **kwargs)  # type: ignore[attr-defined]
         except Exception as exc:
@@ -1605,9 +2793,7 @@ class Broker:
             except Exception:
                 logger.debug("Failed to broadcast transport control error", exc_info=True)
 
-    async def _safe_transport_send(
-        self, transport: object, message: str
-    ) -> None:
+    async def _safe_transport_send(self, transport: object, message: str) -> None:
         """Wrap transport.send_message so background-task failures are surfaced.
 
         Used by the fire-and-forget path in ``_dispatch_browser_message`` —
@@ -1621,13 +2807,9 @@ class Broker:
         except Exception as exc:
             logger.exception("Transport send_message failed in background task")
             try:
-                await self._channels.broadcast(
-                    {"type": "error", "content": str(exc)}
-                )
+                await self._channels.broadcast({"type": "error", "content": str(exc)})
             except Exception:
-                logger.debug(
-                    "Failed to broadcast transport error to channels", exc_info=True
-                )
+                logger.debug("Failed to broadcast transport error to channels", exc_info=True)
 
     async def handle_human_room_message(
         self,
@@ -1688,7 +2870,11 @@ class Broker:
             deliver_to_transport=False,
         )
 
-        delivered = await self._room_bridge.route_directed_message(target_peer_id, content)
+        delivered = await self._room_bridge.route_directed_message(
+            target_peer_id,
+            content,
+            metadata=metadata,
+        )
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id
@@ -1958,6 +3144,8 @@ class Broker:
             return "file_modified"
         if ev_type == "git":
             return "git_commit"
+        if ev_type == "git_push":
+            return "git_push"
         if ev_type == "terminal":
             return "terminal_command"
         return "tool_use"
@@ -1984,13 +3172,15 @@ class Broker:
             model=self.model,
         )
 
-    async def _report_activity_state(self, state: str) -> None:
+    async def _report_activity_state(
+        self, state: str, *, extra_metadata: dict[str, Any] | None = None
+    ) -> None:
         """Report activity state change to Volundr.
 
         States: active, idle, tool_executing.
         Debounces rapid transitions — only reports when state actually changes.
         """
-        if state == self._activity_state:
+        if state == self._activity_state and not extra_metadata:
             return
 
         self._activity_state = state
@@ -2004,6 +3194,8 @@ class Broker:
             "turn_count": self._artifacts.turn_count,
             "duration_seconds": self._artifacts.duration_seconds,
         }
+        if extra_metadata:
+            metadata.update(extra_metadata)
 
         try:
             client = await self._get_http_client()
@@ -2095,6 +3287,26 @@ class Broker:
             "unfinished_work": None,
         }
 
+    def _fallback_chronicle_summary(self) -> dict[str, Any]:
+        """Build a best-effort chronicle summary from already-captured artifacts."""
+        summary: str | None = None
+        unfinished_work: str | None = None
+
+        if isinstance(self._artifacts.structured_outcome, dict):
+            raw_summary = self._artifacts.structured_outcome.get("summary")
+            if isinstance(raw_summary, str) and raw_summary.strip():
+                summary = raw_summary.strip()
+
+            raw_unfinished = self._artifacts.structured_outcome.get("unfinished_work")
+            if isinstance(raw_unfinished, str) and raw_unfinished.strip():
+                unfinished_work = raw_unfinished.strip()
+
+        return {
+            "summary": summary,
+            "key_changes": list(self._artifacts.files_changed),
+            "unfinished_work": unfinished_work,
+        }
+
     def _build_transcript(self) -> str:
         """Concatenate all assistant turns to form the session transcript."""
         return "\n\n".join(
@@ -2121,10 +3333,10 @@ class Broker:
             logger.warning("Failed to extract outcome block from transcript", exc_info=True)
 
     async def _emit_session_ended_event(self) -> None:
-        """Emit ravn.session.ended via Sleipnir with structured outcome and saga/raid context.
+        """Emit ravn.session.ended via Sleipnir with structured outcome and saga/run context.
 
         Always emits the event — even when outcome extraction failed — so that
-        downstream Tyr pipeline executors receive session completion signals.
+        downstream Ting pipeline executors receive session completion signals.
         """
         outcome_str = "SUCCESS" if self._artifacts.outcome_valid else "PARTIAL"
         source = f"ravn:{self.session_id}"
@@ -2143,17 +3355,29 @@ class Broker:
             if self._artifacts.structured_outcome is not None:
                 event.payload["structured_outcome"] = self._artifacts.structured_outcome
                 event.payload["outcome_valid"] = self._artifacts.outcome_valid
-            if self._artifacts.raid_id:
-                event.payload["raid_id"] = self._artifacts.raid_id
+                for key in (
+                    "verdict",
+                    "tests_passing",
+                    "scope_adherence",
+                    "pr_url",
+                    "summary",
+                    "files_changed",
+                ):
+                    if key in self._artifacts.structured_outcome:
+                        event.payload[key] = self._artifacts.structured_outcome[key]
+            if self._artifacts.files_changed:
+                event.payload["files_changed"] = list(self._artifacts.files_changed)
+            if self._artifacts.run_id:
+                event.payload["run_id"] = self._artifacts.run_id
             if self._artifacts.saga_id:
                 event.payload["saga_id"] = self._artifacts.saga_id
             await self._sleipnir_publisher.publish(event)
             logger.info(
-                "Session ended event emitted: session=%s outcome=%s saga=%s raid=%s",
+                "Session ended event emitted: session=%s outcome=%s saga=%s run=%s",
                 self.session_id,
                 outcome_str,
                 self._artifacts.saga_id,
-                self._artifacts.raid_id,
+                self._artifacts.run_id,
             )
         except Exception:
             logger.warning("Failed to emit session ended event", exc_info=True)
@@ -2266,7 +3490,7 @@ class Broker:
         never raises.
 
         Also extracts the outcome block from the session transcript and emits
-        the ``ravn.session.ended`` Sleipnir event so Tyr can track raid completion.
+        the ``ravn.session.ended`` Sleipnir event so Ting can track run completion.
         """
         self._extract_and_store_outcome()
         await self._emit_session_ended_event()
@@ -2275,8 +3499,13 @@ class Broker:
         if not self.volundr_api_url:
             return
 
-        if self._artifacts.turn_count == 0:
-            logger.info("No turns recorded, skipping chronicle report")
+        has_reportable_artifacts = (
+            self._artifacts.turn_count > 0
+            or bool(self._artifacts.files_changed)
+            or self._artifacts.structured_outcome is not None
+        )
+        if not has_reportable_artifacts:
+            logger.info("No chronicle artifacts recorded, skipping chronicle report")
             return
 
         logger.info(
@@ -2287,7 +3516,11 @@ class Broker:
         )
 
         try:
-            summary_data = await self._generate_summary()
+            summary_data = (
+                await self._generate_summary()
+                if self._artifacts.turn_count > 0
+                else self._fallback_chronicle_summary()
+            )
 
             client = await self._get_http_client()
             url = f"{FORGE_SESSIONS_PATH}/{self.session_id}/chronicle"
@@ -2424,6 +3657,17 @@ class Broker:
         if self._chronicle_watcher is not None:
             self._chronicle_watcher.update_headers(self._build_auth_headers())
 
+    async def _safe_browser_send_json(self, websocket: WebSocket, payload: dict[str, Any]) -> bool:
+        """Send a browser frame unless the client has already disconnected."""
+        try:
+            await websocket.send_json(payload)
+            return True
+        except Exception as exc:
+            if _is_expected_ws_disconnect(exc):
+                logger.info("WebSocket disconnected")
+                return False
+            raise
+
     async def handle_websocket(self, websocket: WebSocket) -> None:
         """Handle a browser WebSocket connection at /session."""
         # Extract JWT before accepting — headers are available pre-accept
@@ -2438,7 +3682,10 @@ class Broker:
         try:
             if not self._transport:
                 logger.error("handle_websocket: transport not initialized")
-                await websocket.send_json({"type": "error", "content": "Transport not initialized"})
+                await self._safe_browser_send_json(
+                    websocket,
+                    {"type": "error", "content": "Transport not initialized"},
+                )
                 return
 
             # Lazy-start transport on first browser connection
@@ -2459,11 +3706,12 @@ class Broker:
                             e,
                             exc_info=True,
                         )
-                        await websocket.send_json(
+                        await self._safe_browser_send_json(
+                            websocket,
                             {
                                 "type": "error",
                                 "content": f"Transport start failed: {e}",
-                            }
+                            },
                         )
                         return
             else:
@@ -2473,16 +3721,19 @@ class Broker:
             asyncio.create_task(self._report_session_start())
 
             # Send welcome message
-            await websocket.send_json(
-                {"type": "system", "content": f"Connected to session {self.session_id}"}
-            )
+            if not await self._safe_browser_send_json(
+                websocket,
+                {"type": "system", "content": f"Connected to session {self.session_id}"},
+            ):
+                return
             logger.debug("handle_websocket: welcome message sent")
 
             # Send transport capabilities so the frontend knows which
             # controls to render.
             if self._transport:
                 caps = {"type": "capabilities", **asdict(self._transport.capabilities)}
-                await websocket.send_json(caps)
+                if not await self._safe_browser_send_json(websocket, caps):
+                    return
                 logger.debug("handle_websocket: capabilities sent")
 
             # Replay conversation history so late-joining browsers see
@@ -2492,16 +3743,22 @@ class Broker:
                     "Replaying %d conversation turns to new browser",
                     len(self._conversation_turns),
                 )
-                await websocket.send_json(
+                if not await self._safe_browser_send_json(
+                    websocket,
                     {
                         "type": "conversation_history",
                         "turns": [asdict(t) for t in self._conversation_turns],
-                    }
-                )
+                    },
+                ):
+                    return
 
             # Send current room state to late-joining browsers when room mode active
             if self._room_bridge is not None:
-                await websocket.send_json(self._room_bridge.get_room_state_event())
+                if not await self._safe_browser_send_json(
+                    websocket,
+                    self._room_bridge.get_room_state_event(),
+                ):
+                    return
 
             # Handle messages from browser
             while True:
@@ -2519,6 +3776,9 @@ class Broker:
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected")
         except Exception as e:
+            if _is_expected_ws_disconnect(e):
+                logger.info("WebSocket disconnected")
+                return
             logger.exception("WebSocket error")
             try:
                 await websocket.send_json({"type": "error", "content": str(e)})
@@ -3276,6 +4536,14 @@ class _DirectedRoomMessageRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class _WorkflowGateResolveRequest(BaseModel):
+    """Request body for resolving a pending workflow gate."""
+
+    decision: str
+    notes: str = ""
+    source: str = "human"
+
+
 @app.post("/api/message")
 async def send_message_to_session(body: _SendMessageRequest) -> dict:
     """Send a message to another session via Volundr's WS proxy.
@@ -3338,6 +4606,41 @@ async def send_directed_room_message(body: _DirectedRoomMessageRequest) -> dict:
 async def get_room_participants() -> dict:
     """Return the current participants in the active room session."""
     return {"participants": broker.get_room_participants()}
+
+
+@app.get("/api/workflow/gates")
+async def get_workflow_gates() -> dict:
+    """Return native workflow gate states for the active session."""
+    return {"gates": broker.list_workflow_gates()}
+
+
+@app.post("/api/workflow/gates/{gate_id}/resolve")
+async def resolve_workflow_gate(
+    request: Request,
+    gate_id: str,
+    body: _WorkflowGateResolveRequest,
+) -> dict:
+    """Resolve a pending native workflow gate and publish its outcome."""
+    if (
+        request.headers.get(WORKFLOW_GATE_INTENT_HEADER, "").strip().lower()
+        != WORKFLOW_GATE_INTENT_RESOLVE
+    ):
+        raise HTTPException(428, "Missing explicit workflow gate intent header")
+    try:
+        gate = await broker.resolve_workflow_gate(
+            gate_id,
+            body.decision,
+            notes=body.notes,
+            source=body.source,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+
+    return {"status": "resolved", "gate": gate}
 
 
 @app.get("/api/communication/routes")

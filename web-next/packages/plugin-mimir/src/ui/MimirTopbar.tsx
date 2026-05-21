@@ -5,6 +5,7 @@
  */
 
 import type { PluginCtx } from '@niuulabs/plugin-sdk';
+import { useActiveMount } from '../application/useActiveMount';
 import { useMimirPages } from './useMimirPages';
 import { useLint } from '../application/useLint';
 import { useRavns } from '../application/useRavns';
@@ -14,11 +15,11 @@ interface MimirTopbarProps {
   ctx: PluginCtx;
 }
 
-export function MimirTopbar({ ctx }: MimirTopbarProps) {
-  const activeMount = (ctx.tweaks.activeMount as string | undefined) ?? 'all';
+export function MimirTopbar({ ctx: _ctx }: MimirTopbarProps) {
+  const { activeMount, mountName } = useActiveMount();
 
-  const { data: pages = [] } = useMimirPages();
-  const { summary: lintSummary } = useLint();
+  const { data: pages = [] } = useMimirPages(mountName ? { mountName } : undefined);
+  const { summary: lintSummary } = useLint(mountName);
   const { data: ravns = [] } = useRavns();
 
   const mountLabel = activeMount === 'all' ? 'all mounts' : activeMount;

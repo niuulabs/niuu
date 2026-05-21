@@ -243,6 +243,45 @@ class TestStart:
             finally:
                 sys.modules.pop("asyncpg", None)
 
+    @pytest.mark.asyncio
+    async def test_start_reuses_existing_server_when_postmaster_pid_exists(self, tmp_path: Path):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "postgres").touch()
+        (bin_dir / "initdb").touch()
+        (bin_dir / "pg_ctl").touch()
+
+        data_dir = tmp_path / "pgdata"
+        data_dir.mkdir()
+        (data_dir / "PG_VERSION").write_text("17")
+        (data_dir / "postmaster.pid").write_text("12345\n")
+
+        mock_conn = _make_mock_conn()
+
+        with (
+            patch(
+                "niuu.adapters.embedded_postgres._find_pg_bin_dir",
+                return_value=bin_dir,
+            ),
+            patch(
+                "niuu.adapters.embedded_postgres.subprocess.run",
+                return_value=MagicMock(returncode=0, stderr=""),
+            ) as mock_run,
+            patch("niuu.adapters.embedded_postgres.asyncpg", create=True) as mock_asyncpg,
+        ):
+            import sys
+
+            sys.modules["asyncpg"] = mock_asyncpg
+            mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
+
+            try:
+                db = EmbeddedPostgresDatabase()
+                await db.start(str(data_dir))
+                mock_run.assert_not_called()
+                mock_asyncpg.connect.assert_awaited_once()
+            finally:
+                sys.modules.pop("asyncpg", None)
+
 
 class TestExecute:
     @pytest.mark.asyncio

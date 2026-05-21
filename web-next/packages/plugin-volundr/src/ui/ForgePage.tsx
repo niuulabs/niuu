@@ -25,6 +25,7 @@ const SESSION_PRIORITY: Record<SessionState, number> = {
   failed: 5,
   terminating: 6,
   terminated: 7,
+  archived: 8,
 };
 
 const KIND_LABEL: Record<ClusterKind, string> = {
@@ -547,7 +548,7 @@ export function ForgePage() {
                   clusterLabel={displayCluster(session, clusterLookup)}
                   onClick={() =>
                     void navigate({
-                      to: '/volundr/session/$sessionId',
+                      to: '/volundr/sessions/$sessionId',
                       params: { sessionId: session.id },
                     })
                   }
@@ -568,7 +569,7 @@ export function ForgePage() {
               <button
                 type="button"
                 className="vol-forge__panel-link"
-                onClick={() => void navigate({ to: '/volundr/clusters' })}
+                onClick={() => void navigate({ to: '/guild' })}
                 data-testid="cluster-details-link"
               >
                 details ›

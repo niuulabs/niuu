@@ -647,6 +647,46 @@ class TestDirectedRouting:
         assert payload["content"] == "Hey Alice!"
 
     @pytest.mark.asyncio
+    async def test_route_directed_message_includes_pending_help_metadata(self):
+        bridge, registry = _make_bridge()
+        ws = _fake_ws()
+        await bridge.register("p1", "Alice", ws)
+        registry.broadcast.reset_mock()
+
+        await bridge.handle_ravn_frame(
+            "p1",
+            {
+                "type": "help_needed",
+                "session_id": "sess-1",
+                "root_correlation_id": "root-1",
+                "data": {
+                    "persona": "Alice",
+                    "reason": "uncertain",
+                    "summary": "Need a product tradeoff call",
+                    "attempted": ["compared the two best options"],
+                    "recommendation": "Pick speed or depth",
+                    "context": {
+                        "workflow_parent_event_id": "parent-1",
+                        "workflow_node_id": "chair-synthesis",
+                        "root_correlation_id": "root-1",
+                        "session_id": "sess-1",
+                    },
+                },
+                "metadata": {"urgency": 0.85},
+            },
+        )
+
+        result = await bridge.route_directed_message("p1", "Choose depth")
+
+        assert result is True
+        payload = json.loads(ws.send_text.call_args[0][0])
+        assert payload["metadata"]["help_summary"] == "Need a product tradeoff call"
+        assert payload["metadata"]["workflow_parent_event_id"] == "parent-1"
+        assert payload["metadata"]["workflow_node_id"] == "chair-synthesis"
+        assert payload["metadata"]["root_correlation_id"] == "root-1"
+        assert payload["metadata"]["session_id"] == "sess-1"
+
+    @pytest.mark.asyncio
     async def test_route_directed_message_returns_false_for_unknown_target(self):
         bridge, _ = _make_bridge()
 

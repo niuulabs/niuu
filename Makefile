@@ -1,7 +1,7 @@
 # Niuu single-binary build pipeline
 #
 # Targets:
-#   make build-web      — build React SPA, copy into src/cli/web/dist/
+#   make build-web      — build web-next SPA, copy into src/cli/web/dist/
 #   make build-postgres — compile PostgreSQL + pgvector from source
 #   make build-cli      — Nuitka --onefile compilation → dist/niuu
 #   make build          — all of the above
@@ -13,11 +13,12 @@
 BINARY_NAME  ?= niuu
 ENTRY_POINT  ?= src/cli/__main__.py
 OUTPUT_DIR   ?= dist
-WEB_DIR      := web
+WEB_DIR      := web-next
+WEB_APP_DIST := $(WEB_DIR)/apps/niuu/dist
 WEB_DEST     := src/cli/web/dist
 MIG_DIR      := migrations
 MIG_DEST     := src/cli/migrations/volundr
-TYR_MIG_DEST := src/cli/migrations/tyr
+TING_MIG_DEST := src/cli/migrations/ting
 
 # PostgreSQL build — versions read from the single source of truth
 PG_VERSIONS_PY := src/niuu/pg_versions.py
@@ -26,7 +27,7 @@ PGVECTOR_VERSION := $(shell python3 -c "exec(open('$(PG_VERSIONS_PY)').read()); 
 PGINSTALL_DIR    := build/pginstall
 
 .PHONY: build build-web build-postgres build-cli build-ravn copy-migrations clean lint test verify \
-       test-integration test-integration-volundr test-integration-tyr test-integration-sleipnir \
+       test-integration test-integration-volundr test-integration-ting test-integration-sleipnir \
        test-e2e test-e2e-ui test-all test-ravn
 
 # --------------------------------------------------------------------------
@@ -35,12 +36,12 @@ PGINSTALL_DIR    := build/pginstall
 build: build-web copy-migrations build-postgres build-cli
 
 # --------------------------------------------------------------------------
-# Web UI: npm build + copy dist/ into the cli package data directory
+# Web UI: pnpm build + copy dist/ into the cli package data directory
 # --------------------------------------------------------------------------
 build-web:
-	cd $(WEB_DIR) && npm ci --ignore-scripts && npm run build
+	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm build
 	rm -rf $(WEB_DEST)
-	cp -r $(WEB_DIR)/dist $(WEB_DEST)
+	cp -r $(WEB_APP_DIST) $(WEB_DEST)
 
 # --------------------------------------------------------------------------
 # PostgreSQL + pgvector: compile from source into build/pginstall/
@@ -55,10 +56,10 @@ build-postgres:
 # Migrations: copy SQL files into the cli package data directory
 # --------------------------------------------------------------------------
 copy-migrations:
-	rm -rf $(MIG_DEST)/*.sql $(TYR_MIG_DEST)/*.sql
-	mkdir -p $(MIG_DEST) $(TYR_MIG_DEST)
-	cp $(MIG_DIR)/*.up.sql $(MIG_DEST)/
-	cp $(MIG_DIR)/tyr/*.up.sql $(TYR_MIG_DEST)/
+	rm -rf $(MIG_DEST)/*.sql $(TING_MIG_DEST)/*.sql
+	mkdir -p $(MIG_DEST) $(TING_MIG_DEST)
+	cp $(MIG_DIR)/*.sql $(MIG_DEST)/
+	cp $(MIG_DIR)/ting/*.sql $(TING_MIG_DEST)/
 
 # --------------------------------------------------------------------------
 # Nuitka single-binary compilation
@@ -97,17 +98,17 @@ test-integration:
 test-integration-volundr:
 	uv run pytest tests/integration/volundr/ -v --tb=short -m integration
 
-test-integration-tyr:
-	uv run pytest tests/integration/tyr/ -v --tb=short -m integration
+test-integration-ting:
+	uv run pytest tests/integration/ting/ -v --tb=short -m integration
 
 test-integration-sleipnir:
 	uv run pytest tests/integration/sleipnir/ -v --tb=short -m broker --override-ini="addopts="
 
 test-e2e:
-	cd $(WEB_DIR) && npm run test:e2e
+	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm test:e2e
 
 test-e2e-ui:
-	cd $(WEB_DIR) && npm run test:e2e -- --ui
+	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm exec playwright test --ui
 
 test-all: test test-integration test-e2e
 
@@ -123,5 +124,5 @@ test-ravn:
 # --------------------------------------------------------------------------
 clean:
 	rm -rf $(OUTPUT_DIR) $(WEB_DEST) build/ *.build/ *.dist/ *.onefile-build/
-	rm -rf $(MIG_DEST)/*.sql $(TYR_MIG_DEST)/*.sql
+	rm -rf $(MIG_DEST)/*.sql $(TING_MIG_DEST)/*.sql
 	rm -rf $(PGINSTALL_DIR)

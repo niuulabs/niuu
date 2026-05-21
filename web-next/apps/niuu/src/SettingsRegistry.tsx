@@ -5,7 +5,6 @@ import {
   type NiuuConfig,
   type SettingsScope,
 } from '@niuulabs/plugin-sdk';
-import { tyrMountedSettingsProvider } from '@niuulabs/plugin-tyr';
 import { resolveSettingsServiceBase } from './services';
 
 export interface RemoteSettingsOption {
@@ -25,6 +24,50 @@ export interface RemoteSettingsField {
   options?: RemoteSettingsOption[];
 }
 
+export interface RemoteSettingsTokensResource {
+  id: string;
+  type: 'tokens';
+  label: string;
+  description?: string;
+  writable?: boolean;
+  listPath: string;
+  createPath: string;
+  deletePath: string;
+}
+
+export interface RemoteSettingsCredentialsResource {
+  id: string;
+  type: 'credentials';
+  label: string;
+  description?: string;
+  writable?: boolean;
+  listPath: string;
+  typesPath: string;
+  createPath: string;
+  deletePath: string;
+}
+
+export interface RemoteSettingsIntegrationsResource {
+  id: string;
+  type: 'integrations';
+  label: string;
+  description?: string;
+  writable?: boolean;
+  listPath: string;
+  catalogPath: string;
+  createPath: string;
+  deletePath: string;
+  credentialListPath: string;
+  testPath: string;
+  oauthAuthorizePath: string;
+  oauthDisconnectPath: string;
+}
+
+export type RemoteSettingsResource =
+  | RemoteSettingsTokensResource
+  | RemoteSettingsCredentialsResource
+  | RemoteSettingsIntegrationsResource;
+
 export interface RemoteSettingsSectionSchema {
   id: string;
   label: string;
@@ -32,6 +75,7 @@ export interface RemoteSettingsSectionSchema {
   path?: string;
   saveLabel?: string;
   fields: RemoteSettingsField[];
+  resources?: RemoteSettingsResource[];
 }
 
 export interface RemoteSettingsProviderSchema {
@@ -54,7 +98,7 @@ export type MountedSettingsProvider =
       defaultSectionId?: string;
     };
 
-const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [tyrMountedSettingsProvider];
+const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [];
 
 const REMOTE_PROVIDER_DEFS = [
   {
@@ -66,6 +110,22 @@ const REMOTE_PROVIDER_DEFS = [
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'identity'),
   },
   {
+    id: 'credentials',
+    pluginId: 'credentials',
+    title: 'Credentials',
+    subtitle: 'stored secrets and runtime keys',
+    scope: 'user' as const,
+    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'credentials'),
+  },
+  {
+    id: 'integrations',
+    pluginId: 'integrations',
+    title: 'Integrations',
+    subtitle: 'connected services and providers',
+    scope: 'user' as const,
+    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'integrations'),
+  },
+  {
     id: 'volundr',
     pluginId: 'volundr',
     title: 'Volundr',
@@ -74,12 +134,28 @@ const REMOTE_PROVIDER_DEFS = [
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'volundr'),
   },
   {
+    id: 'ting',
+    pluginId: 'ting',
+    title: 'Ting',
+    subtitle: 'saga coordinator settings',
+    scope: 'service' as const,
+    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'ting'),
+  },
+  {
     id: 'mimir',
     pluginId: 'mimir',
     title: 'Mimir',
     subtitle: 'knowledge system settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'mimir'),
+  },
+  {
+    id: 'bifrost',
+    pluginId: 'bifrost',
+    title: 'Bifrost',
+    subtitle: 'model catalog and routing settings',
+    scope: 'service' as const,
+    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'bifrost'),
   },
   {
     id: 'ravn',
@@ -114,7 +190,9 @@ export function buildMountedSettingsProviders(config: NiuuConfig): MountedSettin
     if (localPluginIds.has(def.pluginId)) continue;
     if (
       !isPluginEnabled(config, def.pluginId) &&
-      !(def.id === 'identity' && def.resolver(config))
+      !(def.id === 'identity' && def.resolver(config)) &&
+      !(def.id === 'credentials' && def.resolver(config)) &&
+      !(def.id === 'integrations' && def.resolver(config))
     ) {
       continue;
     }

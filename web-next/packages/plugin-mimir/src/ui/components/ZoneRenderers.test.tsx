@@ -49,6 +49,17 @@ describe('ZoneBodyReadonly — key-facts', () => {
     const pill = screen.getByLabelText(/broken link: missing\/page/i);
     expect(pill).toBeInTheDocument();
   });
+
+  it('renders inline markdown inside key-facts items', () => {
+    const zone: Zone = {
+      kind: 'key-facts',
+      items: ['**Goal**: Verify `proofs/step-2.txt` after [[arch/overview]]'],
+    };
+    render(<ZoneBodyReadonly zone={zone} allPages={MOCK_PAGES} onNavigate={noop} />);
+    expect(screen.getByText('Goal', { selector: 'strong' })).toBeInTheDocument();
+    expect(screen.getByText('proofs/step-2.txt', { selector: 'code' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /navigate to arch\/overview/i })).toBeInTheDocument();
+  });
 });
 
 // ── ZoneBodyReadonly — relationships ─────────────────────────────────────────
@@ -82,6 +93,17 @@ describe('ZoneBodyReadonly — assessment', () => {
     render(<ZoneBodyReadonly zone={zone} allPages={MOCK_PAGES} onNavigate={noop} />);
     expect(screen.getByText('Architecture looks solid.')).toBeInTheDocument();
   });
+
+  it('renders markdown structure inside the assessment zone', () => {
+    const zone: Zone = {
+      kind: 'assessment',
+      text: '### What was done\n\n- Added artifact\n- Reviewed output',
+    };
+    render(<ZoneBodyReadonly zone={zone} allPages={MOCK_PAGES} onNavigate={noop} />);
+    expect(screen.getByText('What was done')).toBeInTheDocument();
+    expect(screen.getByText('Added artifact')).toBeInTheDocument();
+    expect(screen.getByText('Reviewed output')).toBeInTheDocument();
+  });
 });
 
 // ── ZoneBodyReadonly — timeline ───────────────────────────────────────────────
@@ -100,6 +122,23 @@ describe('ZoneBodyReadonly — timeline', () => {
     expect(screen.getByText('First entry')).toBeInTheDocument();
     expect(screen.getByText('2026-03-20')).toBeInTheDocument();
     expect(screen.getByText('Second entry')).toBeInTheDocument();
+  });
+
+  it('renders inline markdown inside timeline notes', () => {
+    const zone: Zone = {
+      kind: 'timeline',
+      items: [
+        {
+          date: '2026-03-20',
+          note: 'Verified `proofs/step-2.txt` after **review** of [[arch/overview]]',
+          source: 'src-2',
+        },
+      ],
+    };
+    render(<ZoneBodyReadonly zone={zone} allPages={MOCK_PAGES} onNavigate={noop} />);
+    expect(screen.getByText('proofs/step-2.txt', { selector: 'code' })).toBeInTheDocument();
+    expect(screen.getByText('review', { selector: 'strong' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /navigate to arch\/overview/i })).toBeInTheDocument();
   });
 
   it('renders newest entries first', () => {

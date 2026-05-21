@@ -271,16 +271,50 @@ class TestSpawnAppServer:
             await t._spawn_app_server()
 
             call_args = mock_exec.call_args[0]
-            assert call_args[:4] == (
+            assert call_args[:3] == (
                 "/Applications/Codex.app/Contents/Resources/codex",
                 "app-server",
                 "--listen",
-                "ws://127.0.0.1:19999",
             )
+            assert call_args[3].startswith("unix://")
+            assert t._codex_socket_path is not None
+            assert call_args[3] == f"unix://{t._codex_socket_path}"
             assert "-c" in call_args
             assert any(
                 arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
             )
+
+
+class TestFallbackTransport:
+    @pytest.mark.asyncio
+    async def test_start_falls_back_to_subprocess_when_app_server_startup_fails(self, tmp_path):
+        t = _make_transport(tmp_path, initial_prompt="Investigate this")
+        emit = AsyncMock()
+        t.on_event(emit)
+        t._spawn_app_server = AsyncMock()
+        t._connect_ws = AsyncMock(side_effect=RuntimeError("uds handshake failed"))
+        t._handshake = AsyncMock()
+
+        fallback = MagicMock()
+        fallback.start = AsyncMock()
+        fallback.send_message = AsyncMock()
+        fallback.stop = AsyncMock()
+        fallback.session_id = None
+        fallback.last_result = None
+        fallback.is_alive = True
+        fallback.is_turn_active = False
+
+        with patch(
+            "skuld.transports.codex_ws.CodexSubprocessTransport",
+            return_value=fallback,
+        ) as mock_fallback_cls:
+            await t.start()
+
+        mock_fallback_cls.assert_called_once()
+        fallback.on_event.assert_called_once_with(emit)
+        fallback.start.assert_called_once()
+        fallback.send_message.assert_called_once_with("Investigate this")
+        assert t._fallback_transport is fallback
 
 
 # ---------------------------------------------------------------------------
@@ -816,7 +850,7 @@ class TestControl:
         assert t._model == "o3"
 
     @pytest.mark.asyncio
-    async def test_steer_sends_expected_turn_id_and_input(self, tmp_path):
+    async def test_steer_sends_turn_steer(self, tmp_path):
         t = _make_transport(tmp_path)
         t._thread_id = "thread-1"
         t._current_turn_id = "turn-5"
@@ -829,17 +863,15 @@ class TestControl:
 
         t._send_rpc = fake_send_rpc
 
-        await t.send_control("steer", content="Actually focus on tests first.")
+        await t.send_control("steer", content="Focus on the smaller patch")
 
         assert calls[0][0] == "turn/steer"
         assert calls[0][1]["threadId"] == "thread-1"
         assert calls[0][1]["expectedTurnId"] == "turn-5"
-        assert calls[0][1]["input"] == [
-            {"type": "text", "text": "Actually focus on tests first."}
-        ]
+        assert calls[0][1]["input"][0]["text"] == "Focus on the smaller patch"
 
     @pytest.mark.asyncio
-    async def test_redirect_uses_live_steer_with_change_of_plans_prefix(self, tmp_path):
+    async def test_redirect_interrupts_active_turn(self, tmp_path):
         t = _make_transport(tmp_path)
         t._thread_id = "thread-1"
         t._current_turn_id = "turn-5"
@@ -852,27 +884,47 @@ class TestControl:
 
         t._send_rpc = fake_send_rpc
 
-        await t.send_control("redirect", content="Write BETA to /tmp/proof.txt")
+        await t.send_control("redirect", content="Actually do option B instead")
 
-        assert calls[0][0] == "turn/steer"
+        assert t._pending_redirects == ["Actually do option B instead"]
+        assert t._redirect_interrupt_requested is True
+        assert calls[0][0] == "turn/interrupt"
         assert calls[0][1]["threadId"] == "thread-1"
-        assert calls[0][1]["expectedTurnId"] == "turn-5"
-        assert (
-            calls[0][1]["input"][0]["text"]
-            == "Change of plans. Stop what you are doing and follow this instead:\n"
-            "Write BETA to /tmp/proof.txt"
-        )
+        assert calls[0][1]["turnId"] == "turn-5"
 
     @pytest.mark.asyncio
-    async def test_redirect_falls_back_to_send_message_without_active_turn(self, tmp_path):
+    async def test_redirect_without_active_turn_starts_new_turn(self, tmp_path):
         t = _make_transport(tmp_path)
-        t.send_message = AsyncMock()  # type: ignore[method-assign]
+        t._thread_id = "thread-1"
+        t._current_turn_id = None
 
-        await t.send_control("redirect", content="Write BETA to /tmp/proof.txt")
-        await t.send_control("redirect", content="")
+        send_message = AsyncMock()
+        t.send_message = send_message
 
-        t.send_message.assert_awaited_once_with("Write BETA to /tmp/proof.txt")
-        assert t.is_turn_active is False
+        await t.send_control("redirect", content="Start fresh")
+
+        send_message.assert_awaited_once_with("Start fresh")
+
+    @pytest.mark.asyncio
+    async def test_turn_completed_restarts_with_pending_redirect(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-5"
+        t._pending_redirects = ["Do option B instead"]
+        t._redirect_interrupt_requested = True
+        emit = _collect_emits(t)
+
+        send_message = AsyncMock()
+        t.send_message = send_message
+
+        await t._handle_server_message({"method": "turn/completed", "params": {}})
+        await asyncio.sleep(0)
+
+        assert t._current_turn_id is None
+        assert t._redirect_interrupt_requested is False
+        assert t._pending_redirects == []
+        assert _events_of_type(emit, "result")
+        send_message.assert_awaited_once_with("Do option B instead")
 
 
 # ---------------------------------------------------------------------------
@@ -1468,6 +1520,14 @@ class TestResolvePendingEdgeCases:
 
 
 class TestCapabilitiesValues:
+    def test_steer_is_true(self, tmp_path):
+        t = _make_transport(tmp_path)
+        assert t.capabilities.steer is True
+
+    def test_steering_mode_is_live(self, tmp_path):
+        t = _make_transport(tmp_path)
+        assert t.capabilities.steering_mode == "live"
+
     def test_set_permission_mode_is_false(self, tmp_path):
         t = _make_transport(tmp_path)
         assert t.capabilities.set_permission_mode is False
@@ -1656,6 +1716,27 @@ class TestItemCompletedEdgeCases:
         # Only one stop (for the tool_use block), no text block started
         assert len(stops) == 1
         # No text delta emitted
+        text_deltas = [
+            e
+            for e in events
+            if e.get("type") == "content_block_delta"
+            and e.get("delta", {}).get("type") == "text_delta"
+        ]
+        assert len(text_deltas) == 0
+
+    @pytest.mark.asyncio
+    async def test_command_completed_none_output_no_text_block(self, tmp_path):
+        """Command with null aggregated output should still emit stop and not crash."""
+        t = _make_transport(tmp_path)
+        emit = _collect_emits(t)
+
+        await t._handle_item_completed(
+            {"type": "commandExecution", "id": "cmd-1", "aggregatedOutput": None, "exitCode": 0}
+        )
+
+        events = _emitted_events(emit)
+        stops = _events_of_type(emit, "content_block_stop")
+        assert len(stops) == 1
         text_deltas = [
             e
             for e in events

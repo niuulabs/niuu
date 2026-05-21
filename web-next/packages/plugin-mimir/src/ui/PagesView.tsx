@@ -7,14 +7,15 @@
  */
 
 import { useState, useReducer, useEffect, useRef, useMemo, Fragment } from 'react';
-import { useService } from '@niuulabs/plugin-sdk';
+import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
 import { useMimirPages, useMimirPage, useMimirPageSources } from './useMimirPages';
+import { useActiveMount } from '../application/useActiveMount';
 import { TreeNode } from './components/TreeNode';
 import { ZoneBlock } from './components/ZoneBlock';
 import { MetaPanel } from './components/MetaPanel';
 import { MountChip } from './components/MountChip';
 import { RawSourcePane } from './components/RawSourcePane';
-import { mergeFileTrees } from '../domain';
+import { collectLeaves, mergeFileTrees } from '../domain';
 import { zoneEditReducer } from '../domain/zone-edit';
 import type { Zone, Page, PageMeta } from '../domain/page';
 import type { ZoneEditState } from '../domain/zone-edit';
@@ -27,9 +28,16 @@ const ZONE_SAVE_RESET_DELAY_MS = 3_000;
 type ReaderLayout = 'structured' | 'split';
 
 export function PagesView() {
-  const { data: allPages = [] } = useMimirPages();
+  const ctx = usePluginCtx();
+  const { activeMount, mountName } = useActiveMount();
+  const { data: allPages = [] } = useMimirPages(mountName ? { mountName } : undefined);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [readerLayout, setReaderLayout] = useState<ReaderLayout>('structured');
+  const sidebarCollapsed = Boolean(ctx.tweaks['mimir.pagesSidebarCollapsed']);
+  const requestedPath =
+    typeof ctx.tweaks['mimir.selectedPagePath'] === 'string'
+      ? (ctx.tweaks['mimir.selectedPagePath'] as string)
+      : null;
 
   // Auto-select the first page once data loads.
   useEffect(() => {
@@ -38,8 +46,24 @@ export function PagesView() {
     }
   }, [allPages, selectedPath]);
 
+  useEffect(() => {
+    if (
+      requestedPath &&
+      requestedPath !== selectedPath &&
+      allPages.some((page) => page.path === requestedPath)
+    ) {
+      setSelectedPath(requestedPath);
+    }
+  }, [allPages, requestedPath, selectedPath]);
+
+  useEffect(() => {
+    if (selectedPath && !allPages.some((page) => page.path === selectedPath)) {
+      setSelectedPath(allPages[0]?.path ?? null);
+    }
+  }, [allPages, selectedPath]);
+
   const activePagePath = selectedPath ?? allPages[0]?.path ?? null;
-  const { data: page } = useMimirPage(activePagePath);
+  const { data: page } = useMimirPage(activePagePath, mountName);
   const { data: pageSources = [] } = useMimirPageSources(activePagePath);
   const service = useService<IMimirService>('mimir');
 
@@ -63,7 +87,17 @@ export function PagesView() {
 
   function handleNavigate(slug: string) {
     const target = allPages.find((p) => p.path === `/${slug}` || p.path === slug);
-    if (target) setSelectedPath(target.path);
+    if (target) handleSelectPath(target.path);
+  }
+
+  function handleSelectPath(path: string) {
+    setSelectedPath(path);
+    ctx.setTweak('mimir.selectedPagePath', path);
+  }
+
+  function handleSelectCollapsedItem(path: string) {
+    handleSelectPath(path);
+    if (sidebarCollapsed) ctx.setTweak('mimir.pagesSidebarCollapsed', false);
   }
 
   function handleEdit(zone: Zone) {
@@ -119,37 +153,93 @@ export function PagesView() {
   const breadcrumbs = activePagePath ? activePagePath.split('/').filter(Boolean) : [];
 
   return (
-    <div className="niuu-grid niuu-grid-cols-[280px_1fr_380px] niuu-h-full niuu-overflow-hidden">
+    <div
+      className="niuu-grid niuu-h-full niuu-overflow-hidden"
+      style={{ gridTemplateColumns: `${sidebarCollapsed ? 54 : 280}px minmax(0, 1fr) 380px` }}
+    >
       {/* ── File tree sidebar ──────────────────────────────────── */}
       <aside
         className="niuu-bg-bg-secondary niuu-border-r niuu-border-border-subtle niuu-flex niuu-flex-col niuu-overflow-hidden"
         aria-label="page tree"
       >
-        <div className="niuu-flex niuu-items-start niuu-justify-between niuu-px-4 niuu-py-3 niuu-border-b niuu-border-border-subtle niuu-flex-shrink-0">
-          <div className="niuu-flex niuu-flex-col niuu-gap-0.5">
-            <span className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
-              Pages
-            </span>
-            <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint">
-              merged mount tree
-            </span>
+        {sidebarCollapsed ? (
+          <div className="niuu-flex niuu-h-full niuu-flex-col niuu-overflow-hidden">
+            <div className="niuu-flex niuu-items-center niuu-justify-center niuu-border-b niuu-border-border-subtle niuu-py-3">
+              <button
+                type="button"
+                onClick={() => ctx.setTweak('mimir.pagesSidebarCollapsed', false)}
+                className="niuu-font-mono niuu-text-sm niuu-text-text-muted"
+                aria-label="Expand pages sidebar"
+              >
+                ›
+              </button>
+            </div>
+            <div className="niuu-flex-1 niuu-overflow-y-auto niuu-py-2">
+              {Object.values(tree.children).map((child) => {
+                const targetPath = child.isDir ? collectLeaves(child)[0]?.path : child.path;
+                const isActive = child.isDir
+                  ? (activePagePath?.startsWith(`${child.path}/`) ?? false)
+                  : activePagePath === child.path;
+                if (!targetPath) return null;
+                return (
+                  <button
+                    key={child.path}
+                    type="button"
+                    onClick={() => handleSelectCollapsedItem(targetPath)}
+                    className={[
+                      'niuu-mx-auto niuu-mb-2 niuu-flex niuu-h-8 niuu-w-8 niuu-items-center niuu-justify-center niuu-rounded-sm niuu-border niuu-font-mono niuu-text-[10px] niuu-uppercase',
+                      isActive
+                        ? 'niuu-border-brand niuu-bg-[color-mix(in_srgb,var(--brand-300)_14%,transparent)] niuu-text-brand-200'
+                        : 'niuu-border-border-subtle niuu-text-text-secondary hover:niuu-bg-bg-tertiary',
+                    ].join(' ')}
+                    aria-label={child.isDir ? `${child.name} directory` : child.name}
+                    title={child.isDir ? `${child.name}/` : child.name}
+                  >
+                    {child.name.slice(0, 2)}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">
-            {allPages.length}
-          </span>
-        </div>
-        <div className="niuu-overflow-y-auto niuu-flex-1">
-          {Object.values(tree.children).map((child) => (
-            <TreeNode
-              key={child.path}
-              node={child}
-              depth={0}
-              selectedPath={activePagePath}
-              onSelect={setSelectedPath}
-              knownPaths={knownPaths}
-            />
-          ))}
-        </div>
+        ) : (
+          <>
+            <div className="niuu-flex niuu-items-start niuu-justify-between niuu-px-4 niuu-py-3 niuu-border-b niuu-border-border-subtle niuu-flex-shrink-0">
+              <div className="niuu-flex niuu-flex-col niuu-gap-0.5">
+                <span className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                  Pages
+                </span>
+                <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint">
+                  {activeMount === 'all' ? 'merged mount tree' : `${activeMount} mount tree`}
+                </span>
+              </div>
+              <div className="niuu-flex niuu-items-center niuu-gap-3">
+                <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">
+                  {allPages.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => ctx.setTweak('mimir.pagesSidebarCollapsed', true)}
+                  className="niuu-font-mono niuu-text-lg niuu-text-text-muted"
+                  aria-label="Collapse pages sidebar"
+                >
+                  ‹
+                </button>
+              </div>
+            </div>
+            <div className="niuu-overflow-y-auto niuu-flex-1">
+              {Object.values(tree.children).map((child) => (
+                <TreeNode
+                  key={child.path}
+                  node={child}
+                  depth={0}
+                  selectedPath={activePagePath}
+                  onSelect={handleSelectPath}
+                  knownPaths={knownPaths}
+                />
+              ))}
+            </div>
+          </>
+        )}
       </aside>
 
       {/* ── Page reader ────────────────────────────────────────── */}

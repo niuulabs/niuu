@@ -100,8 +100,46 @@ imagePullSecrets:
 {{- end }}
 
 {{/*
+Return the database secret name. By default, reuse the Volundr secret from the
+same umbrella release so shared API surfaces can bind to the same database
+without needing a second secret declaration.
+*/}}
+{{- define "niuu-shared.databaseSecretName" -}}
+{{- if .Values.database.existingSecret }}
+{{- .Values.database.existingSecret }}
+{{- else }}
+{{- printf "%s-volundr-db" .Release.Name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Return the database host.
+*/}}
+{{- define "niuu-shared.databaseHost" -}}
+{{- if .Values.database.external.enabled }}
+{{- .Values.database.external.host }}
+{{- else }}
+{{- printf "%s-postgresql" .Release.Name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Return the database port.
+*/}}
+{{- define "niuu-shared.databasePort" -}}
+{{- if .Values.database.external.enabled }}
+{{- .Values.database.external.port | default 5432 }}
+{{- else }}
+{{- 5432 }}
+{{- end }}
+{{- end }}
+
+{{/*
 Annotations for checksum/config - forces restart on config changes
 */}}
 {{- define "niuu-shared.checksumAnnotations" -}}
 checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.envoy.enabled }}
+checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
+{{- end }}
 {{- end }}

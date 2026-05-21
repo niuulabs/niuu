@@ -98,6 +98,28 @@ class HttpPersonaAdapter(PersonaPort):
             return {}
         return {"Authorization": f"Bearer {token}"}
 
+    def _get(self, *paths: str) -> tuple[httpx.Response, str]:
+        """GET the first successful path, falling back across known persona prefixes.
+
+        We still prefer the shared ``/api/v1/personas`` surface, but some
+        deployments and older test apps only mount the Ravn-specific
+        ``/api/v1/ravn/personas`` routes. A 404 on the primary path should not
+        make persona discovery fail if the alternate surface is available.
+        """
+        last_response: httpx.Response | None = None
+        last_url = ""
+        headers = self._auth_headers()
+        client = self._get_client()
+        for path in paths:
+            url = f"{self._base_url}{path}"
+            response = client.get(url, headers=headers)
+            if response.status_code != 404:
+                return response, url
+            last_response = response
+            last_url = url
+        assert last_response is not None
+        return last_response, last_url
+
     @staticmethod
     def _parse_detail(data: dict) -> PersonaConfig:
         """Parse a PersonaDetail JSON payload into a PersonaConfig.
@@ -141,9 +163,11 @@ class HttpPersonaAdapter(PersonaPort):
         if cached is not None and not cached.expired:
             return cached.value  # type: ignore[return-value]
 
-        url = f"{self._base_url}/api/v1/personas/{name}"
         try:
-            response = self._get_client().get(url, headers=self._auth_headers())
+            response, url = self._get(
+                f"/api/v1/personas/{name}",
+                f"/api/v1/ravn/personas/{name}",
+            )
         except Exception as exc:  # network / timeout
             logger.warning("HttpPersonaAdapter: request failed for %r: %s", name, exc)
             return cached.value if cached is not None else None  # type: ignore[return-value]
@@ -174,9 +198,8 @@ class HttpPersonaAdapter(PersonaPort):
         if self._names_cache is not None and not self._names_cache.expired:
             return list(self._names_cache.value)  # type: ignore[arg-type]
 
-        url = f"{self._base_url}/api/v1/personas"
         try:
-            response = self._get_client().get(url, headers=self._auth_headers())
+            response, url = self._get("/api/v1/personas", "/api/v1/ravn/personas")
         except Exception as exc:  # network / timeout
             logger.warning("HttpPersonaAdapter: list_names request failed: %s", exc)
             return list(self._names_cache.value) if self._names_cache is not None else []  # type: ignore[arg-type]

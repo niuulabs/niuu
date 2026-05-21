@@ -1,22 +1,19 @@
-import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
 import { ClusterChip } from './ClusterChip';
 
 describe('ClusterChip', () => {
-  it('renders dash for null cluster', () => {
+  it('renders an em dash when no cluster is available', () => {
     render(<ClusterChip cluster={null} />);
+
     expect(screen.getByTestId('cluster-chip')).toHaveTextContent('—');
   });
 
-  it('renders cluster name and kind', () => {
-    render(<ClusterChip cluster={{ name: 'Valaskjálf', kind: 'primary' }} />);
-    expect(screen.getByText('Valaskjálf')).toBeInTheDocument();
-    expect(screen.getByText('primary')).toBeInTheDocument();
-  });
+  it('renders cluster details with the mapped kind class', () => {
+    render(<ClusterChip cluster={{ name: 'tor-1', kind: 'gpu' }} className="extra-class" />);
 
-  it('renders gpu kind', () => {
-    render(<ClusterChip cluster={{ name: 'Valhalla', kind: 'gpu' }} />);
-    expect(screen.getByText('Valhalla')).toBeInTheDocument();
-    expect(screen.getByText('gpu')).toBeInTheDocument();
+    expect(screen.getByTestId('cluster-chip')).toHaveClass('extra-class');
+    expect(screen.getByText('tor-1')).toBeInTheDocument();
+    expect(screen.getByText('gpu')).toHaveClass('niuu-text-state-warn');
   });
 });

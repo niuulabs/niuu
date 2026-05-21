@@ -65,7 +65,7 @@ async def test_batch_publish_preserves_order(nats_transport: NatsTransport):
 
 
 async def test_wildcard_pattern_matching(nats_transport: NatsTransport):
-    """Subscriber with 'ravn.*' receives ravn events but not tyr events."""
+    """Subscriber with 'ravn.*' receives ravn events but not ting events."""
     received: list[SleipnirEvent] = []
 
     async def handler(event: SleipnirEvent) -> None:
@@ -74,10 +74,10 @@ async def test_wildcard_pattern_matching(nats_transport: NatsTransport):
     await nats_transport.subscribe(["ravn.*"], handler)
 
     await nats_transport.publish(make_event(event_type="ravn.tool.complete"))
-    await nats_transport.publish(make_event(event_type="tyr.saga.created"))
+    await nats_transport.publish(make_event(event_type="ting.saga.created"))
 
     await collect_events(1, received, timeout=2.0)
-    # Give a moment for the tyr event to *not* arrive
+    # Give a moment for the ting event to *not* arrive
     await asyncio.sleep(0.3)
 
     assert len(received) == 1
@@ -92,25 +92,25 @@ async def test_wildcard_pattern_matching(nats_transport: NatsTransport):
 async def test_multiple_subscribers_receive_independently(nats_transport: NatsTransport):
     """Two subscribers to different patterns each receive matching events."""
     ravn_received: list[SleipnirEvent] = []
-    tyr_received: list[SleipnirEvent] = []
+    ting_received: list[SleipnirEvent] = []
 
     async def ravn_handler(event: SleipnirEvent) -> None:
         ravn_received.append(event)
 
-    async def tyr_handler(event: SleipnirEvent) -> None:
-        tyr_received.append(event)
+    async def ting_handler(event: SleipnirEvent) -> None:
+        ting_received.append(event)
 
     await nats_transport.subscribe(["ravn.*"], ravn_handler)
-    await nats_transport.subscribe(["tyr.*"], tyr_handler)
+    await nats_transport.subscribe(["ting.*"], ting_handler)
 
     await nats_transport.publish(make_event(event_type="ravn.tool.complete"))
-    await nats_transport.publish(make_event(event_type="tyr.saga.created"))
+    await nats_transport.publish(make_event(event_type="ting.saga.created"))
 
     await collect_events(1, ravn_received)
-    await collect_events(1, tyr_received)
+    await collect_events(1, ting_received)
 
     assert len(ravn_received) == 1
-    assert len(tyr_received) == 1
+    assert len(ting_received) == 1
 
 
 # ---------------------------------------------------------------------------

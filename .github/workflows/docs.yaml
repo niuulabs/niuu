@@ -6,21 +6,33 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - ".github/workflows/docs.yaml"
+      - "scripts/build_docs_bundle.py"
       - "src/volundr/adapters/inbound/rest*.py"
       - "scripts/extract_openapi.py"
   push:
-    branches: [main]
+    branches:
+      - main
+      - codex/web-next-only-cutover
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - ".github/workflows/docs.yaml"
+      - "scripts/build_docs_bundle.py"
       - "src/volundr/adapters/inbound/rest*.py"
       - "scripts/extract_openapi.py"
     tags:
       - "v*"
+  workflow_dispatch:
 
 concurrency:
   group: docs-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  DOCS_PREVIEW_BRANCH: codex/web-next-only-cutover
+  DOCS_PREVIEW_SLUG: web-next-only-cutover
+  DOCS_PREVIEW_SUBDIR: branches/web-next-only-cutover
 
 permissions:
   contents: read
@@ -30,6 +42,9 @@ permissions:
 jobs:
   build:
     name: Build docs
+    outputs:
+      deploy_enabled: ${{ steps.mode.outputs.deploy_enabled }}
+      preview_url: ${{ steps.mode.outputs.preview_url }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -42,31 +57,64 @@ jobs:
           python-version: "3.12"
           extras: "--extra dev"
 
-      - name: Inject version from latest git tag
+      - name: Fetch refs used for docs assembly
         run: |
-          VERSION=$(
-            git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
-              | grep -v -- '-' | head -1 | sed 's/^v//' || true
-          )
-          VERSION=${VERSION:-0.0.0-dev}
-          sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
-          echo "Using version: $VERSION"
+          git fetch origin main "${DOCS_PREVIEW_BRANCH}" --depth=1
 
-      - name: Generate OpenAPI spec
-        run: uv run --extra dev python scripts/extract_openapi.py -o docs/site/openapi.json
+      - name: Decide deploy mode
+        id: mode
+        run: |
+          set -euo pipefail
+          PREVIEW_REF="refs/heads/${DOCS_PREVIEW_BRANCH}"
+          PREVIEW_URL="https://niuulabs.github.io/volundr/${DOCS_PREVIEW_SUBDIR}/"
 
-      - name: Build site
-        run: uvx --from mkdocs-material==9.7.5 mkdocs build --strict --site-dir _site
+          if [[ "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == "${PREVIEW_REF}" || "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "deploy_enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy_enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ "${GITHUB_REF}" == "${PREVIEW_REF}" ]]; then
+            echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
+          else
+            echo "preview_url=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build combined site
+        env:
+          PREVIEW_URL: https://niuulabs.github.io/volundr/${{ env.DOCS_PREVIEW_SUBDIR }}/
+        run: |
+          set -euo pipefail
+
+          ROOT_REF="HEAD"
+          PREVIEW_REF="origin/${DOCS_PREVIEW_BRANCH}"
+
+          if [[ "${GITHUB_REF}" == "refs/heads/${DOCS_PREVIEW_BRANCH}" ]]; then
+            ROOT_REF="origin/main"
+            PREVIEW_REF="HEAD"
+          fi
+
+          uv run python scripts/build_docs_bundle.py \
+            --output-dir _site \
+            --root-ref "${ROOT_REF}" \
+            --preview-ref "${PREVIEW_REF}" \
+            --preview-subdir "${DOCS_PREVIEW_SUBDIR}" \
+            --preview-site-url "${PREVIEW_URL}"
 
       - name: Upload artifact
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        if: steps.mode.outputs.deploy_enabled == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
 
+      - name: Summarize preview URL
+        if: steps.mode.outputs.preview_url != ''
+        run: |
+          echo "Preview published at: ${{ steps.mode.outputs.preview_url }}" >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
     name: Deploy to GitHub Pages
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: needs.build.outputs.deploy_enabled == 'true'
     needs: build
     runs-on: ubuntu-latest
     environment:

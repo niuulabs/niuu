@@ -6,6 +6,7 @@ from niuu.ports.embedded_database import EmbeddedDatabasePort
 from niuu.ports.git import GitProvider
 from niuu.ports.graphql import GraphQLClientPort
 from niuu.ports.integrations import IntegrationRepository
+from niuu.ports.model_catalog import ModelCatalogPort
 
 __all__ = [
     "CLITransport",
@@ -15,5 +16,6 @@ __all__ = [
     "GitProvider",
     "GraphQLClientPort",
     "IntegrationRepository",
+    "ModelCatalogPort",
     "TransportCapabilities",
 ]

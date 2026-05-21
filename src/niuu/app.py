@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket
@@ -21,7 +22,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from niuu.config import CorsConfig
 from niuu.cors import apply_cors_middleware
-from niuu.http_compat import collect_legacy_route_hits, reset_legacy_route_hits
 from niuu.ports.plugin import APIRouteDomain, Service
 
 if TYPE_CHECKING:
@@ -105,32 +105,57 @@ def _local_service_host(host: str) -> str:
     return normalized
 
 
+def _plugin_api_base_url(host: str, port: int) -> str:
+    """Return the intra-stack base URL used by host-mounted plugin apps."""
+    return f"http://{_local_service_host(host)}:{port}"
+
+
+def _create_plugin_api_app(plugin: Service, *, base_url: str) -> Any:
+    """Create a plugin API app, passing root context to opt-in plugins only."""
+    factory = plugin.create_api_app
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return factory()
+
+    accepts_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if accepts_kwargs or "base_url" in signature.parameters:
+        return factory(base_url=base_url)
+    return factory()
+
+
 _PLUGIN_API_PREFIXES: dict[str, list[str]] = {
-    "volundr": ["/api/v1/volundr"],
-    "tyr": ["/api/v1/tyr"],
+    "volundr": ["/api/v1/forge"],
+    "audit": ["/api/v1/audit"],
+    "identity": ["/api/v1/identity"],
+    "features": ["/api/v1/features"],
+    "credentials": ["/api/v1/credentials"],
+    "integrations": ["/api/v1/integrations"],
+    "tracker": ["/api/v1/tracker"],
+    "ting": ["/api/v1/ting"],
     "niuu": ["/api/v1/niuu"],
 }
 
 _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "admin-api": "volundr",
-    "audit-api": "volundr",
+    "audit-api": "audit",
     "bifrost-api": "bifrost",
     "bifrost-observability-api": "bifrost",
-    "catalog-legacy-api": "volundr",
-    "credentials-api": "volundr",
-    "credentials-legacy-api": "volundr",
-    "features-api": "volundr",
-    "features-legacy-api": "volundr",
+    "credentials-api": "credentials",
+    "features-api": "features",
     "forge-api": "volundr",
-    "forge-legacy-api": "volundr",
+    "guild-instances-api": "guild",
+    "guild-volundr-api": "guild",
     "git-api": "volundr",
-    "git-legacy-api": "volundr",
-    "identity-api": "volundr",
-    "identity-legacy-api": "volundr",
-    "integrations-api": "volundr",
-    "integrations-legacy-api": "volundr",
+    "identity-api": "identity",
+    "integrations-api": "integrations",
     "mimir-api": "mimir",
     "niuu-api": "niuu",
+    "niuu-repos-api": "niuu",
+    "niuu-shared-api": "niuu",
     "observatory-api": "observatory",
     "observatory-events-api": "observatory",
     "observatory-registry-api": "observatory",
@@ -143,54 +168,33 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "ravn-trigger-api": "ravn",
     "llm-api": "bifrost",
     "catalog-api": "volundr",
-    "dispatch-api": "tyr",
-    "event-api": "tyr",
-    "review-api": "tyr",
+    "dispatch-api": "ting",
+    "event-api": "ting",
+    "review-api": "ting",
     "session-api": "volundr",
-    "session-legacy-api": "volundr",
-    "saga-api": "tyr",
-    "settings-api": "tyr",
-    "tenancy-api": "volundr",
-    "tracker-api": "volundr",
-    "tokens-api": "volundr",
-    "tokens-legacy-api": "volundr",
-    "volundr-api": "volundr",
-    "workflow-api": "tyr",
+    "saga-api": "ting",
+    "settings-api": "ting",
+    "tenancy-api": "identity",
+    "tracker-api": "tracker",
+    "tracker-intake-api": "ting",
+    "tokens-api": "identity",
+    "ting-channel-api": "ting",
+    "workflow-api": "ting",
     "workspace-api": "volundr",
-    "workspace-legacy-api": "volundr",
-    "tyr-api": "tyr",
+    "ting-api": "ting",
 }
 _LEGACY_PLUGIN_DOMAIN_NAMES: dict[str, str] = {
-    "volundr": "volundr-api",
-    "tyr": "tyr-api",
+    "ting": "ting-api",
     "niuu": "niuu-api",
 }
 
 _STATIC_ROUTE_DOMAINS = frozenset({"skuld-proxy", "runtime-config", "web-ui"})
 _FULL_ROUTE_DOMAINS = frozenset({*_PLUGIN_ROUTE_DOMAINS.keys(), *_STATIC_ROUTE_DOMAINS})
-_LEGACY_COMPAT_ROUTE_DOMAINS = frozenset(
-    {
-        "catalog-legacy-api",
-        "credentials-legacy-api",
-        "features-legacy-api",
-        "forge-legacy-api",
-        "git-legacy-api",
-        "identity-legacy-api",
-        "integrations-legacy-api",
-        "session-legacy-api",
-        "tokens-legacy-api",
-        "volundr-api",
-        "workspace-legacy-api",
-    }
-)
-_CANONICAL_ROUTE_DOMAINS = frozenset(_FULL_ROUTE_DOMAINS - _LEGACY_COMPAT_ROUTE_DOMAINS)
 
 DEFAULT_HOST_PROFILE = "full"
 HOST_PROFILES: dict[str, frozenset[str]] = {
-    "full": _CANONICAL_ROUTE_DOMAINS,
-    "api": frozenset(domain for domain in _CANONICAL_ROUTE_DOMAINS if domain != "web-ui"),
-    "full-compat": _FULL_ROUTE_DOMAINS,
-    "api-compat": frozenset(domain for domain in _FULL_ROUTE_DOMAINS if domain != "web-ui"),
+    "full": _FULL_ROUTE_DOMAINS,
+    "api": frozenset(domain for domain in _FULL_ROUTE_DOMAINS if domain != "web-ui"),
 }
 _STATIC_ROUTE_PREFIXES: dict[str, tuple[str, ...]] = {
     "skuld-proxy": (
@@ -318,10 +322,12 @@ def _declared_plugin_route_domains(
 
 def _backend_prefix_for_mount(plugin_name: str, public_prefix: str) -> str:
     """Map public mount prefixes to the backend route prefix a plugin actually serves."""
-    if plugin_name == "bifrost" and public_prefix.startswith("/api/v1/bifrost"):
-        return public_prefix.replace("/api/v1/bifrost", "", 1)
-    if plugin_name == "volundr" and public_prefix.startswith("/api/v1/forge"):
-        return public_prefix.replace("/api/v1/forge", "/api/v1/volundr", 1)
+    if plugin_name == "bifrost":
+        bifrost_prefix = "/api/v1/bifrost"
+        if public_prefix == bifrost_prefix:
+            return ""
+        if public_prefix.startswith(f"{bifrost_prefix}/"):
+            return public_prefix[len(bifrost_prefix) :]
     if plugin_name == "mimir" and public_prefix.startswith("/api/v1/mimir/mcp"):
         return public_prefix.replace("/api/v1/mimir/mcp", "/mcp", 1)
     if plugin_name == "mimir" and public_prefix.startswith("/api/v1/mimir"):
@@ -484,6 +490,7 @@ def build_root_app(
     skuld_registry: SkuldPortRegistry | None = None,
 ) -> FastAPI:
     """Build the root FastAPI app that hosts selected route domains."""
+    plugin_api_base_url = _plugin_api_base_url(host, port)
     active_mounts = resolve_enabled_mounts(
         host_profile,
         enabled_mounts,
@@ -509,11 +516,18 @@ def build_root_app(
             plugin_prefixes.setdefault(plugin_name, []).extend(route_domain.prefixes)
 
     sub_apps: list[tuple[str, FastAPI]] = []
+    shared_api_apps: dict[str, FastAPI] = {}
     for name, plugin in sorted(registry.plugins.items()):
         if name not in requested_plugins:
             continue
         try:
-            sub_app = plugin.create_api_app()
+            shared_key = plugin.shared_api_app_key()
+            if shared_key and shared_key in shared_api_apps:
+                sub_app = shared_api_apps[shared_key]
+            else:
+                sub_app = _create_plugin_api_app(plugin, base_url=plugin_api_base_url)
+                if shared_key and sub_app is not None:
+                    shared_api_apps[shared_key] = sub_app
             if sub_app is None:
                 continue
             sub_apps.append((name, sub_app))
@@ -523,13 +537,19 @@ def build_root_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         exit_stacks: list[tuple[str, AsyncGenerator]] = []
+        started_app_ids: set[int] = set()
         for name, sub_app in sub_apps:
+            app_id = id(sub_app)
+            if app_id in started_app_ids:
+                logger.info("Reusing %s shared API app", name)
+                continue
             lf = sub_app.router.lifespan_context
             if lf:
                 gen = lf(sub_app)
                 try:
                     await gen.__aenter__()
                     exit_stacks.append((name, gen))
+                    started_app_ids.add(app_id)
                     logger.info("Started %s lifespan", name)
                 except Exception:
                     logger.exception("Failed to start %s lifespan", name)
@@ -569,41 +589,6 @@ def build_root_app(
     @root.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
-
-    if "niuu-api" in active_mounts:
-
-        @root.get("/api/v1/niuu/compat/legacy-routes")
-        async def legacy_route_hits() -> dict[str, object]:
-            hits = collect_legacy_route_hits(root)
-            return {
-                "items": [
-                    {
-                        "legacyPath": item.legacy_path,
-                        "canonicalPath": item.canonical_path,
-                        "method": item.method,
-                        "hits": item.hits,
-                    }
-                    for item in hits
-                ],
-                "totalHits": sum(item.hits for item in hits),
-            }
-
-        @root.delete("/api/v1/niuu/compat/legacy-routes")
-        async def reset_legacy_hits() -> dict[str, object]:
-            hits = reset_legacy_route_hits(root)
-            return {
-                "items": [
-                    {
-                        "legacyPath": item.legacy_path,
-                        "canonicalPath": item.canonical_path,
-                        "method": item.method,
-                        "hits": item.hits,
-                    }
-                    for item in hits
-                ],
-                "totalHits": sum(item.hits for item in hits),
-                "cleared": True,
-            }
 
     prefix_apps: list[tuple[str, ASGIApp]] = []
     for name, sub_app in sub_apps:
@@ -648,9 +633,29 @@ def build_root_app(
                 async with ws_client.connect(
                     f"ws://127.0.0.1:{port}/session",
                     additional_headers={
-                        k.decode(): v.decode()
-                        for k, v in websocket.headers.raw
-                        if k.decode().lower() in ("authorization", "cookie", "x-auth-user-id")
+                        **{
+                            k.decode(): v.decode()
+                            for k, v in websocket.headers.raw
+                            if k.decode().lower()
+                            in (
+                                "authorization",
+                                "cookie",
+                                "x-auth-user-id",
+                                "x-auth-email",
+                                "x-auth-tenant",
+                                "x-auth-roles",
+                            )
+                        },
+                        **{
+                            header: value
+                            for query_key, header in (
+                                ("devUserId", "x-auth-user-id"),
+                                ("devEmail", "x-auth-email"),
+                                ("devTenantId", "x-auth-tenant"),
+                                ("devRoles", "x-auth-roles"),
+                            )
+                            if (value := websocket.query_params.get(query_key))
+                        },
                     },
                 ) as skuld_ws:
 
@@ -703,7 +708,10 @@ def build_root_app(
 
             import httpx
 
-            allowed_segment = re.compile(r"^[A-Za-z0-9._~-]+$")
+            # Skuld workflow gate ids use ":" as an internal delimiter, so the
+            # session proxy needs to accept it in path segments while still
+            # rejecting slashes and traversal tokens.
+            allowed_segment = re.compile(r"^[A-Za-z0-9._~:-]+$")
             raw_segments = path.split("/")
             normalized_segments: list[str] = []
             for seg in raw_segments:
@@ -771,8 +779,17 @@ def build_root_app(
 
     def render_live_config(origin: str) -> str:
         assert live_config_template is not None
+        ws_origin = (
+            origin.replace("https://", "wss://", 1)
+            if origin.startswith("https://")
+            else origin.replace("http://", "ws://", 1)
+        )
         payload = live_config_template.replace("http://localhost:8080", origin)
         payload = payload.replace("http://127.0.0.1:8080", origin)
+        payload = payload.replace("ws://localhost:8080", ws_origin)
+        payload = payload.replace("ws://127.0.0.1:8080", ws_origin)
+        payload = payload.replace("wss://localhost:8080", ws_origin)
+        payload = payload.replace("wss://127.0.0.1:8080", ws_origin)
         return payload
 
     if "web-ui" not in active_mounts:
@@ -829,8 +846,9 @@ def build_root_app(
         from starlette.responses import HTMLResponse
 
         @root.get("/{path:path}", include_in_schema=False)
-        async def spa_fallback(path: str) -> HTMLResponse:
-            del path
+        async def spa_fallback(path: str) -> HTMLResponse | JSONResponse:
+            if path.startswith("api/"):
+                return JSONResponse({"detail": "Not found"}, status_code=404)
             return HTMLResponse(content=index_html)
 
         logger.info("Serving web UI from %s", dist)
@@ -868,7 +886,7 @@ class RootServer(Service):
         """Start embedded PostgreSQL and set env vars for sub-apps."""
         from niuu.adapters.embedded_postgres import EmbeddedPostgresDatabase
 
-        data_dir = str(Path.home() / ".niuu" / "pgdata")
+        data_dir = os.environ.get("NIUU_PGDATA_DIR") or str(Path.home() / ".niuu" / "pgdata")
         db = EmbeddedPostgresDatabase()
         info = await db.start(data_dir)
         self._embedded_db = db
@@ -903,9 +921,7 @@ class RootServer(Service):
 
         os.environ["NIUU_SERVER_HOST"] = self._host
         os.environ["NIUU_SERVER_PORT"] = str(self._port)
-        os.environ["VOLUNDR__URL"] = (
-            f"http://{_local_service_host(self._host)}:{self._port}"
-        )
+        os.environ["VOLUNDR__URL"] = f"http://{_local_service_host(self._host)}:{self._port}"
 
         app = self._build_app()
         config = uvicorn.Config(
@@ -925,7 +941,7 @@ class RootServer(Service):
         try:
             import asyncpg
 
-            from cli.resources import migration_dir
+            from cli.resources import migration_dir, ordered_migration_files
 
             info = self._embedded_db._connection_info
             conn = await asyncpg.connect(
@@ -935,13 +951,13 @@ class RootServer(Service):
                 database=info.dbname,
             )
             try:
-                for variant in ("volundr", "tyr"):
+                for variant in ("volundr", "ting"):
                     try:
                         mig_dir = migration_dir(variant)
                     except FileNotFoundError:
                         logger.debug("No migrations found for %s", variant)
                         continue
-                    sql_files = sorted(mig_dir.glob("*.up.sql"))
+                    sql_files = ordered_migration_files(mig_dir)
                     applied = 0
                     for sql_file in sql_files:
                         sql = sql_file.read_text()

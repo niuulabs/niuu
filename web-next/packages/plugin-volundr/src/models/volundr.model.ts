@@ -71,10 +71,12 @@ export type SessionOrigin = 'managed' | 'manual';
 export interface VolundrModel {
   name: string;
   provider: ModelProvider;
+  vendor?: string;
   tier: ModelTier;
   color: string;
   cost?: string;
   vram?: string;
+  sessionDefinition?: string;
 }
 
 export interface VolundrRepo {
@@ -161,6 +163,33 @@ export interface VolundrSession {
   activityState?: 'active' | 'idle' | 'tool_executing' | null;
   ownerId?: string;
   tenantId?: string;
+  instanceId?: string;
+  instanceName?: string;
+}
+
+export type WorkflowGateStatus = 'pending' | 'approved' | 'changes_requested';
+export type WorkflowGatePendingBehavior = 'silent' | 'notify_only' | 'help_needed';
+
+export interface VolundrWorkflowGate {
+  id: string;
+  node_id: string;
+  activation_id: string;
+  label: string;
+  condition: string;
+  status: WorkflowGateStatus;
+  pending_behavior: WorkflowGatePendingBehavior;
+  approvers: string[];
+  auto_forward_after: string;
+  requested_at: string;
+  updated_at: string;
+  triggered_by_event_type: string;
+  approval_event_type: string;
+  changes_requested_event_type: string;
+  attempt: number;
+  decision?: string | null;
+  notes?: string;
+  source?: string;
+  summary?: string;
 }
 
 export interface VolundrStats {
@@ -177,6 +206,16 @@ export interface VolundrStats {
     costToday?: number[];
     gpus?: number[];
   };
+}
+
+export interface VolundrTarget {
+  id: string;
+  slug: string;
+  name: string;
+  baseUrl: string;
+  enabled: boolean;
+  isDefault: boolean;
+  visibility?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +362,7 @@ export interface SessionDefinition {
   description: string;
   labels: string[];
   defaultModel: string;
+  compatibleProviders: string[];
 }
 
 // ---------------------------------------------------------------------------

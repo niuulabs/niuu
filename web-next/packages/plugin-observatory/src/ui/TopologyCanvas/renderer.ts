@@ -6,6 +6,7 @@
  */
 
 import type { Topology, TopologyNode, TopologyEdge, EdgeKind } from '../../domain';
+import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
 import { NODE_SIZE, MIMIR_RUNES, LAYOUT } from './config';
@@ -14,7 +15,7 @@ import { NODE_SIZE, MIMIR_RUNES, LAYOUT } from './config';
 // These map directly to the ice-theme brand ramp used in the prototype.
 const C = {
   ice: [186, 230, 253] as const, // brand-300
-  frost: [125, 211, 252] as const, // active / raid
+  frost: [125, 211, 252] as const, // active / run
   moon: [224, 242, 254] as const, // Mímir / long ravens
   indigo: [147, 197, 253] as const, // Bifröst / skuld
   slate: [148, 163, 184] as const, // muted labels
@@ -30,8 +31,8 @@ function rgba([r, g, b]: readonly [number, number, number], a: number): string {
 
 function nodeColour(typeId: string): readonly [number, number, number] {
   switch (typeId) {
-    case 'tyr':
-    case 'ravn_raid':
+    case 'ting':
+    case 'ravn_run':
       return C.frost;
     case 'bifrost':
     case 'skuld':
@@ -39,14 +40,13 @@ function nodeColour(typeId: string): readonly [number, number, number] {
     case 'volundr':
     case 'ravn_long':
     case 'mimir':
-    case 'mimir_sub':
       return C.moon;
     case 'valkyrie':
       return C.valk;
     case 'model':
       return C.model;
     case 'service':
-    case 'raid':
+    case 'run':
       return C.ice;
     case 'printer':
     case 'vaettir':
@@ -60,11 +60,10 @@ function nodeColour(typeId: string): readonly [number, number, number] {
 
 function identityRune(typeId: string): string {
   const map: Record<string, string> = {
-    tyr: 'ᛃ',
+    ting: '✦',
     bifrost: 'ᚨ',
     volundr: 'ᚲ',
     mimir: 'ᛗ',
-    mimir_sub: 'ᛗ',
   };
   return map[typeId] ?? '';
 }
@@ -100,7 +99,7 @@ export function drawZones(
       if (node.typeId !== typeId) continue;
       const pos = positions.get(node.id);
       if (!pos) continue;
-      const r = zoneRadius(typeId);
+      const r = pos.zoneRadius ?? zoneRadius(typeId);
       const { x: cx, y: cy } = pos;
 
       if (typeId === 'realm') {
@@ -123,7 +122,7 @@ export function drawZones(
         ctx.fillStyle = rgba(C.ice, 0.78);
         ctx.font = '600 13px Inter, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(node.label.toUpperCase(), cx, cy - r - 8);
+        ctx.fillText(humanizeObservatoryText(node.label).toUpperCase(), cx, cy - r - 8);
       } else {
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
         g.addColorStop(0, 'rgba(40,58,88,0.22)');
@@ -144,7 +143,7 @@ export function drawZones(
         ctx.fillStyle = rgba(C.ice, 0.58);
         ctx.font = '10px "JetBrains Mono", monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(`⎔ ${node.label}`, cx, cy - r - 4);
+        ctx.fillText(`⎔ ${humanizeObservatoryText(node.label)}`, cx, cy - r - 4);
       }
     }
   }
@@ -152,35 +151,82 @@ export function drawZones(
 
 // ── Edges (5 kinds) ───────────────────────────────────────────────────────────
 
+function edgeHash(id: string): number {
+  let hash = 5381;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = (((hash << 5) + hash) ^ id.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function nodeEdgeRadius(node: TopologyNode | undefined): number {
+  if (!node) return 8;
+  if (node.typeId === 'mimir') return LAYOUT.MIMIR_RADIUS;
+  if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H);
+  if (node.typeId === 'run') return 50;
+  return (NODE_SIZE[node.typeId] ?? 6) + 3;
+}
+
+function trimToNodeBoundary(
+  node: TopologyNode | undefined,
+  from: NodePosition,
+  toward: NodePosition,
+): NodePosition {
+  const dx = toward.x - from.x;
+  const dy = toward.y - from.y;
+  const distance = Math.hypot(dx, dy) || 1;
+
+  if (node?.typeId === 'host') {
+    const tx = Math.abs(dx) > 0 ? HOST_HALF_W / Math.abs(dx) : Number.POSITIVE_INFINITY;
+    const ty = Math.abs(dy) > 0 ? HOST_HALF_H / Math.abs(dy) : Number.POSITIVE_INFINITY;
+    const t = Math.min(tx, ty, 1);
+    return { x: from.x + dx * t, y: from.y + dy * t };
+  }
+
+  const radius = nodeEdgeRadius(node);
+  return {
+    x: from.x + (dx / distance) * radius,
+    y: from.y + (dy / distance) * radius,
+  };
+}
+
 function drawEdge(
   ctx: CanvasRenderingContext2D,
   edge: TopologyEdge,
+  nodeById: Map<string, TopologyNode>,
   positions: Map<string, NodePosition>,
   now: number,
 ): void {
   const src = positions.get(edge.sourceId);
   const dst = positions.get(edge.targetId);
   if (!src || !dst) return;
+  const srcNode = nodeById.get(edge.sourceId);
+  const dstNode = nodeById.get(edge.targetId);
+  const start = trimToNodeBoundary(srcNode, src, dst);
+  const end = trimToNodeBoundary(dstNode, dst, src);
 
   ctx.save();
   ctx.lineCap = 'round';
 
   const kind: EdgeKind = edge.kind;
+  let bend = 18;
 
   switch (kind) {
     case 'solid':
-      // Solid cyan — Týr → Völundr coordinator links.
+      // Solid cyan — Ting → Völundr coordinator links.
       ctx.strokeStyle = rgba(C.indigo, 0.42);
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
+      bend = 18;
       break;
 
     case 'dashed-anim':
-      // Animated dashes — Týr → raid dispatch channel.
+      // Animated dashes — Ting → run dispatch channel.
       ctx.strokeStyle = rgba(C.frost, 0.48);
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 5]);
       ctx.lineDashOffset = -now / 80;
+      bend = 28;
       break;
 
     case 'dashed-long':
@@ -189,6 +235,7 @@ function drawEdge(
       ctx.lineWidth = 0.9;
       ctx.setLineDash([6, 4]);
       ctx.lineDashOffset = -now / 120;
+      bend = 24;
       break;
 
     case 'soft':
@@ -196,19 +243,51 @@ function drawEdge(
       ctx.strokeStyle = rgba(C.moon, 0.18);
       ctx.lineWidth = 0.8;
       ctx.setLineDash([]);
+      bend = 20;
       break;
 
-    case 'raid':
-      // Frost — inter-raven cohesion within a raid.
+    case 'run':
+      // Frost — inter-raven cohesion within a run.
       ctx.strokeStyle = rgba(C.frost, 0.38);
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
+      bend = 34;
       break;
   }
 
+  const vx = end.x - start.x;
+  const vy = end.y - start.y;
+  const length = Math.hypot(vx, vy) || 1;
+  const nx = -vy / length;
+  const ny = vx / length;
+  const sign = edgeHash(edge.id) % 2 === 0 ? 1 : -1;
+  const sameParent =
+    srcNode?.parentId != null &&
+    srcNode.parentId === dstNode?.parentId &&
+    srcNode.parentId !== null;
+  const directParentChild = srcNode?.id === dstNode?.parentId || dstNode?.id === srcNode?.parentId;
+  const offset = Math.min(
+    bend * (sameParent ? 1.2 : 1) * (directParentChild ? 0.7 : 1),
+    length * 0.28,
+  );
+  const midX = (start.x + end.x) / 2;
+  const midY = (start.y + end.y) / 2;
+  const parentPos = sameParent && srcNode?.parentId ? positions.get(srcNode.parentId) : undefined;
+  let cx = midX + nx * offset * sign;
+  let cy = midY + ny * offset * sign;
+
+  if (sameParent && !directParentChild && parentPos) {
+    const awayX = midX - parentPos.x;
+    const awayY = midY - parentPos.y;
+    const awayLen = Math.hypot(awayX, awayY) || 1;
+    const outward = Math.min(length * 0.32, bend + 34);
+    cx = midX + (awayX / awayLen) * outward;
+    cy = midY + (awayY / awayLen) * outward;
+  }
+
   ctx.beginPath();
-  ctx.moveTo(src.x, src.y);
-  ctx.lineTo(dst.x, dst.y);
+  ctx.moveTo(start.x, start.y);
+  ctx.quadraticCurveTo(cx, cy, end.x, end.y);
   ctx.stroke();
   ctx.restore();
 }
@@ -220,8 +299,9 @@ export function drawEdges(
   now: number,
 ): void {
   ctx.save();
+  const nodeById = new Map(topology.nodes.map((node) => [node.id, node]));
   for (const edge of topology.edges) {
-    drawEdge(ctx, edge, positions, now);
+    drawEdge(ctx, edge, nodeById, positions, now);
   }
   ctx.restore();
 }
@@ -273,7 +353,7 @@ function drawHost(
   ctx.fillStyle = rgba(C.moon, 0.78);
   ctx.font = '600 10px Inter, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(node.label, x + 8, y + 14);
+  ctx.fillText(humanizeObservatoryText(node.label), x + 8, y + 14);
 
   ctx.restore();
 }
@@ -348,7 +428,7 @@ function drawShape(
   const a = rgba(col, 0.92);
 
   switch (typeId) {
-    case 'tyr':
+    case 'ting':
     case 'volundr':
       ctx.fillStyle = a;
       ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
@@ -380,7 +460,7 @@ function drawShape(
       ctx.fill();
       return;
 
-    case 'ravn_raid':
+    case 'ravn_run':
       ctx.fillStyle = rgba(col, 0.9);
       ctx.beginPath();
       ctx.moveTo(cx, cy - size);
@@ -441,27 +521,8 @@ function drawShape(
       ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
       return;
 
-    case 'mimir_sub':
-      // Small Mímir: dark circle with rune
-      ctx.fillStyle = 'rgba(9,9,11,0.95)';
-      ctx.beginPath();
-      ctx.arc(cx, cy, size, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = rgba(C.moon, 0.55);
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(cx, cy, size, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = rgba(C.moon, 0.8);
-      ctx.font = '10px "JetBrains Mono", monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('ᛗ', cx, cy + 1);
-      ctx.textBaseline = 'alphabetic';
-      return;
-
     default:
-      // service, model, raid, …
+      // service, model, run, …
       ctx.fillStyle = rgba(col, 0.85);
       ctx.beginPath();
       ctx.arc(cx, cy, size, 0, Math.PI * 2);
@@ -515,12 +576,14 @@ export function drawNode(
 
   // Label below node for key types and hovered nodes
   const showLabel =
-    ['tyr', 'bifrost', 'volundr', 'valkyrie', 'ravn_long'].includes(node.typeId) || hovered;
+    ['ting', 'bifrost', 'volundr', 'valkyrie', 'ravn_long'].includes(node.typeId) ||
+    (node.typeId === 'service' && ['observatory', 'niuu', 'ravn'].includes(node.svcType ?? '')) ||
+    hovered;
   if (showLabel) {
     ctx.fillStyle = rgba(C.moon, hovered ? 0.95 : 0.75);
     ctx.font = `${hovered ? 600 : 500} 10px Inter, sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText(node.label, x, y + size + 13);
+    ctx.fillText(humanizeObservatoryText(node.label), x, y + size + 13);
   }
 }
 

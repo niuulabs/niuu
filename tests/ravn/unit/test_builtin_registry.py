@@ -94,9 +94,13 @@ class TestRegistryStructure:
 
     def test_platform_tools_present(self) -> None:
         platform_keys = {k for k, v in BUILTIN_TOOLS.items() if "platform" in v.groups}
-        assert {"volundr_session", "volundr_git", "tyr_saga", "tracker_issue"}.issubset(
-            platform_keys
-        )
+        assert {
+            "volundr_session",
+            "volundr_git",
+            "ting_saga",
+            "ting_workflow",
+            "tracker_issue",
+        }.issubset(platform_keys)
 
     def test_terminal_docker_entry_exists(self) -> None:
         assert "terminal_docker" in BUILTIN_TOOLS
@@ -168,7 +172,13 @@ class TestConditions:
     def test_platform_tools_condition(self) -> None:
         s = Settings()
         s.gateway.platform.enabled = False
-        for key in ("volundr_session", "volundr_git", "tyr_saga", "tracker_issue"):
+        for key in (
+            "volundr_session",
+            "volundr_git",
+            "ting_saga",
+            "ting_workflow",
+            "tracker_issue",
+        ):
             cond = BUILTIN_TOOLS[key].condition
             assert cond is not None
             assert not cond(s)

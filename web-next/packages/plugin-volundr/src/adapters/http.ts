@@ -6,18 +6,17 @@
  */
 import {
   createApiClient,
-  getAccessToken,
+  getAuthHeaders,
   openEventStream,
   type EventStreamHandle,
   type EventStreamOptions,
 } from '@niuulabs/query';
-import type { IVolundrService } from '../ports/IVolundrService';
+import type { IVolundrService, VolundrConversationHistory } from '../ports/IVolundrService';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import type {
   VolundrSession,
   VolundrStats,
   VolundrFeatures,
-  VolundrModel,
   VolundrRepo,
   VolundrMessage,
   VolundrLog,
@@ -50,6 +49,7 @@ import type {
   WorkspaceStatus,
   VolundrMember,
   VolundrProvisioningResult,
+  VolundrTarget,
   AdminSettings,
   AdminStorageSettings,
   FeatureModule,
@@ -57,6 +57,7 @@ import type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
+  VolundrWorkflowGate,
 } from '../models/volundr.model';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
@@ -64,7 +65,7 @@ export interface HttpClient {
   basePath?: string;
   get<T>(endpoint: string): Promise<T>;
   post<T>(endpoint: string, body?: unknown): Promise<T>;
-  delete<T>(endpoint: string): Promise<T>;
+  delete<T>(endpoint: string, body?: unknown): Promise<T>;
   patch<T>(endpoint: string, body?: unknown): Promise<T>;
   put<T>(endpoint: string, body?: unknown): Promise<T>;
 }
@@ -119,6 +120,10 @@ type SessionPayload = {
   owner_id?: string | null;
   tenantId?: string | null;
   tenant_id?: string | null;
+  instanceId?: string | null;
+  instance_id?: string | null;
+  instanceName?: string | null;
+  instance_name?: string | null;
 };
 
 type StatsPayload = {
@@ -149,6 +154,32 @@ type ConversationPayload = {
       latency?: number;
     };
   }>;
+};
+
+type WorkflowGatePayload = {
+  id: string;
+  node_id?: string;
+  activation_id?: string;
+  label?: string;
+  condition?: string;
+  status?: VolundrWorkflowGate['status'];
+  pending_behavior?: VolundrWorkflowGate['pending_behavior'];
+  approvers?: string[];
+  auto_forward_after?: string;
+  requested_at?: string;
+  updated_at?: string;
+  triggered_by_event_type?: string;
+  approval_event_type?: string;
+  changes_requested_event_type?: string;
+  attempt?: number;
+  decision?: string | null;
+  notes?: string;
+  source?: string;
+  summary?: string;
+};
+
+type WorkflowGateListPayload = {
+  gates?: WorkflowGatePayload[];
 };
 
 type LogPayload = {
@@ -248,14 +279,16 @@ type SharedRepoPayload = {
 
 type SharedRepoResponse = Record<string, SharedRepoPayload[]>;
 
-type ApiModelInfo = {
+type InstanceTargetPayload = {
   id: string;
+  slug: string;
   name: string;
-  provider: VolundrModel['provider'];
-  tier: VolundrModel['tier'];
-  color: string;
-  cost_per_million_tokens?: number | null;
-  vram_required?: string | null;
+  baseUrl?: string;
+  base_url?: string;
+  enabled: boolean;
+  isDefault?: boolean;
+  is_default?: boolean;
+  visibility?: string;
 };
 
 type SessionDefinitionPayload = {
@@ -266,6 +299,8 @@ type SessionDefinitionPayload = {
   labels: string[];
   default_model?: string;
   defaultModel?: string;
+  compatible_providers?: string[];
+  compatibleProviders?: string[];
 };
 
 function normalizeSessionDefinition(payload: SessionDefinitionPayload): SessionDefinition {
@@ -275,6 +310,7 @@ function normalizeSessionDefinition(payload: SessionDefinitionPayload): SessionD
     description: payload.description,
     labels: payload.labels,
     defaultModel: payload.defaultModel ?? payload.default_model ?? '',
+    compatibleProviders: payload.compatibleProviders ?? payload.compatible_providers ?? [],
   };
 }
 
@@ -329,6 +365,20 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     activityState: session.activityState ?? session.activity_state ?? undefined,
     ownerId: session.ownerId ?? session.owner_id ?? undefined,
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
+    instanceId: session.instanceId ?? session.instance_id ?? undefined,
+    instanceName: session.instanceName ?? session.instance_name ?? undefined,
+  };
+}
+
+function normalizeTarget(payload: InstanceTargetPayload): VolundrTarget {
+  return {
+    id: payload.id,
+    slug: payload.slug,
+    name: payload.name,
+    baseUrl: payload.baseUrl ?? payload.base_url ?? '',
+    enabled: payload.enabled,
+    isDefault: payload.isDefault ?? payload.is_default ?? false,
+    visibility: payload.visibility,
   };
 }
 
@@ -355,7 +405,7 @@ function deriveCanonicalCredentialsBasePath(basePath?: string): string | null {
   if (normalized.endsWith('/api/v1/credentials')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/credentials`;
 
-  const derived = normalized.replace(/\/api\/v1\/(?:forge|volundr)$/, '/api/v1/credentials');
+  const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1/credentials');
   return derived === normalized ? null : derived;
 }
 
@@ -364,8 +414,11 @@ function deriveSharedApiBasePath(basePath?: string): string | null {
 
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1')) return normalized;
+  if (normalized.endsWith('/api/v1/niuu')) return normalized.replace(/\/niuu$/, '');
+  if (normalized.endsWith('/api/v1/niuu/volundr'))
+    return normalized.replace(/\/niuu\/volundr$/, '');
 
-  const derived = normalized.replace(/\/api\/v1\/(?:forge|volundr)$/, '/api/v1');
+  const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1');
   return derived === normalized ? null : derived;
 }
 
@@ -375,9 +428,7 @@ function deriveCanonicalForgeBasePath(basePath?: string): string | null {
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/forge')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/forge`;
-
-  const derived = normalized.replace(/\/api\/v1\/volundr$/, '/api/v1/forge');
-  return derived === normalized ? null : derived;
+  return null;
 }
 
 function deriveNiuuBasePath(basePath?: string): string | null {
@@ -385,6 +436,7 @@ function deriveNiuuBasePath(basePath?: string): string | null {
 
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/niuu')) return normalized;
+  if (normalized.endsWith('/api/v1/niuu/volundr')) return normalized.replace(/\/volundr$/, '');
 
   const sharedBasePath = deriveSharedApiBasePath(normalized);
   return sharedBasePath ? `${sharedBasePath}/niuu` : null;
@@ -435,6 +487,42 @@ function normalizeMessages(sessionId: string, payload: ConversationPayload): Vol
     tokensOut: turn.metadata?.tokens_out,
     latency: turn.metadata?.latency,
   }));
+}
+
+function normalizeConversationHistory(payload: ConversationPayload): VolundrConversationHistory {
+  return {
+    turns: payload.turns.map((turn) => ({
+      id: turn.id,
+      role: turn.role,
+      content: turn.content,
+      created_at: turn.created_at ?? new Date(0).toISOString(),
+      metadata: turn.metadata,
+    })),
+  };
+}
+
+function normalizeWorkflowGate(payload: WorkflowGatePayload): VolundrWorkflowGate {
+  return {
+    id: payload.id,
+    node_id: payload.node_id ?? '',
+    activation_id: payload.activation_id ?? '',
+    label: payload.label ?? payload.id,
+    condition: payload.condition ?? '',
+    status: payload.status ?? 'pending',
+    pending_behavior: payload.pending_behavior ?? 'help_needed',
+    approvers: payload.approvers ?? [],
+    auto_forward_after: payload.auto_forward_after ?? '30m',
+    requested_at: payload.requested_at ?? new Date(0).toISOString(),
+    updated_at: payload.updated_at ?? payload.requested_at ?? new Date(0).toISOString(),
+    triggered_by_event_type: payload.triggered_by_event_type ?? '',
+    approval_event_type: payload.approval_event_type ?? '',
+    changes_requested_event_type: payload.changes_requested_event_type ?? '',
+    attempt: payload.attempt ?? 1,
+    decision: payload.decision ?? undefined,
+    notes: payload.notes ?? '',
+    source: payload.source ?? 'human',
+    summary: payload.summary ?? '',
+  };
 }
 
 function normalizeLogLevel(level?: string): VolundrLog['level'] {
@@ -522,27 +610,6 @@ function normalizeChronicle(payload: ChroniclePayload): SessionChronicle {
     commits: payload.commits,
     tokenBurn: payload.tokenBurn ?? payload.token_burn ?? [],
   };
-}
-
-function normalizeModel(payload: ApiModelInfo): VolundrModel {
-  return {
-    name: payload.name,
-    provider: payload.provider,
-    tier: payload.tier,
-    color: payload.color,
-    cost:
-      payload.cost_per_million_tokens != null ? `$${payload.cost_per_million_tokens}/M` : undefined,
-    vram: payload.vram_required ?? undefined,
-  };
-}
-
-function normalizeModelList(
-  payload: ApiModelInfo[] | Record<string, VolundrModel>,
-): Record<string, VolundrModel> {
-  if (Array.isArray(payload)) {
-    return Object.fromEntries(payload.map((model) => [model.id, normalizeModel(model)]));
-  }
-  return payload;
 }
 
 function normalizeRepo(payload: SharedRepoPayload): VolundrRepo {
@@ -721,12 +788,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
   }
 
   function withAuthHeaders(headers: HeadersInit = {}): Headers {
-    const nextHeaders = new Headers(headers);
-    const token = getAccessToken();
-    if (token) {
-      nextHeaders.set('Authorization', `Bearer ${token}`);
-    }
-    return nextHeaders;
+    return getAuthHeaders(headers);
   }
 
   async function listDirectory(
@@ -1102,16 +1164,19 @@ export function buildVolundrHttpAdapter(
     getSession: (id) => loadSession(id),
     getActiveSessions: () => loadSessions('/sessions?active=true'),
     getStats: () => loadStats(),
-    getModels: async () =>
-      normalizeModelList(
-        await forgeClient.get<ApiModelInfo[] | Record<string, VolundrModel>>('/models'),
-      ),
     getRepos: async () =>
       normalizeRepoList(
         await (niuuClient ?? forgeClient).get<
           SharedRepoResponse | SharedRepoPayload[] | VolundrRepo[]
         >('/repos'),
       ),
+    getTargets: async () => {
+      const targetClient = niuuClient ?? sharedClient;
+      const payload = await targetClient.get<InstanceTargetPayload[]>(
+        '/instances?kind=volundr&enabledOnly=true',
+      );
+      return payload.map(normalizeTarget);
+    },
 
     subscribe: (callback) => {
       sessionSubscribers.add(callback);
@@ -1159,7 +1224,12 @@ export function buildVolundrHttpAdapter(
     getClusterResources: () => forgeClient.get<ClusterResourceInfo>('/cluster/resources'),
 
     startSession: async (config) =>
-      normalizeSession(await forgeClient.post<SessionPayload>('/sessions', config)),
+      normalizeSession(
+        await forgeClient.post<SessionPayload>('/sessions', {
+          ...config,
+          instance_id: config.instanceId ?? null,
+        }),
+      ),
     connectSession: async (config) =>
       normalizeSession(await forgeClient.post<SessionPayload>('/sessions/connect', config)),
     updateSession: (sessionId, updates) =>
@@ -1167,16 +1237,51 @@ export function buildVolundrHttpAdapter(
     stopSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/stop`),
     resumeSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/resume`),
     deleteSession: (sessionId, cleanup) =>
-      forgeClient.delete<void>(
-        `/sessions/${sessionId}${cleanup ? `?cleanup=${cleanup.join(',')}` : ''}`,
-      ),
-    archiveSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/archive`),
-    restoreSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/restore`),
+      forgeClient.delete<void>(`/sessions/${sessionId}`, {
+        cleanup: cleanup ?? [],
+      }),
+    archiveSession: (sessionId) =>
+      forgeClient.patch<void>(`/sessions/${sessionId}/archive`, undefined),
+    archiveStoppedSessions: () => forgeClient.post<string[]>('/sessions/archive-stopped'),
+    restoreSession: (sessionId) =>
+      forgeClient.patch<void>(`/sessions/${sessionId}/restore`, undefined),
     listArchivedSessions: () =>
       forgeClient
         .get<SessionPayload[]>('/sessions?status=archived')
         .then((sessions) => sessions.map(normalizeSession)),
 
+    getConversationHistory: (sessionId) =>
+      forgeClient
+        .get<ConversationPayload>(`/sessions/${sessionId}/conversation`)
+        .then(normalizeConversationHistory),
+    getWorkflowGates: async (sessionId) => {
+      const payload = await forgeClient.get<WorkflowGateListPayload>(
+        `/sessions/${sessionId}/workflow/gates`,
+      );
+      return (payload.gates ?? []).map(normalizeWorkflowGate);
+    },
+    resolveWorkflowGate: async (sessionId, gateId, request) => {
+      const response = await fetch(
+        `${forgeClient.basePath}/sessions/${sessionId}/workflow/gates/${gateId}/resolve`,
+        {
+          method: 'POST',
+          headers: getAuthHeaders({
+            'Content-Type': 'application/json',
+            'x-niuu-workflow-gate-intent': 'resolve',
+          }),
+          body: JSON.stringify(request),
+        },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        const detail =
+          payload && typeof payload === 'object' && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail ?? 'Unknown error')
+            : 'Unknown error';
+        throw new Error(`API request failed: ${response.status} ${detail}`);
+      }
+      return normalizeWorkflowGate(payload as WorkflowGatePayload);
+    },
     getMessages: (sessionId) => loadMessages(sessionId),
     sendMessage: (sessionId, content) =>
       forgeClient.post<VolundrMessage>(`/sessions/${sessionId}/messages`, { content }),
@@ -1281,7 +1386,7 @@ export function buildVolundrHttpAdapter(
     updateTrackerIssueStatus: (issueId, status) =>
       trackerClient.patch<TrackerIssue>(`/tracker/issues/${issueId}`, { status }),
 
-    getIdentity: () => sharedClient.get<VolundrIdentity>('/identity'),
+    getIdentity: () => sharedClient.get<VolundrIdentity>('/identity/me'),
     listUsers: () => client.get<VolundrUser[]>('/admin/users'),
 
     getTenants: () => client.get<VolundrTenant[]>('/tenants'),
@@ -1362,9 +1467,9 @@ export function buildVolundrHttpAdapter(
         { sessionIds },
       ),
 
-    getAdminSettings: () => client.get<AdminSettings>('/admin/settings'),
+    getAdminSettings: () => forgeClient.get<AdminSettings>('/admin/settings'),
     updateAdminSettings: (data: { storage?: AdminStorageSettings }) =>
-      client.patch<AdminSettings>('/admin/settings', data),
+      forgeClient.patch<AdminSettings>('/admin/settings', data),
 
     getFeatureModules: (scope?: FeatureScope) =>
       sharedClient.get<FeatureModule[]>(`/features/modules${scope ? `?scope=${scope}` : ''}`),
