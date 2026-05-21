@@ -7,7 +7,7 @@ import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -118,6 +118,26 @@ def _workspace_dir_from_session(session: Session) -> FilePath | None:
         path = FilePath(session.source.local_path)
         return path if path.exists() else None
     return None
+
+
+def _session_proxy_url(base_url: str, *path_segments: str) -> str:
+    """Build a validated session-pod URL from a trusted base and encoded path segments."""
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Session proxy target must be an absolute http(s) URL")
+
+    segments = [quote(segment, safe="") for segment in path_segments]
+    base_path = parsed.path.rstrip("/")
+    suffix = "/".join(segments)
+    if base_path and suffix:
+        path = f"{base_path}/{suffix}"
+    elif base_path:
+        path = base_path
+    elif suffix:
+        path = f"/{suffix}"
+    else:
+        path = "/"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
 def _fallback_workspace_logs(
@@ -1665,7 +1685,7 @@ def create_router(
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    f"{base_url}/api/logs",
+                    _session_proxy_url(base_url, "api", "logs"),
                     params={"lines": lines, "level": level},
                 )
                 response.raise_for_status()
@@ -1729,7 +1749,7 @@ def create_router(
                 _, base_url = await forge.get_session_proxy_target(session_id)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
-                        f"{base_url}/api/logs/aggregate",
+                        _session_proxy_url(base_url, "api", "logs", "aggregate"),
                         params={
                             "lines": lines,
                             "level": level,
@@ -1879,7 +1899,7 @@ def create_router(
 
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
-                        f"{base_url}/api/conversation/history",
+                        _session_proxy_url(base_url, "api", "conversation", "history"),
                         headers=headers,
                     )
                     response.raise_for_status()
@@ -1937,7 +1957,7 @@ def create_router(
                 headers["Authorization"] = auth
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    f"{base_url}/api/workflow/gates",
+                    _session_proxy_url(base_url, "api", "workflow", "gates"),
                     headers=headers,
                 )
                 response.raise_for_status()
@@ -2000,7 +2020,7 @@ def create_router(
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
-                    f"{base_url}/api/workflow/gates/{gate_id}/resolve",
+                    _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve"),
                     headers=headers,
                     json=body.model_dump(),
                 )
@@ -2582,7 +2602,7 @@ def create_router(
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
-                    f"{base_url}/api/diff",
+                    _session_proxy_url(base_url, "api", "diff"),
                     params={"file": file, "base": base},
                     headers=proxy_headers,
                 )

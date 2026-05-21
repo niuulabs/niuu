@@ -24,6 +24,7 @@ from volundr.adapters.inbound.rest import (
     SessionResponse,
     SessionUpdate,
     StatsResponse,
+    _session_proxy_url,
     create_router,
 )
 from volundr.config import LocalMountsConfig
@@ -847,6 +848,74 @@ class TestSessionLogAggregationProxy:
 
         assert response.status_code == 503
         assert response.json()["detail"] == "Session archive service not available"
+
+
+class TestWorkflowGateProxy:
+    """Tests for native workflow gate proxy endpoints."""
+
+    def test_session_proxy_url_quotes_path_segments(self) -> None:
+        """Dynamic path segments should be encoded before proxying to a session pod."""
+        assert (
+            _session_proxy_url(
+                "http://localhost:8080/s/session-123",
+                "api",
+                "workflow",
+                "gates",
+                "gate needs review?step=1",
+                "resolve",
+            )
+            == "http://localhost:8080/s/session-123/api/workflow/gates/gate%20needs%20review%3Fstep%3D1/resolve"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_workflow_gate_quotes_gate_id(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        """Route-level gate resolution should proxy using an encoded gate path segment."""
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        await service.start_session(session.id)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"status": "resolved"}
+        mock_response.raise_for_status.return_value = None
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/workflow/gates/prd%20review%3Fstep%3D1/resolve",
+                json={"decision": "approved", "notes": "looks good", "source": "human"},
+                headers={"x-niuu-workflow-gate-intent": "resolve"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "resolved"}
+        mock_client.post.assert_awaited_once_with(
+            f"http://localhost:8080/s/{session.id}/api/workflow/gates/prd%20review%3Fstep%3D1/resolve",
+            headers={"x-niuu-workflow-gate-intent": "resolve"},
+            json={"decision": "approved", "notes": "looks good", "source": "human"},
+        )
 
     @pytest.mark.asyncio
     async def test_get_conversation_returns_503_without_archive_or_file_workspace(
