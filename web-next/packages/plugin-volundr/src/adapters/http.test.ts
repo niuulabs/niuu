@@ -302,6 +302,212 @@ describe('buildVolundrHttpAdapter', () => {
     expect(sharedClient.get).toHaveBeenCalledWith('/features');
   });
 
+  it('getCredentials forwards the optional secret type and applies the fallback type', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1');
+    const service = buildVolundrHttpAdapter(client);
+    const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
+    credentialsClient.get.mockResolvedValueOnce({
+      credentials: [
+        {
+          id: 'cred-1',
+          name: 'aws-prod',
+          keys: ['AWS_ACCESS_KEY_ID'],
+          metadata: {},
+        },
+      ],
+    });
+
+    const credentials = await service.getCredentials('aws_env');
+
+    expect(credentialsClient.get).toHaveBeenCalledWith('/user?secret_type=aws_env');
+    expect(credentials).toEqual([
+      expect.objectContaining({
+        id: 'cred-1',
+        secretType: 'aws_env',
+      }),
+    ]);
+  });
+
+  it('getCredential normalizes both camelCase and snake_case credential payloads', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1');
+    const service = buildVolundrHttpAdapter(client);
+    const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
+
+    credentialsClient.get
+      .mockResolvedValueOnce({
+        id: 'cred-camel',
+        name: 'camel',
+        secretType: 'gcp_service_account',
+        keys: ['project_id'],
+        metadata: { scope: 'prod' },
+        createdAt: '2026-05-20T00:00:00Z',
+        updatedAt: '2026-05-20T01:00:00Z',
+      })
+      .mockResolvedValueOnce({
+        id: 'cred-snake',
+        name: 'snake',
+        secret_type: 'aws_env',
+        keys: ['AWS_ACCESS_KEY_ID'],
+        created_at: '2026-05-20T02:00:00Z',
+        updated_at: '2026-05-20T03:00:00Z',
+      });
+
+    const camel = await service.getCredential('camel');
+    const snake = await service.getCredential('snake');
+
+    expect(camel).toMatchObject({
+      id: 'cred-camel',
+      secretType: 'gcp_service_account',
+      metadata: { scope: 'prod' },
+      createdAt: '2026-05-20T00:00:00Z',
+      updatedAt: '2026-05-20T01:00:00Z',
+    });
+    expect(snake).toMatchObject({
+      id: 'cred-snake',
+      secretType: 'aws_env',
+      metadata: {},
+      createdAt: '2026-05-20T02:00:00Z',
+      updatedAt: '2026-05-20T03:00:00Z',
+    });
+  });
+
+  it('getCredentialTypes normalizes legacy field aliases and default mount types', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1');
+    const service = buildVolundrHttpAdapter(client);
+    const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
+    credentialsClient.get.mockResolvedValueOnce([
+      {
+        type: 'generic',
+        label: 'Generic',
+        description: 'Generic secret',
+        fields: [{ name: 'api_key', required: true }],
+        default_mount_type: 'file',
+      },
+      {
+        type: 'aws_env',
+        label: 'AWS',
+        description: 'AWS env secret',
+        fields: [{ key: 'region', label: 'Region', type: 'text', required: false }],
+        defaultMountType: 'env',
+      },
+      {
+        type: 'template_secret',
+        label: 'Template secret',
+        description: 'Template mounted secret',
+        fields: [{ key: 'token', required: true }],
+        default_mount_type: 'template',
+      },
+      {
+        type: 'env_secret',
+        label: 'Env secret',
+        description: 'Environment mounted secret',
+        fields: [{ key: 'endpoint', name: 'legacy-endpoint' }],
+        default_mount_type: 'env_file',
+      },
+    ]);
+
+    const types = await service.getCredentialTypes();
+
+    expect(credentialsClient.get).toHaveBeenCalledWith('/types');
+    expect(types).toEqual([
+      expect.objectContaining({
+        type: 'generic',
+        defaultMountType: 'file',
+        fields: [
+          expect.objectContaining({
+            key: 'api_key',
+            label: 'api_key',
+            type: 'text',
+            required: true,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        type: 'aws_env',
+        defaultMountType: 'env',
+        fields: [
+          expect.objectContaining({
+            key: 'region',
+            label: 'Region',
+            type: 'text',
+            required: false,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        type: 'template_secret',
+        defaultMountType: 'template',
+        fields: [
+          expect.objectContaining({
+            key: 'token',
+            label: 'token',
+            type: 'text',
+            required: true,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        type: 'env_secret',
+        defaultMountType: 'env',
+        fields: [
+          expect.objectContaining({
+            key: 'endpoint',
+            label: 'endpoint',
+            type: 'text',
+            required: false,
+          }),
+        ],
+      }),
+    ]);
+  });
+
+  it('derives forge, shared, niuu, and credentials clients from a shared api base', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1');
+    const service = buildVolundrHttpAdapter(client);
+
+    await service.getSessionDefinitions();
+    await service.getFeatures();
+    await service.getTargets();
+    await service.getCredentials();
+
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/forge');
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/credentials',
+    );
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1');
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
+
+    const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
+    const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
+    const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu');
+    const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
+
+    expect(forgeClient.get).toHaveBeenCalledWith('/session-definitions');
+    expect(sharedClient.get).toHaveBeenCalledWith('/features');
+    expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+    expect(credentialsClient.get).toHaveBeenCalledWith('/user');
+  });
+
+  it('derives shared and niuu clients from a legacy niuu volundr base', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/niuu/volundr');
+    const service = buildVolundrHttpAdapter(client);
+
+    await service.getFeatures();
+    await service.getTargets();
+
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1');
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
+    expect(queryMocks.createApiClient).not.toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/niuu/volundr/forge',
+    );
+
+    const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
+    const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu');
+
+    expect(sharedClient.get).toHaveBeenCalledWith('/features');
+    expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+  });
+
   it('getSessionDefinitions calls GET /session-definitions and normalizes snake_case', async () => {
     const client = makeClient();
     client.get.mockResolvedValueOnce([

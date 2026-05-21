@@ -47,6 +47,7 @@ vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
 // TanStack Router: stub useParams so route components work outside a router.
 vi.mock('@tanstack/react-router', () => ({
+  useNavigate: vi.fn().mockReturnValue(vi.fn()),
   useParams: vi.fn().mockReturnValue({ sessionId: 'sess-route-test' }),
 }));
 
