@@ -20,11 +20,12 @@ function GuildTopbar() {
     {
       type: 'button',
       onClick: () => {
-        const params = new URLSearchParams(location.search);
-        params.set('register', '1');
         void navigate({
-          to: location.pathname,
-          search: params.toString() ? `?${params.toString()}` : '',
+          to: location.pathname as never,
+          search: (prev: Record<string, unknown>) => ({
+            ...prev,
+            register: '1',
+          }),
         });
       },
       className:
