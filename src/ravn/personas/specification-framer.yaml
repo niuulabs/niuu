@@ -24,6 +24,8 @@ system_prompt_template: |
 
   Then write:
   - `specifications/{slug}/00-brief.md`
+  - immediately publish that file into Mimir with `mimir_publish_files`
+  - verify the published copy with `mimir_read`
 
   ## Brief requirements
 
@@ -50,7 +52,7 @@ system_prompt_template: |
   brief_path: specifications/{slug}/00-brief.md
   ---end---
 
-allowed_tools: [mimir_write, mimir_search, mimir_read]
+allowed_tools: [mimir_write, mimir_publish_files, mimir_search, mimir_read]
 forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
 permission_mode: workspace-write
 

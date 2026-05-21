@@ -157,8 +157,8 @@ export function PipelineView({
                     })()}
                   {node.kind === 'gate' && (
                     <span className="niuu-text-xs niuu-text-text-muted">
-                      {(node.approvers ?? []).length || 1} approver
-                      {(node.approvers ?? []).length === 1 ? '' : 's'}
+                      {(node.mode ?? 'human_approval').replaceAll('_', ' ')} ·{' '}
+                      {(node.pendingBehavior ?? 'help_needed').replaceAll('_', ' ')}
                     </span>
                   )}
                   {node.kind === 'cond' && (

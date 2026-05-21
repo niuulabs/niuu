@@ -91,10 +91,46 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Draft PRD",
         "Review PRD",
     ]
-    assert "PRD approval gate" in specification_stage_labels
     assert "Draft SRD" in specification_stage_labels
-    assert "SDD approval gate" in specification_stage_labels
     assert specification_stage_labels[-1] == "Publish specification pack"
+    specification_gate_labels = [
+        node["label"] for node in specification_flow.graph["nodes"] if node.get("kind") == "gate"
+    ]
+    assert specification_gate_labels == [
+        "PRD approval gate",
+        "SRD approval gate",
+        "SDD approval gate",
+        "Breakdown approval gate",
+    ]
+    specification_stage_personas = {
+        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
+        for node in specification_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+    }
+    assert specification_stage_personas["Draft PRD"] == ["specification-prd-author"]
+    assert specification_stage_personas["Review PRD"] == ["specification-prd-critic"]
+    specification_gate_behaviors = {
+        node["label"]: node.get("pendingBehavior")
+        for node in specification_flow.graph["nodes"]
+        if node.get("kind") == "gate"
+    }
+    assert specification_gate_behaviors == {
+        "PRD approval gate": "help_needed",
+        "SRD approval gate": "help_needed",
+        "SDD approval gate": "help_needed",
+        "Breakdown approval gate": "help_needed",
+    }
+    specification_gate_modes = {
+        node["label"]: node.get("mode")
+        for node in specification_flow.graph["nodes"]
+        if node.get("kind") == "gate"
+    }
+    assert specification_gate_modes == {
+        "PRD approval gate": "human_approval",
+        "SRD approval gate": "human_approval",
+        "SDD approval gate": "human_approval",
+        "Breakdown approval gate": "human_approval",
+    }
     specification_resources = {
         node["label"]: node
         for node in specification_flow.graph["nodes"]

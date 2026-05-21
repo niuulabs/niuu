@@ -167,6 +167,24 @@ class TelegramConfig(BaseModel):
     message_thread_id: int | None = Field(default=None)
 
 
+class PeerWatchdogConfig(BaseModel):
+    """Silence watchdog settings for workflow flock peers."""
+
+    enabled: bool = Field(default=True)
+    poll_seconds: float = Field(
+        default=5.0,
+        description="Seconds between silence watchdog checks.",
+    )
+    silence_seconds: float = Field(
+        default=300.0,
+        description="Seconds of no visible peer progress before warning in normal execution.",
+    )
+    tool_silence_seconds: float = Field(
+        default=300.0,
+        description="Seconds of no visible peer progress before warning while a tool is running.",
+    )
+
+
 class SkuldSessionConfig(BaseModel):
     """Per-session configuration (set by Volundr at pod creation)."""
 
@@ -234,6 +252,7 @@ class SkuldSettings(BaseSettings):
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)
     workflow_trigger: WorkflowTriggerConfig = Field(default_factory=WorkflowTriggerConfig)

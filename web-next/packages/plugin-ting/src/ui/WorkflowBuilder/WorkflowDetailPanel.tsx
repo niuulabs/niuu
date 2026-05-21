@@ -998,18 +998,67 @@ export function WorkflowDetailPanel({
             />
           </div>
           <div>
-            <label className={SECTION_LABEL}>Approvers</label>
-            <input
-              className={INPUT}
-              value={(selectedNode.approvers ?? []).join(', ')}
+            <label className={SECTION_LABEL}>Gate mode</label>
+            <select
+              className={cn(INPUT, 'niuu-mt-0.5')}
+              aria-label="Gate mode"
+              value={selectedNode.mode ?? 'human_approval'}
               onChange={(e) =>
                 onUpdateNode(selectedNode.id, {
-                  approvers: e.target.value
-                    .split(',')
-                    .map((part) => part.trim())
-                    .filter(Boolean),
+                  mode: e.target.value as 'human_approval' | 'human_review' | 'automated_approval',
                 })
               }
+            >
+              <option value="human_approval">human approval</option>
+              <option value="human_review">human review</option>
+              <option value="automated_approval">automated approval</option>
+            </select>
+          </div>
+          <div>
+            <label className={SECTION_LABEL}>Pending behavior</label>
+            <select
+              className={cn(INPUT, 'niuu-mt-0.5')}
+              aria-label="Pending behavior"
+              value={selectedNode.pendingBehavior ?? 'help_needed'}
+              onChange={(e) =>
+                onUpdateNode(selectedNode.id, {
+                  pendingBehavior: e.target.value as 'silent' | 'notify_only' | 'help_needed',
+                })
+              }
+            >
+              <option value="help_needed">help_needed</option>
+              <option value="notify_only">notify_only</option>
+              <option value="silent">silent</option>
+            </select>
+          </div>
+          <div>
+            <label className={SECTION_LABEL}>Approve event</label>
+            <input
+              className={INPUT}
+              value={selectedNode.approvalEvent ?? ''}
+              onChange={(e) =>
+                onUpdateNode(selectedNode.id, { approvalEvent: e.target.value.trimStart() })
+              }
+            />
+          </div>
+          <div>
+            <label className={SECTION_LABEL}>Changes requested event</label>
+            <input
+              className={INPUT}
+              value={selectedNode.changesRequestedEvent ?? ''}
+              onChange={(e) =>
+                onUpdateNode(selectedNode.id, {
+                  changesRequestedEvent: e.target.value.trimStart(),
+                })
+              }
+            />
+          </div>
+          <div>
+            <label className={SECTION_LABEL}>Instructions</label>
+            <textarea
+              className={cn(INPUT, 'niuu-min-h-[72px]')}
+              value={selectedNode.instructions ?? ''}
+              onChange={(e) => onUpdateNode(selectedNode.id, { instructions: e.target.value })}
             />
           </div>
           <div>

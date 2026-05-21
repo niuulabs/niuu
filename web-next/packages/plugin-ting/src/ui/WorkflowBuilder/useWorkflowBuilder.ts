@@ -107,7 +107,11 @@ function makeNewNode(kind: WorkflowNodeKind, position: { x: number; y: number })
         kind: 'gate',
         label: 'Gate',
         condition: '',
-        approvers: ['jonas@niuulabs.io'],
+        mode: 'human_approval',
+        pendingBehavior: 'help_needed',
+        approvalEvent: '',
+        changesRequestedEvent: '',
+        instructions: '',
         autoForwardAfter: '30m',
         position,
       };

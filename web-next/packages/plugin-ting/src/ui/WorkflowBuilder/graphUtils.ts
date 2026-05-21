@@ -218,9 +218,17 @@ export function workflowToYaml(
       }
       if (node.kind === 'gate') {
         lines.push(`    condition: ${JSON.stringify(node.condition)}`);
-        lines.push(
-          `    approvers: ${(node.approvers ?? []).length === 0 ? '[]' : `[${(node.approvers ?? []).map((a) => JSON.stringify(a)).join(', ')}]`}`,
-        );
+        lines.push(`    mode: ${JSON.stringify(node.mode ?? 'human_approval')}`);
+        lines.push(`    pendingBehavior: ${JSON.stringify(node.pendingBehavior ?? 'help_needed')}`);
+        if (node.approvalEvent?.trim()) {
+          lines.push(`    approvalEvent: ${JSON.stringify(node.approvalEvent)}`);
+        }
+        if (node.changesRequestedEvent?.trim()) {
+          lines.push(`    changesRequestedEvent: ${JSON.stringify(node.changesRequestedEvent)}`);
+        }
+        if (node.instructions?.trim()) {
+          lines.push(`    instructions: ${JSON.stringify(node.instructions)}`);
+        }
         lines.push(`    autoForwardAfter: ${JSON.stringify(node.autoForwardAfter ?? '30m')}`);
       }
       if (node.kind === 'cond') {

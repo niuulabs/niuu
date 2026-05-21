@@ -61,6 +61,7 @@ from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
+WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 
 
 def _public_session_endpoint(endpoint: str | None) -> str | None:
@@ -555,6 +556,14 @@ class RepoResponse(BaseModel):
     url: str = Field(description="Web URL for the repository")
     default_branch: str = Field(description="Default branch name")
     branches: list[str] = Field(description="Available branch names")
+
+
+class WorkflowGateResolveRequest(BaseModel):
+    """Request body for resolving a live workflow gate."""
+
+    decision: str
+    notes: str = ""
+    source: str = "human"
 
 
 class ErrorResponse(BaseModel):
@@ -1896,6 +1905,115 @@ def create_router(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e),
+            )
+
+    @router.get(
+        "/sessions/{session_id}/workflow/gates",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def get_workflow_gates(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Return native workflow gate state for a live session."""
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        if not session.chat_endpoint:
+            return {"gates": []}
+
+        try:
+            _, base_url = await forge.get_session_proxy_target(session_id)
+            headers = {}
+            auth = request.headers.get("authorization")
+            if auth:
+                headers["Authorization"] = auth
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{base_url}/api/workflow/gates",
+                    headers=headers,
+                )
+                response.raise_for_status()
+                return response.json()
+        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.warning(
+                "Workflow gate proxy failed for session %s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to fetch workflow gates from session pod: {e}",
+            )
+
+    @router.post(
+        "/sessions/{session_id}/workflow/gates/{gate_id}/resolve",
+        tags=["Sessions"],
+        responses={
+            400: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def resolve_workflow_gate(
+        request: Request,
+        body: WorkflowGateResolveRequest,
+        session_id: UUID = Path(description="Unique session identifier"),
+        gate_id: str = Path(description="Workflow gate identifier"),
+    ) -> dict:
+        """Resolve a pending native workflow gate for a live session."""
+        principal = await extract_principal(request)
+        try:
+            session, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+        if session.owner_id and session.owner_id != principal.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to resolve gates for this session",
+            )
+
+        headers = {}
+        auth = request.headers.get("authorization")
+        if auth:
+            headers["Authorization"] = auth
+        intent = request.headers.get(WORKFLOW_GATE_INTENT_HEADER)
+        if intent:
+            headers[WORKFLOW_GATE_INTENT_HEADER] = intent
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{base_url}/api/workflow/gates/{gate_id}/resolve",
+                    headers=headers,
+                    json=body.model_dump(),
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            detail = e.response.text[:500]
+            raise HTTPException(status_code=status_code, detail=detail)
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not connect to session pod: {e}",
             )
 
     @router.get(

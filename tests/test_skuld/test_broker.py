@@ -44,6 +44,7 @@ class TestBroker:
             transport="subprocess",
             host="0.0.0.0",
             port=8081,
+            peer_watchdog={"silence_seconds": 30.0, "tool_silence_seconds": 30.0},
         )
 
     @pytest.fixture
@@ -749,6 +750,89 @@ class TestBroker:
         )
 
         test_broker._emit_pipeline_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_routing_only_peer_outcome_can_activate_native_workflow_gate(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "sess-gate-1", "workspace_dir": str(tmp_path)},
+            workflow={
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "spec-prd-gate",
+                            "kind": "gate",
+                            "label": "Approve PRD",
+                            "condition": "Human approval is required before SRD drafting begins.",
+                            "pendingBehavior": "help_needed",
+                            "approvers": ["human"],
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "review-to-gate",
+                            "source": "spec-prd-review",
+                            "target": "spec-prd-gate",
+                            "label": "spec.prd.ready_for_gate -> spec.prd.ready_for_gate",
+                        },
+                        {
+                            "id": "gate-approved",
+                            "source": "spec-prd-gate",
+                            "target": "spec-srd-draft",
+                            "label": "spec.prd.approved -> spec.prd.approved",
+                        },
+                        {
+                            "id": "gate-rework",
+                            "source": "spec-prd-gate",
+                            "target": "spec-prd-draft",
+                            "label": "spec.prd.changes_requested -> spec.prd.changes_requested",
+                        },
+                    ],
+                }
+            },
+        )
+        broker_under_test = Broker(settings=settings)
+        broker_under_test._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "flock-reviewer": MagicMock(persona="reviewer")
+        }
+        broker_under_test._emit_pipeline_event = AsyncMock()
+        broker_under_test._emit_workflow_gate_help_needed_sleipnir_event = AsyncMock()
+        broker_under_test._report_activity_state = AsyncMock()
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-reviewer",
+            "outcome",
+            {
+                "metadata": {"event_type": "spec.prd.ready_for_gate"},
+                "data": {
+                    "event_type": "spec.prd.ready_for_gate",
+                    "canonical_event_type": "spec.prd.review.completed",
+                    "routing_only": True,
+                    "bubble_up": False,
+                    "summary": "PRD is ready for approval.",
+                    "fields": {
+                        "verdict": "ready_for_gate",
+                        "summary": "PRD is ready for approval.",
+                    },
+                },
+            },
+        )
+
+        gates = broker_under_test.list_workflow_gates()
+        assert len(gates) == 1
+        assert gates[0]["node_id"] == "spec-prd-gate"
+        assert gates[0]["status"] == "pending"
+        assert gates[0]["pending_behavior"] == "help_needed"
+        assert gates[0]["triggered_by_event_type"] == "spec.prd.ready_for_gate"
+        broker_under_test._emit_workflow_gate_help_needed_sleipnir_event.assert_awaited_once()
+        broker_under_test._report_activity_state.assert_awaited_once()
+        pending_events = [
+            call.args
+            for call in broker_under_test._emit_pipeline_event.await_args_list
+            if call.args and call.args[0] == "workflow.gate.pending"
+        ]
+        assert len(pending_events) == 1
 
     @pytest.mark.asyncio
     async def test_flock_completion_accepts_stage_finisher_persona(self, test_broker):

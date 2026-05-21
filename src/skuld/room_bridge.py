@@ -227,7 +227,8 @@ class RoomBridge:
             return
 
         if event_type == "outcome":
-            await self._handle_outcome_frame(meta, frame)
+            if not (isinstance(data, dict) and data.get("routing_only")):
+                await self._handle_outcome_frame(meta, frame)
             # Outcome is emitted mid-turn; the agent may still produce a
             # response afterward — don't reset status here.
             await self._notify_peer_event(meta.peer_id, event_type, frame)

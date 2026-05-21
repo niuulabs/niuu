@@ -174,10 +174,14 @@ comments: fix the null branch
         assert alias_event.payload["bubble_up"] is False
         assert alias_event.payload["room_bridge_skip"] is True
 
-        skuld_channel.emit.assert_awaited_once()
-        emitted = skuld_channel.emit.await_args.args[0]
+        assert skuld_channel.emit.await_count == 2
+        emitted = skuld_channel.emit.await_args_list[0].args[0]
         assert emitted.payload["event_type"] == "review.completed"
         assert emitted.payload["bubble_up"] is True
+        alias_emitted = skuld_channel.emit.await_args_list[1].args[0]
+        assert alias_emitted.payload["event_type"] == "review.changes_requested"
+        assert alias_emitted.payload["routing_only"] is True
+        assert alias_emitted.payload["bubble_up"] is False
 
     @pytest.mark.asyncio
     async def test_canonical_outcome_uses_mesh_bridge_when_skuld_absent(self) -> None:
@@ -989,7 +993,11 @@ recommendation: choose whether to optimize for latency or quality
         assert alias_event.payload["event_type"] == "council.human_input.requested"
 
         emitted_types = [call.args[0].type for call in skuld_channel.emit.await_args_list]
-        assert emitted_types == ["outcome", "help_needed"]
+        assert emitted_types == ["outcome", "help_needed", "outcome"]
+        assert (
+            skuld_channel.emit.await_args_list[2].args[0].payload["event_type"]
+            == "council.human_input.requested"
+        )
 
     @pytest.mark.asyncio
     async def test_help_needed_bypasses_node_outcome_filter_for_human_intervention(self) -> None:

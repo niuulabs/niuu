@@ -1671,27 +1671,6 @@ export function SessionDetailPage({
           >
             res
           </button>
-          <button
-            type="button"
-            aria-label="stop session"
-            className="niuu-rounded-md niuu-border niuu-border-transparent niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[12px] niuu-text-text-muted hover:niuu-border-border-subtle hover:niuu-bg-bg-elevated/60"
-          >
-            stop
-          </button>
-          <button
-            type="button"
-            aria-label="archive session"
-            className="niuu-rounded-md niuu-border niuu-border-transparent niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[12px] niuu-text-text-muted hover:niuu-border-border-subtle hover:niuu-bg-bg-elevated/60"
-          >
-            arc
-          </button>
-          <button
-            type="button"
-            aria-label="delete session"
-            className="niuu-rounded-md niuu-border niuu-border-transparent niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[12px] niuu-text-text-muted hover:niuu-border-critical hover:niuu-bg-critical-bg"
-          >
-            del
-          </button>
         </div>
       </div>
 

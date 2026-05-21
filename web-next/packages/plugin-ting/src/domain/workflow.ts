@@ -31,6 +31,8 @@ export type WorkflowNodeKind = z.input<typeof workflowNodeKindSchema>;
 const positionSchema = z.object({ x: z.number(), y: z.number() });
 const stageExecutionModeSchema = z.enum(['parallel', 'sequential']);
 const stageJoinModeSchema = z.enum(['all', 'any', 'merge']);
+const gateModeSchema = z.enum(['human_approval', 'human_review', 'automated_approval']);
+const gatePendingBehaviorSchema = z.enum(['silent', 'notify_only', 'help_needed']);
 const stageEventFiltersSchema = z.record(z.string()).default({});
 const stageMemberSchema = z.object({
   personaId: z.string().min(1),
@@ -41,6 +43,8 @@ const stageMemberSchema = z.object({
 });
 export type StageExecutionMode = z.input<typeof stageExecutionModeSchema>;
 export type StageJoinMode = z.input<typeof stageJoinModeSchema>;
+export type WorkflowGateMode = z.input<typeof gateModeSchema>;
+export type WorkflowGatePendingBehavior = z.input<typeof gatePendingBehaviorSchema>;
 export type WorkflowStageMember = z.input<typeof stageMemberSchema>;
 
 export const workflowStageNodeSchema = z.object({
@@ -69,7 +73,16 @@ export const workflowGateNodeSchema = z.object({
   label: z.string().min(1),
   /** Human-readable approval condition description. */
   condition: z.string(),
-  approvers: z.array(z.string()).default([]),
+  /** Gate execution mode for runtime and UI semantics. */
+  mode: gateModeSchema.default('human_approval'),
+  /** How the runtime surfaces the gate while it is pending. */
+  pendingBehavior: gatePendingBehaviorSchema.default('help_needed'),
+  /** Optional explicit approval event type override. */
+  approvalEvent: z.string().default(''),
+  /** Optional explicit changes-requested event type override. */
+  changesRequestedEvent: z.string().default(''),
+  /** Optional operator guidance shown with the gate request. */
+  instructions: z.string().default(''),
   autoForwardAfter: z.string().default('30m'),
   position: positionSchema,
 });

@@ -16,6 +16,8 @@ system_prompt_template: |
 
   Then write:
   - `specifications/{slug}/21-srd-review.md`
+  - immediately publish that file into Mimir with `mimir_publish_files`
+  - verify the published copy with `mimir_read`
 
   ## Review requirements
 
@@ -35,6 +37,12 @@ system_prompt_template: |
   the previously raised blockers well enough for a serious design handoff,
   recommend `ready_for_gate` rather than raising new polish-only objections.
 
+  Missing or weak requirements tables are material issues. The SRD is not ready
+  for gate if it lacks:
+  - a functional requirements markdown table with IDs and linked PRD references
+  - a non-functional requirements markdown table with categories and validation
+    expectations
+
   ## Output Format
 
   ---outcome---
@@ -44,7 +52,7 @@ system_prompt_template: |
   review_path: specifications/{slug}/21-srd-review.md
   ---end---
 
-allowed_tools: [mimir_write, mimir_search, mimir_read]
+allowed_tools: [mimir_write, mimir_publish_files, mimir_search, mimir_read]
 forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
 permission_mode: workspace-write
 

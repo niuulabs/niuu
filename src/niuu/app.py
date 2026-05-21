@@ -708,7 +708,10 @@ def build_root_app(
 
             import httpx
 
-            allowed_segment = re.compile(r"^[A-Za-z0-9._~-]+$")
+            # Skuld workflow gate ids use ":" as an internal delimiter, so the
+            # session proxy needs to accept it in path segments while still
+            # rejecting slashes and traversal tokens.
+            allowed_segment = re.compile(r"^[A-Za-z0-9._~:-]+$")
             raw_segments = path.split("/")
             normalized_segments: list[str] = []
             for seg in raw_segments:

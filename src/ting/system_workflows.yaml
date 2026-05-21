@@ -352,15 +352,15 @@
           x: 896
           y: 232
       - id: spec-prd-gate
-        kind: stage
+        kind: gate
         label: PRD approval gate
-        executionMode: sequential
-        joinMode: any
-        stageMembers:
-          - personaId: specification-prd-gate-dummy
-            budget: 12
-            model: gpt-5.5
-            consumesEventTypes: [spec.prd.ready_for_gate]
+        condition: Review the PRD and decide whether it is strong enough to unlock SRD drafting.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: spec.prd.approved
+        changesRequestedEvent: spec.prd.changes_requested
+        instructions: Review the PRD, approve it if it is strong enough to unlock SRD drafting, or request changes with clear feedback.
+        autoForwardAfter: 30m
         position:
           x: 896
           y: 456
@@ -391,15 +391,15 @@
           x: 1472
           y: 232
       - id: spec-srd-gate
-        kind: stage
+        kind: gate
         label: SRD approval gate
-        executionMode: sequential
-        joinMode: any
-        stageMembers:
-          - personaId: specification-srd-gate-dummy
-            budget: 12
-            model: gpt-5.5
-            consumesEventTypes: [spec.srd.ready_for_gate]
+        condition: Review the SRD and decide whether the system requirements are complete and unambiguous enough to unlock design work.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: spec.srd.approved
+        changesRequestedEvent: spec.srd.changes_requested
+        instructions: Review the SRD, approve it if the system requirements are complete and unambiguous enough to unlock design work, or request changes with clear feedback.
+        autoForwardAfter: 30m
         position:
           x: 1472
           y: 456
@@ -430,15 +430,15 @@
           x: 2048
           y: 232
       - id: spec-sdd-gate
-        kind: stage
+        kind: gate
         label: SDD approval gate
-        executionMode: sequential
-        joinMode: any
-        stageMembers:
-          - personaId: specification-sdd-gate-dummy
-            budget: 12
-            model: gpt-5.5
-            consumesEventTypes: [spec.sdd.ready_for_gate]
+        condition: Review the SDD and decide whether the proposed design is coherent, realistic, and ready for breakdown planning.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: spec.sdd.approved
+        changesRequestedEvent: spec.sdd.changes_requested
+        instructions: Review the SDD, approve it if the design is coherent, realistic, and ready for breakdown planning, or request changes with clear feedback.
+        autoForwardAfter: 30m
         position:
           x: 2048
           y: 456
@@ -469,15 +469,15 @@
           x: 2624
           y: 232
       - id: spec-breakdown-gate
-        kind: stage
+        kind: gate
         label: Breakdown approval gate
-        executionMode: sequential
-        joinMode: any
-        stageMembers:
-          - personaId: specification-breakdown-gate-dummy
-            budget: 12
-            model: gpt-5.5
-            consumesEventTypes: [spec.breakdown.ready_for_gate]
+        condition: Review the implementation breakdown and decide whether the plan is actionable enough to publish.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: spec.breakdown.approved
+        changesRequestedEvent: spec.breakdown.changes_requested
+        instructions: Review the implementation breakdown, approve it if the plan is actionable enough to publish, or request changes with clear feedback.
+        autoForwardAfter: 30m
         position:
           x: 2624
           y: 456

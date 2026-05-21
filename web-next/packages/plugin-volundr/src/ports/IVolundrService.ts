@@ -50,6 +50,7 @@ import type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
+  VolundrWorkflowGate,
 } from '../models/volundr.model';
 
 export interface VolundrConversationTurn {
@@ -68,6 +69,12 @@ export interface VolundrConversationTurn {
 export interface VolundrConversationHistory {
   turns: VolundrConversationTurn[];
   last_activity?: string;
+}
+
+export interface ResolveWorkflowGateRequest {
+  decision: 'APPROVE' | 'CHANGES_REQUESTED';
+  notes?: string;
+  source?: string;
 }
 
 export interface IVolundrService {
@@ -147,6 +154,12 @@ export interface IVolundrService {
 
   // Messaging
   getConversationHistory(sessionId: string): Promise<VolundrConversationHistory>;
+  getWorkflowGates(sessionId: string): Promise<VolundrWorkflowGate[]>;
+  resolveWorkflowGate(
+    sessionId: string,
+    gateId: string,
+    request: ResolveWorkflowGateRequest,
+  ): Promise<VolundrWorkflowGate>;
   getMessages(sessionId: string): Promise<VolundrMessage[]>;
   sendMessage(sessionId: string, content: string): Promise<VolundrMessage>;
   subscribeMessages(sessionId: string, callback: (message: VolundrMessage) => void): () => void;

@@ -24,7 +24,15 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -108,6 +116,8 @@ logger = logging.getLogger("skuld.broker")
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 FORGE_CHRONICLES_PATH = "/api/v1/forge/chronicles"
 FORGE_EVENTS_PATH = "/api/v1/forge/events"
+WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
+WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
 
 
 def _sanitize_log(value: object) -> str:
@@ -132,11 +142,6 @@ _GIT_COMMIT_PREFIXES = ("git commit", "git -c ", "git -C ")
 
 # Matches git commit output like: [main e4f7a21] fix: some message
 _GIT_COMMIT_OUTPUT_RE = re.compile(r"\[[\w/-]+\s+([a-f0-9]{7,})\]\s+(.+)")
-_PEER_WATCHDOG_POLL_SECONDS = 5.0
-_PEER_WATCHDOG_SILENCE_SECONDS = 45.0
-_PEER_WATCHDOG_TOOL_SILENCE_SECONDS = 90.0
-
-
 def _is_git_commit(cmd: str) -> bool:
     """Return True if a Bash command is a git commit invocation."""
     stripped = cmd.lstrip()
@@ -480,6 +485,44 @@ class WorkflowTerminalNode:
     require_git_push: bool = False
 
 
+@dataclass(frozen=True)
+class WorkflowGateNode:
+    node_id: str
+    label: str
+    condition: str
+    event_types: list[str]
+    mode: str = "human_approval"
+    approval_event_type: str = "gate.approved"
+    changes_requested_event_type: str = "gate.changes_requested"
+    pending_behavior: str = "help_needed"
+    instructions: str = ""
+    auto_forward_after: str = "30m"
+
+
+@dataclass
+class WorkflowGateState:
+    id: str
+    node_id: str
+    activation_id: str
+    label: str
+    condition: str
+    status: str
+    mode: str
+    pending_behavior: str
+    instructions: str
+    auto_forward_after: str
+    requested_at: str
+    updated_at: str
+    triggered_by_event_type: str
+    approval_event_type: str
+    changes_requested_event_type: str
+    attempt: int = 1
+    decision: str | None = None
+    notes: str = ""
+    source: str = "workflow"
+    summary: str = ""
+
+
 def _workflow_terminal_nodes(graph: dict[str, Any] | None) -> list[WorkflowTerminalNode]:
     if not isinstance(graph, dict):
         return []
@@ -520,6 +563,98 @@ def _workflow_terminal_nodes(graph: dict[str, Any] | None) -> list[WorkflowTermi
         )
 
     return terminal_nodes
+
+
+def _workflow_gate_nodes(graph: dict[str, Any] | None) -> list[WorkflowGateNode]:
+    if not isinstance(graph, dict):
+        return []
+
+    nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
+    edges = [edge for edge in graph.get("edges", []) if isinstance(edge, dict)]
+    gate_nodes: list[WorkflowGateNode] = []
+
+    for node in nodes:
+        if str(node.get("kind") or "") != "gate":
+            continue
+
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            continue
+
+        incoming_event_types = _dedupe_preserve_order(
+            [
+                source_event
+                for edge in edges
+                if str(edge.get("target") or "").strip() == node_id
+                for source_event, _target_event in [_split_workflow_edge_label(edge.get("label"))]
+                if source_event and source_event != "complete"
+            ]
+        )
+        if not incoming_event_types:
+            continue
+
+        outgoing_event_types = _dedupe_preserve_order(
+            [
+                source_event
+                for edge in edges
+                if str(edge.get("source") or "").strip() == node_id
+                for source_event, _target_event in [_split_workflow_edge_label(edge.get("label"))]
+                if source_event and source_event != "complete"
+            ]
+        )
+        explicit_approval_event_type = str(
+            node.get("approvalEvent") or node.get("approval_event") or ""
+        ).strip()
+        explicit_changes_requested_event_type = str(
+            node.get("changesRequestedEvent") or node.get("changes_requested_event") or ""
+        ).strip()
+        approval_event_type = explicit_approval_event_type or next(
+            (
+                event_type
+                for event_type in outgoing_event_types
+                if "approved" in event_type or event_type.endswith(".approve")
+            ),
+            outgoing_event_types[0] if outgoing_event_types else "gate.approved",
+        )
+        changes_requested_event_type = explicit_changes_requested_event_type or next(
+            (
+                event_type
+                for event_type in outgoing_event_types
+                if "changes_requested" in event_type or "changes-requested" in event_type
+            ),
+            next(
+                (
+                    event_type
+                    for event_type in outgoing_event_types
+                    if "changes" in event_type or "rework" in event_type
+                ),
+                outgoing_event_types[1]
+                if len(outgoing_event_types) > 1
+                else "gate.changes_requested",
+            ),
+        )
+        pending_behavior = str(
+            node.get("pendingBehavior") or node.get("pending_behavior") or "help_needed"
+        ).strip() or "help_needed"
+        mode = str(node.get("mode") or "human_approval").strip() or "human_approval"
+        instructions = str(node.get("instructions") or "").strip()
+
+        gate_nodes.append(
+            WorkflowGateNode(
+                node_id=node_id,
+                label=str(node.get("label") or node_id),
+                condition=str(node.get("condition") or ""),
+                event_types=incoming_event_types,
+                mode=mode,
+                approval_event_type=approval_event_type,
+                changes_requested_event_type=changes_requested_event_type,
+                pending_behavior=pending_behavior,
+                instructions=instructions,
+                auto_forward_after=str(node.get("autoForwardAfter") or "30m"),
+            )
+        )
+
+    return gate_nodes
 
 
 def _workflow_outcome_passed(payload: dict[str, Any]) -> bool:
@@ -799,6 +934,15 @@ class Broker:
         self._peer_watches: dict[str, PeerWatchState] = {}
         self._peer_pending_commands: dict[str, list[str]] = {}
         self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None
+        self._workflow_gate_nodes = _workflow_gate_nodes(self._settings.workflow.graph)
+        self._workflow_gate_index: dict[str, list[WorkflowGateNode]] = {}
+        for node in self._workflow_gate_nodes:
+            for event_type in node.event_types:
+                self._workflow_gate_index.setdefault(event_type, []).append(node)
+        self._workflow_gate_slots: dict[tuple[str, str], set[str]] = {}
+        self._workflow_gate_attempts: dict[tuple[str, str], int] = {}
+        self._workflow_gate_state_ids_by_key: dict[tuple[str, str], str] = {}
+        self._workflow_gate_states: dict[str, WorkflowGateState] = {}
         self._workflow_terminal_nodes = _workflow_terminal_nodes(self._settings.workflow.graph)
         self._workflow_terminal_index: dict[str, list[WorkflowTerminalNode]] = {}
         for node in self._workflow_terminal_nodes:
@@ -1354,7 +1498,11 @@ class Broker:
         elif self._has_workflow_trigger():
             logger.warning("Workflow trigger configured but mesh is disabled — skipping dispatch")
 
-        if self._room_bridge is not None and self._settings.mesh.enabled:
+        if (
+            self._room_bridge is not None
+            and self._settings.mesh.enabled
+            and self._settings.peer_watchdog.enabled
+        ):
             self._peer_watchdog_task = asyncio.create_task(self._peer_watchdog_loop())
 
     async def shutdown(self) -> None:
@@ -1514,8 +1662,6 @@ class Broker:
         data = frame.get("data", {})
         if not isinstance(data, dict):
             return
-        if data.get("routing_only") or data.get("bubble_up") is False:
-            return
 
         metadata = frame.get("metadata", {})
         event_type = str(metadata.get("event_type") or data.get("event_type") or "").strip()
@@ -1550,7 +1696,9 @@ class Broker:
         if isinstance(files_changed, list) and files_changed:
             payload["files_changed"] = files_changed
 
-        await self._emit_pipeline_event("outcome", payload)
+        if not data.get("routing_only") and data.get("bubble_up") is not False:
+            await self._emit_pipeline_event("outcome", payload)
+        await self._maybe_activate_workflow_gate(frame, payload)
         await self._maybe_emit_workflow_terminal_outcome(peer_id, frame, payload)
 
     async def _emit_peer_help_needed_sleipnir_event(
@@ -1628,6 +1776,245 @@ class Broker:
             payload["saga_id"] = self._artifacts.saga_id
         return payload
 
+    def list_workflow_gates(self) -> list[dict[str, Any]]:
+        """Return workflow gate states ordered from newest to oldest."""
+        states = sorted(
+            self._workflow_gate_states.values(),
+            key=lambda state: (state.updated_at, state.requested_at),
+            reverse=True,
+        )
+        return [asdict(state) for state in states]
+
+    def _workflow_activation_id_from_frame(self, frame: dict[str, Any]) -> str:
+        data = frame.get("data", {})
+        if not isinstance(data, dict):
+            data = {}
+        metadata = frame.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return (
+            str(
+                data.get("workflow_parent_event_id")
+                or data.get("workflow_activation_id")
+                or metadata.get("task_id")
+                or frame.get("root_correlation_id")
+                or self.session_id
+            ).strip()
+            or self.session_id
+        )
+
+    def _build_workflow_gate_help_needed_payload(
+        self,
+        state: WorkflowGateState,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "session_id": self.session_id,
+            "persona": "workflow-gate",
+            "summary": state.summary
+            or f"{state.label} is waiting for human approval before the workflow can continue.",
+            "reason": "needs_human_approval",
+            "recommendation": state.condition
+            or (
+                "Review the pending gate and decide whether to approve "
+                "or request changes."
+            ),
+            "context": {
+                "gate_id": state.id,
+                "gate_label": state.label,
+                "gate_node_id": state.node_id,
+                "gate_status": state.status,
+                "workflow_activation_id": state.activation_id,
+                "mode": state.mode,
+                "pending_behavior": state.pending_behavior,
+                "instructions": state.instructions,
+                "auto_forward_after": state.auto_forward_after,
+            },
+            "target_peer_id": self._observer_peer_id() or "workflow-gate",
+        }
+        if self._artifacts.run_id:
+            payload["run_id"] = self._artifacts.run_id
+        if self._artifacts.saga_id:
+            payload["saga_id"] = self._artifacts.saga_id
+        return payload
+
+    async def _emit_workflow_gate_help_needed_sleipnir_event(
+        self,
+        state: WorkflowGateState,
+    ) -> None:
+        payload = self._build_workflow_gate_help_needed_payload(state)
+        event = SleipnirEvent(
+            event_type="ravn.help.needed",
+            source=f"workflow-gate:{state.node_id}",
+            payload=payload,
+            urgency=0.85,
+            correlation_id=state.activation_id or self.session_id,
+            summary=f"Workflow gate pending ({state.label}): {payload['summary']}",
+            domain="code",
+            timestamp=SleipnirEvent.now(),
+        )
+        try:
+            await self._sleipnir_publisher.publish(event)
+            logger.info(
+                "Workflow gate help-needed emitted: gate=%s activation=%s",
+                state.node_id,
+                state.activation_id,
+            )
+        except Exception:
+            logger.warning("Failed to emit workflow gate help-needed event", exc_info=True)
+
+    async def _activate_workflow_gate(
+        self,
+        node: WorkflowGateNode,
+        activation_id: str,
+        triggering_event_type: str,
+        *,
+        summary: str = "",
+    ) -> WorkflowGateState:
+        key = (node.node_id, activation_id)
+        existing_state_id = self._workflow_gate_state_ids_by_key.get(key)
+        if existing_state_id is not None:
+            existing_state = self._workflow_gate_states.get(existing_state_id)
+            if existing_state is not None and existing_state.status == "pending":
+                return existing_state
+
+        attempt = self._workflow_gate_attempts.get(key, 0) + 1
+        self._workflow_gate_attempts[key] = attempt
+        now = datetime.now(UTC).isoformat()
+        gate_id = f"{node.node_id}:{activation_id}:{attempt}"
+        state = WorkflowGateState(
+            id=gate_id,
+            node_id=node.node_id,
+            activation_id=activation_id,
+            label=node.label,
+            condition=node.condition,
+            status="pending",
+            mode=node.mode,
+            pending_behavior=node.pending_behavior,
+            instructions=node.instructions,
+            auto_forward_after=node.auto_forward_after,
+            requested_at=now,
+            updated_at=now,
+            triggered_by_event_type=triggering_event_type,
+            approval_event_type=node.approval_event_type,
+            changes_requested_event_type=node.changes_requested_event_type,
+            attempt=attempt,
+            summary=summary,
+        )
+        self._workflow_gate_states[gate_id] = state
+        self._workflow_gate_state_ids_by_key[key] = gate_id
+        await self._emit_pipeline_event(
+            "workflow.gate.pending",
+            {
+                "gate_id": state.id,
+                "gate_node_id": state.node_id,
+                "workflow_activation_id": state.activation_id,
+                "label": state.label,
+                "condition": state.condition,
+                "mode": state.mode,
+                "pending_behavior": state.pending_behavior,
+                "instructions": state.instructions,
+                "auto_forward_after": state.auto_forward_after,
+                "triggered_by_event_type": state.triggered_by_event_type,
+                "status": state.status,
+                "summary": state.summary,
+            },
+        )
+        if state.pending_behavior == "help_needed":
+            await self._emit_workflow_gate_help_needed_sleipnir_event(state)
+            await self._report_activity_state(
+                "idle",
+                extra_metadata={
+                    "help_needed": self._build_workflow_gate_help_needed_payload(state)
+                },
+            )
+        return state
+
+    async def resolve_workflow_gate(
+        self,
+        gate_id: str,
+        decision: str,
+        *,
+        notes: str = "",
+        source: str = "human",
+    ) -> dict[str, Any]:
+        state = self._workflow_gate_states.get(gate_id)
+        if state is None:
+            raise LookupError(f"Workflow gate not found: {gate_id}")
+        if state.status != "pending":
+            raise ValueError(f"Workflow gate {gate_id} is already resolved")
+        normalized = decision.strip().upper()
+        if normalized not in {"APPROVE", "CHANGES_REQUESTED"}:
+            raise ValueError("decision must be APPROVE or CHANGES_REQUESTED")
+        if self._mesh_adapter is None:
+            raise RuntimeError("Workflow gate cannot resolve because mesh is not active")
+
+        human_message = normalized if not notes.strip() else f"{normalized}\n\n{notes.strip()}"
+        await self.handle_human_room_message(
+            human_message,
+            source=source,
+            metadata={
+                "workflow_gate_id": state.id,
+                "workflow_gate_node_id": state.node_id,
+                "workflow_activation_id": state.activation_id,
+            },
+            deliver_to_transport=False,
+        )
+
+        now = datetime.now(UTC)
+        state.status = "approved" if normalized == "APPROVE" else "changes_requested"
+        state.updated_at = now.isoformat()
+        state.decision = normalized
+        state.notes = notes.strip()
+        state.source = source
+        event_type = (
+            state.approval_event_type
+            if normalized == "APPROVE"
+            else state.changes_requested_event_type
+        )
+        verdict = "approved" if normalized == "APPROVE" else "changes_requested"
+        summary = (
+            f"{state.label} approved by human reviewer."
+            if normalized == "APPROVE"
+            else f"{state.label} sent back with requested changes."
+        )
+        state.summary = summary
+        payload: dict[str, Any] = {
+            "event_type": event_type,
+            "session_id": self.session_id,
+            "persona": "workflow-gate",
+            "peer_id": f"workflow-gate:{state.node_id}",
+            "workflow_node_id": state.node_id,
+            "workflow_activation_id": state.activation_id,
+            "summary": summary,
+            "verdict": verdict,
+            "valid": True,
+            "fields": {
+                "verdict": verdict,
+                "summary": summary,
+                "approved": normalized == "APPROVE",
+                "gate_id": state.id,
+                "gate_node_id": state.node_id,
+                "gate_label": state.label,
+                "decision_source": source,
+                "notes": state.notes,
+            },
+        }
+        from ravn.domain.events import RavnEvent, RavnEventType
+
+        event = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source=f"workflow-gate:{state.node_id}",
+            payload=payload,
+            timestamp=now,
+            urgency=0.7,
+            correlation_id=state.activation_id,
+            session_id=self.session_id,
+            root_correlation_id=state.activation_id,
+        )
+        await self._mesh_adapter.publish(event, event_type)
+        await self._emit_pipeline_event("outcome", payload)
+        return asdict(state)
+
     async def _report_peer_help_needed_activity(
         self,
         peer_id: str,
@@ -1637,6 +2024,37 @@ class Broker:
         if payload is None:
             return
         await self._report_activity_state("idle", extra_metadata={"help_needed": payload})
+
+    async def _maybe_activate_workflow_gate(
+        self,
+        frame: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        """Evaluate native gate nodes against bubbled-up workflow outcomes."""
+        event_type = str(payload.get("event_type") or "").strip()
+        if not event_type:
+            return
+
+        matching_nodes = self._workflow_gate_index.get(event_type) or []
+        if not matching_nodes:
+            return
+
+        activation_id = self._workflow_activation_id_from_frame(frame)
+        summary = str(payload.get("summary") or "").strip()
+
+        for node in matching_nodes:
+            key = (node.node_id, activation_id)
+            slot = self._workflow_gate_slots.setdefault(key, set())
+            slot.add(event_type)
+            if not all(required in slot for required in node.event_types):
+                continue
+            self._workflow_gate_slots.pop(key, None)
+            await self._activate_workflow_gate(
+                node,
+                activation_id,
+                event_type,
+                summary=summary,
+            )
 
     async def _maybe_emit_workflow_terminal_outcome(
         self,
@@ -1815,19 +2233,21 @@ class Broker:
         """Warn in chat when a flock peer accepted work but goes quiet."""
         try:
             while True:
-                await asyncio.sleep(_PEER_WATCHDOG_POLL_SECONDS)
+                await asyncio.sleep(self._settings.peer_watchdog.poll_seconds)
                 await self._check_peer_watchdog_once()
         except asyncio.CancelledError:
             return
 
     async def _check_peer_watchdog_once(self) -> None:
         """Run one silence-watchdog pass for active flock peers."""
+        if not self._settings.peer_watchdog.enabled:
+            return
         now = time.monotonic()
         for peer_id, watch in list(self._peer_watches.items()):
             threshold = (
-                _PEER_WATCHDOG_TOOL_SILENCE_SECONDS
+                self._settings.peer_watchdog.tool_silence_seconds
                 if watch.last_status == "tool_executing"
-                else _PEER_WATCHDOG_SILENCE_SECONDS
+                else self._settings.peer_watchdog.silence_seconds
             )
             silence_seconds = now - watch.last_progress_at
             if silence_seconds < threshold or watch.warned:
@@ -4116,6 +4536,14 @@ class _DirectedRoomMessageRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class _WorkflowGateResolveRequest(BaseModel):
+    """Request body for resolving a pending workflow gate."""
+
+    decision: str
+    notes: str = ""
+    source: str = "human"
+
+
 @app.post("/api/message")
 async def send_message_to_session(body: _SendMessageRequest) -> dict:
     """Send a message to another session via Volundr's WS proxy.
@@ -4178,6 +4606,41 @@ async def send_directed_room_message(body: _DirectedRoomMessageRequest) -> dict:
 async def get_room_participants() -> dict:
     """Return the current participants in the active room session."""
     return {"participants": broker.get_room_participants()}
+
+
+@app.get("/api/workflow/gates")
+async def get_workflow_gates() -> dict:
+    """Return native workflow gate states for the active session."""
+    return {"gates": broker.list_workflow_gates()}
+
+
+@app.post("/api/workflow/gates/{gate_id}/resolve")
+async def resolve_workflow_gate(
+    request: Request,
+    gate_id: str,
+    body: _WorkflowGateResolveRequest,
+) -> dict:
+    """Resolve a pending native workflow gate and publish its outcome."""
+    if (
+        request.headers.get(WORKFLOW_GATE_INTENT_HEADER, "").strip().lower()
+        != WORKFLOW_GATE_INTENT_RESOLVE
+    ):
+        raise HTTPException(428, "Missing explicit workflow gate intent header")
+    try:
+        gate = await broker.resolve_workflow_gate(
+            gate_id,
+            body.decision,
+            notes=body.notes,
+            source=body.source,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+
+    return {"status": "resolved", "gate": gate}
 
 
 @app.get("/api/communication/routes")

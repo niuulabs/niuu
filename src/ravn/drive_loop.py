@@ -825,6 +825,55 @@ class DriveLoop:
             fields["mount_name"] = mount_names[0]
         return fields
 
+    @staticmethod
+    def _artifact_publish_paths(outcome_fields: dict[str, object]) -> list[str]:
+        """Collect markdown artifact paths declared in an outcome block."""
+        paths: list[str] = []
+        for key, value in outcome_fields.items():
+            if not str(key).endswith("_path"):
+                continue
+            path = str(value or "").strip()
+            if not path or not path.endswith(".md"):
+                continue
+            paths.append(path)
+        return list(dict.fromkeys(paths))
+
+    async def _maybe_publish_workflow_artifacts(
+        self,
+        task: AgentTask,
+        outcome_fields: dict[str, object],
+    ) -> None:
+        """Mirror workflow-authored markdown artifacts into the active Mimir mount."""
+        if self._mimir is None:
+            return
+        if not str(task.workflow_node_id or "").strip():
+            return
+        paths = self._artifact_publish_paths(outcome_fields)
+        if not paths:
+            return
+
+        from ravn.adapters.tools.mimir_tools import MimirPublishFilesTool  # noqa: PLC0415
+
+        workspace_root = Path(
+            str(getattr(getattr(self._settings, "permission", None), "workspace_root", "")).strip()
+            or Path.cwd()
+        )
+        tool = MimirPublishFilesTool(self._mimir, workspace_root)
+        result = await tool.execute({"paths": paths})
+        if result.is_error:
+            logger.warning(
+                "drive_loop: failed to publish workflow artifacts to Mimir for task %s: %s",
+                task.task_id,
+                result.content,
+            )
+            return
+        outcome_fields.setdefault("published_paths", paths)
+        logger.info(
+            "drive_loop: published workflow artifacts to Mimir for task %s: %s",
+            task.task_id,
+            paths,
+        )
+
     async def handle_rpc(self, message: dict) -> dict:
         """Dispatch an incoming mesh RPC message to the registered handler.
 
@@ -1440,6 +1489,8 @@ class DriveLoop:
         if (synthesized_pass or synthesized_from_tool_write) and not valid:
             valid = True
 
+        await self._maybe_publish_workflow_artifacts(task, outcome_fields)
+
         base_payload: dict[str, object] = {
             "persona": self._persona_config.name,
             "success": success,
@@ -1605,6 +1656,15 @@ class DriveLoop:
                 "Failed to publish routing mesh outcome alias; continuing.",
                 exc_info=True,
             )
+
+        if self._skuld_channel is not None:
+            try:
+                await self._skuld_channel.emit(alias_event)
+            except Exception:
+                logger.warning(
+                    "Failed to emit routing outcome alias to skuld; continuing.",
+                    exc_info=True,
+                )
 
     def _save_task_output(self, task: AgentTask, channel: ChannelPort) -> None:
         """Persist agent response to ``task.output_path`` when set (cron tasks)."""

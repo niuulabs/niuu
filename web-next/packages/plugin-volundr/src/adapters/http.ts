@@ -57,6 +57,7 @@ import type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
+  VolundrWorkflowGate,
 } from '../models/volundr.model';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
@@ -64,7 +65,7 @@ export interface HttpClient {
   basePath?: string;
   get<T>(endpoint: string): Promise<T>;
   post<T>(endpoint: string, body?: unknown): Promise<T>;
-  delete<T>(endpoint: string): Promise<T>;
+  delete<T>(endpoint: string, body?: unknown): Promise<T>;
   patch<T>(endpoint: string, body?: unknown): Promise<T>;
   put<T>(endpoint: string, body?: unknown): Promise<T>;
 }
@@ -153,6 +154,32 @@ type ConversationPayload = {
       latency?: number;
     };
   }>;
+};
+
+type WorkflowGatePayload = {
+  id: string;
+  node_id?: string;
+  activation_id?: string;
+  label?: string;
+  condition?: string;
+  status?: VolundrWorkflowGate['status'];
+  pending_behavior?: VolundrWorkflowGate['pending_behavior'];
+  approvers?: string[];
+  auto_forward_after?: string;
+  requested_at?: string;
+  updated_at?: string;
+  triggered_by_event_type?: string;
+  approval_event_type?: string;
+  changes_requested_event_type?: string;
+  attempt?: number;
+  decision?: string | null;
+  notes?: string;
+  source?: string;
+  summary?: string;
+};
+
+type WorkflowGateListPayload = {
+  gates?: WorkflowGatePayload[];
 };
 
 type LogPayload = {
@@ -471,6 +498,30 @@ function normalizeConversationHistory(payload: ConversationPayload): VolundrConv
       created_at: turn.created_at ?? new Date(0).toISOString(),
       metadata: turn.metadata,
     })),
+  };
+}
+
+function normalizeWorkflowGate(payload: WorkflowGatePayload): VolundrWorkflowGate {
+  return {
+    id: payload.id,
+    node_id: payload.node_id ?? '',
+    activation_id: payload.activation_id ?? '',
+    label: payload.label ?? payload.id,
+    condition: payload.condition ?? '',
+    status: payload.status ?? 'pending',
+    pending_behavior: payload.pending_behavior ?? 'help_needed',
+    approvers: payload.approvers ?? [],
+    auto_forward_after: payload.auto_forward_after ?? '30m',
+    requested_at: payload.requested_at ?? new Date(0).toISOString(),
+    updated_at: payload.updated_at ?? payload.requested_at ?? new Date(0).toISOString(),
+    triggered_by_event_type: payload.triggered_by_event_type ?? '',
+    approval_event_type: payload.approval_event_type ?? '',
+    changes_requested_event_type: payload.changes_requested_event_type ?? '',
+    attempt: payload.attempt ?? 1,
+    decision: payload.decision ?? undefined,
+    notes: payload.notes ?? '',
+    source: payload.source ?? 'human',
+    summary: payload.summary ?? '',
   };
 }
 
@@ -1186,12 +1237,14 @@ export function buildVolundrHttpAdapter(
     stopSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/stop`),
     resumeSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/resume`),
     deleteSession: (sessionId, cleanup) =>
-      forgeClient.delete<void>(
-        `/sessions/${sessionId}${cleanup ? `?cleanup=${cleanup.join(',')}` : ''}`,
-      ),
-    archiveSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/archive`),
+      forgeClient.delete<void>(`/sessions/${sessionId}`, {
+        cleanup: cleanup ?? [],
+      }),
+    archiveSession: (sessionId) =>
+      forgeClient.patch<void>(`/sessions/${sessionId}/archive`, undefined),
     archiveStoppedSessions: () => forgeClient.post<string[]>('/sessions/archive-stopped'),
-    restoreSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/restore`),
+    restoreSession: (sessionId) =>
+      forgeClient.patch<void>(`/sessions/${sessionId}/restore`, undefined),
     listArchivedSessions: () =>
       forgeClient
         .get<SessionPayload[]>('/sessions?status=archived')
@@ -1201,6 +1254,34 @@ export function buildVolundrHttpAdapter(
       forgeClient
         .get<ConversationPayload>(`/sessions/${sessionId}/conversation`)
         .then(normalizeConversationHistory),
+    getWorkflowGates: async (sessionId) => {
+      const payload = await forgeClient.get<WorkflowGateListPayload>(
+        `/sessions/${sessionId}/workflow/gates`,
+      );
+      return (payload.gates ?? []).map(normalizeWorkflowGate);
+    },
+    resolveWorkflowGate: async (sessionId, gateId, request) => {
+      const response = await fetch(
+        `${forgeClient.basePath}/sessions/${sessionId}/workflow/gates/${gateId}/resolve`,
+        {
+          method: 'POST',
+          headers: getAuthHeaders({
+            'Content-Type': 'application/json',
+            'x-niuu-workflow-gate-intent': 'resolve',
+          }),
+          body: JSON.stringify(request),
+        },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        const detail =
+          payload && typeof payload === 'object' && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail ?? 'Unknown error')
+            : 'Unknown error';
+        throw new Error(`API request failed: ${response.status} ${detail}`);
+      }
+      return normalizeWorkflowGate(payload as WorkflowGatePayload);
+    },
     getMessages: (sessionId) => loadMessages(sessionId),
     sendMessage: (sessionId, content) =>
       forgeClient.post<VolundrMessage>(`/sessions/${sessionId}/messages`, { content }),

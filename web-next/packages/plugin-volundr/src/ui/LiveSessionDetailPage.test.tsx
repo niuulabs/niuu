@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
+import * as chatHooks from './hooks/useSkuldChat';
 import {
   createMockVolundrService,
   createMockSessionStore,
@@ -18,6 +19,12 @@ import type { VolundrSession } from '../models/volundr.model';
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
+
+const navigate = vi.fn();
+
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => navigate,
+}));
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: vi.fn().mockImplementation(() => ({
@@ -229,6 +236,7 @@ function wrap(
 describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    navigate.mockReset();
     global.fetch = vi.fn(async (input: string | URL | Request) => {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
@@ -255,7 +263,159 @@ describe('LiveSessionDetailPage', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     global.fetch = originalFetch;
+  });
+
+  it('surfaces native workflow gates and resolves them through Volundr', async () => {
+    const resolveWorkflowGate = vi.fn().mockResolvedValue({
+      id: 'gate-1',
+      node_id: 'spec-prd-gate',
+      activation_id: 'activation-1',
+      label: 'PRD approval gate',
+      condition: 'Review the PRD and decide whether it is strong enough to unlock SRD drafting.',
+      status: 'approved',
+      pending_behavior: 'help_needed',
+      approvers: ['human'],
+      auto_forward_after: '30m',
+      requested_at: '2026-05-20T12:00:00Z',
+      updated_at: '2026-05-20T12:02:00Z',
+      triggered_by_event_type: 'spec.prd.ready_for_gate',
+      approval_event_type: 'spec.prd.approved',
+      changes_requested_event_type: 'spec.prd.changes_requested',
+      attempt: 1,
+      decision: 'APPROVE',
+      notes: 'The scope is right; proceed.',
+      source: 'human',
+      summary: 'PRD approved by human reviewer.',
+    });
+    vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+      messages: [],
+      streamingContent: undefined,
+      streamingParts: undefined,
+      streamingModel: undefined,
+      connected: true,
+      historyLoaded: true,
+      participants: new Map(),
+      meshEvents: [],
+      agentEvents: new Map(),
+      pendingPermissions: [],
+      capabilities: {},
+      sendMessage: vi.fn(),
+      sendDirectedMessages: vi.fn(),
+      respondToPermission: vi.fn(),
+      sendInterrupt: vi.fn(),
+      sendSetModel: vi.fn(),
+      sendSetThinkingTokens: vi.fn(),
+      sendRewindFiles: vi.fn(),
+      sendSetInternalVisibility: vi.fn(),
+      clearMessages: vi.fn(),
+    });
+
+    wrap('test-session-id-1234', {
+      volundr: {
+        getWorkflowGates: vi.fn().mockResolvedValue([
+          {
+            id: 'gate-1',
+            node_id: 'spec-prd-gate',
+            activation_id: 'activation-1',
+            label: 'PRD approval gate',
+            condition:
+              'Review the PRD and decide whether it is strong enough to unlock SRD drafting.',
+            status: 'pending',
+            pending_behavior: 'help_needed',
+            approvers: ['human'],
+            auto_forward_after: '30m',
+            requested_at: '2026-05-20T12:00:00Z',
+            updated_at: '2026-05-20T12:00:00Z',
+            triggered_by_event_type: 'spec.prd.ready_for_gate',
+            approval_event_type: 'spec.prd.approved',
+            changes_requested_event_type: 'spec.prd.changes_requested',
+            attempt: 1,
+            notes: '',
+            source: 'workflow',
+            summary: 'Please approve or request changes on the PRD.',
+          },
+        ]),
+        resolveWorkflowGate,
+      },
+    });
+
+    await screen.findByTestId('live-session-detail-page');
+    await screen.findByText('Human Gate Requested');
+    expect(screen.getByText(/Please approve or request changes on the PRD/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Reply Notes'), {
+      target: { value: 'The scope is right; proceed.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    await waitFor(() => {
+      expect(resolveWorkflowGate).toHaveBeenCalledWith('test-session-id-1234', 'gate-1', {
+        decision: 'APPROVE',
+        notes: 'The scope is right; proceed.',
+        source: 'human',
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
+    });
+  });
+
+  it('hides the gate card once the latest gate verdict is already resolved', async () => {
+    vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+      messages: [],
+      streamingContent: undefined,
+      streamingParts: undefined,
+      streamingModel: undefined,
+      connected: true,
+      historyLoaded: true,
+      participants: new Map(),
+      meshEvents: [],
+      agentEvents: new Map(),
+      pendingPermissions: [],
+      capabilities: {},
+      sendMessage: vi.fn(),
+      sendDirectedMessages: vi.fn(),
+      respondToPermission: vi.fn(),
+      sendInterrupt: vi.fn(),
+      sendSetModel: vi.fn(),
+      sendSetThinkingTokens: vi.fn(),
+      sendRewindFiles: vi.fn(),
+      sendSetInternalVisibility: vi.fn(),
+      clearMessages: vi.fn(),
+    });
+
+    wrap('test-session-id-1234', {
+      volundr: {
+        getWorkflowGates: vi.fn().mockResolvedValue([
+          {
+            id: 'gate-1',
+            node_id: 'spec-prd-gate',
+            activation_id: 'activation-1',
+            label: 'PRD approval gate',
+            condition: 'Review the PRD',
+            status: 'approved',
+            pending_behavior: 'help_needed',
+            approvers: ['human'],
+            auto_forward_after: '30m',
+            requested_at: '2026-05-20T12:00:00Z',
+            updated_at: '2026-05-20T12:01:00Z',
+            triggered_by_event_type: 'spec.prd.ready_for_gate',
+            approval_event_type: 'spec.prd.approved',
+            changes_requested_event_type: 'spec.prd.changes_requested',
+            attempt: 1,
+            decision: 'APPROVE',
+            notes: '',
+            source: 'human',
+            summary: 'PRD approved by human reviewer.',
+          },
+        ]),
+      },
+    });
+
+    await screen.findByTestId('live-session-detail-page');
+    expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
   });
 
   describe('loading and error states', () => {
@@ -785,6 +945,9 @@ describe('LiveSessionDetailPage', () => {
           'workspace_storage',
           'chronicles',
         ]);
+      });
+      await waitFor(() => {
+        expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions', replace: true });
       });
     });
   });

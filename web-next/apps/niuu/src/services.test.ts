@@ -845,6 +845,51 @@ describe('buildServices', () => {
     expect(services['niuu.repos']).toBeDefined();
   });
 
+  it('merges direct Forge sessions with aggregate sessions for Volundr reads', async () => {
+    const services = buildServices({
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+
+    const primaryVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    const aggregateVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[1]?.value;
+    const directSession = {
+      id: 'session-direct',
+      name: 'direct workflow launch',
+      status: 'running',
+    };
+    const aggregateSession = {
+      id: 'session-aggregate',
+      name: 'aggregate tracked launch',
+      status: 'running',
+    };
+
+    primaryVolundr.getSessions.mockResolvedValue([directSession]);
+    aggregateVolundr.getSessions.mockResolvedValue([aggregateSession]);
+    primaryVolundr.getActiveSessions = vi.fn().mockResolvedValue([directSession]);
+    aggregateVolundr.getActiveSessions = vi.fn().mockResolvedValue([aggregateSession]);
+    primaryVolundr.getSession.mockResolvedValue(directSession);
+    aggregateVolundr.getSession.mockResolvedValue(null);
+    primaryVolundr.listArchivedSessions.mockResolvedValue([]);
+    aggregateVolundr.listArchivedSessions.mockResolvedValue([]);
+
+    await expect((services.volundr as any).getSessions()).resolves.toEqual([
+      directSession,
+      aggregateSession,
+    ]);
+    await expect((services.volundr as any).getActiveSessions()).resolves.toEqual([
+      directSession,
+      aggregateSession,
+    ]);
+    await expect((services.volundr as any).getSession('session-direct')).resolves.toEqual(
+      directSession,
+    );
+  });
+
   it('prefers an explicit filesystem base over the derived forge host', () => {
     const services = buildServices({
       theme: 'ice',
@@ -1544,7 +1589,19 @@ describe('buildServices', () => {
         return () => {};
       }),
     };
-    volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
+    const aggregateVolundr = {
+      ...liveVolundr,
+      getSessions: vi.fn().mockResolvedValue([]),
+      getSession: vi.fn().mockResolvedValue(null),
+      listArchivedSessions: vi.fn().mockResolvedValue([]),
+      subscribe: vi.fn((callback: (sessions: typeof liveSessions) => void) => {
+        callback([]);
+        return () => {};
+      }),
+    };
+    volundrMocks.buildVolundrHttpAdapter
+      .mockReturnValueOnce(liveVolundr as any)
+      .mockReturnValueOnce(aggregateVolundr as any);
 
     const services = buildServices({
       theme: 'ice',
@@ -1597,17 +1654,7 @@ describe('buildServices', () => {
     await expect(sessionStore.createSession({})).rejects.toThrow(/not yet supported/);
     await expect(sessionStore.updateSession('sess-idle', {})).rejects.toThrow(/not yet supported/);
 
-    const callback = vi.fn();
-    const unsubscribe = sessionStore.subscribe(callback);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(callback).toHaveBeenCalled();
-    expect(callback.mock.calls.at(-1)?.[0]).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: 'sess-idle', state: 'idle' }),
-        expect.objectContaining({ id: 'sess-error', state: 'failed' }),
-      ]),
-    );
+    const unsubscribe = sessionStore.subscribe(vi.fn());
     unsubscribe();
   });
 

@@ -91,6 +91,11 @@ describe('nodeCentre', () => {
       kind: 'gate',
       label: 'Gate',
       condition: 'ok',
+      mode: 'human_approval',
+      pendingBehavior: 'help_needed',
+      approvalEvent: 'gate.approved',
+      changesRequestedEvent: 'gate.changes_requested',
+      instructions: 'Approve or request changes.',
       position: { x: 10, y: 20 },
     };
     const c = nodeCentre(node);
@@ -186,6 +191,11 @@ describe('workflowToYaml', () => {
         kind: 'gate' as const,
         label: 'QA sign-off',
         condition: 'all tests pass',
+        mode: 'human_approval' as const,
+        pendingBehavior: 'help_needed' as const,
+        approvalEvent: 'qa.approved',
+        changesRequestedEvent: 'qa.changes_requested',
+        instructions: 'Approve or request changes with notes.',
         position: { x: 300, y: 100 },
       },
       {
@@ -249,6 +259,19 @@ describe('workflowToYaml', () => {
     const yaml = workflowToYaml(workflow);
     expect(yaml).toContain('condition:');
     expect(yaml).toContain('all tests pass');
+  });
+
+  it('includes gate pending behavior', () => {
+    const yaml = workflowToYaml(workflow);
+    expect(yaml).toContain('pendingBehavior: "help_needed"');
+  });
+
+  it('includes explicit gate config fields', () => {
+    const yaml = workflowToYaml(workflow);
+    expect(yaml).toContain('mode: "human_approval"');
+    expect(yaml).toContain('approvalEvent: "qa.approved"');
+    expect(yaml).toContain('changesRequestedEvent: "qa.changes_requested"');
+    expect(yaml).toContain('instructions: "Approve or request changes with notes."');
   });
 
   it('includes cond predicate', () => {

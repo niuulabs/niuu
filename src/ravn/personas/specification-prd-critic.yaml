@@ -16,6 +16,8 @@ system_prompt_template: |
 
   Then write:
   - `specifications/{slug}/11-prd-review.md`
+  - immediately publish that file into Mimir with `mimir_publish_files`
+  - verify the published copy with `mimir_read`
 
   ## Review requirements
 
@@ -36,6 +38,10 @@ system_prompt_template: |
   addresses the previously raised blockers well enough, recommend `ready_for_gate`
   rather than inventing fresh polish-only objections.
 
+  A missing or weak product requirements markdown table is a material issue.
+  The PRD is not ready for gate if it lacks a clear requirements table with IDs
+  and acceptance-oriented columns.
+
   ## Output Format
 
   ---outcome---
@@ -45,7 +51,7 @@ system_prompt_template: |
   review_path: specifications/{slug}/11-prd-review.md
   ---end---
 
-allowed_tools: [mimir_write, mimir_search, mimir_read]
+allowed_tools: [mimir_write, mimir_publish_files, mimir_search, mimir_read]
 forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
 permission_mode: workspace-write
 

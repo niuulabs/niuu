@@ -180,6 +180,13 @@ describe('useWorkflowBuilder — addNode', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
     act(() => result.current.addNode('gate'));
     expect(result.current.workflow.nodes[2]!.kind).toBe('gate');
+    const added = result.current.workflow.nodes[2]!;
+    if (added.kind === 'gate') {
+      expect(added.mode).toBe('human_approval');
+      expect(added.pendingBehavior).toBe('help_needed');
+      expect(added.approvalEvent).toBe('');
+      expect(added.changesRequestedEvent).toBe('');
+    }
   });
 
   it('adds a cond node', () => {

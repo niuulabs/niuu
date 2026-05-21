@@ -167,6 +167,31 @@ export interface VolundrSession {
   instanceName?: string;
 }
 
+export type WorkflowGateStatus = 'pending' | 'approved' | 'changes_requested';
+export type WorkflowGatePendingBehavior = 'silent' | 'notify_only' | 'help_needed';
+
+export interface VolundrWorkflowGate {
+  id: string;
+  node_id: string;
+  activation_id: string;
+  label: string;
+  condition: string;
+  status: WorkflowGateStatus;
+  pending_behavior: WorkflowGatePendingBehavior;
+  approvers: string[];
+  auto_forward_after: string;
+  requested_at: string;
+  updated_at: string;
+  triggered_by_event_type: string;
+  approval_event_type: string;
+  changes_requested_event_type: string;
+  attempt: number;
+  decision?: string | null;
+  notes?: string;
+  source?: string;
+  summary?: string;
+}
+
 export interface VolundrStats {
   activeSessions: number;
   totalSessions: number;

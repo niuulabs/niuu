@@ -25,6 +25,11 @@ const nodeB = {
   kind: 'gate' as const,
   label: 'QA sign-off',
   condition: 'All acceptance tests pass',
+  mode: 'human_approval' as const,
+  pendingBehavior: 'help_needed' as const,
+  approvalEvent: 'qa.approved',
+  changesRequestedEvent: 'qa.changes_requested',
+  instructions: 'Review the QA pack before approving.',
   position: { x: 200, y: 0 },
 };
 
@@ -81,6 +86,11 @@ describe('workflowNodeSchema', () => {
     expect(result.kind).toBe('gate');
     if (result.kind === 'gate') {
       expect(result.condition).toBe('All acceptance tests pass');
+      expect(result.mode).toBe('human_approval');
+      expect(result.pendingBehavior).toBe('help_needed');
+      expect(result.approvalEvent).toBe('qa.approved');
+      expect(result.changesRequestedEvent).toBe('qa.changes_requested');
+      expect(result.instructions).toContain('Review the QA pack');
     }
   });
 

@@ -19,6 +19,8 @@ system_prompt_template: |
 
   Then write or revise:
   - `specifications/{slug}/20-srd.md`
+  - immediately publish that file into Mimir with `mimir_publish_files`
+  - verify the published copy with `mimir_read`
 
   ## SRD requirements
 
@@ -36,6 +38,26 @@ system_prompt_template: |
   This document should say what the system must do, not how the final
   implementation is structured.
 
+  Use strong, clean markdown. Prefer short sections, bullets, and tables over
+  long undifferentiated prose.
+
+  The SRD must include a markdown table for functional requirements and a
+  markdown table for non-functional requirements.
+
+  The functional requirements table must include at least:
+  - requirement ID
+  - requirement statement
+  - triggering actor / scenario
+  - linked PRD requirement IDs
+  - acceptance / validation signal
+
+  The non-functional requirements table must include at least:
+  - requirement ID
+  - category
+  - requirement statement
+  - why it matters
+  - validation / evidence expectation
+
   Treat review and gate files as revision inputs, not canonical provenance.
   If a prior review or gate note exists, use it to revise the SRD, but do not
   list the mutable review file path as a stable source artifact inside the SRD.
@@ -52,7 +74,7 @@ system_prompt_template: |
   page_path: specifications/{slug}/20-srd.md
   ---end---
 
-allowed_tools: [mimir_write, mimir_search, mimir_read]
+allowed_tools: [mimir_write, mimir_publish_files, mimir_search, mimir_read]
 forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
 permission_mode: workspace-write
 

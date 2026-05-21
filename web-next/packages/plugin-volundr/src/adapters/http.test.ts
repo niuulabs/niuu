@@ -159,6 +159,103 @@ describe('buildVolundrHttpAdapter', () => {
     expect(history.turns[0]).toMatchObject({ id: 'turn-1', role: 'assistant' });
   });
 
+  it('getWorkflowGates calls GET /sessions/:id/workflow/gates', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({
+      gates: [
+        {
+          id: 'gate-1',
+          node_id: 'spec-prd-gate',
+          activation_id: 'activation-1',
+          label: 'PRD approval gate',
+          condition: 'Review the PRD',
+          status: 'pending',
+          pending_behavior: 'help_needed',
+          approvers: ['human'],
+          auto_forward_after: '30m',
+          requested_at: '2026-05-20T12:00:00Z',
+          updated_at: '2026-05-20T12:00:00Z',
+          triggered_by_event_type: 'spec.prd.ready_for_gate',
+          approval_event_type: 'spec.prd.approved',
+          changes_requested_event_type: 'spec.prd.changes_requested',
+          attempt: 1,
+          summary: 'Please review the PRD.',
+        },
+      ],
+    });
+
+    const gates = await buildVolundrHttpAdapter(client).getWorkflowGates('sess-1');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/workflow/gates');
+    expect(gates).toEqual([
+      expect.objectContaining({
+        id: 'gate-1',
+        node_id: 'spec-prd-gate',
+        pending_behavior: 'help_needed',
+      }),
+    ]);
+  });
+
+  it('resolveWorkflowGate posts the human decision', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValueOnce({
+      id: 'gate-1',
+      node_id: 'spec-prd-gate',
+      activation_id: 'activation-1',
+      label: 'PRD approval gate',
+      condition: 'Review the PRD',
+      status: 'approved',
+      pending_behavior: 'help_needed',
+      approvers: ['human'],
+      auto_forward_after: '30m',
+      requested_at: '2026-05-20T12:00:00Z',
+      updated_at: '2026-05-20T12:02:00Z',
+      triggered_by_event_type: 'spec.prd.ready_for_gate',
+      approval_event_type: 'spec.prd.approved',
+      changes_requested_event_type: 'spec.prd.changes_requested',
+      attempt: 1,
+      decision: 'APPROVE',
+      notes: 'Looks good.',
+      source: 'human',
+      summary: 'PRD approved by human reviewer.',
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'gate-1',
+        node_id: 'spec-prd-gate',
+        label: 'PRD approval gate',
+        status: 'approved',
+        decision: 'APPROVE',
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const gate = await buildVolundrHttpAdapter(client).resolveWorkflowGate('sess-1', 'gate-1', {
+      decision: 'APPROVE',
+      notes: 'Looks good.',
+      source: 'human',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/forge/sessions/sess-1/workflow/gates/gate-1/resolve',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          decision: 'APPROVE',
+          notes: 'Looks good.',
+          source: 'human',
+        }),
+      }),
+    );
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers as HeadersInit);
+    expect(headers.get('x-niuu-workflow-gate-intent')).toBe('resolve');
+    expect(gate.status).toBe('approved');
+    expect(gate.decision).toBe('APPROVE');
+  });
+
   it('getSession calls GET /sessions/:id', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).getSession('s1');
@@ -343,13 +440,25 @@ describe('buildVolundrHttpAdapter', () => {
   it('deleteSession calls DELETE /sessions/:id without cleanup', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).deleteSession('s1');
-    expect(client.delete).toHaveBeenCalledWith('/sessions/s1');
+    expect(client.delete).toHaveBeenCalledWith('/sessions/s1', { cleanup: [] });
   });
 
-  it('deleteSession includes cleanup param when provided', async () => {
+  it('deleteSession sends cleanup targets in the request body when provided', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).deleteSession('s1', ['workspace']);
-    expect(client.delete).toHaveBeenCalledWith('/sessions/s1?cleanup=workspace');
+    expect(client.delete).toHaveBeenCalledWith('/sessions/s1', { cleanup: ['workspace'] });
+  });
+
+  it('archiveSession calls PATCH /sessions/:id/archive', async () => {
+    const client = makeClient();
+    await buildVolundrHttpAdapter(client).archiveSession('s1');
+    expect(client.patch).toHaveBeenCalledWith('/sessions/s1/archive', undefined);
+  });
+
+  it('restoreSession calls PATCH /sessions/:id/restore', async () => {
+    const client = makeClient();
+    await buildVolundrHttpAdapter(client).restoreSession('s1');
+    expect(client.patch).toHaveBeenCalledWith('/sessions/s1/restore', undefined);
   });
 
   it('sendMessage calls POST /sessions/:id/messages', async () => {

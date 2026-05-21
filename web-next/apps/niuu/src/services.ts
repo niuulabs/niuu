@@ -685,34 +685,129 @@ function toDomainSession(session: VolundrSession): Session {
   };
 }
 
+function mergeVolundrSessions(
+  primarySessions: VolundrSession[],
+  aggregateSessions: VolundrSession[],
+): VolundrSession[] {
+  const byId = new Map<string, VolundrSession>();
+  for (const session of [...primarySessions, ...aggregateSessions]) {
+    byId.set(session.id, session);
+  }
+  return Array.from(byId.values());
+}
+
+async function safeVolundrSessionList(
+  loader: () => Promise<VolundrSession[]>,
+): Promise<VolundrSession[]> {
+  try {
+    return await loader();
+  } catch {
+    return [];
+  }
+}
+
+async function safeVolundrSessionDetail(
+  loader: () => Promise<VolundrSession | null>,
+): Promise<VolundrSession | null> {
+  try {
+    return await loader();
+  } catch {
+    return null;
+  }
+}
+
+async function serviceOwnsSession(service: IVolundrService, sessionId: string): Promise<boolean> {
+  const [active, archived] = await Promise.all([
+    safeVolundrSessionList(() => service.getSessions()),
+    safeVolundrSessionList(() => service.listArchivedSessions()),
+  ]);
+  return [...active, ...archived].some((session) => session.id === sessionId);
+}
+
 function buildMultiVolundrService(
   primary: IVolundrService,
   aggregate: IVolundrService,
 ): IVolundrService {
+  const subscribeMerged = (callback: (sessions: VolundrSession[]) => void) => {
+    let latestPrimary: VolundrSession[] = [];
+    let latestAggregate: VolundrSession[] = [];
+    const publish = () => {
+      callback(mergeVolundrSessions(latestPrimary, latestAggregate));
+    };
+    const unsubscribePrimary = primary.subscribe((sessions) => {
+      latestPrimary = sessions;
+      publish();
+    });
+    const unsubscribeAggregate = aggregate.subscribe((sessions) => {
+      latestAggregate = sessions;
+      publish();
+    });
+    return () => {
+      unsubscribePrimary();
+      unsubscribeAggregate();
+    };
+  };
+
+  const resolveSessionMutationTarget = async (sessionId: string): Promise<IVolundrService> => {
+    if (await serviceOwnsSession(aggregate, sessionId)) return aggregate;
+    if (await serviceOwnsSession(primary, sessionId)) return primary;
+    return aggregate;
+  };
+
+  const resolveSessionReadTarget = async (sessionId: string): Promise<IVolundrService> => {
+    if (await serviceOwnsSession(aggregate, sessionId)) return aggregate;
+    if (await serviceOwnsSession(primary, sessionId)) return primary;
+    return aggregate;
+  };
+
   return {
     ...primary,
     getTargets: () => aggregate.getTargets(),
-    getSessions: () => aggregate.getSessions(),
-    getSession: (id) => aggregate.getSession(id),
-    getActiveSessions: () => aggregate.getActiveSessions(),
+    getSessions: async () =>
+      mergeVolundrSessions(
+        await safeVolundrSessionList(() => primary.getSessions()),
+        await safeVolundrSessionList(() => aggregate.getSessions()),
+      ),
+    getSession: async (id) =>
+      safeVolundrSessionDetail(() =>
+        resolveSessionReadTarget(id).then((svc) => svc.getSession(id)),
+      ),
+    getActiveSessions: async () =>
+      mergeVolundrSessions(
+        await safeVolundrSessionList(() => primary.getActiveSessions()),
+        await safeVolundrSessionList(() => aggregate.getActiveSessions()),
+      ),
     getStats: () => aggregate.getStats(),
     startSession: (config) => aggregate.startSession(config),
-    subscribe: (callback) => aggregate.subscribe(callback),
+    subscribe: subscribeMerged,
     subscribeStats: (callback) => aggregate.subscribeStats(callback),
-    stopSession: (sessionId) => aggregate.stopSession(sessionId),
-    deleteSession: (sessionId, cleanup) => aggregate.deleteSession(sessionId, cleanup),
-    archiveSession: (sessionId) => aggregate.archiveSession(sessionId),
-    restoreSession: (sessionId) => aggregate.restoreSession(sessionId),
-    listArchivedSessions: () => aggregate.listArchivedSessions(),
-    getMessages: (sessionId) => aggregate.getMessages(sessionId),
-    sendMessage: (sessionId, content) => aggregate.sendMessage(sessionId, content),
+    stopSession: async (sessionId) =>
+      (await resolveSessionMutationTarget(sessionId)).stopSession(sessionId),
+    deleteSession: async (sessionId, cleanup) =>
+      (await resolveSessionMutationTarget(sessionId)).deleteSession(sessionId, cleanup),
+    archiveSession: async (sessionId) =>
+      (await resolveSessionMutationTarget(sessionId)).archiveSession(sessionId),
+    restoreSession: async (sessionId) =>
+      (await resolveSessionMutationTarget(sessionId)).restoreSession(sessionId),
+    listArchivedSessions: async () =>
+      mergeVolundrSessions(
+        await safeVolundrSessionList(() => primary.listArchivedSessions()),
+        await safeVolundrSessionList(() => aggregate.listArchivedSessions()),
+      ),
+    getMessages: async (sessionId) =>
+      (await resolveSessionReadTarget(sessionId)).getMessages(sessionId),
+    sendMessage: async (sessionId, content) =>
+      (await resolveSessionReadTarget(sessionId)).sendMessage(sessionId, content),
     subscribeMessages: (sessionId, callback) => aggregate.subscribeMessages(sessionId, callback),
-    getLogs: (sessionId, limit) => aggregate.getLogs(sessionId, limit),
+    getLogs: async (sessionId, limit) =>
+      (await resolveSessionReadTarget(sessionId)).getLogs(sessionId, limit),
     subscribeLogs: (sessionId, callback) => aggregate.subscribeLogs(sessionId, callback),
-    getAggregatedLogs: (sessionId, options) => aggregate.getAggregatedLogs(sessionId, options),
+    getAggregatedLogs: async (sessionId, options) =>
+      (await resolveSessionReadTarget(sessionId)).getAggregatedLogs(sessionId, options),
     subscribeAggregatedLogs: (sessionId, options, callback) =>
       aggregate.subscribeAggregatedLogs(sessionId, options, callback),
-    getChronicle: (sessionId) => aggregate.getChronicle(sessionId),
+    getChronicle: async (sessionId) =>
+      (await resolveSessionReadTarget(sessionId)).getChronicle(sessionId),
     subscribeChronicle: (sessionId, callback) => aggregate.subscribeChronicle(sessionId, callback),
   };
 }
