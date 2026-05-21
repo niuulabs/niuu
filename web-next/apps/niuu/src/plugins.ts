@@ -1,5 +1,5 @@
 import { createElement } from 'react';
-import { createRoute, useNavigate, useRouterState } from '@tanstack/react-router';
+import { createRoute } from '@tanstack/react-router';
 import { bifrostPlugin } from '@niuulabs/plugin-bifrost/plugin';
 import { loginPlugin } from '@niuulabs/plugin-login';
 import { ravnPlugin } from '@niuulabs/plugin-ravn';
@@ -12,21 +12,12 @@ import { GuildPage } from './GuildPage';
 import { SettingsPage } from './SettingsPage';
 
 function GuildTopbar() {
-  const navigate = useNavigate();
-  const location = useRouterState({ select: (state) => state.location });
-
   return createElement(
     'button',
     {
       type: 'button',
       onClick: () => {
-        void navigate({
-          to: location.pathname as never,
-          search: (prev: Record<string, unknown>) => ({
-            ...prev,
-            register: '1',
-          }),
-        });
+        window.dispatchEvent(new Event('guild:open-register'));
       },
       className:
         'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-brand/35 niuu-bg-brand/12 niuu-px-3 niuu-py-1.5 niuu-text-[12px] niuu-font-medium niuu-text-brand hover:niuu-bg-brand/18',

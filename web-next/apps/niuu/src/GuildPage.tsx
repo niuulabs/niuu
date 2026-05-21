@@ -1388,6 +1388,22 @@ export function GuildPage() {
     }
   }, [registerRequested, resetWizard]);
 
+  useEffect(() => {
+    const handleOpenRegister = () => {
+      setRegisterOpen(true);
+      const params = new URLSearchParams(window.location.search);
+      params.set('register', '1');
+      const query = params.toString();
+      window.history.replaceState(
+        {},
+        '',
+        `${window.location.pathname}${query ? `?${query}` : ''}`,
+      );
+    };
+    window.addEventListener('guild:open-register', handleOpenRegister);
+    return () => window.removeEventListener('guild:open-register', handleOpenRegister);
+  }, []);
+
   const countsByKind = useMemo(() => {
     const counts: Record<'all' | InstanceKind, number> = {
       all: instances.length,
