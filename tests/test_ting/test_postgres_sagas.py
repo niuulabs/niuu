@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 
 from ting.adapters.postgres_sagas import PostgresSagaRepository
-from ting.domain.models import RunStatus, Saga, SagaStatus
+from ting.domain.models import Run, RunStatus, Saga, SagaStatus
 
 
 @pytest.fixture
@@ -88,6 +88,51 @@ class TestSaveSaga:
         assert call_args[0][13] == workflow_id
         assert call_args[0][14] == "1.0.0"
         assert call_args[0][15] == '{"name": "Review Flow"}'
+
+
+class TestSaveRun:
+    @pytest.mark.asyncio
+    async def test_upserts_run_state_and_session_fields(
+        self, repo: PostgresSagaRepository, mock_pool: MagicMock
+    ) -> None:
+        now = datetime.now(UTC)
+        run = Run(
+            id=uuid4(),
+            phase_id=uuid4(),
+            tracker_id="run-1",
+            name="Proof run",
+            description="Dispatch proof",
+            acceptance_criteria=[],
+            declared_files=[],
+            estimate_hours=1.0,
+            status=RunStatus.RUNNING,
+            confidence=0.5,
+            session_id="session-123",
+            branch="feat/proof",
+            chronicle_summary="summary",
+            pr_url="https://example.com/pr/1",
+            pr_id="1",
+            retry_count=2,
+            created_at=now,
+            updated_at=now,
+            identifier="RUN-1",
+            url="https://tracker.example/runs/1",
+            reviewer_session_id="review-123",
+            review_round=3,
+            structured_outcome={"verdict": "approve"},
+            outcome_event_type="ravn.task.completed",
+        )
+
+        await repo.save_run(run)
+
+        mock_pool.execute.assert_called_once()
+        call_args = mock_pool.execute.call_args
+        assert "INSERT INTO runs" in call_args[0][0]
+        assert "ON CONFLICT (id) DO UPDATE SET" in call_args[0][0]
+        assert call_args[0][9] == RunStatus.RUNNING.value
+        assert call_args[0][12] == "feat/proof"
+        assert call_args[0][18] == "1"
+        assert call_args[0][23] == '{"verdict": "approve"}'
 
 
 class TestListSagas:

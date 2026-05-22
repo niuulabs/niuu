@@ -52,9 +52,36 @@ class PostgresSagaRepository(SagaRepository):
             INSERT INTO runs
                 (id, phase_id, tracker_id, name, description, acceptance_criteria,
                  declared_files, estimate_hours, status, confidence, session_id,
-                 branch, chronicle_summary, retry_count, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-            ON CONFLICT (id) DO NOTHING
+                 branch, chronicle_summary, retry_count, created_at, updated_at,
+                 pr_url, pr_id, identifier, url, reviewer_session_id, review_round,
+                 structured_outcome, outcome_event_type)
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                phase_id = EXCLUDED.phase_id,
+                tracker_id = EXCLUDED.tracker_id,
+                name = EXCLUDED.name,
+                description = EXCLUDED.description,
+                acceptance_criteria = EXCLUDED.acceptance_criteria,
+                declared_files = EXCLUDED.declared_files,
+                estimate_hours = EXCLUDED.estimate_hours,
+                status = EXCLUDED.status,
+                confidence = EXCLUDED.confidence,
+                session_id = EXCLUDED.session_id,
+                branch = EXCLUDED.branch,
+                chronicle_summary = EXCLUDED.chronicle_summary,
+                retry_count = EXCLUDED.retry_count,
+                updated_at = EXCLUDED.updated_at,
+                pr_url = EXCLUDED.pr_url,
+                pr_id = EXCLUDED.pr_id,
+                identifier = EXCLUDED.identifier,
+                url = EXCLUDED.url,
+                reviewer_session_id = EXCLUDED.reviewer_session_id,
+                review_round = EXCLUDED.review_round,
+                structured_outcome = EXCLUDED.structured_outcome,
+                outcome_event_type = EXCLUDED.outcome_event_type
             """,
             run.id,
             run.phase_id,
@@ -72,6 +99,14 @@ class PostgresSagaRepository(SagaRepository):
             run.retry_count,
             run.created_at,
             run.updated_at,
+            run.pr_url,
+            run.pr_id,
+            run.identifier,
+            run.url,
+            run.reviewer_session_id,
+            run.review_round,
+            json.dumps(run.structured_outcome) if run.structured_outcome is not None else None,
+            run.outcome_event_type,
         )
 
     async def save_saga(self, saga: Saga, *, conn: Any | None = None) -> None:
