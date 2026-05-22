@@ -618,7 +618,7 @@ class NativeTrackerAdapter(TrackerPort):
             title=row["name"],
             description=row.get("description", "") or "",
             status=_RUN_STATUS_DISPLAY.get(status, status.value),
-            status_type="unstarted" if status == RunStatus.PENDING else "",
+            status_type="unstarted" if status in (RunStatus.PENDING, RunStatus.QUEUED) else "",
             assignee=None,
             labels=[],
             priority=0,

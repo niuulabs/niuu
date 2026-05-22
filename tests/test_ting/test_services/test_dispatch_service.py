@@ -7,6 +7,7 @@ find_ready_issues and dispatch_issues behave correctly.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -1456,12 +1457,14 @@ def _make_dispatch_service(
     volundr: MockVolundr,
     flow_provider=None,
     saga_repo: MockSagaRepo | None = None,
+    tracker_factory: MockTrackerFactory | None = None,
+    dispatcher_repo: MockDispatcherRepo | None = None,
 ) -> DispatchService:
     return DispatchService(
-        tracker_factory=MockTrackerFactory([]),
+        tracker_factory=tracker_factory or MockTrackerFactory([]),
         volundr_factory=MockVolundrFactory(adapters=[volundr]),
         saga_repo=saga_repo or MockSagaRepo(),
-        dispatcher_repo=MockDispatcherRepo(),
+        dispatcher_repo=dispatcher_repo or MockDispatcherRepo(),
         config=DispatchConfig(
             default_system_prompt="Be helpful.",
             default_model="claude-sonnet-4-6",
@@ -1527,3 +1530,67 @@ class TestDispatchTemplatePhaseFlockFlow:
         assert volundr.spawned[0].workload_type == "default"
         assert volundr.spawned[0].workload_config == {}
         assert volundr.spawned[0].integration_ids == ["int-telegram"]
+
+    @pytest.mark.asyncio
+    async def test_respects_available_slots_and_queues_overflow(self):
+        """Template phase dispatch should not overrun the owner's slot cap."""
+
+        class SlotLimitedVolundr(MockVolundr):
+            async def spawn_session(self, request, *, auth_token=None):  # noqa: ANN001
+                if len(self.spawned) >= 2:
+                    raise AssertionError("dispatch tried to over-launch beyond available slots")
+                return await super().spawn_session(request, auth_token=auth_token)
+
+        class CappedDispatcherRepo(MockDispatcherRepo):
+            async def get_or_create(self, owner_id: str):
+                state = await super().get_or_create(owner_id)
+                return replace(state, max_concurrent_runs=2)
+
+        class RunningTracker(MockTracker):
+            async def list_runs_by_status(self, status: RunStatus) -> list[Run]:
+                return []
+
+        def latest_runs(repo: MockSagaRepo) -> dict[str, Run]:
+            latest: dict[str, Run] = {}
+            for run in repo.runs:
+                latest[run.tracker_id] = run
+            return latest
+
+        volundr = SlotLimitedVolundr()
+        repo = MockSagaRepo()
+        service = _make_dispatch_service(
+            volundr,
+            saga_repo=repo,
+            tracker_factory=MockTrackerFactory([RunningTracker()]),
+            dispatcher_repo=CappedDispatcherRepo(),
+        )
+
+        saga = _make_saga()
+        phase = _make_phase(saga.id)
+        runs = [_make_run(phase.id, persona=f"persona-{idx}") for idx in range(3)]
+        repo.sagas.append(saga)
+        await repo.save_phase(phase)
+        for run in runs:
+            await repo.save_run(run)
+
+        tpl_phase = _make_template_phase(
+            runs=[
+                _make_template_run(persona="persona-0", prompt="first"),
+                _make_template_run(persona="persona-1", prompt="second"),
+                _make_template_run(persona="persona-2", prompt="third"),
+            ]
+        )
+        await service._dispatch_template_phase(
+            saga,
+            phase,
+            runs,
+            tpl_phase,
+            "owner-1",
+            flock_flow_name="",
+        )
+
+        assert len(volundr.spawned) == 2
+        final_runs = latest_runs(repo)
+        assert final_runs[runs[0].tracker_id].status == RunStatus.RUNNING
+        assert final_runs[runs[1].tracker_id].status == RunStatus.RUNNING
+        assert final_runs[runs[2].tracker_id].status == RunStatus.QUEUED

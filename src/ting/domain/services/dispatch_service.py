@@ -34,6 +34,7 @@ from niuu.domain.model_runtime import (
 from niuu.domain.models import Principal
 from ting.domain.flock_merge import build_flock_workload_config
 from ting.domain.models import (
+    DispatcherState,
     Phase,
     PhaseStatus,
     Run,
@@ -559,6 +560,52 @@ class DispatchService:
         self._flow_provider = flow_provider
         self._workflow_repo = workflow_repo
 
+    async def _dispatch_capacity_snapshot(
+        self,
+        owner_id: str,
+        *,
+        volundr: VolundrPort,
+        trackers: list[TrackerPort] | None = None,
+        auth_token: str | None = None,
+    ) -> tuple[DispatcherState, int, int, int]:
+        """Return dispatcher state plus active counts and free slots.
+
+        Slot pressure is ultimately enforced by Volundr, so active Forge
+        sessions are the source of truth. We also sample tracker-side RUNNING
+        runs and take the max of both counts as a conservative fallback when
+        subscriber reconciliation lags behind session reality.
+        """
+        state = await self._dispatcher_repo.get_or_create(owner_id)
+
+        active_sessions = 0
+        try:
+            sessions = await volundr.list_sessions(auth_token=auth_token)
+            active_sessions = sum(
+                1 for session in sessions if session.status in _ACTIVE_SESSION_STATUSES
+            )
+        except Exception:
+            logger.warning(
+                "Failed to list active Volundr sessions for owner %s while checking capacity",
+                owner_id[:8],
+                exc_info=True,
+            )
+
+        running_runs = 0
+        if trackers:
+            try:
+                running = await trackers[0].list_runs_by_status(RunStatus.RUNNING)
+                running_runs = len(running)
+            except Exception:
+                logger.warning(
+                    "Failed to list tracker RUNNING runs for owner %s while checking capacity",
+                    owner_id[:8],
+                    exc_info=True,
+                )
+
+        occupied_slots = max(active_sessions, running_runs)
+        available_slots = max(state.max_concurrent_runs - occupied_slots, 0)
+        return state, active_sessions, running_runs, available_slots
+
     async def find_ready_issues(
         self,
         owner_id: str,
@@ -778,14 +825,27 @@ class DispatchService:
             if not adapters:
                 logger.info("Auto-continue skipped for owner %s: no tracker adapters", owner_id[:8])
                 return []
+            if self._volundr_factory is None:
+                return []
+            volundr = await self._volundr_factory.primary_for_owner(owner_id)
+            if volundr is None:
+                logger.info("Auto-continue skipped for owner %s: no Volundr adapter", owner_id[:8])
+                return []
 
-            running_runs = await adapters[0].list_runs_by_status(RunStatus.RUNNING)
-            available_slots = state.max_concurrent_runs - len(running_runs)
+            state, active_sessions, running_runs, available_slots = (
+                await self._dispatch_capacity_snapshot(
+                    owner_id,
+                    volundr=volundr,
+                    trackers=adapters,
+                )
+            )
             if available_slots <= 0:
                 logger.info(
-                    "Auto-continue skipped for owner %s: no slots (%d running, max %d)",
+                    "Auto-continue skipped for owner %s: no slots "
+                    "(%d active sessions, %d running runs, max %d)",
                     owner_id[:8],
-                    len(running_runs),
+                    active_sessions,
+                    running_runs,
                     state.max_concurrent_runs,
                 )
                 return []
@@ -989,9 +1049,58 @@ class DispatchService:
             None,
             owner_id,
         )
+        trackers = await self._tracker_factory.for_owner(owner_id)
+        state, active_sessions, running_runs, available_slots = (
+            await self._dispatch_capacity_snapshot(
+                owner_id,
+                volundr=volundr,
+                trackers=trackers,
+            )
+        )
+        if available_slots < len(runs):
+            logger.info(
+                "DispatchService: phase '%s' has %d run(s) but only %d slot(s) "
+                "are free for owner %s (%d active sessions, %d running runs, "
+                "max %d); queueing overflow",
+                phase.name,
+                len(runs),
+                available_slots,
+                owner_id[:8],
+                active_sessions,
+                running_runs,
+                state.max_concurrent_runs,
+            )
 
         repo = saga.repos[0] if saga.repos else ""
-        for run, tpl_run in zip(runs, tpl_phase.runs):
+        for index, (run, tpl_run) in enumerate(zip(runs, tpl_phase.runs)):
+            if index >= available_slots:
+                queued = Run(
+                    id=run.id,
+                    phase_id=run.phase_id,
+                    tracker_id=run.tracker_id,
+                    name=run.name,
+                    description=run.description,
+                    acceptance_criteria=run.acceptance_criteria,
+                    declared_files=run.declared_files,
+                    estimate_hours=run.estimate_hours,
+                    status=RunStatus.QUEUED,
+                    confidence=run.confidence,
+                    session_id=None,
+                    branch=run.branch,
+                    chronicle_summary=run.chronicle_summary,
+                    pr_url=run.pr_url,
+                    pr_id=run.pr_id,
+                    retry_count=run.retry_count,
+                    created_at=run.created_at,
+                    updated_at=datetime.now(UTC),
+                )
+                await self._saga_repo.save_run(queued)
+                logger.info(
+                    "DispatchService: queued template run %s in phase '%s' until a slot frees up",
+                    run.name,
+                    phase.name,
+                )
+                continue
             session_name = re.sub(r"[^a-z0-9]+", "-", run.name.lower()).strip("-")[:48]
             workload_config = build_flock_workload_config(
                 flock_flow_name,

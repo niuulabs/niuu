@@ -644,6 +644,24 @@ class TestListIssues:
         assert issues[0].status_type == "unstarted"
         assert issues[0].milestone_id == "phase-tid-1"
 
+    async def test_queued_runs_stay_dispatchable(self):
+        pool = _make_pool()
+        adapter = _make_adapter(pool)
+        run = _make_run(status=RunStatus.QUEUED)
+        tracker_id = str(run.id)
+        pool.fetch.return_value = [
+            {
+                **_run_record(run, tracker_id),
+                "milestone_tracker_id": "phase-tid-1",
+            }
+        ]
+
+        issues = await adapter.list_issues("proj-tid")
+
+        assert len(issues) == 1
+        assert issues[0].status == "Queued"
+        assert issues[0].status_type == "unstarted"
+
     async def test_filtered_by_milestone(self):
         pool = _make_pool()
         adapter = _make_adapter(pool)
