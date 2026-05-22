@@ -5,12 +5,13 @@ from __future__ import annotations
 import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from tests.test_ting.stubs import InMemorySagaRepository, StubVolundrFactory, StubVolundrPort
 from ting.adapters.memory_event_bus import InMemoryEventBus
-from ting.domain.models import SagaStatus
+from ting.domain.models import DispatcherState, SagaStatus
 from ting.domain.services.dispatch_service import DispatchConfig, DispatchService
 from ting.ports.event_bus import TingEvent
 
@@ -29,10 +30,26 @@ class StubTrackerFactory:
 
 class StubDispatcherRepo:
     async def get_or_create(self, owner_id: str):
-        return None
+        return DispatcherState(
+            id=uuid4(),
+            owner_id=owner_id,
+            running=True,
+            threshold=0.75,
+            max_concurrent_runs=3,
+            auto_continue=False,
+            updated_at=_TS,
+        )
 
     async def update(self, owner_id: str, **kwargs):
-        pass
+        return DispatcherState(
+            id=uuid4(),
+            owner_id=owner_id,
+            running=bool(kwargs.get("running", True)),
+            threshold=float(kwargs.get("threshold", 0.75)),
+            max_concurrent_runs=int(kwargs.get("max_concurrent_runs", 3)),
+            auto_continue=bool(kwargs.get("auto_continue", False)),
+            updated_at=_TS,
+        )
 
 
 def _make_service(
