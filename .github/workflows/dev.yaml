@@ -118,7 +118,7 @@ jobs:
   e2e-test:
     name: "E2E: Playwright"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
