@@ -150,6 +150,15 @@ describe('SessionChat', () => {
     expect(screen.getByText('Connected')).toBeInTheDocument();
   });
 
+  it('hides the toolbar row when showToolbar is false', () => {
+    render(
+      <SessionChat {...defaultProps} connected messages={[userMessage]} showToolbar={false} />,
+    );
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument();
+    expect(screen.queryByText('1 message')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('internal-toggle')).not.toBeInTheDocument();
+  });
+
   /* ── History loading ── */
 
   it('shows loading indicator when history not loaded and connected', () => {

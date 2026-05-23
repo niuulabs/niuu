@@ -333,8 +333,8 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     session.trackerIssue ??
     (() => {
       const identifier = session.trackerIssueId ?? session.tracker_issue_id ?? null;
-      const url = session.issueTrackerUrl ?? session.issue_tracker_url ?? null;
-      if (!identifier || !url) return undefined;
+      const url = session.issueTrackerUrl ?? session.issue_tracker_url ?? '';
+      if (!identifier) return undefined;
       return {
         id: identifier,
         identifier,
@@ -428,6 +428,8 @@ function deriveCanonicalForgeBasePath(basePath?: string): string | null {
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/forge')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/forge`;
+  if (normalized.endsWith('/api/v1/niuu/volundr'))
+    return normalized.replace(/\/niuu\/volundr$/, '/forge');
   return null;
 }
 

@@ -186,6 +186,34 @@ describe('setTokenProvider / getAccessToken', () => {
       'ws://127.0.0.1:8080/s/abc/session?access_token=token-xyz',
     );
   });
+
+  it('allows local dev identity overrides on private LAN hosts', async () => {
+    const originalWindow = globalThis.window;
+    const fakeSessionStorage = {
+      getItem: vi.fn().mockReturnValue(null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+      clear: vi.fn(),
+      key: vi.fn(),
+      length: 0,
+    };
+    vi.stubGlobal('window', {
+      location: new URL(
+        'http://192.168.1.106/volundr?devUserId=guild-user-lan&devTenantId=tenant-lan&devRoles=volundr%3Adeveloper',
+      ),
+      sessionStorage: fakeSessionStorage,
+    });
+
+    const fresh = await importFreshHttpClient();
+
+    expect(fresh.getAuthHeaders().get('x-auth-user-id')).toBe('guild-user-lan');
+    expect(fresh.withAuthQuery('/stream')).toBe(
+      'http://192.168.1.106/stream?devUserId=guild-user-lan&devTenantId=tenant-lan&devRoles=volundr%3Adeveloper',
+    );
+
+    vi.unstubAllGlobals();
+    vi.stubGlobal('window', originalWindow);
+  });
 });
 
 describe('createApiClient', () => {

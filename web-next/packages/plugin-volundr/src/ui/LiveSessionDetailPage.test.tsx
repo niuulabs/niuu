@@ -190,10 +190,28 @@ function buildSessionStore(session: VolundrSession | null = RUNNING_SESSION): IS
       session
         ? {
             id: session.id,
+            ravnId: 's-4912',
             name: session.name,
-            state: session.status === 'running' ? 'active' : 'stopped',
+            personaName: session.name,
+            templateId: 'git-default',
+            state: session.status === 'running' ? 'running' : 'terminated',
             clusterId: 'local',
-            events: [],
+            startedAt: new Date(Date.now() - 9_240_000).toISOString(),
+            resources: {
+              cpuRequest: 2,
+              cpuLimit: 4,
+              cpuUsed: 1.5,
+              memRequestMi: 4096,
+              memLimitMi: 8192,
+              memUsedMi: 2048,
+              gpuCount: 0,
+            },
+            env: {},
+            files: { added: 1, modified: 2, deleted: 1 },
+            events: [
+              { ts: new Date().toISOString(), kind: 'message', body: 'started' },
+              { ts: new Date().toISOString(), kind: 'file', body: 'updated files' },
+            ],
           }
         : null,
     ),
@@ -443,10 +461,10 @@ describe('LiveSessionDetailPage', () => {
       expect(chip).toBeInTheDocument();
     });
 
-    it('shows model label', async () => {
+    it('does not show the model label in the compact header', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Claude Sonnet 4.6')).toBeInTheDocument();
+      expect(screen.queryByText('Claude Sonnet 4.6')).not.toBeInTheDocument();
     });
 
     it('shows repo and branch for git source', async () => {
@@ -470,36 +488,42 @@ describe('LiveSessionDetailPage', () => {
   });
 
   describe('status rendering', () => {
-    it('renders running session with status dot', async () => {
+    it('renders a disconnected status dot by default', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      // Status dot should have the brand class for running
       const page = screen.getByTestId('live-session-detail-page');
-      const dot = page.querySelector('.niuu-bg-brand');
+      const dot = page.querySelector('.niuu-live-session__status-dot--disconnected');
       expect(dot).toBeInTheDocument();
     });
 
-    it('renders stopped session with faint dot', async () => {
-      wrap('test-session-id-1234', { session: STOPPED_SESSION });
-      await screen.findByTestId('live-session-detail-page');
-      const page = screen.getByTestId('live-session-detail-page');
-      const dot = page.querySelector('.niuu-bg-text-faint');
-      expect(dot).toBeInTheDocument();
-    });
+    it('renders a connected status dot when chat is live', async () => {
+      vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+        messages: [],
+        streamingContent: undefined,
+        streamingParts: undefined,
+        streamingModel: undefined,
+        connected: true,
+        historyLoaded: true,
+        participants: new Map(),
+        meshEvents: [],
+        agentEvents: new Map(),
+        pendingPermissions: [],
+        capabilities: {},
+        sendMessage: vi.fn(),
+        sendDirectedMessages: vi.fn(),
+        respondToPermission: vi.fn(),
+        sendInterrupt: vi.fn(),
+        sendSetModel: vi.fn(),
+        sendSetThinkingTokens: vi.fn(),
+        sendRewindFiles: vi.fn(),
+        sendSetInternalVisibility: vi.fn(),
+        clearMessages: vi.fn(),
+      });
 
-    it('renders starting session with sky dot', async () => {
-      wrap('test-session-id-1234', { session: STARTING_SESSION });
+      wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       const page = screen.getByTestId('live-session-detail-page');
-      const dot = page.querySelector('.niuu-bg-sky-400');
-      expect(dot).toBeInTheDocument();
-    });
-
-    it('renders error session with rose dot', async () => {
-      wrap('test-session-id-1234', { session: ERROR_SESSION });
-      await screen.findByTestId('live-session-detail-page');
-      const page = screen.getByTestId('live-session-detail-page');
-      const dot = page.querySelector('.niuu-bg-rose-400');
+      const dot = page.querySelector('.niuu-live-session__status-dot--connected');
       expect(dot).toBeInTheDocument();
     });
   });
@@ -891,6 +915,12 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByRole('button', { name: /Stop/i })).toBeInTheDocument();
     });
 
+    it('shows Archive button for running session', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByRole('button', { name: /Archive session/i })).toBeInTheDocument();
+    });
+
     it('shows Start button for stopped session', async () => {
       wrap('test-session-id-1234', { session: STOPPED_SESSION });
       await screen.findByTestId('live-session-detail-page');
@@ -901,6 +931,13 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByTitle(/Delete/i)).toBeInTheDocument();
+    });
+
+    it('uses tooltip-only eye control without rendering res text', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByRole('button', { name: /Show tool calls and results/i })).toBeInTheDocument();
+      expect(screen.queryByText(/^res$/i)).not.toBeInTheDocument();
     });
 
     it('opens a centered delete dialog with visible cleanup options and submits them', async () => {
@@ -965,10 +1002,10 @@ describe('LiveSessionDetailPage', () => {
   });
 
   describe('header metrics', () => {
-    it('shows Active metric', async () => {
+    it('shows Uptime metric', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Active')).toBeInTheDocument();
+      expect(screen.getByText('Uptime')).toBeInTheDocument();
     });
 
     it('shows Msgs metric', async () => {
@@ -977,17 +1014,63 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByText('Msgs')).toBeInTheDocument();
     });
 
+    it('uses the visible chat count for Msgs once chat history is loaded', async () => {
+      vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+        messages: [
+          {
+            id: 'msg-1',
+            role: 'user',
+            content: 'Hello',
+            createdAt: new Date(),
+            status: 'done',
+          },
+          {
+            id: 'msg-2',
+            role: 'assistant',
+            content: 'Hi there',
+            createdAt: new Date(),
+            status: 'done',
+          },
+        ],
+        streamingContent: undefined,
+        streamingParts: undefined,
+        streamingModel: undefined,
+        connected: true,
+        historyLoaded: true,
+        participants: new Map(),
+        meshEvents: [],
+        agentEvents: new Map(),
+        pendingPermissions: [],
+        capabilities: {},
+        sendMessage: vi.fn(),
+        sendDirectedMessages: vi.fn(),
+        respondToPermission: vi.fn(),
+        sendInterrupt: vi.fn(),
+        sendSetModel: vi.fn(),
+        sendSetThinkingTokens: vi.fn(),
+        sendRewindFiles: vi.fn(),
+        sendSetInternalVisibility: vi.fn(),
+        clearMessages: vi.fn(),
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      await waitFor(() => {
+        expect(screen.getByTestId('session-stats')).toHaveTextContent('Msgs2');
+      });
+    });
+
     it('shows Tokens metric', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('Tokens')).toBeInTheDocument();
     });
 
-    it('shows Forge metric with the instance name', async () => {
+    it('shows the forge badge with the instance name', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Forge')).toBeInTheDocument();
       expect(screen.getByText('Guild Alpha')).toBeInTheDocument();
+      expect(screen.getByText('PRIMARY')).toBeInTheDocument();
     });
   });
 });

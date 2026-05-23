@@ -45,6 +45,31 @@ interface DevIdentityOverride {
   roles: string[];
 }
 
+function isLanDevHostname(hostname: string): boolean {
+  if (['localhost', '127.0.0.1', '::1'].includes(hostname)) {
+    return true;
+  }
+
+  const ipv4Match =
+    /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname.trim());
+  if (!ipv4Match) {
+    return false;
+  }
+
+  const octets = ipv4Match.slice(1).map((part) => Number(part));
+  if (octets.some((octet) => Number.isNaN(octet) || octet < 0 || octet > 255)) {
+    return false;
+  }
+
+  const [firstOctet = -1, secondOctet = -1] = octets;
+
+  return (
+    firstOctet === 10 ||
+    (firstOctet === 172 && secondOctet >= 16 && secondOctet <= 31) ||
+    (firstOctet === 192 && secondOctet === 168)
+  );
+}
+
 function canUseBrowserStorage(): boolean {
   return typeof window !== 'undefined' && typeof window.sessionStorage !== 'undefined';
 }
@@ -105,7 +130,7 @@ function readDevIdentityOverride(): DevIdentityOverride | null {
     return null;
   }
 
-  if (!['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)) {
+  if (!isLanDevHostname(window.location.hostname)) {
     return null;
   }
 

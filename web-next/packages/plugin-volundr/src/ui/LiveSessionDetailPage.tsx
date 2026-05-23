@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
 import { getAuthHeaders } from '@niuulabs/query';
 import {
@@ -15,8 +14,11 @@ import {
   type PermissionBehavior,
 } from '@niuulabs/ui';
 import {
+  Archive,
   AlertTriangle,
   Check,
+  Eye,
+  EyeOff,
   ExternalLink,
   FileCode2,
   FileDiff,
@@ -24,8 +26,12 @@ import {
   FolderOpen,
   GitCommitHorizontal,
   MessageSquareText,
+  Play,
+  RotateCcw,
   ScrollText,
+  Square,
   SquareTerminal,
+  Trash2,
 } from 'lucide-react';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { IFileSystemPort } from '../ports/IFileSystemPort';
@@ -64,25 +70,6 @@ function isSessionBooting(status: string | null | undefined): boolean {
   return status === 'starting' || status === 'provisioning';
 }
 
-function statusDotClass(status: string | null | undefined): string {
-  switch (status) {
-    case 'running':
-      return 'niuu-bg-brand';
-    case 'idle':
-      return 'niuu-bg-amber-300';
-    case 'starting':
-    case 'provisioning':
-      return 'niuu-bg-sky-400';
-    case 'stopped':
-    case 'archived':
-      return 'niuu-bg-text-faint';
-    case 'error':
-      return 'niuu-bg-rose-400';
-    default:
-      return 'niuu-bg-text-muted';
-  }
-}
-
 function formatCount(value: number): string {
   if (!Number.isFinite(value)) return '0';
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
@@ -90,16 +77,23 @@ function formatCount(value: number): string {
   return `${value}`;
 }
 
-function formatRelativeAge(epochMs?: number): string {
-  if (!epochMs) return '—';
-  const delta = Math.max(0, Date.now() - epochMs);
+function formatElapsedSince(value?: string | null): string {
+  if (!value) return '—';
+  const startedAt = new Date(value).getTime();
+  if (!Number.isFinite(startedAt)) return '—';
+  const delta = Math.max(0, Date.now() - startedAt);
   const minutes = Math.floor(delta / 60_000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1) return '<1m';
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ${minutes % 60}m`;
   const days = Math.floor(hours / 24);
   return `${days}d ${hours % 24}h`;
+}
+
+function formatCurrencyCents(value?: number): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `$${(value / 100).toFixed(2)}`;
 }
 
 function formatEventTime(value: number): string {
@@ -110,6 +104,17 @@ function formatEventTime(value: number): string {
 
 function sessionForgeLabel(session: VolundrSession | null | undefined): string {
   return session?.instanceName ?? session?.instanceId ?? session?.hostname ?? 'shared';
+}
+
+function fileChangeCount(
+  files?: {
+    added: number;
+    modified: number;
+    deleted: number;
+  } | null,
+): number | undefined {
+  if (!files) return undefined;
+  return files.added + files.modified + files.deleted;
 }
 
 function WorkflowHumanGateCard({
@@ -314,68 +319,117 @@ function normalizeRepoLink(source: VolundrSession['source'] | null | undefined) 
   return `https://github.com/${source.repo}`;
 }
 
-function renderSourceMeta(session: VolundrSession | null | undefined) {
+function formatRepoLabel(repo: string): string {
+  const trimmed = repo.replace(/\.git$/, '');
+  const sshMatch = trimmed.match(/^[^@]+@([^:]+):(.+)$/);
+  if (sshMatch) return sshMatch[2] ?? trimmed;
+  if (/^[^/]+\/[^/]+$/.test(trimmed)) return trimmed;
+  const candidate =
+    trimmed.startsWith('http://') || trimmed.startsWith('https://')
+      ? trimmed
+      : `https://${trimmed}`;
+  try {
+    const url = new URL(candidate);
+    const path = url.pathname.replace(/^\/+/, '');
+    if (!path) return trimmed;
+    if (['github.com', 'gitlab.com', 'bitbucket.org'].includes(url.hostname)) return path;
+    return `${url.hostname}/${path}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+function truncateMiddle(value: string, maxLength = 30): string {
+  if (value.length <= maxLength) return value;
+  const start = Math.ceil((maxLength - 3) * 0.6);
+  const end = Math.floor((maxLength - 3) * 0.4);
+  return `${value.slice(0, start)}...${value.slice(-end)}`;
+}
+
+function titleCaseWord(value: string): string {
+  if (!value) return value;
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+function normalizeForgeBadgeLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  if (/^local-[a-f0-9]{6,}$/i.test(trimmed)) return 'Local';
+  return titleCaseWord(trimmed);
+}
+
+function SourceMeta({ session }: { session: VolundrSession | null | undefined }) {
+  const [branchCopied, setBranchCopied] = useState(false);
+
   if (!session?.source) return null;
+
   if (session.source.type === 'git') {
     const repoUrl = normalizeRepoLink(session.source);
-    const repoLabel = session.source.repo.replace(/^https?:\/\/github\.com\//, '');
+    const repoLabel = formatRepoLabel(session.source.repo);
+    const branch = session.source.branch ?? 'main';
+
     return (
-      <span className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-font-mono niuu-text-[12px]">
+      <span className="niuu-live-session__source">
         <span className="niuu-text-text-faint" aria-hidden>
-          ❯
+          ›
         </span>
         {repoUrl ? (
           <a
             href={repoUrl}
             target="_blank"
             rel="noreferrer"
-            className="niuu-text-text-secondary hover:niuu-text-text-primary hover:niuu-underline"
+            className="niuu-live-session__source-link"
             title={repoUrl}
           >
             {repoLabel}
           </a>
         ) : (
-          <span className="niuu-text-text-secondary">{repoLabel}</span>
+          <span className="niuu-live-session__source-link" title={session.source.repo}>
+            {repoLabel}
+          </span>
         )}
-        <span className="niuu-text-brand">@{session.source.branch ?? 'main'}</span>
+        <button
+          type="button"
+          className="niuu-live-session__branch-button"
+          title={`${branchCopied ? 'Copied' : branch} · click to copy`}
+          onClick={async () => {
+            const copied = await copyText(branch);
+            setBranchCopied(copied);
+            if (copied) {
+              setTimeout(() => setBranchCopied(false), 1200);
+            }
+          }}
+        >
+          {`@${truncateMiddle(branch, 18)}`}
+        </button>
       </span>
     );
   }
 
+  const path = session.source.path ?? 'local mount';
   return (
-    <span className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-font-mono niuu-text-[12px]">
+    <span className="niuu-live-session__source">
       <span className="niuu-text-text-faint" aria-hidden>
-        ⌂
+        ›
       </span>
-      <span className="niuu-text-text-secondary">{session.source.path ?? 'local mount'}</span>
+      <span className="niuu-live-session__source-link" title={path}>
+        {path}
+      </span>
     </span>
   );
 }
 
 function HeaderMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="niuu-flex niuu-items-baseline niuu-gap-2 niuu-font-mono">
-      <span className="niuu-text-[10px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-faint">
-        {label}
-      </span>
-      <span className="niuu-text-[12px] niuu-text-text-secondary">{value}</span>
+    <div className="niuu-live-session__metric">
+      <span className="niuu-live-session__metric-label">{label}</span>
+      <span className="niuu-live-session__metric-value">{value}</span>
     </div>
   );
 }
 
 function HeaderDivider() {
-  return (
-    <span
-      className="niuu-mx-1.5 niuu-flex-shrink-0 niuu-self-center"
-      style={{
-        width: '2px',
-        height: '16px',
-        background:
-          'linear-gradient(to bottom, rgba(255,255,255,0.18), rgba(255,255,255,0.42), rgba(255,255,255,0.18))',
-      }}
-      aria-hidden="true"
-    />
-  );
+  return <span className="niuu-live-session__divider" aria-hidden="true" />;
 }
 
 function HeaderActionButton({
@@ -383,14 +437,12 @@ function HeaderActionButton({
   onClick,
   disabled,
   tone = 'neutral',
-  title,
   className,
 }: {
   label: string;
   onClick: () => void;
   disabled?: boolean;
   tone?: 'neutral' | 'critical' | 'brand';
-  title?: string;
   className?: string;
 }) {
   const toneClass =
@@ -405,7 +457,6 @@ function HeaderActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={title}
       className={cn(
         'niuu-inline-flex niuu-appearance-none niuu-items-center niuu-justify-center niuu-rounded-md niuu-border niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-transition-colors disabled:niuu-cursor-not-allowed disabled:niuu-opacity-45',
         toneClass,
@@ -417,68 +468,107 @@ function HeaderActionButton({
   );
 }
 
-function IconActionButton({
-  label,
+function TabCountBadge({ count }: { count?: number }) {
+  if (count == null || count <= 0) return null;
+  return <span className="niuu-live-session__tab-count">{formatCount(count)}</span>;
+}
+
+function SessionToolbarButton({
+  icon: Icon,
   title,
   onClick,
   disabled,
   tone = 'neutral',
+  active = false,
+  label,
 }: {
-  label: string;
+  icon: typeof Eye;
   title: string;
   onClick: () => void;
   disabled?: boolean;
   tone?: 'neutral' | 'critical' | 'brand';
+  active?: boolean;
+  label?: string;
 }) {
-  return (
-    <HeaderActionButton
-      label={label}
-      onClick={onClick}
-      disabled={disabled}
-      tone={tone}
-      title={title}
-    />
-  );
-}
-
-function SessionIdChip({ sessionId }: { sessionId: string }) {
-  const [copied, setCopied] = useState(false);
-  const shortId = `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
+  const toneClass =
+    tone === 'critical'
+      ? 'niuu-live-session__toolbar-button--critical'
+      : tone === 'brand'
+        ? 'niuu-live-session__toolbar-button--brand'
+        : 'niuu-live-session__toolbar-button--neutral';
 
   return (
     <button
       type="button"
-      title={sessionId}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={title}
+      title={title}
+      aria-pressed={active || undefined}
+      className={cn(
+        'niuu-live-session__toolbar-button',
+        active && 'niuu-live-session__toolbar-button--active',
+        toneClass,
+      )}
+    >
+      <Icon className="niuu-live-session__toolbar-icon" />
+      {label ? <span className="niuu-live-session__toolbar-label">{label}</span> : null}
+    </button>
+  );
+}
+
+function SessionIdChip({ sessionId }: { sessionId: string }) {
+  return (
+    <button
+      type="button"
+      title={`${sessionId} · click to copy`}
+      aria-label="Copy session ID"
       data-testid="session-id-label"
       onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(sessionId);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        } catch {
-          setCopied(false);
-        }
+        await copyText(sessionId);
       }}
-      className="niuu-truncate niuu-font-mono niuu-text-[12px] niuu-text-text-muted hover:niuu-text-text-primary"
+      className="niuu-live-session__session-id"
     >
-      {copied ? 'copied' : shortId}
+      {sessionId}
     </button>
   );
 }
 
 function TicketLink({ issue }: { issue: VolundrSession['trackerIssue'] }) {
   if (!issue) return null;
+  if (!issue.url) {
+    return (
+      <span className="niuu-live-session__ticket niuu-live-session__ticket--static" title={issue.identifier}>
+        <span>{issue.identifier}</span>
+      </span>
+    );
+  }
   return (
     <a
       href={issue.url}
       target="_blank"
       rel="noreferrer"
-      className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-border-brand/30 niuu-bg-brand/10 niuu-px-2.5 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-brand hover:niuu-bg-brand/15"
+      className="niuu-live-session__ticket"
       title={issue.identifier}
     >
       <span>{issue.identifier}</span>
       <ExternalLink className="niuu-h-3.5 niuu-w-3.5" />
     </a>
+  );
+}
+
+function SessionForgeBadge({
+  label,
+  tone,
+}: {
+  label: string;
+  tone?: string;
+}) {
+  return (
+    <span className="niuu-live-session__forge-badge">
+      <span className="niuu-live-session__forge-badge-label">{label}</span>
+      <span className="niuu-live-session__forge-badge-tone">{tone ?? 'PRIMARY'}</span>
+    </span>
   );
 }
 
@@ -1348,8 +1438,9 @@ export function LiveSessionDetailPage({
   >(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [dismissedHumanGateIds, setDismissedHumanGateIds] = useState<Set<string>>(new Set());
+  const [showInternalMessages, setShowInternalMessages] = useState(false);
+  const [visibleMessageCount, setVisibleMessageCount] = useState<number | null>(null);
   const volundr = useService<IVolundrService>('volundr');
-  const bifrost = useService<IBifrostService>('bifrost');
   const filesystem = useService<IFileSystemPort>('filesystem');
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -1369,12 +1460,6 @@ export function LiveSessionDetailPage({
     queryFn: () => volundr.getUserFeaturePreferences(),
     staleTime: 30_000,
   });
-  const modelsQuery = useQuery({
-    queryKey: ['bifrost', 'models'],
-    queryFn: () => bifrost.getModelCatalog(),
-    staleTime: 30_000,
-  });
-
   const liveSession = liveSessionQuery.data;
   const sessionStatus = liveSession?.status ?? null;
   const isRunning = sessionStatus === 'running';
@@ -1400,15 +1485,37 @@ export function LiveSessionDetailPage({
     enabled: Boolean(sessionId) && canReplayTranscript,
     staleTime: 5_000,
   });
-  const sessionName = sessionQuery.data?.personaName ?? liveSession?.name ?? sessionId;
+  const sessionName = liveSession?.name ?? sessionQuery.data?.personaName ?? sessionId;
+  const sessionTrackerIssue = liveSession?.trackerIssue;
+  const sessionHandle = useMemo(() => {
+    const rawHandle = sessionQuery.data?.ravnId?.trim();
+    if (!rawHandle) return null;
+    const normalizedHandle = rawHandle.toLowerCase();
+    if (
+      normalizedHandle === sessionId.toLowerCase() ||
+      normalizedHandle === sessionName.trim().toLowerCase() ||
+      normalizedHandle === sessionTrackerIssue?.identifier.trim().toLowerCase()
+    ) {
+      return null;
+    }
+    return rawHandle;
+  }, [sessionId, sessionName, sessionQuery.data?.ravnId, sessionTrackerIssue?.identifier]);
+  const forgeBadgeLabel = useMemo(() => {
+    const clusterName = sessionQuery.data?.clusterName?.trim();
+    if (clusterName) return clusterName;
+    const clusterId = sessionQuery.data?.clusterId?.trim();
+    if (clusterId && clusterId !== 'local') return normalizeForgeBadgeLabel(clusterId);
+    const instanceName = liveSession?.instanceName?.trim();
+    if (instanceName) return normalizeForgeBadgeLabel(instanceName);
+    const instanceId = liveSession?.instanceId?.trim();
+    if (instanceId) return normalizeForgeBadgeLabel(instanceId);
+    return null;
+  }, [liveSession?.instanceId, liveSession?.instanceName, sessionQuery.data?.clusterId, sessionQuery.data?.clusterName]);
   const sessionFeatures = useMemo(
     () => sessionFeaturesQuery.data ?? [],
     [sessionFeaturesQuery.data],
   );
   const featurePrefs = useMemo(() => featurePrefsQuery.data ?? [], [featurePrefsQuery.data]);
-  const modelCatalog = modelsQuery.data ?? {};
-  const modelInfo = liveSession?.model ? modelCatalog[liveSession.model] : undefined;
-  const modelLabel = modelInfo?.name ?? liveSession?.model ?? 'unknown';
   const transcriptTurns = useMemo(() => transcriptQuery.data?.turns ?? [], [transcriptQuery.data]);
   const replayMessages = useMemo(() => transformTurns(transcriptTurns), [transcriptTurns]);
   const replayParticipants = useMemo(
@@ -1472,11 +1579,44 @@ export function LiveSessionDetailPage({
       },
     };
   }, [chat.meshEvents, chat.participants, dismissedHumanGateIds, workflowGates]);
+  const sessionDetail = sessionQuery.data;
+  const uptimeValue = formatElapsedSince(sessionDetail?.startedAt);
+  const costValue =
+    sessionDetail?.costCents != null ? formatCurrencyCents(sessionDetail.costCents) : null;
+  const trailingMetric = useMemo(() => {
+    if (costValue) {
+      return { label: 'Cost', value: costValue };
+    }
+    if (forgeBadgeLabel) {
+      return null;
+    }
+    return { label: 'Forge', value: sessionForgeLabel(liveSession) };
+  }, [costValue, forgeBadgeLabel, liveSession]);
+  const tabCounts = useMemo<Partial<Record<SessionTab, number>>>(
+    () => ({
+      chat: liveSession?.messageCount || replayMessages.length || undefined,
+      diffs: fileChangeCount(sessionDetail?.files),
+      chronicles: sessionDetail?.events.length ? sessionDetail.events.length : undefined,
+    }),
+    [liveSession?.messageCount, replayMessages.length, sessionDetail?.events, sessionDetail?.files],
+  );
+  const headerMessageCount = useMemo(() => {
+    if (visibleMessageCount != null) return visibleMessageCount;
+    if (canReplayTranscript) return replayMessages.length;
+    return liveSession?.messageCount ?? 0;
+  }, [canReplayTranscript, liveSession?.messageCount, replayMessages.length, visibleMessageCount]);
+  const isSessionConnected = isReady && chat.connected;
 
   const tabs = useMemo(() => {
     const prefMap = new Map(featurePrefs.map((pref) => [pref.featureKey, pref]));
     const visible = ALL_TABS.filter((tab) => {
       if (tab.id === 'diffs') return true;
+      if (tab.id === 'terminal') {
+        const pref = prefMap.get(tab.id);
+        if (pref && !pref.visible) return false;
+        const feature = sessionFeatures.find((candidate) => candidate.key === tab.id);
+        return Boolean(feature?.enabled || terminalUrl);
+      }
       const feature = sessionFeatures.find((candidate) => candidate.key === tab.id);
       if (!feature?.enabled) return false;
       const pref = prefMap.get(tab.id);
@@ -1497,13 +1637,23 @@ export function LiveSessionDetailPage({
     });
 
     return visible;
-  }, [featurePrefs, sessionFeatures]);
+  }, [featurePrefs, sessionFeatures, terminalUrl]);
 
   useEffect(() => {
     setTabWasManuallySelected(false);
     setActiveTab('chat');
     setDismissedHumanGateIds(new Set());
+    setShowInternalMessages(false);
+    setVisibleMessageCount(null);
   }, [sessionId]);
+
+  const handleToggleInternalMessages = useCallback(() => {
+    const next = !showInternalMessages;
+    setShowInternalMessages(next);
+    if (isReady) {
+      chat.sendSetInternalVisibility(next);
+    }
+  }, [chat, isReady, showInternalMessages]);
 
   const handleHumanGateReply = useCallback(
     (decision: 'APPROVE' | 'CHANGES_REQUESTED', notes: string) => {
@@ -1709,160 +1859,162 @@ export function LiveSessionDetailPage({
 
   return (
     <div className="niuu-flex niuu-h-full niuu-flex-col" data-testid="live-session-detail-page">
-      <div className="niuu-bg-bg-secondary">
-        <div className="niuu-flex niuu-flex-nowrap niuu-items-center niuu-gap-2 niuu-overflow-x-auto niuu-px-4 niuu-py-4">
-          <div className="niuu-flex niuu-min-w-0 niuu-flex-shrink-0 niuu-items-center niuu-gap-2">
+      <div className="niuu-live-session__chrome">
+        <div className="niuu-live-session__header">
+          <div className="niuu-live-session__title-group">
             <span
               className={cn(
-                'niuu-h-2.5 niuu-w-2.5 niuu-flex-shrink-0 niuu-rounded-full',
-                statusDotClass(liveSession?.status),
+                'niuu-live-session__status-dot',
+                isSessionConnected
+                  ? 'niuu-live-session__status-dot--connected'
+                  : 'niuu-live-session__status-dot--disconnected',
               )}
             />
-            <span className="niuu-max-w-[240px] niuu-truncate niuu-font-mono niuu-text-[28px] niuu-text-text-primary">
-              {sessionName}
-            </span>
-            {liveSession?.trackerIssue ? (
+            <div className="niuu-live-session__identity">
+              <span className="niuu-live-session__title">{sessionName}</span>
+              {sessionHandle ? (
+                <span className="niuu-live-session__handle" title={sessionHandle}>
+                  {sessionHandle}
+                </span>
+              ) : null}
+              <SessionIdChip sessionId={sessionId} />
+            </div>
+            {sessionTrackerIssue ? (
               <>
-                <TicketLink issue={liveSession?.trackerIssue} />
                 <HeaderDivider />
+                <TicketLink issue={sessionTrackerIssue} />
               </>
             ) : null}
-            {renderSourceMeta(liveSession)}
-            <HeaderDivider />
-            <span className="niuu-inline-flex niuu-flex-shrink-0 niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-2.5 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary">
-              {modelLabel}
-            </span>
-            <HeaderDivider />
-            <SessionIdChip sessionId={sessionId} />
-            {readOnly && (
+            {liveSession?.source ? (
               <>
                 <HeaderDivider />
-                <span className="niuu-rounded-full niuu-bg-bg-elevated niuu-px-3 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
-                  Archived
-                </span>
+                <SourceMeta session={liveSession} />
               </>
-            )}
+            ) : null}
+            {forgeBadgeLabel ? (
+              <>
+                <HeaderDivider />
+                <SessionForgeBadge label={forgeBadgeLabel} />
+              </>
+            ) : null}
+            {readOnly ? (
+              <>
+                <HeaderDivider />
+                <span className="niuu-live-session__archived-badge">Archived</span>
+              </>
+            ) : null}
           </div>
 
-          <div className="niuu-ml-auto niuu-flex niuu-flex-shrink-0 niuu-items-center niuu-gap-2">
-            <HeaderMetric label="Active" value={formatRelativeAge(liveSession?.lastActive)} />
+          <div className="niuu-live-session__metrics-row" data-testid="session-stats">
+            <HeaderMetric label="Uptime" value={uptimeValue} />
             <HeaderDivider />
-            <HeaderMetric label="Msgs" value={formatCount(liveSession?.messageCount ?? 0)} />
+            <HeaderMetric label="Msgs" value={formatCount(headerMessageCount)} />
             <HeaderDivider />
             <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
-            <HeaderDivider />
-            <HeaderMetric label="Forge" value={sessionForgeLabel(liveSession)} />
+            {trailingMetric ? (
+              <>
+                <HeaderDivider />
+                <HeaderMetric label={trailingMetric.label} value={trailingMetric.value} />
+              </>
+            ) : null}
           </div>
         </div>
-        <div
-          aria-hidden="true"
-          style={{
-            height: '2px',
-            background:
-              'linear-gradient(to right, rgba(255,255,255,0.08), rgba(255,255,255,0.24), rgba(255,255,255,0.08))',
-          }}
-        />
-      </div>
 
-      <div
-        className="niuu-flex niuu-flex-nowrap niuu-items-center niuu-gap-0 niuu-overflow-x-auto niuu-bg-bg-secondary niuu-px-3"
-        role="tablist"
-        aria-label="Session tabs"
-      >
-        <div className="niuu-flex niuu-items-center niuu-gap-1">
-          {tabs.map((tab) =>
-            (() => {
-              const TabIcon = tab.icon;
-              return (
-                <button
-                  key={tab.id}
-                  id={`tab-${tab.id}`}
-                  role="tab"
-                  aria-selected={activeTab === tab.id}
-                  onClick={() => {
-                    setTabWasManuallySelected(true);
-                    setActiveTab(tab.id);
-                  }}
-                  className={
-                    activeTab === tab.id
-                      ? 'niuu-flex niuu-items-center niuu-gap-2 niuu-border-b-2 niuu-border-brand niuu-px-3 niuu-py-2.5 niuu-font-mono niuu-text-[13px] niuu-font-medium niuu-text-brand'
-                      : 'niuu-flex niuu-items-center niuu-gap-2 niuu-border-b-2 niuu-border-transparent niuu-px-3 niuu-py-2.5 niuu-font-mono niuu-text-[13px] niuu-text-text-muted hover:niuu-text-text-secondary'
-                  }
-                >
-                  <TabIcon className="niuu-h-4 niuu-w-4" />
-                  {tab.label}
-                </button>
-              );
-            })(),
-          )}
-        </div>
-        {liveSession && (
-          <div className="niuu-ml-auto niuu-flex niuu-flex-shrink-0 niuu-items-center niuu-gap-2 niuu-pr-1">
-            {!readOnly &&
+        <div className="niuu-live-session__tabs-row">
+          <div className="niuu-live-session__tabs" role="tablist" aria-label="Session tabs">
+            {tabs.map((tab) =>
+              (() => {
+                const TabIcon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    id={`tab-${tab.id}`}
+                    role="tab"
+                    aria-selected={activeTab === tab.id}
+                    onClick={() => {
+                      setTabWasManuallySelected(true);
+                      setActiveTab(tab.id);
+                    }}
+                    className={cn(
+                      'niuu-live-session__tab',
+                      activeTab === tab.id && 'niuu-live-session__tab--active',
+                    )}
+                  >
+                    <TabIcon className="niuu-live-session__tab-icon" />
+                    <span>{tab.label}</span>
+                    <TabCountBadge count={tabCounts[tab.id]} />
+                  </button>
+                );
+              })(),
+            )}
+          </div>
+          <div className="niuu-live-session__toolbar">
+            <SessionToolbarButton
+              icon={showInternalMessages ? Eye : EyeOff}
+              title={
+                showInternalMessages
+                  ? 'Hide tool calls and results'
+                  : 'Show tool calls and results'
+              }
+              active={showInternalMessages}
+              onClick={handleToggleInternalMessages}
+            />
+            {liveSession &&
+              !readOnly &&
               (liveSession.status === 'running' ? (
-                <IconActionButton
-                  label={actionBusy === 'stop' ? '■ stopping' : '■ stop'}
+                <SessionToolbarButton
+                  icon={Square}
                   title="Stop session"
                   onClick={() => void handleStopSession()}
                   disabled={actionBusy !== null}
                   tone="critical"
                 />
               ) : liveSession.status === 'stopped' ? (
-                <>
-                  <IconActionButton
-                    label={actionBusy === 'start' ? '▶ starting' : '▶ start'}
-                    title="Start session"
-                    onClick={() => void handleResumeSession()}
-                    disabled={actionBusy !== null}
-                    tone="brand"
-                  />
-                  <IconActionButton
-                    label={actionBusy === 'archive' ? '⤓ archiving' : '⤓ archive'}
-                    title="Archive session"
-                    onClick={() => void handleArchiveSession()}
-                    disabled={actionBusy !== null}
-                    tone="neutral"
-                  />
-                </>
+                <SessionToolbarButton
+                  icon={Play}
+                  title="Start session"
+                  onClick={() => void handleResumeSession()}
+                  disabled={actionBusy !== null}
+                  tone="brand"
+                />
               ) : liveSession.status === 'archived' ? null : (
-                <IconActionButton
-                  label={actionBusy === 'start' ? '▶ starting' : '▶ start'}
+                <SessionToolbarButton
+                  icon={Play}
                   title="Start session"
                   onClick={() => void handleResumeSession()}
                   disabled={actionBusy !== null}
                   tone="brand"
                 />
               ))}
-            {liveSession.status === 'archived' && (
-              <IconActionButton
-                label={actionBusy === 'restore' ? '↺ restoring' : '↺ restore'}
+            {!readOnly && liveSession && liveSession.status !== 'archived' && (
+              <SessionToolbarButton
+                icon={Archive}
+                title="Archive session"
+                onClick={() => void handleArchiveSession()}
+                disabled={actionBusy !== null}
+              />
+            )}
+            {liveSession?.status === 'archived' ? (
+              <SessionToolbarButton
+                icon={RotateCcw}
                 title="Restore archived session"
                 onClick={() => void handleRestoreSession()}
                 disabled={actionBusy !== null}
                 tone="brand"
               />
-            )}
+            ) : null}
             {!readOnly && (
-              <IconActionButton
-                label="⌫ delete"
+              <SessionToolbarButton
+                icon={Trash2}
                 title="Delete session"
                 onClick={() => setDeleteDialogOpen(true)}
                 disabled={actionBusy !== null}
-                tone="neutral"
+                tone="critical"
               />
             )}
           </div>
-        )}
+        </div>
       </div>
-
-      <div
-        aria-hidden="true"
-        style={{
-          height: '2px',
-          background:
-            'linear-gradient(to right, rgba(255,255,255,0.08), rgba(255,255,255,0.24), rgba(255,255,255,0.08))',
-        }}
-      />
 
       <div className="niuu-min-h-0 niuu-flex-1 niuu-overflow-hidden">
         {activeTab === 'chat' && (
@@ -1900,6 +2052,9 @@ export function LiveSessionDetailPage({
                 )}
                 <SessionChat
                   className="niuu-h-full"
+                  showToolbar={false}
+                  showInternalToggle={false}
+                  internalVisibility={showInternalMessages}
                   messages={chat.messages}
                   streamingContent={chat.streamingContent}
                   streamingParts={chat.streamingParts}
@@ -1922,6 +2077,7 @@ export function LiveSessionDetailPage({
                   onSetThinkingTokens={chat.sendSetThinkingTokens}
                   onRewindFiles={chat.sendRewindFiles}
                   onPermissionRespond={chat.respondToPermission}
+                  onMessageCountChange={setVisibleMessageCount}
                   renderPermissions={permissionRenderer}
                 />
               </>
@@ -1936,12 +2092,16 @@ export function LiveSessionDetailPage({
             ) : canReplayTranscript && replayMessages.length > 0 ? (
               <SessionChat
                 className="niuu-h-full"
+                showToolbar={false}
+                showInternalToggle={false}
+                internalVisibility={showInternalMessages}
                 messages={replayMessages}
                 connected={false}
                 historyLoaded={!transcriptQuery.isLoading}
                 participants={replayParticipants}
                 meshEvents={replayMeshEvents}
                 sessionName={sessionName}
+                onMessageCountChange={setVisibleMessageCount}
                 onSend={() => {}}
                 onStop={() => {}}
               />

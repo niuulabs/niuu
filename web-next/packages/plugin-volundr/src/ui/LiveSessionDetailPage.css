@@ -114,3 +114,417 @@
 .niuu-live-delete-dialog__action-button--critical:hover:not(:disabled) {
   background: color-mix(in srgb, var(--color-danger) 20%, var(--color-bg-elevated));
 }
+
+.niuu-live-session__chrome {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
+  background: color-mix(in srgb, var(--color-bg-secondary) 96%, black);
+}
+
+.niuu-live-session__header,
+.niuu-live-session__tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.niuu-live-session__header {
+  min-height: 42px;
+  padding: 4px 20px 3px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border-subtle) 85%, transparent);
+}
+
+.niuu-live-session__tabs-row {
+  min-height: 44px;
+  padding: 0 20px;
+}
+
+.niuu-live-session__title-group,
+.niuu-live-session__metrics-row,
+.niuu-live-session__tabs,
+.niuu-live-session__toolbar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.niuu-live-session__title-group {
+  gap: 10px;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.niuu-live-session__identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.niuu-live-session__metrics-row {
+  margin-left: auto;
+  flex: 0 0 auto;
+  gap: 12px;
+}
+
+.niuu-live-session__status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.niuu-live-session__status-dot--connected {
+  background: color-mix(in srgb, var(--color-brand) 86%, white);
+  box-shadow: 0 0 12px rgba(96, 165, 250, 0.2);
+}
+
+.niuu-live-session__status-dot--disconnected {
+  background: color-mix(in srgb, var(--color-text-faint) 76%, transparent);
+}
+
+.niuu-live-session__title {
+  display: block;
+  max-width: min(32vw, 420px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+
+.niuu-live-session__handle {
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.niuu-live-session__divider {
+  width: 1px;
+  height: 15px;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--color-text-faint) 38%, transparent);
+}
+
+.niuu-live-session__ticket,
+.niuu-live-session__archived-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.niuu-live-session__source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 330px;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.niuu-live-session__source-link {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  text-decoration: none;
+}
+
+.niuu-live-session__source-link:hover {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+}
+
+.niuu-live-session__ticket {
+  border: 1px solid color-mix(in srgb, var(--color-brand) 32%, var(--color-border-subtle));
+  background: color-mix(in srgb, var(--color-brand) 16%, var(--color-bg-elevated));
+  color: color-mix(in srgb, var(--color-brand) 76%, white);
+  text-decoration: none;
+}
+
+.niuu-live-session__ticket:hover {
+  background: color-mix(in srgb, var(--color-brand) 16%, var(--color-bg-elevated));
+}
+
+.niuu-live-session__ticket--static {
+  cursor: default;
+}
+
+.niuu-live-session__archived-badge {
+  border: 1px solid color-mix(in srgb, var(--color-border-subtle) 90%, transparent);
+  background: color-mix(in srgb, var(--color-bg-elevated) 96%, transparent);
+  color: var(--color-text-muted);
+}
+
+.niuu-live-session__session-id {
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 1px 0;
+  background: color-mix(in srgb, var(--color-bg-elevated) 98%, transparent);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: none;
+  transition:
+    max-width 140ms ease,
+    opacity 140ms ease,
+    padding 140ms ease,
+    border-color 140ms ease;
+}
+
+.niuu-live-session__identity:hover .niuu-live-session__session-id,
+.niuu-live-session__identity:focus-within .niuu-live-session__session-id {
+  max-width: 280px;
+  opacity: 1;
+  padding: 2px 7px;
+  border-color: color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
+  pointer-events: auto;
+}
+
+.niuu-live-session__session-id:hover {
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__branch-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-brand) 82%, white);
+  font: inherit;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.niuu-live-session__branch-button:hover {
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__forge-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg-elevated) 96%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border-subtle) 94%, transparent);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.niuu-live-session__forge-badge-label {
+  color: var(--color-text-primary);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.niuu-live-session__forge-badge-tone {
+  color: var(--color-text-faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.niuu-live-session__metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.niuu-live-session__metric-label {
+  color: var(--color-text-faint);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.niuu-live-session__metric-value {
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.niuu-live-session__tabs {
+  gap: 18px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.niuu-live-session__tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.niuu-live-session__tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 12px 0 10px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease;
+}
+
+.niuu-live-session__tab:hover {
+  color: var(--color-text-secondary);
+}
+
+.niuu-live-session__tab--active {
+  color: color-mix(in srgb, var(--color-brand) 75%, white);
+  border-bottom-color: var(--color-brand);
+}
+
+.niuu-live-session__tab-icon {
+  width: 14px;
+  height: 14px;
+  opacity: 0.88;
+}
+
+.niuu-live-session__tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-elevated) 98%, transparent);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.niuu-live-session__tab--active .niuu-live-session__tab-count {
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__toolbar {
+  margin-left: auto;
+  gap: 12px;
+  padding-left: 18px;
+  flex: 0 0 auto;
+}
+
+.niuu-live-session__toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.niuu-live-session__toolbar-button:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__toolbar-button:disabled {
+  opacity: 0.44;
+  cursor: not-allowed;
+}
+
+.niuu-live-session__toolbar-button--active,
+.niuu-live-session__toolbar-button--brand {
+  color: color-mix(in srgb, var(--color-brand) 78%, white);
+}
+
+.niuu-live-session__toolbar-button--critical {
+  color: color-mix(in srgb, var(--color-danger-text) 84%, white);
+}
+
+.niuu-live-session__toolbar-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.niuu-live-session__toolbar-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+@media (max-width: 1100px) {
+  .niuu-live-session__header,
+  .niuu-live-session__tabs-row {
+    gap: 12px;
+  }
+
+  .niuu-live-session__header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .niuu-live-session__metrics-row {
+    margin-left: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .niuu-live-session__metrics-row::-webkit-scrollbar {
+    display: none;
+  }
+}

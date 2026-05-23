@@ -143,6 +143,12 @@ export interface SessionChatProps {
   sessionName?: string;
   /** Optional extra class on the outer wrapper */
   className?: string;
+  /** Show the built-in toolbar row. */
+  showToolbar?: boolean;
+  /** Hide the built-in internal visibility toggle when the page owns it externally. */
+  showInternalToggle?: boolean;
+  /** Controlled internal visibility state for external toolbar integrations. */
+  internalVisibility?: boolean;
 
   /* ── Callbacks ── */
   onSend: (text: string, attachments: FileAttachment[]) => void;
@@ -199,6 +205,9 @@ export function SessionChat({
   chatEndpoint = null,
   sessionName = 'Session',
   className,
+  showToolbar = true,
+  showInternalToggle = true,
+  internalVisibility,
   onSend,
   onSendDirected,
   onStop,
@@ -220,11 +229,17 @@ export function SessionChat({
     activeFilter,
     setActiveFilter,
     showInternal,
+    setShowInternal,
     toggleInternal: toggleInternalLocal,
     visibleMessages,
     collapsedThreads,
     toggleThread,
   } = useRoomState(messages, participants);
+
+  useEffect(() => {
+    if (internalVisibility === undefined) return;
+    setShowInternal(internalVisibility);
+  }, [internalVisibility, setShowInternal]);
 
   const toggleInternal = useCallback(() => {
     toggleInternalLocal();
@@ -559,108 +574,114 @@ export function SessionChat({
 
       <div className="niuu-chat-wrapper">
         {/* ── Toolbar ── */}
-        <div className="niuu-chat-toolbar">
-          <div className="niuu-chat-toolbar-left">
-            <div className="niuu-chat-status-indicator" data-connected={connected}>
-              {connected ? (
-                <Wifi className="niuu-chat-status-icon" />
-              ) : (
-                <WifiOff className="niuu-chat-status-icon" />
-              )}
-              <span>{connected ? 'Connected' : 'Disconnected'}</span>
-            </div>
-            <span className="niuu-chat-message-count">
-              {visibleMessages.length} message{visibleMessages.length !== 1 ? 's' : ''}
-            </span>
-            {visibleMessages.length > 0 && onClear && (
-              <button
-                type="button"
-                className="niuu-chat-control-btn"
-                onClick={onClear}
-                title="Clear chat"
-                data-testid="clear-chat"
-              >
-                <Trash2Icon className="niuu-chat-control-icon" />
-              </button>
-            )}
-            <button
-              type="button"
-              className={cn(
-                'niuu-chat-control-btn',
-                showInternal && 'niuu-chat-control-btn--active',
-              )}
-              onClick={toggleInternal}
-              title={showInternal ? 'Hide tool calls and results' : 'Show tool calls and results'}
-              aria-pressed={showInternal}
-              data-testid="internal-toggle"
-            >
-              {showInternal ? (
-                <Eye className="niuu-chat-control-icon" />
-              ) : (
-                <EyeOff className="niuu-chat-control-icon" />
-              )}
-            </button>
-          </div>
-
-          {connected && (
-            <div className="niuu-chat-toolbar-right">
-              <div className="niuu-chat-control-group">
-                {capabilities.set_model && onSetModel && (
-                  <button
-                    type="button"
-                    className="niuu-chat-control-btn"
-                    onClick={() => setShowModelInput((prev) => !prev)}
-                    title="Switch model"
-                    data-testid="model-switch-toggle"
-                  >
-                    <BrainCircuitIcon className="niuu-chat-control-icon" />
-                  </button>
+        {showToolbar && (
+          <div className="niuu-chat-toolbar">
+            <div className="niuu-chat-toolbar-left">
+              <div className="niuu-chat-status-indicator" data-connected={connected}>
+                {connected ? (
+                  <Wifi className="niuu-chat-status-icon" />
+                ) : (
+                  <WifiOff className="niuu-chat-status-icon" />
                 )}
+                <span>{connected ? 'Connected' : 'Disconnected'}</span>
+              </div>
+              <span className="niuu-chat-message-count">
+                {visibleMessages.length} message{visibleMessages.length !== 1 ? 's' : ''}
+              </span>
+              {visibleMessages.length > 0 && onClear && (
+                <button
+                  type="button"
+                  className="niuu-chat-control-btn"
+                  onClick={onClear}
+                  title="Clear chat"
+                  data-testid="clear-chat"
+                >
+                  <Trash2Icon className="niuu-chat-control-icon" />
+                </button>
+              )}
+              {showInternalToggle && (
+                <button
+                  type="button"
+                  className={cn(
+                    'niuu-chat-control-btn',
+                    showInternal && 'niuu-chat-control-btn--active',
+                  )}
+                  onClick={toggleInternal}
+                  title={
+                    showInternal ? 'Hide tool calls and results' : 'Show tool calls and results'
+                  }
+                  aria-pressed={showInternal}
+                  data-testid="internal-toggle"
+                >
+                  {showInternal ? (
+                    <Eye className="niuu-chat-control-icon" />
+                  ) : (
+                    <EyeOff className="niuu-chat-control-icon" />
+                  )}
+                </button>
+              )}
+            </div>
 
-                {capabilities.set_thinking_tokens && onSetThinkingTokens && (
-                  <div className="niuu-chat-thinking-wrapper">
+            {connected && (
+              <div className="niuu-chat-toolbar-right">
+                <div className="niuu-chat-control-group">
+                  {capabilities.set_model && onSetModel && (
                     <button
                       type="button"
                       className="niuu-chat-control-btn"
-                      onClick={() => setShowThinkingMenu((prev) => !prev)}
-                      title="Set thinking budget"
-                      data-testid="thinking-budget-toggle"
+                      onClick={() => setShowModelInput((prev) => !prev)}
+                      title="Switch model"
+                      data-testid="model-switch-toggle"
                     >
-                      <span className="niuu-chat-control-label">Thinking</span>
+                      <BrainCircuitIcon className="niuu-chat-control-icon" />
                     </button>
-                    {showThinkingMenu && (
-                      <div className="niuu-chat-thinking-menu" data-testid="thinking-menu">
-                        {THINKING_PRESETS.map((preset) => (
-                          <button
-                            key={preset.value}
-                            type="button"
-                            className="niuu-chat-thinking-option"
-                            onClick={() => handleThinkingSelect(preset.value)}
-                            data-testid={`thinking-${preset.label}`}
-                          >
-                            {preset.label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+                  )}
 
-                {capabilities.rewind_files && onRewindFiles && (
-                  <button
-                    type="button"
-                    className="niuu-chat-control-btn"
-                    onClick={onRewindFiles}
-                    title="Rewind files"
-                    data-testid="rewind-files"
-                  >
-                    <RotateCcwIcon className="niuu-chat-control-icon" />
-                  </button>
-                )}
+                  {capabilities.set_thinking_tokens && onSetThinkingTokens && (
+                    <div className="niuu-chat-thinking-wrapper">
+                      <button
+                        type="button"
+                        className="niuu-chat-control-btn"
+                        onClick={() => setShowThinkingMenu((prev) => !prev)}
+                        title="Set thinking budget"
+                        data-testid="thinking-budget-toggle"
+                      >
+                        <span className="niuu-chat-control-label">Thinking</span>
+                      </button>
+                      {showThinkingMenu && (
+                        <div className="niuu-chat-thinking-menu" data-testid="thinking-menu">
+                          {THINKING_PRESETS.map((preset) => (
+                            <button
+                              key={preset.value}
+                              type="button"
+                              className="niuu-chat-thinking-option"
+                              onClick={() => handleThinkingSelect(preset.value)}
+                              data-testid={`thinking-${preset.label}`}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {capabilities.rewind_files && onRewindFiles && (
+                    <button
+                      type="button"
+                      className="niuu-chat-control-btn"
+                      onClick={onRewindFiles}
+                      title="Rewind files"
+                      data-testid="rewind-files"
+                    >
+                      <RotateCcwIcon className="niuu-chat-control-icon" />
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         {/* ── Model input bar ── */}
         {showModelInput && connected && capabilities.set_model && (

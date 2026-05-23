@@ -494,16 +494,20 @@ describe('buildVolundrHttpAdapter', () => {
 
     await service.getFeatures();
     await service.getTargets();
+    await service.getSession('sess-1');
 
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/forge');
     expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1');
     expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
     expect(queryMocks.createApiClient).not.toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/niuu/volundr/forge',
     );
 
+    const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
     const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
     const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu');
 
+    expect(forgeClient.get).toHaveBeenCalledWith('/sessions/sess-1');
     expect(sharedClient.get).toHaveBeenCalledWith('/features');
     expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
   });
