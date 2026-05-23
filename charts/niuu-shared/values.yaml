@@ -72,7 +72,7 @@ git:
     tokenKey: "token"
 
 database:
-  name: volundr
+  name: niuu_shared
   minPoolSize: 5
   maxPoolSize: 20
   createSecret: false
@@ -87,6 +87,20 @@ database:
     enabled: true
     host: postgresql.default.svc.cluster.local
     port: 5432
+
+migrations:
+  enabled: true
+  image:
+    repository: migrate/migrate
+    tag: "v4.17.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
 
 storageAdapter:
   adapter: "volundr.adapters.outbound.k8s_storage.InMemoryStorageAdapter"
@@ -206,6 +220,7 @@ affinity: {}
 podAnnotations: {}
 podLabels: {}
 deploymentAnnotations: {}
+initContainers: []
 extraEnv: []
 extraVolumeMounts: []
 extraVolumes: []

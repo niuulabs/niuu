@@ -1,0 +1,19 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "observatory.fullname" . }}-migrations
+  labels:
+    {{- include "observatory.labels" . | nindent 4 }}
+data:
+  000039_observatory_registry.up.sql: |
+    CREATE TABLE IF NOT EXISTS observatory_registries (
+        registry_key TEXT PRIMARY KEY,
+        version BIGINT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        payload JSONB NOT NULL
+    );
+
+  000039_observatory_registry.down.sql: |
+    DROP TABLE IF EXISTS observatory_registries;
+{{- end }}

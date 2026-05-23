@@ -81,7 +81,8 @@ def test_create_app_uses_loaded_settings_and_skips_empty_seed(monkeypatch) -> No
     with TestClient(app) as client:
         response = client.get("/health")
         assert response.json() == {"status": "healthy"}
-        assert app.state.settings is loaded_settings
+        assert app.state.settings.database.name == "guild"
+        assert loaded_settings.database.name == "volundr"
         assert app.state.pat_validator.__class__ is _DummyPATValidator
 
     seed_instances.assert_not_awaited()

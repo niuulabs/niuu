@@ -57,7 +57,7 @@ config:
   extra: {}
 
 database:
-  name: volundr
+  name: guild
   minPoolSize: 5
   maxPoolSize: 20
   createSecret: false
@@ -72,6 +72,29 @@ database:
     enabled: true
     host: postgresql.default.svc.cluster.local
     port: 5432
+
+# Database migrations configuration
+migrations:
+  # -- Enable Guild schema migrations via init container
+  enabled: true
+  image:
+    # -- Migration image repository
+    repository: migrate/migrate
+    # -- Migration image tag
+    tag: "v4.17.0"
+    # -- Migration image pull policy
+    pullPolicy: IfNotPresent
+  # -- Resources for the migration init container
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# -- Init containers
+initContainers: []
 
 registry:
   instances: []

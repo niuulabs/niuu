@@ -51,7 +51,7 @@ config:
   extra: {}
 
 database:
-  name: volundr
+  name: observatory
   minPoolSize: 5
   maxPoolSize: 20
   createSecret: false
@@ -66,6 +66,20 @@ database:
     enabled: true
     host: postgresql.default.svc.cluster.local
     port: 5432
+
+migrations:
+  enabled: true
+  image:
+    repository: migrate/migrate
+    tag: "v4.17.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
 
 guild:
   url: ""
@@ -121,6 +135,7 @@ affinity: {}
 podAnnotations: {}
 podLabels: {}
 deploymentAnnotations: {}
+initContainers: []
 extraEnv: []
 extraVolumeMounts: []
 extraVolumes: []

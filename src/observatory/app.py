@@ -12,6 +12,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from niuu.ports.http_auth import HttpAuthPort
+from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.service_settings import Settings
 from niuu.settings_schema import (
     SettingsFieldSchema,
@@ -27,8 +28,6 @@ from observatory.registry import (
     RegistryNotFoundError,
     RegistryValidationError,
 )
-from volundr.infrastructure.database import database_pool
-
 KEEPALIVE_INTERVAL = 15.0
 
 
@@ -237,7 +236,7 @@ def create_app(
     discovery_service: ObservatoryDiscoveryService | None = None,
 ) -> FastAPI:
     """Create the Observatory ASGI app."""
-    loaded_settings = settings or Settings()
+    loaded_settings = apply_service_database_settings(settings or Settings(), "observatory")
     discovery = discovery_service
     if discovery is None:
         guild_cfg = loaded_settings.observatory.guild

@@ -56,12 +56,12 @@ class PostgresBase:
         return self._pool
 
     async def _init_schema(self, pool: asyncpg.Pool) -> None:
-        """Create tables and indexes on first connection."""
-        async with pool.acquire() as conn:
-            if self._create_table_sql:
-                await conn.execute(self._create_table_sql)
-            if self._create_indexes_sql:
-                await conn.execute(self._create_indexes_sql)
+        """Initialize adapter state after the pool is created.
+
+        Schema ownership now lives in explicit service migrations instead of
+        runtime auto-DDL on first connection.
+        """
+        _ = pool
 
     async def close(self) -> None:
         if self._pool is not None:
