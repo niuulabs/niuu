@@ -2,8 +2,8 @@ apiVersion: v2
 name: niuu
 description: "Niuu AI Platform — umbrella chart"
 type: application
-version: 0.0.0-service-db-reset.4
-appVersion: "0.0.0-service-db-reset.4"
+version: 0.0.0-service-db-reset.5
+appVersion: "0.0.0-service-db-reset.5"
 keywords:
   - niuu
   - ai

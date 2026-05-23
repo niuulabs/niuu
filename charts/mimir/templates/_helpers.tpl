@@ -112,3 +112,13 @@ Claim name for the wiki data PVC
 {{ include "mimir.fullname" . }}-data
 {{- end -}}
 {{- end }}
+
+{{/*
+Annotations for checksum/config - forces restart on config changes
+*/}}
+{{- define "mimir.checksumAnnotations" -}}
+checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.envoy.enabled }}
+checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
+{{- end }}
+{{- end }}
