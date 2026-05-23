@@ -30,6 +30,7 @@ DEFINITIONS = {
         defaults={
             "broker": {
                 "cliType": "claude",
+                "transport": "sdk",
                 "transportAdapter": "skuld.transports.sdk.SDKTransport",
             },
         },

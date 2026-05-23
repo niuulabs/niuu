@@ -46,11 +46,9 @@ class TestValuesDefaults:
         values_path = CHART_DIR / "values.yaml"
         return yaml.safe_load(values_path.read_text())
 
-    def test_transport_adapter_defaults_to_sdk_websocket(self, values_yaml):
-        """Test broker transportAdapter defaults to SdkWebSocketTransport."""
-        assert values_yaml["broker"]["transportAdapter"] == (
-            "skuld.transports.sdk_websocket.SdkWebSocketTransport"
-        )
+    def test_transport_adapter_defaults_to_sdk(self, values_yaml):
+        """Test broker transportAdapter defaults to SDKTransport."""
+        assert values_yaml["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
 
     def test_broker_cli_type_defaults_to_claude(self, values_yaml):
         """Test legacy broker cliType defaults to claude (backward compat)."""

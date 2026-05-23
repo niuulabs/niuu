@@ -42,7 +42,7 @@ def _config_paths() -> list[Path]:
 
 CONFIG_PATHS = _config_paths()
 
-_DEFAULT_TRANSPORT_ADAPTER = "skuld.transports.sdk_websocket.SdkWebSocketTransport"
+_DEFAULT_TRANSPORT_ADAPTER = "skuld.transports.sdk.SDKTransport"
 
 
 _DEFAULT_PARTICIPANT_COLORS = [

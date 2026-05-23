@@ -516,7 +516,7 @@ class TestWorkflowCatalogAPI:
         assert body["sessionId"] == "session-123"
         assert len(adapter.requests) == 1
         spawn = adapter.requests[0]
-        assert spawn.definition == "skuldCodexExec"
+        assert spawn.definition == "skuldCodex"
         assert spawn.workload_type == "ravn_flock"
         assert spawn.name == "grief-companions"
         assert spawn.repo == "https://github.com/niuulabs/volundr.git"

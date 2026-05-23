@@ -20,7 +20,7 @@ data:
       {{- end }}
 
     transport: {{ .Values.broker.transport | default "sdk" | quote }}
-    transport_adapter: {{ .Values.broker.transportAdapter | default "skuld.transports.sdk_websocket.SdkWebSocketTransport" | quote }}
+    transport_adapter: {{ .Values.broker.transportAdapter | default "skuld.transports.sdk.SDKTransport" | quote }}
     skip_permissions: {{ .Values.broker.skipPermissions | default true }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}

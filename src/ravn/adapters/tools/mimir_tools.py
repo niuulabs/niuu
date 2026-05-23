@@ -603,6 +603,30 @@ class MimirPublishFilesTool(ToolPort):
     def required_permission(self) -> str:
         return _PERMISSION
 
+    def _resolve_workspace_file(self, path: str) -> Path | None:
+        """Resolve a markdown artifact path from the session root or checked-out repo root."""
+        candidate = Path(path)
+        if candidate.is_absolute():
+            try:
+                safe_path = resolve_safe(candidate, self._workspace)
+            except PathSecurityError:
+                return None
+            return safe_path if safe_path.exists() and safe_path.is_file() else None
+
+        roots = [self._workspace]
+        repo_root = self._workspace / "repo"
+        if repo_root.exists() and repo_root.is_dir():
+            roots.append(repo_root)
+
+        for root in roots:
+            try:
+                safe_path = resolve_safe(root / candidate, self._workspace)
+            except PathSecurityError:
+                continue
+            if safe_path.exists() and safe_path.is_file():
+                return safe_path
+        return None
+
     async def execute(self, input: dict) -> ToolResult:
         raw_paths = input.get("paths")
         mimir = input.get("mimir")
@@ -624,14 +648,8 @@ class MimirPublishFilesTool(ToolPort):
                     content=f"path must end with .md: {path}",
                     is_error=True,
                 )
-            candidate = Path(path)
-            if not candidate.is_absolute():
-                candidate = self._workspace / candidate
-            try:
-                safe_path = resolve_safe(candidate, self._workspace)
-            except PathSecurityError as exc:
-                return ToolResult(tool_call_id="", content=str(exc), is_error=True)
-            if not safe_path.exists() or not safe_path.is_file():
+            safe_path = self._resolve_workspace_file(path)
+            if safe_path is None:
                 return ToolResult(
                     tool_call_id="",
                     content=f"Workspace file not found: {path}",

@@ -640,6 +640,13 @@ class DriveLoop:
         counter = self._next_counter()
         await self._queue.put((task.priority, counter, task))
         self._persist_queue()
+        logger.info(
+            "drive_loop: enqueued task %s (%r) queue_size=%d active=%d",
+            task.task_id,
+            task.title,
+            self._queue.qsize(),
+            len(self._active_tasks),
+        )
 
     async def cancel(self, task_id: str) -> None:
         """Request cancellation of a running task by ID."""
@@ -1039,9 +1046,17 @@ class DriveLoop:
 
     async def _task_executor(self) -> None:
         """Drain the priority queue and execute tasks with the semaphore cap."""
+        logger.info("drive_loop: task executor started")
         while True:
             _, _, task = await self._queue.get()
             self._persist_queue()
+            logger.info(
+                "drive_loop: dequeued task %s (%r) queue_size=%d active=%d",
+                task.task_id,
+                task.title,
+                self._queue.qsize(),
+                len(self._active_tasks),
+            )
 
             # Check deadline again after any time in queue
             if task.deadline is not None and datetime.now(UTC) > task.deadline:
@@ -1060,10 +1075,18 @@ class DriveLoop:
                 name=f"initiative:{task.task_id}",
             )
             self._active_tasks[task.task_id] = asyncio_task
-            asyncio_task.add_done_callback(lambda _t, tid=task.task_id: self._on_task_done(tid))
+            asyncio_task.add_done_callback(
+                lambda _t, tid=task.task_id: self._on_task_done(tid, _t)
+            )
             self._queue.task_done()
 
-    def _on_task_done(self, task_id: str) -> None:
+    def _on_task_done(self, task_id: str, finished_task: asyncio.Task[Any]) -> None:
+        try:
+            exc = finished_task.exception()
+        except asyncio.CancelledError:
+            exc = None
+        if exc is not None:
+            logger.error("drive_loop: task %s crashed before completion handling: %s", task_id, exc)
         self._active_tasks.pop(task_id, None)
         self._semaphore.release()
         # Signal any waiters that this task is complete
@@ -1098,39 +1121,47 @@ class DriveLoop:
             )
             return
 
-        # Track the capture channel separately for response_text access
-        capture_channel: CaptureChannel | None = None
-        peer_id = self._settings.mesh.own_peer_id if self._settings.mesh.enabled else ""
-        if self._settings.cascade.enabled:
-            self._result_store.start(task.task_id, task.triggered_by)
-            capture_channel = CaptureChannel(task.task_id, self._result_store)
-            extra: list[ChannelPort] = []
-            if self._skuld_channel is not None:
-                self._skuld_channel._persona = task.persona  # Update persona for this task
-                extra.append(self._wrap_activity_channel(self._skuld_channel, task))
-            elif self._mesh is not None and peer_id:
-                extra.append(
-                    self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
-                )
-            if extra:
-                channel: ChannelPort = CompositeChannel([capture_channel, *extra])
+        try:
+            # Track the capture channel separately for response_text access
+            capture_channel: CaptureChannel | None = None
+            peer_id = self._settings.mesh.own_peer_id if self._settings.mesh.enabled else ""
+            logger.info("drive_loop: task %s setting up channels", task.task_id)
+            if self._settings.cascade.enabled:
+                self._result_store.start(task.task_id, task.triggered_by)
+                capture_channel = CaptureChannel(task.task_id, self._result_store)
+                extra: list[ChannelPort] = []
+                if self._skuld_channel is not None:
+                    self._skuld_channel._persona = task.persona  # Update persona for this task
+                    extra.append(self._wrap_activity_channel(self._skuld_channel, task))
+                elif self._mesh is not None and peer_id:
+                    extra.append(
+                        self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
+                    )
+                if extra:
+                    channel: ChannelPort = CompositeChannel([capture_channel, *extra])
+                else:
+                    channel = capture_channel
             else:
-                channel = capture_channel
-        else:
-            sinks: list[ChannelPort] = []
-            if self._skuld_channel is not None:
-                self._skuld_channel._persona = task.persona
-                sinks.append(self._wrap_activity_channel(self._skuld_channel, task))
-            elif self._mesh is not None and peer_id:
-                sinks.append(
-                    self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
-                )
-            if sinks:
-                channel = CompositeChannel(sinks) if len(sinks) > 1 else sinks[0]
-            else:
-                channel = SilentChannel()
-        agent = self._agent_factory(channel, task.task_id, task.persona, task.triggered_by)
-        prompt = build_initiative_prompt(task)
+                sinks: list[ChannelPort] = []
+                if self._skuld_channel is not None:
+                    self._skuld_channel._persona = task.persona
+                    sinks.append(self._wrap_activity_channel(self._skuld_channel, task))
+                elif self._mesh is not None and peer_id:
+                    sinks.append(
+                        self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
+                    )
+                if sinks:
+                    channel = CompositeChannel(sinks) if len(sinks) > 1 else sinks[0]
+                else:
+                    channel = SilentChannel()
+            logger.info("drive_loop: task %s building agent", task.task_id)
+            agent = self._agent_factory(channel, task.task_id, task.persona, task.triggered_by)
+            logger.info("drive_loop: task %s building prompt", task.task_id)
+            prompt = build_initiative_prompt(task)
+            logger.info("drive_loop: task %s setup complete", task.task_id)
+        except Exception as exc:
+            logger.error("drive_loop: task %s failed during setup: %s", task.task_id, exc)
+            raise
 
         logger.info(
             "drive_loop: executing task %s (%r) triggered_by=%r",

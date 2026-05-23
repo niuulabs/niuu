@@ -44,6 +44,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
         "Specification Stack",
+        "Tracker Delivery Flow",
     }
 
     run_flow = next(
@@ -138,6 +139,37 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     }
     assert specification_resources["Specification Memory"]["path"] == "/tmp/mimir"
 
+    delivery_flow = next(
+        workflow for workflow in workflows if workflow.name == "Tracker Delivery Flow"
+    )
+    delivery_stage_labels = [
+        node["label"] for node in delivery_flow.graph["nodes"] if node.get("kind") == "stage"
+    ]
+    assert delivery_stage_labels == [
+        "Implement tracker ticket",
+        "Review implementation",
+        "Merge and close ticket",
+        "Publish delivery record",
+    ]
+    delivery_stage_personas = {
+        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
+        for node in delivery_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+    }
+    assert delivery_stage_personas["Implement tracker ticket"] == ["coder"]
+    assert delivery_stage_personas["Review implementation"] == ["reviewer"]
+    assert delivery_stage_personas["Merge and close ticket"] == ["closer"]
+    assert delivery_stage_personas["Publish delivery record"] == ["publisher"]
+    delivery_edge_labels = {edge["label"] for edge in delivery_flow.graph["edges"]}
+    assert "review.changes_requested -> review.changes_requested" in delivery_edge_labels
+    assert "review.passed -> review.passed" in delivery_edge_labels
+    delivery_resources = {
+        node["label"]: node
+        for node in delivery_flow.graph["nodes"]
+        if node.get("kind") == "resource"
+    }
+    assert delivery_resources["Delivery Memory"]["path"] == "/tmp/mimir"
+
 
 @pytest.mark.asyncio
 async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> None:
@@ -173,9 +205,10 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
         "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
         "Specification Stack",
+        "Tracker Delivery Flow",
     }
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names
-    assert len(current_catalog) == 3
+    assert len(current_catalog) == 4
     assert all(workflow.id in {seed.id for seed in seeds} for workflow in current_catalog)

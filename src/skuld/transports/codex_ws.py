@@ -37,6 +37,7 @@ from skuld.transports.codex import (
     resolve_codex_cli,
 )
 from skuld.transports.mcp_config import build_codex_mcp_overrides
+from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
@@ -92,6 +93,7 @@ class CodexWebSocketTransport(CLITransport):
         self._codex_port = codex_port or _pick_free_port()
         self._mcp_servers = list(mcp_servers or [])
         self._mcp_overrides = build_codex_mcp_overrides(self._mcp_servers)
+        self._env = dict(os.environ)
 
         self._process: asyncio.subprocess.Process | None = None
         self._ws: ClientConnection | None = None
@@ -198,6 +200,13 @@ class CodexWebSocketTransport(CLITransport):
         listen_url = f"unix://{self._codex_socket_path}"
         codex_cli = resolve_codex_cli()
 
+        _, shim_env = ensure_codex_tool_shims(
+            self.workspace_dir,
+            mcp_servers=self._mcp_servers,
+        )
+        if shim_env:
+            self._env.update(shim_env)
+
         cmd = [
             codex_cli,
             "app-server",
@@ -207,7 +216,7 @@ class CodexWebSocketTransport(CLITransport):
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
 
-        env = dict(os.environ)
+        env = dict(self._env)
         if "OPENAI_API_KEY" not in env:
             logger.info(
                 "OPENAI_API_KEY not found — relying on Codex CLI auth state for app-server access"

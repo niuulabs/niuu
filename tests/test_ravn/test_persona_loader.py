@@ -258,11 +258,25 @@ class TestListBuiltinNames:
         assert "mimir-memory-curator" in names
         assert "mimir-warden" in names
         assert "coding-agent" not in names
-        assert "research-agent" not in names
-        assert "qa-agent" not in names
+
+
+class TestTrackerDeliveryPersonas:
+    def test_coder_uses_explicit_tracker_shim_path(self) -> None:
+        cfg = _BUILTIN_PERSONAS["coder"]
+        assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
+
+    def test_reviewer_uses_explicit_tracker_shim_path(self) -> None:
+        cfg = _BUILTIN_PERSONAS["reviewer"]
+        assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
+
+    def test_closer_uses_explicit_tracker_shim_path(self) -> None:
+        cfg = _BUILTIN_PERSONAS["closer"]
+        assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
 
     def test_returns_sorted_list(self) -> None:
         names = FilesystemPersonaAdapter().list_builtin_names()
+        assert "research-agent" not in names
+        assert "qa-agent" not in names
         assert names == sorted(names)
 
     def test_matches_builtin_dir_files(self) -> None:
@@ -396,7 +410,7 @@ class TestBuiltinPersonas:
     def test_reviewer_exists(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
         assert cfg.name == "reviewer"
-        assert cfg.permission_mode == "read-only"
+        assert cfg.permission_mode == "workspace_write"
         assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
         assert cfg.llm.primary_alias == ""
@@ -405,12 +419,13 @@ class TestBuiltinPersonas:
         cfg = _BUILTIN_PERSONAS["reviewer"]
         assert "file" in cfg.allowed_tools
         assert "git" in cfg.allowed_tools
+        assert "terminal" in cfg.allowed_tools
         assert "web" in cfg.allowed_tools
         assert "ravn" in cfg.allowed_tools
+        assert "tracker_issue" in cfg.allowed_tools
 
     def test_reviewer_forbidden_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
-        assert "terminal" in cfg.forbidden_tools
         assert "cascade" in cfg.forbidden_tools
 
     def test_reviewer_system_prompt_mentions_sql_safety(self) -> None:
@@ -568,7 +583,7 @@ class TestBuiltinPersonas:
             assert expected in names, f"{expected} missing from _BUILTIN_PERSONAS"
 
     def test_read_only_personas_cannot_write(self) -> None:
-        read_only = ["reviewer", "security-auditor", "retro-analyst"]
+        read_only = ["security-auditor", "retro-analyst"]
         for name in read_only:
             cfg = _BUILTIN_PERSONAS[name]
             assert cfg.permission_mode == "read-only", f"{name} should be read-only"

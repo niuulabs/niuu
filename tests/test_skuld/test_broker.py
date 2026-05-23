@@ -74,7 +74,7 @@ class TestBroker:
         )
         b = Broker(settings=settings)
         transport = b._create_transport()
-        assert isinstance(transport, SdkWebSocketTransport)
+        assert isinstance(transport, SDKTransport)
 
     def test_create_transport_default_is_sdk(self, tmp_path):
         settings = SkuldSettings(
@@ -82,7 +82,7 @@ class TestBroker:
         )
         b = Broker(settings=settings)
         transport = b._create_transport()
-        assert isinstance(transport, SdkWebSocketTransport)
+        assert isinstance(transport, SDKTransport)
 
     def test_create_transport_codex(self, tmp_path):
         settings = SkuldSettings(
@@ -114,7 +114,7 @@ class TestBroker:
         )
         b = Broker(settings=settings)
         transport = b._create_transport()
-        assert isinstance(transport, SdkWebSocketTransport)
+        assert isinstance(transport, SDKTransport)
         assert transport._model == "claude-opus-4-20250514"
 
     def test_create_transport_passes_mcp_servers(self, tmp_path):
@@ -125,8 +125,8 @@ class TestBroker:
         )
         b = Broker(settings=settings)
         transport = b._create_transport()
-        assert isinstance(transport, SdkWebSocketTransport)
-        assert transport._mcp_config is not None
+        assert isinstance(transport, SDKTransport)
+        assert transport._mcp_servers
 
     def test_create_transport_dynamic_import(self, tmp_path):
         """Dynamic transport factory uses importlib to load the configured adapter."""
@@ -465,7 +465,7 @@ class TestBroker:
         )
         b = Broker(settings=settings)
         transport = b._create_transport()
-        assert isinstance(transport, SdkWebSocketTransport)
+        assert isinstance(transport, SDKTransport)
         assert transport._skip_permissions is False
 
     def test_create_transport_sdk_passes_agent_teams(self, tmp_path):
@@ -476,7 +476,7 @@ class TestBroker:
         )
         b = Broker(settings=settings)
         transport = b._create_transport()
-        assert isinstance(transport, SdkWebSocketTransport)
+        assert isinstance(transport, SDKTransport)
         assert transport._agent_teams is True
 
     # --- Dynamic transport adapter tests ---
@@ -958,6 +958,66 @@ class TestBroker:
         assert completion["structured_outcome"]["verdict"] == "approve"
 
     @pytest.mark.asyncio
+    async def test_parallel_terminal_node_reports_custom_completion_event_for_workflow_stop(
+        self, tmp_path
+    ):
+        settings = SkuldSettings(
+            session={"id": "sess-1", "workspace_dir": str(tmp_path)},
+            room={"enabled": True},
+            workflow={
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "delivery-complete",
+                            "kind": "end",
+                            "joinMode": "all",
+                            "completionEvent": "delivery.completed",
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "e-publish",
+                            "source": "publish-stage",
+                            "target": "delivery-complete",
+                            "label": "delivery.completed -> delivery.completed",
+                        },
+                    ],
+                }
+            },
+        )
+        broker_under_test = Broker(settings=settings)
+        broker_under_test._mesh_adapter = MagicMock(peer_id="skuld-peer")
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "flock-publisher": MagicMock(persona="publisher"),
+        }
+        broker_under_test._emit_pipeline_event = AsyncMock()
+        broker_under_test._report_activity_state = AsyncMock()
+        broker_under_test._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-publisher",
+            "outcome",
+            {
+                "metadata": {"event_type": "delivery.completed", "task_id": "publish-task-1"},
+                "data": {
+                    "event_type": "delivery.completed",
+                    "workflow_parent_event_id": "close-task-1",
+                    "verdict": "published",
+                    "summary": "Delivery artifacts published",
+                    "fields": {"verdict": "published", "summary": "Delivery artifacts published"},
+                    "room_bridge_skip": True,
+                },
+            },
+        )
+
+        broker_under_test._report_activity_state.assert_awaited_once()
+        completion = broker_under_test._report_activity_state.await_args.kwargs["extra_metadata"]
+        assert completion["completion_event_type"] == "delivery.completed"
+        assert completion["completion_peer_id"] == "workflow-stop:delivery-complete"
+        assert completion["structured_outcome"]["verdict"] == "approve"
+
+    @pytest.mark.asyncio
     async def test_parallel_terminal_node_waits_for_git_push_when_required(self, tmp_path):
         settings = SkuldSettings(
             session={"id": "sess-1", "workspace_dir": str(tmp_path)},
@@ -1213,7 +1273,6 @@ class TestBroker:
         )
         b = Broker(settings=settings)
         transport = b._create_transport()
-        # SubprocessTransport only accepts workspace_dir
         assert isinstance(transport, SubprocessTransport)
         assert transport.workspace_dir == str(tmp_path)
 

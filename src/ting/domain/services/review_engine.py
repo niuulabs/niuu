@@ -1367,6 +1367,100 @@ class ReviewEngine:
 
         return True
 
+    async def handle_workflow_completion(
+        self,
+        tracker_id: str,
+        owner_id: str,
+    ) -> bool:
+        """Finalize a workflow-managed run and trigger phase progression.
+
+        Some workflow-backed saga runs handle implementation, review, merge, and
+        tracker updates internally inside a ravn_flock session. When that
+        workflow reaches an authoritative terminal node, Ting still needs to
+        project the run as merged and unlock the next phase just like the older
+        review-engine merge path.
+        """
+        adapters = await self._tracker_factory.for_owner(owner_id)
+        if not adapters:
+            logger.info(
+                "Workflow completion skipped for run %s: no tracker adapters for owner %s",
+                tracker_id,
+                owner_id[:8],
+            )
+            return False
+
+        tracker = adapters[0]
+        saga = await tracker.get_saga_for_run(tracker_id)
+
+        await tracker.update_run_progress(tracker_id, status=RunStatus.MERGED)
+
+        phase_gate_unlocked = await self._check_phase_gate(
+            tracker,
+            tracker_id,
+            owner_id,
+            saga=saga,
+        )
+
+        if saga is not None:
+            await self._try_auto_continue(owner_id, saga.tracker_id)
+
+        logger.info(
+            "Workflow completion finalized for run %s (phase_gate_unlocked=%s)",
+            tracker_id,
+            phase_gate_unlocked,
+        )
+        return phase_gate_unlocked
+
+    async def handle_run_failure(
+        self,
+        tracker_id: str,
+        owner_id: str,
+        *,
+        reason: str,
+    ) -> bool:
+        """Project a terminal run failure and refill any newly freed slot.
+
+        When Ting reconciles a stale or failed backing session, the run becomes
+        terminal without going through the normal merge/review transitions. The
+        dispatcher still needs to notice that a slot has opened and advance the
+        next ready saga run automatically.
+        """
+        adapters = await self._tracker_factory.for_owner(owner_id)
+        if not adapters:
+            logger.info(
+                "Run failure handling skipped for run %s: no tracker adapters for owner %s",
+                tracker_id,
+                owner_id[:8],
+            )
+            return False
+
+        tracker = adapters[0]
+        await tracker.update_run_progress(
+            tracker_id,
+            status=RunStatus.FAILED,
+            reason=reason,
+        )
+
+        try:
+            await tracker.update_run_state(tracker_id, RunStatus.FAILED)
+        except Exception:
+            logger.warning(
+                "Failed to set tracker issue %s to FAILED after session failure",
+                tracker_id,
+                exc_info=True,
+            )
+
+        saga = await tracker.get_saga_for_run(tracker_id)
+        if saga is not None:
+            await self._try_auto_continue(owner_id, saga.tracker_id)
+
+        logger.info(
+            "Run failure finalized for %s (saga=%s)",
+            tracker_id,
+            saga.tracker_id if saga is not None else "unknown",
+        )
+        return saga is not None
+
     async def _sync_saga_phase_projection(
         self,
         *,

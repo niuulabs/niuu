@@ -41,6 +41,7 @@ from claude_agent_sdk.types import (
 from niuu.adapters.cli.runtime import filter_cli_event as _filter_event
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.transports.mcp_config import build_sdk_mcp_servers
+from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
@@ -51,6 +52,12 @@ _TRANSIENT_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 _MAX_TRANSIENT_RETRIES = 1
+_DEFAULT_TURN_TIMEOUT_S = 0.0
+_SDK_TIMEOUT_RECOVERY_PROMPT = (
+    "Time budget reached. Stop exploring and conclude immediately using the current "
+    "workspace state. Do not do more investigation. Return only the required final "
+    "outcome block for this task."
+)
 
 
 def _content_block_to_dict(block: object) -> dict[str, Any]:
@@ -244,6 +251,7 @@ class SDKTransport(CLITransport):
         system_prompt: str = "",
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
+        turn_timeout_s: float = _DEFAULT_TURN_TIMEOUT_S,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -252,7 +260,9 @@ class SDKTransport(CLITransport):
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
+        self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_servers = build_sdk_mcp_servers(mcp_servers or [])
+        self._turn_timeout_s = max(float(turn_timeout_s or 0.0), 0.0)
         self._initial_prompt_sent = False
         self._send_lock = asyncio.Lock()
         self._client: ClaudeSDKClient | None = None
@@ -328,24 +338,28 @@ class SDKTransport(CLITransport):
                 self._turn_active = True
                 self._steer_interrupt_requested = False
                 attempt = 0
+                timeout_recovery_used = False
                 try:
                     while True:
-                        last_result_message: ResultMessage | None = None
-                        last_result_event: dict[str, Any] | None = None
-                        visible_output_emitted = False
-
-                        await client.query(prompt)
-                        async for message in client.receive_response():
-                            event = await self._translate_sdk_message(message)
-                            if isinstance(message, ResultMessage):
-                                last_result_message = message
-                                if event is not None:
-                                    last_result_event = event
-                                break
-                            if event is not None:
-                                await self._emit_event(event)
-                                if self._is_visible_output_event(event):
-                                    visible_output_emitted = True
+                        try:
+                            (
+                                last_result_message,
+                                last_result_event,
+                                visible_output_emitted,
+                            ) = await self._run_query(prompt)
+                        except TimeoutError:
+                            logger.warning(
+                                "Claude SDK transport: turn timed out after %.1fs",
+                                self._turn_timeout_s,
+                            )
+                            await client.interrupt()
+                            if timeout_recovery_used:
+                                raise RuntimeError(
+                                    "Claude SDK transport timed out while concluding the turn"
+                                )
+                            timeout_recovery_used = True
+                            prompt = self._timeout_recovery_prompt()
+                            continue
 
                         if (
                             last_result_message is not None
@@ -377,6 +391,47 @@ class SDKTransport(CLITransport):
                     return
                 logger.info("Claude SDK transport: continuing interrupted turn with steering")
                 prompt = next_prompt
+
+    async def _run_query(
+        self,
+        prompt: str,
+    ) -> tuple[ResultMessage | None, dict[str, Any] | None, bool]:
+        client = self._client
+        if client is None:
+            raise RuntimeError("Claude SDK client not connected")
+
+        async def _query_and_consume() -> tuple[ResultMessage | None, dict[str, Any] | None, bool]:
+            await client.query(prompt)
+            return await self._consume_response(client)
+
+        if self._turn_timeout_s > 0:
+            return await asyncio.wait_for(
+                _query_and_consume(),
+                timeout=self._turn_timeout_s,
+            )
+        return await _query_and_consume()
+
+    async def _consume_response(
+        self,
+        client: ClaudeSDKClient,
+    ) -> tuple[ResultMessage | None, dict[str, Any] | None, bool]:
+        last_result_message: ResultMessage | None = None
+        last_result_event: dict[str, Any] | None = None
+        visible_output_emitted = False
+
+        async for message in client.receive_response():
+            event = await self._translate_sdk_message(message)
+            if isinstance(message, ResultMessage):
+                last_result_message = message
+                if event is not None:
+                    last_result_event = event
+                break
+            if event is not None:
+                await self._emit_event(event)
+                if self._is_visible_output_event(event):
+                    visible_output_emitted = True
+
+        return last_result_message, last_result_event, visible_output_emitted
 
     async def interrupt(self) -> None:
         """Interrupt the in-flight turn if the SDK client is connected.
@@ -450,6 +505,12 @@ class SDKTransport(CLITransport):
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
+        _, shim_env = ensure_codex_tool_shims(
+            self.workspace_dir,
+            mcp_servers=self._raw_mcp_servers,
+        )
+        if shim_env:
+            env.update(shim_env)
 
         options = ClaudeAgentOptions(
             model=self._model or None,
@@ -527,6 +588,10 @@ class SDKTransport(CLITransport):
         ]
         lines.extend(f"- {item}" for item in pending)
         return "\n".join(lines)
+
+    @staticmethod
+    def _timeout_recovery_prompt() -> str:
+        return _SDK_TIMEOUT_RECOVERY_PROMPT
 
     @staticmethod
     def _is_visible_output_event(event: dict[str, Any]) -> bool:

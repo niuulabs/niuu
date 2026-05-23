@@ -95,6 +95,63 @@ class _ClientFactory:
         return self.client
 
 
+class _TimeoutRecoveryClient(_FakeClient):
+    def __init__(self) -> None:
+        super().__init__(responses=[])
+        self._receive_calls = 0
+
+    async def receive_response(self) -> AsyncIterator[object]:
+        self._receive_calls += 1
+        if self._receive_calls == 1:
+            await asyncio.sleep(3600)
+            return
+        yield _assistant_message(TextBlock(text="recovered"), session_id="sdk-session")
+        yield _result_message(result="recovered")
+
+
+class _TimeoutRecoveryFactory:
+    def __init__(self) -> None:
+        self.client: _TimeoutRecoveryClient | None = None
+        self.options = None
+
+    def __call__(self, options) -> _TimeoutRecoveryClient:
+        self.options = options
+        self.client = _TimeoutRecoveryClient()
+        return self.client
+
+
+class _QueryTimeoutRecoveryClient(_FakeClient):
+    def __init__(self) -> None:
+        super().__init__(
+            responses=[
+                [
+                    _assistant_message(TextBlock(text="recovered"), session_id="sdk-session"),
+                    _result_message(result="recovered"),
+                ]
+            ]
+        )
+        self._query_calls = 0
+        self.query = self._query_impl
+
+    async def _query_impl(self, prompt: str) -> None:
+        self._query_calls += 1
+        if self._query_calls == 1:
+            await asyncio.sleep(3600)
+            return
+        return None
+
+
+class _QueryTimeoutRecoveryFactory:
+    def __init__(self) -> None:
+        self.client: _QueryTimeoutRecoveryClient | None = None
+        self.options = None
+
+    def __call__(self, options) -> _QueryTimeoutRecoveryClient:
+        self.options = options
+        self.client = _QueryTimeoutRecoveryClient()
+        return self.client
+
+
 @pytest.mark.asyncio
 async def test_construction_accepts_standard_kwargs(tmp_path) -> None:
     transport = SDKTransport(
@@ -148,6 +205,30 @@ async def test_start_and_stop_manage_sdk_context(monkeypatch, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_injects_tracker_shim_env(monkeypatch, tmp_path) -> None:
+    factory = _ClientFactory([[]])
+    shim_env = {
+        "PATH": f"{tmp_path}/.skuld-tools/bin:/usr/bin",
+        "RAVN_WORKSPACE_DIR": str(tmp_path),
+    }
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+    monkeypatch.setattr(
+        "skuld.transports.sdk.ensure_codex_tool_shims",
+        lambda workspace_dir, mcp_servers=None: (tmp_path / ".skuld-tools" / "bin", shim_env),
+    )
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+
+    await transport.start()
+
+    assert factory.options is not None
+    assert factory.options.env["PATH"] == shim_env["PATH"]
+    assert factory.options.env["RAVN_WORKSPACE_DIR"] == str(tmp_path)
+
+    await transport.stop()
+
+
+@pytest.mark.asyncio
 async def test_send_message_emits_stream_json_events_and_tracks_last_result(
     monkeypatch, tmp_path
 ) -> None:
@@ -181,6 +262,56 @@ async def test_send_message_emits_stream_json_events_and_tracks_last_result(
     assert received[2]["result"] == "world"
     assert transport.last_result == received[2]
     assert transport.session_id == "sdk-session"
+
+
+@pytest.mark.asyncio
+async def test_send_message_recovers_once_after_turn_timeout(monkeypatch, tmp_path) -> None:
+    factory = _TimeoutRecoveryFactory()
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    received: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        received.append(event)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path), turn_timeout_s=0.01)
+    transport.on_event(on_event)
+
+    await transport.start()
+    await transport.send_message("review the change")
+
+    assert factory.client is not None
+    assert factory.client.query.await_count == 2
+    assert factory.client.query.await_args_list[0].args == ("review the change",)
+    assert "Time budget reached. Stop exploring and conclude immediately" in (
+        factory.client.query.await_args_list[1].args[0]
+    )
+    factory.client.interrupt.assert_awaited_once()
+    assert [event["type"] for event in received] == ["assistant", "result"]
+    assert received[-1]["result"] == "recovered"
+
+
+@pytest.mark.asyncio
+async def test_send_message_recovers_when_query_call_hangs(monkeypatch, tmp_path) -> None:
+    factory = _QueryTimeoutRecoveryFactory()
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    received: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        received.append(event)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path), turn_timeout_s=0.01)
+    transport.on_event(on_event)
+
+    await transport.start()
+    await transport.send_message("review the change")
+
+    assert factory.client is not None
+    assert factory.client._query_calls == 2
+    factory.client.interrupt.assert_awaited_once()
+    assert [event["type"] for event in received] == ["assistant", "result"]
+    assert received[-1]["result"] == "recovered"
 
 
 @pytest.mark.asyncio

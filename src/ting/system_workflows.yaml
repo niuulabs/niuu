@@ -603,3 +603,121 @@
         access: read_write
         writePrefixes: [specifications/]
         readPriority: 1
+- name: Tracker Delivery Flow
+  description: Tracker-driven developer workflow that implements a ticket, iterates through code review, updates the tracker, merges the branch, and publishes a durable delivery record.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: delivery-request
+        kind: trigger
+        label: Start tracker delivery
+        source: tracker delivery
+        dispatchEvent: delivery.requested
+        position:
+          x: 96
+          y: 280
+      - id: delivery-memory
+        kind: resource
+        label: Delivery Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir
+        path: /tmp/mimir
+        role: shared
+        categories: [delivery, tracker, review]
+        position:
+          x: 352
+          y: 520
+      - id: delivery-implement
+        kind: stage
+        label: Implement tracker ticket
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+            model: gpt-5.4
+            consumesEventTypes: [delivery.requested, review.changes_requested]
+        position:
+          x: 352
+          y: 280
+      - id: delivery-review
+        kind: stage
+        label: Review implementation
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 24
+            model: gpt-5.4
+            consumesEventTypes: [code.changed]
+        position:
+          x: 704
+          y: 280
+      - id: delivery-close
+        kind: stage
+        label: Merge and close ticket
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: closer
+            budget: 20
+            model: gpt-5.4
+            consumesEventTypes: [review.passed]
+        position:
+          x: 1056
+          y: 280
+      - id: delivery-publish
+        kind: stage
+        label: Publish delivery record
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: publisher
+            budget: 16
+            model: gpt-5.4
+            consumesEventTypes: [delivery.merged]
+        position:
+          x: 1408
+          y: 280
+      - id: delivery-complete
+        kind: end
+        label: Delivery complete
+        joinMode: all
+        completionEvent: delivery.completed
+        position:
+          x: 1760
+          y: 280
+    edges:
+      - id: edge-delivery-request-to-implement
+        source: delivery-request
+        target: delivery-implement
+        label: delivery.requested -> delivery.requested
+      - id: edge-delivery-implement-to-review
+        source: delivery-implement
+        target: delivery-review
+        label: code.changed -> code.changed
+      - id: edge-delivery-review-to-implement
+        source: delivery-review
+        target: delivery-implement
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-delivery-review-to-close
+        source: delivery-review
+        target: delivery-close
+        label: review.passed -> review.passed
+      - id: edge-delivery-close-to-publish
+        source: delivery-close
+        target: delivery-publish
+        label: delivery.merged -> delivery.merged
+      - id: edge-delivery-publish-to-end
+        source: delivery-publish
+        target: delivery-complete
+        label: delivery.completed -> delivery.completed
+    resourceBindings:
+      - id: binding-delivery-memory
+        resourceNodeId: delivery-memory
+        targetType: workflow
+        targetId: tracker-delivery-flow
+        access: read_write
+        writePrefixes: [deliveries/]
+        readPriority: 1

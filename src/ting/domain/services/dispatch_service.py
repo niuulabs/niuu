@@ -30,6 +30,7 @@ from mimir.registry import MimirRegistryStore
 from niuu.domain.model_runtime import (
     session_definition_for_model,
     transport_adapter_for_session_definition,
+    validate_session_definition_for_models,
 )
 from niuu.domain.models import Principal
 from ting.domain.flock_merge import build_flock_workload_config
@@ -63,6 +64,9 @@ from ting.ports.workflow_repository import WorkflowRepository
 from volundr.config import _default_session_definitions
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_WORKFLOW_SESSION_DEFINITION = "skuldCodex"
+_WORKFLOW_CLI_TURN_TIMEOUT_S = 120.0
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +142,19 @@ def _resolve_workflow_execution(
             "Workflow assigns multiple models to the same persona, "
             f"which is unsupported: {formatted}"
         )
+    requested_definition_error = validate_session_definition_for_models(
+        requested_definition,
+        stage_models,
+        session_definitions=session_definitions,
+        configured_models=configured_models,
+    )
+    if requested_definition and requested_definition_error:
+        logger.warning(
+            "Ignoring incompatible workflow session definition %s: %s",
+            _sanitize_log(requested_definition),
+            _sanitize_log(requested_definition_error),
+        )
+        requested_definition = None
     personas: list[dict[str, Any]] = []
     resolved_definitions: set[str] = set()
     requested_transport_adapter = (
@@ -177,9 +194,14 @@ def _resolve_workflow_execution(
             if resolved_definition:
                 resolved_definitions.add(resolved_definition)
             if transport_adapter:
+                executor_kwargs: dict[str, Any] = {"transport_adapter": transport_adapter}
+                if transport_adapter == "skuld.transports.sdk.SDKTransport":
+                    executor_kwargs["transport_kwargs"] = {
+                        "turn_timeout_s": _WORKFLOW_CLI_TURN_TIMEOUT_S
+                    }
                 runtime_persona["executor"] = {
                     "adapter": _CLI_TRANSPORT_EXECUTOR,
-                    "kwargs": {"transport_adapter": transport_adapter},
+                    "kwargs": executor_kwargs,
                 }
         personas.append(runtime_persona)
 
@@ -1362,6 +1384,17 @@ class DispatchService:
         mesh_transport = "nng"
 
         if use_workflow_flock:
+            workflow_definition = session_definition
+            if validate_session_definition_for_models(
+                workflow_definition,
+                workflow_stage_models_from_snapshot(workflow_snapshot),
+                session_definitions=self._config.session_definitions,
+                configured_models=self._config.configured_models,
+            ):
+                workflow_definition = None
+            workflow_definition = (
+                workflow_definition or _DEFAULT_WORKFLOW_SESSION_DEFINITION
+            )
             (
                 resolved_effective_model,
                 resolved_session_definition,
@@ -1369,7 +1402,7 @@ class DispatchService:
             ) = _resolve_workflow_execution(
                 workflow_snapshot,
                 fallback_model=effective_model,
-                requested_definition=session_definition,
+                requested_definition=workflow_definition,
                 session_definitions=self._config.session_definitions,
                 configured_models=self._config.configured_models,
             )

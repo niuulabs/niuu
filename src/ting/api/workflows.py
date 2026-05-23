@@ -23,7 +23,7 @@ from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimi
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrSession
 from ting.ports.workflow_repository import WorkflowRepository
 
-_DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodexExec"
+_DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodex"
 
 
 class WorkflowBody(BaseModel):

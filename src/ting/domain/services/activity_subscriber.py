@@ -83,6 +83,7 @@ class SessionActivitySubscriber:
         self._task: asyncio.Task[None] | None = None
         self._owner_tasks: dict[str, list[asyncio.Task[None]]] = {}
         self._pending_evaluations: dict[str, asyncio.Task[None]] = {}
+        self._completed_workflow_sessions: set[str] = set()
         # Cache per-owner adapters so we don't re-resolve on every cycle
         self._owner_adapters: dict[str, list[VolundrPort]] = {}
 
@@ -109,6 +110,7 @@ class SessionActivitySubscriber:
         for task in self._pending_evaluations.values():
             task.cancel()
         self._pending_evaluations.clear()
+        self._completed_workflow_sessions.clear()
         for tasks in self._owner_tasks.values():
             for task in tasks:
                 task.cancel()
@@ -273,7 +275,18 @@ class SessionActivitySubscriber:
             event.session_status or "-",
             event.metadata,
         )
+        if await self._try_handle_authoritative_completion(event, volundr, owner_id):
+            return
+
         if event.session_status in self._FAILED_STATUSES:
+            if event.session_id in self._completed_workflow_sessions:
+                logger.info(
+                    "Ignoring terminal session status %s for already-completed workflow session %s",
+                    event.session_status,
+                    event.session_id[:8],
+                )
+                self._completed_workflow_sessions.discard(event.session_id)
+                return
             await self._on_session_failed(event, volundr, owner_id)
             return
 
@@ -295,6 +308,41 @@ class SessionActivitySubscriber:
         )
         task.add_done_callback(self._on_eval_done)
         self._pending_evaluations[event.session_id] = task
+
+    async def _try_handle_authoritative_completion(
+        self,
+        event: ActivityEvent,
+        volundr: VolundrPort,
+        owner_id: str,
+    ) -> bool:
+        """Process authoritative workflow terminal outcomes immediately.
+
+        Local flock sessions emit a deterministic terminal outcome right before
+        Volundr stops the session. If Ting waits on the normal idle debounce,
+        the subsequent ``stopped`` lifecycle event can arrive first and
+        incorrectly downgrade a successful workflow run to FAILED/Canceled.
+        """
+        if event.state != "idle" or self._review_engine is None:
+            return False
+        if not _is_authoritative_completion_metadata(event.metadata):
+            return False
+
+        pending = self._pending_evaluations.pop(event.session_id, None)
+        if pending is not None:
+            pending.cancel()
+
+        run, _tracker = await self._find_run_for_session(event.session_id, owner_id)
+        if run is None:
+            return False
+
+        session = await volundr.get_session(event.session_id)
+        if session is None or session.workload_type != "ravn_flock":
+            return False
+
+        handled = await self._try_handle_flock_completion(event, run, owner_id)
+        if handled:
+            self._completed_workflow_sessions.add(event.session_id)
+        return handled
 
     @staticmethod
     def _on_eval_done(task: asyncio.Task) -> None:  # type: ignore[type-arg]
@@ -555,6 +603,18 @@ class SessionActivitySubscriber:
                 if isinstance(item, dict)
             ],
         )
+        if outcome.authoritative:
+            logger.info(
+                "Handling workflow-terminal flock completion for session %s run=%s verdict=%s",
+                event.session_id[:8],
+                run.tracker_id,
+                outcome.verdict,
+            )
+            await self._review_engine.handle_workflow_completion(
+                run.tracker_id,
+                owner_id,
+            )
+            return True
 
         logger.info(
             "Handling local flock completion for session %s run=%s verdict=%s",
@@ -682,11 +742,24 @@ class SessionActivitySubscriber:
         reason: str,
     ) -> None:
         """Mark a run as failed."""
-        await tracker.update_run_progress(
-            run.tracker_id,
-            status=RunStatus.FAILED,
-            reason=reason,
-        )
+        if self._review_engine is not None:
+            handled = await self._review_engine.handle_run_failure(
+                run.tracker_id,
+                owner_id,
+                reason=reason,
+            )
+            if not handled:
+                await tracker.update_run_progress(
+                    run.tracker_id,
+                    status=RunStatus.FAILED,
+                    reason=reason,
+                )
+        else:
+            await tracker.update_run_progress(
+                run.tracker_id,
+                status=RunStatus.FAILED,
+                reason=reason,
+            )
 
         await self._emit_state_changed(run, owner_id, "FAILED")
         logger.info(
@@ -788,6 +861,25 @@ def _coerce_str_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _is_authoritative_completion_metadata(metadata: dict) -> bool:
+    if metadata.get("completion_source") != "ravn_flock":
+        return False
+    if not str(metadata.get("completion_peer_id") or "").startswith("workflow-stop:"):
+        return False
+
+    structured = metadata.get("structured_outcome")
+    if not isinstance(structured, dict) or not structured:
+        return False
+    if isinstance(structured.get("outcome"), dict):
+        structured_payload = structured["outcome"]
+    else:
+        structured_payload = structured
+    if not isinstance(structured_payload, dict) or not structured_payload:
+        return False
+
+    return bool(structured_payload.get("authoritative") or metadata.get("outcome_valid"))
 
 
 def _help_needed_payload(metadata: dict) -> dict[str, object] | None:

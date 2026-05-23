@@ -525,6 +525,36 @@ class TestSubprocessTransport:
             assert call_kwargs["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] == "1"
 
     @pytest.mark.asyncio
+    async def test_send_message_injects_tracker_shim_env(self, tmp_path):
+        transport = SubprocessTransport(str(tmp_path))
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done"}\n']
+        )
+        shim_env = {
+            "PATH": f"{tmp_path}/.skuld-tools/bin:/usr/bin",
+            "RAVN_WORKSPACE_DIR": str(tmp_path),
+        }
+
+        transport.on_event(AsyncMock())
+
+        with (
+            patch(
+                "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.subprocess.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", shim_env),
+            ),
+        ):
+            mock_exec.return_value = mock_subprocess
+            await transport.send_message("test")
+
+            call_kwargs = mock_exec.call_args.kwargs
+            assert call_kwargs["env"]["PATH"] == shim_env["PATH"]
+            assert call_kwargs["env"]["RAVN_WORKSPACE_DIR"] == str(tmp_path)
+
+    @pytest.mark.asyncio
     async def test_send_message_omits_system_prompt_when_resuming(self, tmp_path):
         transport = SubprocessTransport(
             str(tmp_path),
@@ -1209,6 +1239,38 @@ class TestSdkWebSocketTransport:
             assert env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] == "1"
 
     @pytest.mark.asyncio
+    async def test_spawn_injects_tracker_shim_env(self, tmp_path):
+        t = SdkWebSocketTransport(
+            workspace_dir=str(tmp_path),
+            sdk_port=8081,
+            session_id="s1",
+        )
+        shim_env = {
+            "PATH": f"{tmp_path}/.skuld-tools/bin:/usr/bin",
+            "RAVN_WORKSPACE_DIR": str(tmp_path),
+        }
+        with (
+            patch(
+                "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.sdk_websocket.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", shim_env),
+            ),
+        ):
+            mock_process = MagicMock()
+            mock_process.stdout = None
+            mock_process.stderr = None
+            mock_exec.return_value = mock_process
+
+            await t.start()
+
+            env = mock_exec.call_args[1]["env"]
+            assert env["PATH"] == shim_env["PATH"]
+            assert env["RAVN_WORKSPACE_DIR"] == str(tmp_path)
+
+    @pytest.mark.asyncio
     async def test_spawn_without_agent_teams_no_env(self, tmp_path):
         t = SdkWebSocketTransport(
             workspace_dir=str(tmp_path),
@@ -1525,10 +1587,11 @@ class TestCodexSubprocessTransport:
             assert "--model" in call_args
             assert "o4-mini" in call_args
             assert "--sandbox" in call_args
-            assert "workspace-write" in call_args
+            assert "danger-full-access" in call_args
             assert "--json" in call_args
             assert "--quiet" not in call_args
             assert "refactor the auth module" in call_args
+            assert mock_exec.call_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
 
     @pytest.mark.asyncio
     async def test_send_message_spawns_codex_with_mcp_overrides(self, tmp_path):

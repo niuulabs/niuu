@@ -246,6 +246,51 @@ end---
     assert result.fields["page_path"] == "council/niu-906-human-approval-gate/opinions/opinion-b.md"
 
 
+def test_soft_wrapped_manifest_path_is_compacted() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "verdict": OutcomeField(
+                type="enum",
+                description="publish verdict",
+                enum_values=["published", "blocked"],
+            ),
+            "summary": OutcomeField(type="string", description="summary"),
+            "manifest_path": OutcomeField(type="string", description="manifest path"),
+        }
+    )
+    text = """\
+---outcome---
+verdict: published
+summary: Delivery record is complete.
+manifest_path: deliveries
+/niu
+-991
+-validation
+-force
+-review
+-loop
+-add
+-tr
+oubles
+hooting
+-formatter
+-helper
+/40
+-man
+ifest
+.md
+---end---
+"""
+    result = parse_outcome_block(text, schema)
+    assert result is not None
+    assert result.valid is True
+    assert (
+        result.fields["manifest_path"]
+        == "deliveries/niu-991-validation-force-review-loop-add-troubleshooting-formatter-helper/"
+        "40-manifest.md"
+    )
+
+
 def test_schema_recovery_prefers_salvaged_wrapped_codex_outcome() -> None:
     schema = OutcomeSchema(
         fields={

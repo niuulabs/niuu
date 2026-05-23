@@ -266,13 +266,13 @@ class TestSkuldSettings:
 class TestTransportAdapter:
     """Tests for the transport_adapter config field and legacy migration."""
 
-    def test_default_resolves_to_sdk_websocket(self, monkeypatch):
-        """Default config resolves to SdkWebSocketTransport."""
+    def test_default_resolves_to_sdk(self, monkeypatch):
+        """Default config resolves to SDKTransport."""
         for var in ["CLI_TYPE", "SKULD__CLI_TYPE", "SKULD__TRANSPORT"]:
             monkeypatch.delenv(var, raising=False)
 
         s = SkuldSettings()
-        assert s.transport_adapter == "skuld.transports.sdk_websocket.SdkWebSocketTransport"
+        assert s.transport_adapter == "skuld.transports.sdk.SDKTransport"
 
     def test_cli_type_codex_resolves_to_codex_transport(self, monkeypatch):
         """cli_type=codex maps to CodexSubprocessTransport."""

@@ -1283,7 +1283,73 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "llm": {"model": "claude-sonnet-4-6"},
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-                    "kwargs": {"transport_adapter": "skuld.transports.sdk.SDKTransport"},
+                    "kwargs": {
+                        "transport_adapter": "skuld.transports.sdk.SDKTransport",
+                        "transport_kwargs": {"turn_timeout_s": 120.0},
+                    },
+                },
+            }
+        ]
+
+    def test_workflow_snapshot_ignores_incompatible_default_session_definition(self):
+        config = DispatchConfig(
+            flock_enabled=False,
+            flock_default_personas=[],
+            default_session_definition="skuldClaude",
+        )
+        saga = self._make_saga()
+        issue = self._make_issue()
+        workflow_snapshot = {
+            "workflow_id": str(uuid4()),
+            "name": "OpenAI Flow",
+            "version": "1.0.0",
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "stage-1",
+                        "kind": "stage",
+                        "label": "Implement",
+                        "stageMembers": [
+                            {
+                                "personaId": "developer",
+                                "model": "gpt-5.5",
+                                "budget": 40,
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
+        req = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=issue,
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            session_definition=config.default_session_definition,
+            workflow_snapshot=workflow_snapshot,
+        )
+
+        assert req.definition == "skuldCodex"
+        assert req.workload_config["personas"] == [
+            {
+                "name": "developer",
+                "iteration_budget": 40,
+                "llm": {"model": "gpt-5.5"},
+                "executor": {
+                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                    "kwargs": {
+                        "transport_adapter": (
+                            "skuld.transports.codex_ws.CodexWebSocketTransport"
+                        )
+                    },
                 },
             }
         ]

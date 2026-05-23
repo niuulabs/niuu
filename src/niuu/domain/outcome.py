@@ -171,8 +171,8 @@ def _join_soft_wrapped_parts(parts: list[str], *, compact: bool = False) -> str:
 
 
 def _coerce_simple_scalar(key: str, parts: list[str]) -> Any:
-    compact_keys = {"verdict", "page_path", "source_id"}
-    text = _join_soft_wrapped_parts(parts, compact=key in compact_keys).strip()
+    compact = key == "verdict" or key.endswith("_path") or key.endswith("_id")
+    text = _join_soft_wrapped_parts(parts, compact=compact).strip()
     lowered = text.lower()
     if lowered == "true":
         return True

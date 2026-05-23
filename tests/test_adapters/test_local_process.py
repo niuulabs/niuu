@@ -2270,3 +2270,65 @@ class TestLocalFlockMeshMode:
         assert "workflow_id: wf-1" in node_config
         assert "name: Review Flow" in node_config
         assert "initial_context: Review this change." in node_config
+
+    async def test_start_flock_injects_platform_gateway_for_local_workflows(
+        self,
+        manager: LocalProcessPodManager,
+        tmp_workspaces: Path,
+        git_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("NIUU_SERVER_HOST", "192.168.1.106")
+
+        workspace = tmp_workspaces / "session-with-platform-gateway"
+        repo_workspace = workspace / "repo"
+        repo_workspace.mkdir(parents=True)
+        (repo_workspace / ".git").mkdir()
+        flock_dir = workspace / ".flock"
+        flock_dir.mkdir()
+        (flock_dir / "cluster.yaml").write_text("peers: []\n", encoding="utf-8")
+        (flock_dir / "node-reviewer.yaml").write_text(
+            "persona: reviewer\n"
+            "gateway:\n"
+            "  enabled: false\n"
+            "  channels:\n"
+            "    http:\n"
+            "      enabled: false\n",
+            encoding="utf-8",
+        )
+
+        spec = SessionSpec(
+            values={
+                "flock": {
+                    "personas": [{"name": "reviewer"}],
+                }
+            },
+            pod_spec=PodSpecAdditions(
+                env=(
+                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
+                ),
+                extra_containers=(
+                    {"name": "ravn-reviewer"},
+                ),
+            ),
+        )
+
+        with patch("subprocess.run"):
+            await manager._start_flock(
+                git_session,
+                spec,
+                workspace,
+                FlockPortPlan(
+                    session_base_port=7484,
+                    ravn_base_port=7486,
+                    skuld_pub_port=7484,
+                    skuld_rep_port=7485,
+                    skuld_handshake_port=7584,
+                ),
+                skuld_port=9101,
+            )
+
+        node_config = yaml.safe_load((flock_dir / "node-reviewer.yaml").read_text(encoding="utf-8"))
+        assert node_config["gateway"]["platform"]["enabled"] is True
+        assert node_config["gateway"]["platform"]["base_url"] == "http://192.168.1.106:8080"
+        assert node_config["permission"]["workspace_root"] == str(repo_workspace)

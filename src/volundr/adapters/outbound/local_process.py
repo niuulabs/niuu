@@ -1227,6 +1227,12 @@ class LocalProcessPodManager(PodManager):
             skuld_cfg["enabled"] = True
             skuld_cfg["broker_url"] = f"ws://127.0.0.1:{skuld_port}/ws/ravn"
 
+            gateway_cfg = node_config.setdefault("gateway", {})
+            platform_cfg = gateway_cfg.setdefault("platform", {})
+            platform_cfg["enabled"] = True
+            platform_cfg.setdefault("timeout", 30.0)
+            platform_cfg.setdefault("base_url", f"http://{_public_loopback_host()}:8080")
+
             persona_runtime_overrides: dict[str, Any] = {}
             system_prompt_extra = persona_override.get("system_prompt_extra")
             if isinstance(system_prompt_extra, str) and system_prompt_extra.strip():

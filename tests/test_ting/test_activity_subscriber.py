@@ -582,6 +582,7 @@ class TestActivityEventHandling:
     async def test_idle_event_accepts_flat_structured_outcome_and_coerces_fields(self) -> None:
         review_engine = type("ReviewEngineStub", (), {})()
         review_engine.handle_ravn_outcome = AsyncMock()
+        review_engine.handle_workflow_completion = AsyncMock()
         review_engine.get_reviewer_run = lambda session_id: None
         sub, volundr, _, _ = _make_subscriber(review_engine=review_engine)
         volundr.sessions[SESSION_ID] = _make_volundr_session(workload_type="ravn_flock")
@@ -609,7 +610,7 @@ class TestActivityEventHandling:
                         }
                     ],
                 },
-                "completion_peer_id": "workflow-stop:run-complete",
+                "completion_peer_id": "flock-reviewer",
             },
             owner_id=OWNER_ID,
         )
@@ -617,6 +618,7 @@ class TestActivityEventHandling:
         await sub._on_activity_event(event, volundr, OWNER_ID)
         await asyncio.sleep(0.1)
 
+        review_engine.handle_workflow_completion.assert_not_awaited()
         review_engine.handle_ravn_outcome.assert_awaited_once()
         outcome = review_engine.handle_ravn_outcome.await_args.args[2]
         assert outcome.tests_passing is True
@@ -624,7 +626,7 @@ class TestActivityEventHandling:
         assert outcome.pr_url == "https://github.com/niuulabs/volundr/pull/713"
         assert outcome.files_changed == ["src/one.py", "src/two.py"]
         assert outcome.summary == "all good"
-        assert outcome.authoritative is True
+        assert outcome.authoritative is False
         assert outcome.checks == [
             {
                 "persona": "reviewer",
@@ -633,6 +635,65 @@ class TestActivityEventHandling:
                 "summary": "looks good",
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_authoritative_workflow_completion_ignores_follow_up_stopped_event(self) -> None:
+        config = _default_config(completion_check_delay=5.0)
+        review_engine = type("ReviewEngineStub", (), {})()
+        review_engine.handle_ravn_outcome = AsyncMock()
+        review_engine.handle_workflow_completion = AsyncMock(return_value=True)
+        review_engine.get_reviewer_run = lambda session_id: None
+        sub, volundr, tracker, _ = _make_subscriber(config=config, review_engine=review_engine)
+        volundr.sessions[SESSION_ID] = _make_volundr_session(
+            workload_type="ravn_flock",
+            status="running",
+        )
+
+        completion_event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="idle",
+            metadata={
+                "turn_count": 5,
+                "duration_seconds": 60,
+                "completion_source": "ravn_flock",
+                "completion_event_type": "delivery.completed",
+                "completion_peer_id": "workflow-stop:delivery-complete",
+                "outcome_valid": True,
+                "structured_outcome": {
+                    "verdict": "approve",
+                    "authoritative": True,
+                    "checks": [
+                        {
+                            "persona": "publisher",
+                            "event_type": "delivery.completed",
+                            "verdict": "published",
+                        }
+                    ],
+                },
+            },
+            owner_id=OWNER_ID,
+        )
+        await sub._on_activity_event(completion_event, volundr, OWNER_ID)
+
+        volundr.sessions[SESSION_ID] = _make_volundr_session(
+            workload_type="ravn_flock",
+            status="stopped",
+        )
+        stopped_event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="",
+            metadata={},
+            owner_id=OWNER_ID,
+            session_status="stopped",
+        )
+        await sub._on_activity_event(stopped_event, volundr, OWNER_ID)
+
+        review_engine.handle_workflow_completion.assert_awaited_once_with(
+            TRACKER_ISSUE_ID,
+            OWNER_ID,
+        )
+        tracker.update_run_progress.assert_not_called()
+        review_engine.handle_ravn_outcome.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_idle_with_no_turns_does_not_complete(self) -> None:
@@ -1089,6 +1150,23 @@ class TestFailureDetection:
         assert bus_event.event == "run.state_changed"
         assert bus_event.data["session_id"] == SESSION_ID
         assert bus_event.data["status"] == "FAILED"
+
+    @pytest.mark.asyncio
+    async def test_failure_delegates_to_review_engine_and_refills_capacity(self) -> None:
+        review_engine = type("ReviewEngineStub", (), {})()
+        review_engine.handle_run_failure = AsyncMock(return_value=True)
+        review_engine.get_reviewer_run = lambda session_id: None
+        sub, _, tracker, _ = _make_subscriber(review_engine=review_engine)
+        run = _make_run()
+
+        await sub._handle_failure(run, tracker, OWNER_ID, reason="Session stopped")
+
+        review_engine.handle_run_failure.assert_awaited_once_with(
+            TRACKER_ISSUE_ID,
+            OWNER_ID,
+            reason="Session stopped",
+        )
+        tracker.update_run_progress.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reconcile_running_runs_fails_stale_stopped_sessions(self) -> None:

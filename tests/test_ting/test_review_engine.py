@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -1721,3 +1722,27 @@ class TestReviewerFailure:
         engine, _t, _g, _e, _v = _make_engine()
         # Should not raise even though no mapping exists.
         await engine.handle_reviewer_failure("nope", reason="something")
+
+    @pytest.mark.asyncio
+    async def test_run_failure_triggers_auto_continue_for_saga(self) -> None:
+        """Terminal run failures should refill any newly freed dispatch slot."""
+        engine, tracker, _git, _ev, _vol = _make_engine()
+        engine._dispatch_service = type("DispatchServiceStub", (), {})()
+        engine._dispatch_service.try_auto_continue = AsyncMock()
+        tracker.saga = _make_saga()
+        run = _make_run(tracker_id="NIU-778", status=RunStatus.RUNNING)
+        tracker.runs[run.tracker_id] = run
+
+        handled = await engine.handle_run_failure(
+            run.tracker_id,
+            "dev-user",
+            reason="Session stopped",
+        )
+
+        assert handled is True
+        updated = tracker.runs[run.tracker_id]
+        assert updated.status == RunStatus.FAILED
+        engine._dispatch_service.try_auto_continue.assert_awaited_once_with(
+            "dev-user",
+            tracker.saga.tracker_id,
+        )

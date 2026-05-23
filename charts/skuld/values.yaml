@@ -212,12 +212,13 @@ broker:
   # -- (DEPRECATED) AI CLI backend: "claude" (Claude Code, default) or "codex" (OpenAI Codex).
   # Use broker.transportAdapter instead. Kept for backward compatibility during rollout.
   cliType: claude
-  # -- (DEPRECATED) CLI transport mode for Claude: "sdk" (WebSocket, default) or "subprocess" (legacy).
+  # -- (DEPRECATED) CLI transport mode for Claude: "sdk" (default) or "subprocess".
   # Use broker.transportAdapter instead. Kept for backward compatibility during rollout.
   transport: sdk
   # -- Fully-qualified class path of the transport adapter to use.
   # Replaces broker.cliType + broker.transport with a single, extensible field.
-  transportAdapter: "skuld.transports.sdk_websocket.SdkWebSocketTransport"
+  # ``skuld.transports.sdk_websocket.SdkWebSocketTransport`` is deprecated.
+  transportAdapter: "skuld.transports.sdk.SDKTransport"
   # -- Skip tool permission prompts (true = --dangerously-skip-permissions for Claude,
   # --full-auto for Codex)
   skipPermissions: true

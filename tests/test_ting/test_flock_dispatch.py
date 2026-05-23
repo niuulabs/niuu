@@ -434,7 +434,10 @@ class TestBuildSpawnRequestFlockEnabled:
         assert personas[0]["llm"]["model"] == "claude-sonnet-4-6"
         assert personas[0]["executor"] == {
             "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-            "kwargs": {"transport_adapter": "skuld.transports.sdk.SDKTransport"},
+            "kwargs": {
+                "transport_adapter": "skuld.transports.sdk.SDKTransport",
+                "transport_kwargs": {"turn_timeout_s": 120.0},
+            },
         }
         assert personas[1]["llm"]["model"] == "gpt-5.5"
         assert personas[1]["executor"] == {
@@ -891,3 +894,25 @@ class TestRunExecutorPersona:
     def test_stop_on_outcome_enabled(self) -> None:
         data = self._load()
         assert data["stop_on_outcome"] is True
+
+
+class TestPublisherPersona:
+    """publisher has the tools it needs to finish publication."""
+
+    def _load(self) -> dict:
+        path = _PERSONAS_DIR / "publisher.yaml"
+        with path.open() as f:
+            return yaml.safe_load(f)
+
+    def test_file_exists(self) -> None:
+        assert (_PERSONAS_DIR / "publisher.yaml").exists()
+
+    def test_allowed_tools_include_file_only(self) -> None:
+        data = self._load()
+        tools = data["allowed_tools"]
+        assert "file" in tools
+        assert tools == ["file"]
+
+    def test_produces_delivery_completed_alias(self) -> None:
+        data = self._load()
+        assert data["produces"]["event_type_map"]["published"] == "delivery.completed"

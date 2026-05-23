@@ -353,7 +353,7 @@ class TestTrackerIssueTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_update_status(self):
-        respx.post(f"{TRACKER_ISSUES_URL}/NIU-1").mock(
+        respx.patch(f"{TRACKER_ISSUES_URL}/NIU-1").mock(
             return_value=httpx.Response(200, json={"id": "NIU-1", "status": "Done"})
         )
         result = await self.tool.execute(

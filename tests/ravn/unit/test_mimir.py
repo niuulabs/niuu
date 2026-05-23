@@ -805,6 +805,26 @@ async def test_mimir_publish_files_tool_rejects_missing_workspace_file(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_mimir_publish_files_tool_publishes_repo_relative_markdown(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    workspace = tmp_path / "workspace"
+    repo = workspace / "repo"
+    repo.mkdir(parents=True)
+    delivery_dir = repo / "deliveries" / "demo"
+    delivery_dir.mkdir(parents=True)
+    content = "# Delivery\n\nPublished from repo-relative path."
+    (delivery_dir / "40-manifest.md").write_text(content, encoding="utf-8")
+
+    tool = MimirPublishFilesTool(adapter, workspace)
+    result = await tool.execute({"paths": ["deliveries/demo/40-manifest.md"]})
+
+    assert not result.is_error
+    assert "deliveries/demo/40-manifest.md" in result.content
+    page_path = tmp_path / "mimir" / "wiki" / "deliveries" / "demo" / "40-manifest.md"
+    assert page_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_mimir_search_tool_success(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     await adapter.upsert_page("technical/ravn/memory.md", "# Memory\n\nEpisodic storage.")

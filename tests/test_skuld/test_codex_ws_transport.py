@@ -266,6 +266,9 @@ class TestSpawnAppServer:
         ) as mock_exec, patch(
             "skuld.transports.codex_ws.resolve_codex_cli",
             return_value="/Applications/Codex.app/Contents/Resources/codex",
+        ), patch(
+            "skuld.transports.codex_ws.ensure_codex_tool_shims",
+            return_value=(tmp_path / ".skuld-tools" / "bin", {"PATH": "/tmp/shims:/usr/bin"}),
         ):
             mock_exec.return_value = mock_process
             await t._spawn_app_server()
@@ -283,6 +286,7 @@ class TestSpawnAppServer:
             assert any(
                 arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
             )
+            assert mock_exec.call_args.kwargs["env"]["PATH"] == "/tmp/shims:/usr/bin"
 
 
 class TestFallbackTransport:

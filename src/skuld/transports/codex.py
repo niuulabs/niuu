@@ -45,6 +45,7 @@ _CODEX_TOOL_MAP: dict[str, str] = {
 }
 
 _CODEX_STDOUT_CHUNK_BYTES = 65536
+_DEFAULT_CODEX_SANDBOX = "danger-full-access"
 
 
 def _map_codex_tool(codex_name: str) -> str:
@@ -133,6 +134,7 @@ class CodexSubprocessTransport(CLITransport):
         self._last_result = None
         self._pending_text = []
         codex_cli = resolve_codex_cli()
+        sandbox_mode = os.environ.get("SKULD_CODEX_SANDBOX", _DEFAULT_CODEX_SANDBOX)
 
         cmd = [
             codex_cli,
@@ -140,7 +142,7 @@ class CodexSubprocessTransport(CLITransport):
             "--model",
             self._model,
             "--sandbox",
-            "workspace-write",
+            sandbox_mode,
             "--json",
         ]
         for key, value in self._mcp_overrides:
@@ -154,6 +156,7 @@ class CodexSubprocessTransport(CLITransport):
             *cmd,
             cwd=self.workspace_dir,
             env=self._env,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

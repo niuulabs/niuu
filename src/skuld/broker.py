@@ -1401,14 +1401,12 @@ class Broker:
     async def _auto_start_transport(self) -> None:
         """Background-task wrapper around ``self._transport.start()``.
 
-        SubprocessTransport (the default for skuldClaude) sends the initial
-        prompt to a fresh Claude process and streams back assistant events,
-        but never echoes the user's own prompt back as an event. Without an
-        explicit synthesis the chat UI sees the assistant's reply with no
-        user turn before it. We append a user turn to conversation history
-        (so late-joining browsers see it via replay) and broadcast
-        ``user_confirmed`` so any already-connected channel renders it
-        immediately.
+        Claude subprocess transports do not echo the user's own prompt back as
+        an event. Without an explicit synthesis the chat UI sees the
+        assistant's reply with no user turn before it. We append a user turn
+        to conversation history (so late-joining browsers see it via replay)
+        and broadcast ``user_confirmed`` so any already-connected channel
+        renders it immediately.
         """
         prompt = self._settings.session.initial_prompt
         if prompt and not any(
@@ -2198,7 +2196,8 @@ class Broker:
 
         metadata = frame.get("metadata", {})
         outcome_event_type = str(metadata.get("event_type") or "")
-        if outcome_event_type != "ravn.task.completed":
+        is_workflow_terminal = str(peer_id).startswith("workflow-stop:")
+        if not is_workflow_terminal and outcome_event_type != "ravn.task.completed":
             return
 
         data = frame.get("data", {})

@@ -958,7 +958,7 @@ class TrackerIssueTool(ToolPort):
         if not issue_id or not status:
             return _err("issue_id and status are required for update_status")
         try:
-            resp = await client.post(
+            resp = await client.patch(
                 f"{_TRACKER_ISSUES_PATH}/{issue_id}",
                 json={"status": status},
             )
