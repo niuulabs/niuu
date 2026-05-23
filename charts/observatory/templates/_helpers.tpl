@@ -140,4 +140,7 @@ checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sh
 {{- if .Values.migrations.enabled }}
 checksum/migrations: {{ include (print $.Template.BasePath "/migrations-configmap.yaml") . | sha256sum }}
 {{- end }}
+{{- if .Values.envoy.enabled }}
+checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
+{{- end }}
 {{- end }}

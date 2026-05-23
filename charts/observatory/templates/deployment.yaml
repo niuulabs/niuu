@@ -156,6 +156,41 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if .Values.envoy.enabled }}
+        - name: envoy
+          image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
+          imagePullPolicy: {{ .Values.envoy.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: envoy
+              containerPort: {{ .Values.envoy.port }}
+              protocol: TCP
+          {{- with .Values.envoy.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.envoy.port }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.envoy.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 15
+        {{- end }}
       volumes:
         - name: config
           configMap:
@@ -164,6 +199,11 @@ spec:
         - name: migrations
           configMap:
             name: {{ include "observatory.fullname" . }}-migrations
+        {{- end }}
+        {{- if .Values.envoy.enabled }}
+        - name: envoy-config
+          configMap:
+            name: {{ include "observatory.fullname" . }}-envoy
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
