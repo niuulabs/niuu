@@ -79,4 +79,20 @@ data:
     DROP INDEX IF EXISTS idx_niuu_instances_kind_enabled;
     DROP INDEX IF EXISTS idx_niuu_instances_scope_slug;
     DROP TABLE IF EXISTS niuu_instances;
+
+  000041_expand_niuu_instance_kinds.up.sql: |
+    ALTER TABLE niuu_instances
+        DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
+
+    ALTER TABLE niuu_instances
+        ADD CONSTRAINT niuu_instances_kind_check
+        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'ravn', 'observatory', 'generic'));
+
+  000041_expand_niuu_instance_kinds.down.sql: |
+    ALTER TABLE niuu_instances
+        DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
+
+    ALTER TABLE niuu_instances
+        ADD CONSTRAINT niuu_instances_kind_check
+        CHECK (kind IN ('volundr'));
 {{- end }}
