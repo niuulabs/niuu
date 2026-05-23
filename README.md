@@ -10,7 +10,12 @@
 The self-hosted platform for AI workspaces, custom AI teams, always-on assistants, shared knowledge, and local or cloud AI.
 
 <p align="center">
-  <img src="docs/site/images/dashboard.png" alt="Session dashboard" width="720">
+  <img src="docs/site/images/ui-ting-workflows.png" alt="Ting workflow builder in Niuu" width="960">
+</p>
+
+<p align="center">
+  <img src="docs/site/images/ui-guild-instances.png" alt="Guild instance registry" width="49%">
+  <img src="docs/site/images/ui-niuu-home.png" alt="Volundr forge dashboard" width="49%">
 </p>
 
 ## What Niuu Is

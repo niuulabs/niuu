@@ -40,6 +40,17 @@ Niuu brings four operating modes into one platform you can run on your own machi
 
 The result is a self-hosted system where you can move smoothly between direct operator work, autonomous execution, durable memory, and local or third-party models without handing control to an external vendor platform.
 
+## In the UI
+
+<p align="center">
+  <img src="images/ui-ting-workflows.png" alt="Ting workflow builder in Niuu" width="100%">
+</p>
+
+<p align="center">
+  <img src="images/ui-guild-instances.png" alt="Guild instance registry" width="49%">
+  <img src="images/ui-niuu-home.png" alt="Volundr forge dashboard" width="49%">
+</p>
+
 ## Why It Exists
 
 <div class="feature-grid" markdown>
