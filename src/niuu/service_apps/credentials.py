@@ -67,8 +67,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.identity = identity_adapter
             app.state.pat_validator = pat_validator
             app.include_router(create_credentials_settings_router())
+            app.include_router(create_credentials_settings_router("/api/v1/niuu/credentials"))
             app.include_router(create_canonical_credentials_router(credential_service))
+            app.include_router(
+                create_canonical_credentials_router(
+                    credential_service,
+                    prefix="/api/v1/niuu/credentials",
+                )
+            )
             app.include_router(create_canonical_secrets_router(mcp_provider, secret_manager))
+            app.include_router(
+                create_canonical_secrets_router(
+                    mcp_provider,
+                    secret_manager,
+                    prefix="/api/v1/niuu/credentials",
+                )
+            )
 
             try:
                 yield

@@ -13,10 +13,11 @@ from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.models import Principal
 
 
-def create_credentials_settings_router() -> APIRouter:
+def create_credentials_settings_router(prefix: str = "/api/v1/credentials") -> APIRouter:
     """Expose the shared credentials settings schema."""
 
-    router = APIRouter(prefix="/api/v1/credentials", tags=["Credentials Settings"])
+    prefix = prefix.rstrip("/")
+    router = APIRouter(prefix=prefix, tags=["Credentials Settings"])
 
     @router.get("/settings", response_model=SettingsProviderSchema)
     async def get_credentials_settings(
@@ -39,10 +40,10 @@ def create_credentials_settings_router() -> APIRouter:
                             "Create reusable credentials once, then attach them to sessions,"
                             " assistants, or integrations."
                         ),
-                        list_path="/api/v1/credentials/user",
-                        types_path="/api/v1/credentials/types",
-                        create_path="/api/v1/credentials/user",
-                        delete_path="/api/v1/credentials/user/{name}",
+                        list_path=f"{prefix}/user",
+                        types_path=f"{prefix}/types",
+                        create_path=f"{prefix}/user",
+                        delete_path=f"{prefix}/user/{{name}}",
                     )
                 ],
             )
@@ -66,10 +67,10 @@ def create_credentials_settings_router() -> APIRouter:
                                 "Use tenant-scoped credentials for shared automation and"
                                 " service accounts."
                             ),
-                            list_path="/api/v1/credentials/tenant",
-                            types_path="/api/v1/credentials/types",
-                            create_path="/api/v1/credentials/tenant",
-                            delete_path="/api/v1/credentials/tenant/{name}",
+                            list_path=f"{prefix}/tenant",
+                            types_path=f"{prefix}/types",
+                            create_path=f"{prefix}/tenant",
+                            delete_path=f"{prefix}/tenant/{{name}}",
                         )
                     ],
                 )

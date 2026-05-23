@@ -229,34 +229,37 @@ def test_credentials_service_app_releases_credential_store(monkeypatch) -> None:
     monkeypatch.setattr(
         credentials_app,
         "create_canonical_credentials_router",
-        lambda credential_service: (
+        lambda credential_service, prefix="/api/v1/credentials": (
             captured.setdefault("credential_service", credential_service),
-            _dynamic_conflict_router("/api/v1/credentials/{name}"),
+            _dynamic_conflict_router(f"{prefix}/{{name}}"),
         )[-1],
     )
     monkeypatch.setattr(
         credentials_app,
         "create_canonical_secrets_router",
-        lambda mcp_provider, secret_manager: (
+        lambda mcp_provider, secret_manager, prefix="/api/v1/credentials": (
             captured.setdefault("mcp_provider", mcp_provider),
             captured.setdefault("secret_manager", secret_manager),
-            _probe_router("/api/v1/credentials/secrets-probe"),
+            _probe_router(f"{prefix}/secrets-probe"),
         )[-1],
     )
     monkeypatch.setattr(
         credentials_app,
         "create_credentials_settings_router",
-        lambda: _probe_router("/api/v1/credentials/settings"),
+        lambda prefix="/api/v1/credentials": _probe_router(f"{prefix}/settings"),
     )
 
     app = credentials_app.create_app(settings)
     with TestClient(app) as client:
         assert client.get("/api/v1/credentials/settings").status_code == 200
+        assert client.get("/api/v1/niuu/credentials/settings").status_code == 200
         assert client.get("/api/v1/credentials/secrets-probe").status_code == 200
+        assert client.get("/api/v1/niuu/credentials/secrets-probe").status_code == 200
         assert app.state.identity is identity_adapter
         assert app.state.pat_validator is pat_validator
 
-    assert released == [settings]
+    assert len(released) == 1
+    assert released[0].database.name == "niuu_shared"
     assert captured["credential_service"] is not None
     assert captured["mcp_provider"] is not None
     assert captured["secret_manager"] is not None
@@ -351,7 +354,8 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
 
     seed_configured.assert_awaited_once()
     seed_linear.assert_awaited_once()
-    assert released == [settings]
+    assert len(released) == 1
+    assert released[0].database.name == "niuu_shared"
     assert captured["integrations_router_repo"][0] == "integrations"  # type: ignore[index]
 
 
@@ -425,7 +429,8 @@ def test_tracker_service_app_uses_linear_default_tracker(monkeypatch) -> None:
     seed_linear.assert_awaited_once()
     assert captured["linear_api_key"] == "linear-key"
     assert captured["default_tracker"] is not None
-    assert released == [settings]
+    assert len(released) == 1
+    assert released[0].database.name == "niuu_shared"
 
 
 def test_audit_service_app_starts_and_stops_subscriber(monkeypatch) -> None:

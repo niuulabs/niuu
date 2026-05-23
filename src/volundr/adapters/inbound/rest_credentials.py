@@ -644,19 +644,21 @@ def _build_credentials_router(
 
 def create_credentials_router(
     credential_service: CredentialService,
+    prefix: str = "/api/v1/credentials",
 ) -> APIRouter:
     """Create the canonical shared credentials router."""
     return _build_credentials_router(
         credential_service,
-        prefix="/api/v1/credentials",
+        prefix=prefix,
     )
 
 
 def create_canonical_credentials_router(
     credential_service: CredentialService,
+    prefix: str = "/api/v1/credentials",
 ) -> APIRouter:
     """Backward-compatible alias for the canonical shared credentials router."""
-    return create_credentials_router(credential_service)
+    return create_credentials_router(credential_service, prefix=prefix)
 
 
 def create_legacy_secret_store_router(

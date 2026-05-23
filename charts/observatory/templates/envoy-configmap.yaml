@@ -89,6 +89,11 @@ data:
                                   claim_name: {{ .claimName | quote }}
                                 {{- end }}
                           rules:
+                            - match:
+                                prefix: "/"
+                                headers:
+                                  - name: ":method"
+                                    exact_match: "OPTIONS"
                             {{- range .Values.envoy.jwt.bypassPrefixes }}
                             - match:
                                 prefix: {{ . | quote }}

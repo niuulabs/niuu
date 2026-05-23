@@ -270,18 +270,20 @@ def _build_secrets_router(
 def create_secrets_router(
     mcp_provider: MCPServerProvider,
     secret_manager: SecretManager,
+    prefix: str = "/api/v1/credentials",
 ) -> APIRouter:
     """Create the canonical shared credential metadata router."""
     return _build_secrets_router(
         mcp_provider,
         secret_manager,
-        prefix="/api/v1/credentials",
+        prefix=prefix,
     )
 
 
 def create_canonical_secrets_router(
     mcp_provider: MCPServerProvider,
     secret_manager: SecretManager,
+    prefix: str = "/api/v1/credentials",
 ) -> APIRouter:
     """Backward-compatible alias for the canonical shared credential metadata router."""
-    return create_secrets_router(mcp_provider, secret_manager)
+    return create_secrets_router(mcp_provider, secret_manager, prefix=prefix)

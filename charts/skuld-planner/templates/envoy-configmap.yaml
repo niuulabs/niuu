@@ -74,6 +74,11 @@ data:
                           rules:
                             - match:
                                 prefix: "/"
+                                headers:
+                                  - name: ":method"
+                                    exact_match: "OPTIONS"
+                            - match:
+                                prefix: "/"
                               requires:
                                 provider_name: keycloak
                       {{- end }}
