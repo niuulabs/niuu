@@ -23,6 +23,63 @@ import type {
 } from '../ports';
 import type { Registry, Topology, ObservatoryEvent } from '../domain';
 
+function toObservatoryEventType(raw: Record<string, unknown>): ObservatoryEvent['type'] {
+  const explicitType = typeof raw.type === 'string' ? raw.type.toUpperCase() : '';
+  if (explicitType === 'RUN' || explicitType === 'RAVN' || explicitType === 'TING') {
+    return explicitType;
+  }
+  if (explicitType === 'MIMIR' || explicitType === 'BIFROST') {
+    return explicitType;
+  }
+
+  const service = typeof raw.service === 'string' ? raw.service.toUpperCase() : '';
+  if (service === 'RAVN' || service === 'TING' || service === 'MIMIR' || service === 'BIFROST') {
+    return service;
+  }
+
+  return 'RUN';
+}
+
+function toObservatoryEventTime(raw: Record<string, unknown>): string {
+  if (typeof raw.time === 'string' && raw.time.trim()) return raw.time;
+  if (typeof raw.timestamp === 'string' && raw.timestamp.length >= 19) {
+    return raw.timestamp.slice(11, 19);
+  }
+  return '--:--:--';
+}
+
+function toObservatoryEventSubject(raw: Record<string, unknown>): string {
+  if (typeof raw.subject === 'string' && raw.subject.trim()) return raw.subject;
+  if (typeof raw.service === 'string' && raw.service.trim()) return raw.service;
+  if (typeof raw.id === 'string' && raw.id.trim()) return raw.id;
+  return 'observatory';
+}
+
+function toObservatoryEventBody(raw: Record<string, unknown>): string {
+  if (typeof raw.body === 'string') return raw.body;
+  if (typeof raw.message === 'string') return raw.message;
+  return '';
+}
+
+function normalizeObservatoryEvent(raw: unknown): ObservatoryEvent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const payload = raw as Record<string, unknown>;
+  const time = toObservatoryEventTime(payload);
+  const subject = toObservatoryEventSubject(payload);
+  const body = toObservatoryEventBody(payload);
+  const id =
+    typeof payload.id === 'string' && payload.id.trim()
+      ? payload.id
+      : `${time}:${subject}:${body}` || `${Date.now()}`;
+  return {
+    id,
+    time,
+    type: toObservatoryEventType(payload),
+    subject,
+    body,
+  };
+}
+
 export function buildObservatoryRegistryHttpAdapter(client: ApiClient): IRegistryRepository {
   return {
     async getRegistry(): Promise<Registry> {
@@ -97,7 +154,8 @@ export function buildObservatoryEventsSseStream(url: string): IEventStream {
     handle = openEventStream(url, {
       onMessage: (raw) => {
         try {
-          const event = JSON.parse(raw) as ObservatoryEvent;
+          const event = normalizeObservatoryEvent(JSON.parse(raw));
+          if (!event) return;
           for (const l of listeners) l(event);
         } catch {
           // Malformed frame — drop it.

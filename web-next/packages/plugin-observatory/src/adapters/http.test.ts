@@ -28,9 +28,17 @@ const topologyB: Topology = {
 const event1: ObservatoryEvent = {
   id: 'e1',
   time: '00:00:00',
-  type: 'TYR',
+  type: 'TING',
   subject: 'n1',
   body: 'online',
+};
+
+const liveGuildEvent = {
+  id: 'instance:valhalla:up',
+  level: 'info',
+  service: 'volundr',
+  message: 'Valhalla is reachable',
+  timestamp: '2026-05-23T20:29:44Z',
 };
 
 function fakeClient(registry: Registry): ApiClient {
@@ -174,5 +182,28 @@ describe('buildObservatoryEventsSseStream', () => {
 
     expect(a).toEqual([event1]);
     expect(b).toEqual([event1]);
+  });
+
+  it('normalizes live guild snapshot events into observatory UI events', async () => {
+    global.fetch = vi.fn(async () =>
+      mockSseResponse([`data: ${JSON.stringify(liveGuildEvent)}\n\n`]),
+    ) as typeof fetch;
+
+    const stream = buildObservatoryEventsSseStream('/events/stream');
+    const received: ObservatoryEvent[] = [];
+    const unsubscribe = stream.subscribe((event) => received.push(event));
+
+    await new Promise((r) => setTimeout(r, 20));
+    unsubscribe();
+
+    expect(received).toEqual([
+      {
+        id: 'instance:valhalla:up',
+        time: '20:29:44',
+        type: 'RUN',
+        subject: 'volundr',
+        body: 'Valhalla is reachable',
+      },
+    ]);
   });
 });

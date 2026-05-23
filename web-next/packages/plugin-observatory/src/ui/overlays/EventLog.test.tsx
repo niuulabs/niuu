@@ -102,4 +102,15 @@ describe('EventLog', () => {
     expect(screen.getByText('RUN')).toBeInTheDocument();
     expect(screen.getByText('run-omega')).toBeInTheDocument();
   });
+
+  it('renders sparse events without crashing', () => {
+    const sparseEvent = {
+      id: 'ev-sparse',
+      time: '00:02:00',
+      type: 'RUN',
+      subject: undefined,
+      body: undefined,
+    } as unknown as ObservatoryEvent;
+    expect(() => render(<EventLog events={[sparseEvent]} />)).not.toThrow();
+  });
 });

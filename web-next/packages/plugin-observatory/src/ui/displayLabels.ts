@@ -1,5 +1,7 @@
-export function humanizeObservatoryText(value: string): string {
-  return value
+export function humanizeObservatoryText(value: unknown): string {
+  const text =
+    typeof value === 'string' ? value : value === null || value === undefined ? '' : String(value);
+  return text
     .replace(/Týr/g, 'Ting')
     .replace(/\bTyr\b/g, 'Ting')
     .replace(/\bTYR\b/g, 'TING')
@@ -11,10 +13,11 @@ export function humanizeObservatoryText(value: string): string {
     .replace(/\braid\b/g, 'run');
 }
 
-export function humanizeObservatoryEventType(value: string): string {
-  if (value === 'TYR') return 'TING';
-  if (value === 'RAID') return 'RUN';
-  if (value === 'TING') return 'TING';
-  if (value === 'RUN') return 'RUN';
-  return value;
+export function humanizeObservatoryEventType(value: unknown): string {
+  const text = typeof value === 'string' ? value : '';
+  if (text === 'TYR') return 'TING';
+  if (text === 'RAID') return 'RUN';
+  if (text === 'TING') return 'TING';
+  if (text === 'RUN') return 'RUN';
+  return text;
 }
