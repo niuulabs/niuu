@@ -73,6 +73,10 @@ export interface HttpClient {
 type EventStreamOpener = (url: string, options: EventStreamOptions) => EventStreamHandle;
 const LIVE_POLL_MS = 2_000;
 
+interface VolundrHttpAdapterOptions {
+  niuuBasePath?: string | null;
+}
+
 interface FileEntryPayload {
   name: string;
   path: string;
@@ -885,6 +889,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
 export function buildVolundrHttpAdapter(
   client: HttpClient,
   openStream: EventStreamOpener = openEventStream,
+  options: VolundrHttpAdapterOptions = {},
 ): IVolundrService {
   const forgeClient = (() => {
     const forgeBasePath = deriveCanonicalForgeBasePath(client.basePath);
@@ -901,7 +906,7 @@ export function buildVolundrHttpAdapter(
     return sharedBasePath ? createApiClient(sharedBasePath) : client;
   })();
   const niuuClient = (() => {
-    const niuuBasePath = deriveNiuuBasePath(client.basePath);
+    const niuuBasePath = options.niuuBasePath ?? deriveNiuuBasePath(client.basePath);
     return niuuBasePath ? createApiClient(niuuBasePath) : null;
   })();
   const trackerClient = sharedClient;

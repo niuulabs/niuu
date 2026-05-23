@@ -188,6 +188,14 @@ export function resolveSharedApiBase(config: Pick<NiuuConfig, 'services'>): stri
   return null;
 }
 
+export function resolveNiuuRegistryBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveDirectServiceBase(config, 'niuu');
+  if (explicitBase) return explicitBase.replace(/\/$/, '');
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/niuu` : null;
+}
+
 export function resolveCanonicalServiceBase(
   config: Pick<NiuuConfig, 'services'>,
   serviceKey: string,
@@ -1279,12 +1287,16 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const forgeBase = resolveForgeServiceBase(config);
   const volundrBase = resolveVolundrServiceBase(config);
   const primaryVolundr = volundrBase
-    ? buildVolundrHttpAdapter(createApiClient(volundrBase))
+    ? buildVolundrHttpAdapter(createApiClient(volundrBase), undefined, {
+        niuuBasePath: resolveNiuuRegistryBase(config),
+      })
     : createMockVolundrService();
-  const sharedApiBase = resolveSharedApiBase(config);
+  const niuuRegistryBase = resolveNiuuRegistryBase(config);
   const aggregateVolundr =
-    sharedApiBase != null
-      ? buildVolundrHttpAdapter(createApiClient(`${sharedApiBase}/niuu/volundr`))
+    niuuRegistryBase != null
+      ? buildVolundrHttpAdapter(createApiClient(`${niuuRegistryBase}/volundr`), undefined, {
+          niuuBasePath: niuuRegistryBase,
+        })
       : null;
   const volundr =
     aggregateVolundr != null

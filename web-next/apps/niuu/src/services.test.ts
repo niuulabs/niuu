@@ -108,6 +108,7 @@ import {
   buildSharedFeatureCatalogService,
   buildSharedIdentityService,
   resolveSharedApiBase,
+  resolveNiuuRegistryBase,
   toSharedApiBase,
   toHostBase,
   toHostPtyWsUrl,
@@ -236,6 +237,29 @@ describe('resolveCanonicalServiceBase', () => {
         'identity',
       ),
     ).toBeNull();
+  });
+});
+
+describe('resolveNiuuRegistryBase', () => {
+  it('prefers an explicit niuu registry base when configured', () => {
+    expect(
+      resolveNiuuRegistryBase({
+        services: {
+          niuu: { mode: 'http', baseUrl: 'https://niuu.yggdrasil.niuu.world/api/v1/niuu' },
+          forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        },
+      } as any),
+    ).toBe('https://niuu.yggdrasil.niuu.world/api/v1/niuu');
+  });
+
+  it('falls back to the local shared niuu route when no explicit base is configured', () => {
+    expect(
+      resolveNiuuRegistryBase({
+        services: {
+          forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        },
+      } as any),
+    ).toBe('http://localhost:8080/api/v1/niuu');
   });
 });
 
@@ -391,6 +415,10 @@ describe('buildServices live base selection', () => {
     expect(volundrMocks.buildVolundrHttpAdapter).toHaveBeenCalledWith(
       expect.objectContaining({
         basePath: 'http://localhost:8080/api/v1/forge',
+      }),
+      undefined,
+      expect.objectContaining({
+        niuuBasePath: 'http://localhost:8080/api/v1/niuu',
       }),
     );
   });
@@ -1056,6 +1084,10 @@ describe('buildServices', () => {
     expect(volundrMocks.buildVolundrHttpAdapter).toHaveBeenCalledWith(
       expect.objectContaining({
         basePath: 'http://localhost:8080/api/v1/forge',
+      }),
+      undefined,
+      expect.objectContaining({
+        niuuBasePath: 'http://localhost:8080/api/v1/niuu',
       }),
     );
   });

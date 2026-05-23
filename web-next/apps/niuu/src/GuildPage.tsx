@@ -15,7 +15,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { resolveSharedApiBase } from './services';
+import { resolveNiuuRegistryBase } from './services';
 
 type InstanceKind = 'volundr' | 'ting' | 'mimir' | 'bifrost' | 'ravn' | 'observatory' | 'generic';
 type RegistrySection = 'instances' | 'access' | 'connections';
@@ -1208,7 +1208,7 @@ export function GuildPage() {
   const config = useConfig();
   const identity = useService<IIdentityService>('identity');
   const queryClient = useQueryClient();
-  const sharedBase = resolveSharedApiBase(config);
+  const sharedBase = resolveNiuuRegistryBase(config);
   const client = useMemo(() => {
     if (!sharedBase) return null;
     return createApiClient(sharedBase);
@@ -1263,13 +1263,13 @@ export function GuildPage() {
   const instancesQuery = useQuery({
     queryKey: ['guild-instances'],
     enabled: client != null,
-    queryFn: () => client!.get<InstanceRecord[]>('/niuu/instances'),
+    queryFn: () => client!.get<InstanceRecord[]>('/instances'),
     refetchInterval: 10_000,
   });
   const catalogQuery = useQuery({
     queryKey: ['guild-instance-catalog'],
     enabled: client != null,
-    queryFn: () => client!.get<InstanceCatalogEntry[]>('/niuu/instances/catalog'),
+    queryFn: () => client!.get<InstanceCatalogEntry[]>('/instances/catalog'),
   });
 
   const userCredentialsQuery = useQuery({
@@ -1292,7 +1292,7 @@ export function GuildPage() {
 
   const createMutation = useMutation({
     mutationFn: () =>
-      client!.post<InstanceRecord>('/niuu/instances', {
+      client!.post<InstanceRecord>('/instances', {
         kind: wizard.kind,
         slug: slugifyName(wizard.name),
         name: wizard.name.trim(),
@@ -1324,7 +1324,7 @@ export function GuildPage() {
 
   const healthMutation = useMutation({
     mutationFn: async (instanceId: string) =>
-      client!.post<InstanceTestResult>(`/niuu/instances/${instanceId}/test`),
+      client!.post<InstanceTestResult>(`/instances/${instanceId}/test`),
     onSuccess: (result, instanceId) => {
       const snapshot: HealthSnapshot = { ...result, checkedAt: Date.now() };
       setHealthById((current) => ({ ...current, [instanceId]: snapshot }));
