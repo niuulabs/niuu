@@ -89,6 +89,13 @@ def create_router() -> APIRouter:
     """Create the Observatory API router."""
     router = APIRouter(prefix="/api/v1/observatory", tags=["Observatory"])
 
+    @router.get("/health", summary="Observatory health")
+    async def health(request: Request) -> dict[str, object]:
+        return {
+            "status": "healthy",
+            "guildUrl": request.app.state.guild_url,
+        }
+
     @router.get("/registry", summary="Get the observatory type registry")
     async def registry(request: Request) -> dict[str, object]:
         return await _repository(request).get_registry()
@@ -268,5 +275,13 @@ def create_app(
     app.state.discovery_service = discovery
     app.state.guild_url = getattr(discovery, "guild_url", getattr(discovery, "base_url", ""))
     app.state.guild_auth_adapter = loaded_settings.observatory.guild.auth.adapter
+
+    @app.get("/health", tags=["Health"])
+    async def health() -> dict[str, object]:
+        return {
+            "status": "healthy",
+            "guildUrl": app.state.guild_url,
+        }
+
     app.include_router(create_router())
     return app

@@ -104,6 +104,9 @@ envoy:
     keycloakTls: false
     extraClaimHeaders: []
     bypassPrefixes:
+      - /health
+      - /mimir/health
+      - /api/v1/mimir/health
       - /mimir/stats
   extraHttpFilters: []
   extraClusters: []

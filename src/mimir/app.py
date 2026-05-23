@@ -153,6 +153,16 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     app.include_router(mcp_server.router(), prefix="/api/v1/mimir/mcp", include_in_schema=False)
     app.state.mimir_config = config
 
+    @app.get("/health", tags=["Health"])
+    @app.get("/mimir/health", include_in_schema=False)
+    @app.get("/api/v1/mimir/health", include_in_schema=False)
+    async def health() -> dict[str, object]:
+        return {
+            "status": "healthy",
+            "name": config.name,
+            "role": config.role,
+        }
+
     @app.get("/settings", response_model=SettingsProviderSchema)
     @app.get("/mimir/settings", response_model=SettingsProviderSchema, include_in_schema=False)
     @app.get(

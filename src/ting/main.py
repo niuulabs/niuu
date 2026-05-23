@@ -931,6 +931,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     @app.get("/health")
+    @app.get("/api/v1/ting/health", include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 

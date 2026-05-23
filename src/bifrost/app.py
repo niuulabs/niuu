@@ -271,6 +271,7 @@ def create_app(config: BifrostConfig) -> FastAPI:
         return response
 
     @app.get("/health")
+    @app.get("/api/v1/bifrost/health", include_in_schema=False)
     async def health() -> dict:
         return {"status": "ok"}
 

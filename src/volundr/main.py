@@ -986,6 +986,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(PATRevocationMiddleware)
 
     @app.get("/health", tags=["Health"])
+    @app.get("/api/v1/forge/health", include_in_schema=False)
     async def health_check() -> dict[str, str]:
         """Health check endpoint."""
         return {"status": "healthy"}

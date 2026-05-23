@@ -109,6 +109,16 @@ def _make_client() -> TestClient:
 
 
 class TestObservatoryApp:
+    def test_health_aliases_return_status_and_guild_url(self) -> None:
+        with _make_client() as client:
+            root = client.get("/health")
+            api = client.get("/api/v1/observatory/health")
+
+        assert root.status_code == 200
+        assert api.status_code == 200
+        assert root.json() == {"status": "healthy", "guildUrl": "http://guild.test"}
+        assert api.json() == root.json()
+
     def test_registry_returns_seed_payload(self) -> None:
         with _make_client() as client:
             response = client.get("/api/v1/observatory/registry")
