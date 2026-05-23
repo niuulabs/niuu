@@ -23,6 +23,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from niuu.config import CorsConfig
 from niuu.cors import apply_cors_middleware
 from niuu.ports.plugin import APIRouteDomain, Service
+from niuu.service_databases import (
+    bootstrap_database,
+    bootstrap_sql_for_service,
+    database_name_for_service,
+    local_service_database_names,
+    service_database_env_var,
+)
 
 if TYPE_CHECKING:
     from cli.registry import PluginRegistry
@@ -889,19 +896,24 @@ class RootServer(Service):
         data_dir = os.environ.get("NIUU_PGDATA_DIR") or str(Path.home() / ".niuu" / "pgdata")
         db = EmbeddedPostgresDatabase()
         info = await db.start(data_dir)
+        await db.ensure_databases(local_service_database_names())
         self._embedded_db = db
 
         os.environ["DATABASE__HOST"] = info.host
         os.environ["DATABASE__PORT"] = str(info.port)
         os.environ["DATABASE__USER"] = info.user
         os.environ["DATABASE__PASSWORD"] = ""
-        os.environ["DATABASE__NAME"] = info.dbname
+        os.environ["DATABASE__NAME"] = database_name_for_service("volundr")
+        for service_name in ("volundr", "niuu-shared", "guild", "observatory"):
+            os.environ[service_database_env_var(service_name)] = database_name_for_service(
+                service_name
+            )
 
         logger.info(
             "Embedded PostgreSQL ready at %s:%s/%s",
             info.host,
             info.port,
-            info.dbname,
+            database_name_for_service("volundr"),
         )
 
     def _build_app(self) -> FastAPI:
@@ -944,11 +956,11 @@ class RootServer(Service):
             from cli.resources import migration_dir, ordered_migration_files
 
             info = self._embedded_db._connection_info
-            conn = await asyncpg.connect(
+            volundr_conn = await asyncpg.connect(
                 host=info.host,
                 port=info.port,
                 user=info.user,
-                database=info.dbname,
+                database=database_name_for_service("volundr"),
             )
             try:
                 for variant in ("volundr", "ting"):
@@ -962,13 +974,31 @@ class RootServer(Service):
                     for sql_file in sql_files:
                         sql = sql_file.read_text()
                         try:
-                            await conn.execute(sql)
+                            await volundr_conn.execute(sql)
                             applied += 1
                         except Exception:
                             logger.debug("Migration %s skipped: %s", sql_file.name, exc_info=True)
                     logger.info("Applied %d/%d %s migrations", applied, len(sql_files), variant)
             finally:
-                await conn.close()
+                await volundr_conn.close()
+
+            for service_name in ("niuu-shared", "guild", "observatory"):
+                bootstrap_sql = bootstrap_sql_for_service(service_name)
+                if not bootstrap_sql:
+                    continue
+                await bootstrap_database(
+                    host=info.host,
+                    port=info.port,
+                    user=info.user,
+                    password="",
+                    database=database_name_for_service(service_name),
+                    statements=bootstrap_sql,
+                )
+                logger.info(
+                    "Bootstrapped local %s database %s",
+                    service_name,
+                    database_name_for_service(service_name),
+                )
         except Exception:
             logger.exception("Failed to run migrations")
 

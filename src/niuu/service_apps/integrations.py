@@ -13,6 +13,7 @@ from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
+from niuu.service_databases import apply_service_database_settings
 from niuu.service_database import database_pool
 from niuu.service_integrations import (
     has_seeded_linear_integration,
@@ -43,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Create the standalone integrations API application."""
     if settings is None:
         settings = Settings()
+    settings = apply_service_database_settings(settings, "niuu-shared")
 
     configure_logging(settings.logging)
 

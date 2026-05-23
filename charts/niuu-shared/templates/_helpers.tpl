@@ -100,15 +100,13 @@ imagePullSecrets:
 {{- end }}
 
 {{/*
-Return the database secret name. By default, reuse the Volundr secret from the
-same umbrella release so shared API surfaces can bind to the same database
-without needing a second secret declaration.
+Return the database secret name.
 */}}
 {{- define "niuu-shared.databaseSecretName" -}}
 {{- if .Values.database.existingSecret }}
 {{- .Values.database.existingSecret }}
 {{- else }}
-{{- printf "%s-volundr-db" .Release.Name }}
+{{- printf "%s-niuu-shared-db" .Release.Name }}
 {{- end }}
 {{- end }}
 
@@ -139,6 +137,9 @@ Annotations for checksum/config - forces restart on config changes
 */}}
 {{- define "niuu-shared.checksumAnnotations" -}}
 checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.migrations.enabled }}
+checksum/migrations: {{ include (print $.Template.BasePath "/migrations-configmap.yaml") . | sha256sum }}
+{{- end }}
 {{- if .Values.envoy.enabled }}
 checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
 {{- end }}

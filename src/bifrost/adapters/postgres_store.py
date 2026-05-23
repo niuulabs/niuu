@@ -1,11 +1,7 @@
 """PostgreSQL-backed UsageStore adapter.
 
-Uses ``asyncpg`` for async I/O.  Suitable for multi-node (M5) deployments
-where the usage data must be shared across gateway instances.
-
-The table is created automatically on first use.  For production deployments,
-prefer running the SQL migration via the ``migrate`` tool so schema changes
-are tracked and versioned.
+Uses ``asyncpg`` for async I/O. Suitable for multi-node deployments where the
+usage data must be shared across gateway instances.
 """
 
 from __future__ import annotations
@@ -155,11 +151,6 @@ class PostgresUsageStore(UsageStore):
                 min_size=self._min_size,
                 max_size=self._max_size,
             )
-            async with self._pool.acquire() as conn:
-                await conn.execute(_CREATE_TABLE)
-                await conn.execute(_CREATE_INDEXES)
-                for stmt in _MIGRATE_COLUMNS:
-                    await conn.execute(stmt)
         return self._pool
 
     async def close(self) -> None:

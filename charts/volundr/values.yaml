@@ -1308,6 +1308,8 @@ webNext:
     auth:
       issuer: ""
       clientId: ""
+    # -- Optional service URL overrides keyed by plugin-sdk service id
+    services: {}
 
   resources:
     requests:

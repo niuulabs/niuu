@@ -25,6 +25,7 @@ spec:
           {{- range .routeSets }}
           {{- $routeSetName := . -}}
           {{- range (index $.Values.ingress.routeSets $routeSetName) }}
+          {{- if eq (include "niuu.ingressServiceEnabled" (dict "root" $ "service" .service)) "true" }}
           - path: {{ .path }}
             pathType: {{ .pathType | default "Prefix" }}
             backend:
@@ -38,9 +39,11 @@ spec:
                   {{- else }}
                   name: http
                   {{- end }}
+          {{- end }}
           {{- end }}
           {{- end }}
           {{- range .routes }}
+          {{- if eq (include "niuu.ingressServiceEnabled" (dict "root" $ "service" .service)) "true" }}
           - path: {{ .path }}
             pathType: {{ .pathType | default "Prefix" }}
             backend:
@@ -54,6 +57,7 @@ spec:
                   {{- else }}
                   name: http
                   {{- end }}
+          {{- end }}
           {{- end }}
     {{- end }}
 {{- end }}

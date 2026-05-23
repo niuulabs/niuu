@@ -18,6 +18,7 @@ from niuu.config import GitConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.repo import RepoService
+from niuu.service_databases import apply_service_database_settings
 from niuu.service_database import database_pool
 from niuu.service_runtime import (
     create_identity_adapter,
@@ -61,7 +62,7 @@ def create_app(
         version="0.1.0",
     )
 
-    loaded_settings = settings or _load_settings()
+    loaded_settings = apply_service_database_settings(settings or _load_settings(), "niuu-shared")
     app.state.settings = loaded_settings
 
     @asynccontextmanager

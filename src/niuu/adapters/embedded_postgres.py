@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_STARTUP_TIMEOUT_S = 30
 _DEFAULT_CLEANUP_TIMEOUT_S = 10
 _PG_CTL_TIMEOUT_S = 10
+_DB_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Unix domain socket paths are limited to 104-108 bytes depending on OS.
 _MAX_SOCKET_PATH_LEN = 100
@@ -176,6 +178,24 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
 
         result = await self._conn.fetch(sql, *args)
         return [dict(row) for row in result]
+
+    async def ensure_databases(self, names: list[str] | tuple[str, ...]) -> None:
+        """Create logical databases on the embedded PostgreSQL server if absent."""
+        if self._conn is None:
+            raise RuntimeError("Database not started — call start() first")
+
+        for raw_name in names:
+            name = raw_name.strip()
+            if not _DB_NAME_PATTERN.fullmatch(name):
+                raise ValueError(f"Invalid PostgreSQL database name: {raw_name!r}")
+
+            exists = await self._conn.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = $1",
+                name,
+            )
+            if exists:
+                continue
+            await self._conn.execute(f'CREATE DATABASE "{name}"')
 
     async def stop(self) -> None:
         if self._conn is not None:

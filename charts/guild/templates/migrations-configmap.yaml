@@ -1,0 +1,82 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "guild.fullname" . }}-migrations
+  labels:
+    {{- include "guild.labels" . | nindent 4 }}
+data:
+  000001_pgcrypto.up.sql: |
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+  000001_pgcrypto.down.sql: |
+    -- Keep pgcrypto installed; other services in the shared database may rely on it.
+    SELECT 1;
+
+  000008_personal_access_tokens.up.sql: |
+    -- Personal access tokens for shared Niuu services.
+    -- Guild does not own a users table, so owner_id is treated as an opaque IDP subject.
+
+    CREATE TABLE IF NOT EXISTS personal_access_tokens (
+        id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+        owner_id     TEXT        NOT NULL,
+        name         TEXT        NOT NULL,
+        token_hash   TEXT        NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at   TIMESTAMPTZ,
+        last_used_at TIMESTAMPTZ
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pats_owner_id ON personal_access_tokens(owner_id);
+
+  000008_personal_access_tokens.down.sql: |
+    DROP TABLE IF EXISTS personal_access_tokens;
+
+  000009_pat_unique_owner_name.up.sql: |
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pats_owner_name
+        ON personal_access_tokens(owner_id, name);
+
+  000009_pat_unique_owner_name.down.sql: |
+    DROP INDEX IF EXISTS idx_pats_owner_name;
+
+  000040_niuu_instances.up.sql: |
+    -- Shared runtime instance registry for multi-instance Niuu deployments.
+
+    CREATE TABLE IF NOT EXISTS niuu_instances (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        kind TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'system',
+        owner_id TEXT,
+        tenant_id TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        is_default BOOLEAN NOT NULL DEFAULT false,
+        config JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT niuu_instances_kind_check CHECK (kind IN ('volundr')),
+        CONSTRAINT niuu_instances_visibility_check CHECK (visibility IN ('system', 'tenant', 'user')),
+        CONSTRAINT niuu_instances_scope_check CHECK (
+            (visibility = 'system' AND owner_id IS NULL)
+            OR (visibility = 'tenant' AND owner_id IS NULL AND tenant_id IS NOT NULL)
+            OR (visibility = 'user' AND owner_id IS NOT NULL AND tenant_id IS NULL)
+        )
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_scope_slug
+        ON niuu_instances(kind, slug, COALESCE(owner_id, ''), COALESCE(tenant_id, ''));
+
+    CREATE INDEX IF NOT EXISTS idx_niuu_instances_kind_enabled
+        ON niuu_instances(kind, enabled);
+
+    CREATE INDEX IF NOT EXISTS idx_niuu_instances_visibility
+        ON niuu_instances(visibility, owner_id, tenant_id);
+
+  000040_niuu_instances.down.sql: |
+    DROP INDEX IF EXISTS idx_niuu_instances_visibility;
+    DROP INDEX IF EXISTS idx_niuu_instances_kind_enabled;
+    DROP INDEX IF EXISTS idx_niuu_instances_scope_slug;
+    DROP TABLE IF EXISTS niuu_instances;
+{{- end }}

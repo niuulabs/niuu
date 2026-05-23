@@ -13,7 +13,6 @@ from niuu.adapters.inbound.rest_credentials_settings import create_credentials_s
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.cors import apply_cors_middleware
 from niuu.ports.http_auth import HttpAuthPort
-from niuu.service_database import database_pool
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
 )
@@ -82,6 +81,7 @@ from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.domain.ports import SessionContributor
+from volundr.infrastructure.database import database_pool
 from volundr.domain.services import (
     ChronicleService,
     GitWorkflowService,

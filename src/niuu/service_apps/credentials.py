@@ -11,6 +11,7 @@ from niuu.adapters.inbound.rest_credentials_settings import create_credentials_s
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
+from niuu.service_databases import apply_service_database_settings
 from niuu.service_database import database_pool
 from niuu.service_runtime import (
     configure_logging,
@@ -33,6 +34,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Create the standalone credentials API application."""
     if settings is None:
         settings = Settings()
+    settings = apply_service_database_settings(settings, "niuu-shared")
 
     configure_logging(settings.logging)
 

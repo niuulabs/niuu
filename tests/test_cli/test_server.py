@@ -1653,6 +1653,7 @@ class TestRootServerRunMigrations:
         with (
             patch("asyncpg.connect", new_callable=AsyncMock, return_value=mock_conn),
             patch("cli.resources.migration_dir", side_effect=mock_migration_dir),
+            patch("niuu.app.bootstrap_sql_for_service", return_value=()),
         ):
             await server._run_migrations()
 
@@ -1686,6 +1687,7 @@ class TestRootServerRunMigrations:
         with (
             patch("asyncpg.connect", new_callable=AsyncMock, return_value=mock_conn),
             patch("cli.resources.migration_dir", side_effect=[vol_dir, FileNotFoundError]),
+            patch("niuu.app.bootstrap_sql_for_service", return_value=()),
         ):
             # Should not raise
             await server._run_migrations()
@@ -1731,7 +1733,14 @@ class TestRootServerStartEmbeddedDb:
         assert os.environ["DATABASE__HOST"] == "localhost"
         assert os.environ["DATABASE__PORT"] == "5433"
         assert os.environ["DATABASE__USER"] == "testuser"
-        assert os.environ["DATABASE__NAME"] == "testdb"
+        assert os.environ["DATABASE__NAME"] == "volundr"
+        assert os.environ["NIUU_DATABASE_NAME_VOLUNDR"] == "volundr"
+        assert os.environ["NIUU_DATABASE_NAME_NIUU_SHARED"] == "niuu_shared"
+        assert os.environ["NIUU_DATABASE_NAME_GUILD"] == "guild"
+        assert os.environ["NIUU_DATABASE_NAME_OBSERVATORY"] == "observatory"
+        mock_db.ensure_databases.assert_awaited_once_with(
+            ("volundr", "niuu_shared", "guild", "observatory", "ting", "bifrost", "ravn", "mimir")
+        )
 
     @pytest.mark.asyncio
     async def test_respects_pgdata_env_override(self) -> None:

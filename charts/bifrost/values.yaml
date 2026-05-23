@@ -238,6 +238,59 @@ deploymentAnnotations: {}
 #       secretKey: api-key
 providers: {}
 
+config:
+  host: 0.0.0.0
+  port: 8088
+  auth_mode: open
+  aliases: {}
+  providers: {}
+  routing_strategy: failover
+  guardrails: {}
+  default_quota: {}
+  tenant_quotas: {}
+  agent_permissions: {}
+  key_vault: {}
+  cache:
+    mode: disabled
+  events:
+    adapter: "null"
+  usage_store:
+    adapter: memory
+  audit:
+    adapter: "null"
+  rules: []
+
+database:
+  name: bifrost
+  createSecret: false
+  existingSecret: ""
+  userKey: username
+  passwordKey: password
+  username: ""
+  password: "CHANGE_ME"
+  extraSecretData: {}
+  secretAnnotations: {}
+  external:
+    enabled: true
+    host: postgresql.default.svc.cluster.local
+    port: 5432
+
+migrations:
+  enabled: true
+  image:
+    repository: migrate/migrate
+    tag: "v4.17.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+initContainers: []
+
 # ---------------------------------------------------------------------------
 # PAT signing secret
 # ---------------------------------------------------------------------------

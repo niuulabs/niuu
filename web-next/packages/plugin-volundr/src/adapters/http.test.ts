@@ -601,6 +601,31 @@ describe('buildVolundrHttpAdapter', () => {
     ]);
   });
 
+  it('uses an explicit niuu registry override when provided', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/forge');
+    const svc = buildVolundrHttpAdapter(client, undefined, {
+      niuuBasePath: 'https://niuu.yggdrasil.niuu.world/api/v1/niuu',
+    });
+    const niuuClient = getDerivedClient('https://niuu.yggdrasil.niuu.world/api/v1/niuu')!;
+    expect(niuuClient).toBeDefined();
+    niuuClient.get.mockResolvedValue([
+      {
+        id: 'inst-valhalla',
+        name: 'Valhalla',
+        slug: 'valhalla',
+        baseUrl: 'https://volundr.valhalla.asgard.niuu.world',
+        visibility: 'system',
+        enabled: true,
+        isDefault: false,
+      },
+    ]);
+
+    await svc.getTargets();
+
+    expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+    expect(queryMocks.createApiClient).not.toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
+  });
+
   it('startSession calls POST /sessions', async () => {
     const client = makeClient();
     const config = {

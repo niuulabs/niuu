@@ -14,7 +14,7 @@ from niuu.adapters.postgres_instances import PostgresInstanceRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.instances import InstanceService
-from niuu.service_database import database_pool
+from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.service_instances import seed_configured_instances
 from niuu.service_runtime import configure_logging, create_pat_validator
 from niuu.service_settings import Settings
@@ -27,7 +27,7 @@ def _load_settings() -> Settings:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create the Guild FastAPI application."""
-    loaded_settings = settings or _load_settings()
+    loaded_settings = apply_service_database_settings(settings or _load_settings(), "guild")
     configure_logging(loaded_settings.logging)
     app = FastAPI(
         title="Guild",

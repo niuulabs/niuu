@@ -1,0 +1,101 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bifrost.fullname" . }}-migrations
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+data:
+  000001_usage_records.up.sql: |
+    CREATE TABLE IF NOT EXISTS usage_records (
+        id                 BIGSERIAL PRIMARY KEY,
+        request_id         TEXT      NOT NULL DEFAULT '',
+        agent_id           TEXT      NOT NULL,
+        tenant_id          TEXT      NOT NULL,
+        session_id         TEXT      NOT NULL DEFAULT '',
+        saga_id            TEXT      NOT NULL DEFAULT '',
+        model              TEXT      NOT NULL,
+        provider           TEXT      NOT NULL DEFAULT '',
+        input_tokens       INTEGER   NOT NULL DEFAULT 0,
+        output_tokens      INTEGER   NOT NULL DEFAULT 0,
+        cache_read_tokens  INTEGER   NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER   NOT NULL DEFAULT 0,
+        reasoning_tokens   INTEGER   NOT NULL DEFAULT 0,
+        cost_usd           NUMERIC   NOT NULL DEFAULT 0,
+        latency_ms         REAL      NOT NULL DEFAULT 0,
+        streaming          BOOLEAN   NOT NULL DEFAULT FALSE,
+        cache_hit          BOOLEAN   NOT NULL DEFAULT FALSE,
+        timestamp          TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_usage_tenant_ts ON usage_records(tenant_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_usage_agent_ts ON usage_records(agent_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_records(model);
+    CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_records(provider);
+
+  000001_usage_records.down.sql: |
+    DROP TABLE IF EXISTS usage_records;
+
+  000002_bifrost_audit.up.sql: |
+    CREATE TABLE IF NOT EXISTS bifrost_audit (
+        id               BIGSERIAL PRIMARY KEY,
+        request_id       TEXT        NOT NULL DEFAULT '',
+        agent_id         TEXT        NOT NULL,
+        tenant_id        TEXT        NOT NULL,
+        session_id       TEXT        NOT NULL DEFAULT '',
+        saga_id          TEXT        NOT NULL DEFAULT '',
+        model            TEXT        NOT NULL,
+        provider         TEXT        NOT NULL DEFAULT '',
+        outcome          TEXT        NOT NULL DEFAULT 'success',
+        status_code      INTEGER     NOT NULL DEFAULT 200,
+        rule_name        TEXT        NOT NULL DEFAULT '',
+        rule_action      TEXT        NOT NULL DEFAULT '',
+        tags             JSONB       NOT NULL DEFAULT '{}',
+        error_message    TEXT        NOT NULL DEFAULT '',
+        latency_ms       REAL        NOT NULL DEFAULT 0,
+        tokens_input     INTEGER     NOT NULL DEFAULT 0,
+        tokens_output    INTEGER     NOT NULL DEFAULT 0,
+        cost_usd         REAL        NOT NULL DEFAULT 0,
+        cache_hit        BOOLEAN     NOT NULL DEFAULT FALSE,
+        prompt_content   TEXT        NOT NULL DEFAULT '',
+        response_content TEXT        NOT NULL DEFAULT '',
+        timestamp        TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bifrost_audit_tenant_ts ON bifrost_audit(tenant_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_bifrost_audit_agent_ts ON bifrost_audit(agent_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_bifrost_audit_outcome ON bifrost_audit(outcome);
+    CREATE INDEX IF NOT EXISTS idx_bifrost_audit_request_id ON bifrost_audit(request_id);
+
+  000002_bifrost_audit.down.sql: |
+    DROP TABLE IF EXISTS bifrost_audit;
+
+  000003_bifrost_requests.up.sql: |
+    CREATE TABLE IF NOT EXISTS bifrost_requests (
+        id                 BIGSERIAL PRIMARY KEY,
+        request_id         TEXT        NOT NULL DEFAULT '',
+        agent_id           TEXT        NOT NULL,
+        tenant_id          TEXT        NOT NULL,
+        session_id         TEXT        NOT NULL DEFAULT '',
+        saga_id            TEXT        NOT NULL DEFAULT '',
+        model              TEXT        NOT NULL,
+        provider           TEXT        NOT NULL DEFAULT '',
+        input_tokens       INTEGER     NOT NULL DEFAULT 0,
+        output_tokens      INTEGER     NOT NULL DEFAULT 0,
+        cache_read_tokens  INTEGER     NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER     NOT NULL DEFAULT 0,
+        reasoning_tokens   INTEGER     NOT NULL DEFAULT 0,
+        cost_usd           NUMERIC     NOT NULL DEFAULT 0,
+        latency_ms         REAL        NOT NULL DEFAULT 0,
+        streaming          BOOLEAN     NOT NULL DEFAULT FALSE,
+        timestamp          TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bifrost_req_tenant_ts ON bifrost_requests(tenant_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_bifrost_req_agent_ts ON bifrost_requests(agent_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_bifrost_req_model ON bifrost_requests(model);
+    CREATE INDEX IF NOT EXISTS idx_bifrost_req_provider ON bifrost_requests(provider);
+
+  000003_bifrost_requests.down.sql: |
+    DROP TABLE IF EXISTS bifrost_requests;
+{{- end }}
