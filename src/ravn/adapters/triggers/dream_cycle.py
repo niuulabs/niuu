@@ -9,7 +9,7 @@ to run an end-to-end knowledge-base maintenance pass:
 4. Auto-fix safe lint issues via ``mimir_lint --fix``.
 5. Cross-reference pages that mention the same entities without links.
 6. Write a dream cycle log entry to ``wiki/log.md``.
-7. Emit a ``mimir.dream.completed`` Sleipnir event with summary counts.
+7. Return summary counts; the drive loop emits ``mimir.dream.completed``.
 
 State is persisted to ``<state_dir>/dream_cycle_state.json`` so the
 ``last_dream_at`` timestamp survives daemon restarts.  Running the dream
@@ -162,12 +162,13 @@ class DreamCycleTrigger(TriggerPort):
             f"Search for pages that mention the same entities as the updated pages but "
             f"lack wikilinks to them.  Add the missing links via `mimir_write`.\n"
             f"\n"
-            f"**Step 7 — Log and emit**\n"
+            f"**Step 7 — Log and finish**\n"
             f"Append a dream cycle summary entry to `wiki/log.md` with: timestamp, "
             f"`ravn={warden_id}`, pages_updated count, entities_created count, "
             f"lint_fixes count.\n"
-            f"Then call `sleipnir_publish` to emit a `mimir.dream.completed` event "
-            f"with those three counts.\n"
+            f"Do not call `sleipnir_publish`; the runner emits `mimir.dream.completed` "
+            f"automatically from your final outcome. Include `pages_updated`, "
+            f"`entities_created`, and `lint_fixes` as integer fields in the outcome block.\n"
             f"\n"
             f"Stay within the token budget.  If budget is running low before all steps "
             f"are done, skip Step 6, complete Steps 7, and note which steps were skipped.\n"

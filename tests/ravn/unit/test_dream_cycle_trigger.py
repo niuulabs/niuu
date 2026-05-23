@@ -239,6 +239,10 @@ class TestDreamCycleTriggerTaskContent:
         context = enqueued[0].initiative_context
         for step_num in range(1, 8):
             assert f"Step {step_num}" in context
+        assert "Do not call `sleipnir_publish`" in context
+        assert "pages_updated" in context
+        assert "entities_created" in context
+        assert "lint_fixes" in context
 
     @pytest.mark.asyncio
     async def test_last_dream_at_updated_after_enqueue(self) -> None:

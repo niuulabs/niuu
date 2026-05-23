@@ -2376,6 +2376,7 @@ async def _run_daemon(
     # NIU-598: shared in-process bus for post-session reflection (daemon mode).
     # Captured by _agent_factory so each agent created by the daemon publishes to it.
     daemon_bus: Any | None = None
+    sleipnir_catalog_publisher: Any | None = None
     if settings.reflection.enabled:
         from sleipnir.adapters.in_process import InProcessBus
 
@@ -2571,6 +2572,28 @@ async def _run_daemon(
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
             event_publisher = RabbitMQEventPublisher(settings.sleipnir)
+            amqp_url = os.environ.get(settings.sleipnir.amqp_url_env, "").strip()
+            if amqp_url:
+                try:
+                    from sleipnir.adapters.rabbitmq import RabbitMQPublisher
+
+                    sleipnir_catalog_publisher = RabbitMQPublisher(
+                        url=amqp_url,
+                        exchange_name=settings.sleipnir.exchange,
+                    )
+                    await sleipnir_catalog_publisher.start()
+                except Exception as exc:
+                    logger.warning(
+                        "sleipnir: catalog publisher unavailable; "
+                        "mimir.dream.completed emission will be skipped: %s",
+                        exc,
+                    )
+                    sleipnir_catalog_publisher = None
+            else:
+                logger.warning(
+                    "sleipnir: %s is not set; catalog events will not be published",
+                    settings.sleipnir.amqp_url_env,
+                )
 
         drive_loop = DriveLoop(
             agent_factory=_agent_factory,
@@ -2579,6 +2602,7 @@ async def _run_daemon(
             event_publisher=event_publisher,
             resume=resume,
             mimir=daemon_mimir,
+            sleipnir_publisher=sleipnir_catalog_publisher or daemon_bus,
         )
         _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
         cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
@@ -2704,6 +2728,8 @@ async def _run_daemon(
                 pass
         if daemon_reflection_svc is not None:
             await daemon_reflection_svc.stop()
+        if sleipnir_catalog_publisher is not None:
+            await sleipnir_catalog_publisher.stop()
         return
 
     try:
@@ -2728,6 +2754,8 @@ async def _run_daemon(
                 pass
         if daemon_reflection_svc is not None:
             await daemon_reflection_svc.stop()
+        if sleipnir_catalog_publisher is not None:
+            await sleipnir_catalog_publisher.stop()
 
 
 def _wire_triggers(drive_loop: Any, initiative: InitiativeConfig) -> list[Any]:

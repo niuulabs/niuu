@@ -12,11 +12,13 @@ from niuu.domain.outcome import OutcomeField
 from ravn.domain.events import RavnEventType
 from ravn.drive_loop import (
     _default_success_verdict,
+    _extract_mimir_dream_counts,
     _infer_tool_written_verdict,
     _known_verdict_tokens,
     _normalize_outcome_verdict,
     _parse_outcome_for_persona,
 )
+from sleipnir.domain import registry
 from tests.test_ravn.conftest import _make_agent_task, _make_drive_loop
 
 
@@ -826,6 +828,81 @@ summary: post-mortem source captured
         assert payload["structured_outcome"]["verdict"] == "pass"
         assert payload["summary"] == "shipped"
         assert payload["files_changed"] == 2
+
+    def test_extract_mimir_dream_counts_prefers_outcome_fields_and_falls_back_to_prose(
+        self,
+    ) -> None:
+        persona = SimpleNamespace(
+            produces=SimpleNamespace(
+                schema={
+                    "pages_updated": OutcomeField(type="number", description="pages"),
+                    "entities_created": OutcomeField(type="number", description="entities"),
+                    "lint_fixes": OutcomeField(type="number", description="lint"),
+                }
+            )
+        )
+
+        counts = _extract_mimir_dream_counts(
+            (
+                "---outcome---\n"
+                "pages_updated: 3\n"
+                "entities_created: 2\n"
+                "lint_fixes: 1\n"
+                "---end---"
+            ),
+            persona,
+        )
+        assert counts == {"pages_updated": 3, "entities_created": 2, "lint_fixes": 1}
+
+        assert _extract_mimir_dream_counts(
+            "maintenance ran; pages_updated=4, entities_created=0, lint_fixes=2",
+            None,
+        ) == {"pages_updated": 4, "entities_created": 0, "lint_fixes": 2}
+
+    @pytest.mark.asyncio
+    async def test_emit_sleipnir_mimir_dream_completed_for_dream_cycle_task(self) -> None:
+        dl = _make_drive_loop()
+        dl._source_id = "drive_loop"
+        published = []
+        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
+
+        task = _make_agent_task(task_id="task-dream")
+        task.triggered_by = "dream_cycle:cron"
+        task.persona = "mimir-warden"
+        task.session_id = "sess-dream"
+
+        await dl._emit_sleipnir_mimir_dream_completed(
+            task,
+            response_text=(
+                "---outcome---\n"
+                "verdict: complete\n"
+                "pages_updated: 5\n"
+                "entities_created: 2\n"
+                "lint_fixes: 1\n"
+                "---end---"
+            ),
+        )
+
+        assert published
+        event = published[0]
+        assert event.event_type == registry.MIMIR_DREAM_COMPLETED
+        assert event.correlation_id == "sess-dream"
+        assert event.payload["pages_updated"] == 5
+        assert event.payload["entities_created"] == 2
+        assert event.payload["lint_fixes"] == 1
+        assert event.payload["task_id"] == "task-dream"
+        assert event.payload["persona"] == "mimir-warden"
+
+    @pytest.mark.asyncio
+    async def test_emit_sleipnir_mimir_dream_completed_ignores_non_dream_task(self) -> None:
+        dl = _make_drive_loop()
+        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock())
+        task = _make_agent_task(task_id="task-normal")
+        task.triggered_by = "thread:inbox"
+
+        await dl._emit_sleipnir_mimir_dream_completed(task, response_text="pages_updated=1")
+
+        dl._sleipnir_publisher.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_emit_tool_outcome_event_publishes_and_tolerates_skuld_failure(self) -> None:

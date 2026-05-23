@@ -2101,7 +2101,7 @@ class DreamCycleTriggerConfig(BaseModel):
     3. Update compiled truth pages where evidence has changed.
     4. Run ``mimir_lint --fix`` to auto-fix safe issues.
     5. Cross-reference pages that mention the same entities without links.
-    6. Emit a ``mimir.dream.completed`` Sleipnir event with summary counts.
+    6. Return summary counts; the drive loop emits ``mimir.dream.completed``.
 
     Disabled by default — enable via ``dream_cycle.enabled: true`` in ravn.yaml.
     """

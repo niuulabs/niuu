@@ -65,7 +65,7 @@ system_prompt_template: |
 
   **Step 6 — Cross-reference**: Find pages mentioning the same entities as updated pages but lacking wikilinks; add missing links via `mimir_write`.
 
-  **Step 7 — Log and emit**: Append a summary entry to `wiki/log.md` with timestamp, pages_updated, entities_created, and lint_fixes.  Then call `sleipnir_publish` to emit a `mimir.dream.completed` event with those counts.
+  **Step 7 — Log and finish**: Append a summary entry to `wiki/log.md` with timestamp, pages_updated, entities_created, and lint_fixes. Include those counts in the final outcome; the runner emits `mimir.dream.completed` automatically.
 
   Idempotency: all writes must be conditional — only write a page if its content would actually change.  Running the dream cycle twice must produce no additional changes on the second run.
 

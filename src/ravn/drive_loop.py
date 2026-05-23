@@ -48,11 +48,17 @@ if TYPE_CHECKING:
     from ravn.ports.mesh import MeshPort
 
 try:
-    from sleipnir.domain.catalog import ravn_task_completed as _sleipnir_task_completed
+    from sleipnir.domain.catalog import (
+        mimir_dream_completed as _sleipnir_mimir_dream_completed,
+    )
+    from sleipnir.domain.catalog import (
+        ravn_task_completed as _sleipnir_task_completed,
+    )
     from sleipnir.ports.events import SleipnirPublisher as _SleipnirPublisher
 except ImportError:
     _SleipnirPublisher = None  # type: ignore[assignment,misc]
     _sleipnir_task_completed = None  # type: ignore[assignment]
+    _sleipnir_mimir_dream_completed = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +74,8 @@ _SUCCESS_VERDICT_PREFERENCE = (
     "clean",
 )
 _MIMIR_PAGE_WRITTEN_OUTCOME = "mimir.page.written"
+_DREAM_CYCLE_TRIGGER = "dream_cycle:cron"
+_DREAM_COUNT_FIELDS = ("pages_updated", "entities_created", "lint_fixes")
 
 
 def _default_success_verdict(produces: object) -> str:
@@ -196,6 +204,51 @@ def _parse_outcome_for_persona(
                 exc_info=True,
             )
     return parse_outcome_block(response_text)
+
+
+def _coerce_nonnegative_int(value: object) -> int | None:
+    """Return *value* as a non-negative integer, or None when it cannot be parsed."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and value.is_integer():
+        parsed = int(value)
+        return parsed if parsed >= 0 else None
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _extract_mimir_dream_counts(
+    response_text: str,
+    persona_config: PersonaConfig | None,
+) -> dict[str, int]:
+    """Extract dream-cycle summary counts from a final outcome response."""
+    counts: dict[str, int] = {}
+    parsed = _parse_outcome_for_persona(response_text, persona_config) if response_text else None
+    fields = dict(getattr(parsed, "fields", {}) or {}) if parsed is not None else {}
+
+    for field in _DREAM_COUNT_FIELDS:
+        value = _coerce_nonnegative_int(fields.get(field))
+        if value is not None:
+            counts[field] = value
+
+    # Backward-compatible fallback for older warden prompts that only mention
+    # counts in the summary/log prose, e.g. ``pages_updated=0``.
+    for field in _DREAM_COUNT_FIELDS:
+        if field in counts:
+            continue
+        spaced = field.replace("_", r"[\s_-]")
+        match = re.search(rf"\b(?:{field}|{spaced})\b\s*[:=]\s*(\d+)", response_text)
+        counts[field] = int(match.group(1)) if match else 0
+
+    return counts
 
 
 # Type alias for the mesh RPC handler callable
@@ -1198,6 +1251,7 @@ class DriveLoop:
         )
 
         success = False
+        response_text = ""
         token = self._current_task_var.set(task)
         self._active_task_contexts[task.task_id] = task
         self._active_agents[task.task_id] = agent
@@ -1208,7 +1262,9 @@ class DriveLoop:
                 self._record_task_cost(task, turn_result)
                 await self._maybe_publish_budget_warning(task)
                 self._save_task_output(task, capture_channel or channel)
-                response_text = capture_channel.response_text if capture_channel else ""
+                response_text = (
+                    capture_channel.response_text if capture_channel else turn_result.response
+                )
                 if response_text:
                     logger.info(
                         "drive_loop: task %s output: %s",
@@ -1261,8 +1317,11 @@ class DriveLoop:
                     await emit_fn(outcome)
                 except Exception:
                     logger.warning("emit_session_ended failed; continuing", exc_info=True)
-            response_text = capture_channel.response_text if capture_channel else ""
+            if capture_channel is not None:
+                response_text = capture_channel.response_text
             await self._emit_sleipnir_task_completed(task, outcome, response_text=response_text)
+            if success:
+                await self._emit_sleipnir_mimir_dream_completed(task, response_text=response_text)
 
             # Publish outcome event to mesh for other agents to consume
             await self._emit_mesh_outcome_event(task, response_text, success)
@@ -1355,6 +1414,41 @@ class DriveLoop:
             await self._sleipnir_publisher.publish(event)
         except Exception:
             logger.warning("Failed to emit ravn.task.completed; continuing.", exc_info=True)
+
+    async def _emit_sleipnir_mimir_dream_completed(
+        self,
+        task: AgentTask,
+        *,
+        response_text: str,
+    ) -> None:
+        """Publish mimir.dream.completed for dream-cycle tasks.
+
+        Dream completion is orchestration bookkeeping, so the drive loop emits
+        it deterministically from the final outcome instead of requiring the
+        Mímir warden persona to call an extra publish tool.
+        """
+        if task.triggered_by != _DREAM_CYCLE_TRIGGER:
+            return
+        if self._sleipnir_publisher is None or _sleipnir_mimir_dream_completed is None:
+            return
+
+        try:
+            counts = _extract_mimir_dream_counts(response_text, self._persona_config)
+            event = _sleipnir_mimir_dream_completed(
+                pages_updated=counts["pages_updated"],
+                entities_created=counts["entities_created"],
+                lint_fixes=counts["lint_fixes"],
+                source=self._source_id,
+                correlation_id=task.session_id or task.task_id,
+            )
+            event.payload["task_id"] = task.task_id
+            if task.persona:
+                event.payload["persona"] = task.persona
+            if task.session_id:
+                event.payload["session_id"] = task.session_id
+            await self._sleipnir_publisher.publish(event)
+        except Exception:
+            logger.warning("Failed to emit mimir.dream.completed; continuing.", exc_info=True)
 
     async def emit_tool_outcome_event(
         self,

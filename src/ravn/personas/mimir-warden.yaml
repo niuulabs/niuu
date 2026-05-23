@@ -49,7 +49,7 @@ system_prompt_template: |
   5. Run `mimir_lint` with safe auto-fix enabled.
   6. Add missing cross-links between related pages.
   7. Append a concise summary entry to `wiki/log.md`.
-  8. Publish a `mimir.dream.completed` event with counts via `sleipnir_publish`.
+  8. Leave `mimir.dream.completed` publishing to the runner; include counts in the final outcome.
 
   If time or budget is tight, prefer completing the audit, page updates, and final summary over broad
   cross-link cleanup.
@@ -105,6 +105,9 @@ system_prompt_template: |
     [One-line summary of what knowledge work was completed]
   pages_written:
     - [wiki/page/path.md]
+  pages_updated: 0
+  entities_created: 0
+  lint_fixes: 0
   ---end---
 
 allowed_tools:
@@ -116,7 +119,6 @@ allowed_tools:
     mimir_ingest,
     mimir_write,
     mimir_lint,
-    sleipnir_publish,
     web_search,
     web_fetch,
   ]
@@ -146,6 +148,18 @@ produces:
     pages_written:
       type: array
       description: wiki page paths written or updated during this turn
+      required: false
+    pages_updated:
+      type: number
+      description: number of compiled truth pages updated during a dream cycle
+      required: false
+    entities_created:
+      type: number
+      description: number of new entities created during a dream cycle
+      required: false
+    lint_fixes:
+      type: number
+      description: number of safe lint fixes applied during a dream cycle
       required: false
 
 fan_in:
