@@ -15,6 +15,15 @@ from ting.ports.tracker import TrackerPort
 logger = logging.getLogger(__name__)
 
 
+def _resolve_tracker_adapter(adapter: str) -> str | None:
+    """Map shared tracker adapters onto Ting-owned implementations."""
+    if adapter == "volundr.adapters.outbound.linear.LinearAdapter":
+        return "ting.adapters.linear.LinearTrackerAdapter"
+    if adapter.startswith("volundr."):
+        return None
+    return adapter
+
+
 def _normalize_tracker_credentials(adapter: str, credentials: dict[str, Any]) -> dict[str, Any]:
     """Bridge generic credential payloads to adapter-specific constructor kwargs."""
     normalized = dict(credentials)
@@ -58,8 +67,8 @@ class TrackerAdapterFactory:
         for conn in connections:
             if not conn.enabled:
                 continue
-            # Skip adapters from other services (e.g. volundr's LinearAdapter)
-            if conn.adapter.startswith("volundr."):
+            resolved_adapter = _resolve_tracker_adapter(conn.adapter)
+            if resolved_adapter is None:
                 continue
             try:
                 cred = await self._credential_store.get_value(
@@ -70,8 +79,8 @@ class TrackerAdapterFactory:
                 if cred is None:
                     continue
 
-                cls = import_class(conn.adapter)
-                kwargs = {**_normalize_tracker_credentials(conn.adapter, cred), **conn.config}
+                cls = import_class(resolved_adapter)
+                kwargs = {**_normalize_tracker_credentials(resolved_adapter, cred), **conn.config}
                 if self._pool is not None:
                     kwargs["pool"] = self._pool
                 adapters.append(cls(**kwargs))

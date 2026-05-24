@@ -126,6 +126,11 @@ gateway:
   kwargs: {}
   secretKwargs: []
 
+credentialStore:
+  adapter: "volundr.adapters.outbound.memory_credential_store.MemoryCredentialStore"
+  kwargs: {}
+  secretKwargs: []
+
 envoy:
   enabled: false
   image:

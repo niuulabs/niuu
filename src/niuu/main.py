@@ -224,6 +224,15 @@ def create_app(
                 )
             )
             app.include_router(
+                create_canonical_integrations_router(
+                    integration_repo,
+                    tracker_factory,
+                    prefix="/internal/api/v1/integrations",
+                    registry=integration_registry,
+                    credential_store=credential_store,
+                )
+            )
+            app.include_router(
                 create_canonical_oauth_router(
                     oauth_config=loaded_settings.oauth,
                     integration_registry=integration_registry,

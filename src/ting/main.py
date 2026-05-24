@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
 
+from niuu.adapters.http_integrations import HTTPIntegrationRepository
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
@@ -18,6 +19,7 @@ from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
 from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.pat_validator import PATValidator
+from niuu.ports.integrations import IntegrationRepository
 from niuu.service_instances import seed_configured_instances
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
@@ -140,7 +142,7 @@ def _configure_logging(settings: Settings) -> None:
 
 async def _ensure_telegram_subscription_from_integration(
     pool: object,
-    integration_repo: PostgresIntegrationRepository,
+    integration_repo: IntegrationRepository,
     credential_store: object,
 ) -> None:
     """Idempotently bind the seeded Telegram chat for inbound auth.
@@ -205,7 +207,7 @@ async def _ensure_telegram_subscription_from_integration(
 
 
 async def _resolve_dev_telegram_bot_token(
-    integration_repo: PostgresIntegrationRepository,
+    integration_repo: IntegrationRepository,
     credential_store: object,
 ) -> str:
     """Look up the dev-user's Telegram bot_token from integration_connections.
@@ -236,7 +238,7 @@ async def _resolve_dev_telegram_bot_token(
 
 
 async def _seed_webhook_integration(
-    integration_repo: PostgresIntegrationRepository,
+    integration_repo: IntegrationRepository,
     credential_store: object,
     url: str,
     secret: str = "",
@@ -279,7 +281,7 @@ async def _seed_webhook_integration(
 
 
 async def _seed_linear_integration(
-    integration_repo: PostgresIntegrationRepository,
+    integration_repo: IntegrationRepository,
     credential_store: object,
     api_key: str,
     team_id: str = "",
@@ -376,7 +378,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.pool = pool
 
             # Wire shared credential/integration infrastructure
-            integration_repo = PostgresIntegrationRepository(pool)
+            if settings.shared_integrations.base_url:
+                integration_repo = HTTPIntegrationRepository(
+                    settings.shared_integrations.base_url,
+                    timeout=settings.shared_integrations.timeout_seconds,
+                )
+                logger.info(
+                    "Integration repository: shared HTTP (%s)",
+                    settings.shared_integrations.base_url,
+                )
+            else:
+                integration_repo = PostgresIntegrationRepository(pool)
+                logger.info("Integration repository: local postgres")
             instance_repo = PostgresInstanceRepository(pool)
             await instance_repo.ensure_schema()
             instance_service = InstanceService(instance_repo)
@@ -913,6 +926,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if telegram_polling is not None:
                 await telegram_polling.stop()
             await telegram_reply_client.close()
+            if isinstance(integration_repo, HTTPIntegrationRepository):
+                await integration_repo.close()
             if hasattr(llm_adapter, "close"):
                 await llm_adapter.close()
             await subscriber.stop()

@@ -320,7 +320,7 @@ def create_integrations_router() -> APIRouter:
             str(existing.integration_type),
             existing.config,
             cred or {},
-            trusted_code_forge_base_urls=_trusted_code_forge_base_urls(request),
+            trusted_code_forge_base_urls=await _trusted_code_forge_base_urls(request, principal),
         )
 
     return router

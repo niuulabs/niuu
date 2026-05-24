@@ -267,6 +267,12 @@ credentialStore:
   #     secretKey: client-id
   secretKwargs: []
 
+sharedIntegrations:
+  # -- Internal base URL for niuu-shared integration APIs
+  baseUrl: ""
+  # -- HTTP timeout for shared integration requests
+  timeoutSeconds: 30.0
+
 cerbos:
   # -- Cerbos authorization service URL
   url: "http://localhost:3592"

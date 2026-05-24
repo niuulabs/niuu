@@ -111,6 +111,7 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
         assert "/api/v1/niuu/credentials/user" in paths
         assert "/api/v1/integrations/settings" in paths
         assert "/api/v1/integrations" in paths
+        assert "/internal/api/v1/integrations" in paths
         assert "/api/v1/integrations/catalog" in paths
         assert "/api/v1/tracker/status" in paths
         assert "/api/v1/tracker/issues" in paths

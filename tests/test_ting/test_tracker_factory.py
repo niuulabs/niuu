@@ -353,6 +353,26 @@ async def test_no_pool_does_not_inject_pool_kwarg() -> None:
 
 
 @pytest.mark.asyncio
+async def test_maps_shared_linear_adapter_to_ting_linear_tracker() -> None:
+    conn = _make_connection(
+        adapter="volundr.adapters.outbound.linear.LinearAdapter",
+        credential_name="shared-linear",
+    )
+    factory = TrackerAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=[conn]),
+        credential_store=StubCredentialStore(
+            values={"user:owner-1:shared-linear": {"token": "lin-api-token"}}
+        ),
+        pool=object(),
+    )
+
+    result = await factory.for_owner("owner-1")
+
+    assert len(result) == 1
+    assert result[0].__class__.__name__ == "LinearTrackerAdapter"
+
+
+@pytest.mark.asyncio
 async def test_falls_back_to_native_tracker_when_no_connections_and_pool_available() -> None:
     class FakePool:
         pass

@@ -99,3 +99,7 @@ data:
       {{- else }}
       secret_kwargs_env: {}
       {{- end }}
+
+    shared_integrations:
+      base_url: {{ .Values.sharedIntegrations.baseUrl | quote }}
+      timeout_seconds: {{ .Values.sharedIntegrations.timeoutSeconds | default 30.0 }}
