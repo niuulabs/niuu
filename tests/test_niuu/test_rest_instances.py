@@ -456,12 +456,29 @@ def test_observatory_snapshot_builds_registry_backed_topology() -> None:
     )
     assert any(node.get("svcType") == "volundr" for node in payload["nodes"])
     assert any(node.get("svcType") == "bifrost" for node in payload["nodes"])
-    assert any(node["id"] == "mimir-well" and node["parentId"] == "cluster-valaskjalf" for node in payload["nodes"])
-    assert any(node["id"] == "run-curate" and node.get("flockId") == "workflow-curate" for node in payload["nodes"])
-    assert any(node["id"] == "run-curate-mimir" and node["parentId"] == "run-curate" for node in payload["nodes"])
-    assert any(node.get("layoutHints", {}).get("pack_group") == "volundr" for node in payload["nodes"])
-    assert any(node["typeId"] == "stage" and node.get("flockId") == "workflow-refactor" for node in payload["nodes"])
-    assert any(node["typeId"] == "trigger" and node["parentId"] == "run-migrate" for node in payload["nodes"])
+    assert any(
+        node["id"] == "mimir-well" and node["parentId"] == "cluster-valaskjalf"
+        for node in payload["nodes"]
+    )
+    assert any(
+        node["id"] == "run-curate" and node.get("flockId") == "workflow-curate"
+        for node in payload["nodes"]
+    )
+    assert any(
+        node["id"] == "run-curate-mimir" and node["parentId"] == "run-curate"
+        for node in payload["nodes"]
+    )
+    assert any(
+        node.get("layoutHints", {}).get("pack_group") == "volundr" for node in payload["nodes"]
+    )
+    assert any(
+        node["typeId"] == "stage" and node.get("flockId") == "workflow-refactor"
+        for node in payload["nodes"]
+    )
+    assert any(
+        node["typeId"] == "trigger" and node["parentId"] == "run-migrate"
+        for node in payload["nodes"]
+    )
     assert any(edge.get("label") == "code.requested -> code.requested" for edge in payload["edges"])
     assert any(edge.get("label") == "memory.ready -> review.requested" for edge in payload["edges"])
     assert any(edge.get("label") == "canary.green -> rollout.begin" for edge in payload["edges"])

@@ -7,8 +7,7 @@ Observatory snapshot.
 
 from __future__ import annotations
 
-from typing import Literal, NotRequired, TypedDict
-
+from typing import Literal, TypedDict
 
 LayoutMode = Literal["manual", "orbit", "pack", "force", "hybrid"]
 LayoutScope = Literal["world", "realm", "cluster", "group", "node"]

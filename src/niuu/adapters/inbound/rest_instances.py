@@ -1189,8 +1189,9 @@ def _overlay_instance_demo_nodes(
         node_id = f"instance:{instance.kind.value}:{_slug(instance.slug or instance.name)}"
         type_id = _kind_type_id(instance.kind)
         svc_type = _kind_svc_type(instance.kind)
-        resolved_node_id = "mimir-well" if instance.kind is InstanceKind.MIMIR and kind_index == 0 else node_id
-        resolved_type_id = "mimir" if instance.kind is InstanceKind.MIMIR and kind_index == 0 else type_id
+        is_primary_mimir = instance.kind is InstanceKind.MIMIR and kind_index == 0
+        resolved_node_id = "mimir-well" if is_primary_mimir else node_id
+        resolved_type_id = "mimir" if is_primary_mimir else type_id
         node_payload: dict[str, Any] = {
             "id": resolved_node_id,
             "typeId": resolved_type_id,
@@ -1298,7 +1299,10 @@ async def _build_observatory_snapshot(
         "layoutHints": {
             "mode": "hybrid",
             "scope": "world",
-            "note": "Registry-first baseline layout until Valkyrie and service fragments enrich the snapshot.",
+            "note": (
+                "Registry-first baseline layout until Valkyrie and service fragments "
+                "enrich the snapshot."
+            ),
         },
         "nodes": nodes,
         "edges": edges,
