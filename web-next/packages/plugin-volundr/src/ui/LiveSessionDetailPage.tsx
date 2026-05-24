@@ -61,14 +61,7 @@ import { SessionTerminalLive } from './SessionTerminalLive';
 import { StructuredLogViewer } from './components/StructuredLogViewer';
 import './LiveSessionDetailPage.css';
 
-type SessionTab =
-  | 'chat'
-  | 'terminal'
-  | 'diffs'
-  | 'files'
-  | 'chronicles'
-  | 'telemetry'
-  | 'logs';
+type SessionTab = 'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
 
 const ALL_TABS: Array<{ id: SessionTab; label: string; icon: typeof MessageSquareText }> = [
   { id: 'chat', label: 'Chat', icon: MessageSquareText },
@@ -288,10 +281,7 @@ function median(values: number[]): number | null {
 function percentile(values: number[], quantile: number): number | null {
   if (values.length === 0) return null;
   const ordered = [...values].sort((left, right) => left - right);
-  const index = Math.min(
-    ordered.length - 1,
-    Math.max(0, Math.ceil(quantile * ordered.length) - 1),
-  );
+  const index = Math.min(ordered.length - 1, Math.max(0, Math.ceil(quantile * ordered.length) - 1));
   return ordered[index] ?? null;
 }
 
@@ -326,7 +316,8 @@ function pickLongestStage(
 
 function formatStageLabel(span: VolundrSessionTraceSpan | null): string {
   if (!span) return 'n/a';
-  if (span.kind === 'session.workflow' || span.kind.startsWith('turn.')) return span.name.toLowerCase();
+  if (span.kind === 'session.workflow' || span.kind.startsWith('turn.'))
+    return span.name.toLowerCase();
   if (span.kind === 'tool.call') return span.name;
   return span.name || span.kind;
 }
@@ -591,10 +582,7 @@ function buildTelemetryToolOverview(trace: VolundrSessionTrace): {
 
   for (const span of toolSpans) {
     const descriptor = extractTelemetryToolDescriptor(span);
-    countsByCategory.set(
-      descriptor.category,
-      (countsByCategory.get(descriptor.category) ?? 0) + 1,
-    );
+    countsByCategory.set(descriptor.category, (countsByCategory.get(descriptor.category) ?? 0) + 1);
     const groupId =
       descriptor.category === 'mcp' || descriptor.category === 'other'
         ? `${descriptor.category}:${descriptor.title}`
@@ -604,7 +592,8 @@ function buildTelemetryToolOverview(trace: VolundrSessionTrace): {
     if (existing) {
       existing.row.calls += 1;
       existing.row.totalMs += durationMs;
-      existing.row.blockedMs += span.status === 'failed' || span.status === 'cancelled' ? durationMs : 0;
+      existing.row.blockedMs +=
+        span.status === 'failed' || span.status === 'cancelled' ? durationMs : 0;
       existing.row.blockedCount += span.status === 'failed' || span.status === 'cancelled' ? 1 : 0;
       existing.durations.push(durationMs);
       if (!existing.row.subtitle && descriptor.subtitle) {
@@ -697,7 +686,8 @@ function formatTelemetryTaskLabel(span: VolundrSessionTraceSpan): string {
   if (span.kind.startsWith('wait.')) {
     return `wait · ${(span.name || span.kind.split('.').slice(1).join(' ')).toLowerCase()}`;
   }
-  if (span.kind.startsWith('turn.')) return `${span.kind.replace('turn.', '')} · ${normalizeTimelineRowLabel(span)}`;
+  if (span.kind.startsWith('turn.'))
+    return `${span.kind.replace('turn.', '')} · ${normalizeTimelineRowLabel(span)}`;
   return `${span.kind.replace('.', ' · ')} · ${normalizeTimelineRowLabel(span)}`;
 }
 
@@ -715,10 +705,7 @@ function buildTelemetryTimelineRows(trace: VolundrSessionTrace): TelemetryTimeli
   }
   return trace.spans
     .filter((span) => span.parentSpanId === rootSpan.id)
-    .sort(
-      (left, right) =>
-        new Date(left.startedAt).getTime() - new Date(right.startedAt).getTime(),
-    )
+    .sort((left, right) => new Date(left.startedAt).getTime() - new Date(right.startedAt).getTime())
     .map((span) => {
       const startOffsetMs = Math.max(0, new Date(span.startedAt).getTime() - rootStart);
       const durationMs = span.durationMs ?? 0;
@@ -757,9 +744,7 @@ function buildTelemetryTimelineRows(trace: VolundrSessionTrace): TelemetryTimeli
         .sort((left, right) => left.startOffsetMs - right.startOffsetMs);
 
       const waitDurationMs =
-        tone === 'wait'
-          ? durationMs
-          : Math.min(durationMs, childToneDurations.wait);
+        tone === 'wait' ? durationMs : Math.min(durationMs, childToneDurations.wait);
       const blockedDurationMs =
         tone === 'blocked'
           ? durationMs
@@ -808,7 +793,11 @@ function buildTelemetryTurnRows(trace: VolundrSessionTrace): TelemetryTurnRow[] 
 
   const directTurnNodes = turnNodes.filter((node) => node.span.parentSpanId === root?.span.id);
   const candidateNodes =
-    nestedTurnNodes.length > 0 ? nestedTurnNodes : directTurnNodes.length > 0 ? directTurnNodes : turnNodes;
+    nestedTurnNodes.length > 0
+      ? nestedTurnNodes
+      : directTurnNodes.length > 0
+        ? directTurnNodes
+        : turnNodes;
 
   return candidateNodes
     .sort(
@@ -860,13 +849,7 @@ function formatTurnDurationTick(valueMs: number): string {
   return formatDurationMs(valueMs);
 }
 
-function TurnMetricLine({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
+function TurnMetricLine({ label, value }: { label: string; value: string }) {
   return (
     <div className="niuu-live-telemetry__turn-detail-line">
       <span className="niuu-live-telemetry__turn-detail-key">{label}</span>
@@ -931,7 +914,9 @@ function TelemetryTurnInspector({
         />
         <TurnMetricLine
           label="blocked"
-          value={selectedTurn.blockedMs > 0 ? formatCompactDurationMs(selectedTurn.blockedMs) : '0s'}
+          value={
+            selectedTurn.blockedMs > 0 ? formatCompactDurationMs(selectedTurn.blockedMs) : '0s'
+          }
         />
         <TurnMetricLine label="stage" value={selectedTurn.stageLabel} />
         <TurnMetricLine
@@ -973,11 +958,7 @@ function TelemetryTurnInspector({
   );
 }
 
-function TelemetryTurnByTurn({
-  trace,
-}: {
-  trace: VolundrSessionTrace;
-}) {
+function TelemetryTurnByTurn({ trace }: { trace: VolundrSessionTrace }) {
   const turns = useMemo(() => buildTelemetryTurnRows(trace), [trace]);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
 
@@ -988,7 +969,11 @@ function TelemetryTurnByTurn({
 
   const medianMs = useMemo(() => median(turns.map((turn) => turn.durationMs)), [turns]);
   const p95Ms = useMemo(
-    () => percentile(turns.map((turn) => turn.durationMs), 0.95),
+    () =>
+      percentile(
+        turns.map((turn) => turn.durationMs),
+        0.95,
+      ),
     [turns],
   );
   const maxMs = useMemo(
@@ -1087,7 +1072,9 @@ function TelemetryTurnByTurn({
                       'niuu-live-telemetry__turn-bar-col',
                       selected && 'niuu-live-telemetry__turn-bar-col--selected',
                     )}
-                    onClick={() => setSelectedTurnId((current) => (current === turn.id ? null : turn.id))}
+                    onClick={() =>
+                      setSelectedTurnId((current) => (current === turn.id ? null : turn.id))
+                    }
                     data-testid={`telemetry-turn-bar-${turn.index + 1}`}
                   >
                     <div className="niuu-live-telemetry__turn-bar-track">
@@ -1098,19 +1085,25 @@ function TelemetryTurnByTurn({
                         {turn.idleMs > 0 ? (
                           <span
                             className="niuu-live-telemetry__turn-bar-segment niuu-live-telemetry__turn-bar-segment--idle"
-                            style={{ height: `${Math.max((turn.idleMs / turn.durationMs) * 100, 4)}%` }}
+                            style={{
+                              height: `${Math.max((turn.idleMs / turn.durationMs) * 100, 4)}%`,
+                            }}
                           />
                         ) : null}
                         {turn.toolMs > 0 ? (
                           <span
                             className="niuu-live-telemetry__turn-bar-segment niuu-live-telemetry__turn-bar-segment--tool"
-                            style={{ height: `${Math.max((turn.toolMs / turn.durationMs) * 100, 4)}%` }}
+                            style={{
+                              height: `${Math.max((turn.toolMs / turn.durationMs) * 100, 4)}%`,
+                            }}
                           />
                         ) : null}
                         {turn.modelWaitMs > 0 ? (
                           <span
                             className="niuu-live-telemetry__turn-bar-segment niuu-live-telemetry__turn-bar-segment--model"
-                            style={{ height: `${Math.max((turn.modelWaitMs / turn.durationMs) * 100, 4)}%` }}
+                            style={{
+                              height: `${Math.max((turn.modelWaitMs / turn.durationMs) * 100, 4)}%`,
+                            }}
                           />
                         ) : null}
                       </div>
@@ -1259,9 +1252,13 @@ function TelemetryTimeline({
                     style={{ left: `${left}%`, width: `${visibleWidth}%` }}
                     title={`${row.label} · ${formatDurationMs(row.durationMs)} · ${row.percentOfTotal}%`}
                     onMouseEnter={() => setHoveredRowId(row.id)}
-                    onMouseLeave={() => setHoveredRowId((current) => (current === row.id ? null : current))}
+                    onMouseLeave={() =>
+                      setHoveredRowId((current) => (current === row.id ? null : current))
+                    }
                     onFocus={() => setHoveredRowId(row.id)}
-                    onBlur={() => setHoveredRowId((current) => (current === row.id ? null : current))}
+                    onBlur={() =>
+                      setHoveredRowId((current) => (current === row.id ? null : current))
+                    }
                     onClick={() => onSelectRow(row.id)}
                     tabIndex={0}
                     role="button"
@@ -1327,9 +1324,7 @@ function TelemetryTimeline({
                           </span>
                         </div>
                         <div className="niuu-live-telemetry__timeline-tooltip-line">
-                          <span className="niuu-live-telemetry__timeline-tooltip-key">
-                            status
-                          </span>
+                          <span className="niuu-live-telemetry__timeline-tooltip-key">status</span>
                           <span className="niuu-live-telemetry__timeline-tooltip-value">
                             {row.span.status}
                             {row.span.sourceService ? (
@@ -1437,13 +1432,7 @@ function TelemetryStateStack({
   );
 }
 
-function TelemetryTaskRow({
-  node,
-  depth,
-}: {
-  node: TelemetrySpanNode;
-  depth: number;
-}) {
+function TelemetryTaskRow({ node, depth }: { node: TelemetrySpanNode; depth: number }) {
   const tone = timelineRowTone(node.span);
   const durationMs = node.span.durationMs ?? 0;
   return (
@@ -1640,11 +1629,7 @@ function TelemetryStageBreakdown({
   );
 }
 
-function TelemetryToolCallsOverview({
-  trace,
-}: {
-  trace: VolundrSessionTrace;
-}) {
+function TelemetryToolCallsOverview({ trace }: { trace: VolundrSessionTrace }) {
   const overview = useMemo(() => buildTelemetryToolOverview(trace), [trace]);
   const [selectedCategory, setSelectedCategory] = useState<TelemetryToolCategory>('all');
   const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
@@ -1801,8 +1786,12 @@ function TelemetryToolCallsOverview({
                 <div className="niuu-live-telemetry__tools-metric niuu-live-telemetry__tools-metric--muted">
                   {formatCompactDurationMs(row.p50Ms)}
                 </div>
-                <div className="niuu-live-telemetry__tools-metric">{formatDurationMs(row.p95Ms)}</div>
-                <div className="niuu-live-telemetry__tools-metric">{formatDurationMs(row.maxMs)}</div>
+                <div className="niuu-live-telemetry__tools-metric">
+                  {formatDurationMs(row.p95Ms)}
+                </div>
+                <div className="niuu-live-telemetry__tools-metric">
+                  {formatDurationMs(row.maxMs)}
+                </div>
                 <div className="niuu-live-telemetry__tools-share-cell">
                   <div className="niuu-live-telemetry__tools-share-track">
                     <span
@@ -1810,7 +1799,9 @@ function TelemetryToolCallsOverview({
                       style={{ width: `${Math.max(row.sharePercent, row.totalMs > 0 ? 1 : 0)}%` }}
                     />
                   </div>
-                  <span className="niuu-live-telemetry__tools-share-label">{row.sharePercent}%</span>
+                  <span className="niuu-live-telemetry__tools-share-label">
+                    {row.sharePercent}%
+                  </span>
                 </div>
               </div>
               {row.blockedCount > 0 ? (
@@ -2495,7 +2486,10 @@ function TicketLink({ issue }: { issue: VolundrSession['trackerIssue'] }) {
   if (!issue) return null;
   if (!issue.url) {
     return (
-      <span className="niuu-live-session__ticket niuu-live-session__ticket--static" title={issue.identifier}>
+      <span
+        className="niuu-live-session__ticket niuu-live-session__ticket--static"
+        title={issue.identifier}
+      >
         <span>{issue.identifier}</span>
       </span>
     );
@@ -2514,13 +2508,7 @@ function TicketLink({ issue }: { issue: VolundrSession['trackerIssue'] }) {
   );
 }
 
-function SessionForgeBadge({
-  label,
-  tone,
-}: {
-  label: string;
-  tone?: string;
-}) {
+function SessionForgeBadge({ label, tone }: { label: string; tone?: string }) {
   return (
     <span className="niuu-live-session__forge-badge">
       <span className="niuu-live-session__forge-badge-label">{label}</span>
@@ -3473,7 +3461,12 @@ export function LiveSessionDetailPage({
     const instanceId = liveSession?.instanceId?.trim();
     if (instanceId) return normalizeForgeBadgeLabel(instanceId);
     return null;
-  }, [liveSession?.instanceId, liveSession?.instanceName, sessionQuery.data?.clusterId, sessionQuery.data?.clusterName]);
+  }, [
+    liveSession?.instanceId,
+    liveSession?.instanceName,
+    sessionQuery.data?.clusterId,
+    sessionQuery.data?.clusterName,
+  ]);
   const sessionFeatures = useMemo(
     () => sessionFeaturesQuery.data ?? [],
     [sessionFeaturesQuery.data],
@@ -3596,8 +3589,7 @@ export function LiveSessionDetailPage({
       const leftOrder =
         FIXED_TAB_ORDER[left.id] ?? (leftPref ? leftPref.sortOrder : (leftFeature?.order ?? 0));
       const rightOrder =
-        FIXED_TAB_ORDER[right.id] ??
-        (rightPref ? rightPref.sortOrder : (rightFeature?.order ?? 0));
+        FIXED_TAB_ORDER[right.id] ?? (rightPref ? rightPref.sortOrder : (rightFeature?.order ?? 0));
       return leftOrder - rightOrder;
     });
 
@@ -3917,9 +3909,7 @@ export function LiveSessionDetailPage({
             <SessionToolbarButton
               icon={showInternalMessages ? Eye : EyeOff}
               title={
-                showInternalMessages
-                  ? 'Hide tool calls and results'
-                  : 'Show tool calls and results'
+                showInternalMessages ? 'Hide tool calls and results' : 'Show tool calls and results'
               }
               active={showInternalMessages}
               onClick={handleToggleInternalMessages}

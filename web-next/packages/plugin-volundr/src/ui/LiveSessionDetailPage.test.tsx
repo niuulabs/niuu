@@ -1361,7 +1361,9 @@ describe('LiveSessionDetailPage', () => {
     it('uses tooltip-only eye control without rendering res text', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByRole('button', { name: /Show tool calls and results/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /Show tool calls and results/i }),
+      ).toBeInTheDocument();
       expect(screen.queryByText(/^res$/i)).not.toBeInTheDocument();
     });
 

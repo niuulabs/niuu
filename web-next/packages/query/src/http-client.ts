@@ -50,8 +50,7 @@ function isLanDevHostname(hostname: string): boolean {
     return true;
   }
 
-  const ipv4Match =
-    /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname.trim());
+  const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname.trim());
   if (!ipv4Match) {
     return false;
   }

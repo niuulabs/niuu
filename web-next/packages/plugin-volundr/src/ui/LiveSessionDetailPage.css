@@ -623,21 +623,19 @@
 }
 
 .niuu-live-telemetry__swatch--wait {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(148, 151, 165, 0.16) 0 4px,
-      rgba(148, 151, 165, 0.34) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(148, 151, 165, 0.16) 0 4px,
+    rgba(148, 151, 165, 0.34) 4px 8px
+  );
 }
 
 .niuu-live-telemetry__swatch--blocked {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(234, 92, 86, 0.28) 0 4px,
-      rgba(234, 92, 86, 0.9) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(234, 92, 86, 0.28) 0 4px,
+    rgba(234, 92, 86, 0.9) 4px 8px
+  );
   border-color: rgba(234, 92, 86, 0.88);
 }
 
@@ -830,9 +828,8 @@
 
 .niuu-live-telemetry__timeline-guides {
   position: absolute;
-  inset: 0 0 0 calc(
-    var(--niuu-telemetry-timeline-label-width) + var(--niuu-telemetry-timeline-row-gap)
-  );
+  inset: 0 0 0
+    calc(var(--niuu-telemetry-timeline-label-width) + var(--niuu-telemetry-timeline-row-gap));
   pointer-events: none;
 }
 
@@ -925,21 +922,19 @@
 }
 
 .niuu-live-telemetry__timeline-bar-segment--wait {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(148, 151, 165, 0.16) 0 4px,
-      rgba(148, 151, 165, 0.34) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(148, 151, 165, 0.16) 0 4px,
+    rgba(148, 151, 165, 0.34) 4px 8px
+  );
 }
 
 .niuu-live-telemetry__timeline-bar-segment--blocked {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(234, 92, 86, 0.28) 0 4px,
-      rgba(234, 92, 86, 0.9) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(234, 92, 86, 0.28) 0 4px,
+    rgba(234, 92, 86, 0.9) 4px 8px
+  );
   border-left: 1px solid rgba(234, 92, 86, 0.88);
   border-right: 1px solid rgba(234, 92, 86, 0.88);
 }
@@ -968,12 +963,11 @@
   content: '';
   position: absolute;
   inset: 0;
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(255, 255, 255, 0.05) 0 6px,
-      rgba(11, 13, 18, 0.3) 6px 12px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.05) 0 6px,
+    rgba(11, 13, 18, 0.3) 6px 12px
+  );
   pointer-events: none;
 }
 
@@ -1089,21 +1083,19 @@
 }
 
 .niuu-live-telemetry__timeline-tooltip-breakdown-swatch--wait {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(148, 151, 165, 0.16) 0 4px,
-      rgba(148, 151, 165, 0.34) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(148, 151, 165, 0.16) 0 4px,
+    rgba(148, 151, 165, 0.34) 4px 8px
+  );
 }
 
 .niuu-live-telemetry__timeline-tooltip-breakdown-swatch--blocked {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(234, 92, 86, 0.28) 0 4px,
-      rgba(234, 92, 86, 0.9) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(234, 92, 86, 0.28) 0 4px,
+    rgba(234, 92, 86, 0.9) 4px 8px
+  );
   border-color: rgba(234, 92, 86, 0.88);
 }
 
@@ -1612,21 +1604,19 @@
 }
 
 .niuu-live-telemetry__state-stack-segment--wait {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(148, 151, 165, 0.18) 0 4px,
-      rgba(148, 151, 165, 0.4) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(148, 151, 165, 0.18) 0 4px,
+    rgba(148, 151, 165, 0.4) 4px 8px
+  );
 }
 
 .niuu-live-telemetry__state-stack-segment--blocked {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(234, 92, 86, 0.28) 0 4px,
-      rgba(234, 92, 86, 0.9) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(234, 92, 86, 0.28) 0 4px,
+    rgba(234, 92, 86, 0.9) 4px 8px
+  );
 }
 
 .niuu-live-telemetry__state-stack-meta {
@@ -1767,12 +1757,11 @@
 }
 
 .niuu-live-telemetry__turn-legend-swatch--idle {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(148, 151, 165, 0.18) 0 4px,
-      rgba(148, 151, 165, 0.4) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(148, 151, 165, 0.18) 0 4px,
+    rgba(148, 151, 165, 0.4) 4px 8px
+  );
 }
 
 .niuu-live-telemetry__turn-grid {
@@ -1916,12 +1905,11 @@
 }
 
 .niuu-live-telemetry__turn-bar-segment--idle {
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      rgba(148, 151, 165, 0.18) 0 4px,
-      rgba(148, 151, 165, 0.4) 4px 8px
-    );
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(148, 151, 165, 0.18) 0 4px,
+    rgba(148, 151, 165, 0.4) 4px 8px
+  );
 }
 
 .niuu-live-telemetry__turn-bar-label {

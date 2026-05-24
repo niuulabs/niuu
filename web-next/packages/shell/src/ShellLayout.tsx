@@ -212,10 +212,7 @@ export function ShellLayout() {
         </header>
 
         <nav
-          className={clsx(
-            'niuu-shell__subnav',
-            subnavCollapsed && 'niuu-shell__subnav--collapsed',
-          )}
+          className={clsx('niuu-shell__subnav', subnavCollapsed && 'niuu-shell__subnav--collapsed')}
         >
           <PluginSlot render={active?.subnav ?? null} ctx={ctx} />
         </nav>

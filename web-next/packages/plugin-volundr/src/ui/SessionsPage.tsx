@@ -375,7 +375,9 @@ export function SessionsPage() {
   const stoppedSessionIds = useMemo(
     () =>
       new Set(
-        allSessions.filter((session) => session.state === 'terminated').map((session) => session.id),
+        allSessions
+          .filter((session) => session.state === 'terminated')
+          .map((session) => session.id),
       ),
     [allSessions],
   );
@@ -698,7 +700,9 @@ export function SessionsPage() {
                           data-testid="toggle-stopped-selection-button"
                         >
                           <Trash2 className="niuu-h-3.5 niuu-w-3.5" />
-                          {stoppedSelectionMode ? 'cancel delete select' : 'select stopped to delete'}
+                          {stoppedSelectionMode
+                            ? 'cancel delete select'
+                            : 'select stopped to delete'}
                         </button>
                         <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint">
                           {deleteSelectionCount} selected

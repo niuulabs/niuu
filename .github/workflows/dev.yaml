@@ -163,6 +163,61 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
         working-directory: web-next
 
+      - name: Apply database migrations
+        env:
+          TEST_DATABASE_HOST: localhost
+          TEST_DATABASE_PORT: "5432"
+          TEST_DATABASE_USER: volundr_test
+          TEST_DATABASE_PASSWORD: volundr_test
+          TEST_DATABASE_NAME: volundr_test
+        run: |
+          uv run python - <<'PY'
+          import asyncio
+          import logging
+          import os
+          from pathlib import Path
+
+          import asyncpg
+
+          from tests.helpers.migrations import apply_migrations, discover_migrations
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger("e2e-migrations")
+
+          async def apply_ting_migrations(pool: asyncpg.Pool, migrations_dir: Path) -> None:
+              migration_files = discover_migrations(migrations_dir)
+              async with pool.acquire() as conn:
+                  for file in migration_files:
+                      sql = file.read_text(encoding="utf-8")
+                      try:
+                          await conn.execute(sql)
+                      except asyncpg.UndefinedColumnError:
+                          logger.info("Skipping %s (column conflict with Volundr schema)", file.name)
+                      except asyncpg.DuplicateObjectError:
+                          logger.info("Skipping %s (object already exists)", file.name)
+
+          async def main() -> None:
+              root = Path.cwd()
+              pool = await asyncpg.create_pool(
+                  host=os.environ["TEST_DATABASE_HOST"],
+                  port=int(os.environ["TEST_DATABASE_PORT"]),
+                  user=os.environ["TEST_DATABASE_USER"],
+                  password=os.environ["TEST_DATABASE_PASSWORD"],
+                  database=os.environ["TEST_DATABASE_NAME"],
+                  min_size=1,
+                  max_size=2,
+              )
+              try:
+                  await apply_migrations(pool, root / "migrations")
+                  ting_migrations = root / "migrations" / "ting"
+                  if ting_migrations.is_dir():
+                      await apply_ting_migrations(pool, ting_migrations)
+              finally:
+                  await pool.close()
+
+          asyncio.run(main())
+          PY
+
       - name: Start backend
         env:
           DATABASE__HOST: localhost

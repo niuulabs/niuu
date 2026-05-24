@@ -623,7 +623,9 @@ describe('buildVolundrHttpAdapter', () => {
     await svc.getTargets();
 
     expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
-    expect(queryMocks.createApiClient).not.toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
+    expect(queryMocks.createApiClient).not.toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/niuu',
+    );
   });
 
   it('startSession calls POST /sessions', async () => {

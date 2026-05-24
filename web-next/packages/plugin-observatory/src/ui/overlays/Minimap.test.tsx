@@ -127,9 +127,7 @@ describe('Minimap', () => {
 
   it('renders sparse node labels without crashing', () => {
     const sparseTopology = {
-      nodes: [
-        { id: 'n1', typeId: 'realm', label: undefined, parentId: null, status: 'healthy' },
-      ],
+      nodes: [{ id: 'n1', typeId: 'realm', label: undefined, parentId: null, status: 'healthy' }],
       edges: [],
       timestamp: '2026-04-19T00:00:00Z',
     } as unknown as Topology;
