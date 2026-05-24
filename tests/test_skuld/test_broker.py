@@ -1408,7 +1408,9 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_dispatch_structured_user_message_redirects_with_normalized_text(self, test_broker):
+    async def test_dispatch_structured_user_message_redirects_with_normalized_text(
+        self, test_broker
+    ):
         test_broker._transport.capabilities = TransportCapabilities(steer=True)
         test_broker._transport.is_turn_active = True
 

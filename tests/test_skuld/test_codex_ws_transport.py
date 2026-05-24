@@ -1387,7 +1387,9 @@ class TestFullTurnFlow:
         assert text_deltas == []
 
         result_blocks = [
-            b["content_block"] for b in block_starts if b["content_block"].get("type") == "tool_result"
+            b["content_block"]
+            for b in block_starts
+            if b["content_block"].get("type") == "tool_result"
         ]
         assert len(result_blocks) == 1
         assert "On branch main" in result_blocks[0]["content"]
