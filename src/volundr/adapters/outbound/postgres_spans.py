@@ -82,7 +82,10 @@ class PostgresSpanRepository(SessionSpanRepository):
         row = await self._pool.fetchrow(
             """UPDATE session_spans
                SET ended_at = $2,
-                   duration_ms = GREATEST(0, FLOOR(EXTRACT(EPOCH FROM ($2 - started_at)) * 1000))::int,
+                   duration_ms = GREATEST(
+                       0,
+                       FLOOR(EXTRACT(EPOCH FROM ($2 - started_at)) * 1000)
+                   )::int,
                    status = $3,
                    attributes = COALESCE(attributes, '{}'::jsonb) || $4::jsonb,
                    updated_at = NOW()

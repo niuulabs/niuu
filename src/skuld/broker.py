@@ -1736,7 +1736,9 @@ class Broker:
         if event_type == "tool_start":
             metadata = frame.get("metadata", {})
             tool_input = metadata.get("input") if isinstance(metadata, dict) else {}
-            tool_name = str(metadata.get("tool_name") or frame.get("data") or "tool").strip() or "tool"
+            tool_name = (
+                str(metadata.get("tool_name") or frame.get("data") or "tool").strip() or "tool"
+            )
             if peer_id not in self._trace_peer_turn_spans:
                 self._trace_peer_turn_spans[peer_id] = await self._start_trace_span(
                     kind="turn.peer",
@@ -3708,7 +3710,11 @@ class Broker:
         tool_use_id: str,
     ) -> tuple[uuid.UUID | None, str]:
         """Pop a pending assistant tool span by id, falling back to FIFO order."""
-        tool_key = tool_use_id if tool_use_id and tool_use_id in self._trace_assistant_tool_spans else ""
+        tool_key = (
+            tool_use_id
+            if tool_use_id and tool_use_id in self._trace_assistant_tool_spans
+            else ""
+        )
         if not tool_key and self._trace_assistant_tool_order:
             tool_key = self._trace_assistant_tool_order[0]
         if not tool_key:
@@ -3720,7 +3726,9 @@ class Broker:
         command = self._assistant_pending_commands.pop(tool_key, "")
         return span_id, command
 
-    async def _finish_assistant_tool_trace_spans_from_user_event(self, data: dict[str, Any]) -> None:
+    async def _finish_assistant_tool_trace_spans_from_user_event(
+        self, data: dict[str, Any]
+    ) -> None:
         """Close assistant child tool spans from tool_result-only user events."""
         for block in self._event_content_blocks(data):
             if block.get("type") != "tool_result":

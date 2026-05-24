@@ -42,7 +42,6 @@ from volundr.adapters.inbound.rest_audit import (
 )
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_events import create_events_router
-from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
@@ -52,6 +51,7 @@ from volundr.adapters.inbound.rest_profiles import create_profiles_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
+from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.outbound.bifrost_catalog_http import HttpBifrostCatalogAdapter
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
@@ -74,8 +74,8 @@ from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationR
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_presets import PostgresPresetRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
-from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
 from volundr.adapters.outbound.postgres_spans import PostgresSpanRepository
+from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_timeline import PostgresTimelineRepository
 from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
@@ -83,7 +83,6 @@ from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.domain.ports import SessionContributor
-from volundr.infrastructure.database import database_pool
 from volundr.domain.services import (
     ChronicleService,
     GitWorkflowService,
@@ -106,6 +105,7 @@ from volundr.domain.services.template import WorkspaceTemplateService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
 from volundr.domain.services.workspace import WorkspaceService
+from volundr.infrastructure.database import database_pool
 
 # Interval for periodic stats and heartbeat broadcasts (seconds)
 BROADCAST_INTERVAL = 30

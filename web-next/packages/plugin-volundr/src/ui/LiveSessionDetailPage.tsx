@@ -632,8 +632,8 @@ function buildTelemetryToolOverview(trace: VolundrSessionTrace): {
   const rows = [...groups.values()]
     .map(({ row, durations }) => ({
       ...row,
-      p50Ms: median(durations),
-      p95Ms: percentile(durations, 0.95),
+      p50Ms: median(durations) ?? 0,
+      p95Ms: percentile(durations, 0.95) ?? 0,
       maxMs: durations.reduce((max, value) => Math.max(max, value), 0),
       sharePercent: trace.durationMs > 0 ? Math.round((row.totalMs / trace.durationMs) * 100) : 0,
     }))
@@ -1868,14 +1868,12 @@ function TelemetryMetricCard({
 function TelemetryTab({
   sessionId,
   session,
-  sessionLabel,
   runLabel,
   volundr,
   isRunning,
 }: {
   sessionId: string;
   session: VolundrSession | null | undefined;
-  sessionLabel: string;
   runLabel: string;
   volundr: IVolundrService;
   isRunning: boolean;
@@ -4135,8 +4133,7 @@ export function LiveSessionDetailPage({
             <TelemetryTab
               sessionId={sessionId}
               session={liveSession ?? null}
-              sessionLabel={sessionName}
-              runLabel={telemetryRunLabel}
+              runLabel={telemetryRunLabel ?? sessionName ?? 'session'}
               volundr={volundr}
               isRunning={isRunning}
             />

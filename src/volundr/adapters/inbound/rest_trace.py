@@ -64,7 +64,7 @@ class SessionSpanResponse(BaseModel):
     attributes: dict
 
     @classmethod
-    def from_span(cls, span: SessionSpan) -> "SessionSpanResponse":
+    def from_span(cls, span: SessionSpan) -> SessionSpanResponse:
         return cls(
             id=span.id,
             session_id=span.session_id,
