@@ -111,6 +111,7 @@ class TestVolundrPlugin:
             "/api/v1/forge/sessions",
             "/api/v1/forge/chronicles",
             "/api/v1/forge/events",
+            "/api/v1/forge/spans",
         )
         assert domains["workspace-api"] == ("/api/v1/forge/workspaces",)
 

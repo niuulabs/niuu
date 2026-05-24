@@ -67,10 +67,13 @@ function normalizeObservatoryEvent(raw: unknown): ObservatoryEvent | null {
   const time = toObservatoryEventTime(payload);
   const subject = toObservatoryEventSubject(payload);
   const body = toObservatoryEventBody(payload);
+  const fallbackId = `${time}:${subject}:${body}`.trim();
   const id =
     typeof payload.id === 'string' && payload.id.trim()
       ? payload.id
-      : `${time}:${subject}:${body}` || `${Date.now()}`;
+      : fallbackId
+        ? fallbackId
+        : `${Date.now()}`;
   return {
     id,
     time,

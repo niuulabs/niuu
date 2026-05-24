@@ -171,16 +171,34 @@ jobs:
           DATABASE__PASSWORD: volundr_test
           DATABASE__NAME: volundr_test
         run: |
-          uv run uvicorn volundr.main:app --port 8080 &
+          timeout 30 bash -c '
+            until pg_isready -h localhost -p 5432 -U volundr_test -d volundr_test > /dev/null 2>&1; do
+              sleep 1
+            done
+          '
+          uv run uvicorn volundr.main:app --port 8080 > backend.log 2>&1 &
+          echo $! > backend.pid
 
       - name: Wait for backend
         run: |
-          timeout 30 bash -c '
+          timeout 90 bash -c '
             until curl -sf http://localhost:8080/health > /dev/null 2>&1; do
               sleep 1
             done
           '
           echo "Backend is ready"
+        shell: bash
+
+      - name: Dump backend log on startup failure
+        if: failure()
+        run: |
+          echo "Backend failed to become ready"
+          if [ -f backend.pid ]; then
+            ps -p "$(cat backend.pid)" -o pid=,etime=,command= || true
+          fi
+          if [ -f backend.log ]; then
+            tail -n 200 backend.log || true
+          fi
 
       - name: Run Playwright tests
         run: pnpm test:e2e

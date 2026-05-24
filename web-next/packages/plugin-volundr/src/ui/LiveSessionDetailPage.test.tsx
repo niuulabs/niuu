@@ -85,12 +85,6 @@ const STARTING_SESSION: VolundrSession = {
   status: 'starting',
 };
 
-const ERROR_SESSION: VolundrSession = {
-  ...RUNNING_SESSION,
-  status: 'error',
-  error: 'OOMKilled',
-};
-
 const TELEMETRY_TRACE = {
   traceId: 'trace-1',
   sessionId: RUNNING_SESSION.id,
