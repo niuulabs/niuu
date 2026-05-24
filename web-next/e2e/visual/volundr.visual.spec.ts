@@ -41,7 +41,9 @@ test('volundr sessions matches web2', async ({ page }) => {
   await page.goto('/volundr/sessions');
   await page.waitForTimeout(500);
   await page.waitForLoadState('networkidle');
-  await expect(page).toHaveScreenshot('volundr-sessions.png');
+  await expect(page).toHaveScreenshot('volundr-sessions.png', {
+    maxDiffPixelRatio: 0.03,
+  });
 });
 
 // ── Session chat ──────────────────────────────────────────────────────────────

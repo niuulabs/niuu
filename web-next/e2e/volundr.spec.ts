@@ -86,9 +86,16 @@ test('session detail page renders the live diff surface', async ({ page }) => {
   await expect(page.getByTestId('diffs-tab')).toBeVisible();
 });
 
-test('session id is shown in the header', async ({ page }) => {
+test('session id copy chip is shown in the header', async ({ page }) => {
   await page.goto('/volundr/session/ds-1');
-  await expect(page.getByTestId('session-id-label')).toHaveAttribute('title', 'ds-1', {
+  await expect(page.getByTestId('session-id-label')).toHaveAttribute(
+    'title',
+    /^ds-1 · click to copy$/,
+    {
+      timeout: 8_000,
+    },
+  );
+  await expect(page.getByTestId('session-id-label')).toHaveText('ds-1', {
     timeout: 8_000,
   });
 });
