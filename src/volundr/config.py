@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -273,6 +273,50 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             },
         ),
     }
+
+
+def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge ``override`` into ``base`` without mutating either input."""
+    merged: dict[str, Any] = dict(base)
+    for key, value in override.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dicts(base_value, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _merge_session_definition_configs(
+    base: SessionDefinitionConfig,
+    override: SessionDefinitionConfig,
+) -> SessionDefinitionConfig:
+    """Merge explicit override fields onto a built-in session definition."""
+    merged = base.model_copy(deep=True)
+    explicit_fields = set(getattr(override, "model_fields_set", set()))
+    for field_name in explicit_fields:
+        value = getattr(override, field_name)
+        if field_name == "defaults":
+            merged.defaults = _deep_merge_dicts(merged.defaults, value)
+        else:
+            setattr(merged, field_name, value)
+    return merged
+
+
+def merge_session_definitions(
+    overrides: dict[str, SessionDefinitionConfig] | None,
+) -> dict[str, SessionDefinitionConfig]:
+    """Deep-merge configured session definition overrides onto built-in defaults."""
+    merged = {
+        key: definition.model_copy(deep=True)
+        for key, definition in _default_session_definitions().items()
+    }
+    for key, override in (overrides or {}).items():
+        if key in merged:
+            merged[key] = _merge_session_definition_configs(merged[key], override)
+        else:
+            merged[key] = override.model_copy(deep=True)
+    return merged
 
 
 class ProfileConfig(BaseModel):
@@ -1324,6 +1368,12 @@ class Settings(BaseSettings):
     )
     ravn: RavnConfig = Field(default_factory=RavnConfig)
     observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)
+
+    @model_validator(mode="after")
+    def _merge_built_in_session_definitions(self) -> "Settings":
+        """Keep built-in session definitions unless config explicitly overrides them."""
+        self.session_definitions = merge_session_definitions(self.session_definitions)
+        return self
 
     @classmethod
     def settings_customise_sources(

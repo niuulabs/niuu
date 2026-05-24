@@ -992,6 +992,62 @@ class TestProcessSpawning:
         assert env["SKULD__SKIP_PERMISSIONS"] == "false"
         assert "SKULD__CLI_BINARY" not in env
 
+    async def test_spawn_skuld_uses_definition_default_model_without_hardcoded_claude_fallback(
+        self,
+        manager: LocalProcessPodManager,
+        tmp_workspaces: Path,
+    ) -> None:
+        """The session model env should come from merged spec values."""
+        session = Session(id=uuid4(), name="codex-test", model="")
+        workspace = tmp_workspaces / str(session.id)
+        workspace.mkdir(parents=True)
+
+        spec = SessionSpec(values={"model": "gpt-5.5"}, pod_spec=PodSpecAdditions())
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+
+        with (
+            patch.object(manager, "_resolve_claude_binary", return_value="/usr/bin/fake-claude"),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ) as mock_exec,
+        ):
+            await manager._spawn_skuld(session, spec, workspace, 9100)
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["SKULD__SESSION__MODEL"] == "gpt-5.5"
+
+    async def test_spawn_skuld_allows_blank_model_for_runtime_selected_sessions(
+        self,
+        manager: LocalProcessPodManager,
+        tmp_workspaces: Path,
+    ) -> None:
+        """Codex-style sessions with no explicit model should not inject a Claude fallback."""
+        session = Session(id=uuid4(), name="codex-test", model="")
+        workspace = tmp_workspaces / str(session.id)
+        workspace.mkdir(parents=True)
+
+        spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+
+        with (
+            patch.object(manager, "_resolve_claude_binary", return_value="/usr/bin/fake-claude"),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ) as mock_exec,
+        ):
+            await manager._spawn_skuld(session, spec, workspace, 9100)
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["SKULD__SESSION__MODEL"] == ""
+
     async def test_spawn_skuld_overrides_mesh_ports_for_local_flock(
         self,
         manager: LocalProcessPodManager,
@@ -1621,6 +1677,25 @@ class TestStartStop:
         assert result.code_endpoint == "file:///tmp/ws"
         assert result.pod_name.startswith("local-")
 
+    async def test_start_prefers_public_host_for_browser_endpoint(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Browser-facing session endpoints should use NIUU_SERVER_PUBLIC_HOST when set."""
+        monkeypatch.setenv("NIUU_SERVER_HOST", "0.0.0.0")
+        monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "100.66.123.128")
+
+        with (
+            _mock_provision(manager),
+            _mock_spawn(manager),
+        ):
+            result = await manager.start(git_session, default_spec)
+
+        assert result.chat_endpoint == f"ws://100.66.123.128:8080/s/{git_session.id}/session"
+
     async def test_set_skuld_registry_rehydrates_running_sessions(
         self,
         tmp_workspaces: Path,
@@ -1640,7 +1715,14 @@ class TestStartStop:
             ),
             encoding="utf-8",
         )
-        with patch.object(LocalProcessPodManager, "_is_process_alive", return_value=True):
+        with (
+            patch.object(LocalProcessPodManager, "_is_process_alive", return_value=True),
+            patch.object(
+                LocalProcessPodManager,
+                "_process_command",
+                return_value="python -m skuld",
+            ),
+        ):
             mgr = LocalProcessPodManager(
                 workspaces_dir=str(tmp_workspaces),
                 claude_binary="/usr/bin/fake-claude",
@@ -1952,6 +2034,37 @@ class TestStatePersistence:
             workspaces_dir=str(tmp_workspaces),
             state_file=str(tmp_state_file),
         )
+        assert mgr._processes["sess1"].state == ProcessState.STOPPED
+
+    def test_load_marks_non_skuld_process_as_stopped(
+        self,
+        tmp_workspaces: Path,
+        tmp_state_file: Path,
+    ) -> None:
+        """Running PIDs that are alive but not local Skuld processes should not count."""
+        data = {
+            "sess1": {
+                "session_id": "sess1",
+                "pid": 4242,
+                "port": 9100,
+                "workspace": "/tmp/ws",
+                "state": "running",
+            }
+        }
+        tmp_state_file.write_text(json.dumps(data))
+
+        with (
+            patch.object(LocalProcessPodManager, "_is_process_alive", return_value=True),
+            patch.object(
+                LocalProcessPodManager,
+                "_process_command",
+                return_value="containerd-shim",
+            ),
+        ):
+            mgr = LocalProcessPodManager(
+                workspaces_dir=str(tmp_workspaces),
+                state_file=str(tmp_state_file),
+            )
         assert mgr._processes["sess1"].state == ProcessState.STOPPED
 
     def test_load_corrupt_file(

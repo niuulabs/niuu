@@ -63,7 +63,11 @@ def _sanitize_log(value: object) -> str:
 
 def _public_loopback_host() -> str:
     """Return the loopback host we publish to browser-facing clients."""
-    host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    host = (
+        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
+        or os.environ.get("NIUU_SERVER_HOST")
+        or "127.0.0.1"
+    ).strip() or "127.0.0.1"
     return "localhost" if host == "127.0.0.1" else host
 
 

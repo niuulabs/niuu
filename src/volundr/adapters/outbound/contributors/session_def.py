@@ -45,4 +45,6 @@ class SessionDefinitionContributor(SessionContributor):
             return SessionContribution()
 
         values: dict[str, Any] = dict(defn.defaults)
+        if defn.default_model and "model" not in values:
+            values["model"] = defn.default_model
         return SessionContribution(values=values)

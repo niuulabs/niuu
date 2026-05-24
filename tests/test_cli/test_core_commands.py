@@ -301,6 +301,7 @@ class TestStartup:
         root_server_cls.assert_called_once_with(
             registry=manager._registry,
             host=settings.server.host,
+            public_host=settings.server.host,
             port=settings.server.port,
             host_profile="api",
             enabled_mounts=mounts,

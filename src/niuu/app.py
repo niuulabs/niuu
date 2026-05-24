@@ -874,11 +874,13 @@ class RootServer(Service):
         host: str = "127.0.0.1",
         port: int = 8080,
         *,
+        public_host: str | None = None,
         host_profile: str = DEFAULT_HOST_PROFILE,
         enabled_mounts: set[str] | None = None,
     ) -> None:
         self._registry = registry
         self._host = host
+        self._public_host = (public_host or host).strip() or host
         self._port = port
         self._host_profile = host_profile
         self._enabled_mounts = enabled_mounts
@@ -891,6 +893,14 @@ class RootServer(Service):
 
     async def _start_embedded_db(self) -> None:
         """Start embedded PostgreSQL and set env vars for sub-apps."""
+        database_mode = os.environ.get("NIUU_DATABASE_MODE", "").strip().lower()
+        if database_mode == "external":
+            logger.info("Skipping embedded PostgreSQL because NIUU_DATABASE_MODE=external")
+            return
+        if os.environ.get("DATABASE__HOST", "").strip():
+            logger.info("Skipping embedded PostgreSQL because DATABASE__HOST is already set")
+            return
+
         from niuu.adapters.embedded_postgres import EmbeddedPostgresDatabase
 
         data_dir = os.environ.get("NIUU_PGDATA_DIR") or str(Path.home() / ".niuu" / "pgdata")
@@ -932,6 +942,7 @@ class RootServer(Service):
         await self._run_migrations()
 
         os.environ["NIUU_SERVER_HOST"] = self._host
+        os.environ["NIUU_SERVER_PUBLIC_HOST"] = self._public_host
         os.environ["NIUU_SERVER_PORT"] = str(self._port)
         os.environ["VOLUNDR__URL"] = f"http://{_local_service_host(self._host)}:{self._port}"
 

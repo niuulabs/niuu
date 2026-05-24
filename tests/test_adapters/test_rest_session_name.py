@@ -59,3 +59,7 @@ class TestSessionNameValidation:
     def test_rejects_dot(self):
         with pytest.raises(ValidationError, match="lowercase letters"):
             self._create("my.session")
+
+    def test_accepts_session_definition_alias(self):
+        sc = SessionCreate(name="my-session", session_definition="skuldCodex")
+        assert sc.definition == "skuldCodex"
