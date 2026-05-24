@@ -479,6 +479,30 @@ class TestSessionServiceStart:
         assert result.chat_endpoint.startswith("ws://localhost:")
         assert "session" in result.chat_endpoint
 
+    async def test_start_session_prefers_public_host_for_browser_endpoints(
+        self,
+        repository: Repo,
+        pod_manager: Pods,
+        monkeypatch,
+    ):
+        """Browser-facing session URLs should prefer the configured public host."""
+        service = SessionService(repository, pod_manager)
+        created = await service.create_session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(
+                repo="https://github.com/org/repo",
+                branch="main",
+            ),
+        )
+
+        monkeypatch.setenv("NIUU_SERVER_HOST", "0.0.0.0")
+        monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "100.66.123.128")
+
+        result = await service.start_session(created.id)
+
+        assert result.chat_endpoint == f"ws://100.66.123.128:8080/s/{created.id}/session"
+
     async def test_start_stopped_session(self, repository: Repo, pod_manager: Pods):
         """Starting a stopped session works."""
         service = SessionService(repository, pod_manager)

@@ -25,6 +25,7 @@ import re
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -67,7 +68,11 @@ READY_POLL_INTERVAL = 0.5
 
 def _public_loopback_host() -> str:
     """Return the loopback host we publish to browser-facing clients."""
-    host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    host = (
+        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
+        or os.environ.get("NIUU_SERVER_HOST")
+        or "127.0.0.1"
+    ).strip() or "127.0.0.1"
     return "localhost" if host == "127.0.0.1" else host
 
 
@@ -92,6 +97,7 @@ class ProcessInfo:
     error: str | None = None
     flock_dir: str = ""
     flock_base_port: int | None = None
+    managed_by: str = "local_process"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-safe dict."""
@@ -909,7 +915,7 @@ class LocalProcessPodManager(PodManager):
 
         env["SKULD__SESSION__ID"] = session_id
         env["SKULD__SESSION__NAME"] = session.name
-        model = session.model or spec.values.get("model", "claude-sonnet-4-6")
+        model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
         env["SKULD__HOST"] = "127.0.0.1"
@@ -1526,7 +1532,7 @@ class LocalProcessPodManager(PodManager):
         for sid, info_data in data.items():
             info = ProcessInfo.from_dict(info_data)
             if info.state in (ProcessState.RUNNING, ProcessState.STARTING):
-                if info.pid is not None and self._is_process_alive(info.pid):
+                if self._is_recoverable_local_process(info):
                     info.state = ProcessState.RUNNING
                 else:
                     info.state = ProcessState.STOPPED
@@ -1546,6 +1552,45 @@ class LocalProcessPodManager(PodManager):
             return True
         except OSError:
             return False
+
+    @staticmethod
+    def _process_command(pid: int) -> str:
+        """Best-effort command line lookup for a running PID."""
+        proc_cmdline = Path(f"/proc/{pid}/cmdline")
+        try:
+            if proc_cmdline.exists():
+                raw = proc_cmdline.read_bytes()
+                if raw:
+                    return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+        except OSError:
+            pass
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
+
+    def _is_recoverable_local_process(self, info: ProcessInfo) -> bool:
+        """Return True when a saved PID still looks like a locally managed Skuld process."""
+        if info.pid is None or not self._is_process_alive(info.pid):
+            return False
+        cmdline = self._process_command(info.pid)
+        if not cmdline:
+            return False
+        normalized = cmdline.lower()
+        return (
+            " -m skuld" in normalized
+            or normalized.endswith(" skuld")
+            or " platform skuld" in normalized
+        )
 
     # ------------------------------------------------------------------
     # Helpers

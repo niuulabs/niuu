@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.domain.models import (
@@ -74,7 +74,11 @@ def _public_session_endpoint(endpoint: str | None) -> str | None:
         return endpoint
     if parsed.hostname != "127.0.0.1":
         return endpoint
-    host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    host = (
+        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
+        or os.environ.get("NIUU_SERVER_HOST")
+        or "127.0.0.1"
+    ).strip() or "127.0.0.1"
     public_host = "localhost" if host == "127.0.0.1" else host
     netloc = public_host
     if parsed.port is not None:
@@ -288,6 +292,21 @@ class SessionCreate(BaseModel):
         default_factory=dict,
         description="Workload-specific configuration (e.g. personas, mesh, mimir settings)",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_session_definition(cls, data: object) -> object:
+        """Accept ``session_definition`` as a backwards-compatible alias for ``definition``."""
+        if not isinstance(data, dict):
+            return data
+        if data.get("definition"):
+            return data
+        alias_value = data.get("session_definition")
+        if alias_value:
+            merged = dict(data)
+            merged["definition"] = alias_value
+            return merged
+        return data
 
     model_config = {
         "json_schema_extra": {

@@ -87,6 +87,7 @@ class TestSessionDefinitionContributor:
         result = await contributor.contribute(_mock_session(), context)
 
         assert result.values["broker"]["cliType"] == "claude"
+        assert result.values["model"] == "claude-sonnet-4-6"
 
     @pytest.mark.asyncio
     async def test_explicit_definition_overrides_default(self):
@@ -98,6 +99,7 @@ class TestSessionDefinitionContributor:
         result = await contributor.contribute(_mock_session(), context)
 
         assert result.values["broker"]["cliType"] == "codex-ws"
+        assert "model" not in result.values
 
     @pytest.mark.asyncio
     async def test_disabled_definition_returns_empty(self):
@@ -184,3 +186,4 @@ class TestDefaultSessionDefinitions:
         context = SessionContext()
         result = await contributor.contribute(_mock_session(), context)
         assert result.values["broker"]["cliType"] == "claude"
+        assert result.values["model"] == "claude-sonnet-4-6"

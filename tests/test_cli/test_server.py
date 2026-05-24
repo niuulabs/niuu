@@ -1520,6 +1520,7 @@ class TestRootServerStartStop:
         ):
             await server.start()
             assert os.environ["NIUU_SERVER_HOST"] == "127.0.0.1"
+            assert os.environ["NIUU_SERVER_PUBLIC_HOST"] == "127.0.0.1"
             assert os.environ["NIUU_SERVER_PORT"] == "8080"
             assert os.environ["VOLUNDR__URL"] == "http://127.0.0.1:8080"
 
@@ -1545,8 +1546,34 @@ class TestRootServerStartStop:
         ):
             await server.start()
             assert os.environ["NIUU_SERVER_HOST"] == "0.0.0.0"
+            assert os.environ["NIUU_SERVER_PUBLIC_HOST"] == "0.0.0.0"
             assert os.environ["NIUU_SERVER_PORT"] == "18080"
             assert os.environ["VOLUNDR__URL"] == "http://127.0.0.1:18080"
+
+    @pytest.mark.asyncio
+    async def test_start_uses_explicit_public_host_for_browser_urls(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(
+            registry=registry,
+            host="0.0.0.0",
+            public_host="100.66.123.128",
+            port=18080,
+        )
+
+        server._start_embedded_db = AsyncMock()
+        server._run_migrations = AsyncMock()
+
+        mock_uvicorn_server = MagicMock()
+        mock_uvicorn_server.serve = AsyncMock()
+
+        with (
+            patch.dict(os.environ, {"NIUU_NO_WEB": "true"}, clear=False),
+            patch("uvicorn.Server", return_value=mock_uvicorn_server),
+            patch("uvicorn.Config"),
+        ):
+            await server.start()
+            assert os.environ["NIUU_SERVER_HOST"] == "0.0.0.0"
+            assert os.environ["NIUU_SERVER_PUBLIC_HOST"] == "100.66.123.128"
 
     @pytest.mark.asyncio
     async def test_stop_shuts_down_server_and_db(self) -> None:
@@ -1743,6 +1770,34 @@ class TestRootServerStartEmbeddedDb:
         )
 
     @pytest.mark.asyncio
+    async def test_skips_when_database_mode_is_external(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+
+        with (
+            patch.dict(os.environ, {"NIUU_DATABASE_MODE": "external"}, clear=False),
+            patch("niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase") as mock_cls,
+        ):
+            await server._start_embedded_db()
+
+        mock_cls.assert_not_called()
+        assert server._embedded_db is None
+
+    @pytest.mark.asyncio
+    async def test_skips_when_database_host_already_set(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+
+        with (
+            patch.dict(os.environ, {"DATABASE__HOST": "db.internal"}, clear=False),
+            patch("niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase") as mock_cls,
+        ):
+            await server._start_embedded_db()
+
+        mock_cls.assert_not_called()
+        assert server._embedded_db is None
+
+    @pytest.mark.asyncio
     async def test_respects_pgdata_env_override(self) -> None:
         registry = PluginRegistry()
         server = RootServer(registry=registry)
@@ -1755,7 +1810,15 @@ class TestRootServerStartEmbeddedDb:
         )
 
         with (
-            patch.dict(os.environ, {"NIUU_PGDATA_DIR": "/tmp/niuu-observatory-pg"}, clear=False),
+            patch.dict(
+                os.environ,
+                {
+                    "NIUU_PGDATA_DIR": "/tmp/niuu-observatory-pg",
+                    "DATABASE__HOST": "",
+                    "NIUU_DATABASE_MODE": "",
+                },
+                clear=False,
+            ),
             patch(
                 "niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase",
                 return_value=mock_db,

@@ -166,12 +166,115 @@ Minimal example:
 
 The response should be treated as an asynchronous launch acknowledgement, not proof that the session is ready.
 
+### Runtime selection
+
+Volundr's Forge session-create API uses `definition` to pick the runtime, for example:
+
+- `skuldClaude`
+- `skuldCodex`
+- `skuldOpenCode`
+
+Example:
+
+```json
+{
+  "name": "openclaw-task-123",
+  "model": "gpt-5.5",
+  "definition": "skuldCodex",
+  "source": {
+    "type": "git",
+    "repo": "https://github.com/acme/repo",
+    "branch": "main",
+    "base_branch": "main"
+  },
+  "initial_prompt": "Fix ACME-123 and open a PR."
+}
+```
+
+Compatibility note:
+
+- Forge now also accepts `session_definition` as a backward-compatible alias on session create.
+- Prefer `definition` in new clients.
+
+Behavior note:
+
+- If you omit `definition`, Forge may still resolve a runtime from the selected model catalog.
+- For orchestration systems like OpenClaw, it is better to send the runtime explicitly so launch behavior is deterministic.
+
 After creation:
 
 1. cache the `session_id`
 2. subscribe to SSE if not already subscribed
 3. wait for `status=running`
 4. verify `chat_endpoint` exists before attempting live interaction
+
+### Config notes for OpenClaw-oriented deployments
+
+If you are deploying Volundr in mini mode or a self-hosted remote setup, these config behaviors matter:
+
+#### `session_definitions` overrides are partial now
+
+You can override only part of a built-in runtime definition. Volundr now deep-merges configured `session_definitions` over the built-ins instead of replacing the entire map.
+
+This is valid:
+
+```yaml
+session_definitions:
+  skuldClaude:
+    default_model: claude-opus-4-7
+```
+
+You do not need to repeat `skuldCodex`, `skuldOpenCode`, or the full nested broker config just to override one field.
+
+Nested `defaults` also merge recursively. For example:
+
+```yaml
+session_definitions:
+  skuldCodex:
+    defaults:
+      broker:
+        skipPermissions: true
+```
+
+That keeps the rest of the built-in Codex transport settings intact.
+
+#### Remote-access URLs should use `server.external_host`
+
+When the server binds to `0.0.0.0`, that is only the listen address. It is not a usable browser-facing host for remote clients.
+
+Use:
+
+```yaml
+server:
+  host: 0.0.0.0
+  external_host: 100.66.123.128
+  port: 8080
+```
+
+Volundr will then keep internal service-to-service URLs loopback-safe while generating browser-facing session URLs, including `chat_endpoint`, with the external host.
+
+#### External PostgreSQL
+
+If you are not using the embedded database, run mini mode with:
+
+```yaml
+database:
+  mode: external
+  dsn: postgresql://postgres:secret@db.example.internal:5432/postgres
+```
+
+With `database.mode: external`, the root server skips starting the embedded PostgreSQL instance.
+
+As an additional safety guard, if `DATABASE__HOST` is already set in the environment, embedded PostgreSQL is also skipped.
+
+#### Model fallback behavior
+
+Local-process sessions no longer hardcode a Claude fallback model when the session runtime is selected explicitly and no model is given.
+
+Practical effect:
+
+- `definition: skuldCodex` with no `model` will not inject `claude-sonnet-4-6` into the Skuld session env.
+- definition defaults can provide the runtime-specific model when desired.
 
 ## 7. Real-time session SSE
 

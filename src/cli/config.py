@@ -130,6 +130,10 @@ class ServerConfig(BaseModel):
         default="127.0.0.1",
         description="Host to bind the server to.",
     )
+    external_host: str = Field(
+        default="",
+        description="Externally reachable host/IP for browser-facing URLs. Empty = reuse host.",
+    )
     port: int = Field(
         default=8080,
         description="Single port for all services (Volundr, Ting, Web UI).",

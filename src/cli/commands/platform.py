@@ -163,13 +163,19 @@ async def _startup(
     host = settings.server.host
     port = settings.server.port
 
-    # Expose server address so pod manager can construct chat_endpoint URLs
+    public_host = settings.server.external_host.strip() or host
+
+    # Expose bind/public server addresses so browser-facing URLs can differ
+    # from the interface uvicorn listens on.
     os.environ["NIUU_SERVER_HOST"] = host
+    os.environ["NIUU_SERVER_PUBLIC_HOST"] = public_host
     os.environ["NIUU_SERVER_PORT"] = str(port)
+    os.environ["NIUU_DATABASE_MODE"] = settings.database.mode
 
     root_server = RootServer(
         registry=manager._registry,
         host=host,
+        public_host=public_host,
         port=port,
         host_profile=host_profile,
         enabled_mounts=enabled_mounts,
