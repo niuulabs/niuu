@@ -159,6 +159,18 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: web-next
 
+      - name: Build web package style entrypoints
+        run: |
+          pnpm --filter @niuulabs/ui build
+          pnpm --filter @niuulabs/shell build
+          pnpm --filter @niuulabs/plugin-login build
+          pnpm --filter @niuulabs/plugin-mimir build
+          pnpm --filter @niuulabs/plugin-observatory build
+          pnpm --filter @niuulabs/plugin-ravn build
+          pnpm --filter @niuulabs/plugin-ting build
+          pnpm --filter @niuulabs/plugin-volundr build
+        working-directory: web-next
+
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
         working-directory: web-next
