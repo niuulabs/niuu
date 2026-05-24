@@ -7,7 +7,6 @@ import {
   buildDispatcherHttpAdapter,
   buildTingSessionHttpAdapter,
   buildTrackerHttpAdapter,
-  buildTingIntegrationHttpAdapter,
   buildDispatchBusHttpAdapter,
   buildWorkflowHttpAdapter,
 } from './http';
@@ -16,10 +15,8 @@ import type {
   IDispatcherService,
   ITingSessionService,
   ITrackerBrowserService,
-  ITingIntegrationService,
   IDispatchBus,
   CommitSagaRequest,
-  CreateIntegrationParams,
 } from '../ports';
 import type { Workflow } from '../domain/workflow';
 
@@ -189,16 +186,6 @@ const rawIssue = {
   priority: 2,
   url: 'https://linear.app/niuu/iss/1',
   milestone_id: 'ms-1',
-};
-
-const rawIntegration = {
-  id: 'int-1',
-  integration_type: 'telegram',
-  adapter: 'TelegramAdapter',
-  credential_name: 'tg-token',
-  enabled: true,
-  status: 'connected',
-  created_at: '2026-01-01T00:00:00Z',
 };
 
 const rawWorkflow = {
@@ -800,83 +787,6 @@ describe('buildTrackerHttpAdapter', () => {
     expect(typeof svc.listMilestones).toBe('function');
     expect(typeof svc.listIssues).toBe('function');
     expect(typeof svc.importProject).toBe('function');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildTingIntegrationHttpAdapter
-// ---------------------------------------------------------------------------
-
-describe('buildTingIntegrationHttpAdapter', () => {
-  it('calls GET /integrations', async () => {
-    const client = makeClient();
-    client.get.mockResolvedValue([rawIntegration]);
-    await buildTingIntegrationHttpAdapter(client).listIntegrations();
-    expect(client.get).toHaveBeenCalledWith('/integrations');
-  });
-
-  it('transforms integration snake_case', async () => {
-    const client = makeClient();
-    client.get.mockResolvedValue([rawIntegration]);
-    const [integration] = await buildTingIntegrationHttpAdapter(client).listIntegrations();
-    expect(integration?.integrationType).toBe('telegram');
-    expect(integration?.credentialName).toBe('tg-token');
-  });
-
-  it('creates integration with snake_case body', async () => {
-    const client = makeClient();
-    client.post.mockResolvedValue(rawIntegration);
-    const params: CreateIntegrationParams = {
-      integrationType: 'telegram',
-      adapter: 'TelegramAdapter',
-      credentialName: 'tg-token',
-      credentialValue: 'secret',
-      config: { chat_id: '123' },
-    };
-    await buildTingIntegrationHttpAdapter(client).createIntegration(params);
-    const body = client.post.mock.calls[0][1] as Record<string, unknown>;
-    expect(body.integration_type).toBe('telegram');
-    expect(body.credential_name).toBe('tg-token');
-    expect(body.credential_value).toBe('secret');
-  });
-
-  it('calls DELETE /integrations/:id', async () => {
-    const client = makeClient();
-    client.delete.mockResolvedValue(undefined);
-    await buildTingIntegrationHttpAdapter(client).deleteIntegration('int-1');
-    expect(client.delete).toHaveBeenCalledWith('/integrations/int-1');
-  });
-
-  it('calls PATCH for toggle', async () => {
-    const client = makeClient();
-    client.patch.mockResolvedValue(rawIntegration);
-    await buildTingIntegrationHttpAdapter(client).toggleIntegration('int-1', false);
-    expect(client.patch).toHaveBeenCalledWith('/integrations/int-1', { enabled: false });
-  });
-
-  it('calls POST /integrations/:id/test', async () => {
-    const client = makeClient();
-    client.post.mockResolvedValue({ success: true, message: 'ok' });
-    const result = await buildTingIntegrationHttpAdapter(client).testConnection('int-1');
-    expect(result.success).toBe(true);
-  });
-
-  it('calls GET /integrations/telegram/setup', async () => {
-    const client = makeClient();
-    client.get.mockResolvedValue({ deeplink: 'https://t.me/bot', token: 'tok' });
-    const result = await buildTingIntegrationHttpAdapter(client).getTelegramSetup();
-    expect(result.deeplink).toBe('https://t.me/bot');
-  });
-
-  it('satisfies ITingIntegrationService', () => {
-    const client = makeClient();
-    const svc: ITingIntegrationService = buildTingIntegrationHttpAdapter(client);
-    expect(typeof svc.listIntegrations).toBe('function');
-    expect(typeof svc.createIntegration).toBe('function');
-    expect(typeof svc.deleteIntegration).toBe('function');
-    expect(typeof svc.toggleIntegration).toBe('function');
-    expect(typeof svc.testConnection).toBe('function');
-    expect(typeof svc.getTelegramSetup).toBe('function');
   });
 });
 

@@ -330,6 +330,7 @@ class TestTingPlugin:
             "/api/v1/ting/flock_flows",
         )
         assert route_domains[5].prefixes == ("/api/v1/ting/settings",)
+        assert route_domains[6].prefixes == ("/api/v1/ting/telegram",)
 
     def test_registers_sagas_group(self) -> None:
         plugin = TingPlugin()

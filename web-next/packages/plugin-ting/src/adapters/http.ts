@@ -14,7 +14,6 @@ import type {
   IDispatcherService,
   ITingSessionService,
   ITrackerBrowserService,
-  ITingIntegrationService,
   IDispatchBus,
   DispatchResult,
   DispatchQueueItem,
@@ -34,10 +33,6 @@ import type {
   PhaseSpec,
   RunSessionMessage,
   RunHelpRequest,
-  IntegrationConnection,
-  CreateIntegrationParams,
-  ConnectionTestResult,
-  TelegramSetupResult,
   FlockConfig,
   DispatchDefaults,
   NotificationSettings,
@@ -204,16 +199,6 @@ interface RawTrackerIssue {
   priority: number;
   url: string;
   milestone_id: string | null;
-}
-
-interface RawIntegrationConnection {
-  id: string;
-  integration_type: string;
-  adapter: string;
-  credential_name: string;
-  enabled: boolean;
-  status: string;
-  created_at: string;
 }
 
 interface RawDispatchQueueItem {
@@ -450,18 +435,6 @@ function toTrackerIssue(raw: RawTrackerIssue): TrackerIssue {
     priority: raw.priority,
     url: raw.url,
     milestoneId: raw.milestone_id,
-  };
-}
-
-function toIntegrationConnection(raw: RawIntegrationConnection): IntegrationConnection {
-  return {
-    id: raw.id,
-    integrationType: raw.integration_type,
-    adapter: raw.adapter,
-    credentialName: raw.credential_name,
-    enabled: raw.enabled,
-    status: raw.status,
-    createdAt: raw.created_at,
   };
 }
 
@@ -820,51 +793,6 @@ export function buildTrackerHttpAdapter(client: ApiClient): ITrackerBrowserServi
         instance_id: instanceId ?? null,
       });
       return toSaga(raw);
-    },
-  };
-}
-
-/**
- * Build an ITingIntegrationService backed by the Ting integrations API.
- *
- * @param client - HTTP client scoped to the integrations base path.
- */
-export function buildTingIntegrationHttpAdapter(client: ApiClient): ITingIntegrationService {
-  return {
-    async listIntegrations() {
-      const raw = await client.get<RawIntegrationConnection[]>('/integrations');
-      return raw.map(toIntegrationConnection);
-    },
-
-    async createIntegration(params: CreateIntegrationParams) {
-      const raw = await client.post<RawIntegrationConnection>('/integrations', {
-        integration_type: params.integrationType,
-        adapter: params.adapter,
-        credential_name: params.credentialName,
-        credential_value: params.credentialValue,
-        config: params.config,
-      });
-      return toIntegrationConnection(raw);
-    },
-
-    async deleteIntegration(id: string) {
-      await client.delete<void>(`/integrations/${encodeURIComponent(id)}`);
-    },
-
-    async toggleIntegration(id: string, enabled: boolean) {
-      const raw = await client.patch<RawIntegrationConnection>(
-        `/integrations/${encodeURIComponent(id)}`,
-        { enabled },
-      );
-      return toIntegrationConnection(raw);
-    },
-
-    async testConnection(id: string) {
-      return client.post<ConnectionTestResult>(`/integrations/${encodeURIComponent(id)}/test`, {});
-    },
-
-    async getTelegramSetup() {
-      return client.get<TelegramSetupResult>('/integrations/telegram/setup');
     },
   };
 }

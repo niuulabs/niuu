@@ -4,7 +4,6 @@ import {
   createMockDispatcherService,
   createMockTingSessionService,
   createMockTrackerService,
-  createMockTingIntegrationService,
   createMockTingSettingsService,
   createMockAuditLogService,
 } from './mock';
@@ -211,62 +210,6 @@ describe('createMockTrackerService', () => {
     expect(saga.name).toBe('Niuu Core');
     expect(saga.repos).toEqual(['niuulabs/volundr']);
     expect(saga.status).toBe('active');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// createMockTingIntegrationService
-// ---------------------------------------------------------------------------
-
-describe('createMockTingIntegrationService', () => {
-  it('returns 2 seed integrations', async () => {
-    const svc = createMockTingIntegrationService();
-    const integrations = await svc.listIntegrations();
-    expect(integrations).toHaveLength(2);
-  });
-
-  it('createIntegration adds to list', async () => {
-    const svc = createMockTingIntegrationService();
-    await svc.createIntegration({
-      integrationType: 'slack',
-      adapter: 'SlackAdapter',
-      credentialName: 'slack-token',
-      credentialValue: 'xoxb-secret',
-      config: {},
-    });
-    const integrations = await svc.listIntegrations();
-    expect(integrations).toHaveLength(3);
-  });
-
-  it('deleteIntegration removes from list', async () => {
-    const svc = createMockTingIntegrationService();
-    await svc.deleteIntegration('int-linear');
-    const integrations = await svc.listIntegrations();
-    expect(integrations.find((i) => i.id === 'int-linear')).toBeUndefined();
-  });
-
-  it('toggleIntegration updates enabled flag', async () => {
-    const svc = createMockTingIntegrationService();
-    const updated = await svc.toggleIntegration('int-linear', false);
-    expect(updated.enabled).toBe(false);
-  });
-
-  it('toggleIntegration throws for unknown id', async () => {
-    const svc = createMockTingIntegrationService();
-    await expect(svc.toggleIntegration('no-such', true)).rejects.toThrow();
-  });
-
-  it('testConnection returns success', async () => {
-    const svc = createMockTingIntegrationService();
-    const result = await svc.testConnection('int-linear');
-    expect(result.success).toBe(true);
-  });
-
-  it('getTelegramSetup returns deeplink', async () => {
-    const svc = createMockTingIntegrationService();
-    const setup = await svc.getTelegramSetup();
-    expect(setup.deeplink).toBeTruthy();
-    expect(setup.token).toBeTruthy();
   });
 });
 

@@ -25,10 +25,7 @@ from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
 from ting.adapters.github_git import GitHubGitAdapter
-from ting.adapters.inbound.rest_integrations import (
-    create_integrations_router,
-    create_telegram_setup_router,
-)
+from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.adapters.inbound.rest_pats import create_pats_router
 from ting.adapters.inbound.rest_telegram_webhook import create_telegram_webhook_router
 from ting.adapters.notification_channel_factory import NotificationChannelFactory
@@ -360,7 +357,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from ting.adapters.inbound.auth import extract_principal as _extract_principal
 
     app.include_router(create_pats_router(_extract_principal))
-    app.include_router(create_integrations_router())
+    # Shared integration CRUD lives in niuu-shared. Ting keeps only its
+    # Telegram setup bridge until that flow moves to the shared surface too.
     app.include_router(
         create_telegram_setup_router(
             telegram_bot_username=settings.telegram.bot_username,
