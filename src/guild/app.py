@@ -40,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async with database_pool(loaded_settings.database) as pool:
             instance_repository = PostgresInstanceRepository(pool)
+            await instance_repository.ensure_schema()
             instance_service = InstanceService(instance_repository)
 
             pat_repository = PostgresPATRepository(pool)

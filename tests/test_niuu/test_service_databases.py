@@ -38,6 +38,9 @@ def test_local_service_database_names_are_distinct(monkeypatch) -> None:
 
 
 def test_bootstrap_sql_is_defined_for_split_services() -> None:
-    assert bootstrap_sql_for_service("guild")
+    guild_sql = bootstrap_sql_for_service("guild")
+
+    assert guild_sql
     assert bootstrap_sql_for_service("observatory")
     assert bootstrap_sql_for_service("volundr") == ()
+    assert all("CREATE EXTENSION IF NOT EXISTS pgcrypto" not in statement for statement in guild_sql)

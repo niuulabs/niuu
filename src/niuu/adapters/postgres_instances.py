@@ -12,6 +12,7 @@ from niuu.domain.models import (
     RegisteredInstance,
 )
 from niuu.ports.instances import InstanceRepository
+from niuu.service_databases import GUILD_BOOTSTRAP_SQL
 
 
 class PostgresInstanceRepository(InstanceRepository):
@@ -19,6 +20,11 @@ class PostgresInstanceRepository(InstanceRepository):
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        """Ensure the shared instance registry schema exists."""
+        for statement in GUILD_BOOTSTRAP_SQL:
+            await self._pool.execute(statement)
 
     async def list_instances(self, kind: InstanceKind | None = None) -> list[RegisteredInstance]:
         if kind is None:

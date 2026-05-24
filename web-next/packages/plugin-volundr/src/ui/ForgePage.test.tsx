@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -291,6 +291,63 @@ describe('ForgePage', () => {
     expect(screen.getByTestId('inflight-preview').textContent).toBe(
       'Implement the new batch import pipeline for the analytics service',
     );
+  });
+
+  it('prefers session title and tracker issue in forge lists when present', async () => {
+    const session: Session = {
+      id: 'sess-issue-1',
+      title: 'OIDC auth hardening',
+      trackerIssue: {
+        id: 'issue-900',
+        identifier: 'NIU-900',
+        title: 'OIDC auth hardening',
+        status: 'in_progress',
+        url: 'https://linear.app/niuu/issue/NIU-900',
+      },
+      ravnId: 'r-issue',
+      personaName: 'OIDC auth hardening',
+      templateId: 'tpl-default',
+      clusterId: 'cl-eitri',
+      state: 'running',
+      startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      lastActivityAt: new Date(Date.now() - 45_000).toISOString(),
+      preview: 'validating callback edge cases',
+      resources: {
+        cpuRequest: 1,
+        cpuLimit: 2,
+        cpuUsed: 0.6,
+        memRequestMi: 512,
+        memLimitMi: 1_024,
+        memUsedMi: 384,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [],
+    };
+
+    const store = createMockSessionStore();
+    const overriddenStore: ISessionStore = {
+      ...store,
+      listSessions: async () => [session],
+      subscribe: (cb) => {
+        cb([session]);
+        return () => {};
+      },
+    };
+
+    wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
+    await waitFor(() => expect(screen.getByTestId('inflight-panel')).toBeInTheDocument());
+
+    const inflight = screen.getByTestId('inflight-panel');
+    expect(within(inflight).getByTestId('inflight-title')).toHaveTextContent('OIDC auth hardening');
+    expect(within(inflight).getByTestId('inflight-ticket')).toHaveTextContent('NIU-900');
+    expect(within(inflight).queryByText('sess-issue-1')).not.toBeInTheDocument();
+    expect(within(inflight).getAllByText('OIDC auth hardening')).toHaveLength(1);
+
+    const recent = screen.getByTestId('recent-panel');
+    expect(within(recent).getByTestId('tail-title')).toHaveTextContent('OIDC auth hardening');
+    expect(within(recent).getByTestId('tail-ticket')).toHaveTextContent('NIU-900');
+    expect(within(recent).queryByText('sess-issue-1')).not.toBeInTheDocument();
   });
 
   it('falls back to the raw cluster id and requested label for requested sessions', async () => {

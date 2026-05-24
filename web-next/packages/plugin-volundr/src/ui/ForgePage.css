@@ -254,7 +254,8 @@
 .vol-forge__launch-name,
 .vol-forge__cluster-name,
 .vol-forge__error-title span:first-child,
-.vol-forge__tail-name {
+.vol-forge__tail-name,
+.vol-forge__ticket {
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -270,6 +271,9 @@
   font-size: 13px;
   font-weight: 600;
   line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .vol-forge__inflight-sub {
@@ -291,6 +295,14 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.vol-forge__ticket {
+  color: var(--color-brand);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .vol-forge__sep {
@@ -632,6 +644,16 @@
   color: var(--color-text-primary);
   font-size: 13px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vol-forge__tail-namewrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .vol-forge__error-list {

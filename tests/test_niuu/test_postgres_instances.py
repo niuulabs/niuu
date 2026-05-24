@@ -129,6 +129,17 @@ async def test_save_and_delete_instance_send_expected_sql_payloads() -> None:
     assert delete_args == (instance.id,)
 
 
+@pytest.mark.asyncio
+async def test_ensure_schema_executes_bootstrap_statements() -> None:
+    pool = FakePool()
+    repo = PostgresInstanceRepository(pool)
+
+    await repo.ensure_schema()
+
+    assert pool.execute_calls
+    assert any("CREATE TABLE IF NOT EXISTS niuu_instances" in query for query, _ in pool.execute_calls)
+
+
 def test_row_to_instance_handles_mapping_and_json_string_configs() -> None:
     mapping_instance = PostgresInstanceRepository._row_to_instance(
         _row("mapped", config={"enabled": True})

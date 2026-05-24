@@ -994,7 +994,13 @@ describe('buildServices', () => {
       messageCount: 12,
       tokensUsed: 4200,
       taskType: 'forge-web',
-      trackerIssue: { identifier: 'NIU-754' },
+      trackerIssue: {
+        id: 'issue-754',
+        identifier: 'NIU-754',
+        title: 'Canonical routes cleanup',
+        status: 'in_progress',
+        url: 'https://linear.app/niuu/issue/NIU-754',
+      },
       activityState: 'active',
     };
     const archivedSession = {
@@ -1011,7 +1017,13 @@ describe('buildServices', () => {
       messageCount: 4,
       tokensUsed: 800,
       taskType: 'forge-web',
-      trackerIssue: { identifier: 'NIU-753' },
+      trackerIssue: {
+        id: 'issue-753',
+        identifier: 'NIU-753',
+        title: 'Legacy shim cleanup',
+        status: 'done',
+        url: 'https://linear.app/niuu/issue/NIU-753',
+      },
       activityState: null,
       archivedAt: new Date('2026-04-23T13:00:00Z'),
     };
@@ -1045,8 +1057,14 @@ describe('buildServices', () => {
     await expect(sessionStore.listSessions()).resolves.toEqual([
       expect.objectContaining({
         id: 'sess-live',
+        name: 'feat/canonical-routes',
+        title: 'Canonical routes cleanup',
         ravnId: 'NIU-754',
         personaName: 'feat/canonical-routes',
+        trackerIssue: expect.objectContaining({
+          identifier: 'NIU-754',
+          title: 'Canonical routes cleanup',
+        }),
         templateId: 'forge-web',
         clusterId: 'shared',
         state: 'running',
@@ -1056,7 +1074,13 @@ describe('buildServices', () => {
       }),
       expect.objectContaining({
         id: 'sess-archived',
+        name: 'fix/legacy-shim-cleanup',
+        title: 'Legacy shim cleanup',
         ravnId: 'NIU-753',
+        trackerIssue: expect.objectContaining({
+          identifier: 'NIU-753',
+          title: 'Legacy shim cleanup',
+        }),
         state: 'archived',
         terminatedAt: '2026-04-23T13:00:00.000Z',
       }),
@@ -1065,7 +1089,12 @@ describe('buildServices', () => {
       expect.objectContaining({ id: 'sess-archived' }),
     ]);
     await expect(sessionStore.getSession('sess-archived')).resolves.toEqual(
-      expect.objectContaining({ id: 'sess-archived', state: 'archived' }),
+      expect.objectContaining({
+        id: 'sess-archived',
+        title: 'Legacy shim cleanup',
+        trackerIssue: expect.objectContaining({ identifier: 'NIU-753' }),
+        state: 'archived',
+      }),
     );
     await sessionStore.deleteSession('sess-live');
     expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live', undefined);

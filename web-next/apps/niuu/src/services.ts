@@ -672,6 +672,8 @@ function toDomainSession(session: VolundrSession): Session {
   return {
     id: session.id,
     ravnId: toSessionRavnId(session),
+    name: session.name,
+    title: session.trackerIssue?.title ?? session.name,
     personaName: session.name,
     templateId: toSessionTemplateId(session),
     clusterId: toSessionClusterId(session),
@@ -690,6 +692,7 @@ function toDomainSession(session: VolundrSession): Session {
     tokensIn: session.tokensUsed,
     tokensOut: 0,
     preview: toSessionPreview(session),
+    trackerIssue: session.trackerIssue,
   };
 }
 

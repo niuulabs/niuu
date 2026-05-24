@@ -168,7 +168,6 @@ NIUU_SHARED_BOOTSTRAP_SQL: tuple[str, ...] = (
 )
 
 GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
-    "CREATE EXTENSION IF NOT EXISTS pgcrypto;",
     """
     CREATE TABLE IF NOT EXISTS personal_access_tokens (
         id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

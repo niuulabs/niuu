@@ -378,6 +378,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Wire shared credential/integration infrastructure
             integration_repo = PostgresIntegrationRepository(pool)
             instance_repo = PostgresInstanceRepository(pool)
+            await instance_repo.ensure_schema()
             instance_service = InstanceService(instance_repo)
 
             cs_cfg = settings.credential_store
