@@ -14,8 +14,8 @@ from niuu.adapters.inbound.rest_integrations_settings import create_integrations
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_repos import create_repos_router
 from niuu.adapters.outbound.git_registry import create_git_registry
-from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
+from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.config import GitConfig
 from niuu.cors import apply_cors_middleware
