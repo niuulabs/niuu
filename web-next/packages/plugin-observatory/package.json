@@ -35,12 +35,22 @@
     "@niuulabs/domain": "workspace:*",
     "@niuulabs/plugin-sdk": "workspace:*",
     "@niuulabs/query": "workspace:*",
-    "@niuulabs/ui": "workspace:*"
+    "@niuulabs/ui": "workspace:*",
+    "d3-force": "^3.0.0",
+    "d3-hierarchy": "^3.1.2",
+    "d3-selection": "^3.0.0",
+    "d3-shape": "^3.2.0",
+    "d3-zoom": "^3.0.0"
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-router": "^1.95.0",
+    "@types/d3-force": "^3.0.10",
+    "@types/d3-hierarchy": "^3.1.7",
+    "@types/d3-selection": "^3.0.11",
+    "@types/d3-shape": "^3.1.7",
+    "@types/d3-zoom": "^3.0.8",
     "@types/react": "^19.0.7",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",

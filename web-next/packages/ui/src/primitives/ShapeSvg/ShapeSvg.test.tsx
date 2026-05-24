@@ -157,7 +157,7 @@ describe('SERVICE_RUNES', () => {
 
   it('maps canonical system names to their glyphs', () => {
     expect(SERVICE_RUNES.volundr).toBe('ᚲ');
-    expect(SERVICE_RUNES.ting).toBe('✦');
+    expect(SERVICE_RUNES.ting).toBe('ᚦ');
     expect(SERVICE_RUNES.ravn).toBe('ᚱ');
     expect(SERVICE_RUNES.mimir).toBe('ᛗ');
     expect(SERVICE_RUNES.bifrost).toBe('ᚨ');

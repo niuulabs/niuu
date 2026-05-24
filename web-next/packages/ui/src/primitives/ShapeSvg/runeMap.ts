@@ -13,7 +13,7 @@
 export const SERVICE_RUNES = {
   volundr: 'ᚲ',
   guild: 'ᚹ',
-  ting: '✦',
+  ting: 'ᚦ',
   ravn: 'ᚱ',
   mimir: 'ᛗ',
   bifrost: 'ᚨ',

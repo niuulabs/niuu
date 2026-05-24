@@ -135,6 +135,39 @@ async def _load_bifrost_catalog(
             delay_seconds = min(delay_seconds * 2, 5.0)
 
 
+async def _bootstrap_startup_schema(settings: Settings) -> None:
+    """Apply embedded Volundr migrations for standalone startup paths."""
+    import asyncpg
+
+    from cli.resources import migration_dir, ordered_migration_files
+
+    try:
+        mig_dir = migration_dir("volundr")
+    except FileNotFoundError:
+        logger.debug("No Volundr migrations available for startup bootstrap")
+        return
+
+    sql_files = ordered_migration_files(mig_dir)
+    if not sql_files:
+        return
+
+    conn = await asyncpg.connect(
+        host=settings.database.host,
+        port=settings.database.port,
+        user=settings.database.user,
+        password=settings.database.password,
+        database=settings.database.name,
+    )
+    try:
+        for sql_file in sql_files:
+            try:
+                await conn.execute(sql_file.read_text())
+            except Exception:
+                logger.debug("Migration %s skipped", sql_file.name, exc_info=True)
+    finally:
+        await conn.close()
+
+
 def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
     """Create the PodManager adapter from dynamic config."""
     pm_cfg = settings.pod_manager
@@ -190,6 +223,7 @@ def _create_resource_provider(settings: Settings) -> "ResourceProvider":  # noqa
     instance = cls(**kwargs)
     logger.info("Resource provider: %s", rp_cfg.adapter.rsplit(".", 1)[-1])
     return instance
+
 
 def _create_archive_store(settings: Settings) -> "ArchiveStorePort":  # noqa: F821
     """Create the ArchiveStorePort adapter from dynamic config."""
@@ -463,6 +497,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Manage application lifecycle."""
         settings = app.state.settings
         audit_subscriber: AuditSubscriber | None = None
+
+        await _bootstrap_startup_schema(settings)
 
         async with database_pool(settings.database) as pool:
             # Identity & authorization adapters (dynamic adapter pattern)

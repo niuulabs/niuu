@@ -28,6 +28,13 @@ if [[ -z "${NIUU_SERVER__HOST:-}" ]]; then
   NIUU_SERVER__HOST="${detected_ip:-127.0.0.1}"
 fi
 export NIUU_SERVER__HOST
+#
+# Several mounted services call back into the shared platform host over HTTP.
+# Keep those internal URLs aligned with the same bind address start-dev chose,
+# otherwise localhost becomes unreachable whenever the stack is pinned to a LAN
+# address for cross-device access.
+export OBSERVATORY__GUILD__URL="${OBSERVATORY__GUILD__URL:-http://${NIUU_SERVER__HOST}:8080}"
+export BIFROST__URL="${BIFROST__URL:-http://${NIUU_SERVER__HOST}:8080}"
 UI_VARIANT="${UI_VARIANT:-new}"
 export UI_VARIANT
 PLATFORM_URL="http://${NIUU_SERVER__HOST}:8080/health"

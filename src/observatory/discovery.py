@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from niuu.ports.http_auth import HttpAuthPort
+from observatory.contracts import ObservatorySnapshot
 
 JsonFetcher = Callable[[str], Awaitable[Any]]
 
@@ -20,7 +21,7 @@ JsonFetcher = Callable[[str], Awaitable[Any]]
 class DiscoverySnapshot:
     """Materialized observatory snapshot."""
 
-    topology: dict[str, Any]
+    topology: ObservatorySnapshot
     events: list[dict[str, str]]
 
 
@@ -61,7 +62,7 @@ class ObservatoryDiscoveryService:
         """Backwards-compatible alias for callers that still read base_url."""
         return self._guild_url
 
-    async def get_topology_snapshot(self) -> dict[str, Any]:
+    async def get_topology_snapshot(self) -> ObservatorySnapshot:
         return deepcopy((await self._get_snapshot()).topology)
 
     async def get_events(self) -> list[dict[str, str]]:
@@ -113,13 +114,17 @@ class ObservatoryDiscoveryService:
         if not isinstance(payload, dict):
             payload = {}
         events = payload.get("events")
-        topology = {key: value for key, value in payload.items() if key != "events"}
+        topology: ObservatorySnapshot = {
+            key: value for key, value in payload.items() if key != "events"
+        }
         if not isinstance(events, list):
             events = []
         if "nodes" not in topology or not isinstance(topology.get("nodes"), list):
             topology.setdefault("nodes", [])
         if "edges" not in topology or not isinstance(topology.get("edges"), list):
             topology.setdefault("edges", [])
+        if "layoutHints" in topology and not isinstance(topology.get("layoutHints"), dict):
+            topology.pop("layoutHints", None)
         if "timestamp" not in topology:
             topology["timestamp"] = _utc_now().isoformat().replace("+00:00", "Z")
         return DiscoverySnapshot(topology=topology, events=events)

@@ -1,6 +1,7 @@
 """Tests for the main application factory."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -10,7 +11,7 @@ from fastapi import FastAPI
 from niuu.domain.model_catalog import ManagedModel
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.config import Settings
-from volundr.main import _load_bifrost_catalog, create_app
+from volundr.main import _bootstrap_startup_schema, _load_bifrost_catalog, create_app
 
 
 class TestCreateApp:
@@ -82,6 +83,73 @@ class TestCORSMiddleware:
 class TestLifespan:
     """Tests for app lifespan startup/shutdown (mocked infrastructure)."""
 
+    @pytest.mark.asyncio
+    async def test_bootstrap_startup_schema_applies_volundr_migrations(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        mig_dir = tmp_path / "volundr"
+        mig_dir.mkdir()
+        (mig_dir / "000001_init.up.sql").write_text("CREATE TABLE IF NOT EXISTS a (id INT);")
+        (mig_dir / "000002_more.up.sql").write_text("CREATE TABLE IF NOT EXISTS b (id INT);")
+
+        mock_conn = AsyncMock()
+
+        with (
+            patch("asyncpg.connect", new_callable=AsyncMock, return_value=mock_conn),
+            patch("cli.resources.migration_dir", return_value=mig_dir),
+        ):
+            await _bootstrap_startup_schema(Settings())
+
+        executed_sql = [call.args[0] for call in mock_conn.execute.await_args_list]
+        assert executed_sql == [
+            "CREATE TABLE IF NOT EXISTS a (id INT);",
+            "CREATE TABLE IF NOT EXISTS b (id INT);",
+        ]
+        mock_conn.close.assert_awaited_once()
+
+    def test_lifespan_bootstraps_schema_before_opening_pool(self) -> None:
+        """Startup bootstrap should run before the app opens its Postgres pool."""
+        from fastapi.testclient import TestClient
+
+        events: list[str] = []
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            events.append("database_pool")
+            yield mock_pool
+
+        async def _bootstrap(_settings: Settings) -> None:
+            events.append("bootstrap")
+
+        with (
+            patch("volundr.main._bootstrap_startup_schema", side_effect=_bootstrap),
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                response = client.get("/health")
+                assert response.status_code == 200
+
+        assert events[:2] == ["bootstrap", "database_pool"]
+
     def test_lifespan_initializes_audit_subscriber(self):
         """Lifespan must run startup/shutdown without error when sleipnir is disabled.
 
@@ -97,6 +165,7 @@ class TestLifespan:
             yield mock_pool
 
         with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch(
                 "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
@@ -131,6 +200,7 @@ class TestLifespan:
             yield mock_pool
 
         with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch(
                 "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
@@ -196,6 +266,7 @@ class TestLifespan:
             return real_import_class(path)
 
         with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch("volundr.main.import_class", side_effect=selective_import),
             patch("volundr.main._seed_configured_integrations", seed_integrations),
@@ -260,6 +331,7 @@ class TestLifespan:
         subscriber.stop = AsyncMock()
 
         with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch("volundr.main.import_class", side_effect=selective_import),
             patch("volundr.main.AuditSubscriber", return_value=subscriber),
@@ -348,6 +420,7 @@ class TestBifrostCatalogLoading:
             yield mock_pool
 
         with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch(
                 "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",

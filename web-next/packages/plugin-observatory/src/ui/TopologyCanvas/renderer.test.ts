@@ -141,7 +141,7 @@ describe('drawEdges', () => {
     drawEdges(ctx, TOPOLOGY, POSITIONS, 0);
     // At least one beginPath per edge
     expect((ctx.beginPath as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
-    expect((ctx.quadraticCurveTo as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    expect((ctx.bezierCurveTo as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
   });
 
   it('handles edges with missing source position gracefully', () => {
@@ -174,6 +174,29 @@ describe('drawEdges', () => {
         (call: unknown[]) => Array.isArray(call[0]) && (call[0] as number[]).length > 0,
       ),
     ).toBe(true);
+  });
+
+  it('accepts legacy dashed-short edges without throwing', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      ...TOPOLOGY,
+      edges: [{ id: 'e-ds', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-short' as never }],
+    };
+    expect(() => drawEdges(ctx, topo, POSITIONS, 1000)).not.toThrow();
+    expect(
+      (ctx.setLineDash as ReturnType<typeof vi.fn>).mock.calls.some(
+        (call: unknown[]) => Array.isArray(call[0]) && (call[0] as number[]).length > 0,
+      ),
+    ).toBe(true);
+  });
+
+  it('falls back safely for unknown edge kinds', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      ...TOPOLOGY,
+      edges: [{ id: 'e-unknown', sourceId: 'ting-0', targetId: 'run-0', kind: 'mystery' as never }],
+    };
+    expect(() => drawEdges(ctx, topo, POSITIONS, 0)).not.toThrow();
   });
 
   it('uses setLineDash([]) for solid edges (no dash)', () => {
@@ -256,7 +279,7 @@ describe('drawNode', () => {
     expect((ctx.fillRect as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
-  it('draws host as a rounded rect (uses quadraticCurveTo)', () => {
+  it('draws host as a circular container', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const host: TopologyNode = {
       id: 'h',
@@ -266,7 +289,10 @@ describe('drawNode', () => {
       status: 'healthy',
     };
     drawNode(ctx, host, pos, false);
-    expect((ctx.quadraticCurveTo as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    expect((ctx.arc as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+    expect(calls.some(([text]) => text === 'tanngrisnir')).toBe(true);
+    expect((ctx.strokeRect as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
   it('draws hover ring for hovered non-mimir non-host node', () => {
@@ -284,7 +310,7 @@ describe('drawNode', () => {
     expect(ctx.stroke).toHaveBeenCalled();
   });
 
-  it('draws identity rune as fillText for ting', () => {
+  it('draws the canonical sidebar rune for ting', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const node: TopologyNode = {
       id: 'ting-0',
@@ -295,10 +321,10 @@ describe('drawNode', () => {
     };
     drawNode(ctx, node, pos, false);
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
-    expect(calls.some(([text]) => text === '✦')).toBe(true);
+    expect(calls.some(([text]) => text === 'ᚦ')).toBe(true);
   });
 
-  it('draws identity rune as fillText for bifrost', () => {
+  it('draws the canonical sidebar rune for bifrost', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const node: TopologyNode = {
       id: 'bf-0',

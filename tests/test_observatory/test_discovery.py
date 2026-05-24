@@ -15,6 +15,7 @@ from observatory.discovery import ObservatoryDiscoveryService
 async def test_discovery_materializes_guild_snapshot() -> None:
     payload = {
         "timestamp": "2026-05-17T12:00:00Z",
+        "layoutHints": {"mode": "hybrid", "scope": "world"},
         "nodes": [
             {
                 "id": "service:guild",
@@ -72,6 +73,7 @@ async def test_discovery_materializes_guild_snapshot() -> None:
     events = await service.get_events()
 
     assert topology["timestamp"] == "2026-05-17T12:00:00Z"
+    assert topology["layoutHints"] == {"mode": "hybrid", "scope": "world"}
     assert any(node["id"] == "service:guild" for node in topology["nodes"])
     assert any(node.get("svcType") == "volundr" for node in topology["nodes"])
     assert any(node.get("svcType") == "bifrost" for node in topology["nodes"])
