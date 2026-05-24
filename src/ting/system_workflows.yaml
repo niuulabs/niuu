@@ -721,3 +721,104 @@
         access: read_write
         writePrefixes: [deliveries/]
         readPriority: 1
+- name: Code & Review Flow
+  description: Tracker-driven developer workflow that implements a ticket, iterates through code review, and merges the branch without publishing a delivery record.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: code-review-request
+        kind: trigger
+        label: Start tracker code & review
+        source: tracker delivery
+        dispatchEvent: delivery.requested
+        position:
+          x: 96
+          y: 280
+      - id: code-review-memory
+        kind: resource
+        label: Delivery Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir
+        path: /tmp/mimir
+        role: shared
+        categories: [delivery, tracker, review]
+        position:
+          x: 352
+          y: 520
+      - id: code-review-implement
+        kind: stage
+        label: Implement tracker ticket
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+            model: gpt-5.5
+            consumesEventTypes: [delivery.requested, review.changes_requested]
+        position:
+          x: 352
+          y: 280
+      - id: code-review-review
+        kind: stage
+        label: Review implementation
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [code.changed]
+        position:
+          x: 704
+          y: 280
+      - id: code-review-close
+        kind: stage
+        label: Merge and close ticket
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: closer
+            budget: 20
+            model: gpt-5.5
+            consumesEventTypes: [review.passed]
+        position:
+          x: 1056
+          y: 280
+      - id: code-review-complete
+        kind: end
+        label: Code & review complete
+        joinMode: all
+        completionEvent: delivery.merged
+        position:
+          x: 1408
+          y: 280
+    edges:
+      - id: edge-code-review-request-to-implement
+        source: code-review-request
+        target: code-review-implement
+        label: delivery.requested -> delivery.requested
+      - id: edge-code-review-implement-to-review
+        source: code-review-implement
+        target: code-review-review
+        label: code.changed -> code.changed
+      - id: edge-code-review-review-to-implement
+        source: code-review-review
+        target: code-review-implement
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-code-review-review-to-close
+        source: code-review-review
+        target: code-review-close
+        label: review.passed -> review.passed
+      - id: edge-code-review-close-to-end
+        source: code-review-close
+        target: code-review-complete
+        label: delivery.merged -> delivery.merged
+    resourceBindings:
+      - id: binding-code-review-memory
+        resourceNodeId: code-review-memory
+        targetType: workflow
+        targetId: tracker-code-review-flow
+        access: read_write
+        writePrefixes: [deliveries/]
+        readPriority: 1

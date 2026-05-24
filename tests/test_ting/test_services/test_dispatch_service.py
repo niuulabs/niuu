@@ -42,6 +42,7 @@ from ting.domain.services.dispatch_service import (
 )
 from ting.domain.templates import TemplatePhase, TemplateRun
 from ting.ports.workflow_repository import WorkflowRepository
+from ting.system_workflows import load_system_workflows
 
 from ..stubs import StubFlockFlowProvider
 from ..test_dispatch_api import (
@@ -1352,6 +1353,87 @@ class TestBuildSpawnRequestPersonaOverrides:
                     },
                 },
             }
+        ]
+
+    def test_tracker_code_review_flow_defaults_to_codex_websocket_runtime(self):
+        config = DispatchConfig(flock_enabled=False, flock_default_personas=[])
+        saga = self._make_saga()
+        issue = self._make_issue()
+        workflow_snapshot = next(
+            {
+                "workflow_id": str(workflow.id),
+                "name": workflow.name,
+                "version": workflow.version,
+                "graph": workflow.graph,
+            }
+            for workflow in load_system_workflows()
+            if workflow.name == "Code & Review Flow"
+        )
+
+        svc = MagicMock()
+        svc._config = config
+        svc._flow_provider = None
+        item = DispatchItem(saga_id=str(saga.id), issue_id="i-1", repo="org/repo")
+        req = DispatchService._build_spawn_request(
+            svc,
+            item=item,
+            saga=saga,
+            issue=issue,
+            effective_model="claude-sonnet-4-6",
+            effective_prompt="",
+            integration_ids=[],
+            workflow_snapshot=workflow_snapshot,
+        )
+
+        assert req.definition == "skuldCodex"
+        assert req.workload_type == "ravn_flock"
+        assert req.workload_config["workflow"]["name"] == "Code & Review Flow"
+        assert req.workload_config["personas"] == [
+            {
+                "name": "coder",
+                "iteration_budget": 40,
+                "consumes_event_types": [
+                    "delivery.requested",
+                    "review.changes_requested",
+                ],
+                "llm": {"model": "gpt-5.5"},
+                "executor": {
+                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                    "kwargs": {
+                        "transport_adapter": (
+                            "skuld.transports.codex_ws.CodexWebSocketTransport"
+                        )
+                    },
+                },
+            },
+            {
+                "name": "reviewer",
+                "iteration_budget": 24,
+                "consumes_event_types": ["code.changed"],
+                "llm": {"model": "gpt-5.5"},
+                "executor": {
+                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                    "kwargs": {
+                        "transport_adapter": (
+                            "skuld.transports.codex_ws.CodexWebSocketTransport"
+                        )
+                    },
+                },
+            },
+            {
+                "name": "closer",
+                "iteration_budget": 20,
+                "consumes_event_types": ["review.passed"],
+                "llm": {"model": "gpt-5.5"},
+                "executor": {
+                    "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
+                    "kwargs": {
+                        "transport_adapter": (
+                            "skuld.transports.codex_ws.CodexWebSocketTransport"
+                        )
+                    },
+                },
+            },
         ]
 
 

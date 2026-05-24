@@ -45,6 +45,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Research Campaign",
         "Specification Stack",
         "Tracker Delivery Flow",
+        "Code & Review Flow",
     }
 
     run_flow = next(
@@ -170,6 +171,46 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     }
     assert delivery_resources["Delivery Memory"]["path"] == "/tmp/mimir"
 
+    code_review_flow = next(
+        workflow for workflow in workflows if workflow.name == "Code & Review Flow"
+    )
+    code_review_stage_labels = [
+        node["label"] for node in code_review_flow.graph["nodes"] if node.get("kind") == "stage"
+    ]
+    assert code_review_stage_labels == [
+        "Implement tracker ticket",
+        "Review implementation",
+        "Merge and close ticket",
+    ]
+    code_review_stage_members = {
+        node["label"]: node.get("stageMembers", [])
+        for node in code_review_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+    }
+    assert [
+        member["personaId"] for member in code_review_stage_members["Implement tracker ticket"]
+    ] == ["coder"]
+    assert [
+        member["personaId"] for member in code_review_stage_members["Review implementation"]
+    ] == ["reviewer"]
+    assert [
+        member["personaId"] for member in code_review_stage_members["Merge and close ticket"]
+    ] == ["closer"]
+    assert all(
+        member.get("model") == "gpt-5.5"
+        for members in code_review_stage_members.values()
+        for member in members
+    )
+    code_review_edge_labels = {edge["label"] for edge in code_review_flow.graph["edges"]}
+    assert "review.passed -> review.passed" in code_review_edge_labels
+    assert "delivery.merged -> delivery.merged" in code_review_edge_labels
+    code_review_resources = {
+        node["label"]: node
+        for node in code_review_flow.graph["nodes"]
+        if node.get("kind") == "resource"
+    }
+    assert code_review_resources["Delivery Memory"]["path"] == "/tmp/mimir"
+
 
 @pytest.mark.asyncio
 async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> None:
@@ -206,9 +247,10 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
         "Research Campaign",
         "Specification Stack",
         "Tracker Delivery Flow",
+        "Code & Review Flow",
     }
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names
-    assert len(current_catalog) == 4
+    assert len(current_catalog) == 5
     assert all(workflow.id in {seed.id for seed in seeds} for workflow in current_catalog)
