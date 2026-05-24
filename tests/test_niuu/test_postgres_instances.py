@@ -137,7 +137,10 @@ async def test_ensure_schema_executes_bootstrap_statements() -> None:
     await repo.ensure_schema()
 
     assert pool.execute_calls
-    assert any("CREATE TABLE IF NOT EXISTS niuu_instances" in query for query, _ in pool.execute_calls)
+    assert any(
+        "CREATE TABLE IF NOT EXISTS niuu_instances" in query
+        for query, _ in pool.execute_calls
+    )
 
 
 def test_row_to_instance_handles_mapping_and_json_string_configs() -> None:
