@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { hashAngle, computeLayout, computeLayoutBounds, zoneRadius } from './layoutEngine';
+import {
+  hashAngle,
+  computeLayout,
+  computeLayoutBounds,
+  zoneRadius,
+  HOST_HALF_W,
+  HOST_HALF_H,
+} from './layoutEngine';
 import { LAYOUT } from './config';
 import type { Topology } from '../../domain';
 
@@ -111,40 +118,106 @@ describe('computeLayout', () => {
     }
   });
 
-  it('places Mímir at the origin (0, 0)', () => {
+  it('packs top-level containers without overlapping them', () => {
     const positions = computeLayout(TEST_TOPOLOGY);
-    const mimiPos = positions.get('mimir-0');
-    expect(mimiPos).toBeDefined();
-    expect(mimiPos!.x).toBe(0);
-    expect(mimiPos!.y).toBe(0);
+    const mimir = positions.get('mimir-0')!;
+    const asgard = positions.get('realm-asgard')!;
+    const vanaheim = positions.get('realm-vanaheim')!;
+    const asgardRadius = asgard.zoneRadius ?? LAYOUT.REALM_INNER_RADIUS;
+    const vanaheimRadius = vanaheim.zoneRadius ?? LAYOUT.REALM_INNER_RADIUS;
+
+    expect(Math.hypot(mimir.x - asgard.x, mimir.y - asgard.y)).toBeGreaterThanOrEqual(
+      LAYOUT.MIMIR_RADIUS + asgardRadius,
+    );
+    expect(Math.hypot(mimir.x - vanaheim.x, mimir.y - vanaheim.y)).toBeGreaterThanOrEqual(
+      LAYOUT.MIMIR_RADIUS + vanaheimRadius,
+    );
+    expect(Math.hypot(asgard.x - vanaheim.x, asgard.y - vanaheim.y)).toBeGreaterThanOrEqual(
+      asgardRadius + vanaheimRadius,
+    );
   });
 
-  it('places realms on the computed outer orbit from origin', () => {
-    const positions = computeLayout(TEST_TOPOLOGY);
-    const realmPos = positions.get('realm-asgard')!;
-    const expectedBase = Math.max(560, (realmPos.zoneRadius ?? LAYOUT.REALM_INNER_RADIUS) + 260);
-    for (const node of TEST_TOPOLOGY.nodes) {
-      if (node.typeId !== 'realm') continue;
-      const pos = positions.get(node.id)!;
-      const dist = Math.hypot(pos.x, pos.y);
-      expect(dist).toBeGreaterThanOrEqual(expectedBase - 0.01);
-    }
-  });
-
-  it('keeps a single cluster centered within its realm to reduce wasted space', () => {
+  it('keeps a single cluster close to the realm center even when packed with host siblings', () => {
     const positions = computeLayout(TEST_TOPOLOGY);
     const clusterPos = positions.get('cluster-vk')!;
+    const hostPos = positions.get('host-mjolnir')!;
     const parentPos = positions.get('realm-asgard')!;
-    const dist = Math.hypot(clusterPos.x - parentPos.x, clusterPos.y - parentPos.y);
-    expect(dist).toBeCloseTo(0);
+    const clusterDist = Math.hypot(clusterPos.x - parentPos.x, clusterPos.y - parentPos.y);
+    const hostDist = Math.hypot(hostPos.x - parentPos.x, hostPos.y - parentPos.y);
+    expect(clusterDist).toBeLessThan(hostDist);
   });
 
-  it('places hosts near their parent realm', () => {
+  it('keeps hosts contained within their parent realm radius', () => {
     const positions = computeLayout(TEST_TOPOLOGY);
     const hostPos = positions.get('host-mjolnir')!;
     const parentPos = positions.get('realm-asgard')!;
+    const parentRadius = parentPos.zoneRadius ?? LAYOUT.REALM_INNER_RADIUS;
     const dist = Math.hypot(hostPos.x - parentPos.x, hostPos.y - parentPos.y);
-    expect(dist).toBeGreaterThanOrEqual(LAYOUT.REALM_HOST_ORBIT);
+    expect(dist + 48).toBeLessThanOrEqual(parentRadius);
+  });
+
+  it('treats hosts as packed containers and keeps host children inside the host hull', () => {
+    const topology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-local', typeId: 'realm', label: 'local', parentId: null, status: 'healthy' },
+        {
+          id: 'cluster-edge',
+          typeId: 'cluster',
+          label: 'edge',
+          parentId: 'realm-local',
+          status: 'healthy',
+        },
+        {
+          id: 'host-brokkr',
+          typeId: 'host',
+          label: 'brokkr',
+          parentId: 'cluster-edge',
+          status: 'healthy',
+        },
+        {
+          id: 'valk-brokkr',
+          typeId: 'valkyrie',
+          label: 'valkyrie',
+          parentId: 'host-brokkr',
+          status: 'healthy',
+        },
+        {
+          id: 'raven-brokkr',
+          typeId: 'ravn_long',
+          label: 'huginn',
+          parentId: 'host-brokkr',
+          status: 'idle',
+        },
+        {
+          id: 'printer-brokkr',
+          typeId: 'printer',
+          label: 'forge',
+          parentId: 'host-brokkr',
+          status: 'healthy',
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+    const cluster = positions.get('cluster-edge')!;
+    const host = positions.get('host-brokkr')!;
+    const clusterRadius = cluster.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
+    const halfW = (host.containerWidth ?? HOST_HALF_W * 2) / 2;
+    const halfH = (host.containerHeight ?? HOST_HALF_H * 2) / 2;
+
+    expect(host.containerWidth ?? 0).toBeGreaterThan(HOST_HALF_W * 2);
+    expect(host.containerHeight ?? 0).toBeGreaterThan(HOST_HALF_H * 2);
+    expect(Math.hypot(host.x - cluster.x, host.y - cluster.y) + Math.max(halfW, halfH)).toBeLessThanOrEqual(
+      clusterRadius + 8,
+    );
+
+    for (const childId of ['valk-brokkr', 'raven-brokkr', 'printer-brokkr']) {
+      const child = positions.get(childId)!;
+      expect(Math.abs(child.x - host.x)).toBeLessThanOrEqual(halfW);
+      expect(Math.abs(child.y - host.y)).toBeLessThanOrEqual(halfH);
+    }
   });
 
   it('places different realms at different positions', () => {
@@ -185,7 +258,7 @@ describe('computeLayout', () => {
     expect(positions.size).toBe(0);
   });
 
-  it('places nodes without a matching parent near origin', () => {
+  it('treats nodes without a matching parent as world-level roots', () => {
     const orphan: Topology = {
       timestamp: '2026-04-19T00:00:00Z',
       nodes: [
@@ -195,9 +268,7 @@ describe('computeLayout', () => {
     };
     const positions = computeLayout(orphan);
     const pos = positions.get('orphan-svc')!;
-    // Falls back to anchor at (0,0), so should be outside the scatter floor.
-    const dist = Math.hypot(pos.x, pos.y);
-    expect(dist).toBeGreaterThanOrEqual(LAYOUT.NODE_SCATTER_DIST);
+    expect(pos).toMatchObject({ x: 0, y: 0 });
   });
 
   it('realm positions do not depend on node array order', () => {
@@ -213,6 +284,40 @@ describe('computeLayout', () => {
     const a2 = posReversed.get('realm-asgard')!;
     expect(a1.x).toBeCloseTo(a2.x);
     expect(a1.y).toBeCloseTo(a2.y);
+  });
+
+  it('packs cluster containers using their real zone radii so sibling clusters do not overlap', () => {
+    const dense: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-a', typeId: 'realm', label: 'realm-a', parentId: null, status: 'healthy' },
+        { id: 'cluster-a', typeId: 'cluster', label: 'cluster-a', parentId: 'realm-a', status: 'healthy' },
+        { id: 'cluster-b', typeId: 'cluster', label: 'cluster-b', parentId: 'realm-a', status: 'healthy' },
+        { id: 'cluster-c', typeId: 'cluster', label: 'cluster-c', parentId: 'realm-a', status: 'healthy' },
+        ...['cluster-a', 'cluster-b', 'cluster-c'].flatMap((clusterId, clusterIndex) =>
+          Array.from({ length: 8 }, (_, index) => ({
+            id: `${clusterId}-run-${index}`,
+            typeId: 'run' as const,
+            label: `run-${clusterIndex}-${index}`,
+            parentId: clusterId,
+            status: 'observing' as const,
+          })),
+        ),
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(dense);
+    const a = positions.get('cluster-a')!;
+    const b = positions.get('cluster-b')!;
+    const c = positions.get('cluster-c')!;
+    const aRadius = a.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
+    const bRadius = b.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
+    const cRadius = c.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
+
+    expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(aRadius + bRadius);
+    expect(Math.hypot(a.x - c.x, a.y - c.y)).toBeGreaterThanOrEqual(aRadius + cRadius);
+    expect(Math.hypot(b.x - c.x, b.y - c.y)).toBeGreaterThanOrEqual(bRadius + cRadius);
   });
 
   it('grows cluster and realm container radii as child counts increase', () => {
@@ -236,7 +341,9 @@ describe('computeLayout', () => {
     expect(positions.get('cluster-a')?.zoneRadius ?? 0).toBeGreaterThan(
       LAYOUT.CLUSTER_INNER_RADIUS,
     );
-    expect(positions.get('realm-a')?.zoneRadius ?? 0).toBeGreaterThan(LAYOUT.REALM_INNER_RADIUS);
+    expect(positions.get('realm-a')?.zoneRadius ?? 0).toBeGreaterThanOrEqual(
+      LAYOUT.REALM_INNER_RADIUS,
+    );
   });
 
   it('computes bounds that fully enclose the rendered topology', () => {
@@ -274,7 +381,7 @@ describe('computeLayout', () => {
     expect(positions.get('realm-local')).toMatchObject({ x: 0, y: 0 });
     expect(positions.get('cluster-platform')).toMatchObject({ x: 0, y: 0 });
     const mimir = positions.get('mimir-platform')!;
-    expect(Math.hypot(mimir.x, mimir.y)).toBeGreaterThanOrEqual(LAYOUT.CLUSTER_CORE_ORBIT);
+    expect(mimir).toMatchObject({ x: 0, y: 0 });
   });
 
   it('treats a cluster-local Mimir as a first-class cluster service instead of the global center', () => {
@@ -312,19 +419,17 @@ describe('computeLayout', () => {
     const mimir = positions.get('mimir-platform')!;
     const bifrost = positions.get('service-bifrost')!;
 
-    expect(Math.hypot(mimir.x - cluster.x, mimir.y - cluster.y)).toBeGreaterThanOrEqual(
-      LAYOUT.CLUSTER_CORE_ORBIT,
+    const clusterRadius = cluster.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
+    expect(Math.hypot(mimir.x - cluster.x, mimir.y - cluster.y) + LAYOUT.MIMIR_RADIUS).toBeLessThanOrEqual(
+      clusterRadius,
     );
-    expect(Math.hypot(bifrost.x - cluster.x, bifrost.y - cluster.y)).toBeGreaterThanOrEqual(
-      LAYOUT.CLUSTER_CORE_ORBIT,
-    );
-    expect(mimir.x).toBeLessThan(cluster.x);
-    expect(mimir.y).toBeGreaterThan(cluster.y);
-    expect(bifrost.x).toBeGreaterThan(cluster.x);
-    expect(bifrost.y).toBeGreaterThan(cluster.y);
+    expect(
+      Math.hypot(bifrost.x - cluster.x, bifrost.y - cluster.y) + 32,
+    ).toBeLessThanOrEqual(clusterRadius);
+    expect(Math.hypot(mimir.x - bifrost.x, mimir.y - bifrost.y)).toBeGreaterThan(0);
   });
 
-  it('separates core services, wardens, and runs into distinct cluster bands', () => {
+  it('packs cluster children tightly while keeping them inside the cluster radius', () => {
     const topology: Topology = {
       timestamp: '2026-04-19T00:00:00Z',
       nodes: [
@@ -375,23 +480,66 @@ describe('computeLayout', () => {
     const warden = positions.get('warden-a')!;
     const ting = positions.get('service-ting')!;
     const run = positions.get('run-a')!;
+    const clusterRadius = cluster.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
 
-    expect(Math.hypot(ravn.x - cluster.x, ravn.y - cluster.y)).toBeCloseTo(
-      LAYOUT.CLUSTER_CORE_ORBIT,
-      6,
-    );
-    expect(Math.hypot(warden.x - cluster.x, warden.y - cluster.y)).toBeGreaterThanOrEqual(
-      LAYOUT.CLUSTER_RAVEN_ORBIT,
-    );
-    expect(Math.hypot(run.x - cluster.x, run.y - cluster.y)).toBeGreaterThanOrEqual(
-      LAYOUT.CLUSTER_RUN_ORBIT,
-    );
-    expect(ravn.x).toBeGreaterThan(cluster.x);
-    expect(warden.x).toBeGreaterThan(ravn.x);
-    expect(run.y).toBeGreaterThan(ting.y);
+    for (const child of [ravn, warden, ting, run]) {
+      expect(Math.hypot(child.x - cluster.x, child.y - cluster.y)).toBeLessThanOrEqual(
+        clusterRadius,
+      );
+    }
+    expect(Math.hypot(ravn.x - warden.x, ravn.y - warden.y)).toBeGreaterThan(0);
+    expect(Math.hypot(ting.x - run.x, ting.y - run.y)).toBeGreaterThan(0);
   });
 
-  it('groups generic service children into a real orbit instead of fallback overlap scatter', () => {
+  it('sizes cluster packs using nested run footprint so run children stay contained', () => {
+    const topology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-local', typeId: 'realm', label: 'local', parentId: null, status: 'healthy' },
+        {
+          id: 'cluster-platform',
+          typeId: 'cluster',
+          label: 'platform',
+          parentId: 'realm-local',
+          status: 'healthy',
+        },
+        {
+          id: 'run-a',
+          typeId: 'run',
+          label: 'Run A',
+          parentId: 'cluster-platform',
+          status: 'observing',
+        },
+        {
+          id: 'coord-a',
+          typeId: 'ravn_run',
+          label: 'coord',
+          parentId: 'run-a',
+          status: 'healthy',
+        },
+        {
+          id: 'reviewer-a',
+          typeId: 'ravn_run',
+          label: 'reviewer',
+          parentId: 'run-a',
+          status: 'healthy',
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+    const cluster = positions.get('cluster-platform')!;
+    const clusterRadius = cluster.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
+    for (const id of ['run-a', 'coord-a', 'reviewer-a']) {
+      const child = positions.get(id)!;
+      expect(Math.hypot(child.x - cluster.x, child.y - cluster.y)).toBeLessThanOrEqual(
+        clusterRadius,
+      );
+    }
+  });
+
+  it('packs generic service children into a contained sibling group instead of fallback overlap scatter', () => {
     const topology: Topology = {
       timestamp: '2026-04-19T00:00:00Z',
       nodes: [
@@ -423,9 +571,22 @@ describe('computeLayout', () => {
 
     const positions = computeLayout(topology);
     const bifrost = positions.get('service-bifrost')!;
+    const modelPositions = Array.from({ length: 5 }, (_, index) => positions.get(`model-${index}`)!);
     for (let index = 0; index < 5; index += 1) {
       const model = positions.get(`model-${index}`)!;
-      expect(Math.hypot(model.x - bifrost.x, model.y - bifrost.y)).toBeGreaterThanOrEqual(104);
+      const dist = Math.hypot(model.x - bifrost.x, model.y - bifrost.y);
+      expect(dist).toBeGreaterThanOrEqual(44);
+      expect(dist).toBeLessThanOrEqual(120);
+    }
+    for (let index = 0; index < modelPositions.length; index += 1) {
+      for (let other = index + 1; other < modelPositions.length; other += 1) {
+        expect(
+          Math.hypot(
+            modelPositions[index]!.x - modelPositions[other]!.x,
+            modelPositions[index]!.y - modelPositions[other]!.y,
+          ),
+        ).toBeGreaterThan(0);
+      }
     }
   });
 });

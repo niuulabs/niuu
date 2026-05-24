@@ -109,6 +109,18 @@ const VOLUNDR_NODE: TopologyNode = {
   maxSessions: 20,
 };
 
+const RUN_NODE: TopologyNode = {
+  id: 'run-refactor',
+  typeId: 'run',
+  label: 'run-refactor',
+  parentId: 'cluster-valaskjalf',
+  status: 'observing',
+  zone: 'asgard',
+  state: 'working',
+  purpose: 'refactor bifrost routing',
+  flockId: 'workflow-refactor',
+};
+
 function renderDrawer(
   node: TopologyNode | null,
   overrides?: {
@@ -201,6 +213,47 @@ describe('EntityDrawer', () => {
     renderDrawer(HOST_NODE);
     expect(screen.getByText('Residents')).toBeInTheDocument();
     expect(screen.getByText('huginn')).toBeInTheDocument();
+  });
+
+  it('shows run members section with ordered workflow nodes', () => {
+    const runTopology: Topology = {
+      nodes: [
+        RUN_NODE,
+        {
+          id: 'run-refactor-trigger',
+          typeId: 'trigger',
+          label: 'code requested',
+          parentId: 'run-refactor',
+          status: 'healthy',
+          layoutHints: { order: 0, packGroup: 'entry' },
+        },
+        {
+          id: 'run-refactor-analyze',
+          typeId: 'stage',
+          label: 'analyze',
+          parentId: 'run-refactor',
+          status: 'healthy',
+          layoutHints: { order: 2, packGroup: 'main' },
+        },
+        {
+          id: 'run-refactor-review',
+          typeId: 'gate',
+          label: 'review',
+          parentId: 'run-refactor',
+          status: 'healthy',
+          layoutHints: { order: 3, packGroup: 'decision' },
+        },
+      ],
+      edges: [],
+      timestamp: '2026-05-24T16:00:00Z',
+    };
+
+    renderDrawer(RUN_NODE, { topology: runTopology });
+    expect(screen.getByText('Members')).toBeInTheDocument();
+    expect(screen.getByText('working')).toBeInTheDocument();
+    expect(screen.getByText('code requested')).toBeInTheDocument();
+    expect(screen.getByText('analyze')).toBeInTheDocument();
+    expect(screen.getByText('review')).toBeInTheDocument();
   });
 
   it('shows ting Properties section', () => {

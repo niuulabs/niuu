@@ -53,6 +53,34 @@ export interface Registry extends Omit<TypeRegistry, 'types'> {
 /** The 5 connection styles in the topology edge taxonomy. */
 export type EdgeKind = 'solid' | 'dashed-anim' | 'dashed-long' | 'soft' | 'run';
 
+/** Higher-level layout strategy hint attached to a node or snapshot. */
+export type LayoutMode = 'manual' | 'orbit' | 'pack' | 'force' | 'hybrid';
+
+/** Scope at which a layout hint should be interpreted. */
+export type LayoutScope = 'world' | 'realm' | 'cluster' | 'group' | 'node';
+
+/** Optional fixed or weighted anchor point. */
+export interface LayoutAnchor {
+  x: number;
+  y: number;
+  pinned?: boolean;
+  weight?: number;
+}
+
+/** Optional layout guidance emitted by Valkyrie, services, or operators. */
+export interface LayoutHints {
+  mode?: LayoutMode;
+  scope?: LayoutScope;
+  anchor?: LayoutAnchor;
+  order?: number;
+  ring?: number;
+  radius?: number;
+  packGroup?: string;
+  clusterRole?: string;
+  axisLock?: Array<'x' | 'y'>;
+  note?: string;
+}
+
 /** Runtime health status of a topology node. */
 export type NodeStatus = 'healthy' | 'degraded' | 'failed' | 'idle' | 'observing' | 'unknown';
 
@@ -84,6 +112,9 @@ export interface TopologyNode {
   cluster?: string | null;
   hostId?: string | null;
   flockId?: string | null;
+  sourceId?: string;
+  sourceKind?: string;
+  layoutHints?: LayoutHints;
 
   // ── ting ──────────────────────────────────────────────────────────────────
   mode?: string;
@@ -158,6 +189,7 @@ export interface TopologyEdge {
   sourceId: string;
   targetId: string;
   kind: EdgeKind;
+  label?: string;
 }
 
 /** Point-in-time snapshot of the live topology graph. */
@@ -165,6 +197,7 @@ export interface Topology {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
   timestamp: string;
+  layoutHints?: LayoutHints;
 }
 
 // ── Event log ─────────────────────────────────────────────────────────────────

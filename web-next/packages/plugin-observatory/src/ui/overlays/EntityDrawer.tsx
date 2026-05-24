@@ -56,6 +56,7 @@ function KindProperties({ node }: { node: TopologyNode }) {
       'vaettir',
       'service',
       'model',
+      'run',
     ].includes(kind)
   ) {
     return null;
@@ -197,9 +198,38 @@ function KindProperties({ node }: { node: TopologyNode }) {
             <dd>{node.location ?? '—'}</dd>
           </>
         )}
+        {kind === 'run' && (
+          <>
+            <dt>state</dt>
+            <dd>{node.state ?? '—'}</dd>
+            {node.flockId && (
+              <>
+                <dt>flock</dt>
+                <dd>{node.flockId}</dd>
+              </>
+            )}
+            {node.purpose && (
+              <>
+                <dt>purpose</dt>
+                <dd className="obs-entity-drawer__plain">{humanizeObservatoryText(node.purpose)}</dd>
+              </>
+            )}
+          </>
+        )}
       </dl>
     </section>
   );
+}
+
+function sortContainedNodes(nodes: TopologyNode[]): TopologyNode[] {
+  return [...nodes].sort((a, b) => {
+    const aOrder = a.layoutHints?.order ?? Number.POSITIVE_INFINITY;
+    const bOrder = b.layoutHints?.order ?? Number.POSITIVE_INFINITY;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return humanizeObservatoryText(a.label).localeCompare(humanizeObservatoryText(b.label), undefined, {
+      sensitivity: 'base',
+    });
+  });
 }
 
 // ── Realm drawer body ─────────────────────────────────────────────────────────
@@ -361,10 +391,11 @@ export function EntityDrawer({
   onNodeSelect,
 }: EntityDrawerProps) {
   const entityType = node ? registry?.types.find((t) => t.id === node.typeId) : undefined;
-  const residents = node && topology ? topology.nodes.filter((n) => n.parentId === node.id) : [];
+  const residents = node && topology ? sortContainedNodes(topology.nodes.filter((n) => n.parentId === node.id)) : [];
   const isRealm = node?.typeId === 'realm';
   const isCluster = node?.typeId === 'cluster';
-  const isContainer = ['realm', 'cluster', 'host'].includes(node?.typeId ?? '');
+  const isContainer = ['realm', 'cluster', 'host', 'run'].includes(node?.typeId ?? '');
+  const containedSectionTitle = node?.typeId === 'run' ? 'Members' : 'Residents';
 
   // Sparkline seed: deterministic per-entity pseudo-random values.
   const sparkValues = useMemo(() => {
@@ -496,7 +527,7 @@ export function EntityDrawer({
             {/* Residents for host containers */}
             {isContainer && residents.length > 0 && (
               <section className="obs-entity-drawer__section">
-                <h4 className="obs-entity-drawer__section-title">Residents</h4>
+                <h4 className="obs-entity-drawer__section-title">{containedSectionTitle}</h4>
                 <ul className="obs-entity-drawer__resident-list">
                   {residents.map((resident) => {
                     const residentType = registry?.types.find((t) => t.id === resident.typeId);

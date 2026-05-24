@@ -1,11 +1,13 @@
 /**
  * Deterministic, sibling-aware layout engine.
  *
- * Instead of scattering children from hashes alone, this layout uses
- * containment-aware arcs and concentric bands so dense local clusters can
- * breathe without overlapping or collapsing into a single knot.
+ * Realm placement stays intentionally curated and stable, while local
+ * containment inside realms and clusters uses D3 pack so dense groups breathe
+ * more naturally than the old hand-authored orbit bands.
  */
 
+import { forceCollide, forceManyBody, forceSimulation, forceX, forceY } from 'd3-force';
+import { packSiblings } from 'd3-hierarchy';
 import type { Topology, TopologyNode } from '../../domain';
 import { LAYOUT, NODE_SIZE } from './config';
 
@@ -13,6 +15,8 @@ export interface NodePosition {
   x: number;
   y: number;
   zoneRadius?: number;
+  containerWidth?: number;
+  containerHeight?: number;
 }
 
 export interface LayoutBounds {
@@ -36,9 +40,12 @@ export function hashAngle(id: string): number {
 }
 
 /** Host rounded-rect half-width in world units. */
-export const HOST_HALF_W = 50;
+export const HOST_HALF_W = 34;
 /** Host rounded-rect half-height in world units. */
-export const HOST_HALF_H = 30;
+export const HOST_HALF_H = 20;
+const HOST_CONTAINER_PAD_X = 26;
+const HOST_CONTAINER_PAD_Y = 24;
+const HOST_CORE_CLEARANCE = 52;
 
 const TYPE_PRIORITY: Record<string, number> = {
   mimir: 0,
@@ -51,12 +58,25 @@ const TYPE_PRIORITY: Record<string, number> = {
   ravn_long: 7,
   ravn_run: 8,
   run: 9,
-  service: 10,
-  model: 11,
+  trigger: 10,
+  resource: 11,
+  stage: 12,
+  gate: 13,
+  cond: 14,
+  end: 15,
+  service: 16,
+  model: 17,
 };
 
 function sortedNodes(nodes: TopologyNode[]): TopologyNode[] {
   return [...nodes].sort((a, b) => {
+    const aOrder = a.layoutHints?.order;
+    const bOrder = b.layoutHints?.order;
+    if (aOrder != null || bOrder != null) {
+      const resolvedAOrder = aOrder ?? Number.POSITIVE_INFINITY;
+      const resolvedBOrder = bOrder ?? Number.POSITIVE_INFINITY;
+      if (resolvedAOrder !== resolvedBOrder) return resolvedAOrder - resolvedBOrder;
+    }
     const priority = (TYPE_PRIORITY[a.typeId] ?? 100) - (TYPE_PRIORITY[b.typeId] ?? 100);
     if (priority !== 0) return priority;
     const label = a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
@@ -66,13 +86,9 @@ function sortedNodes(nodes: TopologyNode[]): TopologyNode[] {
 }
 
 function nodeExtent(node: TopologyNode): number {
-  if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H) + 18;
+  if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H) + 12;
   if (node.typeId === 'run') return 72;
   return (NODE_SIZE[node.typeId] ?? 8) + 18;
-}
-
-function maxNodeExtent(nodes: TopologyNode[]): number {
-  return nodes.reduce((max, node) => Math.max(max, nodeExtent(node)), 0);
 }
 
 function buildChildrenIndex(nodes: TopologyNode[]): Map<string | null, TopologyNode[]> {
@@ -97,59 +113,50 @@ interface ArcPlacementOptions {
   arcSpan?: number;
 }
 
-const CLUSTER_SERVICE_SLOT_ANGLES: Partial<Record<string, number>> = {
-  observatory: -Math.PI / 2,
-  niuu: (-3 * Math.PI) / 4,
-  volundr: Math.PI,
-  mimir: (3 * Math.PI) / 4,
-  ting: Math.PI / 2,
-  bifrost: Math.PI / 4,
-  ravn: 0,
-};
+interface PackLeaf {
+  kind: 'node';
+  node: TopologyNode;
+  order: number;
+}
+
+interface PackGroup {
+  kind: 'group';
+  id: string;
+  order: number;
+  children: PackDatum[];
+}
+
+type PackDatum = PackGroup | PackLeaf;
+
+interface PackedLayout {
+  radius: number;
+  positions: Map<string, NodePosition>;
+}
+
+interface HostPackedLayout {
+  layout: PackedLayout;
+  halfW: number;
+  halfH: number;
+  outerRadius: number;
+}
+
+type NodeExtentResolver = (node: TopologyNode) => number;
+
+interface PackedCircle {
+  leaf: PackLeaf;
+  order: number;
+  r: number;
+  x: number;
+  y: number;
+  targetX: number;
+  targetY: number;
+  vx?: number;
+  vy?: number;
+}
 
 function ringCapacity(radius: number, arcSpan: number, minSpacing: number): number {
   const circumference = Math.max(radius * arcSpan, minSpacing);
   return Math.max(1, Math.floor(circumference / Math.max(minSpacing, 1)));
-}
-
-function ringCount(
-  count: number,
-  {
-    baseRadius,
-    radialStep,
-    minSpacing,
-    arcSpan = Math.PI * 2,
-  }: {
-    baseRadius: number;
-    radialStep: number;
-    minSpacing: number;
-    arcSpan?: number;
-  },
-): number {
-  let remaining = count;
-  let radius = baseRadius;
-  let rings = 0;
-
-  while (remaining > 0) {
-    rings += 1;
-    remaining -= ringCapacity(radius, arcSpan, minSpacing);
-    radius += radialStep;
-  }
-
-  return rings;
-}
-
-function containerRadius(
-  children: TopologyNode[],
-  options: ArcPlacementOptions,
-  fallback: number,
-  padding: number,
-): number {
-  if (children.length === 0) return fallback;
-  const arcSpan = options.arcSpan ?? Math.PI * 2;
-  const rings = ringCount(children.length, { ...options, arcSpan });
-  const outerRadius = options.baseRadius + Math.max(0, rings - 1) * options.radialStep;
-  return Math.max(fallback, outerRadius + maxNodeExtent(children) + padding);
 }
 
 function placeArcChildren(
@@ -187,84 +194,315 @@ function placeArcChildren(
   return placements;
 }
 
-function clusterServiceRole(node: TopologyNode): string | null {
+function packLeaf(node: TopologyNode, order: number): PackLeaf {
+  return { kind: 'node', node, order };
+}
+
+function packGroup(id: string, order: number, children: TopologyNode[]): PackGroup | null {
+  if (children.length === 0) return null;
+  return {
+    kind: 'group',
+    id,
+    order,
+    children: sortedNodes(children).map((child, index) => packLeaf(child, index)),
+  };
+}
+
+function packGroupsForNode(node: TopologyNode, children: TopologyNode[]): Array<PackGroup | null> {
+  if (node.typeId !== 'run') {
+    return [packGroup(node.id, 0, children)];
+  }
+
+  const grouped = new Map<string, TopologyNode[]>();
+  for (const child of sortedNodes(children)) {
+    const groupId = child.layoutHints?.packGroup ?? 'run';
+    const bucket = grouped.get(groupId);
+    if (bucket) bucket.push(child);
+    else grouped.set(groupId, [child]);
+  }
+
+  return [...grouped.entries()]
+    .map(([groupId, groupChildren], index) => {
+      const firstOrder = groupChildren
+        .map((child) => child.layoutHints?.order)
+        .find((order): order is number => order != null);
+      return packGroup(`${node.id}:${groupId}`, firstOrder ?? index, groupChildren);
+    })
+    .sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0));
+}
+
+function packChildren(
+  groups: Array<PackGroup | null>,
+  {
+    padding,
+    fallbackRadius,
+    extentForNode = nodeExtent,
+  }: {
+    padding: number;
+    fallbackRadius: number;
+    extentForNode?: NodeExtentResolver;
+  },
+): PackedLayout {
+  const activeGroups = groups.filter((group): group is PackGroup => group !== null);
+  if (activeGroups.length === 0) {
+    return { radius: fallbackRadius, positions: new Map() };
+  }
+
   if (
-    node.typeId === 'mimir' ||
-    node.typeId === 'ting' ||
-    node.typeId === 'bifrost' ||
-    node.typeId === 'volundr'
+    activeGroups.length === 1 &&
+    activeGroups[0]!.children.length === 1 &&
+    activeGroups[0]!.children[0]!.kind === 'node'
   ) {
-    return node.typeId;
+    const onlyLeaf = activeGroups[0]!.children[0] as PackLeaf;
+    return {
+      radius: Math.max(fallbackRadius, extentForNode(onlyLeaf.node) + padding * 2),
+      positions: new Map([[onlyLeaf.node.id, { x: 0, y: 0 }]]),
+    };
   }
-  if (node.typeId === 'service' && node.svcType) {
-    return node.svcType;
+
+  const inflatedPadding = padding / 2;
+  const circles = activeGroups
+    .flatMap((group) =>
+      group.children
+        .filter((child): child is PackLeaf => child.kind === 'node')
+        .map((child) => ({
+          leaf: child,
+          order: group.order * 1000 + child.order,
+          r: extentForNode(child.node) + inflatedPadding,
+          x: 0,
+          y: 0,
+          targetX: 0,
+          targetY: 0,
+        })),
+    )
+    .sort((a, b) => a.order - b.order);
+
+  packSiblings(circles);
+  for (const circle of circles) {
+    circle.targetX = circle.x;
+    circle.targetY = circle.y;
   }
-  return null;
+
+  if (circles.length > 1) {
+    const simulation = forceSimulation(circles)
+      .alpha(0.22)
+      .alphaDecay(0.12)
+      .force('x', forceX<PackedCircle>((circle) => circle.targetX).strength(0.16))
+      .force('y', forceY<PackedCircle>((circle) => circle.targetY).strength(0.16))
+      .force('collide', forceCollide<PackedCircle>((circle) => circle.r + 2).iterations(2))
+      .force('charge', forceManyBody<PackedCircle>().strength(-4))
+      .stop();
+
+    for (let tick = 0; tick < 18; tick += 1) {
+      simulation.tick();
+    }
+  }
+
+  const positions = new Map<string, NodePosition>();
+  let radius = fallbackRadius;
+
+  for (const circle of circles) {
+    positions.set(circle.leaf.node.id, { x: circle.x, y: circle.y });
+    radius = Math.max(radius, Math.hypot(circle.x, circle.y) + circle.r);
+  }
+
+  return { radius, positions };
 }
 
-function clusterPartitions(children: TopologyNode[]) {
-  const core: TopologyNode[] = [];
-  const ravens: TopologyNode[] = [];
-  const runs: TopologyNode[] = [];
-  const generic: TopologyNode[] = [];
-
-  for (const child of children) {
-    if (child.typeId === 'run') {
-      runs.push(child);
-      continue;
-    }
-    if (child.typeId === 'ravn_long' || child.typeId === 'ravn_run') {
-      ravens.push(child);
-      continue;
-    }
-    if (clusterServiceRole(child)) {
-      core.push(child);
-      continue;
-    }
-    generic.push(child);
-  }
-
-  return { core, ravens, runs, generic };
-}
-
-function placeClusterCoreChildren(
-  children: TopologyNode[],
+function translatePackedLayout(
+  layout: PackedLayout,
   anchor: NodePosition | undefined,
 ): Map<string, NodePosition> {
-  const placements = new Map<string, NodePosition>();
-  if (children.length === 0) return placements;
-
+  const translated = new Map<string, NodePosition>();
   const base = anchor ?? { x: 0, y: 0 };
-  const fallback: TopologyNode[] = [];
+  for (const [id, pos] of layout.positions) {
+    translated.set(id, {
+      x: base.x + pos.x,
+      y: base.y + pos.y,
+    });
+  }
+  return translated;
+}
+
+function placePackedChildren(
+  children: TopologyNode[],
+  anchor: NodePosition | undefined,
+  {
+    padding,
+    fallbackRadius,
+    extentForNode,
+  }: {
+    padding: number;
+    fallbackRadius: number;
+    extentForNode?: NodeExtentResolver;
+  },
+): Map<string, NodePosition> {
+  return translatePackedLayout(
+    packChildren([packGroup('group', 0, children)], {
+      padding,
+      fallbackRadius,
+      extentForNode,
+    }),
+    anchor,
+  );
+}
+
+function packedRadius(
+  children: TopologyNode[],
+  {
+    padding,
+    fallbackRadius,
+    extentForNode,
+  }: {
+    padding: number;
+    fallbackRadius: number;
+    extentForNode?: NodeExtentResolver;
+  },
+): number {
+  return packChildren([packGroup('group', 0, children)], {
+    padding,
+    fallbackRadius,
+    extentForNode,
+  }).radius;
+}
+
+function pushPackedChildrenAwayFromCenter(
+  layout: PackedLayout,
+  children: TopologyNode[],
+  extentForNode: NodeExtentResolver,
+  clearance: number,
+): PackedLayout {
+  const adjusted = new Map<string, NodePosition>();
+  let radius = 0;
 
   for (const child of children) {
-    const role = clusterServiceRole(child);
-    const slotAngle = role ? CLUSTER_SERVICE_SLOT_ANGLES[role] : undefined;
-    if (slotAngle == null) {
-      fallback.push(child);
-      continue;
-    }
-    placements.set(child.id, {
-      x: base.x + Math.cos(slotAngle) * LAYOUT.CLUSTER_CORE_ORBIT,
-      y: base.y + Math.sin(slotAngle) * LAYOUT.CLUSTER_CORE_ORBIT,
-    });
+    const pos = layout.positions.get(child.id);
+    if (!pos) continue;
+
+    const extent = extentForNode(child);
+    const minDistance = clearance + extent;
+    const distance = Math.hypot(pos.x, pos.y);
+    const angle = distance > 0 ? Math.atan2(pos.y, pos.x) : hashAngle(child.id);
+    const targetDistance = Math.max(distance, minDistance);
+    const next = {
+      x: Math.cos(angle) * targetDistance,
+      y: Math.sin(angle) * targetDistance,
+    };
+
+    adjusted.set(child.id, next);
+    radius = Math.max(radius, targetDistance + extent);
   }
 
-  if (fallback.length > 0) {
-    const fallbackPlacements = placeArcChildren(fallback, anchor, {
-      baseRadius: LAYOUT.CLUSTER_CORE_ORBIT,
-      radialStep: LAYOUT.CLUSTER_CHILD_STEP,
-      minSpacing: Math.max(104, maxNodeExtent(fallback) * 1.8),
-      arcCenter: -Math.PI / 2,
-      arcSpan: Math.PI * 0.9,
-    });
-    for (const child of fallback) {
-      const pos = fallbackPlacements.get(child.id);
-      if (pos) placements.set(child.id, pos);
+  return { radius, positions: adjusted };
+}
+
+function buildHostPackedLayout(
+  host: TopologyNode,
+  children: TopologyNode[],
+  extentForNode: NodeExtentResolver,
+): HostPackedLayout {
+  if (children.length === 0) {
+    const halfW = HOST_HALF_W + 10;
+    const halfH = HOST_HALF_H + 8;
+    return {
+      layout: { radius: Math.max(halfW, halfH), positions: new Map() },
+      halfW,
+      halfH,
+      outerRadius: Math.hypot(halfW, halfH),
+    };
+  }
+
+  const baseLayout = packChildren([packGroup(host.id, 0, children)], {
+    padding: 14,
+    fallbackRadius: Math.max(LAYOUT.HOST_CHILD_ORBIT - 18, 60),
+    extentForNode,
+  });
+  const layout = pushPackedChildrenAwayFromCenter(
+    baseLayout,
+    children,
+    extentForNode,
+    HOST_CORE_CLEARANCE,
+  );
+  const halfW = Math.max(HOST_HALF_W + 10, layout.radius + HOST_CONTAINER_PAD_X);
+  const halfH = Math.max(HOST_HALF_H + 10, layout.radius + HOST_CONTAINER_PAD_Y);
+
+  return {
+    layout,
+    halfW,
+    halfH,
+    outerRadius: Math.hypot(halfW, halfH),
+  };
+}
+
+function buildNestedPackedLayout(
+  node: TopologyNode,
+  children: TopologyNode[],
+  extentForNode: NodeExtentResolver,
+): PackedLayout {
+  if (children.length === 0) {
+    return { radius: nodeExtent(node), positions: new Map() };
+  }
+
+  if (node.typeId === 'run') {
+    return buildRunWorkflowLayout(children, extentForNode);
+  }
+
+  const baseLayout = packChildren(packGroupsForNode(node, children), {
+    padding: 14,
+    fallbackRadius: Math.max(nodeExtent(node) + 34, 72),
+    extentForNode,
+  });
+
+  return pushPackedChildrenAwayFromCenter(
+    baseLayout,
+    children,
+    extentForNode,
+    Math.max(34, nodeExtent(node) + 10),
+  );
+}
+
+function buildRunWorkflowLayout(
+  children: TopologyNode[],
+  extentForNode: NodeExtentResolver,
+): PackedLayout {
+  const positions = new Map<string, NodePosition>();
+  const groups = new Map<string, TopologyNode[]>();
+  for (const child of sortedNodes(children)) {
+    const key = child.layoutHints?.packGroup ?? 'main';
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(child);
+    else groups.set(key, [child]);
+  }
+
+  const baseRadius = Math.max(142, LAYOUT.RUN_CHILD_ORBIT + Math.max(0, children.length - 4) * 18);
+  const anchors: Record<string, { x: number; y: number }> = {
+    entry: { x: 0, y: -baseRadius * 0.76 },
+    resource: { x: -baseRadius * 0.82, y: 0 },
+    main: { x: 0, y: 0 },
+    decision: { x: baseRadius * 0.82, y: 0 },
+    exit: { x: 0, y: baseRadius * 0.76 },
+    run: { x: 0, y: 0 },
+  };
+  const fallbackAnchor = { x: 0, y: 0 };
+
+  let radius = baseRadius * 0.78;
+  for (const [groupId, groupChildren] of groups) {
+    const anchor = anchors[groupId] ?? fallbackAnchor;
+    const spacing = groupId === 'main' ? 72 : 62;
+    const startY = anchor.y - ((groupChildren.length - 1) * spacing) / 2;
+
+    for (const [index, child] of groupChildren.entries()) {
+      const offsetX = groupId === 'main' && groupChildren.length > 2 ? (index % 2 === 0 ? -14 : 14) : 0;
+      const next = {
+        x: anchor.x + offsetX,
+        y: startY + index * spacing,
+      };
+      positions.set(child.id, next);
+      radius = Math.max(radius, Math.hypot(next.x, next.y) + extentForNode(child));
     }
   }
 
-  return placements;
+  return { radius, positions };
 }
 
 /**
@@ -273,305 +511,192 @@ function placeClusterCoreChildren(
 export function computeLayout(topology: Topology): Map<string, NodePosition> {
   const positions = new Map<string, NodePosition>();
   const { nodes } = topology;
+  const nodeIds = new Set(nodes.map((node) => node.id));
   const childrenByParent = buildChildrenIndex(nodes);
+  const nestedRadii = new Map<string, number>();
   const clusterRadii = new Map<string, number>();
   const realmRadii = new Map<string, number>();
+  const hostLayouts = new Map<string, HostPackedLayout>();
+  const nestedLayouts = new Map<string, PackedLayout>();
 
   const realmNodes = sortedNodes(nodes.filter((node) => node.typeId === 'realm'));
   const clusterNodes = sortedNodes(nodes.filter((node) => node.typeId === 'cluster'));
   const hostNodes = sortedNodes(nodes.filter((node) => node.typeId === 'host'));
   const runNodes = sortedNodes(nodes.filter((node) => node.typeId === 'run'));
+  const nestedNodes = sortedNodes(
+    nodes.filter((node) => {
+      if (node.typeId === 'realm' || node.typeId === 'cluster') return false;
+      return (childrenByParent.get(node.id)?.length ?? 0) > 0;
+    }),
+  ).sort(
+    (a, b) => (childrenByParent.get(b.id)?.length ?? 0) - (childrenByParent.get(a.id)?.length ?? 0),
+  );
+
+  const nestedExtent: NodeExtentResolver = (node) => nestedRadii.get(node.id) ?? nodeExtent(node);
+
+  const clusterContainerExtent: NodeExtentResolver = (node) => {
+    if (node.typeId !== 'cluster') return nodeExtent(node);
+    return (clusterRadii.get(node.id) ?? LAYOUT.CLUSTER_INNER_RADIUS) + 18;
+  };
+
+  const worldContainerExtent: NodeExtentResolver = (node) => {
+    if (node.typeId === 'realm') {
+      return (realmRadii.get(node.id) ?? LAYOUT.REALM_INNER_RADIUS) + 24;
+    }
+    if (node.typeId === 'cluster') {
+      return (clusterRadii.get(node.id) ?? LAYOUT.CLUSTER_INNER_RADIUS) + 20;
+    }
+    return nestedExtent(node) + 14;
+  };
+
+  for (const node of nestedNodes) {
+    const children = childrenByParent.get(node.id) ?? [];
+    let contentExtent = 0;
+    if (node.typeId === 'run') {
+      const nestedLayout = buildNestedPackedLayout(node, children, nestedExtent);
+      nestedLayouts.set(node.id, nestedLayout);
+      contentExtent = nestedLayout.radius;
+    } else if (node.typeId === 'host') {
+      const hostLayout = buildHostPackedLayout(node, children, nestedExtent);
+      hostLayouts.set(node.id, hostLayout);
+      contentExtent = hostLayout.outerRadius;
+    } else {
+      const nestedLayout = buildNestedPackedLayout(node, children, nestedExtent);
+      nestedLayouts.set(node.id, nestedLayout);
+      contentExtent = nestedLayout.radius;
+    }
+    nestedRadii.set(node.id, Math.max(nodeExtent(node), contentExtent));
+  }
+
   for (const node of clusterNodes) {
-    const children = (childrenByParent.get(node.id) ?? []).filter(
-      (child) => child.typeId !== 'host' && child.typeId !== 'cluster',
-    );
-    const { core, ravens, runs, generic } = clusterPartitions(children);
-    const coreExtent = core.length === 0 ? 0 : LAYOUT.CLUSTER_CORE_ORBIT + maxNodeExtent(core) + 34;
-    const ravenExtent =
-      ravens.length === 0
+    const children = (childrenByParent.get(node.id) ?? []).filter((child) => child.typeId !== 'cluster');
+    const contentExtent =
+      children.length === 0
         ? 0
-        : containerRadius(
-            ravens,
-            {
-              baseRadius: LAYOUT.CLUSTER_RAVEN_ORBIT,
-              radialStep: LAYOUT.CLUSTER_RAVEN_STEP,
-              minSpacing: Math.max(92, maxNodeExtent(ravens) * 1.9),
-              arcCenter: 0,
-              arcSpan: Math.PI * 0.92,
-            },
-            0,
-            maxNodeExtent(ravens) + 30,
-          );
-    const runExtent =
-      runs.length === 0
-        ? 0
-        : containerRadius(
-            runs,
-            {
-              baseRadius: LAYOUT.CLUSTER_RUN_ORBIT,
-              radialStep: LAYOUT.CLUSTER_RUN_STEP,
-              minSpacing: Math.max(132, maxNodeExtent(runs) * 1.9),
-              arcCenter: Math.PI / 2,
-              arcSpan: Math.PI * 0.96,
-            },
-            0,
-            maxNodeExtent(runs) + 34,
-          );
-    const genericExtent =
-      generic.length === 0
-        ? 0
-        : containerRadius(
-            generic,
-            {
-              baseRadius: LAYOUT.CLUSTER_GENERIC_ORBIT,
-              radialStep: LAYOUT.CLUSTER_GENERIC_STEP,
-              minSpacing: Math.max(104, maxNodeExtent(generic) * 1.9),
-              arcCenter: -Math.PI / 2,
-              arcSpan: Math.PI * 0.98,
-            },
-            0,
-            maxNodeExtent(generic) + 30,
-          );
+        : packedRadius(children, {
+            padding: 18,
+            fallbackRadius: 72,
+            extentForNode: nestedExtent,
+          });
     clusterRadii.set(
       node.id,
-      Math.max(LAYOUT.CLUSTER_INNER_RADIUS, coreExtent, ravenExtent, runExtent, genericExtent),
+      Math.max(LAYOUT.CLUSTER_INNER_RADIUS, contentExtent + 18),
     );
   }
 
   for (const node of realmNodes) {
     const children = childrenByParent.get(node.id) ?? [];
-    const clusters = children.filter((child) => child.typeId === 'cluster');
-    const hosts = children.filter((child) => child.typeId === 'host');
-    const directOthers = children.filter(
-      (child) => child.typeId !== 'cluster' && child.typeId !== 'host',
-    );
-
-    const clusterSpacing = Math.max(
-      220,
-      clusters.reduce(
-        (max, child) =>
-          Math.max(max, (clusterRadii.get(child.id) ?? LAYOUT.CLUSTER_INNER_RADIUS) * 1.55),
-        220,
-      ),
-    );
-    const clusterExtent =
-      clusters.length === 0
+    const realmChildExtent: NodeExtentResolver = (child) =>
+      child.typeId === 'cluster' ? clusterContainerExtent(child) : nestedExtent(child);
+    const contentExtent =
+      children.length === 0
         ? 0
-        : containerRadius(
-            clusters,
-            {
-              baseRadius: LAYOUT.REALM_CLUSTER_ORBIT,
-              radialStep: LAYOUT.REALM_CLUSTER_STEP,
-              minSpacing: clusterSpacing,
-              arcCenter: Math.PI / 2,
-              arcSpan: Math.PI * 1.82,
-            },
-            0,
-            clusters.reduce(
-              (max, child) =>
-                Math.max(max, clusterRadii.get(child.id) ?? LAYOUT.CLUSTER_INNER_RADIUS),
-              0,
-            ) + 18,
-          );
-
-    const hostExtent =
-      hosts.length === 0
-        ? 0
-        : containerRadius(
-            hosts,
-            {
-              baseRadius: LAYOUT.REALM_HOST_ORBIT,
-              radialStep: LAYOUT.REALM_HOST_STEP,
-              minSpacing: Math.max(180, maxNodeExtent(hosts) * 1.85),
-              arcCenter: Math.PI / 2,
-              arcSpan: Math.PI * 1.58,
-            },
-            0,
-            HOST_HALF_W + 28,
-          );
-
-    const directExtent =
-      directOthers.length === 0
-        ? 0
-        : containerRadius(
-            directOthers,
-            {
-              baseRadius: LAYOUT.REALM_DEVICE_ORBIT,
-              radialStep: LAYOUT.REALM_DEVICE_STEP,
-              minSpacing: Math.max(120, maxNodeExtent(directOthers) * 1.7),
-              arcCenter: Math.PI / 2,
-              arcSpan: Math.PI * 1.6,
-            },
-            0,
-            maxNodeExtent(directOthers) + 24,
-          );
-
+        : children.length === 1 && children[0]!.typeId === 'cluster'
+          ? (clusterRadii.get(children[0]!.id) ?? LAYOUT.CLUSTER_INNER_RADIUS) + 18
+          : packedRadius(children, {
+              padding: 22,
+              fallbackRadius: 72,
+              extentForNode: realmChildExtent,
+            });
     realmRadii.set(
       node.id,
-      Math.max(LAYOUT.REALM_INNER_RADIUS, clusterExtent, hostExtent, directExtent),
+      Math.max(LAYOUT.REALM_INNER_RADIUS, contentExtent + 18),
     );
   }
 
-  for (const node of nodes) {
-    if (
-      node.typeId === 'mimir' &&
-      (!node.parentId || !nodes.some((candidate) => candidate.id === node.parentId))
-    ) {
-      positions.set(node.id, { x: 0, y: 0 });
-    }
-  }
+  const rootNodes = sortedNodes(
+    nodes.filter((node) => !node.parentId || !nodeIds.has(node.parentId)),
+  );
+  const rootPlacements = placePackedChildren(rootNodes, { x: 0, y: 0 }, {
+    padding: 48,
+    fallbackRadius: Math.max(LAYOUT.REALM_INNER_RADIUS, LAYOUT.MIMIR_RADIUS) + 120,
+    extentForNode: worldContainerExtent,
+  });
 
-  if (realmNodes.length === 1) {
-    const [node] = realmNodes;
-    if (!node) return positions;
-    positions.set(node.id, {
-      x: 0,
-      y: 0,
-      zoneRadius: realmRadii.get(node.id) ?? LAYOUT.REALM_INNER_RADIUS,
-    });
-  } else {
-    const largestRealmRadius = realmNodes.reduce<number>(
-      (max, node) => Math.max(max, realmRadii.get(node.id) ?? LAYOUT.REALM_INNER_RADIUS),
-      LAYOUT.REALM_INNER_RADIUS,
-    );
-    const realmRingBase = Math.max(560, largestRealmRadius + 260);
-    const realmRingStep = Math.max(260, largestRealmRadius * 0.9);
-    const realmSpacing = Math.max(360, largestRealmRadius * 1.75);
-    const realmPlacements = placeArcChildren(
-      realmNodes,
-      { x: 0, y: 0 },
-      {
-        baseRadius: realmRingBase,
-        radialStep: realmRingStep,
-        minSpacing: realmSpacing,
-        arcCenter: Math.PI / 2,
-        arcSpan: Math.PI * 1.92,
-      },
-    );
-    for (const node of realmNodes) {
-      const pos = realmPlacements.get(node.id);
-      if (!pos) continue;
+  for (const node of rootNodes) {
+    const pos = rootPlacements.get(node.id);
+    if (!pos) continue;
+    if (node.typeId === 'realm') {
       positions.set(node.id, {
         ...pos,
         zoneRadius: realmRadii.get(node.id) ?? LAYOUT.REALM_INNER_RADIUS,
       });
+      continue;
     }
+    if (node.typeId === 'cluster') {
+      positions.set(node.id, {
+        ...pos,
+        zoneRadius: clusterRadii.get(node.id) ?? LAYOUT.CLUSTER_INNER_RADIUS,
+      });
+      continue;
+    }
+    positions.set(node.id, pos);
   }
 
   for (const realm of realmNodes) {
-    const clusters = (childrenByParent.get(realm.id) ?? []).filter(
-      (child) => child.typeId === 'cluster',
-    );
+    const children = childrenByParent.get(realm.id) ?? [];
+    const clusters = children.filter((child) => child.typeId === 'cluster');
     const parentPos = positions.get(realm.id);
-    if (clusters.length === 1 && parentPos) {
+    const realmChildExtent: NodeExtentResolver = (child) =>
+      child.typeId === 'cluster' ? clusterContainerExtent(child) : nestedExtent(child);
+    if (children.length === 1 && clusters.length === 1 && parentPos) {
       const onlyCluster = clusters[0]!;
       positions.set(onlyCluster.id, {
         ...parentPos,
         zoneRadius: clusterRadii.get(onlyCluster.id) ?? LAYOUT.CLUSTER_INNER_RADIUS,
       });
-      continue;
-    }
-    const clusterSpacing = Math.max(
-      220,
-      clusters.reduce(
-        (max, child) =>
-          Math.max(max, (clusterRadii.get(child.id) ?? LAYOUT.CLUSTER_INNER_RADIUS) * 1.55),
-        220,
-      ),
-    );
-    const clusterPlacements = placeArcChildren(clusters, parentPos, {
-      baseRadius: LAYOUT.REALM_CLUSTER_ORBIT,
-      radialStep: LAYOUT.REALM_CLUSTER_STEP,
-      minSpacing: clusterSpacing,
-      arcCenter: Math.PI / 2,
-      arcSpan: Math.PI * 1.82,
-    });
-    for (const node of clusters) {
-      const pos = clusterPlacements.get(node.id);
-      if (!pos) continue;
-      positions.set(node.id, {
-        ...pos,
-        zoneRadius: clusterRadii.get(node.id) ?? LAYOUT.CLUSTER_INNER_RADIUS,
+    } else {
+      const childPlacements = placePackedChildren(children, parentPos, {
+        padding: 22,
+        fallbackRadius: 72,
+        extentForNode: realmChildExtent,
       });
-    }
-  }
-
-  for (const realm of realmNodes) {
-    const hosts = (childrenByParent.get(realm.id) ?? []).filter((child) => child.typeId === 'host');
-    const hostPlacements = placeArcChildren(hosts, positions.get(realm.id), {
-      baseRadius: LAYOUT.REALM_HOST_ORBIT,
-      radialStep: LAYOUT.REALM_HOST_STEP,
-      minSpacing: Math.max(180, maxNodeExtent(hosts) * 1.85),
-      arcCenter: Math.PI / 2,
-      arcSpan: Math.PI * 1.58,
-    });
-    for (const node of hosts) {
-      const pos = hostPlacements.get(node.id);
-      if (pos) positions.set(node.id, pos);
-    }
-
-    const directOthers = (childrenByParent.get(realm.id) ?? []).filter(
-      (child) => child.typeId !== 'cluster' && child.typeId !== 'host',
-    );
-    const directPlacements = placeArcChildren(directOthers, positions.get(realm.id), {
-      baseRadius: LAYOUT.REALM_DEVICE_ORBIT,
-      radialStep: LAYOUT.REALM_DEVICE_STEP,
-      minSpacing: Math.max(120, maxNodeExtent(directOthers) * 1.7),
-      arcCenter: Math.PI / 2,
-      arcSpan: Math.PI * 1.6,
-    });
-    for (const node of directOthers) {
-      const pos = directPlacements.get(node.id);
-      if (pos) positions.set(node.id, pos);
+      for (const node of children) {
+        const pos = childPlacements.get(node.id);
+        if (!pos) continue;
+        if (node.typeId === 'cluster') {
+          positions.set(node.id, {
+            ...pos,
+            zoneRadius: clusterRadii.get(node.id) ?? LAYOUT.CLUSTER_INNER_RADIUS,
+          });
+          continue;
+        }
+        positions.set(node.id, pos);
+      }
     }
   }
 
   for (const cluster of clusterNodes) {
-    const children = (childrenByParent.get(cluster.id) ?? []).filter(
-      (child) => child.typeId !== 'host' && child.typeId !== 'cluster',
-    );
-    const { core, ravens, runs, generic } = clusterPartitions(children);
+    const children = (childrenByParent.get(cluster.id) ?? []).filter((child) => child.typeId !== 'cluster');
+    const clusterAnchor = positions.get(cluster.id);
 
-    const corePlacements = placeClusterCoreChildren(core, positions.get(cluster.id));
-    for (const child of core) {
-      const pos = corePlacements.get(child.id);
-      if (pos) positions.set(child.id, pos);
-    }
-
-    const ravenPlacements = placeArcChildren(ravens, positions.get(cluster.id), {
-      baseRadius: LAYOUT.CLUSTER_RAVEN_ORBIT,
-      radialStep: LAYOUT.CLUSTER_RAVEN_STEP,
-      minSpacing: Math.max(92, maxNodeExtent(ravens) * 1.9),
-      arcCenter: 0,
-      arcSpan: Math.PI * 0.92,
+    const childPlacements = placePackedChildren(children, clusterAnchor, {
+      padding: 18,
+      fallbackRadius: 72,
+      extentForNode: nestedExtent,
     });
-    for (const child of ravens) {
-      const pos = ravenPlacements.get(child.id);
-      if (pos) positions.set(child.id, pos);
-    }
-
-    const runPlacements = placeArcChildren(runs, positions.get(cluster.id), {
-      baseRadius: LAYOUT.CLUSTER_RUN_ORBIT,
-      radialStep: LAYOUT.CLUSTER_RUN_STEP,
-      minSpacing: Math.max(132, maxNodeExtent(runs) * 1.9),
-      arcCenter: Math.PI / 2,
-      arcSpan: Math.PI * 0.96,
-    });
-    for (const child of runs) {
-      const pos = runPlacements.get(child.id);
-      if (pos) positions.set(child.id, pos);
-    }
-
-    const genericPlacements = placeArcChildren(generic, positions.get(cluster.id), {
-      baseRadius: LAYOUT.CLUSTER_GENERIC_ORBIT,
-      radialStep: LAYOUT.CLUSTER_GENERIC_STEP,
-      minSpacing: Math.max(104, maxNodeExtent(generic) * 1.9),
-      arcCenter: -Math.PI / 2,
-      arcSpan: Math.PI * 0.98,
-    });
-    for (const child of generic) {
-      const pos = genericPlacements.get(child.id);
-      if (pos) positions.set(child.id, pos);
+    for (const child of children) {
+      const pos = childPlacements.get(child.id);
+      if (!pos) continue;
+      if (child.typeId === 'host') {
+        const hostLayout = hostLayouts.get(child.id);
+        positions.set(child.id, {
+          ...pos,
+          containerWidth: hostLayout ? hostLayout.halfW * 2 : undefined,
+          containerHeight: hostLayout ? hostLayout.halfH * 2 : undefined,
+        });
+        continue;
+      }
+      if (child.typeId === 'run') {
+        const runLayout = nestedLayouts.get(child.id);
+        positions.set(child.id, {
+          ...pos,
+          containerWidth: runLayout ? runLayout.radius * 2 : undefined,
+          containerHeight: runLayout ? runLayout.radius * 2 : undefined,
+        });
+        continue;
+      }
+      positions.set(child.id, pos);
     }
   }
 
@@ -579,13 +704,17 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
     const children = (childrenByParent.get(host.id) ?? []).filter(
       (child) => child.typeId !== 'host',
     );
-    const placements = placeArcChildren(children, positions.get(host.id), {
-      baseRadius: LAYOUT.HOST_CHILD_ORBIT,
-      radialStep: LAYOUT.HOST_CHILD_STEP,
-      minSpacing: Math.max(72, maxNodeExtent(children) * 1.75),
-      arcCenter: 0,
-      arcSpan: Math.PI * 1.7,
-    });
+    const anchor = positions.get(host.id);
+    const hostLayout =
+      hostLayouts.get(host.id) ?? buildHostPackedLayout(host, children, nestedExtent);
+    if (anchor) {
+      positions.set(host.id, {
+        ...anchor,
+        containerWidth: hostLayout.halfW * 2,
+        containerHeight: hostLayout.halfH * 2,
+      });
+    }
+    const placements = translatePackedLayout(hostLayout.layout, anchor);
     for (const child of children) {
       const pos = placements.get(child.id);
       if (pos) positions.set(child.id, pos);
@@ -594,13 +723,16 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
 
   for (const run of runNodes) {
     const children = childrenByParent.get(run.id) ?? [];
-    const placements = placeArcChildren(children, positions.get(run.id), {
-      baseRadius: LAYOUT.RUN_CHILD_ORBIT,
-      radialStep: LAYOUT.RUN_CHILD_STEP,
-      minSpacing: Math.max(64, maxNodeExtent(children) * 1.7),
-      arcCenter: Math.PI / 2,
-      arcSpan: Math.PI * 1.75,
-    });
+    const runLayout = nestedLayouts.get(run.id) ?? buildNestedPackedLayout(run, children, nestedExtent);
+    const anchor = positions.get(run.id);
+    if (anchor) {
+      positions.set(run.id, {
+        ...anchor,
+        containerWidth: runLayout.radius * 2,
+        containerHeight: runLayout.radius * 2,
+      });
+    }
+    const placements = translatePackedLayout(runLayout, anchor);
     for (const child of children) {
       const pos = placements.get(child.id);
       if (pos) positions.set(child.id, pos);
@@ -622,13 +754,10 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
       (child) => !positions.has(child.id),
     );
     if (children.length === 0) continue;
-    const placements = placeArcChildren(children, positions.get(node.id), {
-      baseRadius: Math.max(132, nodeExtent(node) + 72),
-      radialStep: 76,
-      minSpacing: Math.max(96, maxNodeExtent(children) * 2),
-      arcCenter: -Math.PI / 2,
-      arcSpan: Math.PI * 2,
-    });
+    const placements = translatePackedLayout(
+      nestedLayouts.get(node.id) ?? buildNestedPackedLayout(node, children, nestedExtent),
+      positions.get(node.id),
+    );
     for (const child of children) {
       const pos = placements.get(child.id);
       if (pos) positions.set(child.id, pos);
@@ -681,9 +810,9 @@ export function computeLayoutBounds(
       const radius = pos.zoneRadius ?? zoneRadius(node.typeId);
       extentX = radius + 36;
       extentY = radius + 48;
-    } else if (node.typeId === 'host') {
-      extentX = HOST_HALF_W + 18;
-      extentY = HOST_HALF_H + 18;
+    } else if (node.typeId === 'host' || node.typeId === 'run') {
+      extentX = (pos.containerWidth ?? HOST_HALF_W * 2) / 2 + 18;
+      extentY = (pos.containerHeight ?? HOST_HALF_H * 2) / 2 + 24;
     }
 
     minX = Math.min(minX, pos.x - extentX);
