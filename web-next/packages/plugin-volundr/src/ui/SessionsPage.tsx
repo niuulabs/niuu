@@ -2,9 +2,18 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import { LoadingState, ErrorState, EmptyState, StateDot, relTime, cn } from '@niuulabs/ui';
+import {
+  LoadingState,
+  ErrorState,
+  EmptyState,
+  StateDot,
+  relTime,
+  cn,
+  Dialog,
+  DialogContent,
+} from '@niuulabs/ui';
 import type { DotState } from '@niuulabs/ui';
-import { Clock3, FolderGit2, Search, SquareTerminal, Ticket } from 'lucide-react';
+import { Check, Clock3, FolderGit2, Search, SquareTerminal, Ticket, Trash2 } from 'lucide-react';
 import { LaunchWizard } from './LaunchWizard';
 import { useSessionList } from './hooks/useSessionStore';
 import { groupByState } from './sessions/groupByState';
@@ -157,11 +166,17 @@ function PodEntry({
   selected,
   onSelect,
   collapsed = false,
+  selectable = false,
+  checked = false,
+  onToggleSelection,
 }: {
   session: Session;
   selected: boolean;
   onSelect: () => void;
   collapsed?: boolean;
+  selectable?: boolean;
+  checked?: boolean;
+  onToggleSelection?: () => void;
 }) {
   const ageLabel = relTime(new Date(session.lastActivityAt ?? session.startedAt).getTime());
   const primaryLabel = session.personaName || session.id;
@@ -183,6 +198,33 @@ function PodEntry({
           : 'niuu-border-transparent niuu-border-b-white/6 hover:niuu-bg-bg-tertiary',
       )}
     >
+      {selectable && !collapsed ? (
+        <span
+          role="checkbox"
+          tabIndex={0}
+          aria-checked={checked}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleSelection?.();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            event.stopPropagation();
+            onToggleSelection?.();
+          }}
+          aria-label={`${checked ? 'Deselect' : 'Select'} stopped session ${session.id}`}
+          data-testid={`stopped-session-checkbox-${session.id}`}
+          className={cn(
+            'niuu-mt-0.5 niuu-flex niuu-h-4 niuu-w-4 niuu-flex-shrink-0 niuu-items-center niuu-justify-center niuu-rounded-sm niuu-border niuu-transition-colors',
+            checked
+              ? 'niuu-border-brand niuu-bg-brand niuu-text-bg-primary'
+              : 'niuu-border-border-subtle niuu-bg-bg-elevated niuu-text-transparent hover:niuu-border-brand/60',
+          )}
+        >
+          <Check className="niuu-h-3 niuu-w-3" />
+        </span>
+      ) : null}
       <StateDot state={SESSION_DOT[session.state]} pulse={session.state === 'running'} />
       {collapsed ? null : (
         <>
@@ -256,12 +298,18 @@ function PodGroup({
   selectedId,
   onSelect,
   collapsed = false,
+  selectableSessionIds,
+  selectedSessionIds,
+  onToggleSelection,
 }: {
   label: string;
   sessions: Session[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   collapsed?: boolean;
+  selectableSessionIds?: ReadonlySet<string>;
+  selectedSessionIds?: ReadonlySet<string>;
+  onToggleSelection?: (id: string) => void;
 }) {
   if (sessions.length === 0) return null;
 
@@ -285,6 +333,13 @@ function PodGroup({
           selected={s.id === selectedId}
           onSelect={() => onSelect(s.id)}
           collapsed={collapsed}
+          selectable={selectableSessionIds?.has(s.id) ?? false}
+          checked={selectedSessionIds?.has(s.id) ?? false}
+          onToggleSelection={
+            onToggleSelection && selectableSessionIds?.has(s.id)
+              ? () => onToggleSelection(s.id)
+              : undefined
+          }
         />
       ))}
     </div>
@@ -303,6 +358,10 @@ export function SessionsPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('state');
   const [archiveBusy, setArchiveBusy] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [stoppedSelectionMode, setStoppedSelectionMode] = useState(false);
+  const [selectedStoppedIds, setSelectedStoppedIds] = useState<Set<string>>(new Set());
+  const [deleteStoppedOpen, setDeleteStoppedOpen] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
@@ -311,6 +370,13 @@ export function SessionsPage() {
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
   const stoppedSessionCount = useMemo(
     () => allSessions.filter((session) => session.state === 'terminated').length,
+    [allSessions],
+  );
+  const stoppedSessionIds = useMemo(
+    () =>
+      new Set(
+        allSessions.filter((session) => session.state === 'terminated').map((session) => session.id),
+      ),
     [allSessions],
   );
 
@@ -327,6 +393,14 @@ export function SessionsPage() {
         s.clusterId?.toLowerCase().includes(q),
     );
   }, [allSessions, searchQuery]);
+  const filteredStoppedSessions = useMemo(
+    () => filteredSessions.filter((session) => session.state === 'terminated'),
+    [filteredSessions],
+  );
+  const filteredStoppedIds = useMemo(
+    () => new Set(filteredStoppedSessions.map((session) => session.id)),
+    [filteredStoppedSessions],
+  );
 
   // Group by state
   const grouped = useMemo(() => groupByState(filteredSessions), [filteredSessions]);
@@ -372,6 +446,13 @@ export function SessionsPage() {
     }
   }, [routeSessionId, selectedSessionId, sessionsQuery.data]);
 
+  useEffect(() => {
+    setSelectedStoppedIds((current) => {
+      const next = new Set([...current].filter((id) => stoppedSessionIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [stoppedSessionIds]);
+
   function handleSelectSession(id: string) {
     setSelectedSessionId(id);
     void navigate({
@@ -394,6 +475,54 @@ export function SessionsPage() {
       setArchiveBusy(false);
     }
   }
+
+  function handleToggleStoppedSelection(sessionId: string) {
+    setSelectedStoppedIds((current) => {
+      const next = new Set(current);
+      if (next.has(sessionId)) {
+        next.delete(sessionId);
+      } else {
+        next.add(sessionId);
+      }
+      return next;
+    });
+  }
+
+  function handleSelectAllVisibleStopped() {
+    setSelectedStoppedIds(new Set(filteredStoppedSessions.map((session) => session.id)));
+  }
+
+  function handleClearStoppedSelection() {
+    setSelectedStoppedIds(new Set());
+  }
+
+  async function handleDeleteSelectedStopped() {
+    if (deleteBusy || selectedStoppedIds.size === 0) return;
+    const ids = [...selectedStoppedIds];
+    setDeleteBusy(true);
+    try {
+      await Promise.all(ids.map((id) => volundr.deleteSession(id)));
+      if (selectedSessionId && ids.includes(selectedSessionId)) {
+        setSelectedSessionId(null);
+        await navigate({ to: '/volundr/sessions', replace: true });
+      }
+      setDeleteStoppedOpen(false);
+      setStoppedSelectionMode(false);
+      setSelectedStoppedIds(new Set());
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
+        queryClient.invalidateQueries({ queryKey: ['volundr', 'history'] }),
+      ]);
+      await sessionsQuery.refetch();
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  const deleteSelectionCount = selectedStoppedIds.size;
+  const deleteSelectionPreview = filteredStoppedSessions.filter((session) =>
+    selectedStoppedIds.has(session.id),
+  );
 
   return (
     <>
@@ -535,18 +664,80 @@ export function SessionsPage() {
 
               {stoppedSessionCount > 0 && (
                 <div className="niuu-px-2.5 niuu-pb-2">
-                  <button
-                    type="button"
-                    onClick={() => void handleArchiveAllStopped()}
-                    disabled={archiveBusy}
-                    className="niuu-flex niuu-w-full niuu-items-center niuu-justify-between niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-[10px] niuu-text-text-muted hover:niuu-bg-bg-elevated disabled:niuu-cursor-not-allowed disabled:niuu-opacity-50"
-                    data-testid="archive-stopped-button"
-                  >
-                    <span>
-                      {archiveBusy ? 'archiving stopped sessions…' : 'archive all stopped'}
-                    </span>
-                    <span className="niuu-text-text-faint">{stoppedSessionCount}</span>
-                  </button>
+                  <div className="niuu-space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleArchiveAllStopped()}
+                      disabled={archiveBusy}
+                      className="niuu-flex niuu-w-full niuu-items-center niuu-justify-between niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-[10px] niuu-text-text-muted hover:niuu-bg-bg-elevated disabled:niuu-cursor-not-allowed disabled:niuu-opacity-50"
+                      data-testid="archive-stopped-button"
+                    >
+                      <span>
+                        {archiveBusy ? 'archiving stopped sessions…' : 'archive all stopped'}
+                      </span>
+                      <span className="niuu-text-text-faint">{stoppedSessionCount}</span>
+                    </button>
+
+                    <div className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-p-2">
+                      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = !stoppedSelectionMode;
+                            setStoppedSelectionMode(next);
+                            if (!next) {
+                              setSelectedStoppedIds(new Set());
+                            }
+                          }}
+                          className={cn(
+                            'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-px-2.5 niuu-py-1.5 niuu-font-mono niuu-text-[10px] niuu-transition-colors',
+                            stoppedSelectionMode
+                              ? 'niuu-bg-brand/15 niuu-text-brand'
+                              : 'niuu-text-text-muted hover:niuu-bg-bg-elevated hover:niuu-text-text-primary',
+                          )}
+                          data-testid="toggle-stopped-selection-button"
+                        >
+                          <Trash2 className="niuu-h-3.5 niuu-w-3.5" />
+                          {stoppedSelectionMode ? 'cancel delete select' : 'select stopped to delete'}
+                        </button>
+                        <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint">
+                          {deleteSelectionCount} selected
+                        </span>
+                      </div>
+
+                      {stoppedSelectionMode ? (
+                        <div className="niuu-mt-2 niuu-flex niuu-flex-wrap niuu-gap-2">
+                          <button
+                            type="button"
+                            onClick={handleSelectAllVisibleStopped}
+                            disabled={filteredStoppedSessions.length === 0}
+                            className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-px-2.5 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-text-muted hover:niuu-bg-bg-elevated disabled:niuu-cursor-not-allowed disabled:niuu-opacity-50"
+                            data-testid="select-all-stopped-button"
+                          >
+                            select visible stopped ({filteredStoppedSessions.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearStoppedSelection}
+                            disabled={deleteSelectionCount === 0}
+                            className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-px-2.5 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-text-muted hover:niuu-bg-bg-elevated disabled:niuu-cursor-not-allowed disabled:niuu-opacity-50"
+                            data-testid="clear-stopped-selection-button"
+                          >
+                            clear
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeleteStoppedOpen(true)}
+                            disabled={deleteSelectionCount === 0}
+                            className="niuu-rounded-md niuu-border niuu-border-red-500/35 niuu-bg-red-500/10 niuu-px-2.5 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-red-200 hover:niuu-bg-red-500/15 disabled:niuu-cursor-not-allowed disabled:niuu-opacity-50"
+                            data-testid="delete-selected-stopped-button"
+                          >
+                            delete selected ({deleteSelectionCount})
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -558,6 +749,9 @@ export function SessionsPage() {
                     sessions={g.sessions}
                     selectedId={selectedSessionId}
                     onSelect={handleSelectSession}
+                    selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
+                    selectedSessionIds={selectedStoppedIds}
+                    onToggleSelection={handleToggleStoppedSelection}
                   />
                 ))}
               </div>
@@ -597,6 +791,51 @@ export function SessionsPage() {
           )}
         </div>
       </div>
+      <Dialog open={deleteStoppedOpen} onOpenChange={setDeleteStoppedOpen}>
+        <DialogContent
+          title="Delete Selected Stopped Sessions"
+          description="This removes the selected stopped sessions from the list. This action cannot be undone."
+        >
+          <div className="niuu-space-y-4">
+            <div className="niuu-rounded-lg niuu-border niuu-border-red-500/25 niuu-bg-red-500/8 niuu-p-3 niuu-text-sm niuu-text-text-secondary">
+              {deleteSelectionCount === 1
+                ? 'Delete 1 stopped session?'
+                : `Delete ${deleteSelectionCount} stopped sessions?`}
+            </div>
+            {deleteSelectionPreview.length > 0 ? (
+              <div className="niuu-max-h-48 niuu-space-y-2 niuu-overflow-y-auto niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-p-3">
+                {deleteSelectionPreview.map((session) => (
+                  <div
+                    key={session.id}
+                    className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-font-mono niuu-text-xs niuu-text-text-secondary"
+                  >
+                    <span className="niuu-truncate">{session.personaName || session.id}</span>
+                    <span className="niuu-text-text-faint">{session.id}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <div className="niuu-flex niuu-justify-end niuu-gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteStoppedOpen(false)}
+                className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary hover:niuu-bg-bg-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteSelectedStopped()}
+                disabled={deleteBusy || deleteSelectionCount === 0}
+                className="niuu-rounded-md niuu-bg-red-500 niuu-px-3 niuu-py-2 niuu-text-sm niuu-font-medium niuu-text-white hover:niuu-opacity-90 disabled:niuu-cursor-not-allowed disabled:niuu-opacity-50"
+                data-testid="confirm-delete-selected-stopped-button"
+              >
+                {deleteBusy ? 'Deleting…' : `Delete ${deleteSelectionCount}`}
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       <LaunchWizard open={launchOpen} onOpenChange={setLaunchOpen} />
     </>
   );

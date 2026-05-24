@@ -7,6 +7,78 @@
   min-width: 960px;
 }
 
+.vol-launch-wizard__access-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.vol-launch-wizard__access-option:hover {
+  border-color: color-mix(in srgb, var(--color-brand-500, var(--brand-500)) 42%, var(--color-border-subtle));
+  background: color-mix(in srgb, var(--color-brand-500, var(--brand-500)) 6%, var(--color-bg-primary));
+}
+
+.vol-launch-wizard__access-option--checked {
+  border-color: color-mix(in srgb, var(--color-brand-500, var(--brand-500)) 60%, var(--color-border-subtle));
+  background: color-mix(in srgb, var(--color-brand-500, var(--brand-500)) 10%, var(--color-bg-primary));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
+}
+
+.vol-launch-wizard__access-option--stacked {
+  align-items: flex-start;
+}
+
+.vol-launch-wizard__access-option-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.vol-launch-wizard__access-option-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  border: 1px solid color-mix(in srgb, var(--color-brand-500, var(--brand-500)) 38%, var(--color-border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 78%, transparent);
+  color: var(--color-bg-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast),
+    color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.vol-launch-wizard__access-option--checked .vol-launch-wizard__access-option-box {
+  border-color: var(--color-brand-500, var(--brand-500));
+  background: var(--color-brand-500, var(--brand-500));
+}
+
+.vol-launch-wizard__access-option-input:focus-visible + .vol-launch-wizard__access-option-box {
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--color-brand-500, var(--brand-500)) 26%, transparent);
+}
+
 @media (max-width: 1100px) {
   .vol-launch-wizard {
     width: calc(100vw - var(--space-8)) !important;

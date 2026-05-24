@@ -41,6 +41,9 @@ from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
+_MAX_WS_FRAME_BYTES = 1024 * 1024
+_WS_FRAME_HEADROOM_BYTES = 8 * 1024
+
 # Monotonic request-ID generator for JSON-RPC calls.
 _next_id = count(1)
 
@@ -57,6 +60,55 @@ def _rpc_request(method: str, params: dict | None = None) -> tuple[int, dict]:
 def _rpc_notification(method: str) -> dict:
     """Build a JSON-RPC 2.0 notification (no id, no response expected)."""
     return {"jsonrpc": "2.0", "method": method}
+
+
+def _normalize_text_content(content: object) -> str:
+    """Return a safe plain-text representation for transport control content."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        attachment_labels: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").strip()
+            if item_type == "text":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text.strip())
+                continue
+            if item_type == "image":
+                attachment_labels.append("image attachment")
+            elif item_type:
+                attachment_labels.append(f"{item_type} attachment")
+        lines: list[str] = []
+        if text_parts:
+            lines.append("\n\n".join(text_parts))
+        if attachment_labels:
+            counts: dict[str, int] = {}
+            for label in attachment_labels:
+                counts[label] = counts.get(label, 0) + 1
+            summary = ", ".join(
+                f"{count} {label}" if count != 1 else f"1 {label}"
+                for label, count in sorted(counts.items())
+            )
+            lines.append(f"[User attached {summary}. This transport forwards text only.]")
+        return "\n\n".join(lines).strip()
+    return str(content or "").strip()
+
+
+def _encode_rpc_message(msg: dict, method: str) -> str:
+    """Serialize an outbound RPC message and fail early if it exceeds WS limits."""
+    encoded = json.dumps(msg)
+    encoded_size = len(encoded.encode("utf-8"))
+    limit = _MAX_WS_FRAME_BYTES - _WS_FRAME_HEADROOM_BYTES
+    if encoded_size > limit:
+        raise RuntimeError(
+            f"Codex WebSocket payload too large for {method}: "
+            f"{encoded_size} bytes exceeds safe limit of {limit} bytes"
+        )
+    return encoded
 
 
 class CodexWebSocketTransport(CLITransport):
@@ -109,6 +161,7 @@ class CodexWebSocketTransport(CLITransport):
         self._block_index: int = 0
         self._pending_redirects: list[str] = []
         self._redirect_interrupt_requested = False
+        self._buffered_item_output: dict[str, list[str]] = {}
 
         # Pending RPC response futures keyed by request id.
         self._pending: dict[int, asyncio.Future] = {}
@@ -274,7 +327,13 @@ class CodexWebSocketTransport(CLITransport):
         fut: asyncio.Future[dict] = loop.create_future()
         self._pending[rid] = fut
 
-        await self._ws.send(json.dumps(msg))
+        try:
+            payload = _encode_rpc_message(msg, method)
+        except Exception:
+            self._pending.pop(rid, None)
+            raise
+
+        await self._ws.send(payload)
         logger.debug("RPC → %s id=%d", method, rid)
 
         try:
@@ -287,7 +346,8 @@ class CodexWebSocketTransport(CLITransport):
         """Send a JSON-RPC notification (fire-and-forget)."""
         if not self._ws:
             return
-        await self._ws.send(json.dumps(_rpc_notification(method)))
+        payload = _encode_rpc_message(_rpc_notification(method), method)
+        await self._ws.send(payload)
 
     # ------------------------------------------------------------------
     # Handshake
@@ -504,17 +564,13 @@ class CodexWebSocketTransport(CLITransport):
             await self._handle_item_completed(item)
             return
 
-        # --- Command / file output deltas (show in chat as text) ---
+        # --- Command / file output deltas ---
         if method == "item/commandExecution/outputDelta":
-            delta = params.get("delta", "")
-            if delta:
-                await self._emit_text_delta(delta)
+            self._buffer_item_output(params.get("itemId"), params.get("delta", ""))
             return
 
         if method == "item/fileChange/outputDelta":
-            delta = params.get("delta", "")
-            if delta:
-                await self._emit_text_delta(delta)
+            self._buffer_item_output(params.get("itemId"), params.get("delta", ""))
             return
 
         # --- Errors ---
@@ -720,7 +776,9 @@ class CodexWebSocketTransport(CLITransport):
             # Close the tool_use block, then emit the output as a tool_result
             # paired by id so the UI groups it under the call.
             await self._emit_content_block_stop()
-            output = item.get("aggregatedOutput") or ""
+            output = item.get("aggregatedOutput")
+            if not isinstance(output, str) or not output:
+                output = self._consume_buffered_item_output(item_id)
             if not isinstance(output, str):
                 output = str(output)
             exit_code = item.get("exitCode", 0)
@@ -742,10 +800,14 @@ class CodexWebSocketTransport(CLITransport):
         if item_type in ("fileChange", "mcpToolCall", "webSearch"):
             await self._emit_content_block_stop()
             result_text = self._extract_item_result_text(item)
+            if not result_text:
+                result_text = self._consume_buffered_item_output(item_id)
             if result_text:
                 is_error = bool(item.get("isError") or item.get("is_error"))
                 await self._emit_tool_result(item_id, result_text, is_error=is_error)
             return
+
+        self._buffered_item_output.pop(item_id, None)
 
     @staticmethod
     def _extract_item_result_text(item: dict) -> str:
@@ -763,6 +825,21 @@ class CodexWebSocketTransport(CLITransport):
             except (TypeError, ValueError):
                 return str(val)
         return ""
+
+    def _buffer_item_output(self, item_id: object, delta: object) -> None:
+        """Accumulate incremental tool output until the item completes."""
+        if not isinstance(item_id, str) or not item_id:
+            return
+        if not isinstance(delta, str) or not delta:
+            return
+        self._buffered_item_output.setdefault(item_id, []).append(delta)
+
+    def _consume_buffered_item_output(self, item_id: object) -> str:
+        """Return and clear buffered incremental output for a completed item."""
+        if not isinstance(item_id, str) or not item_id:
+            return ""
+        chunks = self._buffered_item_output.pop(item_id, None) or []
+        return "".join(chunks)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -852,7 +929,7 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if subtype == "steer":
-            content = str(kwargs.get("content") or "").strip()
+            content = _normalize_text_content(kwargs.get("content"))
             if content and self._thread_id and self._current_turn_id:
                 logger.info(
                     "Codex steer requested (thread=%s turn=%s)",
@@ -877,7 +954,7 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if subtype == "redirect":
-            content = str(kwargs.get("content") or "").strip()
+            content = _normalize_text_content(kwargs.get("content"))
             if not content:
                 return
 

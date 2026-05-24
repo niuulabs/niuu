@@ -1313,6 +1313,73 @@ class TestDispatchBrowserMessage:
         )
 
     @pytest.mark.asyncio
+    async def test_dispatch_structured_user_message_normalizes_attachments(self, test_broker):
+        test_broker._channels.broadcast = AsyncMock()
+        image_data = "a" * 200000
+
+        await test_broker._dispatch_browser_message(
+            {
+                "content": [
+                    {"type": "text", "text": "Please review this screenshot"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": image_data,
+                        },
+                    },
+                ]
+            }
+        )
+        await asyncio.sleep(0)
+
+        expected = (
+            "Please review this screenshot\n\n"
+            "[User attached 1 image attachment. This transport forwards text only.]"
+        )
+        test_broker._transport.send_message.assert_called_once_with(expected)
+        test_broker._channels.broadcast.assert_awaited_once_with(
+            {
+                "type": "user_confirmed",
+                "id": ANY,
+                "content": expected,
+                "request_id": None,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_attachment_only_message_uses_summary_text(self, test_broker):
+        test_broker._channels.broadcast = AsyncMock()
+
+        await test_broker._dispatch_browser_message(
+            {
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "a" * 200000,
+                        },
+                    }
+                ]
+            }
+        )
+        await asyncio.sleep(0)
+
+        expected = "[User attached 1 image attachment. This transport forwards text only.]"
+        test_broker._transport.send_message.assert_called_once_with(expected)
+        test_broker._channels.broadcast.assert_awaited_once_with(
+            {
+                "type": "user_confirmed",
+                "id": ANY,
+                "content": expected,
+                "request_id": None,
+            }
+        )
+
+    @pytest.mark.asyncio
     async def test_dispatch_user_message_steers_when_turn_active(self, test_broker):
         test_broker._transport.capabilities = TransportCapabilities(steer=True)
         test_broker._transport.is_turn_active = True
@@ -1337,6 +1404,37 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_control.assert_called_once_with(
             "redirect",
             content="change direction",
+        )
+        test_broker._transport.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_structured_user_message_redirects_with_normalized_text(self, test_broker):
+        test_broker._transport.capabilities = TransportCapabilities(steer=True)
+        test_broker._transport.is_turn_active = True
+
+        await test_broker._dispatch_browser_message(
+            {
+                "content": [
+                    {"type": "text", "text": "Switch to the new screenshot"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "b" * 200000,
+                        },
+                    },
+                ]
+            }
+        )
+        await asyncio.sleep(0)
+
+        test_broker._transport.send_control.assert_called_once_with(
+            "redirect",
+            content=(
+                "Switch to the new screenshot\n\n"
+                "[User attached 1 image attachment. This transport forwards text only.]"
+            ),
         )
         test_broker._transport.send_message.assert_not_called()
 

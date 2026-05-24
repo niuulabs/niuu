@@ -376,4 +376,61 @@ describe('SessionsPage', () => {
     fireEvent.click(screen.getByTestId('archive-stopped-button'));
     await waitFor(() => expect(archiveStoppedSessions).toHaveBeenCalledTimes(1));
   });
+
+  it('can select multiple stopped sessions and delete them together', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({ id: 'stopped-1', personaName: 'stopped one', state: 'terminated' }),
+      makeSession({ id: 'stopped-2', personaName: 'stopped two', state: 'terminated' }),
+      makeSession({ id: 'running-1', personaName: 'running one', state: 'running' }),
+    ]);
+    const volundr = createMockVolundrService();
+    const deleteSession = vi.fn().mockResolvedValue(undefined);
+    (volundr as IVolundrService).deleteSession = deleteSession;
+
+    wrap(store, volundr);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('toggle-stopped-selection-button')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('toggle-stopped-selection-button'));
+    fireEvent.click(screen.getByTestId('stopped-session-checkbox-stopped-1'));
+    fireEvent.click(screen.getByTestId('stopped-session-checkbox-stopped-2'));
+    fireEvent.click(screen.getByTestId('delete-selected-stopped-button'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('confirm-delete-selected-stopped-button')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('confirm-delete-selected-stopped-button'));
+
+    await waitFor(() => expect(deleteSession).toHaveBeenCalledTimes(2));
+    expect(deleteSession).toHaveBeenCalledWith('stopped-1');
+    expect(deleteSession).toHaveBeenCalledWith('stopped-2');
+  });
+
+  it('navigates back to the sessions list when deleting the selected stopped session', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({ id: 'ds-1', personaName: 'stopped current', state: 'terminated' }),
+      makeSession({ id: 'stopped-2', personaName: 'stopped two', state: 'terminated' }),
+    ]);
+    const volundr = createMockVolundrService();
+    const deleteSession = vi.fn().mockResolvedValue(undefined);
+    (volundr as IVolundrService).deleteSession = deleteSession;
+
+    wrap(store, volundr);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('toggle-stopped-selection-button')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('toggle-stopped-selection-button'));
+    fireEvent.click(screen.getByTestId('stopped-session-checkbox-ds-1'));
+    fireEvent.click(screen.getByTestId('delete-selected-stopped-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('confirm-delete-selected-stopped-button')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('confirm-delete-selected-stopped-button'));
+
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions', replace: true }),
+    );
+  });
 });

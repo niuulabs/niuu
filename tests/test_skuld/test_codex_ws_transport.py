@@ -910,6 +910,44 @@ class TestControl:
         send_message.assert_awaited_once_with("Start fresh")
 
     @pytest.mark.asyncio
+    async def test_redirect_normalizes_structured_content(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-5"
+
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            return {}
+
+        t._send_rpc = fake_send_rpc
+
+        await t.send_control(
+            "redirect",
+            content=[
+                {"type": "text", "text": "Use the attached screenshot instead"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "a" * 1000,
+                    },
+                },
+            ],
+        )
+
+        assert t._pending_redirects == [
+            (
+                "Use the attached screenshot instead\n\n"
+                "[User attached 1 image attachment. This transport forwards text only.]"
+            )
+        ]
+        assert t._redirect_interrupt_requested is True
+        assert calls[0][0] == "turn/interrupt"
+
+    @pytest.mark.asyncio
     async def test_turn_completed_restarts_with_pending_redirect(self, tmp_path):
         t = _make_transport(tmp_path)
         t._thread_id = "thread-1"
@@ -928,7 +966,19 @@ class TestControl:
         assert t._redirect_interrupt_requested is False
         assert t._pending_redirects == []
         assert _events_of_type(emit, "result")
-        send_message.assert_awaited_once_with("Do option B instead")
+
+    @pytest.mark.asyncio
+    async def test_send_message_rejects_oversized_payload_before_ws_send(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._ws = FakeWebSocket()
+
+        oversized = "x" * 1045000
+
+        with pytest.raises(RuntimeError, match="payload too large"):
+            await t.send_message(oversized)
+
+        assert t._ws.sent == []
 
 
 # ---------------------------------------------------------------------------
@@ -1326,14 +1376,21 @@ class TestFullTurnFlow:
         tool_starts = [b for b in block_starts if b["content_block"].get("type") == "tool_use"]
         assert len(tool_starts) >= 1
 
-        # Output text shown
+        # Output should stay attached to the tool result, not leak as plain
+        # assistant text.
         text_deltas = [
             e
             for e in events
             if e.get("type") == "content_block_delta"
             and e.get("delta", {}).get("type") == "text_delta"
         ]
-        assert any("branch main" in d["delta"]["text"] for d in text_deltas)
+        assert text_deltas == []
+
+        result_blocks = [
+            b["content_block"] for b in block_starts if b["content_block"].get("type") == "tool_result"
+        ]
+        assert len(result_blocks) == 1
+        assert "On branch main" in result_blocks[0]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -1750,6 +1807,35 @@ class TestItemCompletedEdgeCases:
         assert len(text_deltas) == 0
 
     @pytest.mark.asyncio
+    async def test_command_completed_uses_buffered_output_when_aggregate_missing(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emit = _collect_emits(t)
+
+        await t._handle_server_message(
+            {
+                "method": "item/commandExecution/outputDelta",
+                "params": {"itemId": "cmd-1", "delta": "line one\n"},
+            }
+        )
+        await t._handle_server_message(
+            {
+                "method": "item/commandExecution/outputDelta",
+                "params": {"itemId": "cmd-1", "delta": "line two\n"},
+            }
+        )
+
+        await t._handle_item_completed(
+            {"type": "commandExecution", "id": "cmd-1", "aggregatedOutput": None, "exitCode": 0}
+        )
+
+        starts = _events_of_type(emit, "content_block_start")
+        result_blocks = [
+            e["content_block"] for e in starts if e["content_block"].get("type") == "tool_result"
+        ]
+        assert len(result_blocks) == 1
+        assert result_blocks[0]["content"] == "line one\nline two\n"
+
+    @pytest.mark.asyncio
     async def test_unknown_item_completed_no_emit(self, tmp_path):
         """An unknown item type completing should not emit anything."""
         t = _make_transport(tmp_path)
@@ -1990,7 +2076,7 @@ class TestThreadStartedNotification:
 
 class TestFileChangeOutputDelta:
     @pytest.mark.asyncio
-    async def test_file_change_output_delta_emits_text(self, tmp_path):
+    async def test_file_change_output_delta_without_item_id_is_ignored(self, tmp_path):
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
@@ -2001,9 +2087,27 @@ class TestFileChangeOutputDelta:
             }
         )
 
-        events = _emitted_events(emit)
-        assert len(events) == 1
-        assert events[0]["delta"]["text"] == "patching file.py"
+        assert emit.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_file_change_output_delta_is_buffered_until_completion(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emit = _collect_emits(t)
+
+        await t._handle_server_message(
+            {
+                "method": "item/fileChange/outputDelta",
+                "params": {"itemId": "fc-1", "delta": "patching file.py"},
+            }
+        )
+        await t._handle_item_completed({"type": "fileChange", "id": "fc-1", "changes": []})
+
+        starts = _events_of_type(emit, "content_block_start")
+        result_blocks = [
+            e["content_block"] for e in starts if e["content_block"].get("type") == "tool_result"
+        ]
+        assert len(result_blocks) == 1
+        assert result_blocks[0]["content"] == "patching file.py"
 
     @pytest.mark.asyncio
     async def test_file_change_output_delta_empty_ignored(self, tmp_path):

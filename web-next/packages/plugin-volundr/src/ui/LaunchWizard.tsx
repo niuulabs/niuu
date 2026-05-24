@@ -1258,10 +1258,15 @@ export function RuntimeStep({
               {credentials.map((credential) => (
                 <label
                   key={credential.name}
-                  className="niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-primary"
+                  className={`vol-launch-wizard__access-option ${
+                    form.selectedCredentials.includes(credential.name)
+                      ? 'vol-launch-wizard__access-option--checked'
+                      : ''
+                  }`}
                 >
                   <input
                     type="checkbox"
+                    className="vol-launch-wizard__access-option-input"
                     checked={form.selectedCredentials.includes(credential.name)}
                     onChange={(event) =>
                       update({
@@ -1270,7 +1275,11 @@ export function RuntimeStep({
                           : form.selectedCredentials.filter((name) => name !== credential.name),
                       })
                     }
+                    aria-label={credential.name}
                   />
+                  <span className="vol-launch-wizard__access-option-box" aria-hidden="true">
+                    {form.selectedCredentials.includes(credential.name) ? '✓' : ''}
+                  </span>
                   <span className="niuu-font-mono">{credential.name}</span>
                 </label>
               ))}
@@ -1284,10 +1293,15 @@ export function RuntimeStep({
               {integrations.map((integration) => (
                 <label
                   key={integration.id}
-                  className="niuu-flex niuu-items-start niuu-gap-2 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-primary"
+                  className={`vol-launch-wizard__access-option vol-launch-wizard__access-option--stacked ${
+                    form.selectedIntegrations.includes(integration.id)
+                      ? 'vol-launch-wizard__access-option--checked'
+                      : ''
+                  }`}
                 >
                   <input
                     type="checkbox"
+                    className="vol-launch-wizard__access-option-input"
                     checked={form.selectedIntegrations.includes(integration.id)}
                     onChange={(event) =>
                       update({
@@ -1296,7 +1310,11 @@ export function RuntimeStep({
                           : form.selectedIntegrations.filter((id) => id !== integration.id),
                       })
                     }
+                    aria-label={formatIntegrationLabel(integration)}
                   />
+                  <span className="vol-launch-wizard__access-option-box" aria-hidden="true">
+                    {form.selectedIntegrations.includes(integration.id) ? '✓' : ''}
+                  </span>
                   <span className="niuu-flex niuu-flex-col">
                     <span>{formatIntegrationLabel(integration)}</span>
                     {formatIntegrationMeta(integration) ? (

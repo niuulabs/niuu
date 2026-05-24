@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { createMemoryHistory } from '@tanstack/react-router';
 import { ConfigProvider, FeatureCatalogProvider, definePlugin } from '@niuulabs/plugin-sdk';
 import { Shell } from './Shell';
@@ -116,6 +117,22 @@ describe('Shell', () => {
       expect(screen.getByTestId('beta-content')).toBeInTheDocument();
     });
     expect(localStorage.getItem('niuu.active')).toBe('beta');
+  });
+
+  it('shows a tooltip for rail items with plugin name and subtitle', async () => {
+    const user = userEvent.setup({ delay: null });
+    wrap(<Shell plugins={[pluginA, pluginB]} _testHistory={memHistory('/')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
+    });
+
+    await user.hover(screen.getByRole('button', { name: 'Beta' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('tooltip')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Beta');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('second');
   });
 
   it('hides plugins disabled via config', async () => {
