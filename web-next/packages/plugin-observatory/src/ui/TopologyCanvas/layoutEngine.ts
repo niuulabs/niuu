@@ -492,7 +492,8 @@ function buildRunWorkflowLayout(
     const startY = anchor.y - ((groupChildren.length - 1) * spacing) / 2;
 
     for (const [index, child] of groupChildren.entries()) {
-      const offsetX = groupId === 'main' && groupChildren.length > 2 ? (index % 2 === 0 ? -14 : 14) : 0;
+      const offsetX =
+        groupId === 'main' && groupChildren.length > 2 ? (index % 2 === 0 ? -14 : 14) : 0;
       const next = {
         x: anchor.x + offsetX,
         y: startY + index * spacing,
@@ -569,7 +570,9 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
   }
 
   for (const node of clusterNodes) {
-    const children = (childrenByParent.get(node.id) ?? []).filter((child) => child.typeId !== 'cluster');
+    const children = (childrenByParent.get(node.id) ?? []).filter(
+      (child) => child.typeId !== 'cluster',
+    );
     const contentExtent =
       children.length === 0
         ? 0
@@ -578,10 +581,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
             fallbackRadius: 72,
             extentForNode: nestedExtent,
           });
-    clusterRadii.set(
-      node.id,
-      Math.max(LAYOUT.CLUSTER_INNER_RADIUS, contentExtent + 18),
-    );
+    clusterRadii.set(node.id, Math.max(LAYOUT.CLUSTER_INNER_RADIUS, contentExtent + 18));
   }
 
   for (const node of realmNodes) {
@@ -598,20 +598,21 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
               fallbackRadius: 72,
               extentForNode: realmChildExtent,
             });
-    realmRadii.set(
-      node.id,
-      Math.max(LAYOUT.REALM_INNER_RADIUS, contentExtent + 18),
-    );
+    realmRadii.set(node.id, Math.max(LAYOUT.REALM_INNER_RADIUS, contentExtent + 18));
   }
 
   const rootNodes = sortedNodes(
     nodes.filter((node) => !node.parentId || !nodeIds.has(node.parentId)),
   );
-  const rootPlacements = placePackedChildren(rootNodes, { x: 0, y: 0 }, {
-    padding: 48,
-    fallbackRadius: Math.max(LAYOUT.REALM_INNER_RADIUS, LAYOUT.MIMIR_RADIUS) + 120,
-    extentForNode: worldContainerExtent,
-  });
+  const rootPlacements = placePackedChildren(
+    rootNodes,
+    { x: 0, y: 0 },
+    {
+      padding: 48,
+      fallbackRadius: Math.max(LAYOUT.REALM_INNER_RADIUS, LAYOUT.MIMIR_RADIUS) + 120,
+      extentForNode: worldContainerExtent,
+    },
+  );
 
   for (const node of rootNodes) {
     const pos = rootPlacements.get(node.id);
@@ -667,7 +668,9 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
   }
 
   for (const cluster of clusterNodes) {
-    const children = (childrenByParent.get(cluster.id) ?? []).filter((child) => child.typeId !== 'cluster');
+    const children = (childrenByParent.get(cluster.id) ?? []).filter(
+      (child) => child.typeId !== 'cluster',
+    );
     const clusterAnchor = positions.get(cluster.id);
 
     const childPlacements = placePackedChildren(children, clusterAnchor, {
@@ -723,7 +726,8 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
 
   for (const run of runNodes) {
     const children = childrenByParent.get(run.id) ?? [];
-    const runLayout = nestedLayouts.get(run.id) ?? buildNestedPackedLayout(run, children, nestedExtent);
+    const runLayout =
+      nestedLayouts.get(run.id) ?? buildNestedPackedLayout(run, children, nestedExtent);
     const anchor = positions.get(run.id);
     if (anchor) {
       positions.set(run.id, {

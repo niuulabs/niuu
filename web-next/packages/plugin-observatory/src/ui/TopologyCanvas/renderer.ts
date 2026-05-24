@@ -315,8 +315,11 @@ export function getStructureLabelBounds(
   const totalWidth = glyphWidth + glyphGap + textWidth;
   const radius =
     node.typeId === 'realm' || node.typeId === 'cluster'
-      ? pos.zoneRadius ?? zoneRadius(node.typeId)
-      : Math.max((pos.containerWidth ?? HOST_HALF_W * 2) / 2, (pos.containerHeight ?? HOST_HALF_H * 2) / 2);
+      ? (pos.zoneRadius ?? zoneRadius(node.typeId))
+      : Math.max(
+          (pos.containerWidth ?? HOST_HALF_W * 2) / 2,
+          (pos.containerHeight ?? HOST_HALF_H * 2) / 2,
+        );
   const labelY = pos.y - radius - (node.typeId === 'realm' ? 8 : 4);
   const fontHeight = node.typeId === 'realm' ? 13 : 10;
 
@@ -640,10 +643,10 @@ function drawEdge(
       sameRunFlow
         ? curveLinear
         : sameClusterSoft
-        ? curveCatmullRom.alpha(0.5)
-        : ancestorNode && !directParentChild && !sameRunFlow
-        ? curveBundle.beta(profile.bundleStrength)
-        : curveCatmullRom.alpha(0.72),
+          ? curveCatmullRom.alpha(0.5)
+          : ancestorNode && !directParentChild && !sameRunFlow
+            ? curveBundle.beta(profile.bundleStrength)
+            : curveCatmullRom.alpha(0.72),
     )
     .context(ctx);
   const points: Array<{ x: number; y: number }> = [start];
@@ -1015,7 +1018,11 @@ export function drawNode(
 
   if (node.typeId === 'run') {
     const { x, y } = pos;
-    const runRadius = Math.max((pos.containerWidth ?? 100) / 2, (pos.containerHeight ?? 100) / 2, 42);
+    const runRadius = Math.max(
+      (pos.containerWidth ?? 100) / 2,
+      (pos.containerHeight ?? 100) / 2,
+      42,
+    );
 
     ctx.save();
     const g = ctx.createRadialGradient(x, y, 0, x, y, runRadius);

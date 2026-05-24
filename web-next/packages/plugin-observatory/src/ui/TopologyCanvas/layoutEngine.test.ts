@@ -209,9 +209,9 @@ describe('computeLayout', () => {
 
     expect(host.containerWidth ?? 0).toBeGreaterThan(HOST_HALF_W * 2);
     expect(host.containerHeight ?? 0).toBeGreaterThan(HOST_HALF_H * 2);
-    expect(Math.hypot(host.x - cluster.x, host.y - cluster.y) + Math.max(halfW, halfH)).toBeLessThanOrEqual(
-      clusterRadius + 8,
-    );
+    expect(
+      Math.hypot(host.x - cluster.x, host.y - cluster.y) + Math.max(halfW, halfH),
+    ).toBeLessThanOrEqual(clusterRadius + 8);
 
     for (const childId of ['valk-brokkr', 'raven-brokkr', 'printer-brokkr']) {
       const child = positions.get(childId)!;
@@ -291,9 +291,27 @@ describe('computeLayout', () => {
       timestamp: '2026-04-19T00:00:00Z',
       nodes: [
         { id: 'realm-a', typeId: 'realm', label: 'realm-a', parentId: null, status: 'healthy' },
-        { id: 'cluster-a', typeId: 'cluster', label: 'cluster-a', parentId: 'realm-a', status: 'healthy' },
-        { id: 'cluster-b', typeId: 'cluster', label: 'cluster-b', parentId: 'realm-a', status: 'healthy' },
-        { id: 'cluster-c', typeId: 'cluster', label: 'cluster-c', parentId: 'realm-a', status: 'healthy' },
+        {
+          id: 'cluster-a',
+          typeId: 'cluster',
+          label: 'cluster-a',
+          parentId: 'realm-a',
+          status: 'healthy',
+        },
+        {
+          id: 'cluster-b',
+          typeId: 'cluster',
+          label: 'cluster-b',
+          parentId: 'realm-a',
+          status: 'healthy',
+        },
+        {
+          id: 'cluster-c',
+          typeId: 'cluster',
+          label: 'cluster-c',
+          parentId: 'realm-a',
+          status: 'healthy',
+        },
         ...['cluster-a', 'cluster-b', 'cluster-c'].flatMap((clusterId, clusterIndex) =>
           Array.from({ length: 8 }, (_, index) => ({
             id: `${clusterId}-run-${index}`,
@@ -420,12 +438,12 @@ describe('computeLayout', () => {
     const bifrost = positions.get('service-bifrost')!;
 
     const clusterRadius = cluster.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
-    expect(Math.hypot(mimir.x - cluster.x, mimir.y - cluster.y) + LAYOUT.MIMIR_RADIUS).toBeLessThanOrEqual(
+    expect(
+      Math.hypot(mimir.x - cluster.x, mimir.y - cluster.y) + LAYOUT.MIMIR_RADIUS,
+    ).toBeLessThanOrEqual(clusterRadius);
+    expect(Math.hypot(bifrost.x - cluster.x, bifrost.y - cluster.y) + 32).toBeLessThanOrEqual(
       clusterRadius,
     );
-    expect(
-      Math.hypot(bifrost.x - cluster.x, bifrost.y - cluster.y) + 32,
-    ).toBeLessThanOrEqual(clusterRadius);
     expect(Math.hypot(mimir.x - bifrost.x, mimir.y - bifrost.y)).toBeGreaterThan(0);
   });
 
@@ -571,7 +589,10 @@ describe('computeLayout', () => {
 
     const positions = computeLayout(topology);
     const bifrost = positions.get('service-bifrost')!;
-    const modelPositions = Array.from({ length: 5 }, (_, index) => positions.get(`model-${index}`)!);
+    const modelPositions = Array.from(
+      { length: 5 },
+      (_, index) => positions.get(`model-${index}`)!,
+    );
     for (let index = 0; index < 5; index += 1) {
       const model = positions.get(`model-${index}`)!;
       const dist = Math.hypot(model.x - bifrost.x, model.y - bifrost.y);

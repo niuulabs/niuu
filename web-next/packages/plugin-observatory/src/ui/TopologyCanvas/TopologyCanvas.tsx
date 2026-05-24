@@ -84,17 +84,22 @@ export function TopologyCanvas({
 
   const cameraToZoomTransform = useCallback((cam: Camera) => {
     const { w, h } = sizeRef.current;
-    return zoomIdentity.translate(w / 2 - cam.x * cam.zoom, h / 2 - cam.y * cam.zoom).scale(cam.zoom);
+    return zoomIdentity
+      .translate(w / 2 - cam.x * cam.zoom, h / 2 - cam.y * cam.zoom)
+      .scale(cam.zoom);
   }, []);
 
-  const zoomTransformToCamera = useCallback((transform: { x: number; y: number; k: number }): Camera => {
-    const { w, h } = sizeRef.current;
-    return {
-      x: (w / 2 - transform.x) / transform.k,
-      y: (h / 2 - transform.y) / transform.k,
-      zoom: clampZoom(transform.k),
-    };
-  }, []);
+  const zoomTransformToCamera = useCallback(
+    (transform: { x: number; y: number; k: number }): Camera => {
+      const { w, h } = sizeRef.current;
+      return {
+        x: (w / 2 - transform.x) / transform.k,
+        y: (h / 2 - transform.y) / transform.k,
+        zoom: clampZoom(transform.k),
+      };
+    },
+    [],
+  );
 
   const syncCamera = useCallback(
     (camera: Camera, markAdjusted: boolean) => {
@@ -306,18 +311,24 @@ export function TopologyCanvas({
 
   // ── Minimap click-to-pan ────────────────────────────────────────────────────
 
-  const handleMinimapClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const mm = minimapRef.current;
-    if (!mm) return;
-    const rect = mm.getBoundingClientRect();
-    const fx = (e.clientX - rect.left) / rect.width;
-    const fy = (e.clientY - rect.top) / rect.height;
-    syncCamera({
-      ...camRef.current,
-      x: fx * CANVAS.WORLD_W - CANVAS.WORLD_W / 2,
-      y: fy * CANVAS.WORLD_H - CANVAS.WORLD_H / 2,
-    }, true);
-  }, [syncCamera]);
+  const handleMinimapClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      const mm = minimapRef.current;
+      if (!mm) return;
+      const rect = mm.getBoundingClientRect();
+      const fx = (e.clientX - rect.left) / rect.width;
+      const fy = (e.clientY - rect.top) / rect.height;
+      syncCamera(
+        {
+          ...camRef.current,
+          x: fx * CANVAS.WORLD_W - CANVAS.WORLD_W / 2,
+          y: fy * CANVAS.WORLD_H - CANVAS.WORLD_H / 2,
+        },
+        true,
+      );
+    },
+    [syncCamera],
+  );
 
   // ── Camera controls ─────────────────────────────────────────────────────────
 

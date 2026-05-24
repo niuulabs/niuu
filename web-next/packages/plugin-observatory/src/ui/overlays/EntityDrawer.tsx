@@ -211,7 +211,9 @@ function KindProperties({ node }: { node: TopologyNode }) {
             {node.purpose && (
               <>
                 <dt>purpose</dt>
-                <dd className="obs-entity-drawer__plain">{humanizeObservatoryText(node.purpose)}</dd>
+                <dd className="obs-entity-drawer__plain">
+                  {humanizeObservatoryText(node.purpose)}
+                </dd>
               </>
             )}
           </>
@@ -226,9 +228,13 @@ function sortContainedNodes(nodes: TopologyNode[]): TopologyNode[] {
     const aOrder = a.layoutHints?.order ?? Number.POSITIVE_INFINITY;
     const bOrder = b.layoutHints?.order ?? Number.POSITIVE_INFINITY;
     if (aOrder !== bOrder) return aOrder - bOrder;
-    return humanizeObservatoryText(a.label).localeCompare(humanizeObservatoryText(b.label), undefined, {
-      sensitivity: 'base',
-    });
+    return humanizeObservatoryText(a.label).localeCompare(
+      humanizeObservatoryText(b.label),
+      undefined,
+      {
+        sensitivity: 'base',
+      },
+    );
   });
 }
 
@@ -391,7 +397,10 @@ export function EntityDrawer({
   onNodeSelect,
 }: EntityDrawerProps) {
   const entityType = node ? registry?.types.find((t) => t.id === node.typeId) : undefined;
-  const residents = node && topology ? sortContainedNodes(topology.nodes.filter((n) => n.parentId === node.id)) : [];
+  const residents =
+    node && topology
+      ? sortContainedNodes(topology.nodes.filter((n) => n.parentId === node.id))
+      : [];
   const isRealm = node?.typeId === 'realm';
   const isCluster = node?.typeId === 'cluster';
   const isContainer = ['realm', 'cluster', 'host', 'run'].includes(node?.typeId ?? '');
