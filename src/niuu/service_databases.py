@@ -201,7 +201,9 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         CONSTRAINT niuu_instances_kind_check CHECK (kind IN ('volundr')),
-        CONSTRAINT niuu_instances_visibility_check CHECK (visibility IN ('system', 'tenant', 'user')),
+        CONSTRAINT niuu_instances_visibility_check CHECK (
+            visibility IN ('system', 'tenant', 'user')
+        ),
         CONSTRAINT niuu_instances_scope_check CHECK (
             (visibility = 'system' AND owner_id IS NULL)
             OR (visibility = 'tenant' AND owner_id IS NULL AND tenant_id IS NOT NULL)

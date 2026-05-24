@@ -127,6 +127,60 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
+def _describe_browser_content_block(block: dict[str, Any]) -> str | None:
+    """Return a short human-readable description for a browser content block."""
+    block_type = str(block.get("type") or "").strip()
+    if not block_type:
+        return None
+    if block_type == "image":
+        return "image attachment"
+    if block_type == "file":
+        return "file attachment"
+    return f"{block_type} attachment"
+
+
+def _normalize_browser_message_content(content: object) -> str:
+    """Convert browser message content into a compact text prompt.
+
+    The browser can send either a plain string or structured content blocks,
+    including large base64-encoded image attachments. Codex transports only
+    accept text, so attachment payloads are summarized instead of stringified.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+
+    text_parts: list[str] = []
+    attachment_descriptions: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "").strip()
+        if block_type == "text":
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                text_parts.append(text.strip())
+            continue
+        description = _describe_browser_content_block(block)
+        if description:
+            attachment_descriptions.append(description)
+
+    lines: list[str] = []
+    if text_parts:
+        lines.append("\n\n".join(text_parts))
+    if attachment_descriptions:
+        counts = collections.Counter(attachment_descriptions)
+        attachment_summary = ", ".join(
+            f"{count} {label}" if count != 1 else f"1 {label}"
+            for label, count in sorted(counts.items())
+        )
+        lines.append(
+            f"[User attached {attachment_summary}. This transport forwards text only.]"
+        )
+    return "\n\n".join(lines).strip()
+
+
 def _resolve_git_workspace_root(workspace_dir: str) -> Path:
     """Resolve the actual checkout root for git-backed workspaces."""
     workspace = Path(workspace_dir).resolve()
@@ -3015,7 +3069,9 @@ class Broker:
                     return
 
                 # Record user turn in conversation history
-                content_str = message if isinstance(message, str) else json.dumps(message)
+                content_str = _normalize_browser_message_content(message)
+                if not content_str:
+                    return
                 msg_id = str(uuid.uuid4())
                 request_id = data.get("request_id")
                 request_id = request_id if isinstance(request_id, str) and request_id else None
@@ -3059,7 +3115,7 @@ class Broker:
                         self._safe_transport_control(
                             self._transport,
                             "redirect",
-                            content=message,
+                            content=content_str,
                         ),
                         name=f"transport-redirect-{msg_id}",
                     )
@@ -3072,7 +3128,7 @@ class Broker:
                 # invocations, so ordering is preserved; we just don't pin
                 # the WS handler waiting for a turn that may take minutes.
                 asyncio.create_task(
-                    self._safe_transport_send(self._transport, message),
+                    self._safe_transport_send(self._transport, content_str),
                     name=f"transport-send-{msg_id}",
                 )
 

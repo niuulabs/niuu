@@ -28,6 +28,7 @@ from observatory.registry import (
     RegistryNotFoundError,
     RegistryValidationError,
 )
+
 KEEPALIVE_INTERVAL = 15.0
 
 

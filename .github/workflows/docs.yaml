@@ -13,7 +13,6 @@ on:
   push:
     branches:
       - main
-      - codex/web-next-only-cutover
     paths:
       - "docs/**"
       - "mkdocs.yml"
@@ -28,11 +27,6 @@ on:
 concurrency:
   group: docs-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  DOCS_PREVIEW_BRANCH: codex/web-next-only-cutover
-  DOCS_PREVIEW_SLUG: web-next-only-cutover
-  DOCS_PREVIEW_SUBDIR: branches/web-next-only-cutover
 
 permissions:
   contents: read
@@ -57,49 +51,26 @@ jobs:
           python-version: "3.12"
           extras: "--extra dev"
 
-      - name: Fetch refs used for docs assembly
-        run: |
-          git fetch origin main "${DOCS_PREVIEW_BRANCH}" --depth=1
-
       - name: Decide deploy mode
         id: mode
         run: |
           set -euo pipefail
-          PREVIEW_REF="refs/heads/${DOCS_PREVIEW_BRANCH}"
-          PREVIEW_URL="https://niuulabs.github.io/volundr/${DOCS_PREVIEW_SUBDIR}/"
 
-          if [[ "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == "${PREVIEW_REF}" || "${GITHUB_REF}" == refs/tags/v* ]]; then
+          if [[ "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "deploy_enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "deploy_enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if [[ "${GITHUB_REF}" == "${PREVIEW_REF}" ]]; then
-            echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
-          else
-            echo "preview_url=" >> "$GITHUB_OUTPUT"
-          fi
+          echo "preview_url=" >> "$GITHUB_OUTPUT"
 
       - name: Build combined site
-        env:
-          PREVIEW_URL: https://niuulabs.github.io/volundr/${{ env.DOCS_PREVIEW_SUBDIR }}/
         run: |
           set -euo pipefail
 
-          ROOT_REF="HEAD"
-          PREVIEW_REF="origin/${DOCS_PREVIEW_BRANCH}"
-
-          if [[ "${GITHUB_REF}" == "refs/heads/${DOCS_PREVIEW_BRANCH}" ]]; then
-            ROOT_REF="origin/main"
-            PREVIEW_REF="HEAD"
-          fi
-
           uv run python scripts/build_docs_bundle.py \
             --output-dir _site \
-            --root-ref "${ROOT_REF}" \
-            --preview-ref "${PREVIEW_REF}" \
-            --preview-subdir "${DOCS_PREVIEW_SUBDIR}" \
-            --preview-site-url "${PREVIEW_URL}"
+            --root-ref HEAD
 
       - name: Upload artifact
         if: steps.mode.outputs.deploy_enabled == 'true'
