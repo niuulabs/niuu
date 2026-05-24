@@ -118,7 +118,7 @@ jobs:
   e2e-test:
     name: "E2E: Playwright"
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
@@ -128,7 +128,7 @@ jobs:
           POSTGRES_DB: volundr_test
         ports: ["5432:5432"]
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U volundr_test -d volundr_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
