@@ -51,6 +51,8 @@ import type {
   PersonalAccessToken,
   CreatePATResult,
   VolundrWorkflowGate,
+  VolundrSessionTrace,
+  VolundrSessionTraceSummary,
 } from '../models/volundr.model';
 
 export interface VolundrConversationTurn {
@@ -199,6 +201,8 @@ export interface IVolundrService {
     sessionId: string,
     callback: (chronicle: SessionChronicle) => void,
   ): () => void;
+  getSessionTrace(sessionId: string): Promise<VolundrSessionTrace | null>;
+  getSessionTraceSummary(sessionId: string): Promise<VolundrSessionTraceSummary | null>;
 
   // Pull requests / CI
   getPullRequests(repoUrl: string, status?: string): Promise<PullRequest[]>;

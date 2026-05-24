@@ -744,6 +744,15 @@ class SessionEventType(StrEnum):
     SESSION_STOP = "session_stop"
 
 
+class SessionSpanStatus(StrEnum):
+    """Lifecycle status for a trace span."""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 @dataclass(frozen=True)
 class SessionEvent:
     """A raw event from a session, dispatched through the event pipeline.
@@ -779,6 +788,27 @@ class SessionEvent:
     cost: Decimal | None = None
     duration_ms: int | None = None
     model: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionSpan:
+    """A hierarchical timing span recorded for a Volundr session."""
+
+    id: UUID
+    session_id: UUID
+    trace_id: UUID
+    kind: str
+    name: str
+    started_at: datetime
+    source_service: str
+    parent_span_id: UUID | None = None
+    status: SessionSpanStatus = SessionSpanStatus.RUNNING
+    ended_at: datetime | None = None
+    duration_ms: int | None = None
+    actor_type: str | None = None
+    actor_id: str | None = None
+    actor_label: str | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
 
 
 class PromptScope(StrEnum):

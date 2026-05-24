@@ -613,9 +613,10 @@ function NodeGlyph({ kind }: { kind: BrowserNode['kind'] }) {
       <svg
         aria-hidden="true"
         viewBox="0 0 12 12"
-        className="niuu-h-3.5 niuu-w-3.5 niuu-fill-current niuu-text-text-secondary"
+        className="niuu-h-3.5 niuu-w-3.5"
+        style={{ color: 'var(--color-text-secondary)' }}
       >
-        <path d="M3 2.5L9 6L3 9.5V2.5Z" />
+        <path d="M3 2.5L9 6L3 9.5V2.5Z" fill="currentColor" />
       </svg>
     );
   }

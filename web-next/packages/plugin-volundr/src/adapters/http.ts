@@ -58,6 +58,10 @@ import type {
   PersonalAccessToken,
   CreatePATResult,
   VolundrWorkflowGate,
+  VolundrSessionTrace,
+  VolundrSessionTraceLane,
+  VolundrSessionTraceSpan,
+  VolundrSessionTraceSummary,
 } from '../models/volundr.model';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
@@ -222,6 +226,54 @@ type ChroniclePayload = {
   commits: SessionChronicle['commits'];
   token_burn?: number[];
   tokenBurn?: number[];
+};
+
+type TraceSpanPayload = {
+  id: string;
+  session_id?: string;
+  trace_id?: string;
+  parent_span_id?: string | null;
+  kind?: string;
+  name?: string;
+  status?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  duration_ms?: number | null;
+  actor_type?: string | null;
+  actor_id?: string | null;
+  actor_label?: string | null;
+  source_service?: string | null;
+  attributes?: Record<string, unknown>;
+};
+
+type TraceLanePayload = {
+  key: string;
+  label?: string;
+  kind?: string;
+};
+
+type TracePayload = {
+  trace_id?: string;
+  session_id?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  duration_ms?: number;
+  spans?: TraceSpanPayload[];
+  lanes?: TraceLanePayload[];
+};
+
+type TraceSummaryPayload = {
+  total_duration_ms?: number;
+  provisioning_duration_ms?: number;
+  setup_duration_ms?: number;
+  workflow_duration_ms?: number;
+  publish_duration_ms?: number;
+  cleanup_duration_ms?: number;
+  active_execution_duration_ms?: number;
+  waiting_duration_ms?: number;
+  turn_count?: number;
+  tool_call_count?: number;
+  longest_span?: TraceSpanPayload | null;
 };
 
 type ChronicleEventPayload = {
@@ -615,6 +667,62 @@ function normalizeChronicle(payload: ChroniclePayload): SessionChronicle {
     files: payload.files,
     commits: payload.commits,
     tokenBurn: payload.tokenBurn ?? payload.token_burn ?? [],
+  };
+}
+
+function normalizeTraceSpan(payload: TraceSpanPayload): VolundrSessionTraceSpan {
+  return {
+    id: payload.id,
+    sessionId: payload.session_id ?? '',
+    traceId: payload.trace_id ?? '',
+    parentSpanId: payload.parent_span_id ?? null,
+    kind: payload.kind ?? 'unknown',
+    name: payload.name ?? payload.kind ?? 'span',
+    status: payload.status ?? 'completed',
+    startedAt: payload.started_at ?? new Date(0).toISOString(),
+    endedAt: payload.ended_at ?? null,
+    durationMs: payload.duration_ms ?? null,
+    actorType: payload.actor_type ?? null,
+    actorId: payload.actor_id ?? null,
+    actorLabel: payload.actor_label ?? null,
+    sourceService: payload.source_service ?? null,
+    attributes: payload.attributes ?? {},
+  };
+}
+
+function normalizeTraceLane(payload: TraceLanePayload): VolundrSessionTraceLane {
+  return {
+    key: payload.key,
+    label: payload.label ?? payload.key,
+    kind: payload.kind ?? 'system',
+  };
+}
+
+function normalizeTrace(payload: TracePayload): VolundrSessionTrace {
+  return {
+    traceId: payload.trace_id ?? '',
+    sessionId: payload.session_id ?? '',
+    startedAt: payload.started_at ?? null,
+    endedAt: payload.ended_at ?? null,
+    durationMs: payload.duration_ms ?? 0,
+    spans: (payload.spans ?? []).map(normalizeTraceSpan),
+    lanes: (payload.lanes ?? []).map(normalizeTraceLane),
+  };
+}
+
+function normalizeTraceSummary(payload: TraceSummaryPayload): VolundrSessionTraceSummary {
+  return {
+    totalDurationMs: payload.total_duration_ms ?? 0,
+    provisioningDurationMs: payload.provisioning_duration_ms ?? 0,
+    setupDurationMs: payload.setup_duration_ms ?? 0,
+    workflowDurationMs: payload.workflow_duration_ms ?? 0,
+    publishDurationMs: payload.publish_duration_ms ?? 0,
+    cleanupDurationMs: payload.cleanup_duration_ms ?? 0,
+    activeExecutionDurationMs: payload.active_execution_duration_ms ?? 0,
+    waitingDurationMs: payload.waiting_duration_ms ?? 0,
+    turnCount: payload.turn_count ?? 0,
+    toolCallCount: payload.tool_call_count ?? 0,
+    longestSpan: payload.longest_span ? normalizeTraceSpan(payload.longest_span) : null,
   };
 }
 
@@ -1367,6 +1475,26 @@ export function buildVolundrHttpAdapter(
         if (active.size === 0) chronicleSubscribers.delete(sessionId);
         maybeCloseStream();
       };
+    },
+    getSessionTrace: async (sessionId) => {
+      try {
+        const payload = await forgeClient.get<TracePayload>(`/sessions/${sessionId}/trace`);
+        return normalizeTrace(payload);
+      } catch (error) {
+        if (error instanceof Error && /404/.test(error.message)) return null;
+        throw error;
+      }
+    },
+    getSessionTraceSummary: async (sessionId) => {
+      try {
+        const payload = await forgeClient.get<TraceSummaryPayload>(
+          `/sessions/${sessionId}/trace/summary`,
+        );
+        return normalizeTraceSummary(payload);
+      } catch (error) {
+        if (error instanceof Error && /404/.test(error.message)) return null;
+        throw error;
+      }
     },
 
     getPullRequests: (repoUrl, status) =>

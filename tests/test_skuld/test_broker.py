@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -2140,6 +2141,96 @@ class TestHandleCliEventSdkFormat:
         }
         await test_broker._handle_cli_event(data)
         assert "/src/module.py" in test_broker._artifacts.files_changed
+
+
+class TestHandleCliEventTraceSpans:
+    """Tests for trace child spans in normal assistant sessions."""
+
+    @pytest.fixture
+    def test_broker(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "trace-session", "workspace_dir": str(tmp_path)},
+            volundr_api_url="http://volundr.test:80",
+        )
+        return Broker(settings=settings)
+
+    @pytest.mark.asyncio
+    async def test_assistant_tool_use_starts_child_tool_span(self, test_broker):
+        assistant_span_id = uuid.uuid4()
+        tool_span_id = uuid.uuid4()
+        test_broker._trace_session_span_id = uuid.uuid4()
+        test_broker._trace_assistant_span_id = assistant_span_id
+
+        with patch.object(
+            test_broker,
+            "_start_trace_span",
+            new_callable=AsyncMock,
+            return_value=tool_span_id,
+        ) as mock_start:
+            await test_broker._handle_cli_event(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "tool-123",
+                                "name": "Bash",
+                                "input": {"command": "npm test"},
+                            }
+                        ]
+                    },
+                }
+            )
+
+        mock_start.assert_awaited_once()
+        assert mock_start.await_args.kwargs["kind"] == "tool.call"
+        assert mock_start.await_args.kwargs["parent_span_id"] == assistant_span_id
+        assert mock_start.await_args.kwargs["attributes"]["tool_use_id"] == "tool-123"
+        assert (
+            mock_start.await_args.kwargs["attributes"]["tool_input"]["command"] == "npm test"
+        )
+        assert test_broker._trace_assistant_tool_spans["tool-123"] == tool_span_id
+
+    @pytest.mark.asyncio
+    async def test_tool_result_user_event_closes_child_span_without_closing_turn(
+        self,
+        test_broker,
+    ):
+        assistant_span_id = uuid.uuid4()
+        tool_span_id = uuid.uuid4()
+        test_broker._trace_assistant_span_id = assistant_span_id
+        test_broker._trace_assistant_tool_spans["tool-123"] = tool_span_id
+        test_broker._trace_assistant_tool_order.append("tool-123")
+        test_broker._assistant_pending_commands["tool-123"] = "npm test"
+
+        with patch.object(
+            test_broker,
+            "_finish_trace_span",
+            new_callable=AsyncMock,
+        ) as mock_finish:
+            await test_broker._handle_cli_event(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "tool-123",
+                                "content": "ok",
+                                "is_error": False,
+                            }
+                        ]
+                    },
+                }
+            )
+
+        mock_finish.assert_awaited_once()
+        assert mock_finish.await_args.args[0] == tool_span_id
+        assert mock_finish.await_args.kwargs["status"] == "completed"
+        assert mock_finish.await_args.kwargs["attributes"]["command"] == "npm test"
+        assert test_broker._trace_assistant_span_id == assistant_span_id
+        assert test_broker._trace_assistant_tool_spans == {}
 
 
 class TestGitDiffSummary:

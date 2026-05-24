@@ -91,6 +91,287 @@ const ERROR_SESSION: VolundrSession = {
   error: 'OOMKilled',
 };
 
+const TELEMETRY_TRACE = {
+  traceId: 'trace-1',
+  sessionId: RUNNING_SESSION.id,
+  startedAt: '2026-05-23T09:25:01Z',
+  endedAt: '2026-05-23T09:40:07Z',
+  durationMs: 906_000,
+  spans: [
+    {
+      id: 'root',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: null,
+      kind: 'session.lifecycle',
+      name: RUNNING_SESSION.name,
+      status: 'completed',
+      startedAt: '2026-05-23T09:25:01Z',
+      endedAt: '2026-05-23T09:40:07Z',
+      durationMs: 906_000,
+      actorType: 'system',
+      actorId: RUNNING_SESSION.id,
+      actorLabel: RUNNING_SESSION.name,
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'workflow',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'root',
+      kind: 'session.workflow',
+      name: 'execution',
+      status: 'completed',
+      startedAt: '2026-05-23T09:29:12Z',
+      endedAt: '2026-05-23T09:37:52Z',
+      durationMs: 520_000,
+      actorType: 'workflow',
+      actorId: 'coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'tool',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'workflow',
+      kind: 'tool.call',
+      name: 'Write',
+      status: 'completed',
+      startedAt: '2026-05-23T09:31:00Z',
+      endedAt: '2026-05-23T09:31:21Z',
+      durationMs: 21_000,
+      actorType: 'assistant',
+      actorId: 'coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-1',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'workflow',
+      kind: 'turn.assistant',
+      name: 'draft response',
+      status: 'completed',
+      startedAt: '2026-05-23T09:29:12Z',
+      endedAt: '2026-05-23T09:29:51Z',
+      durationMs: 39_000,
+      actorType: 'assistant',
+      actorId: 'coordinator',
+      actorLabel: 'planner',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-1-tool',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-1',
+      kind: 'tool.call',
+      name: 'Search',
+      status: 'completed',
+      startedAt: '2026-05-23T09:29:18Z',
+      endedAt: '2026-05-23T09:29:26Z',
+      durationMs: 8_000,
+      actorType: 'assistant',
+      actorId: 'coordinator',
+      actorLabel: 'planner',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-1-idle',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-1',
+      kind: 'wait.idle',
+      name: 'Operator away',
+      status: 'completed',
+      startedAt: '2026-05-23T09:29:26Z',
+      endedAt: '2026-05-23T09:29:38Z',
+      durationMs: 12_000,
+      actorType: 'assistant',
+      actorId: 'coordinator',
+      actorLabel: 'planner',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-2',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'workflow',
+      kind: 'turn.peer',
+      name: 'execute patch',
+      status: 'completed',
+      startedAt: '2026-05-23T09:31:30Z',
+      endedAt: '2026-05-23T09:33:50Z',
+      durationMs: 140_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-2-tool',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-2',
+      kind: 'terminal.command',
+      name: 'npm test',
+      status: 'completed',
+      startedAt: '2026-05-23T09:32:10Z',
+      endedAt: '2026-05-23T09:32:48Z',
+      durationMs: 38_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-2-wait',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-2',
+      kind: 'wait.permission',
+      name: 'Await approval',
+      status: 'completed',
+      startedAt: '2026-05-23T09:33:00Z',
+      endedAt: '2026-05-23T09:33:12Z',
+      durationMs: 12_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+  ],
+  lanes: [
+    { key: 'system', label: 'system', kind: 'system' },
+    { key: 'assistant', label: 'coordinator', kind: 'assistant' },
+  ],
+};
+
+const TELEMETRY_SUMMARY = {
+  totalDurationMs: 906_000,
+  provisioningDurationMs: 0,
+  setupDurationMs: 0,
+  workflowDurationMs: 660_000,
+  publishDurationMs: 21_000,
+  cleanupDurationMs: 0,
+  activeExecutionDurationMs: 556_000,
+  waitingDurationMs: 349_000,
+  turnCount: 2,
+  toolCallCount: 1,
+  longestSpan: TELEMETRY_TRACE.spans[0],
+};
+
+const BLOCKED_TELEMETRY_TRACE = {
+  ...TELEMETRY_TRACE,
+  spans: [
+    TELEMETRY_TRACE.spans[0],
+    TELEMETRY_TRACE.spans[1],
+    {
+      id: 'peer-blocked',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'root',
+      kind: 'turn.peer',
+      name: 'Handle mesh outcome',
+      status: 'completed',
+      startedAt: '2026-05-23T09:30:00Z',
+      endedAt: '2026-05-23T09:38:00Z',
+      durationMs: 480_000,
+      actorType: 'peer',
+      actorId: 'flock-coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'peer-wait',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'peer-blocked',
+      kind: 'wait.permission',
+      name: 'Await approval',
+      status: 'completed',
+      startedAt: '2026-05-23T09:35:00Z',
+      endedAt: '2026-05-23T09:35:06Z',
+      durationMs: 6_000,
+      actorType: 'peer',
+      actorId: 'flock-coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'peer-block',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'peer-blocked',
+      kind: 'tool.call',
+      name: 'Write',
+      status: 'cancelled',
+      startedAt: '2026-05-23T09:37:20Z',
+      endedAt: '2026-05-23T09:37:24Z',
+      durationMs: 4_000,
+      actorType: 'peer',
+      actorId: 'flock-coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+  ],
+};
+
+const TOOL_OVERVIEW_TRACE = {
+  ...TELEMETRY_TRACE,
+  spans: [
+    ...TELEMETRY_TRACE.spans,
+    {
+      id: 'mcp-blocked',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-2',
+      kind: 'tool.call',
+      name: 'linear.search blocker',
+      status: 'cancelled',
+      startedAt: '2026-05-23T09:33:20Z',
+      endedAt: '2026-05-23T09:33:28Z',
+      durationMs: 8_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: { reason: 'blocked by permissions' },
+    },
+    {
+      id: 'write-followup',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-2',
+      kind: 'tool.call',
+      name: 'Draft handoff note',
+      status: 'completed',
+      startedAt: '2026-05-23T09:33:28Z',
+      endedAt: '2026-05-23T09:33:38Z',
+      durationMs: 10_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+  ],
+};
+
 const originalFetch = global.fetch;
 
 // ---------------------------------------------------------------------------
@@ -154,6 +435,16 @@ const SESSION_FEATURES = [
     order: 50,
   },
   {
+    key: 'telemetry',
+    label: 'Telemetry',
+    icon: '',
+    scope: 'session' as const,
+    enabled: true,
+    defaultEnabled: true,
+    adminOnly: false,
+    order: 55,
+  },
+  {
     key: 'logs',
     label: 'Logs',
     icon: '',
@@ -169,10 +460,26 @@ function buildVolundrService(session: VolundrSession | null = RUNNING_SESSION): 
   const base = createMockVolundrService();
   return {
     ...base,
+    getSessions: vi.fn().mockResolvedValue(
+      session
+        ? [
+            session,
+            {
+              ...session,
+              id: 'recent-trace-peer',
+              name: `${session.name}-recent`,
+              status: 'stopped',
+              lastActive: Date.now() - 120_000,
+            },
+          ]
+        : [],
+    ),
     getSession: vi.fn().mockResolvedValue(session),
     getFeatureModules: vi.fn().mockResolvedValue(SESSION_FEATURES),
     getUserFeaturePreferences: vi.fn().mockResolvedValue([]),
     getChronicle: vi.fn().mockResolvedValue(null),
+    getSessionTrace: vi.fn().mockResolvedValue(TELEMETRY_TRACE),
+    getSessionTraceSummary: vi.fn().mockResolvedValue(TELEMETRY_SUMMARY),
     getLogs: vi.fn().mockResolvedValue([]),
     getAggregatedLogs: vi.fn().mockResolvedValue({
       lines: [],
@@ -537,7 +844,131 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByRole('tab', { name: /Diffs/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Files/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Chronicle/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /Telemetry/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Logs/i })).toBeInTheDocument();
+    });
+
+    it('switches to telemetry tab on click', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId('live-telemetry-tab')).toBeInTheDocument();
+      });
+    });
+
+    it('renders wired telemetry summary metrics', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Session Duration')).toBeInTheDocument();
+      });
+      expect(screen.getAllByText('15m 06s').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('9m 16s')).toBeInTheDocument();
+      expect(screen.getByText('5m 49s')).toBeInTheDocument();
+      expect(screen.getAllByText('21s').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('execution').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('median 15m 06s • n=1')).toBeInTheDocument();
+      expect(screen.getByText('Timeline')).toBeInTheDocument();
+      expect(screen.getAllByText('workflow').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByTestId('telemetry-breakdown')).toBeInTheDocument();
+    });
+
+    it('shows a hover card with span details for a trace row', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      const workflowTrace = await screen.findByRole('button', {
+        name: /execution trace details/i,
+      });
+      fireEvent.mouseEnter(workflowTrace);
+
+      const tooltip = await screen.findByTestId('telemetry-tooltip-workflow');
+      expect(tooltip).toHaveTextContent('child spans');
+      expect(tooltip).toHaveTextContent('active 8m 40s');
+      expect(tooltip).toHaveTextContent('wait 0s');
+      expect(tooltip).toHaveTextContent('blocked 0s');
+      expect(tooltip).toHaveTextContent('1');
+    });
+
+    it('clicking a timeline row selects and expands the matching stage breakdown section', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: /execution trace details/i,
+        }),
+      );
+
+      expect(await screen.findByText(/tool · write/i)).toBeInTheDocument();
+    });
+
+    it('renders the turn-by-turn timing shell with all-turns list by default', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      expect(await screen.findByTestId('telemetry-turn-shell')).toBeInTheDocument();
+      expect(screen.getByText('Turn-by-turn timing')).toBeInTheDocument();
+      expect(screen.getByTestId('telemetry-turn-list')).toBeInTheDocument();
+      expect(screen.getByText(/2 turns/i)).toBeInTheDocument();
+    });
+
+    it('shows selected turn details when a turn bar is clicked', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      fireEvent.click(await screen.findByTestId('telemetry-turn-bar-2'));
+
+      const detail = await screen.findByTestId('telemetry-turn-detail');
+      expect(detail).toHaveTextContent('turn #2');
+      expect(detail).toHaveTextContent('tool time');
+      expect(detail).toHaveTextContent('operator idle');
+      expect(detail).toHaveTextContent('npm test');
+    });
+
+    it('surfaces blocked child-state timing for a row with blocked work', async () => {
+      wrap('test-session-id-1234', {
+        volundr: {
+          getSessionTrace: vi.fn().mockResolvedValue(BLOCKED_TELEMETRY_TRACE),
+        },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      const blockedTrace = await screen.findByRole('button', {
+        name: /coordinator trace details/i,
+      });
+      fireEvent.mouseEnter(blockedTrace);
+
+      const tooltip = await screen.findByTestId('telemetry-tooltip-peer-blocked');
+      expect(tooltip).toHaveTextContent('active 7m 50s');
+      expect(tooltip).toHaveTextContent('wait 6s');
+      expect(tooltip).toHaveTextContent('blocked 4s');
+    });
+
+    it('renders tool overview rows with specific MCP detail and blocked note', async () => {
+      wrap('test-session-id-1234', {
+        volundr: {
+          getSessionTrace: vi.fn().mockResolvedValue(TOOL_OVERVIEW_TRACE),
+        },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      const toolOverview = await screen.findByTestId('telemetry-tools-overview');
+      expect(toolOverview).toHaveTextContent('Tool calls');
+      expect(toolOverview).toHaveTextContent('linear.search');
+      expect(toolOverview).toHaveTextContent('blocked 1×');
+
+      fireEvent.click(screen.getByRole('button', { name: /mcp/i }));
+      expect(toolOverview).toHaveTextContent('linear.search');
     });
 
     it('switches to logs tab on click', async () => {

@@ -302,6 +302,54 @@ export interface SessionChronicle {
   tokenBurn: number[];
 }
 
+export interface VolundrSessionTraceSpan {
+  id: string;
+  sessionId: string;
+  traceId: string;
+  parentSpanId: string | null;
+  kind: string;
+  name: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | string;
+  startedAt: string;
+  endedAt: string | null;
+  durationMs: number | null;
+  actorType?: string | null;
+  actorId?: string | null;
+  actorLabel?: string | null;
+  sourceService?: string | null;
+  attributes: Record<string, unknown>;
+}
+
+export interface VolundrSessionTraceLane {
+  key: string;
+  label: string;
+  kind: string;
+}
+
+export interface VolundrSessionTrace {
+  traceId: string;
+  sessionId: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number;
+  spans: VolundrSessionTraceSpan[];
+  lanes: VolundrSessionTraceLane[];
+}
+
+export interface VolundrSessionTraceSummary {
+  totalDurationMs: number;
+  provisioningDurationMs: number;
+  setupDurationMs: number;
+  workflowDurationMs: number;
+  publishDurationMs: number;
+  cleanupDurationMs: number;
+  activeExecutionDurationMs: number;
+  waitingDurationMs: number;
+  turnCount: number;
+  toolCallCount: number;
+  longestSpan: VolundrSessionTraceSpan | null;
+}
+
 // ---------------------------------------------------------------------------
 // Pull requests / CI
 // ---------------------------------------------------------------------------

@@ -48,6 +48,7 @@ from volundr.domain.models import (
     SessionCommunicationTarget,
     SessionEvent,
     SessionEventType,
+    SessionSpan,
     SessionSpec,
     SessionStatus,
     Stats,
@@ -472,6 +473,32 @@ class SessionEventRepository(ABC):
     @abstractmethod
     async def delete_by_session(self, session_id: UUID) -> int:
         """Delete all events for a session. Returns count deleted."""
+
+
+class SessionSpanRepository(ABC):
+    """Read/write port for persisted session trace spans."""
+
+    @abstractmethod
+    async def upsert_span(self, span: SessionSpan) -> SessionSpan:
+        """Create or replace a span."""
+
+    @abstractmethod
+    async def finish_span(
+        self,
+        span_id: UUID,
+        ended_at: datetime,
+        status: str,
+        attributes: dict | None = None,
+    ) -> SessionSpan | None:
+        """Finish an existing span and optionally merge terminal attributes."""
+
+    @abstractmethod
+    async def list_spans(self, session_id: UUID) -> list[SessionSpan]:
+        """List all spans for a session ordered by start time."""
+
+    @abstractmethod
+    async def delete_by_session(self, session_id: UUID) -> int:
+        """Delete all spans for a session. Returns count deleted."""
 
 
 class SavedPromptRepository(ABC):

@@ -507,6 +507,1571 @@
   line-height: 1;
 }
 
+.niuu-live-telemetry {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 16px;
+  background: var(--color-bg-primary);
+}
+
+.niuu-live-telemetry-panel {
+  scrollbar-gutter: stable both-edges;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 132, 150, 0.82) rgba(255, 255, 255, 0.04);
+}
+
+.niuu-live-telemetry-panel::-webkit-scrollbar {
+  width: 10px;
+}
+
+.niuu-live-telemetry-panel::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.niuu-live-telemetry-panel::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(124, 132, 150, 0.82);
+  background-clip: padding-box;
+}
+
+.niuu-live-telemetry-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(146, 154, 175, 0.92);
+  background-clip: padding-box;
+}
+
+.niuu-live-telemetry__header-row,
+.niuu-live-telemetry__run-group,
+.niuu-live-telemetry__legend,
+.niuu-live-telemetry__legend-item,
+.niuu-live-telemetry__run-pill {
+  display: flex;
+  align-items: center;
+}
+
+.niuu-live-telemetry__header-row {
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.niuu-live-telemetry__run-group {
+  gap: 10px;
+  min-width: 0;
+}
+
+.niuu-live-telemetry__section-label,
+.niuu-live-telemetry__metric-label {
+  color: rgba(151, 154, 170, 0.74);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.niuu-live-telemetry__run-pill {
+  gap: 9px;
+  min-height: 34px;
+  min-width: min(100%, 520px);
+  padding: 0 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.niuu-live-telemetry__run-pill-label {
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.niuu-live-telemetry__run-pill-divider {
+  color: rgba(123, 129, 145, 0.64);
+}
+
+.niuu-live-telemetry__legend {
+  gap: 14px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.niuu-live-telemetry__legend-item {
+  gap: 6px;
+}
+
+.niuu-live-telemetry__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.niuu-live-telemetry__swatch--active {
+  background: rgba(156, 205, 244, 0.95);
+  border-color: rgba(156, 205, 244, 0.95);
+}
+
+.niuu-live-telemetry__swatch--wait {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(148, 151, 165, 0.16) 0 4px,
+      rgba(148, 151, 165, 0.34) 4px 8px
+    );
+}
+
+.niuu-live-telemetry__swatch--blocked {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(234, 92, 86, 0.28) 0 4px,
+      rgba(234, 92, 86, 0.9) 4px 8px
+    );
+  border-color: rgba(234, 92, 86, 0.88);
+}
+
+.niuu-live-telemetry__shell {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 92%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.niuu-live-telemetry__shell--loading,
+.niuu-live-telemetry__shell--empty {
+  display: flex;
+  min-height: 160px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  padding: 32px;
+}
+
+.niuu-live-telemetry__loading,
+.niuu-live-telemetry__empty-title {
+  color: rgba(240, 244, 255, 0.94);
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.niuu-live-telemetry__empty-copy {
+  max-width: 520px;
+  margin: 0;
+  color: rgba(155, 160, 178, 0.8);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.niuu-live-telemetry__metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.niuu-live-telemetry__metric-card {
+  display: grid;
+  gap: 6px;
+  min-height: 94px;
+  padding: 13px 16px 12px;
+  border-left: 1px solid var(--color-border-subtle);
+}
+
+.niuu-live-telemetry__metric-card:first-child {
+  border-left: 0;
+}
+
+.niuu-live-telemetry__metric-card--accent {
+  box-shadow: none;
+}
+
+.niuu-live-telemetry__metric-value {
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+}
+
+.niuu-live-telemetry__metric-value--emphasized {
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__metric-detail {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.niuu-live-telemetry__delta-pill {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px 3px;
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.niuu-live-telemetry__delta-pill--slower {
+  background: rgba(116, 42, 42, 0.68);
+  color: rgba(255, 195, 195, 0.96);
+}
+
+.niuu-live-telemetry__delta-pill--faster {
+  background: rgba(39, 93, 64, 0.68);
+  color: rgba(193, 249, 215, 0.96);
+}
+
+.niuu-live-telemetry__timeline-shell {
+  --niuu-telemetry-timeline-label-width: 340px;
+  --niuu-telemetry-timeline-row-gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 20px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
+}
+
+.niuu-live-telemetry__timeline-head,
+.niuu-live-telemetry__timeline-title,
+.niuu-live-telemetry__timeline-label {
+  display: flex;
+  align-items: center;
+}
+
+.niuu-live-telemetry__timeline-head {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.niuu-live-telemetry__timeline-title {
+  gap: 14px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.niuu-live-telemetry__timeline-title-label {
+  color: var(--color-text-primary);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.niuu-live-telemetry__timeline-hint {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.niuu-live-telemetry__timeline-grid {
+  position: relative;
+  display: grid;
+  gap: 5px;
+}
+
+.niuu-live-telemetry__timeline-axis {
+  position: relative;
+  margin-left: calc(
+    var(--niuu-telemetry-timeline-label-width) + var(--niuu-telemetry-timeline-row-gap)
+  );
+  height: 18px;
+}
+
+.niuu-live-telemetry__timeline-axis-marker {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--color-border-subtle) 48%, transparent);
+}
+
+.niuu-live-telemetry__timeline-axis-marker span {
+  position: absolute;
+  top: -4px;
+  left: 8px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.niuu-live-telemetry__timeline-axis-marker--end span {
+  left: auto;
+  right: 8px;
+  text-align: right;
+}
+
+.niuu-live-telemetry__timeline-body {
+  position: relative;
+  display: grid;
+  gap: 5px;
+}
+
+.niuu-live-telemetry__timeline-guides {
+  position: absolute;
+  inset: 0 0 0 calc(
+    var(--niuu-telemetry-timeline-label-width) + var(--niuu-telemetry-timeline-row-gap)
+  );
+  pointer-events: none;
+}
+
+.niuu-live-telemetry__timeline-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--color-border-subtle) 48%, transparent);
+}
+
+.niuu-live-telemetry__timeline-row {
+  display: grid;
+  grid-template-columns: var(--niuu-telemetry-timeline-label-width) minmax(0, 1fr);
+  gap: var(--niuu-telemetry-timeline-row-gap);
+  align-items: center;
+}
+
+.niuu-live-telemetry__timeline-row--selected .niuu-live-telemetry__timeline-label-title {
+  color: rgba(240, 247, 255, 0.98);
+}
+
+.niuu-live-telemetry__timeline-label {
+  gap: 6px;
+  min-width: 0;
+}
+
+.niuu-live-telemetry__timeline-label-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.niuu-live-telemetry__timeline-label-dot--active {
+  background: rgba(156, 205, 244, 0.96);
+}
+
+.niuu-live-telemetry__timeline-label-dot--wait,
+.niuu-live-telemetry__timeline-label-dot--system {
+  background: rgba(123, 128, 142, 0.78);
+}
+
+.niuu-live-telemetry__timeline-label-dot--blocked {
+  background: rgba(234, 92, 86, 0.92);
+}
+
+.niuu-live-telemetry__timeline-label-title {
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__timeline-label-meta {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  white-space: nowrap;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__timeline-track {
+  position: relative;
+  height: 28px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.niuu-live-telemetry__timeline-bar {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  min-width: 10px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(140, 145, 158, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.niuu-live-telemetry__timeline-bar-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  pointer-events: none;
+}
+
+.niuu-live-telemetry__timeline-bar-segment--wait {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(148, 151, 165, 0.16) 0 4px,
+      rgba(148, 151, 165, 0.34) 4px 8px
+    );
+}
+
+.niuu-live-telemetry__timeline-bar-segment--blocked {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(234, 92, 86, 0.28) 0 4px,
+      rgba(234, 92, 86, 0.9) 4px 8px
+    );
+  border-left: 1px solid rgba(234, 92, 86, 0.88);
+  border-right: 1px solid rgba(234, 92, 86, 0.88);
+}
+
+.niuu-live-telemetry__timeline-bar--hovered {
+  overflow: visible;
+  z-index: 3;
+  outline: 1px solid rgba(121, 202, 255, 0.88);
+  outline-offset: 1px;
+}
+
+.niuu-live-telemetry__timeline-bar--active {
+  background: rgba(177, 217, 246, 0.98);
+}
+
+.niuu-live-telemetry__timeline-bar--wait,
+.niuu-live-telemetry__timeline-bar--system {
+  background: rgba(94, 99, 113, 0.72);
+}
+
+.niuu-live-telemetry__timeline-bar--blocked {
+  background: rgba(194, 70, 65, 0.92);
+}
+
+.niuu-live-telemetry__timeline-bar--hatched::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(255, 255, 255, 0.05) 0 6px,
+      rgba(11, 13, 18, 0.3) 6px 12px
+    );
+  pointer-events: none;
+}
+
+.niuu-live-telemetry__timeline-bar-copy {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  height: 100%;
+  align-items: center;
+  padding: 0 10px;
+  color: rgba(34, 38, 46, 0.95);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.niuu-live-telemetry__timeline-tooltip {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  display: grid;
+  gap: 8px;
+  min-width: 280px;
+  max-width: 340px;
+  padding: 14px 16px 15px;
+  border: 1px solid rgba(116, 122, 142, 0.64);
+  border-radius: 14px;
+  background: rgba(66, 68, 79, 0.96);
+  box-shadow: 0 20px 38px rgba(0, 0, 0, 0.34);
+  color: rgba(242, 245, 255, 0.96);
+}
+
+.niuu-live-telemetry__timeline-tooltip--start {
+  left: -1px;
+}
+
+.niuu-live-telemetry__timeline-tooltip--end {
+  right: -1px;
+}
+
+.niuu-live-telemetry__timeline-tooltip-title-row,
+.niuu-live-telemetry__timeline-tooltip-line,
+.niuu-live-telemetry__timeline-tooltip-breakdown,
+.niuu-live-telemetry__timeline-tooltip-breakdown-item {
+  display: flex;
+  align-items: center;
+}
+
+.niuu-live-telemetry__timeline-tooltip-title-row {
+  gap: 10px;
+}
+
+.niuu-live-telemetry__timeline-tooltip-title {
+  color: rgba(248, 251, 255, 0.98);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__timeline-tooltip-meta,
+.niuu-live-telemetry__timeline-tooltip-key {
+  color: rgba(173, 178, 194, 0.78);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__timeline-tooltip-line {
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.niuu-live-telemetry__timeline-tooltip-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(245, 247, 255, 0.96);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.niuu-live-telemetry__timeline-tooltip-breakdown {
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding-top: 4px;
+}
+
+.niuu-live-telemetry__timeline-tooltip-breakdown-item {
+  gap: 7px;
+  color: rgba(245, 247, 255, 0.96);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.niuu-live-telemetry__timeline-tooltip-breakdown-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+}
+
+.niuu-live-telemetry__timeline-tooltip-breakdown-swatch--active {
+  background: rgba(156, 205, 244, 0.96);
+  border-color: rgba(156, 205, 244, 0.96);
+}
+
+.niuu-live-telemetry__timeline-tooltip-breakdown-swatch--wait {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(148, 151, 165, 0.16) 0 4px,
+      rgba(148, 151, 165, 0.34) 4px 8px
+    );
+}
+
+.niuu-live-telemetry__timeline-tooltip-breakdown-swatch--blocked {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(234, 92, 86, 0.28) 0 4px,
+      rgba(234, 92, 86, 0.9) 4px 8px
+    );
+  border-color: rgba(234, 92, 86, 0.88);
+}
+
+.niuu-live-telemetry__detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(260px, 3fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.niuu-live-telemetry__detail-grid-main,
+.niuu-live-telemetry__detail-grid-side {
+  min-width: 0;
+}
+
+.niuu-live-telemetry__detail-placeholder,
+.niuu-live-telemetry__tools-shell,
+.niuu-live-telemetry__breakdown-shell {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
+}
+
+.niuu-live-telemetry__detail-placeholder {
+  min-height: 320px;
+}
+
+.niuu-live-telemetry__tools-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 12px 10px;
+}
+
+.niuu-live-telemetry__tools-head,
+.niuu-live-telemetry__tools-table {
+  display: grid;
+  gap: 10px;
+}
+
+.niuu-live-telemetry__tools-title-row {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.niuu-live-telemetry__tools-title {
+  color: rgba(246, 249, 255, 0.98);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.niuu-live-telemetry__tools-summary,
+.niuu-live-telemetry__tools-footnote,
+.niuu-live-telemetry__tools-tool-subtitle,
+.niuu-live-telemetry__tools-row-note {
+  color: rgba(132, 136, 151, 0.86);
+  font-family: var(--font-mono);
+  font-size: 8px;
+}
+
+.niuu-live-telemetry__tools-filter-row,
+.niuu-live-telemetry__tools-columns,
+.niuu-live-telemetry__tools-row-main,
+.niuu-live-telemetry__tools-share-cell {
+  display: grid;
+  align-items: center;
+}
+
+.niuu-live-telemetry__tools-filter-row {
+  grid-template-columns: repeat(auto-fit, minmax(78px, max-content));
+  gap: 6px;
+}
+
+.niuu-live-telemetry__tools-filter-row--secondary {
+  grid-template-columns: repeat(auto-fit, minmax(96px, max-content));
+}
+
+.niuu-live-telemetry__tools-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  background: rgba(8, 10, 14, 0.8);
+  color: rgba(224, 229, 240, 0.94);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__tools-filter--secondary {
+  min-height: 28px;
+  padding-inline: 9px;
+  font-size: 8px;
+}
+
+.niuu-live-telemetry__tools-filter--selected {
+  border-color: rgba(123, 192, 235, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(123, 192, 235, 0.18);
+}
+
+.niuu-live-telemetry__tools-filter-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(153, 158, 173, 0.88);
+  flex-shrink: 0;
+}
+
+.niuu-live-telemetry__tools-filter-dot--read {
+  background: rgba(172, 224, 255, 0.96);
+}
+
+.niuu-live-telemetry__tools-filter-dot--edit {
+  background: rgba(123, 210, 255, 0.96);
+}
+
+.niuu-live-telemetry__tools-filter-dot--write {
+  background: rgba(59, 180, 244, 0.96);
+}
+
+.niuu-live-telemetry__tools-filter-dot--shell {
+  background: rgba(0, 113, 184, 0.96);
+}
+
+.niuu-live-telemetry__tools-filter-dot--mcp {
+  background: rgba(116, 126, 150, 0.96);
+}
+
+.niuu-live-telemetry__tools-filter-dot--other {
+  background: rgba(96, 101, 115, 0.92);
+}
+
+.niuu-live-telemetry__tools-filter-count {
+  color: rgba(132, 136, 151, 0.92);
+}
+
+.niuu-live-telemetry__tools-columns {
+  grid-template-columns: minmax(0, 1.6fr) 0.55fr 0.75fr 0.66fr 0.66fr 0.66fr 0.92fr;
+  gap: 10px;
+  padding: 0 10px;
+  color: rgba(141, 146, 162, 0.74);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.niuu-live-telemetry__tools-rows {
+  display: grid;
+  gap: 1px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.niuu-live-telemetry__tools-row {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  background: rgba(8, 10, 14, 0.8);
+}
+
+.niuu-live-telemetry__tools-row-main {
+  grid-template-columns: minmax(0, 1.6fr) 0.55fr 0.75fr 0.66fr 0.66fr 0.66fr 0.92fr;
+  gap: 10px;
+  padding: 9px 10px 8px;
+}
+
+.niuu-live-telemetry__tools-tool-cell,
+.niuu-live-telemetry__tools-tool-copy {
+  display: flex;
+  min-width: 0;
+}
+
+.niuu-live-telemetry__tools-tool-cell {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.niuu-live-telemetry__tools-tool-copy {
+  flex-direction: column;
+  gap: 2px;
+}
+
+.niuu-live-telemetry__tools-badge {
+  display: inline-flex;
+  min-width: 42px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border-radius: 5px;
+  background: rgba(54, 57, 67, 0.94);
+  color: rgba(200, 206, 221, 0.96);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.niuu-live-telemetry__tools-tool-title,
+.niuu-live-telemetry__tools-metric,
+.niuu-live-telemetry__tools-share-label {
+  color: rgba(246, 249, 255, 0.98);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.niuu-live-telemetry__tools-tool-title {
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__tools-tool-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.niuu-live-telemetry__tools-metric--muted {
+  color: rgba(168, 174, 190, 0.92);
+}
+
+.niuu-live-telemetry__tools-share-cell {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.niuu-live-telemetry__tools-share-track {
+  height: 6px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.niuu-live-telemetry__tools-share-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(92, 166, 214, 0.96);
+}
+
+.niuu-live-telemetry__tools-row-note {
+  padding: 0 10px 8px 58px;
+  color: rgba(255, 167, 164, 0.94);
+}
+
+.niuu-live-telemetry__tools-empty {
+  min-height: 240px;
+  display: grid;
+  place-items: center;
+  color: rgba(132, 136, 151, 0.86);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.niuu-live-telemetry__breakdown-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 14px 12px;
+}
+
+.niuu-live-telemetry__breakdown-head {
+  display: grid;
+  gap: 12px;
+}
+
+.niuu-live-telemetry__breakdown-title-row,
+.niuu-live-telemetry__breakdown-columns,
+.niuu-live-telemetry__breakdown-stage-row,
+.niuu-live-telemetry__breakdown-percent,
+.niuu-live-telemetry__breakdown-task-row,
+.niuu-live-telemetry__breakdown-task-visual,
+.niuu-live-telemetry__breakdown-total-row {
+  display: grid;
+  align-items: center;
+}
+
+.niuu-live-telemetry__breakdown-title-row {
+  grid-auto-flow: column;
+  justify-content: start;
+  gap: 10px;
+}
+
+.niuu-live-telemetry__breakdown-title {
+  color: rgba(246, 249, 255, 0.98);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.niuu-live-telemetry__breakdown-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(132, 136, 151, 0.86);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.niuu-live-telemetry__breakdown-columns,
+.niuu-live-telemetry__breakdown-stage-row,
+.niuu-live-telemetry__breakdown-total-row {
+  grid-template-columns: minmax(0, 2.2fr) 0.75fr 1.2fr 1.8fr 0.72fr;
+  gap: 12px;
+}
+
+.niuu-live-telemetry__breakdown-columns {
+  padding: 0 10px;
+  color: rgba(141, 146, 162, 0.74);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.niuu-live-telemetry__breakdown-list {
+  display: grid;
+  gap: 4px;
+}
+
+.niuu-live-telemetry__breakdown-stage {
+  display: grid;
+  gap: 0;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  background: rgba(8, 10, 14, 0.8);
+  overflow: hidden;
+}
+
+.niuu-live-telemetry__breakdown-stage--selected {
+  background: rgba(45, 57, 67, 0.96);
+  border-color: rgba(123, 192, 235, 0.24);
+}
+
+.niuu-live-telemetry__breakdown-stage-row {
+  width: 100%;
+  padding: 8px 10px 7px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.niuu-live-telemetry__breakdown-stage-cell,
+.niuu-live-telemetry__breakdown-task-stage {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.niuu-live-telemetry__breakdown-chevron {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  align-items: center;
+  justify-content: center;
+  color: rgba(122, 128, 144, 0.88);
+  border-radius: 4px;
+}
+
+.niuu-live-telemetry__breakdown-chevron-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.niuu-live-telemetry__breakdown-dot {
+  width: 8px;
+  height: 8px;
+  margin-right: 9px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.niuu-live-telemetry__breakdown-dot--active {
+  background: rgba(156, 205, 244, 0.96);
+}
+
+.niuu-live-telemetry__breakdown-dot--wait,
+.niuu-live-telemetry__breakdown-dot--system {
+  background: rgba(123, 128, 142, 0.78);
+}
+
+.niuu-live-telemetry__breakdown-dot--blocked {
+  background: rgba(234, 92, 86, 0.92);
+}
+
+.niuu-live-telemetry__breakdown-stage-label,
+.niuu-live-telemetry__breakdown-total-label {
+  color: rgba(246, 249, 255, 0.98);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__breakdown-stage-meta {
+  margin-left: 8px;
+  color: rgba(132, 136, 151, 0.86);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__breakdown-duration,
+.niuu-live-telemetry__breakdown-total-duration,
+.niuu-live-telemetry__breakdown-total-percent {
+  color: rgba(246, 249, 255, 0.98);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.niuu-live-telemetry__breakdown-percent {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.niuu-live-telemetry__breakdown-percent-track {
+  height: 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.niuu-live-telemetry__breakdown-percent-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(156, 205, 244, 0.96);
+}
+
+.niuu-live-telemetry__breakdown-percent span,
+.niuu-live-telemetry__breakdown-task-duration {
+  color: rgba(214, 220, 234, 0.94);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.niuu-live-telemetry__breakdown-delta,
+.niuu-live-telemetry__breakdown-total-delta {
+  justify-self: end;
+}
+
+.niuu-live-telemetry__breakdown-delta-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  padding: 4px 8px 3px;
+  border-radius: 5px;
+  background: rgba(54, 57, 67, 0.96);
+  color: rgba(168, 174, 190, 0.92);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.niuu-live-telemetry__state-stack {
+  display: grid;
+  gap: 3px;
+}
+
+.niuu-live-telemetry__state-stack--compact {
+  gap: 0;
+}
+
+.niuu-live-telemetry__state-stack-track {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.niuu-live-telemetry__state-stack--compact .niuu-live-telemetry__state-stack-track {
+  height: 6px;
+}
+
+.niuu-live-telemetry__state-stack-segment {
+  height: 100%;
+}
+
+.niuu-live-telemetry__state-stack-segment--active {
+  background: rgba(156, 205, 244, 0.96);
+}
+
+.niuu-live-telemetry__state-stack-segment--wait {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(148, 151, 165, 0.18) 0 4px,
+      rgba(148, 151, 165, 0.4) 4px 8px
+    );
+}
+
+.niuu-live-telemetry__state-stack-segment--blocked {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(234, 92, 86, 0.28) 0 4px,
+      rgba(234, 92, 86, 0.9) 4px 8px
+    );
+}
+
+.niuu-live-telemetry__state-stack-meta {
+  display: inline-flex;
+  gap: 6px;
+  color: rgba(132, 136, 151, 0.86);
+  font-family: var(--font-mono);
+  font-size: 8px;
+}
+
+.niuu-live-telemetry__breakdown-stage-children {
+  display: grid;
+  gap: 2px;
+  padding: 0 10px 6px;
+  background: rgba(5, 7, 10, 0.42);
+}
+
+.niuu-live-telemetry__breakdown-task-row {
+  grid-template-columns: minmax(0, 2.8fr) 0.7fr minmax(0, 2fr);
+  gap: 12px;
+  padding: 0;
+  min-height: 20px;
+}
+
+.niuu-live-telemetry__breakdown-task-indent {
+  flex-shrink: 0;
+}
+
+.niuu-live-telemetry__breakdown-task-branch {
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  border-left: 1px solid rgba(125, 130, 145, 0.42);
+  border-bottom: 1px solid rgba(125, 130, 145, 0.42);
+  flex-shrink: 0;
+}
+
+.niuu-live-telemetry__breakdown-task-label {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(171, 176, 191, 0.9);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.niuu-live-telemetry__breakdown-task-visual {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.niuu-live-telemetry__breakdown-task-warning {
+  color: rgba(255, 167, 164, 0.94);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.niuu-live-telemetry__breakdown-total-row {
+  padding: 8px 10px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.niuu-live-telemetry__turn-shell {
+  display: grid;
+  gap: 12px;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
+}
+
+.niuu-live-telemetry__turn-head,
+.niuu-live-telemetry__turn-head-title,
+.niuu-live-telemetry__turn-legend,
+.niuu-live-telemetry__turn-legend-item,
+.niuu-live-telemetry__turn-tool-row,
+.niuu-live-telemetry__turn-detail-line {
+  display: flex;
+  align-items: center;
+}
+
+.niuu-live-telemetry__turn-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.niuu-live-telemetry__turn-head-title {
+  gap: 12px;
+  min-width: 0;
+}
+
+.niuu-live-telemetry__turn-head-title-label {
+  color: rgba(246, 249, 255, 0.98);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.niuu-live-telemetry__turn-head-summary,
+.niuu-live-telemetry__turn-legend,
+.niuu-live-telemetry__turn-detail-key,
+.niuu-live-telemetry__turn-reset {
+  color: rgba(141, 146, 162, 0.8);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__turn-legend {
+  gap: 14px;
+}
+
+.niuu-live-telemetry__turn-legend-item {
+  gap: 6px;
+}
+
+.niuu-live-telemetry__turn-legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.niuu-live-telemetry__turn-legend-swatch--model {
+  background: rgba(166, 215, 251, 0.96);
+  border-color: rgba(166, 215, 251, 0.96);
+}
+
+.niuu-live-telemetry__turn-legend-swatch--tool {
+  background: rgba(56, 121, 187, 0.96);
+  border-color: rgba(56, 121, 187, 0.96);
+}
+
+.niuu-live-telemetry__turn-legend-swatch--idle {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(148, 151, 165, 0.18) 0 4px,
+      rgba(148, 151, 165, 0.4) 4px 8px
+    );
+}
+
+.niuu-live-telemetry__turn-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 0.95fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.niuu-live-telemetry__turn-chart,
+.niuu-live-telemetry__turn-side {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 11px;
+  background: rgba(6, 8, 12, 0.88);
+}
+
+.niuu-live-telemetry__turn-chart {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 8px;
+  padding: 14px 14px 12px 10px;
+  min-height: 360px;
+}
+
+.niuu-live-telemetry__turn-axis {
+  position: relative;
+  display: grid;
+  align-content: stretch;
+}
+
+.niuu-live-telemetry__turn-axis-label {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  color: rgba(110, 116, 132, 0.82);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  line-height: 1;
+}
+
+.niuu-live-telemetry__turn-axis-label:last-child {
+  align-items: flex-end;
+}
+
+.niuu-live-telemetry__turn-plot {
+  position: relative;
+  padding: 8px 54px 26px 0;
+}
+
+.niuu-live-telemetry__turn-grid-line,
+.niuu-live-telemetry__turn-stat-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.niuu-live-telemetry__turn-grid-line {
+  border-top: 1px dashed rgba(87, 95, 112, 0.3);
+}
+
+.niuu-live-telemetry__turn-stat-line {
+  border-top: 1px dashed rgba(122, 192, 235, 0.76);
+}
+
+.niuu-live-telemetry__turn-stat-line--p50 {
+  border-top-color: rgba(122, 192, 235, 0.54);
+}
+
+.niuu-live-telemetry__turn-stat-label {
+  position: absolute;
+  right: -4px;
+  top: -8px;
+  padding-left: 8px;
+  background: rgba(6, 8, 12, 0.88);
+  color: rgba(166, 215, 251, 0.96);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 700;
+}
+
+.niuu-live-telemetry__turn-bars {
+  position: absolute;
+  inset: 0 0 0 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(18px, 1fr);
+  gap: 10px;
+  align-items: end;
+  padding: 0 2px;
+}
+
+.niuu-live-telemetry__turn-bar-col {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 6px;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  align-self: stretch;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.niuu-live-telemetry__turn-bar-track {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 100%;
+}
+
+.niuu-live-telemetry__turn-bar-stack {
+  display: flex;
+  width: 100%;
+  min-height: 8px;
+  flex-direction: column-reverse;
+  overflow: hidden;
+  border: 1px solid rgba(51, 88, 120, 0.55);
+  border-radius: 6px 6px 3px 3px;
+  background: rgba(10, 16, 25, 0.64);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.niuu-live-telemetry__turn-bar-col--selected .niuu-live-telemetry__turn-bar-stack {
+  outline: 1px solid rgba(124, 202, 252, 0.92);
+  outline-offset: 2px;
+}
+
+.niuu-live-telemetry__turn-bar-segment {
+  width: 100%;
+}
+
+.niuu-live-telemetry__turn-bar-segment--model {
+  background: rgba(166, 215, 251, 0.96);
+}
+
+.niuu-live-telemetry__turn-bar-segment--tool {
+  background: rgba(56, 121, 187, 0.96);
+}
+
+.niuu-live-telemetry__turn-bar-segment--idle {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(148, 151, 165, 0.18) 0 4px,
+      rgba(148, 151, 165, 0.4) 4px 8px
+    );
+}
+
+.niuu-live-telemetry__turn-bar-label {
+  color: rgba(125, 131, 146, 0.9);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.niuu-live-telemetry__turn-side {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 18px 18px 16px;
+  min-height: 360px;
+  max-height: 360px;
+  overflow: hidden;
+}
+
+.niuu-live-telemetry__turn-side-title {
+  color: rgba(246, 249, 255, 0.98);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__turn-list,
+.niuu-live-telemetry__turn-detail-lines {
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 132, 150, 0.82) rgba(255, 255, 255, 0.04);
+}
+
+.niuu-live-telemetry__turn-list::-webkit-scrollbar,
+.niuu-live-telemetry__turn-detail-lines::-webkit-scrollbar {
+  width: 8px;
+}
+
+.niuu-live-telemetry__turn-list::-webkit-scrollbar-track,
+.niuu-live-telemetry__turn-detail-lines::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.niuu-live-telemetry__turn-list::-webkit-scrollbar-thumb,
+.niuu-live-telemetry__turn-detail-lines::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(124, 132, 150, 0.82);
+  background-clip: padding-box;
+}
+
+.niuu-live-telemetry__turn-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.niuu-live-telemetry__turn-list-item-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.niuu-live-telemetry__turn-list-item-label,
+.niuu-live-telemetry__turn-detail-value {
+  color: rgba(246, 249, 255, 0.98);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__turn-list-item-meta {
+  color: rgba(130, 136, 151, 0.86);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__turn-list-item-duration {
+  color: rgba(213, 220, 234, 0.94);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.niuu-live-telemetry__turn-detail-line {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.niuu-live-telemetry__turn-detail-value {
+  white-space: nowrap;
+}
+
+.niuu-live-telemetry__turn-tool-row {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  margin-top: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.niuu-live-telemetry__turn-tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.niuu-live-telemetry__turn-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 5px;
+  background: rgba(54, 57, 67, 0.96);
+  color: rgba(246, 249, 255, 0.96);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.niuu-live-telemetry__turn-reset {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
 @media (max-width: 1100px) {
   .niuu-live-session__header,
   .niuu-live-session__tabs-row {
@@ -526,5 +2091,137 @@
 
   .niuu-live-session__metrics-row::-webkit-scrollbar {
     display: none;
+  }
+
+  .niuu-live-telemetry {
+    padding: 12px;
+  }
+
+  .niuu-live-telemetry__header-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .niuu-live-telemetry__run-group {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .niuu-live-telemetry__run-pill {
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  .niuu-live-telemetry__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .niuu-live-telemetry__metric-card:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .niuu-live-telemetry__timeline-shell {
+    --niuu-telemetry-timeline-label-width: 240px;
+    --niuu-telemetry-timeline-row-gap: 14px;
+    padding: 16px;
+  }
+
+  .niuu-live-telemetry__timeline-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .niuu-live-telemetry__timeline-axis {
+    padding-left: 0;
+  }
+
+  .niuu-live-telemetry__timeline-label-title {
+    font-size: 15px;
+  }
+
+  .niuu-live-telemetry__timeline-tooltip {
+    min-width: 250px;
+    max-width: 300px;
+  }
+
+  .niuu-live-telemetry__detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .niuu-live-telemetry__turn-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .niuu-live-telemetry__turn-head-title {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .niuu-live-telemetry__turn-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .niuu-live-telemetry__breakdown-columns,
+  .niuu-live-telemetry__breakdown-stage-row,
+  .niuu-live-telemetry__breakdown-total-row {
+    grid-template-columns: minmax(0, 2fr) 0.7fr 1fr 1.5fr 0.7fr;
+    gap: 12px;
+  }
+}
+
+@media (max-width: 720px) {
+  .niuu-live-telemetry__legend {
+    flex-wrap: wrap;
+    gap: 10px 14px;
+  }
+
+  .niuu-live-telemetry__metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .niuu-live-telemetry__turn-chart {
+    grid-template-columns: 42px minmax(0, 1fr);
+    min-height: 300px;
+    padding-right: 10px;
+  }
+
+  .niuu-live-telemetry__metric-card {
+    min-height: 104px;
+    border-left: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .niuu-live-telemetry__metric-card:first-child {
+    border-top: 0;
+  }
+
+  .niuu-live-telemetry__timeline-axis {
+    display: none;
+  }
+
+  .niuu-live-telemetry__timeline-guides {
+    display: none;
+  }
+
+  .niuu-live-telemetry__timeline-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .niuu-live-telemetry__timeline-track {
+    height: 34px;
+  }
+
+  .niuu-live-telemetry__breakdown-columns {
+    display: none;
+  }
+
+  .niuu-live-telemetry__breakdown-stage-row,
+  .niuu-live-telemetry__breakdown-total-row,
+  .niuu-live-telemetry__breakdown-task-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
   }
 }

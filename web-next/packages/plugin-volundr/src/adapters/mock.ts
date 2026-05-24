@@ -1481,6 +1481,8 @@ export function createMockVolundrService(): IVolundrService {
 
     getChronicle: async () => null,
     subscribeChronicle: () => () => {},
+    getSessionTrace: async () => null,
+    getSessionTraceSummary: async () => null,
 
     getPullRequests: async () => [],
     createPullRequest: async (_sessionId, title = 'Draft PR') => ({

@@ -83,6 +83,7 @@ class VolundrPlugin(ServicePlugin):
                     "/api/v1/forge/sessions",
                     "/api/v1/forge/chronicles",
                     "/api/v1/forge/events",
+                    "/api/v1/forge/spans",
                     "/api/v1/forge/templates",
                     "/api/v1/forge/presets",
                     "/api/v1/forge/profiles",
@@ -103,6 +104,7 @@ class VolundrPlugin(ServicePlugin):
                     "/api/v1/forge/sessions",
                     "/api/v1/forge/chronicles",
                     "/api/v1/forge/events",
+                    "/api/v1/forge/spans",
                 ),
                 description=(
                     "Session lifecycle, messaging, logs, chronicle, "

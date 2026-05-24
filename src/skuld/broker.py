@@ -116,6 +116,8 @@ logger = logging.getLogger("skuld.broker")
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 FORGE_CHRONICLES_PATH = "/api/v1/forge/chronicles"
 FORGE_EVENTS_PATH = "/api/v1/forge/events"
+FORGE_TRACE_SPANS_START_PATH = "/api/v1/forge/spans/start"
+FORGE_TRACE_SPANS_COMPLETE_PATH = "/api/v1/forge/spans/complete"
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
 
@@ -950,6 +952,16 @@ class Broker:
                 self._workflow_terminal_index.setdefault(event_type, []).append(node)
         self._workflow_terminal_slots: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._workflow_terminal_emitted: set[tuple[str, str]] = set()
+        self._trace_id = self._parse_trace_uuid(self.session_id)
+        self._trace_session_span_id: uuid.UUID | None = None
+        self._trace_workflow_span_id: uuid.UUID | None = None
+        self._trace_workflow_gate_spans: dict[str, uuid.UUID] = {}
+        self._trace_assistant_span_id: uuid.UUID | None = None
+        self._trace_assistant_tool_spans: dict[str, uuid.UUID] = {}
+        self._trace_assistant_tool_order: list[str] = []
+        self._assistant_pending_commands: dict[str, str] = {}
+        self._trace_peer_turn_spans: dict[str, uuid.UUID] = {}
+        self._trace_peer_tool_spans: dict[str, list[uuid.UUID]] = {}
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
@@ -974,6 +986,14 @@ class Broker:
         # JWT identity state — populated on first browser WebSocket connection
         self._user_jwt: str | None = None
         self._user_claims: dict = {}
+
+    @staticmethod
+    def _parse_trace_uuid(value: object) -> uuid.UUID:
+        """Return a stable UUID for arbitrary identifiers."""
+        try:
+            return uuid.UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            return uuid.uuid5(uuid.NAMESPACE_URL, str(value))
 
     def _conversation_history_path(self) -> Path:
         """Return the path to the conversation history file, scoped to session ID."""
@@ -1064,6 +1084,17 @@ class Broker:
                 role="user",
                 content=prompt,
             )
+        )
+        await self._complete_trace_span(
+            kind="turn.user",
+            name=prompt[:120] or "workflow prompt",
+            parent_span_id=self._trace_session_span_id,
+            actor_type="user",
+            actor_id="workflow-trigger",
+            actor_label="workflow trigger",
+            attributes={"source": "workflow_trigger"},
+            started_at=datetime.now(UTC),
+            ended_at=datetime.now(UTC),
         )
         await self._channels.broadcast(
             {
@@ -1348,11 +1379,37 @@ class Broker:
 
     async def _run_workflow_trigger_task(self) -> None:
         """Dispatch the initial workflow trigger after broker startup completes."""
+        cfg = self._settings.workflow_trigger
+        workflow_name = (
+            str(getattr(self._settings.workflow, "name", "") or "").strip()
+            or cfg.label
+            or "workflow"
+        )
+        if self._trace_workflow_span_id is None:
+            self._trace_workflow_span_id = await self._start_trace_span(
+                kind="session.workflow",
+                name=workflow_name,
+                parent_span_id=self._trace_session_span_id,
+                actor_type="workflow",
+                actor_id=cfg.node_id or cfg.event_type or "workflow",
+                actor_label=cfg.label or workflow_name,
+                attributes={
+                    "event_type": cfg.event_type,
+                    "node_id": cfg.node_id,
+                    "source": cfg.source,
+                },
+            )
         try:
             await self._publish_workflow_trigger()
         except asyncio.CancelledError:
             raise
         except Exception:
+            await self._finish_trace_span(
+                self._trace_workflow_span_id,
+                status="failed",
+                attributes={"reason": "workflow_trigger_failed"},
+            )
+            self._trace_workflow_span_id = None
             logger.exception("Workflow trigger dispatch failed")
             raise
 
@@ -1431,6 +1488,7 @@ class Broker:
         """Initialize the broker on startup."""
         logger.info("Broker starting for session %s", self.session_id)
         logger.info("Transport adapter: %s", self._settings.transport_adapter)
+        await self._ensure_session_trace_started()
 
         if self.volundr_api_url:
             logger.info("Token usage reporting enabled: %s", self.volundr_api_url)
@@ -1524,6 +1582,47 @@ class Broker:
             self._workflow_trigger_task.cancel()
             await asyncio.gather(self._workflow_trigger_task, return_exceptions=True)
             self._workflow_trigger_task = None
+        await self._finish_pending_assistant_tool_trace_spans(
+            status="cancelled",
+            attributes={"reason": "shutdown"},
+        )
+        await self._finish_trace_span(
+            self._trace_assistant_span_id,
+            status="cancelled",
+            attributes={"reason": "shutdown"},
+        )
+        self._trace_assistant_span_id = None
+        for gate_span_id in list(self._trace_workflow_gate_spans.values()):
+            await self._finish_trace_span(
+                gate_span_id,
+                status="cancelled",
+                attributes={"reason": "shutdown"},
+            )
+        self._trace_workflow_gate_spans.clear()
+        for peer_id, tool_span_ids in list(self._trace_peer_tool_spans.items()):
+            for tool_span_id in tool_span_ids:
+                await self._finish_trace_span(
+                    tool_span_id,
+                    status="cancelled",
+                    attributes={"reason": "shutdown", "peer_id": peer_id},
+                )
+        self._trace_peer_tool_spans.clear()
+        for peer_id, peer_span_id in list(self._trace_peer_turn_spans.items()):
+            await self._finish_trace_span(
+                peer_span_id,
+                status="cancelled",
+                attributes={"reason": "shutdown", "peer_id": peer_id},
+            )
+        self._trace_peer_turn_spans.clear()
+        await self._finish_trace_span(
+            self._trace_workflow_span_id,
+            status="completed",
+            attributes={
+                "duration_seconds": self._artifacts.duration_seconds,
+                "turn_count": self._artifacts.turn_count,
+            },
+        )
+        self._trace_workflow_span_id = None
 
         # Report chronicle BEFORE stopping the transport (CLI must be alive)
         await self._report_chronicle()
@@ -1545,6 +1644,17 @@ class Broker:
         # Stop transport
         if self._transport:
             await self._transport.stop()
+
+        await self._finish_trace_span(
+            self._trace_session_span_id,
+            status="completed",
+            attributes={
+                "duration_seconds": self._artifacts.duration_seconds,
+                "turn_count": self._artifacts.turn_count,
+                "files_changed": len(self._artifacts.files_changed),
+            },
+        )
+        self._trace_session_span_id = None
 
         # Close HTTP client
         if self._http_client:
@@ -1582,6 +1692,12 @@ class Broker:
         observer_peer_id = self._observer_peer_id()
         if peer_id == observer_peer_id:
             return
+        participant = self._room_bridge.participants.get(peer_id)
+        peer_label = (
+            participant.persona
+            if participant is not None and getattr(participant, "persona", "")
+            else peer_id
+        )
 
         if event_type == "outcome":
             await self._emit_peer_outcome_pipeline_event(peer_id, frame)
@@ -1596,6 +1712,17 @@ class Broker:
             metadata = frame.get("metadata", {})
             title = str(metadata.get("title") or frame.get("data") or "task")
             task_id = str(metadata.get("task_id") or frame.get("task_id") or peer_id)
+            existing_turn_span_id = self._trace_peer_turn_spans.get(peer_id)
+            if existing_turn_span_id is None:
+                self._trace_peer_turn_spans[peer_id] = await self._start_trace_span(
+                    kind="turn.peer",
+                    name=title or peer_label,
+                    parent_span_id=self._trace_session_span_id,
+                    actor_type="peer",
+                    actor_id=peer_id,
+                    actor_label=peer_label,
+                    attributes={"task_id": task_id},
+                )
             self._peer_watches[peer_id] = PeerWatchState(
                 peer_id=peer_id,
                 task_id=task_id,
@@ -1609,6 +1736,28 @@ class Broker:
         if event_type == "tool_start":
             metadata = frame.get("metadata", {})
             tool_input = metadata.get("input") if isinstance(metadata, dict) else {}
+            tool_name = str(metadata.get("tool_name") or frame.get("data") or "tool").strip() or "tool"
+            if peer_id not in self._trace_peer_turn_spans:
+                self._trace_peer_turn_spans[peer_id] = await self._start_trace_span(
+                    kind="turn.peer",
+                    name=peer_label,
+                    parent_span_id=self._trace_session_span_id,
+                    actor_type="peer",
+                    actor_id=peer_id,
+                    actor_label=peer_label,
+                    attributes={"source": "tool_start"},
+                )
+            tool_span_id = await self._start_trace_span(
+                kind="tool.call",
+                name=tool_name,
+                parent_span_id=self._trace_peer_turn_spans.get(peer_id),
+                actor_type="peer",
+                actor_id=peer_id,
+                actor_label=peer_label,
+                attributes={"tool_input": tool_input if isinstance(tool_input, dict) else {}},
+            )
+            if tool_span_id is not None:
+                self._trace_peer_tool_spans.setdefault(peer_id, []).append(tool_span_id)
             command = ""
             if isinstance(tool_input, dict):
                 command = str(tool_input.get("command") or "").strip()
@@ -1626,10 +1775,57 @@ class Broker:
                     self._artifacts.git_commit_count += 1
                 elif _is_git_push(command):
                     self._artifacts.git_push_count += 1
+            tool_spans = self._trace_peer_tool_spans.get(peer_id, [])
+            tool_span_id = tool_spans.pop(0) if tool_spans else None
+            if not tool_spans:
+                self._trace_peer_tool_spans.pop(peer_id, None)
+            await self._finish_trace_span(
+                tool_span_id,
+                status="failed" if bool(metadata.get("is_error")) else "completed",
+                attributes={
+                    "command": command,
+                    "is_error": bool(metadata.get("is_error")),
+                },
+            )
+        elif event_type in {"response", "task_complete"}:
+            tool_spans = self._trace_peer_tool_spans.pop(peer_id, [])
+            pending_commands = self._peer_pending_commands.pop(peer_id, [])
+            for index, tool_span_id in enumerate(tool_spans):
+                command = pending_commands[index] if index < len(pending_commands) else ""
+                await self._finish_trace_span(
+                    tool_span_id,
+                    status="completed",
+                    attributes={
+                        "command": command,
+                        "peer_id": peer_id,
+                        "terminal_event": event_type,
+                    },
+                )
+        elif event_type == "error":
+            tool_spans = self._trace_peer_tool_spans.pop(peer_id, [])
+            pending_commands = self._peer_pending_commands.pop(peer_id, [])
+            for index, tool_span_id in enumerate(tool_spans):
+                command = pending_commands[index] if index < len(pending_commands) else ""
+                await self._finish_trace_span(
+                    tool_span_id,
+                    status="failed",
+                    attributes={
+                        "command": command,
+                        "peer_id": peer_id,
+                        "terminal_event": event_type,
+                    },
+                )
 
         if watch is None:
             if event_type == "outcome":
                 await self._maybe_report_flock_completion(peer_id, frame)
+            if event_type in {"response", "error", "task_complete"}:
+                peer_span_id = self._trace_peer_turn_spans.pop(peer_id, None)
+                await self._finish_trace_span(
+                    peer_span_id,
+                    status="failed" if event_type == "error" else "completed",
+                    attributes={"event_type": event_type, "peer_id": peer_id},
+                )
             return
 
         watch.last_progress_at = now
@@ -1643,10 +1839,16 @@ class Broker:
         elif event_type == "error":
             watch.last_status = "error"
             self._peer_watches.pop(peer_id, None)
-            self._peer_pending_commands.pop(peer_id, None)
         elif event_type in {"response", "outcome", "help_needed"}:
             self._peer_watches.pop(peer_id, None)
-            self._peer_pending_commands.pop(peer_id, None)
+
+        if event_type in {"response", "error", "task_complete"}:
+            peer_span_id = self._trace_peer_turn_spans.pop(peer_id, None)
+            await self._finish_trace_span(
+                peer_span_id,
+                status="failed" if event_type == "error" else "completed",
+                attributes={"event_type": event_type, "peer_id": peer_id},
+            )
 
         if event_type == "outcome":
             await self._maybe_report_flock_completion(peer_id, frame)
@@ -1900,6 +2102,20 @@ class Broker:
         )
         self._workflow_gate_states[gate_id] = state
         self._workflow_gate_state_ids_by_key[key] = gate_id
+        self._trace_workflow_gate_spans[gate_id] = await self._start_trace_span(
+            kind="wait.workflow_gate",
+            name=state.label or state.node_id,
+            parent_span_id=self._trace_session_span_id,
+            actor_type="workflow",
+            actor_id=state.node_id,
+            actor_label=state.label or state.node_id,
+            attributes={
+                "gate_id": state.id,
+                "activation_id": state.activation_id,
+                "pending_behavior": state.pending_behavior,
+                "triggered_by_event_type": state.triggered_by_event_type,
+            },
+        ) or self._trace_workflow_gate_spans.get(gate_id)
         await self._emit_pipeline_event(
             "workflow.gate.pending",
             {
@@ -2011,6 +2227,17 @@ class Broker:
         )
         await self._mesh_adapter.publish(event, event_type)
         await self._emit_pipeline_event("outcome", payload)
+        gate_span_id = self._trace_workflow_gate_spans.pop(gate_id, None)
+        await self._finish_trace_span(
+            gate_span_id,
+            status="completed",
+            attributes={
+                "decision": normalized,
+                "source": source,
+                "notes": state.notes,
+                "event_type": event_type,
+            },
+        )
         return asdict(state)
 
     async def _report_peer_help_needed_activity(
@@ -2158,6 +2385,17 @@ class Broker:
             payload["scope_adherence"] = fields["scope_adherence"]
 
         await self._emit_pipeline_event("outcome", payload)
+        await self._finish_trace_span(
+            self._trace_workflow_span_id,
+            status="completed",
+            attributes={
+                "workflow_node_id": node.node_id,
+                "workflow_activation_id": activation_id,
+                "completion_event_type": node.completion_event_type,
+                "fields": fields,
+            },
+        )
+        self._trace_workflow_span_id = None
         logger.info(
             "workflow runtime: terminal node %s emitted %s activation=%s",
             node.node_id,
@@ -2302,6 +2540,9 @@ class Broker:
     async def _handle_cli_event(self, data: dict) -> None:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
+        tool_result_only_user_event = (
+            event_type == "user" and self._is_tool_result_only_user_event(data)
+        )
         suppress_channel_broadcast = (
             event_type in {"user", "assistant", "content_block_delta", "result"}
             and self._pending_explicit_human_response_count > 0
@@ -2326,10 +2567,21 @@ class Broker:
         # Record user messages that arrive via the transport (e.g. the
         # initial prompt flushed as a pending message) into conversation
         # history so late-joining browsers see them.
-        if event_type == "user":
+        if event_type == "user" and not tool_result_only_user_event:
             # A user event means the previous assistant turn is complete.
             # Flush any pending assistant content as a saved turn.
             self._flush_pending_assistant_turn()
+            await self._finish_pending_assistant_tool_trace_spans(
+                status="completed",
+                attributes={"reason": "new_user_event"},
+            )
+            if self._trace_assistant_span_id is not None:
+                await self._finish_trace_span(
+                    self._trace_assistant_span_id,
+                    status="completed",
+                    attributes={"reason": "new_user_event"},
+                )
+                self._trace_assistant_span_id = None
 
             user_content = ""
             msg = data.get("message", {})
@@ -2365,12 +2617,30 @@ class Broker:
 
         # Report activity state transitions to Volundr
         if event_type == "assistant":
+            if self._trace_assistant_span_id is None:
+                assistant_label = (
+                    self._settings.mesh.persona
+                    if getattr(self._settings, "mesh", None) is not None
+                    else None
+                ) or self._settings.session.name
+                self._trace_assistant_span_id = await self._start_trace_span(
+                    kind="turn.assistant",
+                    name="assistant turn",
+                    parent_span_id=self._trace_session_span_id,
+                    actor_type="assistant",
+                    actor_id=self._observer_peer_id() or self.session_id,
+                    actor_label=assistant_label,
+                    attributes={"model": self.model},
+                )
+            await self._start_assistant_tool_trace_spans(data)
             asyncio.create_task(self._report_activity_state("active"))
             # Emit room activity for CLI participant so room UI shows "thinking"
             if self._room_bridge is not None and self._mesh_adapter is not None:
                 await self._room_bridge.broadcast_cli_activity(
                     self._mesh_adapter.peer_id, "thinking"
                 )
+        elif tool_result_only_user_event:
+            await self._finish_assistant_tool_trace_spans_from_user_event(data)
         elif event_type == "result":
             asyncio.create_task(self._report_activity_state("idle"))
             if self._pending_explicit_human_response_count == 0:
@@ -2582,6 +2852,22 @@ class Broker:
                         model=result_model or self.model,
                     )
                 )
+            if self._trace_assistant_span_id is not None:
+                await self._finish_pending_assistant_tool_trace_spans(
+                    status="completed",
+                    attributes={"reason": "assistant_turn_completed"},
+                )
+                await self._finish_trace_span(
+                    self._trace_assistant_span_id,
+                    status="completed",
+                    attributes={
+                        "finish_reason": data.get("stop_reason", "end_turn"),
+                        "tokens_in": total_input,
+                        "tokens_out": total_output,
+                        "model": result_model or self.model,
+                    },
+                )
+                self._trace_assistant_span_id = None
 
     # Maps control message types to the TransportCapabilities field that
     # must be True for the control to be forwarded.
@@ -2738,6 +3024,18 @@ class Broker:
                         content=content_str,
                     )
                 )
+                now = datetime.now(UTC)
+                await self._complete_trace_span(
+                    kind="turn.user",
+                    name=content_str[:120] or "user turn",
+                    parent_span_id=self._trace_session_span_id,
+                    actor_type="user",
+                    actor_id=request_id or msg_id,
+                    actor_label="user",
+                    attributes={"source": "browser"},
+                    started_at=now,
+                    ended_at=now,
+                )
 
                 # Echo back to all browsers so the message is confirmed
                 # immediately (rendering as a user turn) — the actual transport
@@ -2829,6 +3127,18 @@ class Broker:
                 role="user",
                 content=content,
             )
+        )
+        now = datetime.now(UTC)
+        await self._complete_trace_span(
+            kind="turn.user",
+            name=content[:120] or "human turn",
+            parent_span_id=self._trace_session_span_id,
+            actor_type="user",
+            actor_id=source,
+            actor_label=source,
+            attributes={"source": source, "metadata": metadata or {}},
+            started_at=now,
+            ended_at=now,
         )
         await self._channels.broadcast(
             {
@@ -2990,6 +3300,172 @@ class Broker:
         self._event_sequence += 1
         return seq
 
+    @staticmethod
+    def _trace_label(name: str, *, limit: int = 120) -> str:
+        """Trim trace labels so the API payloads stay readable."""
+        value = " ".join(str(name or "").split())
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3].rstrip() + "..."
+
+    async def _start_trace_span(
+        self,
+        *,
+        kind: str,
+        name: str,
+        source_service: str = "skuld",
+        parent_span_id: uuid.UUID | None = None,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        actor_label: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        started_at: datetime | None = None,
+    ) -> uuid.UUID | None:
+        """Open a trace span in Volundr for this session."""
+        if not self.volundr_api_url:
+            return None
+        client = await self._get_http_client()
+        span_id = uuid.uuid4()
+        payload = {
+            "id": str(span_id),
+            "session_id": str(self.session_id),
+            "trace_id": str(self._trace_id),
+            "kind": kind,
+            "name": self._trace_label(name),
+            "source_service": source_service,
+            "started_at": (started_at or datetime.now(UTC)).isoformat(),
+            "attributes": attributes or {},
+        }
+        if parent_span_id is not None:
+            payload["parent_span_id"] = str(parent_span_id)
+        if actor_type is not None:
+            payload["actor_type"] = actor_type
+        if actor_id is not None:
+            payload["actor_id"] = actor_id
+        if actor_label is not None:
+            payload["actor_label"] = actor_label
+        try:
+            response = await client.post(FORGE_TRACE_SPANS_START_PATH, json=payload)
+            if response.status_code < 300:
+                return span_id
+            logger.debug(
+                "Trace span start failed (%d): %s",
+                response.status_code,
+                response.text[:200],
+            )
+        except Exception:
+            logger.debug("Failed to start trace span kind=%s name=%s", kind, name, exc_info=True)
+        return None
+
+    async def _finish_trace_span(
+        self,
+        span_id: uuid.UUID | None,
+        *,
+        status: str = "completed",
+        attributes: dict[str, Any] | None = None,
+        ended_at: datetime | None = None,
+    ) -> None:
+        """Finish an already-open trace span."""
+        if span_id is None or not self.volundr_api_url:
+            return
+        client = await self._get_http_client()
+        payload = {
+            "session_id": str(self.session_id),
+            "ended_at": (ended_at or datetime.now(UTC)).isoformat(),
+            "status": status,
+            "attributes": attributes or {},
+        }
+        try:
+            response = await client.post(
+                f"/api/v1/forge/spans/{span_id}/finish",
+                json=payload,
+            )
+            if response.status_code < 300:
+                return
+            logger.debug(
+                "Trace span finish failed (%d): %s",
+                response.status_code,
+                response.text[:200],
+            )
+        except Exception:
+            logger.debug("Failed to finish trace span id=%s", span_id, exc_info=True)
+
+    async def _complete_trace_span(
+        self,
+        *,
+        kind: str,
+        name: str,
+        source_service: str = "skuld",
+        parent_span_id: uuid.UUID | None = None,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        actor_label: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        started_at: datetime | None = None,
+        ended_at: datetime | None = None,
+        duration_ms: int | None = None,
+        status: str = "completed",
+    ) -> uuid.UUID | None:
+        """Record a completed span in a single request."""
+        if not self.volundr_api_url:
+            return None
+        client = await self._get_http_client()
+        span_id = uuid.uuid4()
+        actual_started_at = started_at or datetime.now(UTC)
+        payload = {
+            "id": str(span_id),
+            "session_id": str(self.session_id),
+            "trace_id": str(self._trace_id),
+            "kind": kind,
+            "name": self._trace_label(name),
+            "source_service": source_service,
+            "started_at": actual_started_at.isoformat(),
+            "status": status,
+            "attributes": attributes or {},
+        }
+        if ended_at is not None:
+            payload["ended_at"] = ended_at.isoformat()
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        if parent_span_id is not None:
+            payload["parent_span_id"] = str(parent_span_id)
+        if actor_type is not None:
+            payload["actor_type"] = actor_type
+        if actor_id is not None:
+            payload["actor_id"] = actor_id
+        if actor_label is not None:
+            payload["actor_label"] = actor_label
+        try:
+            response = await client.post(FORGE_TRACE_SPANS_COMPLETE_PATH, json=payload)
+            if response.status_code < 300:
+                return span_id
+            logger.debug(
+                "Trace span complete failed (%d): %s",
+                response.status_code,
+                response.text[:200],
+            )
+        except Exception:
+            logger.debug("Failed to complete trace span kind=%s name=%s", kind, name, exc_info=True)
+        return None
+
+    async def _ensure_session_trace_started(self) -> None:
+        """Ensure the root session lifecycle span is open."""
+        if self._trace_session_span_id is not None:
+            return
+        self._trace_session_span_id = await self._start_trace_span(
+            kind="session.lifecycle",
+            name=self._settings.session.name or "session",
+            source_service="skuld",
+            actor_type="system",
+            actor_id=self.session_id,
+            actor_label=self._settings.session.name or "session",
+            attributes={
+                "model": self.model,
+                "workspace_path": self.workspace_dir,
+                "workflow_enabled": bool(self._has_workflow_trigger()),
+            },
+        )
+
     async def _emit_pipeline_event(
         self,
         event_type: str,
@@ -3148,6 +3624,143 @@ class Broker:
         if ev_type == "terminal":
             return "terminal_command"
         return "tool_use"
+
+    @staticmethod
+    def _event_content_blocks(data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return normalized content blocks from either top-level or message payload."""
+        content = data.get("content", [])
+        if isinstance(content, list) and content:
+            return [block for block in content if isinstance(block, dict)]
+        message = data.get("message")
+        if isinstance(message, dict):
+            nested = message.get("content", [])
+            if isinstance(nested, list):
+                return [block for block in nested if isinstance(block, dict)]
+        return []
+
+    @classmethod
+    def _is_tool_result_only_user_event(cls, data: dict[str, Any]) -> bool:
+        """Return True when a user event only carries internal tool_result blocks."""
+        blocks = cls._event_content_blocks(data)
+        return bool(blocks) and all(block.get("type") == "tool_result" for block in blocks)
+
+    @staticmethod
+    def _extract_tool_result_preview(block: dict[str, Any]) -> str:
+        """Return a compact text preview for a tool_result payload."""
+        content = block.get("content", "")
+        if isinstance(content, str):
+            return content[:200]
+        if isinstance(content, list):
+            text_parts = [
+                str(item.get("text", ""))
+                for item in content
+                if isinstance(item, dict) and item.get("text")
+            ]
+            return " ".join(text_parts)[:200]
+        return ""
+
+    async def _start_assistant_tool_trace_spans(self, data: dict[str, Any]) -> None:
+        """Open child tool spans for assistant tool_use blocks."""
+        if self._trace_assistant_span_id is None:
+            return
+
+        assistant_label = (
+            self._settings.mesh.persona
+            if getattr(self._settings, "mesh", None) is not None
+            else None
+        ) or self._settings.session.name
+
+        for block in self._event_content_blocks(data):
+            if block.get("type") != "tool_use":
+                continue
+
+            tool_name = str(block.get("name") or "tool").strip() or "tool"
+            tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
+            tool_key = str(block.get("id") or uuid.uuid4())
+            if tool_key in self._trace_assistant_tool_spans:
+                continue
+
+            span_id = await self._start_trace_span(
+                kind="tool.call",
+                name=tool_name,
+                parent_span_id=self._trace_assistant_span_id,
+                actor_type="assistant",
+                actor_id=self._observer_peer_id() or self.session_id,
+                actor_label=assistant_label,
+                attributes={
+                    "tool_name": tool_name,
+                    "tool_use_id": str(block.get("id") or ""),
+                    "tool_input": tool_input,
+                },
+            )
+            if span_id is None:
+                continue
+
+            self._trace_assistant_tool_spans[tool_key] = span_id
+            self._trace_assistant_tool_order.append(tool_key)
+
+            command = str(tool_input.get("command") or "").strip()
+            if command:
+                self._assistant_pending_commands[tool_key] = command
+
+    def _pop_assistant_tool_trace_span(
+        self,
+        tool_use_id: str,
+    ) -> tuple[uuid.UUID | None, str]:
+        """Pop a pending assistant tool span by id, falling back to FIFO order."""
+        tool_key = tool_use_id if tool_use_id and tool_use_id in self._trace_assistant_tool_spans else ""
+        if not tool_key and self._trace_assistant_tool_order:
+            tool_key = self._trace_assistant_tool_order[0]
+        if not tool_key:
+            return None, ""
+
+        span_id = self._trace_assistant_tool_spans.pop(tool_key, None)
+        if tool_key in self._trace_assistant_tool_order:
+            self._trace_assistant_tool_order.remove(tool_key)
+        command = self._assistant_pending_commands.pop(tool_key, "")
+        return span_id, command
+
+    async def _finish_assistant_tool_trace_spans_from_user_event(self, data: dict[str, Any]) -> None:
+        """Close assistant child tool spans from tool_result-only user events."""
+        for block in self._event_content_blocks(data):
+            if block.get("type") != "tool_result":
+                continue
+            tool_use_id = str(block.get("tool_use_id") or "")
+            span_id, command = self._pop_assistant_tool_trace_span(tool_use_id)
+            await self._finish_trace_span(
+                span_id,
+                status="failed" if bool(block.get("is_error")) else "completed",
+                attributes={
+                    "tool_use_id": tool_use_id,
+                    "command": command,
+                    "exit_code": SessionArtifacts._extract_exit_code(block),
+                    "is_error": bool(block.get("is_error")),
+                    "result_preview": self._extract_tool_result_preview(block),
+                },
+            )
+
+    async def _finish_pending_assistant_tool_trace_spans(
+        self,
+        *,
+        status: str,
+        attributes: dict[str, Any] | None = None,
+    ) -> None:
+        """Close any assistant tool spans still open on turn/session termination."""
+        while self._trace_assistant_tool_order:
+            tool_key = self._trace_assistant_tool_order.pop(0)
+            span_id = self._trace_assistant_tool_spans.pop(tool_key, None)
+            command = self._assistant_pending_commands.pop(tool_key, "")
+            extra_attributes = dict(attributes or {})
+            if command:
+                extra_attributes.setdefault("command", command)
+            extra_attributes.setdefault("tool_use_id", tool_key)
+            await self._finish_trace_span(
+                span_id,
+                status=status,
+                attributes=extra_attributes,
+            )
+        self._trace_assistant_tool_spans.clear()
+        self._assistant_pending_commands.clear()
 
     async def _report_session_start(self) -> None:
         """Report the session start timeline event (once)."""

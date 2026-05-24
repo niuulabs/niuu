@@ -42,6 +42,7 @@ from volundr.adapters.inbound.rest_audit import (
 )
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_events import create_events_router
+from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
@@ -74,6 +75,7 @@ from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepositor
 from volundr.adapters.outbound.postgres_presets import PostgresPresetRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
+from volundr.adapters.outbound.postgres_spans import PostgresSpanRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_timeline import PostgresTimelineRepository
 from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
@@ -836,6 +838,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pg_event_sink = PostgresEventSink(
                 pool, buffer_size=settings.event_pipeline.postgres_buffer_size
             )
+            span_repository = PostgresSpanRepository(pool)
             event_sinks: list = [pg_event_sink]
 
             # Optional: RabbitMQ sink
@@ -909,6 +912,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 prefix="/api/v1/forge",
             )
             app.include_router(events_router)
+            trace_router = create_trace_router(
+                span_repository,
+                session_service=session_service,
+                prefix="/api/v1/forge",
+            )
+            app.include_router(trace_router)
 
             # GitHub webhook ingestion
             from volundr.adapters.inbound.rest_webhooks import create_webhooks_router
