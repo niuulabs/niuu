@@ -146,4 +146,4 @@ jobs:
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/niuu-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/niuu-[0-9]*.tgz ${{ env.CHART_REPO }}

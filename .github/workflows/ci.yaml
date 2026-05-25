@@ -761,7 +761,7 @@ jobs:
           helm push .helm-packages/volundr-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/ting-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/niuu-shared-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
-          helm push .helm-packages/niuu-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          helm push .helm-packages/niuu-[0-9]*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
 
   # ---------------------------------------------------------------------------
   # Security — container vulnerability scanning — full tier only.
