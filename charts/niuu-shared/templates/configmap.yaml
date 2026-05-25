@@ -103,6 +103,18 @@ data:
       secret_kwargs_env: {}
       {{- end }}
 
+    credential_store:
+      adapter: {{ .Values.credentialStore.adapter | quote }}
+      kwargs: {{ .Values.credentialStore.kwargs | toJson }}
+      {{- if .Values.credentialStore.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.credentialStore.secretKwargs }}
+        {{ .kwarg }}: CREDENTIAL_STORE_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+
     pat:
       token_issuer_adapter: {{ .Values.pat.token_issuer_adapter | quote }}
       token_issuer_kwargs: {{ .Values.pat.token_issuer_kwargs | toJson }}

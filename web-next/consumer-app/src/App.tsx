@@ -20,7 +20,6 @@ import {
   createMockDispatchBus,
   createMockTingSettingsService,
   createMockAuditLogService,
-  createMockTingIntegrationService,
 } from '@niuulabs/plugin-ting';
 
 const queryClient = createQueryClient();
@@ -35,7 +34,6 @@ const services = {
   'ting.dispatch': createMockDispatchBus(),
   'ting.settings': createMockTingSettingsService(),
   'ting.audit': createMockAuditLogService(),
-  'ting.integrations': createMockTingIntegrationService(),
 };
 
 export function App() {

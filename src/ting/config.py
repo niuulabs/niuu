@@ -101,6 +101,13 @@ class CredentialStoreConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
+class SharedIntegrationsConfig(BaseModel):
+    """Configuration for consuming shared integration connections."""
+
+    base_url: str = Field(default="")
+    timeout_seconds: float = Field(default=30.0)
+
+
 class ReviewConfig(BaseModel):
     """Confidence deltas for run review actions."""
 
@@ -1062,6 +1069,9 @@ class Settings(BaseSettings):
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     planner: PlannerConfig = Field(default_factory=PlannerConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
+    shared_integrations: SharedIntegrationsConfig = Field(
+        default_factory=SharedIntegrationsConfig
+    )
     pat: PATConfig = Field(default_factory=PATConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     cerbos: CerbosConfig = Field(default_factory=CerbosConfig)

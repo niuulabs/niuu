@@ -112,13 +112,10 @@ class TingPlugin(ServicePlugin):
             ),
             APIRouteDomain(
                 name="ting-channel-api",
-                prefixes=(
-                    "/api/v1/ting/integrations",
-                    "/api/v1/ting/telegram",
-                ),
+                prefixes=("/api/v1/ting/telegram",),
                 description=(
-                    "Ting operator-channel routes for Ting-scoped integrations, "
-                    "Telegram setup, and webhook ingress."
+                    "Ting operator-channel routes for Telegram setup and "
+                    "webhook ingress."
                 ),
             ),
             APIRouteDomain(

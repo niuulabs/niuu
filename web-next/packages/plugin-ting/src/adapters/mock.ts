@@ -11,7 +11,6 @@ import type {
   IDispatcherService,
   ITingSessionService,
   ITrackerBrowserService,
-  ITingIntegrationService,
   IWorkflowService,
   WorkflowLaunchRequest,
   IDispatchBus,
@@ -23,10 +22,6 @@ import type {
   PlanSession,
   ExtractedStructure,
   RunSessionMessage,
-  IntegrationConnection,
-  CreateIntegrationParams,
-  ConnectionTestResult,
-  TelegramSetupResult,
   DispatchCluster,
   FlockConfig,
   DispatchDefaults,
@@ -1021,27 +1016,6 @@ const SEED_AUDIT_ENTRIES: AuditEntry[] = [
   },
 ];
 
-const SEED_INTEGRATIONS: IntegrationConnection[] = [
-  {
-    id: 'int-linear',
-    integrationType: 'linear',
-    adapter: 'LinearAdapter',
-    credentialName: 'linear-api-key',
-    enabled: true,
-    status: 'connected',
-    createdAt: '2026-01-01T00:00:00Z',
-  },
-  {
-    id: 'int-github',
-    integrationType: 'github',
-    adapter: 'GitHubAdapter',
-    credentialName: 'github-token',
-    enabled: true,
-    status: 'connected',
-    createdAt: '2026-01-01T00:00:00Z',
-  },
-];
-
 // ---------------------------------------------------------------------------
 // Mock factories
 // ---------------------------------------------------------------------------
@@ -1582,55 +1556,6 @@ export function createMockAuditLogService(): IAuditLogService {
       }
 
       return result;
-    },
-  };
-}
-
-/**
- * Create an in-memory ITingIntegrationService.
- */
-export function createMockTingIntegrationService(): ITingIntegrationService {
-  const integrations = new Map<string, IntegrationConnection>(
-    SEED_INTEGRATIONS.map((i) => [i.id, { ...i }]),
-  );
-
-  return {
-    async listIntegrations() {
-      return Array.from(integrations.values());
-    },
-
-    async createIntegration(params: CreateIntegrationParams) {
-      const integration: IntegrationConnection = {
-        id: `int-${Date.now()}`,
-        integrationType: params.integrationType,
-        adapter: params.adapter,
-        credentialName: params.credentialName,
-        enabled: true,
-        status: 'connected',
-        createdAt: new Date().toISOString(),
-      };
-      integrations.set(integration.id, integration);
-      return integration;
-    },
-
-    async deleteIntegration(id: string) {
-      integrations.delete(id);
-    },
-
-    async toggleIntegration(id: string, enabled: boolean) {
-      const integration = integrations.get(id);
-      if (!integration) throw new Error(`Integration not found: ${id}`);
-      const updated = { ...integration, enabled };
-      integrations.set(id, updated);
-      return updated;
-    },
-
-    async testConnection(_id: string): Promise<ConnectionTestResult> {
-      return { success: true, message: 'Connection successful (mock)' };
-    },
-
-    async getTelegramSetup(): Promise<TelegramSetupResult> {
-      return { deeplink: 'https://t.me/niuu_bot?start=mock', token: 'mock-telegram-token' };
     },
   };
 }

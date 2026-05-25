@@ -32,6 +32,11 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
+def _can_manage_connection(principal: Principal, connection: IntegrationConnection) -> bool:
+    """Return True when the principal may manage the connection."""
+    return connection.owner_id == principal.user_id or "volundr:admin" in principal.roles
+
+
 # --- Request/Response models ---
 
 
@@ -301,6 +306,34 @@ def _build_integrations_router(
         connections = await integration_repo.list_connections(principal.user_id)
         return [IntegrationResponse.from_connection(c) for c in connections]
 
+    @router.get(
+        "/{connection_id}",
+        response_model=IntegrationResponse,
+    )
+    async def get_integration(
+        request: Request,
+        response: Response,
+        connection_id: str = Path(description="Integration connection UUID to retrieve"),
+        principal: Principal = Depends(extract_principal),
+    ) -> IntegrationResponse:
+        """Get a single integration connection."""
+        if deprecated and canonical_prefix is not None:
+            warn_on_legacy_route(
+                request=request,
+                response=response,
+                notice=LegacyRouteNotice(
+                    legacy_path=f"{prefix}/{connection_id}",
+                    canonical_path=f"{canonical_prefix}/{connection_id}",
+                ),
+            )
+        existing = await integration_repo.get_connection(connection_id)
+        if existing is None or not _can_manage_connection(principal, existing):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Integration not found: {connection_id}",
+            )
+        return IntegrationResponse.from_connection(existing)
+
     @router.post(
         "",
         response_model=IntegrationResponse,
@@ -451,7 +484,7 @@ def _build_integrations_router(
                 ),
             )
         existing = await integration_repo.get_connection(connection_id)
-        if existing is None or existing.owner_id != principal.user_id:
+        if existing is None or not _can_manage_connection(principal, existing):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Integration not found: {connection_id}",
@@ -498,7 +531,7 @@ def _build_integrations_router(
                 ),
             )
         existing = await integration_repo.get_connection(connection_id)
-        if existing is None or existing.owner_id != principal.user_id:
+        if existing is None or not _can_manage_connection(principal, existing):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Integration not found: {connection_id}",
@@ -526,7 +559,7 @@ def _build_integrations_router(
                 ),
             )
         existing = await integration_repo.get_connection(connection_id)
-        if existing is None or existing.owner_id != principal.user_id:
+        if existing is None or not _can_manage_connection(principal, existing):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Integration not found: {connection_id}",
@@ -588,6 +621,7 @@ def _build_integrations_router(
 def create_integrations_router(
     integration_repo: IntegrationRepository,
     tracker_factory: TrackerFactory,
+    prefix: str = "/api/v1/integrations",
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
 ) -> APIRouter:
@@ -595,7 +629,7 @@ def create_integrations_router(
     return _build_integrations_router(
         integration_repo,
         tracker_factory,
-        prefix="/api/v1/integrations",
+        prefix=prefix,
         registry=registry,
         credential_store=credential_store,
     )
@@ -604,6 +638,7 @@ def create_integrations_router(
 def create_canonical_integrations_router(
     integration_repo: IntegrationRepository,
     tracker_factory: TrackerFactory,
+    prefix: str = "/api/v1/integrations",
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
 ) -> APIRouter:
@@ -611,6 +646,7 @@ def create_canonical_integrations_router(
     return create_integrations_router(
         integration_repo,
         tracker_factory,
+        prefix=prefix,
         registry=registry,
         credential_store=credential_store,
     )

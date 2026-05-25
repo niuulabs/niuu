@@ -210,52 +210,6 @@ export interface ITrackerBrowserService {
 }
 
 // ---------------------------------------------------------------------------
-// ITingIntegrationService — external integration connections
-// ---------------------------------------------------------------------------
-
-export interface IntegrationConnection {
-  id: string;
-  integrationType: string;
-  adapter: string;
-  credentialName: string;
-  enabled: boolean;
-  status: string;
-  createdAt: string;
-}
-
-export interface TelegramSetupResult {
-  deeplink: string;
-  token: string;
-}
-
-export interface CreateIntegrationParams {
-  integrationType: string;
-  adapter: string;
-  credentialName: string;
-  credentialValue: string;
-  config: Record<string, string>;
-}
-
-export interface ConnectionTestResult {
-  success: boolean;
-  message: string;
-}
-
-/**
- * Integration connection management service.
- *
- * Lifted from web/src/modules/ting/ports/integrations.port.ts.
- */
-export interface ITingIntegrationService {
-  listIntegrations(): Promise<IntegrationConnection[]>;
-  createIntegration(params: CreateIntegrationParams): Promise<IntegrationConnection>;
-  deleteIntegration(id: string): Promise<void>;
-  toggleIntegration(id: string, enabled: boolean): Promise<IntegrationConnection>;
-  testConnection(id: string): Promise<ConnectionTestResult>;
-  getTelegramSetup(): Promise<TelegramSetupResult>;
-}
-
-// ---------------------------------------------------------------------------
 // IWorkflowService — workflow DAG CRUD
 // ---------------------------------------------------------------------------
 

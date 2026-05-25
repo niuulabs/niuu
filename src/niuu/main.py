@@ -9,10 +9,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from niuu.adapters.inbound.auth import extract_principal
+from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
+from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_repos import create_repos_router
 from niuu.adapters.outbound.git_registry import create_git_registry
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
+from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.config import GitConfig
 from niuu.cors import apply_cors_middleware
@@ -20,21 +23,46 @@ from niuu.domain.services.pat import PATService
 from niuu.domain.services.repo import RepoService
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
+from niuu.service_integrations import (
+    has_seeded_linear_integration,
+    seed_configured_integrations,
+    seed_linear_integration,
+)
 from niuu.service_runtime import (
+    create_credential_store,
     create_identity_adapter,
     create_pat_validator,
     create_storage_adapter,
+    release_credential_store,
 )
 from niuu.service_settings import Settings
 from niuu.utils import import_class
 from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
+from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_features import create_features_router
+from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
+from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
+from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_ravn_personas import create_ravn_personas_router
+from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_tenants import create_identity_router
+from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
+from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
+from volundr.adapters.outbound.linear import LinearAdapter
+from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
+from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
+from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.feature import FeatureService
+from volundr.domain.services.integration_registry import (
+    IntegrationRegistry,
+    definitions_from_config,
+)
+from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.tenant import TenantService
+from volundr.domain.services.tracker import TrackerService
+from volundr.domain.services.tracker_factory import TrackerFactory
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +86,10 @@ def create_app(
     """
     app = FastAPI(
         title="Niuu Shared Services",
-        description="Shared API endpoints — repos, identity, features, personas, and PATs.",
+        description=(
+            "Shared API endpoints — repos, identity, credentials, integrations, tracker,"
+            " features, personas, and PATs."
+        ),
         version="0.1.0",
     )
 
@@ -94,6 +125,58 @@ def create_app(
                 ttl_days=loaded_settings.pat.ttl_days,
                 validator=pat_validator,
             )
+            credential_store = create_credential_store(loaded_settings)
+            credential_service = CredentialService(
+                store=credential_store,
+                strategies=SecretMountStrategyRegistry(),
+            )
+            mcp_provider = ConfigMCPServerProvider(loaded_settings.mcp_servers)
+            secret_manager = InMemorySecretManager()
+            integration_repo = PostgresIntegrationRepository(pool)
+            integration_registry = IntegrationRegistry(
+                definitions_from_config(
+                    [
+                        definition.model_dump()
+                        for definition in loaded_settings.integrations.definitions
+                    ]
+                )
+            )
+            tracker_factory = TrackerFactory(credential_store)
+            mapping_repository = PostgresMappingRepository(pool)
+            default_tracker = None
+
+            if loaded_settings.integrations.seed_connections:
+                await seed_configured_integrations(
+                    integration_repo=integration_repo,
+                    credential_store=credential_store,
+                    settings=loaded_settings,
+                )
+                logger.info(
+                    "Seeded %d integration connection(s) from config",
+                    len(loaded_settings.integrations.seed_connections),
+                )
+
+            if (
+                loaded_settings.linear.enabled
+                and loaded_settings.linear.api_key
+                and not has_seeded_linear_integration(loaded_settings)
+            ):
+                await seed_linear_integration(
+                    integration_repo,
+                    credential_store,
+                    api_key=loaded_settings.linear.api_key,
+                )
+                logger.info("Linear integration seeded from config")
+
+            if loaded_settings.linear.enabled and loaded_settings.linear.api_key:
+                default_tracker = LinearAdapter(api_key=loaded_settings.linear.api_key)
+
+            tracker_service = TrackerService(
+                default_tracker,
+                mapping_repository,
+                integration_repo=integration_repo,
+                tracker_factory=tracker_factory,
+            )
 
             feature_configs = list(loaded_settings.features)
             if loaded_settings.local_mounts.mini_mode:
@@ -114,12 +197,58 @@ def create_app(
             app.include_router(create_repos_router(repo_service))
             app.include_router(create_identity_router(tenant_service))
             app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
+            app.include_router(create_credentials_settings_router())
+            app.include_router(create_credentials_settings_router("/api/v1/niuu/credentials"))
+            app.include_router(create_canonical_credentials_router(credential_service))
+            app.include_router(
+                create_canonical_credentials_router(
+                    credential_service,
+                    prefix="/api/v1/niuu/credentials",
+                )
+            )
+            app.include_router(create_canonical_secrets_router(mcp_provider, secret_manager))
+            app.include_router(
+                create_canonical_secrets_router(
+                    mcp_provider,
+                    secret_manager,
+                    prefix="/api/v1/niuu/credentials",
+                )
+            )
+            app.include_router(create_integrations_settings_router())
+            app.include_router(
+                create_canonical_integrations_router(
+                    integration_repo,
+                    tracker_factory,
+                    registry=integration_registry,
+                    credential_store=credential_store,
+                )
+            )
+            app.include_router(
+                create_canonical_integrations_router(
+                    integration_repo,
+                    tracker_factory,
+                    prefix="/internal/api/v1/integrations",
+                    registry=integration_registry,
+                    credential_store=credential_store,
+                )
+            )
+            app.include_router(
+                create_canonical_oauth_router(
+                    oauth_config=loaded_settings.oauth,
+                    integration_registry=integration_registry,
+                    credential_store=credential_store,
+                    integration_repo=integration_repo,
+                )
+            )
+            app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))
+            app.include_router(create_canonical_issues_router(integration_repo, tracker_factory))
             app.include_router(create_features_router(feature_service))
             app.include_router(create_ravn_personas_router())
 
             try:
                 yield
             finally:
+                release_credential_store(loaded_settings)
                 await git_registry.close()
 
     app.router.lifespan_context = lifespan
