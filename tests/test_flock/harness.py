@@ -245,9 +245,15 @@ class InMemoryMimirPort(MimirPort):
             content=content,
         )
 
-    async def list_pages(self, category: str | None = None) -> list[MimirPageMeta]:
+    async def list_pages(
+        self,
+        category: str | None = None,
+        prefix: str | None = None,
+    ) -> list[MimirPageMeta]:
         result = []
         for path in self._pages:
+            if prefix is not None and not path.startswith(prefix):
+                continue
             result.append(
                 MimirPageMeta(
                     path=path,

@@ -97,8 +97,8 @@ describe('DashboardPage', () => {
     });
     await waitFor(() => expect(screen.getByText('Event feed')).toBeInTheDocument());
     expect(
-      screen.getByText(/created · awaiting decomposition|stages committed|running ·/i),
-    ).toBeInTheDocument();
+      screen.getAllByText(/created · awaiting decomposition|stages committed|running ·/i).length,
+    ).toBeGreaterThan(0);
   });
 
   it('shows an honest empty state when there is no recent activity at all', async () => {
@@ -138,6 +138,14 @@ describe('DashboardPage', () => {
     fireEvent.click(screen.getByText('View all'));
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/sagas' });
     await waitFor(() => expect(screen.getByText('Navigating to Sagas')).toBeInTheDocument());
+  });
+
+  it('clicking awaiting review navigates to the sagas page', async () => {
+    mockNavigate.mockClear();
+    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
+    await waitFor(() => expect(screen.getByText('Awaiting review')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Awaiting review').closest('.ting-kpi')!);
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/sagas' });
   });
 
   it('renders the dispatcher stats bar when state is available', async () => {
@@ -196,5 +204,234 @@ describe('DashboardPage', () => {
     render(<DashboardPage />, { wrapper: wrap(completeSvc) });
     await waitFor(() => expect(screen.getByText('Saga stream')).toBeInTheDocument());
     expect(screen.queryByText('Done Saga')).not.toBeInTheDocument();
+  });
+
+  it('renders confidence and saga completion events in the activity feed', async () => {
+    const eventfulDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [
+        {
+          id: 'evt-confidence',
+          timestamp: '2026-05-25T12:00:00Z',
+          event: 'confidence.updated',
+          data: {
+            event_type: 'confidence_updated',
+            delta: -0.12,
+            score_after: 0.58,
+            tracker_id: 'NIU-902',
+          },
+        },
+        {
+          id: 'evt-saga-complete',
+          timestamp: '2026-05-25T11:59:00Z',
+          event: 'saga.completed',
+          data: {
+            tracker_id: 'NIU-903',
+            status: 'merged',
+          },
+        },
+      ],
+      getState: async () => null,
+    };
+
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': eventfulDispatcher }),
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/confidence updated · -0.12 · → 0.58/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText('NIU-902')).toBeInTheDocument();
+    expect(screen.getByText(/^completed$/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('ting-dispatcher-stats')).not.toBeInTheDocument();
+  });
+
+  it('renders fallback feed rows from terminal runs when dispatcher activity is quiet', async () => {
+    const quietDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [],
+    };
+    const phasefulTing = {
+      getSagas: async (): Promise<Saga[]> => [
+        {
+          id: 'done-1',
+          trackerId: 'NIU-404',
+          trackerType: 'linear',
+          slug: 'terminal-saga',
+          name: 'Terminal Saga',
+          repos: [],
+          featureBranch: 'feat/terminal',
+          status: 'active',
+          confidence: 61,
+          createdAt: '2026-05-25T08:00:00Z',
+          phaseSummary: { total: 2, completed: 1 },
+          baseBranch: 'main',
+        },
+      ],
+      getPhases: async () => [
+        {
+          id: 'phase-1',
+          sagaId: 'done-1',
+          name: 'Validate',
+          order: 1,
+          status: 'complete',
+          runs: [
+            {
+              id: 'run-merged',
+              phaseId: 'phase-1',
+              sagaId: 'done-1',
+              name: 'Publisher',
+              status: 'merged',
+              persona: 'publisher',
+              updatedAt: '2026-05-25T11:00:00Z',
+              createdAt: '2026-05-25T10:30:00Z',
+              confidence: 0.91,
+            },
+          ],
+        },
+      ],
+    };
+
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: phasefulTing, 'ting.dispatcher': quietDispatcher }),
+    });
+
+    await waitFor(() => expect(screen.getByText(/merged · Publisher/i)).toBeInTheDocument());
+    expect(screen.getAllByText('NIU-404').length).toBeGreaterThan(1);
+  });
+
+  it('opens a linked saga from the dispatcher feed', async () => {
+    mockNavigate.mockClear();
+    const linkedDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [
+        {
+          id: 'evt-linked',
+          timestamp: '2026-05-25T12:00:00Z',
+          event: 'run.state_changed',
+          data: {
+            tracker_id: 'NIU-214.2',
+            status: 'running',
+            action: 'dispatch',
+          },
+        },
+      ],
+    };
+
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': linkedDispatcher }),
+    });
+
+    await waitFor(() => expect(screen.getByText('NIU-214.2')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Open NIU-214.2'));
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/ting/sagas/$sagaId',
+      params: { sagaId: '00000000-0000-0000-0000-000000000004' },
+    });
+  });
+
+  it('falls back to saga ids and generic event labels in dispatcher activity rows', async () => {
+    const genericEventDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [
+        {
+          id: 'evt-generic',
+          timestamp: '2026-05-25T12:00:00Z',
+          event: 'custom.research_ping',
+          data: {
+            saga_id: 'saga-external-123',
+          },
+        },
+      ],
+      getState: async () => null,
+    };
+
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': genericEventDispatcher }),
+    });
+
+    await waitFor(() => expect(screen.getByText('custom research_ping')).toBeInTheDocument());
+    expect(screen.getByText('saga-external-123')).toBeInTheDocument();
+  });
+
+  it('renders awaiting decomposition fallback rows for fresh sagas with no phases', async () => {
+    const quietDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [],
+      getState: async () => null,
+    };
+    const freshSagaServices = {
+      ting: {
+        getSagas: async (): Promise<Saga[]> => [
+          {
+            id: 'fresh-1',
+            trackerId: 'NIU-1001',
+            trackerType: 'linear',
+            slug: 'fresh-saga',
+            name: 'Fresh Saga',
+            repos: [],
+            featureBranch: 'feat/fresh',
+            status: 'active',
+            confidence: 44,
+            createdAt: '2026-05-25T08:00:00Z',
+            phaseSummary: { total: 0, completed: 0 },
+            baseBranch: 'main',
+          },
+        ],
+        getPhases: async () => [],
+      },
+      'ting.dispatcher': quietDispatcher,
+    };
+
+    render(<DashboardPage />, { wrapper: wrap(freshSagaServices) });
+
+    await waitFor(() =>
+      expect(screen.getByText('created · awaiting decomposition')).toBeInTheDocument(),
+    );
+    expect(screen.getAllByText('NIU-1001').length).toBeGreaterThan(1);
+  });
+
+  it('disables feed navigation when no linked saga exists', async () => {
+    mockNavigate.mockClear();
+    const unlinkedEventDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [
+        {
+          id: 'evt-unlinked',
+          timestamp: '2026-05-25T12:00:00Z',
+          event: 'external.signal',
+          data: {},
+        },
+      ],
+      getState: async () => null,
+    };
+
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': unlinkedEventDispatcher }),
+    });
+
+    await waitFor(() => expect(screen.getByText('external signal')).toBeInTheDocument());
+    const openButton = screen.getByTitle('No linked saga');
+    expect(openButton).toBeDisabled();
+    fireEvent.click(openButton);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('opens a saga from keyboard interaction on the card', async () => {
+    mockNavigate.mockClear();
+    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
+    await waitFor(() =>
+      expect(screen.getByText('Flokk subscription validation')).toBeInTheDocument(),
+    );
+    fireEvent.keyDown(
+      screen.getByText('Flokk subscription validation').closest('[role="button"]')!,
+      {
+        key: 'Enter',
+      },
+    );
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/ting/sagas/$sagaId',
+      params: { sagaId: '00000000-0000-0000-0000-000000000004' },
+    });
   });
 });

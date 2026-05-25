@@ -34,6 +34,7 @@ from ting.adapters.postgres_notification_subscriptions import (
     PostgresNotificationSubscriptionRepository,
 )
 from ting.adapters.postgres_sagas import PostgresSagaRepository
+from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.adapters.postgres_workflows import PostgresWorkflowRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.adapters.volundr_factory import VolundrAdapterFactory
@@ -58,6 +59,7 @@ from ting.api.flock_flows import (
 from ting.api.health import create_health_router
 from ting.api.persona_names import build_persona_names_dependency
 from ting.api.phases import create_saga_phases_router
+from ting.api.research import create_research_router, resolve_workflow_campaign_repo
 from ting.api.runs import create_runs_router, resolve_git, resolve_run_repo
 from ting.api.runs import resolve_tracker as resolve_runs_tracker
 from ting.api.runs import resolve_volundr as resolve_runs_volundr
@@ -84,6 +86,7 @@ from ting.domain.services.dispatch_service import (
 from ting.domain.services.notification import NotificationService
 from ting.domain.services.review_engine import ReviewEngine
 from ting.domain.services.reviewer_session import ReviewerSessionService
+from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.infrastructure.database import database_pool
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort
@@ -92,6 +95,7 @@ from ting.ports.git import GitPort
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerPort
 from ting.ports.volundr import VolundrPort
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 from ting.system_workflows import seed_system_workflows
 
@@ -352,6 +356,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(create_sessions_router())
     app.include_router(create_settings_router())
     app.include_router(create_workflows_router())
+    app.include_router(create_research_router())
     app.include_router(create_flock_flows_router())
     app.include_router(create_flock_config_router())
     from ting.adapters.inbound.auth import extract_principal as _extract_principal
@@ -536,6 +541,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             app.dependency_overrides[resolve_workflow_repo] = _resolve_workflow_repo
 
+            workflow_campaign_repo = PostgresWorkflowCampaignRepository(pool)
+            app.state.workflow_campaign_repo = workflow_campaign_repo
+
+            async def _resolve_workflow_campaign_repo() -> WorkflowCampaignRepository:
+                return workflow_campaign_repo
+
+            app.dependency_overrides[resolve_workflow_campaign_repo] = (
+                _resolve_workflow_campaign_repo
+            )
+
             # Wire DispatchService
             dispatch_svc = DispatchService(
                 tracker_factory=app.state.tracker_factory,
@@ -657,6 +672,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             app.dependency_overrides[resolve_event_bus] = _resolve_event_bus
             app.dependency_overrides[dispatcher_resolve_event_bus] = _resolve_event_bus
+
+            workflow_campaign_projector = WorkflowCampaignProjector(
+                repo=workflow_campaign_repo,
+                volundr_factory=app.state.volundr_factory,
+                event_bus=event_bus,
+            )
+            app.state.workflow_campaign_projector = workflow_campaign_projector
+            await workflow_campaign_projector.start()
 
             # Wire Sleipnir bridge (sleipnir_bus already created above; bridge needs event_bus)
             ting_sleipnir_bridge = None
@@ -917,6 +940,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await event_trigger_adapter.stop()
             if ting_sleipnir_bridge is not None:
                 await ting_sleipnir_bridge.stop()
+            await workflow_campaign_projector.stop()
             await review_engine.stop()
             if ravn_dispatcher is not None:
                 await ravn_dispatcher.close()

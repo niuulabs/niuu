@@ -24,6 +24,13 @@ import type {
   IWorkflowService,
   WorkflowLaunchRequest,
   WorkflowLaunchResult,
+  IResearchService,
+  CreateResearchCampaignRequest,
+  UpdateResearchCampaignRequest,
+  CampaignArtifact,
+  CampaignArtifactDetail,
+  ResearchCampaign,
+  ResearchCampaignDetail,
   ITingSettingsService,
   IAuditLogService,
   DispatcherActivityEvent,
@@ -246,6 +253,7 @@ interface RawWorkflow {
   version: string;
   scope: 'system' | 'user';
   owner_id: string | null;
+  tags?: string[];
   nodes: Workflow['nodes'];
   edges: Workflow['edges'];
   resourceBindings?: Workflow['resourceBindings'];
@@ -265,6 +273,73 @@ interface RawWorkflowLaunchResult {
   status: string;
   clusterName?: string;
   cluster_name?: string;
+}
+
+interface RawCampaignStageState {
+  stageId?: string;
+  stage_id?: string;
+  label: string;
+  status: string;
+  startedAt?: string | null;
+  started_at?: string | null;
+  completedAt?: string | null;
+  completed_at?: string | null;
+  reason?: string | null;
+}
+
+interface RawCampaignArtifact {
+  path: string;
+  title: string;
+  updatedAt?: string;
+  updated_at?: string;
+  kind?: string | null;
+  publishState?: string;
+  publish_state?: string;
+  sourceIds?: string[];
+  source_ids?: string[];
+  summary?: string | null;
+}
+
+interface RawResearchCampaign {
+  id: string;
+  slug: string;
+  name: string;
+  ownerId?: string;
+  owner_id?: string;
+  workflowId?: string;
+  workflow_id?: string;
+  workflowVersion?: string;
+  workflow_version?: string;
+  workflowName?: string;
+  workflow_name?: string;
+  sessionId?: string;
+  session_id?: string;
+  sessionName?: string;
+  session_name?: string;
+  status: string;
+  activeStageId?: string | null;
+  active_stage_id?: string | null;
+  stageState?: RawCampaignStageState[];
+  stage_state?: RawCampaignStageState[];
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+  created_at?: string;
+  updatedAt?: string;
+  updated_at?: string;
+  lastActivityAt?: string | null;
+  last_activity_at?: string | null;
+  completedAt?: string | null;
+  completed_at?: string | null;
+}
+
+interface RawResearchCampaignDetail extends RawResearchCampaign {
+  artifacts?: RawCampaignArtifact[];
+  canonicalArtifacts?: Record<string, string>;
+  canonical_artifacts?: Record<string, string>;
+}
+
+interface RawCampaignArtifactDetail extends RawCampaignArtifact {
+  content: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +609,7 @@ function toWorkflow(raw: RawWorkflow): Workflow {
     version: raw.version || undefined,
     scope: raw.scope,
     ownerId: raw.owner_id,
+    tags: raw.tags ?? [],
     nodes,
     edges,
     resourceBindings: raw.resourceBindings ?? raw.resource_bindings ?? [],
@@ -546,6 +622,7 @@ function toWorkflowBody(workflow: Workflow): Record<string, unknown> {
     description: workflow.description ?? '',
     version: workflow.version ?? 'draft',
     scope: workflow.scope ?? 'user',
+    tags: workflow.tags ?? [],
     nodes: workflow.nodes,
     edges: workflow.edges,
     resourceBindings: workflow.resourceBindings ?? [],
@@ -570,6 +647,95 @@ function toWorkflowLaunchResult(raw: RawWorkflowLaunchResult): WorkflowLaunchRes
     sessionName: raw.sessionName ?? raw.session_name ?? '',
     status: raw.status,
     clusterName: raw.clusterName ?? raw.cluster_name ?? '',
+  };
+}
+
+function toCampaignStageState(raw: RawCampaignStageState) {
+  return {
+    stageId: raw.stageId ?? raw.stage_id ?? '',
+    label: raw.label,
+    status: raw.status,
+    startedAt: raw.startedAt ?? raw.started_at ?? null,
+    completedAt: raw.completedAt ?? raw.completed_at ?? null,
+    reason: raw.reason ?? null,
+  };
+}
+
+function toCampaignArtifact(raw: RawCampaignArtifact): CampaignArtifact {
+  return {
+    path: raw.path,
+    title: raw.title,
+    updatedAt: raw.updatedAt ?? raw.updated_at ?? '',
+    kind: raw.kind ?? undefined,
+    publishState: raw.publishState ?? raw.publish_state ?? 'unknown',
+    sourceIds: raw.sourceIds ?? raw.source_ids ?? [],
+    summary: raw.summary ?? null,
+  };
+}
+
+function toResearchCampaign(raw: RawResearchCampaign): ResearchCampaign {
+  return {
+    id: raw.id,
+    slug: raw.slug,
+    name: raw.name,
+    ownerId: raw.ownerId ?? raw.owner_id ?? '',
+    workflowId: raw.workflowId ?? raw.workflow_id ?? '',
+    workflowVersion: raw.workflowVersion ?? raw.workflow_version ?? '',
+    workflowName: raw.workflowName ?? raw.workflow_name ?? '',
+    sessionId: raw.sessionId ?? raw.session_id ?? '',
+    sessionName: raw.sessionName ?? raw.session_name ?? '',
+    status: raw.status as ResearchCampaign['status'],
+    activeStageId: raw.activeStageId ?? raw.active_stage_id ?? undefined,
+    stageState: (raw.stageState ?? raw.stage_state ?? []).map(toCampaignStageState),
+    metadata: raw.metadata ?? {},
+    createdAt: raw.createdAt ?? raw.created_at ?? '',
+    updatedAt: raw.updatedAt ?? raw.updated_at ?? '',
+    lastActivityAt: raw.lastActivityAt ?? raw.last_activity_at ?? null,
+    completedAt: raw.completedAt ?? raw.completed_at ?? null,
+  };
+}
+
+function toResearchCampaignDetail(raw: RawResearchCampaignDetail): ResearchCampaignDetail {
+  const base = toResearchCampaign(raw);
+  return {
+    ...base,
+    artifacts: (raw.artifacts ?? []).map(toCampaignArtifact),
+    canonicalArtifacts: raw.canonicalArtifacts ?? raw.canonical_artifacts ?? {},
+  };
+}
+
+function toCampaignArtifactDetail(raw: RawCampaignArtifactDetail): CampaignArtifactDetail {
+  return {
+    ...toCampaignArtifact(raw),
+    content: raw.content,
+  };
+}
+
+function toResearchCampaignCreateBody(
+  request: CreateResearchCampaignRequest,
+): Record<string, unknown> {
+  return {
+    question: request.question,
+    name: request.name,
+    workflowId: request.workflowId,
+    repo: request.repo,
+    branch: request.branch,
+    mode: request.mode,
+    audience: request.audience,
+    deliverable: request.deliverable,
+    success: request.success,
+    constraints: request.constraints,
+    monitoringCadence: request.monitoringCadence,
+  };
+}
+
+function toResearchCampaignPatchBody(
+  request: UpdateResearchCampaignRequest,
+): Record<string, unknown> {
+  return {
+    name: request.name,
+    status: request.status,
+    metadata: request.metadata,
   };
 }
 
@@ -897,6 +1063,64 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
         toWorkflowLaunchBody(request),
       );
       return toWorkflowLaunchResult(raw);
+    },
+  };
+}
+
+export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
+  return {
+    async listCampaigns() {
+      const raw = await client.get<RawResearchCampaign[]>('/campaigns');
+      return raw.map(toResearchCampaign);
+    },
+
+    async getCampaign(slug: string) {
+      try {
+        const raw = await client.get<RawResearchCampaignDetail>(
+          `/campaigns/${encodeURIComponent(slug)}`,
+        );
+        return toResearchCampaignDetail(raw);
+      } catch {
+        return null;
+      }
+    },
+
+    async createCampaign(request: CreateResearchCampaignRequest) {
+      const raw = await client.post<RawResearchCampaign>(
+        '/campaigns',
+        toResearchCampaignCreateBody(request),
+      );
+      return toResearchCampaign(raw);
+    },
+
+    async updateCampaign(slug: string, request: UpdateResearchCampaignRequest) {
+      const raw = await client.patch<RawResearchCampaign>(
+        `/campaigns/${encodeURIComponent(slug)}`,
+        toResearchCampaignPatchBody(request),
+      );
+      return toResearchCampaign(raw);
+    },
+
+    async deleteCampaign(slug: string) {
+      await client.delete<void>(`/campaigns/${encodeURIComponent(slug)}`);
+    },
+
+    async listArtifacts(slug: string) {
+      const raw = await client.get<RawCampaignArtifact[]>(
+        `/campaigns/${encodeURIComponent(slug)}/artifacts`,
+      );
+      return raw.map(toCampaignArtifact);
+    },
+
+    async getArtifact(slug: string, path: string) {
+      try {
+        const raw = await client.get<RawCampaignArtifactDetail>(
+          `/campaigns/${encodeURIComponent(slug)}/artifact?path=${encodeURIComponent(path)}`,
+        );
+        return toCampaignArtifactDetail(raw);
+      } catch {
+        return null;
+      }
     },
   };
 }

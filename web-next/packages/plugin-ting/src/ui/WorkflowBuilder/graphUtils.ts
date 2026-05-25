@@ -167,12 +167,16 @@ export function edgeToPath(edge: WorkflowEdge, nodes: Map<string, WorkflowNode>)
  * The output is deterministic — keys are in a fixed meaningful order.
  */
 export function workflowToYaml(
-  workflow: Pick<Workflow, 'id' | 'name' | 'nodes' | 'edges' | 'resourceBindings'>,
+  workflow: Pick<Workflow, 'id' | 'name' | 'tags' | 'nodes' | 'edges' | 'resourceBindings'>,
 ): string {
   const lines: string[] = [];
 
   lines.push(`id: ${JSON.stringify(workflow.id)}`);
   lines.push(`name: ${JSON.stringify(workflow.name)}`);
+  const tags = workflow.tags ?? [];
+  if (tags.length > 0) {
+    lines.push(`tags: [${tags.map((tag) => JSON.stringify(tag)).join(', ')}]`);
+  }
 
   if (workflow.nodes.length === 0) {
     lines.push('nodes: []');

@@ -1234,11 +1234,12 @@ class MimirRouter:
         @router.get("/pages", response_model=list[PageMetaResponse])
         async def list_pages(
             category: str | None = Query(default=None),
+            prefix: str | None = Query(default=None),
             mount: str | None = Query(default=None),
         ) -> list[PageMetaResponse]:
             mounts = self._mount_definitions()
             port, resolved_mount = self._resolve_port(mount)
-            pages = await port.list_pages(category=category)
+            pages = await port.list_pages(category=category, prefix=prefix)
             mount_map = await _page_mount_map(
                 adapter,
                 default_name=self._name,

@@ -252,6 +252,33 @@ def test_list_pages_category_filter(client_with_page: TestClient) -> None:
     assert len(resp2.json()) == 0
 
 
+def test_list_pages_prefix_filter(tmp_path: Path) -> None:
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    router = MimirRouter(adapter=adapter, name="test", role="local")
+    app = FastAPI()
+    app.include_router(router.router, prefix="/mimir")
+    client = TestClient(app)
+
+    client.put(
+        "/mimir/page",
+        json={
+            "path": "research/campaigns/alpha/final.md",
+            "content": "# Alpha\n",
+        },
+    )
+    client.put(
+        "/mimir/page",
+        json={
+            "path": "research/campaigns/beta/final.md",
+            "content": "# Beta\n",
+        },
+    )
+
+    resp = client.get("/mimir/pages", params={"prefix": "research/campaigns/alpha/"})
+    assert resp.status_code == 200
+    assert [page["path"] for page in resp.json()] == ["research/campaigns/alpha/final.md"]
+
+
 def test_registry_mount_crud(registry_client: TestClient) -> None:
     create = registry_client.post(
         "/mimir/registry/mounts",

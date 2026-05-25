@@ -9,6 +9,9 @@ import { TingTopbar } from './ui/TingTopbar';
 import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
 import { TingSubnav } from './ui/TingSubnav';
+import { ResearchCenterPage } from './ui/ResearchCenterPage';
+import { ResearchNewPage } from './ui/ResearchNewPage';
+import { ResearchCampaignPage } from './ui/ResearchCampaignPage';
 
 const LEGACY_SETTINGS_SECTION_TARGETS: Record<string, string> = {
   general: '/settings/ting/general',
@@ -33,6 +36,7 @@ export const tingPlugin = definePlugin({
     { id: 'sagas', label: 'Sagas', rune: '✦', path: '/ting/sagas' },
     { id: 'dispatch', label: 'Dispatch', rune: '⇥', path: '/ting/dispatch' },
     { id: 'plan', label: 'Plan', rune: '◇', path: '/ting/plan' },
+    { id: 'research', label: 'Research', rune: '⌁', path: '/ting/research' },
     { id: 'workflows', label: 'Workflows', rune: '⚙', path: '/ting/workflows' },
   ],
   routes: (rootRoute) => [
@@ -45,6 +49,21 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/workflows',
       component: WorkflowBuilderPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/research',
+      component: ResearchCenterPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/research/new',
+      component: ResearchNewPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/research/$slug',
+      component: ResearchCampaignPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -103,6 +122,7 @@ export {
   createMockTingSessionService,
   createMockTrackerService,
   createMockWorkflowService,
+  createMockResearchService,
   createMockDispatchBus,
   createMockTingSettingsService,
   createMockAuditLogService,
@@ -115,6 +135,7 @@ export {
   buildTingSessionHttpAdapter,
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
+  buildResearchHttpAdapter,
   buildDispatchBusHttpAdapter,
   buildTingSettingsHttpAdapter,
   buildTingAuditLogHttpAdapter,
@@ -127,6 +148,9 @@ export type {
   ITingSessionService,
   ITrackerBrowserService,
   IWorkflowService,
+  IResearchService,
+  CreateResearchCampaignRequest,
+  UpdateResearchCampaignRequest,
   IDispatchBus,
   DispatchResult,
   ITingSettingsService,
@@ -158,6 +182,11 @@ export type {
   TrackerMilestone,
   TrackerIssue,
   RepoInfo,
+  ResearchCampaign,
+  ResearchCampaignDetail,
+  CampaignArtifact,
+  CampaignArtifactDetail,
+  CampaignStageState,
 } from './ports';
 
 // Application layer — feasibility engine
@@ -211,6 +240,15 @@ export {
   type WorkflowEdge,
   type Workflow,
 } from './domain/workflow';
+
+export {
+  researchCampaignStatusSchema,
+  campaignStageStateSchema,
+  campaignArtifactSchema,
+  researchCampaignSchema,
+  researchCampaignDetailSchema,
+  campaignArtifactDetailSchema,
+} from './domain/research';
 
 export { dispatcherStateSchema, dispatchRuleSchema } from './domain/dispatcher';
 

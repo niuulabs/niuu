@@ -50,6 +50,7 @@ system_prompt_template: |
   verdict: published | blocked
   summary: |
     [One-line summary of what was durably published]
+  page_path: research/campaigns/{slug}/final.md
   manifest_path: research/campaigns/{slug}/manifest.md
   ---end---
 
@@ -75,6 +76,8 @@ produces:
       type: enum
       values: [published, blocked]
     summary:
+      type: string
+    page_path:
       type: string
     manifest_path:
       type: string

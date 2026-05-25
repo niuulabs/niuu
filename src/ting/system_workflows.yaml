@@ -143,6 +143,7 @@
   description: Flexible deep-research workflow that frames a question, explores the evidence deeply, challenges the thesis, and distills durable memory into Mimir.
   version: 1.0.0
   graph:
+    tags: [research, campaign]
     nodes:
       - id: research-request
         kind: trigger

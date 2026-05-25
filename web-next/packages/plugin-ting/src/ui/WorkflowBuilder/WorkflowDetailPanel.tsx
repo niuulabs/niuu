@@ -170,6 +170,23 @@ function WorkflowSummary({
         </div>
       </div>
 
+      <div>
+        <label className={SECTION_LABEL}>Tags</label>
+        <input
+          className={INPUT}
+          value={(workflow.tags ?? []).join(', ')}
+          onChange={(e) =>
+            onUpdateWorkflowMeta({
+              tags: e.target.value
+                .split(',')
+                .map((item) => item.trim().toLowerCase())
+                .filter(Boolean),
+            })
+          }
+          placeholder="research, campaign, review"
+        />
+      </div>
+
       <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-flex niuu-gap-2">
         <span
           className={cn(
