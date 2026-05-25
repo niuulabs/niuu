@@ -1692,7 +1692,9 @@ export function createMockWorkflowService(): IWorkflowService {
  */
 export function createMockResearchService(): IResearchService {
   const now = new Date().toISOString();
-  const workflows = new Map<string, Workflow>(SEED_WORKFLOWS.map((workflow) => [workflow.id, workflow]));
+  const workflows = new Map<string, Workflow>(
+    SEED_WORKFLOWS.map((workflow) => [workflow.id, workflow]),
+  );
   const seedCampaigns: ResearchCampaignDetail[] = [
     {
       id: '11111111-1111-4111-8111-111111111111',
@@ -1707,10 +1709,34 @@ export function createMockResearchService(): IResearchService {
       status: 'running',
       activeStageId: 'synthesize',
       stageState: [
-        { stageId: 'frame', label: 'Frame the inquiry', status: 'complete', startedAt: now, completedAt: now },
-        { stageId: 'explore', label: 'Explore the evidence', status: 'complete', startedAt: now, completedAt: now },
-        { stageId: 'challenge', label: 'Challenge the thesis', status: 'complete', startedAt: now, completedAt: now },
-        { stageId: 'synthesize', label: 'Synthesize the research', status: 'active', startedAt: now, completedAt: null },
+        {
+          stageId: 'frame',
+          label: 'Frame the inquiry',
+          status: 'complete',
+          startedAt: now,
+          completedAt: now,
+        },
+        {
+          stageId: 'explore',
+          label: 'Explore the evidence',
+          status: 'complete',
+          startedAt: now,
+          completedAt: now,
+        },
+        {
+          stageId: 'challenge',
+          label: 'Challenge the thesis',
+          status: 'complete',
+          startedAt: now,
+          completedAt: now,
+        },
+        {
+          stageId: 'synthesize',
+          label: 'Synthesize the research',
+          status: 'active',
+          startedAt: now,
+          completedAt: null,
+        },
       ],
       metadata: {
         question: 'What does the RAG tooling landscape look like?',
@@ -1763,7 +1789,9 @@ export function createMockResearchService(): IResearchService {
     async createCampaign(request: CreateResearchCampaignRequest) {
       const workflow =
         (request.workflowId ? workflows.get(request.workflowId) : null) ??
-        Array.from(workflows.values()).find((candidate: Workflow) => candidate.tags?.includes('research')) ??
+        Array.from(workflows.values()).find((candidate: Workflow) =>
+          candidate.tags?.includes('research'),
+        ) ??
         Array.from(workflows.values())[0];
       const slug =
         (request.name || request.question)
@@ -1784,7 +1812,15 @@ export function createMockResearchService(): IResearchService {
         sessionName: request.name || slug,
         status: 'running',
         activeStageId: 'frame',
-        stageState: [{ stageId: 'frame', label: 'Frame the inquiry', status: 'active', startedAt: createdAt, completedAt: null }],
+        stageState: [
+          {
+            stageId: 'frame',
+            label: 'Frame the inquiry',
+            status: 'active',
+            startedAt: createdAt,
+            completedAt: null,
+          },
+        ],
         metadata: {
           question: request.question,
           mode: request.mode ?? 'exploratory',

@@ -182,7 +182,8 @@ function deriveWarning(
   if (firstReason) return firstReason;
   if (bucket === 'failed') return 'workflow run failed before publish';
   if (bucket === 'blocked') return 'campaign needs human review before it can continue';
-  if (!detail && campaign.status === 'running') return 'awaiting artifact updates from live workflow';
+  if (!detail && campaign.status === 'running')
+    return 'awaiting artifact updates from live workflow';
   return null;
 }
 
@@ -227,7 +228,8 @@ function deriveConfidence(
 ): number {
   const artifactCount = detail?.artifacts.length ?? 0;
   const sourceCount = countUniqueSourceIds(detail?.artifacts ?? []);
-  let score = 24 + Math.round(progressPercent * 0.36) + artifactCount * 6 + Math.min(sourceCount, 6);
+  let score =
+    24 + Math.round(progressPercent * 0.36) + artifactCount * 6 + Math.min(sourceCount, 6);
   if (bucket === 'review-ready') score = Math.max(score, 78);
   if (bucket === 'published') score = Math.max(score, 91);
   if (bucket === 'blocked') score = Math.min(score, 62);
@@ -294,7 +296,11 @@ function toViewModel(
   };
 }
 
-function filterMatches(card: CampaignCardViewModel, query: string, filter: ResearchFilter): boolean {
+function filterMatches(
+  card: CampaignCardViewModel,
+  query: string,
+  filter: ResearchFilter,
+): boolean {
   const normalizedQuery = query.trim().toLowerCase();
   if (normalizedQuery) {
     const haystack = [card.name, card.slug, card.question, card.modeLabel, card.runLabel]
@@ -313,13 +319,17 @@ function sortCards(cards: CampaignCardViewModel[], sortBy: ResearchSort): Campai
   const sorted = [...cards];
   sorted.sort((a, b) => {
     if (sortBy === 'confidence') return b.confidence - a.confidence;
-    if (sortBy === 'created') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    if (sortBy === 'created')
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
   });
   return sorted;
 }
 
-function bucketCount(cards: CampaignCardViewModel[], bucket: CampaignBucket | CampaignBucket[]): number {
+function bucketCount(
+  cards: CampaignCardViewModel[],
+  bucket: CampaignBucket | CampaignBucket[],
+): number {
   const set = new Set(Array.isArray(bucket) ? bucket : [bucket]);
   return cards.filter((card) => set.has(card.bucket)).length;
 }
@@ -340,7 +350,12 @@ function summaryCards(cards: CampaignCardViewModel[]) {
       sub: 'need attention',
       tone: 'alert',
     },
-    { key: 'published', label: 'PUBLISHED', value: bucketCount(cards, 'published'), sub: 'in mimir' },
+    {
+      key: 'published',
+      label: 'PUBLISHED',
+      value: bucketCount(cards, 'published'),
+      sub: 'in mimir',
+    },
     { key: 'draft', label: 'DRAFTS', value: bucketCount(cards, 'draft'), sub: 'not dispatched' },
   ];
 }
@@ -585,7 +600,9 @@ export function ResearchCenterPage() {
   }, [queryClient]);
 
   const cards = useMemo(() => {
-    return campaigns.map((campaign, index) => toViewModel(campaign, detailQueries[index]?.data ?? null));
+    return campaigns.map((campaign, index) =>
+      toViewModel(campaign, detailQueries[index]?.data ?? null),
+    );
   }, [campaigns, detailQueries]);
 
   const counts = useMemo(
@@ -626,15 +643,17 @@ export function ResearchCenterPage() {
             </label>
 
             <div className="research-filter-row">
-              {(['all', 'needs-attention', 'running', 'published', 'drafts'] as const).map((filter) => (
-                <ResearchFilterChip
-                  key={filter}
-                  label={FILTER_LABELS[filter]}
-                  count={counts[filter]}
-                  active={activeFilter === filter}
-                  onClick={() => setActiveFilter(filter)}
-                />
-              ))}
+              {(['all', 'needs-attention', 'running', 'published', 'drafts'] as const).map(
+                (filter) => (
+                  <ResearchFilterChip
+                    key={filter}
+                    label={FILTER_LABELS[filter]}
+                    count={counts[filter]}
+                    active={activeFilter === filter}
+                    onClick={() => setActiveFilter(filter)}
+                  />
+                ),
+              )}
             </div>
           </div>
 
@@ -665,7 +684,9 @@ export function ResearchCenterPage() {
         </section>
 
         <section className="research-section-heading">
-          <div className="research-section-heading__title">ALL CAMPAIGNS • {visibleCards.length}</div>
+          <div className="research-section-heading__title">
+            ALL CAMPAIGNS • {visibleCards.length}
+          </div>
           <div className="research-sort-row">
             <span className="research-sort-row__label">SORT:</span>
             {(['updated', 'created', 'confidence'] as const).map((sort) => (
@@ -673,7 +694,9 @@ export function ResearchCenterPage() {
                 key={sort}
                 type="button"
                 onClick={() => setSortBy(sort)}
-                className={['research-sort-chip', sortBy === sort ? 'is-active' : ''].join(' ').trim()}
+                className={['research-sort-chip', sortBy === sort ? 'is-active' : '']
+                  .join(' ')
+                  .trim()}
               >
                 {SORT_LABELS[sort]}
               </button>
@@ -681,9 +704,7 @@ export function ResearchCenterPage() {
           </div>
         </section>
 
-        {isLoading ? (
-          <section className="research-empty-state">Loading campaigns…</section>
-        ) : null}
+        {isLoading ? <section className="research-empty-state">Loading campaigns…</section> : null}
 
         {isError ? (
           <section className="research-empty-state is-error">
@@ -692,7 +713,9 @@ export function ResearchCenterPage() {
         ) : null}
 
         {!isLoading && !isError && visibleCards.length === 0 ? (
-          <section className="research-empty-state">No campaigns match the current filters.</section>
+          <section className="research-empty-state">
+            No campaigns match the current filters.
+          </section>
         ) : null}
 
         {!isLoading && !isError && visibleCards.length > 0 ? (
@@ -702,7 +725,9 @@ export function ResearchCenterPage() {
                 <ResearchCampaignCard
                   key={card.id}
                   card={card}
-                  onOpen={() => navigate({ to: '/ting/research/$slug', params: { slug: card.slug } })}
+                  onOpen={() =>
+                    navigate({ to: '/ting/research/$slug', params: { slug: card.slug } })
+                  }
                 />
               ))}
             </section>

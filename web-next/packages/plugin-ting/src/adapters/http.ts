@@ -1148,7 +1148,9 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
 
     async getCampaign(slug: string) {
       try {
-        const raw = await client.get<RawResearchCampaignDetail>(`/campaigns/${encodeURIComponent(slug)}`);
+        const raw = await client.get<RawResearchCampaignDetail>(
+          `/campaigns/${encodeURIComponent(slug)}`,
+        );
         return toResearchCampaignDetail(raw);
       } catch {
         return null;
@@ -1156,7 +1158,10 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
     },
 
     async createCampaign(request: CreateResearchCampaignRequest) {
-      const raw = await client.post<RawResearchCampaign>('/campaigns', toResearchCampaignCreateBody(request));
+      const raw = await client.post<RawResearchCampaign>(
+        '/campaigns',
+        toResearchCampaignCreateBody(request),
+      );
       return toResearchCampaign(raw);
     },
 
@@ -1173,7 +1178,9 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
     },
 
     async listArtifacts(slug: string) {
-      const raw = await client.get<RawCampaignArtifact[]>(`/campaigns/${encodeURIComponent(slug)}/artifacts`);
+      const raw = await client.get<RawCampaignArtifact[]>(
+        `/campaigns/${encodeURIComponent(slug)}/artifacts`,
+      );
       return raw.map(toCampaignArtifact);
     },
 

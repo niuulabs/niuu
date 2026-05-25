@@ -40,7 +40,9 @@ test.describe('Research Center live workflow launch', () => {
     await page.getByLabel('Audience').fill(audience);
     await page.getByLabel('Deliverable').fill(deliverable);
     await page.getByLabel('Success criteria').fill('create a clear recommendation');
-    await page.getByLabel('Constraints').fill('use existing infrastructure\navoid tracker coupling');
+    await page
+      .getByLabel('Constraints')
+      .fill('use existing infrastructure\navoid tracker coupling');
 
     const createResponsePromise = page.waitForResponse((response) => {
       return (
