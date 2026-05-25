@@ -34,7 +34,7 @@ export function ResearchNewPage() {
   const [showAllWorkflows, setShowAllWorkflows] = useState(false);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
 
-  const workflows = workflowsQuery.data ?? [];
+  const workflows = useMemo(() => workflowsQuery.data ?? [], [workflowsQuery.data]);
   const taggedWorkflows = useMemo(
     () => workflows.filter((workflow) => hasResearchTag(workflow.tags)),
     [workflows],
@@ -43,7 +43,8 @@ export function ResearchNewPage() {
     if (showAllWorkflows || taggedWorkflows.length === 0) return workflows;
     return taggedWorkflows;
   }, [showAllWorkflows, taggedWorkflows, workflows]);
-  const selectedWorkflow = visibleWorkflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null;
+  const selectedWorkflow =
+    visibleWorkflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null;
   const repos = reposQuery.data ?? [];
 
   useEffect(() => {
@@ -98,7 +99,9 @@ export function ResearchNewPage() {
           <div className="niuu-rounded-2xl niuu-border niuu-border-border-subtle niuu-bg-bg-primary/50 niuu-p-4 niuu-flex niuu-flex-col niuu-gap-3">
             <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
               <div className="niuu-flex niuu-flex-col niuu-gap-1">
-                <span className="niuu-text-sm niuu-font-medium niuu-text-text-primary">Workflow</span>
+                <span className="niuu-text-sm niuu-font-medium niuu-text-text-primary">
+                  Workflow
+                </span>
                 <span className="niuu-text-xs niuu-text-text-faint">
                   {taggedWorkflows.length > 0 && !showAllWorkflows
                     ? `Showing ${taggedWorkflows.length} workflow${taggedWorkflows.length === 1 ? '' : 's'} tagged research`
@@ -241,7 +244,9 @@ export function ResearchNewPage() {
           </div>
 
           <label className="niuu-flex niuu-flex-col niuu-gap-2">
-            <span className="niuu-text-sm niuu-font-medium niuu-text-text-primary">Constraints</span>
+            <span className="niuu-text-sm niuu-font-medium niuu-text-text-primary">
+              Constraints
+            </span>
             <textarea
               value={constraints}
               onChange={(event) => setConstraints(event.target.value)}

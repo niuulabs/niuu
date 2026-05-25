@@ -11,13 +11,7 @@ import type {
 import { useDeleteResearchCampaign, useResearchCampaign } from './useResearch';
 import './ResearchCampaignPage.css';
 
-type DerivedCampaignState =
-  | 'draft'
-  | 'running'
-  | 'blocked'
-  | 'failed'
-  | 'review'
-  | 'published';
+type DerivedCampaignState = 'draft' | 'running' | 'blocked' | 'failed' | 'review' | 'published';
 
 type DrawerTab = 'files' | 'sources' | 'critiques' | 'operator';
 type OperatorSubTab = 'activity' | 'run' | 'actions';
@@ -104,9 +98,7 @@ function readDrawerState(): DrawerState {
   if (!drawer) {
     return { open: false, tab: 'files' };
   }
-  const tab = (['files', 'sources', 'critiques', 'operator'] as const).includes(
-    drawer as DrawerTab,
-  )
+  const tab = (['files', 'sources', 'critiques', 'operator'] as const).includes(drawer as DrawerTab)
     ? (drawer as DrawerTab)
     : 'files';
   return {
@@ -209,9 +201,7 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
 }
 
 function stripHeading(text: string): string {
-  return text
-    .replace(/^# .+\n?/m, '')
-    .trim();
+  return text.replace(/^# .+\n?/m, '').trim();
 }
 
 function firstParagraph(text: string): string {
@@ -240,7 +230,10 @@ function normalizeStageLabel(stage: CampaignStageState | undefined): string {
   return stage.label;
 }
 
-function deriveCampaignState(campaign: ResearchCampaignDetail, artifacts: ParsedArtifact[]): DerivedCampaignState {
+function deriveCampaignState(
+  campaign: ResearchCampaignDetail,
+  artifacts: ParsedArtifact[],
+): DerivedCampaignState {
   const activeLike = campaign.stageState.find(
     (stage) => stage.status === 'active' || stage.status === 'blocked' || stage.status === 'failed',
   );
@@ -256,15 +249,18 @@ function deriveCampaignState(campaign: ResearchCampaignDetail, artifacts: Parsed
   if (hasPublishedFinal || hasManifest) return 'published';
   const hasFinal = artifacts.some((artifact) => artifact.kind === 'final');
   if (hasFinal && campaign.status === 'completed') return 'review';
-  if (activeLike || campaign.stageState.some((stage) => stage.status === 'pending')) return 'running';
+  if (activeLike || campaign.stageState.some((stage) => stage.status === 'pending'))
+    return 'running';
   if (campaign.status === 'completed') return hasFinal ? 'review' : 'running';
   return 'running';
 }
 
 function findActiveStage(stageState: CampaignStageState[]): CampaignStageState | undefined {
   return (
-    stageState.find((stage) => stage.status === 'active' || stage.status === 'blocked' || stage.status === 'failed') ??
-    stageState[stageState.length - 1]
+    stageState.find(
+      (stage) =>
+        stage.status === 'active' || stage.status === 'blocked' || stage.status === 'failed',
+    ) ?? stageState[stageState.length - 1]
   );
 }
 
@@ -467,11 +463,7 @@ function ResearchSection({
           {meta ? <span className="ting-research-detail__section-meta">· {meta}</span> : null}
         </button>
         {actionLabel && onAction ? (
-          <button
-            type="button"
-            className="ting-research-detail__section-action"
-            onClick={onAction}
-          >
+          <button type="button" className="ting-research-detail__section-action" onClick={onAction}>
             {actionLabel}
           </button>
         ) : null}
@@ -498,13 +490,7 @@ function QualityDots({ score }: { score: number }) {
   );
 }
 
-function ConfidenceBadge({
-  percent,
-  label,
-}: {
-  percent: number;
-  label: 'low' | 'med' | 'high';
-}) {
+function ConfidenceBadge({ percent, label }: { percent: number; label: 'low' | 'med' | 'high' }) {
   return (
     <div className="ting-research-detail__confidence">
       <div className="ting-research-detail__confidence-bar">
@@ -592,7 +578,9 @@ function ResearchMarkdown({
       elements.push(
         <ul key={`ul-${index}`} className="ting-research-detail__markdown-list">
           {items.map((item, itemIndex) => (
-            <li key={`${item}-${itemIndex}`}>{renderInlineRich(item, activeCitation, onCitationClick)}</li>
+            <li key={`${item}-${itemIndex}`}>
+              {renderInlineRich(item, activeCitation, onCitationClick)}
+            </li>
           ))}
         </ul>,
       );
@@ -607,7 +595,9 @@ function ResearchMarkdown({
       elements.push(
         <ol key={`ol-${index}`} className="ting-research-detail__markdown-ordered-list">
           {items.map((item, itemIndex) => (
-            <li key={`${item}-${itemIndex}`}>{renderInlineRich(item, activeCitation, onCitationClick)}</li>
+            <li key={`${item}-${itemIndex}`}>
+              {renderInlineRich(item, activeCitation, onCitationClick)}
+            </li>
           ))}
         </ol>,
       );
@@ -657,7 +647,7 @@ function ResearchMarkdown({
     const shouldAppendFallback = paragraphIndex === 0 && !/\[[sc]\d+\]/i.test(paragraph);
     elements.push(
       <p key={`p-${paragraphIndex}`} className="ting-research-detail__markdown-p">
-      {renderInlineRich(paragraph, activeCitation, onCitationClick)}
+        {renderInlineRich(paragraph, activeCitation, onCitationClick)}
         {shouldAppendFallback && fallbackSourceLabels?.length
           ? fallbackSourceLabels.slice(0, 3).map((label) => (
               <span key={label} className="ting-research-detail__markdown-fallback-citation">
@@ -786,7 +776,7 @@ function CitationPopover({
         {isSource ? 'Source' : 'Critique'} · [{citation.key}]
       </div>
       <div className="ting-research-detail__popover-title">
-        {isSource ? source?.title ?? 'Source' : critique?.claim ?? 'Critique'}
+        {isSource ? (source?.title ?? 'Source') : (critique?.claim ?? 'Critique')}
       </div>
       <div className="ting-research-detail__popover-meta">
         {isSource
@@ -795,8 +785,8 @@ function CitationPopover({
       </div>
       <div className="ting-research-detail__popover-quote">
         {isSource
-          ? source?.excerpt ?? 'Excerpt from this source supporting the claim would surface here.'
-          : critique?.note ?? 'This critique challenges the current thesis.'}
+          ? (source?.excerpt ?? 'Excerpt from this source supporting the claim would surface here.')
+          : (critique?.note ?? 'This critique challenges the current thesis.')}
       </div>
       <div className="ting-research-detail__popover-actions">
         <button type="button" onClick={onOpenDrawer}>
@@ -865,7 +855,9 @@ export function ResearchCampaignPage() {
       }
       void queryClient.invalidateQueries({ queryKey: ['ting', 'research', 'campaign', slug] });
       void queryClient.invalidateQueries({ queryKey: ['ting', 'research', 'campaigns'] });
-      void queryClient.invalidateQueries({ queryKey: ['ting', 'research', 'campaign', slug, 'activity'] });
+      void queryClient.invalidateQueries({
+        queryKey: ['ting', 'research', 'campaign', slug, 'activity'],
+      });
     };
     source.addEventListener('workflow.campaign.updated', invalidate);
     source.addEventListener('workflow.campaign.completed', invalidate);
@@ -883,7 +875,10 @@ export function ResearchCampaignPage() {
     })),
   });
 
-  const artifactDetails = useMemo(() => artifactQueries.map((query) => query.data).filter(Boolean) as CampaignArtifactDetail[], [artifactQueries]);
+  const artifactDetails = useMemo(
+    () => artifactQueries.map((query) => query.data).filter(Boolean) as CampaignArtifactDetail[],
+    [artifactQueries],
+  );
 
   const parsedArtifacts = useMemo<ParsedArtifact[]>(() => {
     return artifactDetails.map((artifact) => {
@@ -945,8 +940,12 @@ export function ResearchCampaignPage() {
 
   const sourceList = useMemo<SourceVm[]>(() => {
     const orderedSources = [...(sourcesQuery.data ?? [])].sort((left, right) => {
-      const leftCount = left.compiledInto.filter((path) => path.includes(`/research/campaigns/${slug}/`) || path.endsWith(`${slug}.md`)).length;
-      const rightCount = right.compiledInto.filter((path) => path.includes(`/research/campaigns/${slug}/`) || path.endsWith(`${slug}.md`)).length;
+      const leftCount = left.compiledInto.filter(
+        (path) => path.includes(`/research/campaigns/${slug}/`) || path.endsWith(`${slug}.md`),
+      ).length;
+      const rightCount = right.compiledInto.filter(
+        (path) => path.includes(`/research/campaigns/${slug}/`) || path.endsWith(`${slug}.md`),
+      ).length;
       return rightCount - leftCount;
     });
     return orderedSources.map((source, index) => ({
@@ -962,7 +961,9 @@ export function ResearchCampaignPage() {
       compiledInto:
         source.compiledInto.filter((path) => artifactByPath.has(path)).length > 0
           ? source.compiledInto.filter((path) => artifactByPath.has(path))
-          : parsedArtifacts.filter((artifact) => artifact.sourceIds.includes(source.id)).map((artifact) => artifact.path),
+          : parsedArtifacts
+              .filter((artifact) => artifact.sourceIds.includes(source.id))
+              .map((artifact) => artifact.path),
       excerpt: takeExcerpt(source.content),
       kind: inferSourceKind(source),
       content: source.content,
@@ -1000,7 +1001,10 @@ export function ResearchCampaignPage() {
     () => (campaign ? deriveCampaignState(campaign, parsedArtifacts) : 'draft'),
     [campaign, parsedArtifacts],
   );
-  const activeStage = useMemo(() => (campaign ? findActiveStage(campaign.stageState) : undefined), [campaign]);
+  const activeStage = useMemo(
+    () => (campaign ? findActiveStage(campaign.stageState) : undefined),
+    [campaign],
+  );
   const confidence = useMemo(
     () => confidenceFromArtifacts(derivedState, finalArtifact, sourceList.length, critiques.length),
     [critiques.length, derivedState, finalArtifact, sourceList.length],
@@ -1011,15 +1015,21 @@ export function ResearchCampaignPage() {
     artifactByKind.get('analysis')?.path ??
     artifactByKind.get('brief')?.path ??
     parsedArtifacts[0]?.path;
-  const selectedFileArtifact = selectedFilePath ? artifactByPath.get(selectedFilePath) ?? null : null;
+  const selectedFileArtifact = selectedFilePath
+    ? (artifactByPath.get(selectedFilePath) ?? null)
+    : null;
   const selectedSource =
     sourceList.find((source) => source.id === drawer.sourceId) ??
-    (popoverCitation?.kind === 'source' ? sourceByCitation.get(popoverCitation.key) ?? null : null) ??
+    (popoverCitation?.kind === 'source'
+      ? (sourceByCitation.get(popoverCitation.key) ?? null)
+      : null) ??
     sourceList[0] ??
     null;
   const selectedCritique =
     critiques.find((critique) => critique.id === drawer.critiqueId) ??
-    (popoverCitation?.kind === 'critique' ? critiqueByCitation.get(popoverCitation.key) ?? null : null) ??
+    (popoverCitation?.kind === 'critique'
+      ? (critiqueByCitation.get(popoverCitation.key) ?? null)
+      : null) ??
     critiques[0] ??
     null;
 
@@ -1027,7 +1037,8 @@ export function ResearchCampaignPage() {
     const events = activityLog.data ?? [];
     return events.filter((event) => {
       const eventSlug = typeof event.data.slug === 'string' ? event.data.slug : undefined;
-      const sessionId = typeof event.data.session_id === 'string' ? event.data.session_id : undefined;
+      const sessionId =
+        typeof event.data.session_id === 'string' ? event.data.session_id : undefined;
       return eventSlug === slug || (campaign?.sessionId && sessionId === campaign.sessionId);
     });
   }, [activityLog.data, campaign?.sessionId, slug]);
@@ -1053,16 +1064,20 @@ export function ResearchCampaignPage() {
 
   const memoryGroups = useMemo(() => {
     const published = parsedArtifacts.filter((artifact) => artifact.publishState === 'published');
-    const reviewReady = parsedArtifacts.filter((artifact) => artifact.publishState === 'unpublished');
+    const reviewReady = parsedArtifacts.filter(
+      (artifact) => artifact.publishState === 'unpublished',
+    );
     const notebook = parsedArtifacts.filter((artifact) => artifact.publishState === 'unknown');
     return { published, reviewReady, notebook };
   }, [parsedArtifacts]);
 
   const visibleCitationSourceLabels = sourceList.slice(0, 3).map((source) => source.citation);
   const popoverSource =
-    popoverCitation?.kind === 'source' ? sourceByCitation.get(popoverCitation.key) ?? null : null;
+    popoverCitation?.kind === 'source' ? (sourceByCitation.get(popoverCitation.key) ?? null) : null;
   const popoverCritique =
-    popoverCitation?.kind === 'critique' ? critiqueByCitation.get(popoverCitation.key) ?? null : null;
+    popoverCitation?.kind === 'critique'
+      ? (critiqueByCitation.get(popoverCitation.key) ?? null)
+      : null;
 
   function openDrawer(next: Partial<DrawerState>) {
     setDrawer((current) => ({
@@ -1114,8 +1129,12 @@ export function ResearchCampaignPage() {
             ))}
           </div>
           <div className="ting-research-detail__strip-copy">
-            stage {Math.max(1, campaign.stageState.findIndex((stage) => stage.stageId === activeStage?.stageId) + 1)}/
-            {campaign.stageState.length} · {normalizeStageLabel(activeStage)}
+            stage{' '}
+            {Math.max(
+              1,
+              campaign.stageState.findIndex((stage) => stage.stageId === activeStage?.stageId) + 1,
+            )}
+            /{campaign.stageState.length} · {normalizeStageLabel(activeStage)}
           </div>
         </div>
 
@@ -1124,7 +1143,9 @@ export function ResearchCampaignPage() {
             <>
               <span className="ting-research-detail__live-dot" />
               <span className="ting-research-detail__ticker-persona">
-                {String(latestActivity.data.persona ?? latestActivity.data.raven ?? 'research-campaign')}
+                {String(
+                  latestActivity.data.persona ?? latestActivity.data.raven ?? 'research-campaign',
+                )}
               </span>
               <span className="ting-research-detail__ticker-message">
                 {String(latestActivity.data.summary ?? latestActivity.event)}
@@ -1156,9 +1177,12 @@ export function ResearchCampaignPage() {
           <button
             type="button"
             className="ting-research-detail__run-chip"
-            onClick={() => window.location.assign(`/volundr/sessions/${encodeURIComponent(campaign.sessionId)}`)}
+            onClick={() =>
+              window.location.assign(`/volundr/sessions/${encodeURIComponent(campaign.sessionId)}`)
+            }
           >
-            ‹ run/{campaign.sessionName || campaign.slug} · {sessionsCount} {sessionsCount === 1 ? 'session' : 'sessions'}
+            ‹ run/{campaign.sessionName || campaign.slug} · {sessionsCount}{' '}
+            {sessionsCount === 1 ? 'session' : 'sessions'}
           </button>
           <button
             type="button"
@@ -1183,7 +1207,9 @@ export function ResearchCampaignPage() {
               </button>
               <span className="ting-research-detail__crumb-separator">›</span>
               <span className="ting-research-detail__crumb-slug">{campaign.slug}</span>
-              <span className={cx('ting-research-detail__state-dot', statusDotClass(derivedState))} />
+              <span
+                className={cx('ting-research-detail__state-dot', statusDotClass(derivedState))}
+              />
               <span className="ting-research-detail__crumb-state">
                 {derivedState === 'review' ? 'review-ready' : sentenceCase(derivedState)}
               </span>
@@ -1211,7 +1237,9 @@ export function ResearchCampaignPage() {
           </div>
 
           <h1 className="ting-research-detail__title">{campaign.name}</h1>
-          <p className="ting-research-detail__question">{String(campaign.metadata.question ?? '')}</p>
+          <p className="ting-research-detail__question">
+            {String(campaign.metadata.question ?? '')}
+          </p>
 
           <div className="ting-research-detail__meta-line">
             <span>audience · {String(campaign.metadata.audience ?? 'unspecified')}</span>
@@ -1258,7 +1286,10 @@ export function ResearchCampaignPage() {
                           : 'Draft · not yet dispatched'}
               </div>
 
-              {derivedState === 'running' || derivedState === 'blocked' || derivedState === 'failed' || derivedState === 'draft' ? (
+              {derivedState === 'running' ||
+              derivedState === 'blocked' ||
+              derivedState === 'failed' ||
+              derivedState === 'draft' ? (
                 <>
                   <div className="ting-research-detail__hero-heading">
                     {derivedState === 'draft'
@@ -1290,7 +1321,10 @@ export function ResearchCampaignPage() {
                             <InlineCitation
                               label={critique.citation}
                               kind="critique"
-                              isActive={popoverCitation?.kind === 'critique' && popoverCitation.key === critique.citation}
+                              isActive={
+                                popoverCitation?.kind === 'critique' &&
+                                popoverCitation.key === critique.citation
+                              }
                               onClick={(event) => {
                                 const rect = event.currentTarget.getBoundingClientRect();
                                 setPopoverCitation({
@@ -1309,7 +1343,9 @@ export function ResearchCampaignPage() {
                     </div>
                   ) : null}
 
-                  {(derivedState === 'running' || derivedState === 'blocked' || derivedState === 'failed') && (
+                  {(derivedState === 'running' ||
+                    derivedState === 'blocked' ||
+                    derivedState === 'failed') && (
                     <p className="ting-research-detail__hero-note">
                       {derivedState === 'running'
                         ? "The synthesist will write the final answer after the challenge stage completes. The working thesis above is the explorer's best read so far."
@@ -1318,7 +1354,12 @@ export function ResearchCampaignPage() {
                   )}
                 </>
               ) : finalArtifact ? (
-                <div className={cx('ting-research-detail__rendered-answer', viewMode === 'annotated' && 'is-annotated')}>
+                <div
+                  className={cx(
+                    'ting-research-detail__rendered-answer',
+                    viewMode === 'annotated' && 'is-annotated',
+                  )}
+                >
                   <div className="ting-research-detail__rendered-answer-main">
                     <div className="ting-research-detail__hero-heading">
                       Final synthesis — {campaign.name}
@@ -1333,10 +1374,19 @@ export function ResearchCampaignPage() {
                   {viewMode === 'annotated' ? (
                     <aside className="ting-research-detail__annotations">
                       {sourceList.slice(0, 4).map((source) => (
-                        <div key={source.id} className="ting-research-detail__annotation-card is-source">
-                          <div className="ting-research-detail__annotation-tag">[{source.citation}]</div>
-                          <div className="ting-research-detail__annotation-title">{source.title}</div>
-                          <div className="ting-research-detail__annotation-body">{source.excerpt}</div>
+                        <div
+                          key={source.id}
+                          className="ting-research-detail__annotation-card is-source"
+                        >
+                          <div className="ting-research-detail__annotation-tag">
+                            [{source.citation}]
+                          </div>
+                          <div className="ting-research-detail__annotation-title">
+                            {source.title}
+                          </div>
+                          <div className="ting-research-detail__annotation-body">
+                            {source.excerpt}
+                          </div>
                           <button
                             type="button"
                             className="ting-research-detail__annotation-action"
@@ -1347,14 +1397,25 @@ export function ResearchCampaignPage() {
                         </div>
                       ))}
                       {critiques.slice(0, 3).map((critique) => (
-                        <div key={critique.id} className="ting-research-detail__annotation-card is-critique">
-                          <div className="ting-research-detail__annotation-tag">[{critique.citation}]</div>
-                          <div className="ting-research-detail__annotation-title">{critique.claim}</div>
-                          <div className="ting-research-detail__annotation-body">{critique.note}</div>
+                        <div
+                          key={critique.id}
+                          className="ting-research-detail__annotation-card is-critique"
+                        >
+                          <div className="ting-research-detail__annotation-tag">
+                            [{critique.citation}]
+                          </div>
+                          <div className="ting-research-detail__annotation-title">
+                            {critique.claim}
+                          </div>
+                          <div className="ting-research-detail__annotation-body">
+                            {critique.note}
+                          </div>
                           <button
                             type="button"
                             className="ting-research-detail__annotation-action"
-                            onClick={() => openDrawer({ tab: 'critiques', critiqueId: critique.id })}
+                            onClick={() =>
+                              openDrawer({ tab: 'critiques', critiqueId: critique.id })
+                            }
                           >
                             open
                           </button>
@@ -1365,7 +1426,8 @@ export function ResearchCampaignPage() {
                 </div>
               ) : (
                 <p className="ting-research-detail__hero-paragraph">
-                  A synthesized answer will appear here once the campaign reaches the synthesis stage.
+                  A synthesized answer will appear here once the campaign reaches the synthesis
+                  stage.
                 </p>
               )}
             </div>
@@ -1373,7 +1435,13 @@ export function ResearchCampaignPage() {
             <aside className="ting-research-detail__hero-side">
               <div className="ting-research-detail__hero-meta-row">
                 <span className="ting-research-detail__hero-meta-label">
-                  {derivedState === 'running' ? 'Current stage' : derivedState === 'review' ? 'Confidence' : derivedState === 'published' ? 'Final confidence' : 'Status'}
+                  {derivedState === 'running'
+                    ? 'Current stage'
+                    : derivedState === 'review'
+                      ? 'Confidence'
+                      : derivedState === 'published'
+                        ? 'Final confidence'
+                        : 'Status'}
                 </span>
                 {derivedState === 'running' ? (
                   <span className="ting-research-detail__hero-meta-value is-stage">
@@ -1405,7 +1473,12 @@ export function ResearchCampaignPage() {
                   <button
                     type="button"
                     className="ting-research-detail__ghost-button"
-                    onClick={() => openDrawer({ tab: 'files', file: artifactByKind.get('analysis')?.path ?? selectedFilePath })}
+                    onClick={() =>
+                      openDrawer({
+                        tab: 'files',
+                        file: artifactByKind.get('analysis')?.path ?? selectedFilePath,
+                      })
+                    }
                   >
                     Open notebook
                   </button>
@@ -1416,22 +1489,35 @@ export function ResearchCampaignPage() {
                 <>
                   <div className="ting-research-detail__hero-meta-row">
                     <span className="ting-research-detail__hero-meta-label">Synthesis size</span>
-                    <span className="ting-research-detail__hero-meta-value">{formatKiloWords(finalArtifact.body)}</span>
+                    <span className="ting-research-detail__hero-meta-value">
+                      {formatKiloWords(finalArtifact.body)}
+                    </span>
                   </div>
                   <div className="ting-research-detail__hero-meta-row">
                     <span className="ting-research-detail__hero-meta-label">Sources cited</span>
-                    <span className="ting-research-detail__hero-meta-value">{sourceList.length}</span>
+                    <span className="ting-research-detail__hero-meta-value">
+                      {sourceList.length}
+                    </span>
                   </div>
                   <div className="ting-research-detail__hero-meta-row">
-                    <span className="ting-research-detail__hero-meta-label">Critiques addressed</span>
-                    <span className="ting-research-detail__hero-meta-value">{critiques.length}</span>
+                    <span className="ting-research-detail__hero-meta-label">
+                      Critiques addressed
+                    </span>
+                    <span className="ting-research-detail__hero-meta-value">
+                      {critiques.length}
+                    </span>
                   </div>
                   {derivedState === 'review' ? (
                     <>
                       <button
                         type="button"
                         className="ting-research-detail__primary-button"
-                        onClick={() => openDrawer({ tab: 'files', file: manifestArtifact?.path ?? finalArtifact.path })}
+                        onClick={() =>
+                          openDrawer({
+                            tab: 'files',
+                            file: manifestArtifact?.path ?? finalArtifact.path,
+                          })
+                        }
                       >
                         Publish to Mímir →
                       </button>
@@ -1447,7 +1533,9 @@ export function ResearchCampaignPage() {
                     <>
                       <div className="ting-research-detail__hero-meta-row">
                         <span className="ting-research-detail__hero-meta-label">Published</span>
-                        <span className="ting-research-detail__hero-meta-value">{formatClock(campaign.completedAt)}</span>
+                        <span className="ting-research-detail__hero-meta-value">
+                          {formatClock(campaign.completedAt)}
+                        </span>
                       </div>
                       <div className="ting-research-detail__hero-meta-row">
                         <span className="ting-research-detail__hero-meta-label">Elapsed</span>
@@ -1476,7 +1564,9 @@ export function ResearchCampaignPage() {
                     </span>
                   </div>
                   <div className="ting-research-detail__hero-meta-row">
-                    <span className="ting-research-detail__hero-meta-label">Elapsed since block</span>
+                    <span className="ting-research-detail__hero-meta-label">
+                      Elapsed since block
+                    </span>
                     <span className="ting-research-detail__hero-meta-value">
                       {formatElapsed(activeStage?.startedAt ?? campaign.updatedAt)}
                     </span>
@@ -1508,7 +1598,9 @@ export function ResearchCampaignPage() {
                   </div>
                   <div className="ting-research-detail__hero-meta-row">
                     <span className="ting-research-detail__hero-meta-label">Persona</span>
-                    <span className="ting-research-detail__hero-meta-value is-mono">research-campaign</span>
+                    <span className="ting-research-detail__hero-meta-value is-mono">
+                      research-campaign
+                    </span>
                   </div>
                   <button
                     type="button"
@@ -1593,7 +1685,9 @@ export function ResearchCampaignPage() {
                   className="ting-research-detail__table-row"
                   onClick={() => openDrawer({ tab: 'sources', sourceId: source.id })}
                 >
-                  <span className="ting-research-detail__mono-pill">{citationToken(source.citation)}</span>
+                  <span className="ting-research-detail__mono-pill">
+                    {citationToken(source.citation)}
+                  </span>
                   <span className="ting-research-detail__row-title">{source.title}</span>
                   <span className="ting-research-detail__row-muted">{source.domain}</span>
                   <QualityDots score={source.quality} />
@@ -1621,13 +1715,22 @@ export function ResearchCampaignPage() {
                   onClick={() => openDrawer({ tab: 'critiques', critiqueId: critique.id })}
                 >
                   <div className="ting-research-detail__critique-top">
-                    <span className="ting-research-detail__mono-pill">{citationToken(critique.citation)}</span>
+                    <span className="ting-research-detail__mono-pill">
+                      {citationToken(critique.citation)}
+                    </span>
                     <span className="ting-research-detail__critique-claim">{critique.claim}</span>
-                    <span className={cx('ting-research-detail__severity-pill', `is-${critique.severity}`)}>
+                    <span
+                      className={cx(
+                        'ting-research-detail__severity-pill',
+                        `is-${critique.severity}`,
+                      )}
+                    >
                       {critique.severity}
                     </span>
                   </div>
-                  <div className="ting-research-detail__critique-against">against: {critique.against}</div>
+                  <div className="ting-research-detail__critique-against">
+                    against: {critique.against}
+                  </div>
                   <div className="ting-research-detail__critique-note">{critique.note}</div>
                 </button>
               ))}
@@ -1697,7 +1800,9 @@ export function ResearchCampaignPage() {
                   className="ting-research-detail__memory-card is-published"
                   onClick={() => openDrawer({ tab: 'files', file: artifact.path })}
                 >
-                  <span className="ting-research-detail__memory-title">{artifact.displayTitle}</span>
+                  <span className="ting-research-detail__memory-title">
+                    {artifact.displayTitle}
+                  </span>
                   <span className="ting-research-detail__memory-path">{artifact.path}</span>
                 </button>
               ))}
@@ -1713,7 +1818,9 @@ export function ResearchCampaignPage() {
                     className="ting-research-detail__memory-card is-review"
                     onClick={() => openDrawer({ tab: 'files', file: artifact.path })}
                   >
-                    <span className="ting-research-detail__memory-title">{artifact.displayTitle}</span>
+                    <span className="ting-research-detail__memory-title">
+                      {artifact.displayTitle}
+                    </span>
                     <span className="ting-research-detail__memory-path">{artifact.path}</span>
                   </button>
                 ))}
@@ -1731,7 +1838,9 @@ export function ResearchCampaignPage() {
                       className="ting-research-detail__memory-card is-notebook"
                       onClick={() => openDrawer({ tab: 'files', file: artifact.path })}
                     >
-                      <span className="ting-research-detail__memory-title">{artifact.displayTitle}</span>
+                      <span className="ting-research-detail__memory-title">
+                        {artifact.displayTitle}
+                      </span>
                       <span className="ting-research-detail__memory-path">{artifact.path}</span>
                     </button>
                   ))}
@@ -1769,7 +1878,9 @@ export function ResearchCampaignPage() {
                 type="button"
                 key={tab}
                 className={cx(drawer.tab === tab && 'is-active')}
-                onClick={() => setDrawer((current) => ({ ...current, open: true, tab: tab as DrawerTab }))}
+                onClick={() =>
+                  setDrawer((current) => ({ ...current, open: true, tab: tab as DrawerTab }))
+                }
               >
                 {label}
               </button>
@@ -1789,7 +1900,9 @@ export function ResearchCampaignPage() {
                         selectedFileArtifact?.path === artifact.path && 'is-active',
                         artifact.publishState === 'published' && 'is-published',
                       )}
-                      onClick={() => setDrawer((current) => ({ ...current, tab: 'files', file: artifact.path }))}
+                      onClick={() =>
+                        setDrawer((current) => ({ ...current, tab: 'files', file: artifact.path }))
+                      }
                     >
                       {artifact.path.split('/').slice(-1)[0]}
                     </button>
@@ -1830,7 +1943,9 @@ export function ResearchCampaignPage() {
                       )}
                       onClick={() => setDrawer((current) => ({ ...current, sourceId: source.id }))}
                     >
-                      <span className="ting-research-detail__master-citation">[{source.citation}]</span>
+                      <span className="ting-research-detail__master-citation">
+                        [{source.citation}]
+                      </span>
                       <span className="ting-research-detail__master-title">{source.title}</span>
                       <span className="ting-research-detail__master-quality">
                         <QualityDots score={source.quality} />
@@ -1844,8 +1959,12 @@ export function ResearchCampaignPage() {
                     <div className="ting-research-detail__drawer-detail-eyebrow">
                       Source · [{selectedSource.citation}]
                     </div>
-                    <div className="ting-research-detail__drawer-detail-title">{selectedSource.title}</div>
-                    <div className="ting-research-detail__drawer-detail-domain">{selectedSource.domain}</div>
+                    <div className="ting-research-detail__drawer-detail-title">
+                      {selectedSource.title}
+                    </div>
+                    <div className="ting-research-detail__drawer-detail-domain">
+                      {selectedSource.domain}
+                    </div>
                     <div className="ting-research-detail__drawer-meta-card">
                       <div>
                         <span>Quality</span>
@@ -1863,7 +1982,9 @@ export function ResearchCampaignPage() {
                       </div>
                     </div>
                     <div className="ting-research-detail__drawer-subheading">Excerpt</div>
-                    <div className="ting-research-detail__drawer-quote">{selectedSource.excerpt}</div>
+                    <div className="ting-research-detail__drawer-quote">
+                      {selectedSource.excerpt}
+                    </div>
                     <div className="ting-research-detail__drawer-subheading">Cited in</div>
                     <div className="ting-research-detail__drawer-linked-list">
                       {selectedSource.compiledInto.map((path) => (
@@ -1871,7 +1992,9 @@ export function ResearchCampaignPage() {
                           type="button"
                           key={path}
                           className="ting-research-detail__drawer-linked-item"
-                          onClick={() => setDrawer((current) => ({ ...current, tab: 'files', file: path }))}
+                          onClick={() =>
+                            setDrawer((current) => ({ ...current, tab: 'files', file: path }))
+                          }
                         >
                           {path}
                         </button>
@@ -1882,14 +2005,22 @@ export function ResearchCampaignPage() {
                         type="button"
                         onClick={() =>
                           openMimirPage(
-                            selectedSource.compiledInto[0] ?? finalArtifact?.path ?? selectedFilePath ?? '',
+                            selectedSource.compiledInto[0] ??
+                              finalArtifact?.path ??
+                              selectedFilePath ??
+                              '',
                           )
                         }
                       >
                         ᛗ open in Mímir
                       </button>
                       {selectedSource.originUrl ? (
-                        <button type="button" onClick={() => window.open(selectedSource.originUrl, '_blank', 'noopener,noreferrer')}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            window.open(selectedSource.originUrl, '_blank', 'noopener,noreferrer')
+                          }
+                        >
                           ↗ open external
                         </button>
                       ) : null}
@@ -1910,11 +2041,20 @@ export function ResearchCampaignPage() {
                         'ting-research-detail__master-row',
                         selectedCritique?.id === critique.id && 'is-active',
                       )}
-                      onClick={() => setDrawer((current) => ({ ...current, critiqueId: critique.id }))}
+                      onClick={() =>
+                        setDrawer((current) => ({ ...current, critiqueId: critique.id }))
+                      }
                     >
-                      <span className="ting-research-detail__master-citation">[{critique.citation}]</span>
+                      <span className="ting-research-detail__master-citation">
+                        [{critique.citation}]
+                      </span>
                       <span className="ting-research-detail__master-title">{critique.claim}</span>
-                      <span className={cx('ting-research-detail__severity-pill', `is-${critique.severity}`)}>
+                      <span
+                        className={cx(
+                          'ting-research-detail__severity-pill',
+                          `is-${critique.severity}`,
+                        )}
+                      >
                         {critique.severity}
                       </span>
                     </button>
@@ -1925,11 +2065,15 @@ export function ResearchCampaignPage() {
                     <div className="ting-research-detail__drawer-detail-eyebrow">
                       Critique · [{selectedCritique.citation}]
                     </div>
-                    <div className="ting-research-detail__drawer-detail-title">{selectedCritique.claim}</div>
+                    <div className="ting-research-detail__drawer-detail-title">
+                      {selectedCritique.claim}
+                    </div>
                     <div className="ting-research-detail__drawer-detail-domain">
                       against {selectedCritique.against}
                     </div>
-                    <div className="ting-research-detail__drawer-quote">{selectedCritique.note}</div>
+                    <div className="ting-research-detail__drawer-quote">
+                      {selectedCritique.note}
+                    </div>
                     <div className="ting-research-detail__drawer-subheading">Linked artifacts</div>
                     <div className="ting-research-detail__drawer-linked-list">
                       {selectedCritique.linkedArtifacts.map((path) => (
@@ -1937,7 +2081,9 @@ export function ResearchCampaignPage() {
                           type="button"
                           key={path}
                           className="ting-research-detail__drawer-linked-item"
-                          onClick={() => setDrawer((current) => ({ ...current, tab: 'files', file: path }))}
+                          onClick={() =>
+                            setDrawer((current) => ({ ...current, tab: 'files', file: path }))
+                          }
                         >
                           {path}
                         </button>
@@ -1972,7 +2118,9 @@ export function ResearchCampaignPage() {
                           <span>{formatClock(event.timestamp)}</span>
                         </div>
                         <div className="ting-research-detail__activity-body">
-                          {String(event.data.summary ?? event.data.message ?? JSON.stringify(event.data))}
+                          {String(
+                            event.data.summary ?? event.data.message ?? JSON.stringify(event.data),
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1995,22 +2143,49 @@ export function ResearchCampaignPage() {
                     </div>
                     <div>
                       <span>Elapsed</span>
-                      <strong>{formatElapsed(campaign.createdAt, campaign.completedAt ?? undefined)}</strong>
+                      <strong>
+                        {formatElapsed(campaign.createdAt, campaign.completedAt ?? undefined)}
+                      </strong>
                     </div>
                   </div>
                 ) : null}
 
                 {(drawer.operatorSub ?? 'activity') === 'actions' ? (
                   <div className="ting-research-detail__operator-actions">
-                    <button type="button" onClick={() => window.location.assign(`/volundr/sessions/${encodeURIComponent(campaign.sessionId)}`)}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        window.location.assign(
+                          `/volundr/sessions/${encodeURIComponent(campaign.sessionId)}`,
+                        )
+                      }
+                    >
                       Open in Völundr
                     </button>
                     {manifestArtifact ? (
-                      <button type="button" onClick={() => setDrawer((current) => ({ ...current, tab: 'files', file: manifestArtifact.path }))}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDrawer((current) => ({
+                            ...current,
+                            tab: 'files',
+                            file: manifestArtifact.path,
+                          }))
+                        }
+                      >
                         Open manifest
                       </button>
                     ) : null}
-                    <button type="button" onClick={() => setDrawer((current) => ({ ...current, tab: 'files', file: finalArtifact?.path ?? selectedFilePath }))}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDrawer((current) => ({
+                          ...current,
+                          tab: 'files',
+                          file: finalArtifact?.path ?? selectedFilePath,
+                        }))
+                      }
+                    >
                       Open final synthesis
                     </button>
                     <button
