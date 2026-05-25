@@ -471,12 +471,12 @@ jobs:
         run: |
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/skuld-0*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/skuld-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-planner-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/niuu-0*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/niuu-*.tgz ${{ env.CHART_REPO }}
 
   # ---------------------------------------------------------------------------
   # Shared CLI assets — build once, reuse in packaging jobs
