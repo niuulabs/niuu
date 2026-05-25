@@ -34,6 +34,9 @@ test.describe('Research Center live workflow launch', () => {
 
     await page.getByRole('button', { name: 'New campaign' }).click();
     await expect(page.getByRole('heading', { name: 'Start a campaign' })).toBeVisible();
+    const workflowSelect = page.locator('select').first();
+    await expect(workflowSelect).toBeVisible();
+    await expect(workflowSelect.locator('option')).not.toHaveCount(0, { timeout: 15000 });
 
     await page.getByLabel('Question').fill(question);
     await page.getByLabel('Audience').fill(audience);
@@ -42,6 +45,9 @@ test.describe('Research Center live workflow launch', () => {
     await page
       .getByLabel('Constraints')
       .fill('use existing infrastructure\navoid tracker coupling');
+    await expect(page.getByRole('button', { name: 'Launch campaign' })).toBeEnabled({
+      timeout: 15000,
+    });
 
     const createResponsePromise = page.waitForResponse((response) => {
       return (
