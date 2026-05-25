@@ -681,7 +681,7 @@ describe('ResearchCampaignPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'open' }));
     await waitFor(() => expect(screen.getByText(/Cited in/i)).toBeInTheDocument());
-    expect(screen.getByText(/arxiv\.org/i)).toBeInTheDocument();
+    expect(screen.getByText(/^arxiv\.org$/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /open external/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getAllByRole('button', { name: /open in Mímir/i })[0]!);
@@ -862,7 +862,7 @@ describe('ResearchCampaignPage', () => {
     await waitFor(() =>
       expect(screen.getAllByText(/Operator dispatch feed/i).length).toBeGreaterThan(0),
     );
-    expect(screen.getByText(/ops\.example\.com/i)).toBeInTheDocument();
+    expect(screen.getByText(/^ops\.example\.com$/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Learnings & follow-ups/i }));
     await waitFor(() => expect(screen.getByText(/Durable learnings/i)).toBeInTheDocument());
