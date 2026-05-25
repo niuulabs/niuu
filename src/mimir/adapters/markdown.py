@@ -512,9 +512,13 @@ class MarkdownMimirAdapter(MimirPort):
     async def list_pages(
         self,
         category: str | None = None,
+        prefix: str | None = None,
     ) -> list[MimirPageMeta]:
-        """List all wiki pages, optionally filtered by category."""
-        return [meta for meta, _ in self._list_pages_with_content(category)]
+        """List all wiki pages, optionally filtered by category or path prefix."""
+        pages = [meta for meta, _ in self._list_pages_with_content(category)]
+        if prefix is None:
+            return pages
+        return [meta for meta in pages if meta.path.startswith(prefix)]
 
     async def read_source(self, source_id: str) -> MimirSource | None:
         """Return the full raw source by ID, or None if not found."""

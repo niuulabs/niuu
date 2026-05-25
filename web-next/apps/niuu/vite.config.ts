@@ -3,6 +3,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const fromHere = (relativePath: string) => fileURLToPath(new URL(relativePath, import.meta.url));
+const apiProxyTarget = process.env.NIUU_API_PROXY_TARGET ?? 'http://127.0.0.1:8080';
 
 const workspaceAlias = [
   {
@@ -139,5 +140,11 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    proxy: {
+      '/api': {
+        target: apiProxyTarget,
+        changeOrigin: true,
+      },
+    },
   },
 });

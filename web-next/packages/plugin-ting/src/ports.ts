@@ -13,6 +13,12 @@ import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
 import type { Workflow } from './domain/workflow';
 import type {
+  ResearchCampaign,
+  ResearchCampaignDetail,
+  CampaignArtifact,
+  CampaignArtifactDetail,
+} from './domain/research';
+import type {
   FlockConfig,
   DispatchDefaults,
   NotificationSettings,
@@ -27,6 +33,14 @@ export type { DispatcherState, DispatchRule } from './domain/dispatcher';
 export type { SessionInfo, TingSessionStatus } from './domain/session';
 export type { TrackerProject, TrackerMilestone, TrackerIssue, RepoInfo } from './domain/tracker';
 export type { Workflow } from './domain/workflow';
+export type {
+  ResearchCampaign,
+  ResearchCampaignDetail,
+  CampaignArtifact,
+  CampaignArtifactDetail,
+  CampaignStageState,
+  ResearchCampaignStatus,
+} from './domain/research';
 export type {
   FlockConfig,
   DispatchDefaults,
@@ -285,6 +299,36 @@ export interface IWorkflowService {
   saveWorkflow(workflow: Workflow): Promise<Workflow>;
   deleteWorkflow(id: string): Promise<void>;
   launchWorkflow(workflowId: string, request: WorkflowLaunchRequest): Promise<WorkflowLaunchResult>;
+}
+
+export interface CreateResearchCampaignRequest {
+  question: string;
+  name?: string;
+  workflowId?: string;
+  repo?: string;
+  branch?: string;
+  mode?: string;
+  audience?: string;
+  deliverable?: string;
+  success?: string;
+  constraints?: string[];
+  monitoringCadence?: string;
+}
+
+export interface UpdateResearchCampaignRequest {
+  name?: string;
+  status?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface IResearchService {
+  listCampaigns(): Promise<ResearchCampaign[]>;
+  getCampaign(slug: string): Promise<ResearchCampaignDetail | null>;
+  createCampaign(request: CreateResearchCampaignRequest): Promise<ResearchCampaign>;
+  updateCampaign(slug: string, request: UpdateResearchCampaignRequest): Promise<ResearchCampaign>;
+  deleteCampaign(slug: string): Promise<void>;
+  listArtifacts(slug: string): Promise<CampaignArtifact[]>;
+  getArtifact(slug: string, path: string): Promise<CampaignArtifactDetail | null>;
 }
 
 // ---------------------------------------------------------------------------

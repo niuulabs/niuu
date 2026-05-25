@@ -72,7 +72,9 @@ export interface WorkflowBuilderActions {
   ): void;
   updateResourceBinding(id: string, patch: Partial<WorkflowResourceBinding>): void;
   removeResourceBinding(id: string): void;
-  updateWorkflowMeta(patch: Partial<Pick<Workflow, 'name' | 'description' | 'version'>>): void;
+  updateWorkflowMeta(
+    patch: Partial<Pick<Workflow, 'name' | 'description' | 'version' | 'tags'>>,
+  ): void;
   setWorkflow(workflow: Workflow): void;
 }
 
@@ -869,7 +871,7 @@ export function useWorkflowBuilder(
   }, []);
 
   const updateWorkflowMeta = useCallback(
-    (patch: Partial<Pick<Workflow, 'name' | 'description' | 'version'>>) => {
+    (patch: Partial<Pick<Workflow, 'name' | 'description' | 'version' | 'tags'>>) => {
       setWorkflowState((prev) =>
         normalizeWorkflowWithStageDefaults(
           { ...prev, ...patch },

@@ -13,7 +13,10 @@ import type {
   ITrackerBrowserService,
   ITingIntegrationService,
   IWorkflowService,
+  IResearchService,
   WorkflowLaunchRequest,
+  CreateResearchCampaignRequest,
+  UpdateResearchCampaignRequest,
   IDispatchBus,
   DispatchResult,
   ITingSettingsService,
@@ -33,6 +36,9 @@ import type {
   NotificationSettings,
   AuditEntry,
   AuditFilter,
+  ResearchCampaign,
+  ResearchCampaignDetail,
+  CampaignArtifactDetail,
 } from '../ports';
 import type { Saga, Phase, Run } from '../domain/saga';
 import type { DispatcherState } from '../domain/dispatcher';
@@ -757,6 +763,7 @@ const SEED_WORKFLOWS: Workflow[] = [
     version: '1.4.2',
     description:
       'qa → pre-ship review → version bump → release PR. Matches src/ting/templates/ship.yaml.',
+    tags: ['delivery', 'release'],
     nodes: [
       {
         id: 'stage-dispatch',
@@ -871,6 +878,7 @@ const SEED_WORKFLOWS: Workflow[] = [
     name: 'deep-review — code audit',
     version: '0.9.1',
     description: 'Full code audit pipeline with multiple reviewers and automated checks.',
+    tags: ['review', 'audit'],
     nodes: [
       {
         id: 'stage-scan',
@@ -1675,6 +1683,158 @@ export function createMockWorkflowService(): IWorkflowService {
         status: 'starting',
         clusterName: 'mock',
       };
+    },
+  };
+}
+
+/**
+ * Create an in-memory IResearchService backed by lightweight campaign records.
+ */
+export function createMockResearchService(): IResearchService {
+  const now = new Date().toISOString();
+  const workflows = new Map<string, Workflow>(SEED_WORKFLOWS.map((workflow) => [workflow.id, workflow]));
+  const seedCampaigns: ResearchCampaignDetail[] = [
+    {
+      id: '11111111-1111-4111-8111-111111111111',
+      slug: 'rag-landscape',
+      name: 'RAG landscape',
+      ownerId: 'dev-user',
+      workflowId: '00000000-0000-4000-8000-000000000001',
+      workflowVersion: '1.0.0',
+      workflowName: 'Research Campaign',
+      sessionId: 'mock-session-rag',
+      sessionName: 'RAG landscape',
+      status: 'running',
+      activeStageId: 'synthesize',
+      stageState: [
+        { stageId: 'frame', label: 'Frame the inquiry', status: 'complete', startedAt: now, completedAt: now },
+        { stageId: 'explore', label: 'Explore the evidence', status: 'complete', startedAt: now, completedAt: now },
+        { stageId: 'challenge', label: 'Challenge the thesis', status: 'complete', startedAt: now, completedAt: now },
+        { stageId: 'synthesize', label: 'Synthesize the research', status: 'active', startedAt: now, completedAt: null },
+      ],
+      metadata: {
+        question: 'What does the RAG tooling landscape look like?',
+        mode: 'exploratory',
+        audience: 'product leadership',
+      },
+      createdAt: now,
+      updatedAt: now,
+      lastActivityAt: now,
+      completedAt: null,
+      artifacts: [
+        {
+          path: 'research/campaigns/rag-landscape/brief.md',
+          title: 'Brief',
+          updatedAt: now,
+          kind: 'brief',
+          publishState: 'unknown',
+          sourceIds: [],
+          summary: 'Framing brief',
+        },
+        {
+          path: 'research/campaigns/rag-landscape/final.md',
+          title: 'Final',
+          updatedAt: now,
+          kind: 'final',
+          publishState: 'published',
+          sourceIds: ['src_123'],
+          summary: 'Draft synthesis',
+        },
+      ],
+      canonicalArtifacts: {
+        brief: 'research/campaigns/rag-landscape/brief.md',
+        final: 'research/campaigns/rag-landscape/final.md',
+      },
+    },
+  ];
+  const campaigns = new Map<string, ResearchCampaignDetail>(
+    seedCampaigns.map((campaign) => [campaign.slug, campaign]),
+  );
+
+  return {
+    async listCampaigns() {
+      return Array.from(campaigns.values()).map((campaign) => ({ ...campaign }));
+    },
+
+    async getCampaign(slug: string) {
+      return campaigns.get(slug) ?? null;
+    },
+
+    async createCampaign(request: CreateResearchCampaignRequest) {
+      const workflow =
+        (request.workflowId ? workflows.get(request.workflowId) : null) ??
+        Array.from(workflows.values()).find((candidate: Workflow) => candidate.tags?.includes('research')) ??
+        Array.from(workflows.values())[0];
+      const slug =
+        (request.name || request.question)
+          .toLowerCase()
+          .match(/[a-z0-9]+/g)
+          ?.join('-')
+          .slice(0, 96) || `campaign-${campaigns.size + 1}`;
+      const createdAt = new Date().toISOString();
+      const campaign: ResearchCampaignDetail = {
+        id: crypto.randomUUID(),
+        slug,
+        name: request.name || request.question.slice(0, 80),
+        ownerId: 'dev-user',
+        workflowId: workflow?.id ?? '00000000-0000-4000-8000-000000000001',
+        workflowVersion: workflow?.version ?? '1.0.0',
+        workflowName: workflow?.name ?? 'Research Campaign',
+        sessionId: `mock-session-${slug}`,
+        sessionName: request.name || slug,
+        status: 'running',
+        activeStageId: 'frame',
+        stageState: [{ stageId: 'frame', label: 'Frame the inquiry', status: 'active', startedAt: createdAt, completedAt: null }],
+        metadata: {
+          question: request.question,
+          mode: request.mode ?? 'exploratory',
+          audience: request.audience ?? '',
+          deliverable: request.deliverable ?? '',
+          success: request.success ?? '',
+          constraints: request.constraints ?? [],
+          repo: request.repo ?? '',
+          branch: request.branch ?? '',
+        },
+        createdAt,
+        updatedAt: createdAt,
+        lastActivityAt: createdAt,
+        completedAt: null,
+        artifacts: [],
+        canonicalArtifacts: {},
+      };
+      campaigns.set(slug, campaign);
+      return campaign;
+    },
+
+    async updateCampaign(slug: string, request: UpdateResearchCampaignRequest) {
+      const current = campaigns.get(slug);
+      if (!current) throw new Error(`Campaign ${slug} not found`);
+      const updated: ResearchCampaignDetail = {
+        ...current,
+        name: request.name ?? current.name,
+        status: (request.status as ResearchCampaign['status']) ?? current.status,
+        metadata: { ...current.metadata, ...(request.metadata ?? {}) },
+        updatedAt: new Date().toISOString(),
+      };
+      campaigns.set(slug, updated);
+      return updated;
+    },
+
+    async deleteCampaign(slug: string) {
+      campaigns.delete(slug);
+    },
+
+    async listArtifacts(slug: string) {
+      return campaigns.get(slug)?.artifacts ?? [];
+    },
+
+    async getArtifact(slug: string, path: string) {
+      const artifact = campaigns.get(slug)?.artifacts.find((item) => item.path === path);
+      if (!artifact) return null;
+      return {
+        ...artifact,
+        content: `# ${artifact.title}\n\nMock content for ${artifact.path}.`,
+      } satisfies CampaignArtifactDetail;
     },
   };
 }

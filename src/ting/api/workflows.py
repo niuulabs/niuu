@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -31,6 +32,7 @@ class WorkflowBody(BaseModel):
     description: str = ""
     version: str = Field(default="draft", min_length=1, max_length=64)
     scope: Literal["system", "user"] = "user"
+    tags: list[str] = Field(default_factory=list)
     nodes: list[dict[str, Any]] = Field(default_factory=list)
     edges: list[dict[str, Any]] = Field(default_factory=list)
     resource_bindings: list[dict[str, Any]] = Field(
@@ -48,6 +50,7 @@ class WorkflowResponse(BaseModel):
     version: str
     scope: Literal["system", "user"]
     owner_id: str | None
+    tags: list[str] = Field(default_factory=list)
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     resource_bindings: list[dict[str, Any]] = Field(
@@ -77,6 +80,14 @@ class WorkflowLaunchResponse(BaseModel):
     cluster_name: str = Field(default="", serialization_alias="clusterName")
 
     model_config = {"populate_by_name": True}
+
+
+@dataclass(frozen=True)
+class WorkflowLaunchExecution:
+    workflow: WorkflowDefinition
+    workflow_snapshot: dict[str, Any]
+    slug: str
+    session: VolundrSession
 
 
 async def resolve_workflow_repo() -> WorkflowRepository:
@@ -201,87 +212,15 @@ def create_workflows_router() -> APIRouter:
         if workflow is None or not _can_view_workflow(workflow, principal):
             raise HTTPException(status_code=404, detail="Workflow not found")
 
-        workflow_snapshot = build_workflow_snapshot(workflow)
-        launch_slug = _resolve_launch_slug(body, workflow)
-        session_name = _resolve_launch_session_name(body, workflow, launch_slug)
-        settings = request.app.state.settings
-
-        try:
-            resolved_model, resolved_definition, workflow_personas = _resolve_workflow_execution(
-                workflow_snapshot,
-                fallback_model=settings.dispatch.default_model,
-                requested_definition=_DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
-                session_definitions=settings.session_definitions,
-                configured_models=list(settings.bifrost.models),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        initiative_context = _build_workflow_initiative_context(
+        execution = await launch_workflow_execution(
+            request=request,
             workflow=workflow,
             launch=body,
-            slug=launch_slug,
-        )
-        workflow_mimir = _resolve_mimir_registry_refs(
-            _normalize_mimir_workload_config(
-                workflow_mimir_from_snapshot(workflow_snapshot),
-                hosted_url=settings.dispatch.flock.mimir_hosted_url,
-            ),
-            registry_path=settings.dispatch.flock.mimir_registry_path,
-        )
-        target_adapter = await _resolve_target_adapter(
             volundr_factory=volundr_factory,
             principal=principal,
+            bearer_token=bearer_token,
         )
-        if target_adapter is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No Volundr connection is available for this user",
-            )
-
-        session = await target_adapter.spawn_session(
-            SpawnRequest(
-                name=session_name,
-                repo=body.repo,
-                branch=body.branch,
-                base_branch="",
-                model=resolved_model,
-                tracker_issue_id=f"workflow:{launch_slug}",
-                tracker_issue_url="",
-                system_prompt="",
-                initial_prompt=initiative_context,
-                workload_type="ravn_flock",
-                workload_config={
-                    "personas": workflow_personas,
-                    "initiative_context": initiative_context,
-                    "workflow": workflow_snapshot,
-                    **({"mimir": workflow_mimir} if workflow_mimir else {}),
-                    **(
-                        {
-                            "sleipnir_publish_urls": list(
-                                settings.dispatch.flock.sleipnir_publish_urls
-                            )
-                        }
-                        if settings.dispatch.flock.sleipnir_publish_urls
-                        else {}
-                    ),
-                    **(
-                        {"daily_budget_usd": settings.dispatch.flock.daily_budget_usd}
-                        if settings.dispatch.flock.daily_budget_usd > 0
-                        else {}
-                    ),
-                    **(
-                        {"llm_config": settings.dispatch.flock.llm_config}
-                        if settings.dispatch.flock.llm_config
-                        else {}
-                    ),
-                },
-                definition=resolved_definition,
-            ),
-            auth_token=bearer_token,
-            principal=principal,
-        )
-        return _launch_response(workflow, launch_slug, session)
+        return _launch_response(execution.workflow, execution.slug, execution.session)
 
     return router
 
@@ -294,6 +233,7 @@ def _coerce_scope_filter(scope: Literal["all", "system", "user"]) -> WorkflowSco
 
 def _body_to_graph(body: WorkflowBody) -> dict[str, Any]:
     return {
+        "tags": body.tags,
         "nodes": body.nodes,
         "edges": body.edges,
         "resourceBindings": body.resource_bindings,
@@ -309,6 +249,7 @@ def _to_response(workflow: WorkflowDefinition) -> WorkflowResponse:
         version=workflow.version,
         scope=workflow.scope.value,
         owner_id=workflow.owner_id,
+        tags=[str(tag).strip() for tag in list(graph.get("tags") or []) if str(tag).strip()],
         nodes=list(graph.get("nodes") or []),
         edges=list(graph.get("edges") or []),
         resource_bindings=list(
@@ -332,6 +273,103 @@ def _launch_response(
         session_name=session.name,
         status=session.status,
         cluster_name=session.cluster_name,
+    )
+
+
+async def launch_workflow_execution(
+    *,
+    request: Request,
+    workflow: WorkflowDefinition,
+    launch: WorkflowLaunchBody,
+    volundr_factory: VolundrFactory,
+    principal: Principal,
+    bearer_token: str | None = None,
+) -> WorkflowLaunchExecution:
+    workflow_snapshot = build_workflow_snapshot(workflow)
+    launch_slug = _resolve_launch_slug(launch, workflow)
+    session_name = _resolve_launch_session_name(launch, workflow, launch_slug)
+    settings = request.app.state.settings
+
+    try:
+        resolved_model, resolved_definition, workflow_personas = _resolve_workflow_execution(
+            workflow_snapshot,
+            fallback_model=settings.dispatch.default_model,
+            requested_definition=_DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
+            session_definitions=settings.session_definitions,
+            configured_models=list(settings.bifrost.models),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    initiative_context = _build_workflow_initiative_context(
+        workflow=workflow,
+        launch=launch,
+        slug=launch_slug,
+    )
+    workflow_mimir = _resolve_mimir_registry_refs(
+        _normalize_mimir_workload_config(
+            workflow_mimir_from_snapshot(workflow_snapshot),
+            hosted_url=settings.dispatch.flock.mimir_hosted_url,
+        ),
+        registry_path=settings.dispatch.flock.mimir_registry_path,
+    )
+    target_adapter = await _resolve_target_adapter(
+        volundr_factory=volundr_factory,
+        principal=principal,
+    )
+    if target_adapter is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No Volundr connection is available for this user",
+        )
+
+    session = await target_adapter.spawn_session(
+        SpawnRequest(
+            name=session_name,
+            repo=launch.repo,
+            branch=launch.branch,
+            base_branch="",
+            model=resolved_model,
+            tracker_issue_id=f"workflow:{launch_slug}",
+            tracker_issue_url="",
+            system_prompt="",
+            initial_prompt=initiative_context,
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": workflow_personas,
+                "initiative_context": initiative_context,
+                "workflow": workflow_snapshot,
+                **({"mimir": workflow_mimir} if workflow_mimir else {}),
+                **(
+                    {
+                        "sleipnir_publish_urls": list(
+                            settings.dispatch.flock.sleipnir_publish_urls
+                        )
+                    }
+                    if settings.dispatch.flock.sleipnir_publish_urls
+                    else {}
+                ),
+                **(
+                    {"daily_budget_usd": settings.dispatch.flock.daily_budget_usd}
+                    if settings.dispatch.flock.daily_budget_usd > 0
+                    else {}
+                ),
+                **(
+                    {"llm_config": settings.dispatch.flock.llm_config}
+                    if settings.dispatch.flock.llm_config
+                    else {}
+                ),
+            },
+            definition=resolved_definition,
+        ),
+        auth_token=bearer_token,
+        principal=principal,
+    )
+    return WorkflowLaunchExecution(
+        workflow=workflow,
+        workflow_snapshot=workflow_snapshot,
+        slug=launch_slug,
+        session=session,
     )
 
 

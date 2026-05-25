@@ -57,6 +57,14 @@ class WorkflowScope(StrEnum):
     USER = "user"
 
 
+class WorkflowCampaignStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 # ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
@@ -235,6 +243,38 @@ class WorkflowDefinition:
     graph: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class CampaignStageState:
+    stage_id: str
+    label: str
+    status: str
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowCampaign:
+    id: UUID
+    slug: str
+    name: str
+    owner_id: str
+    workflow_id: UUID
+    workflow_version: str
+    workflow_name: str
+    workflow_snapshot: dict[str, Any]
+    session_id: str
+    session_name: str
+    status: WorkflowCampaignStatus
+    active_stage_id: str | None
+    stage_state: list[CampaignStageState]
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+    last_activity_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 @dataclass(frozen=True)

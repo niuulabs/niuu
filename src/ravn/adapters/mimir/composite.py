@@ -178,14 +178,18 @@ class CompositeMimirAdapter(MimirPort):
                 logger.warning("composite mimir: read_page failed on %r: %s", mount.name, exc)
         raise FileNotFoundError(f"Mímir page not found in any mount: {path}")
 
-    async def list_pages(self, category: str | None = None) -> list[MimirPageMeta]:
+    async def list_pages(
+        self,
+        category: str | None = None,
+        prefix: str | None = None,
+    ) -> list[MimirPageMeta]:
         """List pages from all mounts in priority order, de-dup by path."""
         seen_paths: set[str] = set()
         results: list[MimirPageMeta] = []
 
         for mount in self._mounts:
             try:
-                pages = await mount.port.list_pages(category)
+                pages = await mount.port.list_pages(category=category, prefix=prefix)
                 for meta in pages:
                     if meta.path not in seen_paths:
                         seen_paths.add(meta.path)

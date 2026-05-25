@@ -102,6 +102,7 @@ class TingPlugin(ServicePlugin):
                 prefixes=(
                     "/api/v1/ting/flock",
                     "/api/v1/ting/flock_flows",
+                    "/api/v1/ting/research",
                 ),
                 description="Flock configuration and flow library routes.",
             ),

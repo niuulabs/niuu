@@ -1,0 +1,1352 @@
+.ting-research-detail {
+  position: relative;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top, rgba(96, 165, 250, 0.06), transparent 24%),
+    #09090b;
+  color: rgba(244, 244, 245, 0.96);
+}
+
+.ting-research-detail__loading,
+.ting-research-detail__error {
+  padding: 32px;
+  color: rgba(161, 161, 170, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 12px;
+}
+
+.ting-research-detail__error {
+  color: rgba(251, 113, 133, 0.92);
+}
+
+.ting-research-detail__state-strip {
+  position: sticky;
+  top: 0;
+  z-index: 14;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.6fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 30px;
+  border-bottom: 1px solid rgba(63, 63, 70, 0.7);
+  background: rgba(17, 17, 20, 0.94);
+  backdrop-filter: blur(14px);
+}
+
+.ting-research-detail__state-cluster {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.ting-research-detail__state-cluster.is-right {
+  justify-content: flex-end;
+}
+
+.ting-research-detail__ticks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ting-research-detail__tick {
+  width: 24px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(63, 63, 70, 0.86);
+  box-shadow: inset 0 0 0 1px rgba(82, 82, 91, 0.26);
+}
+
+.ting-research-detail__tick.is-complete {
+  background: rgba(219, 234, 254, 0.96);
+}
+
+.ting-research-detail__tick.is-active {
+  background: rgba(186, 230, 253, 1);
+  box-shadow: 0 0 12px rgba(186, 230, 253, 0.48);
+}
+
+.ting-research-detail__tick.is-blocked {
+  background: rgba(251, 191, 36, 0.92);
+}
+
+.ting-research-detail__tick.is-failed {
+  background: rgba(248, 113, 113, 0.92);
+}
+
+.ting-research-detail__strip-copy,
+.ting-research-detail__ticker,
+.ting-research-detail__ticker-persona,
+.ting-research-detail__ticker-message,
+.ting-research-detail__run-chip,
+.ting-research-detail__operator-button,
+.ting-research-detail__meta-line,
+.ting-research-detail__hero-eyebrow,
+.ting-research-detail__hero-meta-label,
+.ting-research-detail__crumb-slug,
+.ting-research-detail__crumb-state,
+.ting-research-detail__section-meta,
+.ting-research-detail__row-muted,
+.ting-research-detail__drawer-slug,
+.ting-research-detail__drawer-detail-domain,
+.ting-research-detail__drawer-file-path,
+.ting-research-detail__drawer-detail-eyebrow,
+.ting-research-detail__drawer-subheading,
+.ting-research-detail__activity-top,
+.ting-research-detail__operator-grid span,
+.ting-research-detail__memory-path,
+.ting-research-detail__lf-action,
+.ting-research-detail__annotation-tag {
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+}
+
+.ting-research-detail__strip-copy,
+.ting-research-detail__ticker,
+.ting-research-detail__confidence-text,
+.ting-research-detail__run-chip,
+.ting-research-detail__operator-button {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.ting-research-detail__ticker {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: rgba(212, 212, 216, 0.82);
+}
+
+.ting-research-detail__ticker-persona {
+  color: rgba(225, 232, 240, 0.94);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ting-research-detail__ticker-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(161, 161, 170, 0.88);
+}
+
+.ting-research-detail__live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(191, 219, 254, 0.98);
+  box-shadow: 0 0 12px rgba(125, 211, 252, 0.52);
+}
+
+.ting-research-detail__live-dot.is-idle {
+  background: rgba(113, 113, 122, 0.82);
+  box-shadow: none;
+}
+
+.ting-research-detail__confidence {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.ting-research-detail__confidence-bar {
+  width: 48px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(63, 63, 70, 0.86);
+  overflow: hidden;
+}
+
+.ting-research-detail__confidence-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(191, 219, 254, 0.94), rgba(125, 211, 252, 1));
+}
+
+.ting-research-detail__confidence-text {
+  color: rgba(212, 212, 216, 0.86);
+}
+
+.ting-research-detail__run-chip,
+.ting-research-detail__operator-button,
+.ting-research-detail__files-chip,
+.ting-research-detail__section-action,
+.ting-research-detail__ghost-button,
+.ting-research-detail__primary-button,
+.ting-research-detail__drawer-actions button,
+.ting-research-detail__operator-actions button,
+.ting-research-detail__annotation-action,
+.ting-research-detail__popover-actions button,
+.ting-research-detail__lf-action {
+  border: 1px solid rgba(82, 82, 91, 0.74);
+  background: rgba(24, 24, 27, 0.98);
+  color: rgba(244, 244, 245, 0.95);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.ting-research-detail__run-chip,
+.ting-research-detail__operator-button,
+.ting-research-detail__files-chip,
+.ting-research-detail__section-action,
+.ting-research-detail__ghost-button,
+.ting-research-detail__primary-button {
+  padding: 10px 14px;
+}
+
+.ting-research-detail__operator-button,
+.ting-research-detail__files-chip,
+.ting-research-detail__primary-button,
+.ting-research-detail__segmented button.is-active {
+  border-color: rgba(56, 189, 248, 0.56);
+  background: rgba(14, 32, 46, 0.96);
+  color: rgba(224, 242, 254, 0.98);
+}
+
+.ting-research-detail__files-chip.is-danger,
+.ting-research-detail__ghost-button.is-danger,
+.ting-research-detail__primary-button.is-danger,
+.ting-research-detail__operator-actions button.is-danger {
+  border-color: rgba(248, 113, 113, 0.38);
+  background: rgba(69, 10, 10, 0.24);
+  color: rgba(254, 202, 202, 0.98);
+}
+
+.ting-research-detail__canvas {
+  display: flex;
+  justify-content: center;
+  padding: 36px 28px 88px;
+}
+
+.ting-research-detail__content {
+  width: min(1120px, 100%);
+}
+
+.ting-research-detail__crumbs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.ting-research-detail__page-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ting-research-detail__crumbs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ting-research-detail__crumb-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: rgba(212, 212, 216, 0.86);
+  cursor: pointer;
+  font: inherit;
+}
+
+.ting-research-detail__crumb-separator,
+.ting-research-detail__crumb-slug,
+.ting-research-detail__crumb-state,
+.ting-research-detail__meta-line,
+.ting-research-detail__section-meta,
+.ting-research-detail__view-label {
+  color: rgba(161, 161, 170, 0.84);
+  font-size: 11px;
+}
+
+.ting-research-detail__state-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(113, 113, 122, 0.82);
+}
+
+.ting-research-detail__state-dot.is-brand {
+  background: rgba(186, 230, 253, 0.98);
+  box-shadow: 0 0 11px rgba(186, 230, 253, 0.44);
+}
+
+.ting-research-detail__state-dot.is-amber {
+  background: rgba(251, 191, 36, 0.98);
+}
+
+.ting-research-detail__state-dot.is-rose {
+  background: rgba(248, 113, 113, 0.98);
+}
+
+.ting-research-detail__mode-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(124, 58, 237, 0.42);
+  background: rgba(46, 16, 101, 0.34);
+  color: rgba(221, 214, 254, 0.96);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ting-research-detail__title {
+  margin: 18px 0 10px;
+  font-size: clamp(34px, 4vw, 50px);
+  line-height: 0.98;
+  letter-spacing: -0.05em;
+  font-weight: 700;
+  color: rgba(250, 250, 250, 0.98);
+}
+
+.ting-research-detail__question {
+  max-width: 820px;
+  margin: 0;
+  color: rgba(161, 161, 170, 0.95);
+  font-size: 18px;
+  line-height: 1.52;
+}
+
+.ting-research-detail__meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.ting-research-detail__view-toggle {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.ting-research-detail__segmented {
+  display: inline-flex;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(63, 63, 70, 0.8);
+}
+
+.ting-research-detail__segmented button {
+  padding: 8px 16px;
+  border: none;
+  background: rgba(17, 24, 39, 0.88);
+  color: rgba(161, 161, 170, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ting-research-detail__hero-card {
+  position: relative;
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 28px;
+  padding: 30px;
+  border: 1px solid rgba(82, 82, 91, 0.76);
+  border-radius: 22px;
+  background: rgba(24, 24, 27, 0.92);
+  box-shadow: 0 22px 64px rgba(0, 0, 0, 0.22);
+}
+
+.ting-research-detail__hero-card.is-running,
+.ting-research-detail__hero-card.is-review {
+  border-color: rgba(100, 116, 139, 0.94);
+}
+
+.ting-research-detail__hero-card.is-published {
+  border-color: rgba(103, 232, 249, 0.3);
+}
+
+.ting-research-detail__hero-card.is-blocked {
+  border-color: rgba(234, 179, 8, 0.48);
+}
+
+.ting-research-detail__hero-card.is-failed {
+  border-color: rgba(248, 113, 113, 0.52);
+}
+
+.ting-research-detail__hero-main {
+  min-width: 0;
+}
+
+.ting-research-detail__hero-eyebrow {
+  color: rgba(191, 219, 254, 0.92);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.ting-research-detail__hero-heading {
+  margin-top: 10px;
+  font-size: 21px;
+  line-height: 1.2;
+  font-weight: 650;
+  color: rgba(250, 250, 250, 0.98);
+}
+
+.ting-research-detail__hero-paragraph,
+.ting-research-detail__markdown-p,
+.ting-research-detail__lf-body,
+.ting-research-detail__annotation-body,
+.ting-research-detail__drawer-quote,
+.ting-research-detail__activity-body {
+  color: rgba(228, 228, 231, 0.94);
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+.ting-research-detail__hero-note {
+  margin: 16px 0 0;
+  color: rgba(161, 161, 170, 0.86);
+  font-size: 15px;
+  line-height: 1.45;
+  font-style: italic;
+}
+
+.ting-research-detail__challenge-callout {
+  margin-top: 22px;
+  padding: 18px 20px;
+  border: 1px solid rgba(234, 179, 8, 0.42);
+  border-left: 3px solid rgba(250, 204, 21, 0.92);
+  border-radius: 12px;
+  background: rgba(55, 48, 34, 0.74);
+}
+
+.ting-research-detail__challenge-title {
+  color: rgba(250, 204, 21, 0.98);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.ting-research-detail__challenge-callout ul {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding-left: 18px;
+}
+
+.ting-research-detail__challenge-callout li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(252, 211, 77, 0.96);
+  font-size: 16px;
+}
+
+.ting-research-detail__hero-side {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  border-left: 1px solid rgba(63, 63, 70, 0.76);
+  padding-left: 26px;
+}
+
+.ting-research-detail__hero-meta-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ting-research-detail__hero-meta-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: rgba(113, 113, 122, 0.88);
+}
+
+.ting-research-detail__hero-meta-value {
+  color: rgba(250, 250, 250, 0.98);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.ting-research-detail__hero-meta-value.is-stage {
+  color: rgba(191, 219, 254, 0.98);
+}
+
+.ting-research-detail__hero-meta-value.is-mono {
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ting-research-detail__ghost-button,
+.ting-research-detail__primary-button {
+  justify-content: center;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ting-research-detail__floating-popover {
+  position: fixed;
+  z-index: 80;
+  max-width: calc(100vw - 48px);
+}
+
+.ting-research-detail__popover {
+  width: 360px;
+  padding: 16px;
+  border: 1px solid rgba(82, 82, 91, 0.82);
+  border-radius: 16px;
+  background: rgba(24, 24, 27, 0.98);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
+}
+
+.ting-research-detail__popover.is-critique {
+  border-color: rgba(248, 113, 113, 0.36);
+}
+
+.ting-research-detail__popover-eyebrow {
+  color: rgba(191, 219, 254, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.ting-research-detail__popover-title {
+  margin-top: 12px;
+  font-size: 18px;
+  line-height: 1.35;
+  font-weight: 650;
+}
+
+.ting-research-detail__popover-meta {
+  margin-top: 10px;
+  color: rgba(161, 161, 170, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+}
+
+.ting-research-detail__popover-quote {
+  margin-top: 16px;
+  padding-left: 14px;
+  border-left: 2px solid rgba(191, 219, 254, 0.92);
+  color: rgba(228, 228, 231, 0.92);
+  font-size: 16px;
+  line-height: 1.48;
+}
+
+.ting-research-detail__popover-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.ting-research-detail__popover-actions button {
+  padding: 8px 12px;
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+}
+
+.ting-research-detail__rendered-answer.is-annotated {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 28px;
+}
+
+.ting-research-detail__annotations {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ting-research-detail__annotation-card {
+  padding: 14px;
+  border: 1px solid rgba(82, 82, 91, 0.74);
+  border-left-width: 3px;
+  border-radius: 14px;
+  background: rgba(17, 17, 20, 0.82);
+}
+
+.ting-research-detail__annotation-card.is-source {
+  border-left-color: rgba(125, 211, 252, 0.92);
+}
+
+.ting-research-detail__annotation-card.is-critique {
+  border-left-color: rgba(248, 113, 113, 0.9);
+}
+
+.ting-research-detail__annotation-title,
+.ting-research-detail__lf-title,
+.ting-research-detail__memory-title,
+.ting-research-detail__drawer-detail-title,
+.ting-research-detail__drawer-title {
+  font-size: 17px;
+  line-height: 1.32;
+  font-weight: 650;
+  color: rgba(250, 250, 250, 0.98);
+}
+
+.ting-research-detail__annotation-body,
+.ting-research-detail__lf-body {
+  margin-top: 8px;
+  font-size: 14px;
+  color: rgba(212, 212, 216, 0.88);
+}
+
+.ting-research-detail__annotation-action,
+.ting-research-detail__lf-action {
+  margin-top: 12px;
+  padding: 8px 12px;
+  font-size: 11px;
+}
+
+.ting-research-detail__section {
+  border-top: 1px solid rgba(39, 39, 42, 0.92);
+  padding-top: 18px;
+  margin-top: 18px;
+}
+
+.ting-research-detail__section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.ting-research-detail__section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: rgba(250, 250, 250, 0.98);
+}
+
+.ting-research-detail__section-title {
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.ting-research-detail__section-caret {
+  color: rgba(161, 161, 170, 0.9);
+  font-size: 16px;
+}
+
+.ting-research-detail__section-action {
+  padding: 8px 14px;
+  font-size: 11px;
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+}
+
+.ting-research-detail__section-body {
+  margin-top: 18px;
+}
+
+.ting-research-detail__table {
+  border: 1px solid rgba(63, 63, 70, 0.72);
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.ting-research-detail__table-head,
+.ting-research-detail__table-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1.8fr) 1fr 96px 72px 92px;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+}
+
+.ting-research-detail__table-head {
+  background: rgba(24, 24, 27, 0.98);
+  color: rgba(113, 113, 122, 0.94);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.ting-research-detail__table-row {
+  border-top: 1px solid rgba(39, 39, 42, 0.92);
+  background: rgba(17, 17, 20, 0.72);
+  color: rgba(244, 244, 245, 0.96);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ting-research-detail__mono-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  padding: 6px 9px;
+  border-radius: 10px;
+  border: 1px solid rgba(82, 82, 91, 0.78);
+  background: rgba(30, 41, 59, 0.92);
+  color: rgba(219, 234, 254, 0.98);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+}
+
+.ting-research-detail__row-title,
+.ting-research-detail__master-title,
+.ting-research-detail__critique-claim {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+}
+
+.ting-research-detail__row-open {
+  color: rgba(191, 219, 254, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+}
+
+.ting-research-detail__quality-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ting-research-detail__quality-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(63, 63, 70, 0.86);
+}
+
+.ting-research-detail__quality-dot.is-filled {
+  background: rgba(191, 219, 254, 0.98);
+}
+
+.ting-research-detail__critique-list {
+  display: grid;
+  gap: 16px;
+}
+
+.ting-research-detail__critique-card {
+  padding: 16px 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(82, 82, 91, 0.74);
+  border-left-width: 3px;
+  background: rgba(17, 17, 20, 0.8);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ting-research-detail__critique-card.is-high {
+  border-left-color: rgba(248, 113, 113, 0.92);
+}
+
+.ting-research-detail__critique-card.is-med {
+  border-left-color: rgba(251, 191, 36, 0.92);
+}
+
+.ting-research-detail__critique-card.is-low {
+  border-left-color: rgba(148, 163, 184, 0.92);
+}
+
+.ting-research-detail__critique-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.ting-research-detail__severity-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(82, 82, 91, 0.74);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  text-transform: lowercase;
+}
+
+.ting-research-detail__severity-pill.is-high {
+  color: rgba(254, 202, 202, 0.98);
+  border-color: rgba(248, 113, 113, 0.48);
+  background: rgba(69, 10, 10, 0.28);
+}
+
+.ting-research-detail__severity-pill.is-med {
+  color: rgba(253, 230, 138, 0.98);
+  border-color: rgba(251, 191, 36, 0.46);
+  background: rgba(69, 26, 3, 0.26);
+}
+
+.ting-research-detail__severity-pill.is-low {
+  color: rgba(203, 213, 225, 0.98);
+  background: rgba(30, 41, 59, 0.46);
+}
+
+.ting-research-detail__critique-against {
+  margin-top: 12px;
+  color: rgba(161, 161, 170, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 12px;
+}
+
+.ting-research-detail__critique-note {
+  margin-top: 10px;
+  color: rgba(228, 228, 231, 0.92);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.ting-research-detail__lf-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.ting-research-detail__lf-column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ting-research-detail__lf-heading,
+.ting-research-detail__memory-heading {
+  color: rgba(191, 219, 254, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.ting-research-detail__lf-card,
+.ting-research-detail__memory-card,
+.ting-research-detail__drawer-meta-card,
+.ting-research-detail__drawer-linked-item,
+.ting-research-detail__activity-item {
+  padding: 14px 16px;
+  border: 1px solid rgba(63, 63, 70, 0.72);
+  border-radius: 14px;
+  background: rgba(17, 17, 20, 0.76);
+}
+
+.ting-research-detail__memory-group {
+  display: grid;
+  gap: 12px;
+}
+
+.ting-research-detail__memory-group + .ting-research-detail__memory-group {
+  margin-top: 18px;
+}
+
+.ting-research-detail__memory-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ting-research-detail__memory-card.is-published {
+  border-color: rgba(56, 189, 248, 0.38);
+  background: rgba(8, 47, 73, 0.34);
+}
+
+.ting-research-detail__memory-card.is-review {
+  border-style: dashed;
+}
+
+.ting-research-detail__memory-card.is-notebook {
+  opacity: 0.88;
+}
+
+.ting-research-detail__memory-details {
+  margin-top: 18px;
+}
+
+.ting-research-detail__memory-details summary {
+  cursor: pointer;
+  color: rgba(161, 161, 170, 0.9);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+}
+
+.ting-research-detail__markdown {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.ting-research-detail__markdown-h2 {
+  margin: 10px 0 0;
+  font-size: 21px;
+  line-height: 1.2;
+  font-weight: 650;
+}
+
+.ting-research-detail__markdown-h3 {
+  margin: 8px 0 0;
+  font-size: 18px;
+  line-height: 1.2;
+  font-weight: 650;
+}
+
+.ting-research-detail__markdown-p {
+  margin: 0;
+}
+
+.ting-research-detail__markdown-list,
+.ting-research-detail__markdown-ordered-list {
+  display: grid;
+  gap: 12px;
+  padding-left: 24px;
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+.ting-research-detail__markdown-table-wrap {
+  overflow-x: auto;
+}
+
+.ting-research-detail__markdown-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ting-research-detail__markdown-table th,
+.ting-research-detail__markdown-table td {
+  border: 1px solid rgba(63, 63, 70, 0.72);
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.ting-research-detail__markdown-table th {
+  color: rgba(191, 219, 254, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.ting-research-detail__inline-code {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.14em 0.4em;
+  border-radius: 7px;
+  background: rgba(39, 39, 42, 0.96);
+  color: rgba(226, 232, 240, 0.98);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 0.92em;
+}
+
+.ting-research-detail__markdown-link {
+  color: rgba(125, 211, 252, 0.98);
+  text-decoration: underline;
+  text-decoration-color: rgba(125, 211, 252, 0.42);
+}
+
+.ting-research-detail__citation-anchor,
+.ting-research-detail__markdown-fallback-citation {
+  display: inline-flex;
+  margin-left: 8px;
+}
+
+.ting-research-detail__citation {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(82, 82, 91, 0.78);
+  background: rgba(30, 41, 59, 0.8);
+  color: rgba(219, 234, 254, 0.98);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ting-research-detail__citation.is-critique {
+  background: rgba(69, 10, 10, 0.28);
+  color: rgba(254, 202, 202, 0.98);
+  border-color: rgba(248, 113, 113, 0.38);
+}
+
+.ting-research-detail__citation.is-active {
+  box-shadow: 0 0 0 1px rgba(186, 230, 253, 0.56), 0 0 12px rgba(125, 211, 252, 0.24);
+}
+
+.ting-research-detail__drawer {
+  position: fixed;
+  top: 86px;
+  right: 0;
+  bottom: 24px;
+  width: min(620px, 46vw);
+  border-left: 1px solid rgba(63, 63, 70, 0.78);
+  background: rgba(24, 24, 27, 0.98);
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.34);
+  z-index: 18;
+  display: flex;
+  flex-direction: column;
+}
+
+.ting-research-detail__drawer-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid rgba(39, 39, 42, 0.92);
+}
+
+.ting-research-detail__drawer-close {
+  border: none;
+  background: none;
+  color: rgba(161, 161, 170, 0.92);
+  cursor: pointer;
+  font-size: 22px;
+}
+
+.ting-research-detail__drawer-slug {
+  margin-top: 4px;
+  font-size: 12px;
+  color: rgba(113, 113, 122, 0.92);
+}
+
+.ting-research-detail__drawer-tabs,
+.ting-research-detail__operator-tabs {
+  display: flex;
+  border-bottom: 1px solid rgba(39, 39, 42, 0.92);
+}
+
+.ting-research-detail__drawer-tabs button,
+.ting-research-detail__operator-tabs button {
+  flex: 1;
+  padding: 12px 14px;
+  border: none;
+  background: none;
+  color: rgba(161, 161, 170, 0.9);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ting-research-detail__drawer-tabs button.is-active,
+.ting-research-detail__operator-tabs button.is-active {
+  color: rgba(240, 249, 255, 0.98);
+  box-shadow: inset 0 -2px 0 rgba(56, 189, 248, 0.98);
+}
+
+.ting-research-detail__drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ting-research-detail__drawer-files,
+.ting-research-detail__operator {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ting-research-detail__chip-strip {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border-bottom: 1px solid rgba(39, 39, 42, 0.92);
+}
+
+.ting-research-detail__file-chip {
+  flex: none;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(82, 82, 91, 0.74);
+  background: rgba(17, 24, 39, 0.92);
+  color: rgba(212, 212, 216, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ting-research-detail__file-chip.is-active,
+.ting-research-detail__file-chip.is-published {
+  border-color: rgba(56, 189, 248, 0.44);
+  color: rgba(224, 242, 254, 0.98);
+}
+
+.ting-research-detail__drawer-file {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 18px 28px;
+}
+
+.ting-research-detail__drawer-file-head {
+  margin-bottom: 18px;
+}
+
+.ting-research-detail__drawer-file-title {
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.ting-research-detail__drawer-file-path {
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(113, 113, 122, 0.92);
+}
+
+.ting-research-detail__drawer-split {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 240px minmax(0, 1fr);
+}
+
+.ting-research-detail__drawer-master {
+  overflow-y: auto;
+  border-bottom: 1px solid rgba(39, 39, 42, 0.92);
+}
+
+.ting-research-detail__master-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid rgba(39, 39, 42, 0.7);
+  background: transparent;
+  color: rgba(228, 228, 231, 0.96);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ting-research-detail__master-row.is-active {
+  background: rgba(30, 41, 59, 0.42);
+}
+
+.ting-research-detail__master-citation {
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+  color: rgba(191, 219, 254, 0.98);
+}
+
+.ting-research-detail__master-quality {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(161, 161, 170, 0.9);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11px;
+}
+
+.ting-research-detail__drawer-detail {
+  overflow-y: auto;
+  padding: 20px 22px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ting-research-detail__drawer-detail-domain {
+  font-size: 12px;
+}
+
+.ting-research-detail__drawer-meta-card {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.ting-research-detail__drawer-meta-card span {
+  display: block;
+  color: rgba(113, 113, 122, 0.92);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.ting-research-detail__drawer-meta-card strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 16px;
+  color: rgba(250, 250, 250, 0.98);
+}
+
+.ting-research-detail__drawer-subheading {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.ting-research-detail__drawer-quote {
+  padding-left: 16px;
+  border-left: 2px solid rgba(191, 219, 254, 0.92);
+  font-size: 16px;
+}
+
+.ting-research-detail__drawer-linked-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ting-research-detail__drawer-linked-item {
+  text-align: left;
+  cursor: pointer;
+  color: rgba(228, 228, 231, 0.96);
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 12px;
+}
+
+.ting-research-detail__drawer-actions,
+.ting-research-detail__operator-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.ting-research-detail__drawer-actions button,
+.ting-research-detail__operator-actions button {
+  padding: 9px 12px;
+  font-size: 11px;
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+}
+
+.ting-research-detail__operator-actions button.is-danger {
+  border-color: rgba(248, 113, 113, 0.38);
+  color: rgba(254, 202, 202, 0.98);
+  background: rgba(69, 10, 10, 0.24);
+}
+
+.ting-research-detail__operator-actions button.is-danger:disabled {
+  opacity: 0.65;
+}
+
+.ting-research-detail__operator-tabs {
+  border-bottom: none;
+}
+
+.ting-research-detail__activity-list {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.ting-research-detail__activity-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(113, 113, 122, 0.92);
+}
+
+.ting-research-detail__activity-body {
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.ting-research-detail__operator-grid {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+}
+
+.ting-research-detail__operator-grid div {
+  padding: 14px 16px;
+  border: 1px solid rgba(63, 63, 70, 0.72);
+  border-radius: 14px;
+  background: rgba(17, 17, 20, 0.76);
+}
+
+.ting-research-detail__operator-grid strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 16px;
+}
+
+.ting-research-detail__operator-actions {
+  padding: 18px;
+}
+
+@media (max-width: 1280px) {
+  .ting-research-detail__state-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .ting-research-detail__state-cluster.is-right {
+    justify-content: flex-start;
+  }
+
+  .ting-research-detail__drawer {
+    width: min(680px, 56vw);
+  }
+}
+
+@media (max-width: 1040px) {
+  .ting-research-detail__hero-card,
+  .ting-research-detail__rendered-answer.is-annotated,
+  .ting-research-detail__lf-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ting-research-detail__hero-side {
+    border-left: none;
+    border-top: 1px solid rgba(63, 63, 70, 0.76);
+    padding-left: 0;
+    padding-top: 22px;
+  }
+
+  .ting-research-detail__drawer {
+    width: min(720px, 100vw);
+    top: 74px;
+  }
+}
+
+@media (max-width: 820px) {
+  .ting-research-detail__canvas {
+    padding: 22px 16px 88px;
+  }
+
+  .ting-research-detail__title {
+    font-size: 32px;
+  }
+
+  .ting-research-detail__question,
+  .ting-research-detail__hero-paragraph,
+  .ting-research-detail__markdown-p,
+  .ting-research-detail__markdown-list,
+  .ting-research-detail__markdown-ordered-list {
+    font-size: 16px;
+  }
+
+  .ting-research-detail__table-head,
+  .ting-research-detail__table-row {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .ting-research-detail__table-head span:nth-child(n + 3),
+  .ting-research-detail__table-row span:nth-child(n + 3),
+  .ting-research-detail__table-row .ting-research-detail__quality-dots {
+    display: none;
+  }
+
+  .ting-research-detail__drawer {
+    position: fixed;
+    top: 66px;
+    left: 0;
+    width: 100vw;
+  }
+}
