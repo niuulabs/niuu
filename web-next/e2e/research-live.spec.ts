@@ -27,11 +27,10 @@ test.describe('Research Center live workflow launch', () => {
       target: '/api/v1/ting/research',
     });
 
-    await expect(
-      page.getByRole('heading', {
-        name: 'Campaigns, artifacts, and durable memory in one place.',
-      }),
-    ).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: 'New campaign' })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByText('ALL CAMPAIGNS')).toBeVisible({ timeout: 15000 });
 
     await page.getByRole('button', { name: 'New campaign' }).click();
     await expect(page.getByRole('heading', { name: 'Start a campaign' })).toBeVisible();
