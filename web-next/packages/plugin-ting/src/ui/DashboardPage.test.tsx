@@ -140,6 +140,14 @@ describe('DashboardPage', () => {
     await waitFor(() => expect(screen.getByText('Navigating to Sagas')).toBeInTheDocument());
   });
 
+  it('clicking awaiting review navigates to the sagas page', async () => {
+    mockNavigate.mockClear();
+    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
+    await waitFor(() => expect(screen.getByText('Awaiting review')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Awaiting review').closest('.ting-kpi')!);
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/sagas' });
+  });
+
   it('renders the dispatcher stats bar when state is available', async () => {
     render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
     await waitFor(() => expect(screen.getByTestId('ting-dispatcher-stats')).toBeInTheDocument());
@@ -230,7 +238,9 @@ describe('DashboardPage', () => {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': eventfulDispatcher }),
     });
 
-    await waitFor(() => expect(screen.getByText(/confidence updated · -0.12 · → 0.58/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/confidence updated · -0.12 · → 0.58/i)).toBeInTheDocument(),
+    );
     expect(screen.getByText('NIU-902')).toBeInTheDocument();
     expect(screen.getByText(/^completed$/i)).toBeInTheDocument();
     expect(screen.queryByTestId('ting-dispatcher-stats')).not.toBeInTheDocument();
@@ -288,5 +298,140 @@ describe('DashboardPage', () => {
 
     await waitFor(() => expect(screen.getByText(/merged · Publisher/i)).toBeInTheDocument());
     expect(screen.getAllByText('NIU-404').length).toBeGreaterThan(1);
+  });
+
+  it('opens a linked saga from the dispatcher feed', async () => {
+    mockNavigate.mockClear();
+    const linkedDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [
+        {
+          id: 'evt-linked',
+          timestamp: '2026-05-25T12:00:00Z',
+          event: 'run.state_changed',
+          data: {
+            tracker_id: 'NIU-214.2',
+            status: 'running',
+            action: 'dispatch',
+          },
+        },
+      ],
+    };
+
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': linkedDispatcher }),
+    });
+
+    await waitFor(() => expect(screen.getByText('NIU-214.2')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Open NIU-214.2'));
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/ting/sagas/$sagaId',
+      params: { sagaId: '00000000-0000-0000-0000-000000000004' },
+    });
+  });
+
+  it('falls back to saga ids and generic event labels in dispatcher activity rows', async () => {
+    const genericEventDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [
+        {
+          id: 'evt-generic',
+          timestamp: '2026-05-25T12:00:00Z',
+          event: 'custom.research_ping',
+          data: {
+            saga_id: 'saga-external-123',
+          },
+        },
+      ],
+      getState: async () => null,
+    };
+
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': genericEventDispatcher }),
+    });
+
+    await waitFor(() => expect(screen.getByText('custom research_ping')).toBeInTheDocument());
+    expect(screen.getByText('saga-external-123')).toBeInTheDocument();
+  });
+
+  it('renders awaiting decomposition fallback rows for fresh sagas with no phases', async () => {
+    const quietDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [],
+      getState: async () => null,
+    };
+    const freshSagaServices = {
+      ting: {
+        getSagas: async (): Promise<Saga[]> => [
+          {
+            id: 'fresh-1',
+            trackerId: 'NIU-1001',
+            trackerType: 'linear',
+            slug: 'fresh-saga',
+            name: 'Fresh Saga',
+            repos: [],
+            featureBranch: 'feat/fresh',
+            status: 'active',
+            confidence: 44,
+            createdAt: '2026-05-25T08:00:00Z',
+            phaseSummary: { total: 0, completed: 0 },
+            baseBranch: 'main',
+          },
+        ],
+        getPhases: async () => [],
+      },
+      'ting.dispatcher': quietDispatcher,
+    };
+
+    render(<DashboardPage />, { wrapper: wrap(freshSagaServices) });
+
+    await waitFor(() =>
+      expect(screen.getByText('created · awaiting decomposition')).toBeInTheDocument(),
+    );
+    expect(screen.getAllByText('NIU-1001').length).toBeGreaterThan(1);
+  });
+
+  it('disables feed navigation when no linked saga exists', async () => {
+    mockNavigate.mockClear();
+    const unlinkedEventDispatcher = {
+      ...createMockDispatcherService(),
+      getActivityLog: async () => [
+        {
+          id: 'evt-unlinked',
+          timestamp: '2026-05-25T12:00:00Z',
+          event: 'external.signal',
+          data: {},
+        },
+      ],
+      getState: async () => null,
+    };
+
+    render(<DashboardPage />, {
+      wrapper: wrap({ ting: createMockTingService(), 'ting.dispatcher': unlinkedEventDispatcher }),
+    });
+
+    await waitFor(() => expect(screen.getByText('external signal')).toBeInTheDocument());
+    const openButton = screen.getByTitle('No linked saga');
+    expect(openButton).toBeDisabled();
+    fireEvent.click(openButton);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('opens a saga from keyboard interaction on the card', async () => {
+    mockNavigate.mockClear();
+    render(<DashboardPage />, { wrapper: wrap(defaultServices()) });
+    await waitFor(() =>
+      expect(screen.getByText('Flokk subscription validation')).toBeInTheDocument(),
+    );
+    fireEvent.keyDown(
+      screen.getByText('Flokk subscription validation').closest('[role="button"]')!,
+      {
+        key: 'Enter',
+      },
+    );
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/ting/sagas/$sagaId',
+      params: { sagaId: '00000000-0000-0000-0000-000000000004' },
+    });
   });
 });

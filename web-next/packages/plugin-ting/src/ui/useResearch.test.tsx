@@ -61,9 +61,9 @@ describe('useResearch', () => {
     });
 
     await waitFor(() =>
-      expect(
-        campaigns.result.current.data?.some((item) => item.slug === created!.slug),
-      ).toBe(false),
+      expect(campaigns.result.current.data?.some((item) => item.slug === created!.slug)).toBe(
+        false,
+      ),
     );
 
     const deletedCampaign = renderHook(() => useResearchCampaign(created!.slug), { wrapper });
@@ -76,9 +76,7 @@ describe('useResearch', () => {
       () => useResearchArtifact('rag-landscape', 'research/campaigns/rag-landscape/final.md'),
       { wrapper },
     );
-    await waitFor(() =>
-      expect(artifact.result.current.data?.content).toContain('Mock content'),
-    );
+    await waitFor(() => expect(artifact.result.current.data?.content).toContain('Mock content'));
   });
 
   it('updates a campaign and keeps the cached campaign detail in sync', async () => {
@@ -98,9 +96,7 @@ describe('useResearch', () => {
       });
     });
 
-    await waitFor(() =>
-      expect(campaign.result.current.data?.name).toBe('RAG landscape revised'),
-    );
+    await waitFor(() => expect(campaign.result.current.data?.name).toBe('RAG landscape revised'));
     expect(campaign.result.current.data?.status).toBe('blocked');
     expect(campaign.result.current.data?.metadata.audience).toBe('platform leadership');
   });

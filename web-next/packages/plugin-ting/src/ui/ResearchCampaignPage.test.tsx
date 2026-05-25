@@ -36,10 +36,34 @@ const campaign: ResearchCampaignDetail = {
   status: 'completed',
   activeStageId: 'publish',
   stageState: [
-    { stageId: 'frame', label: 'Frame the inquiry', status: 'complete', startedAt: now, completedAt: now },
-    { stageId: 'explore', label: 'Explore the evidence', status: 'complete', startedAt: now, completedAt: now },
-    { stageId: 'challenge', label: 'Challenge the thesis', status: 'complete', startedAt: now, completedAt: now },
-    { stageId: 'publish', label: 'Publish to Mimir', status: 'complete', startedAt: now, completedAt: now },
+    {
+      stageId: 'frame',
+      label: 'Frame the inquiry',
+      status: 'complete',
+      startedAt: now,
+      completedAt: now,
+    },
+    {
+      stageId: 'explore',
+      label: 'Explore the evidence',
+      status: 'complete',
+      startedAt: now,
+      completedAt: now,
+    },
+    {
+      stageId: 'challenge',
+      label: 'Challenge the thesis',
+      status: 'complete',
+      startedAt: now,
+      completedAt: now,
+    },
+    {
+      stageId: 'publish',
+      label: 'Publish to Mimir',
+      status: 'complete',
+      startedAt: now,
+      completedAt: now,
+    },
   ],
   metadata: {
     question:
@@ -143,9 +167,27 @@ const runningCampaign: ResearchCampaignDetail = {
   status: 'running',
   activeStageId: 'challenge',
   stageState: [
-    { stageId: 'frame', label: 'Frame the inquiry', status: 'complete', startedAt: now, completedAt: now },
-    { stageId: 'explore', label: 'Explore the evidence', status: 'complete', startedAt: now, completedAt: now },
-    { stageId: 'challenge', label: 'Challenge the thesis', status: 'active', startedAt: now, completedAt: null },
+    {
+      stageId: 'frame',
+      label: 'Frame the inquiry',
+      status: 'complete',
+      startedAt: now,
+      completedAt: now,
+    },
+    {
+      stageId: 'explore',
+      label: 'Explore the evidence',
+      status: 'complete',
+      startedAt: now,
+      completedAt: now,
+    },
+    {
+      stageId: 'challenge',
+      label: 'Challenge the thesis',
+      status: 'active',
+      startedAt: now,
+      completedAt: null,
+    },
   ],
   artifacts: [
     {
@@ -305,7 +347,13 @@ const blockedCampaign: ResearchCampaignDetail = {
   status: 'blocked',
   activeStageId: 'challenge',
   stageState: [
-    { stageId: 'frame', label: 'Frame the inquiry', status: 'complete', startedAt: now, completedAt: now },
+    {
+      stageId: 'frame',
+      label: 'Frame the inquiry',
+      status: 'complete',
+      startedAt: now,
+      completedAt: now,
+    },
     {
       stageId: 'challenge',
       label: 'Challenge the thesis',
@@ -329,8 +377,20 @@ const failedCampaign: ResearchCampaignDetail = {
   status: 'failed',
   activeStageId: 'challenge',
   stageState: [
-    { stageId: 'frame', label: 'Frame the inquiry', status: 'complete', startedAt: now, completedAt: now },
-    { stageId: 'explore', label: 'Explore the evidence', status: 'complete', startedAt: now, completedAt: now },
+    {
+      stageId: 'frame',
+      label: 'Frame the inquiry',
+      status: 'complete',
+      startedAt: now,
+      completedAt: now,
+    },
+    {
+      stageId: 'explore',
+      label: 'Explore the evidence',
+      status: 'complete',
+      startedAt: now,
+      completedAt: now,
+    },
     {
       stageId: 'challenge',
       label: 'Challenge the thesis',
@@ -593,7 +653,10 @@ describe('ResearchCampaignPage', () => {
     mockSetTweak.mockClear();
     mockSlug = 'local-model-serving';
     vi.stubGlobal('EventSource', MockEventSource);
-    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
   });
 
   it('renders the final synthesis state and opens source drawers', async () => {
@@ -617,9 +680,7 @@ describe('ResearchCampaignPage', () => {
     await waitFor(() => expect(screen.getByText(/Source · \[s1\]/i)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: 'open' }));
-    await waitFor(() =>
-      expect(screen.getByText(/Cited in/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Cited in/i)).toBeInTheDocument());
     expect(screen.getByText(/arxiv\.org/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /open external/i })).toBeInTheDocument();
 
@@ -651,13 +712,13 @@ describe('ResearchCampaignPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Open notebook/i }));
     await waitFor(() =>
-      expect(screen.getByText(/research\/campaigns\/homelab-running\/analysis\.md/i)).toBeInTheDocument(),
+      expect(
+        screen.getByText(/research\/campaigns\/homelab-running\/analysis\.md/i),
+      ).toBeInTheDocument(),
     );
     expect(screen.getAllByText(/Tentative answer in one line/i).length).toBeGreaterThan(0);
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /Throughput numbers are aspirational/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /Throughput numbers are aspirational/i }));
     await waitFor(() => expect(screen.getByText(/Critique · \[c1\]/i)).toBeInTheDocument());
     expect(screen.getAllByText(/We still need measured benchmarks/i).length).toBeGreaterThan(0);
   });
@@ -684,7 +745,9 @@ describe('ResearchCampaignPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Annotated/i }));
     fireEvent.click(screen.getByRole('button', { name: /Publish to Mímir/i }));
     await waitFor(() =>
-      expect(screen.getByText(/research\/campaigns\/skuld-fanout-options\/manifest\.md/i)).toBeInTheDocument(),
+      expect(
+        screen.getByText(/research\/campaigns\/skuld-fanout-options\/manifest\.md/i),
+      ).toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Send back for revision/i }));
@@ -816,7 +879,9 @@ describe('ResearchCampaignPage', () => {
     await waitFor(() =>
       expect(screen.getAllByText(/Durable packaging/i).length).toBeGreaterThan(0),
     );
-    expect(screen.getAllByText(/One manifest should name the durable set\./i).length).toBeGreaterThan(1);
+    expect(
+      screen.getAllByText(/One manifest should name the durable set\./i).length,
+    ).toBeGreaterThan(1);
 
     fireEvent.click(screen.getByRole('button', { name: /Evidence freshness is unclear/i }));
     await waitFor(() => expect(screen.getByText(/Critique · \[c1\]/i)).toBeInTheDocument());

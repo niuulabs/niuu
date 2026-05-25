@@ -94,9 +94,7 @@ describe('ResearchNewPage', () => {
     expect(screen.queryByRole('option', { name: /Incident triage/i })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /All workflows/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/Showing all 2 workflows/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Showing all 2 workflows/i)).toBeInTheDocument());
     expect(screen.getByRole('option', { name: /Incident triage/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Research-tagged/i }));
@@ -440,7 +438,9 @@ describe('ResearchNewPage', () => {
     });
 
     await waitFor(() =>
-      expect(within(screen.getByLabelText('Branch').parentElement!).getByDisplayValue('')).toBeInTheDocument(),
+      expect(
+        within(screen.getByLabelText('Branch').parentElement!).getByDisplayValue(''),
+      ).toBeInTheDocument(),
     );
   });
 });

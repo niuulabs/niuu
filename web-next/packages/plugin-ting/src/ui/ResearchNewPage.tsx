@@ -328,9 +328,7 @@ export function ResearchNewPage() {
             <button
               type="submit"
               disabled={
-                createCampaign.isPending ||
-                question.trim().length === 0 ||
-                workflowsQuery.isLoading
+                createCampaign.isPending || question.trim().length === 0 || workflowsQuery.isLoading
               }
               className="niuu-rounded-full niuu-border niuu-border-sky-300/40 niuu-bg-sky-400/15 niuu-px-5 niuu-py-2.5 niuu-text-sm niuu-font-medium niuu-text-sky-100 disabled:niuu-opacity-50"
             >

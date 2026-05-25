@@ -273,9 +273,7 @@ describe('ResearchCenterPage', () => {
     fireEvent.change(screen.getByPlaceholderText(/search by title, slug, question/i), {
       target: { value: 'yaml' },
     });
-    await waitFor(() =>
-      expect(screen.getByText(/YAML vs JSON prompt files/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/YAML vs JSON prompt files/i)).toBeInTheDocument());
     expect(screen.queryByText(/RAG landscape/i)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText(/search by title, slug, question/i), {
@@ -287,9 +285,7 @@ describe('ResearchCenterPage', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Published/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/YAML vs JSON prompt files/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/YAML vs JSON prompt files/i)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: 'Confidence' }));
     fireEvent.click(screen.getByRole('button', { name: /All/i }));
@@ -354,9 +350,7 @@ describe('ResearchCenterPage', () => {
       }),
     });
 
-    await waitFor(() =>
-      expect(screen.getByText(/research index offline/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/research index offline/i)).toBeInTheDocument());
   });
 
   it('invalidates the index on campaign events and supports opening grid cards directly', async () => {
