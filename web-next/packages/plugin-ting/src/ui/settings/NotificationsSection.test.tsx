@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { NotificationsSection } from './NotificationsSection';
@@ -69,5 +70,19 @@ describe('NotificationsSection', () => {
   it('shows channel selection label', async () => {
     render(<NotificationsSection />, { wrapper: wrap(defaultServices()) });
     await waitFor(() => expect(screen.getByText('Notification channel')).toBeInTheDocument());
+  });
+
+  it('switches to webhook mode when a different channel is selected', async () => {
+    const user = userEvent.setup();
+    render(<NotificationsSection />, { wrapper: wrap(defaultServices()) });
+
+    await waitFor(() =>
+      expect(screen.getByRole('form', { name: /notification settings form/i })).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole('combobox'));
+    await user.click(screen.getByRole('option', { name: 'Webhook' }));
+
+    expect(screen.getByText('Webhook URL')).toBeInTheDocument();
   });
 });

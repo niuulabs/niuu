@@ -142,16 +142,21 @@ export function ResearchNewPage() {
 
             <label className="niuu-flex niuu-flex-col niuu-gap-2">
               <select
+                aria-label="Workflow"
                 value={selectedWorkflowId}
                 onChange={(event) => setSelectedWorkflowId(event.target.value)}
                 className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-primary niuu-px-3 niuu-py-2.5 niuu-text-sm niuu-text-text-primary"
               >
-                {visibleWorkflows.map((workflow) => (
-                  <option key={workflow.id} value={workflow.id}>
-                    {workflow.name}
-                    {workflow.version ? ` · v${workflow.version}` : ''}
-                  </option>
-                ))}
+                {visibleWorkflows.length > 0 ? (
+                  visibleWorkflows.map((workflow) => (
+                    <option key={workflow.id} value={workflow.id}>
+                      {workflow.name}
+                      {workflow.version ? ` · v${workflow.version}` : ''}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">Default research workflow</option>
+                )}
               </select>
             </label>
 
@@ -181,7 +186,17 @@ export function ResearchNewPage() {
                   </p>
                 ) : null}
               </div>
-            ) : null}
+            ) : (
+              <div className="niuu-flex niuu-flex-col niuu-gap-2 niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-3">
+                <div className="niuu-text-sm niuu-font-medium niuu-text-text-primary">
+                  Default research workflow
+                </div>
+                <p className="niuu-m-0 niuu-text-sm niuu-text-text-secondary">
+                  Ting will ask the backend to launch its default research-compatible workflow if
+                  the workflow catalog is unavailable.
+                </p>
+              </div>
+            )}
           </div>
 
           <label className="niuu-flex niuu-flex-col niuu-gap-2">
@@ -315,8 +330,7 @@ export function ResearchNewPage() {
               disabled={
                 createCampaign.isPending ||
                 question.trim().length === 0 ||
-                workflowsQuery.isLoading ||
-                visibleWorkflows.length === 0
+                workflowsQuery.isLoading
               }
               className="niuu-rounded-full niuu-border niuu-border-sky-300/40 niuu-bg-sky-400/15 niuu-px-5 niuu-py-2.5 niuu-text-sm niuu-font-medium niuu-text-sky-100 disabled:niuu-opacity-50"
             >

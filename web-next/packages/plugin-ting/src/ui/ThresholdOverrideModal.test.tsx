@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ThresholdOverrideModal } from './ThresholdOverrideModal';
 
@@ -59,6 +59,22 @@ describe('ThresholdOverrideModal', () => {
     expect(slider).toHaveAttribute('min', '0');
     expect(slider).toHaveAttribute('max', '1');
     expect(slider).toHaveAttribute('step', '0.05');
+  });
+
+  it('updates the displayed threshold when the slider changes', async () => {
+    render(
+      <ThresholdOverrideModal
+        open={true}
+        onOpenChange={vi.fn()}
+        currentThreshold={0.6}
+        onApply={vi.fn()}
+      />,
+    );
+
+    const slider = screen.getByRole('slider', { name: /threshold value/i });
+    fireEvent.change(slider, { target: { value: '0.9' } });
+
+    expect(screen.getByText('0.90')).toBeInTheDocument();
   });
 
   it('calls onApply with current value on Apply click', async () => {

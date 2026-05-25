@@ -1,6 +1,11 @@
 import { expect, test } from '@playwright/test';
 
 test.describe('Research Center live workflow launch', () => {
+  test.skip(
+    !process.env.RESEARCH_LIVE_E2E,
+    'Requires a live backend stack behind /config.live.json.',
+  );
+
   test('launches a real research campaign through the UI', async ({ page, request }) => {
     const nonce = Date.now();
     const question = `Should Ting add a dedicated Research Center tab for workflow-backed research? ${nonce}`;
@@ -34,9 +39,14 @@ test.describe('Research Center live workflow launch', () => {
 
     await page.getByRole('button', { name: 'New campaign' }).click();
     await expect(page.getByRole('heading', { name: 'Start a campaign' })).toBeVisible();
-    const workflowSelect = page.locator('select').first();
+    const workflowSelect = page.getByRole('combobox', { name: 'Workflow' });
     await expect(workflowSelect).toBeVisible();
-    await expect(workflowSelect.locator('option')).not.toHaveCount(0, { timeout: 15000 });
+    await expect(
+      page
+        .locator('body')
+        .getByText(/workflow tagged research|default research workflow/i)
+        .first(),
+    ).toBeVisible({ timeout: 15000 });
 
     await page.getByLabel('Question').fill(question);
     await page.getByLabel('Audience').fill(audience);
