@@ -147,7 +147,13 @@ def build_openapi_app() -> FastAPI:
     app.include_router(create_admin_settings_router())
     app.include_router(create_credentials_router(mock))
     app.include_router(create_events_router(mock, mock))
-    app.include_router(create_integrations_router(mock, mock, mock))
+    app.include_router(
+        create_integrations_router(
+            mock,
+            mock,
+            registry=mock,
+        )
+    )
     app.include_router(create_tracker_router(mock))
 
     return app
