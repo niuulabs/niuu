@@ -86,7 +86,8 @@ RUN uv pip install --system --break-system-packages --upgrade pip==26.1.1
 # Common Python packages for web dev
 RUN uv pip install --system --break-system-packages \
     uvicorn==0.41.0 \
-    fastapi==0.135.1 \
+    fastapi==0.136.3 \
+    starlette==1.1.0 \
     flask==3.1.3 \
     gunicorn==25.1.0 \
     psycopg2-binary==2.9.11 \
