@@ -1,3 +1,5 @@
+/* global console, document, window */
+
 import { chromium } from '@playwright/test';
 const base = 'http://192.168.1.106:8080/ting/research/assess-whether-adding-a-dedicated-research-center-tab-in-ting-i?config=/config.live.json';
 const browser = await chromium.launch({ headless: true });
