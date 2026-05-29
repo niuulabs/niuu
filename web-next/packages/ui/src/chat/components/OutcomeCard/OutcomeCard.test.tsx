@@ -153,6 +153,20 @@ ed
       ),
     ).toBeInTheDocument();
   });
+
+  it('restores inline label bullets without collapsing the label text', () => {
+    render(
+      <OutcomeCard
+        raw={
+          'verdict: pass\nsummary: Recommendations: - Keep manual approval for risky commands - Auto-approve routine reads'
+        }
+      />,
+    );
+
+    expect(screen.getByText('Recommendations:')).toBeInTheDocument();
+    expect(screen.getByText('Keep manual approval for risky commands')).toBeInTheDocument();
+    expect(screen.getByText('Auto-approve routine reads')).toBeInTheDocument();
+  });
 });
 
 describe('extractOutcomeBlock', () => {

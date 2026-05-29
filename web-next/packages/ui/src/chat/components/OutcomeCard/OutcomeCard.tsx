@@ -18,6 +18,8 @@ const VERDICT_ICONS: Record<MeshVerdict, typeof CheckCircle> = {
 const WRAPPED_OUTCOME_START = /---\s*o\s*u\s*t\s*c\s*o\s*m\s*e\s*---/i;
 const WRAPPED_OUTCOME_END = /---\s*e\s*n\s*d\s*---/i;
 const SOFT_KEY_FRAGMENT = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const INLINE_LABEL_TEXT = /^[A-Z][A-Za-z0-9 /&()_-]{2,48}$/;
+const INLINE_LABEL_CHAR = /[A-Za-z0-9 /&()_-]/;
 
 function parseKeyValueLine(line: string): { key: string; value: string } | null {
   const colon = line.indexOf(':');
@@ -223,16 +225,44 @@ function parseFields(raw: string): Record<string, string> {
   return fields;
 }
 
+function restoreInlineLabelBullets(value: string): string {
+  let result = '';
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    const marker = value.indexOf(': - ', cursor);
+    if (marker === -1) {
+      result += value.slice(cursor);
+      break;
+    }
+
+    let labelStart = marker - 1;
+    while (labelStart >= cursor && INLINE_LABEL_CHAR.test(value[labelStart] ?? '')) {
+      labelStart -= 1;
+    }
+    labelStart += 1;
+
+    const label = value.slice(labelStart, marker).trimStart();
+    if (!INLINE_LABEL_TEXT.test(label)) {
+      result += value.slice(cursor, marker + 4);
+      cursor = marker + 4;
+      continue;
+    }
+
+    result += value.slice(cursor, labelStart).trimEnd();
+    const spacer = result.trim() ? '\n\n' : '';
+    result += `${spacer}${label}:\n- `;
+    cursor = marker + 4;
+  }
+
+  return result;
+}
+
 function restoreInlineMarkdownBreaks(value: string): string {
   const trimmed = value.trim();
   if (!trimmed || trimmed.includes('\n')) return trimmed;
 
-  return trimmed
-    .replace(/\s+(#{1,6}\s+)/g, '\n\n$1')
-    .replace(/(^|\s)([A-Z][A-Za-z0-9 /&()_-]{2,48}):\s+-\s+/g, (_match, prefix, label) => {
-      const spacer = prefix && String(prefix).trim() ? '\n\n' : '';
-      return `${spacer}${label}:\n- `;
-    })
+  return restoreInlineLabelBullets(trimmed.replace(/\s+(#{1,6}\s+)/g, '\n\n$1'))
     .replace(/\s+-\s+(?=[A-Z0-9`*])/g, '\n- ')
     .replace(/(#{2,6}\s+[^\n#-]{2,80})-\s+/g, '$1\n')
     .trim();

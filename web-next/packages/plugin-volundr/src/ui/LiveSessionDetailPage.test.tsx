@@ -1237,9 +1237,9 @@ describe('LiveSessionDetailPage', () => {
 
       await screen.findByTestId('live-session-detail-page');
       expect(await screen.findByTestId('mesh-cascade-panel')).toBeInTheDocument();
-      expect(screen.getAllByText('Review found missing telemetry coverage.').length).toBeGreaterThan(
-        1,
-      );
+      expect(
+        screen.getAllByText('Review found missing telemetry coverage.').length,
+      ).toBeGreaterThan(1);
       expect(screen.getByText('Changes Requested')).toBeInTheDocument();
     });
 

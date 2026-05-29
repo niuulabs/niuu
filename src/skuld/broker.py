@@ -3714,7 +3714,12 @@ class Broker:
                 response.text[:200],
             )
         except Exception:
-            logger.debug("Failed to complete trace span kind=%s name=%s", kind, name, exc_info=True)
+            logger.debug(
+                "Failed to complete trace span kind=%s name=%s",
+                _sanitize_log(kind),
+                _sanitize_log(name),
+                exc_info=True,
+            )
         return None
 
     async def _ensure_session_trace_started(self) -> None:
