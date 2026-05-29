@@ -33,7 +33,7 @@ from ting.domain.services.dispatch_service import (
     _normalize_mimir_workload_config,
     _resolve_mimir_registry_refs,
 )
-from ting.domain.utils import _session_name
+from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import workflow_mimir_from_snapshot
 from ting.ports.event_bus import TingEvent
 from ting.ports.volundr import VolundrFactory
@@ -71,6 +71,7 @@ class ResearchCampaignCreateBody(BaseModel):
 
 class ResearchCampaignPatchBody(BaseModel):
     name: str | None = Field(default=None, max_length=255)
+    slug: str | None = Field(default=None, max_length=255)
     status: str | None = Field(default=None, max_length=64)
     metadata: dict[str, Any] | None = None
 
@@ -294,6 +295,16 @@ def create_research_router() -> APIRouter:
         if campaign is None:
             raise HTTPException(status_code=404, detail="Campaign not found")
 
+        next_slug = campaign.slug
+        if body.slug is not None:
+            next_slug = _normalize_campaign_slug(body.slug)
+            if not next_slug:
+                raise HTTPException(status_code=400, detail="Invalid campaign slug")
+            if next_slug != campaign.slug:
+                existing = await repo.get_campaign_by_slug(next_slug)
+                if existing is not None and existing.id != campaign.id:
+                    raise HTTPException(status_code=409, detail="Campaign slug already exists")
+
         next_status = campaign.status
         if body.status:
             try:
@@ -304,6 +315,7 @@ def create_research_router() -> APIRouter:
         updated = WorkflowCampaign(
             **{
                 **campaign.__dict__,
+                "slug": next_slug,
                 "name": body.name or campaign.name,
                 "status": next_status,
                 "metadata": {**campaign.metadata, **(body.metadata or {})},
@@ -438,6 +450,10 @@ async def _reserve_slug(repo: WorkflowCampaignRepository, base_slug: str) -> str
         slug = f"{base_slug}-{suffix}"
         suffix += 1
     return slug
+
+
+def _normalize_campaign_slug(value: str) -> str:
+    return _slugify(value)[:96]
 
 
 def _default_campaign_name(question: str) -> str:

@@ -246,7 +246,7 @@ class SDKTransport(CLITransport):
         self,
         workspace_dir: str,
         model: str = "",
-        skip_permissions: bool = True,
+        skip_permissions: bool = False,
         agent_teams: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
@@ -512,16 +512,18 @@ class SDKTransport(CLITransport):
         if shim_env:
             env.update(shim_env)
 
-        options = ClaudeAgentOptions(
-            model=self._model or None,
-            system_prompt=self._system_prompt or None,
-            permission_mode=(_DEFAULT_PERMISSION_MODE if self._skip_permissions else "default"),
-            cwd=self.workspace_dir,
-            mcp_servers=self._mcp_servers,
-            include_partial_messages=True,
-            thinking={"type": "adaptive", "display": "summarized"},
-            env=env,
-        )
+        option_kwargs = {
+            "model": self._model or None,
+            "system_prompt": self._system_prompt or None,
+            "cwd": self.workspace_dir,
+            "mcp_servers": self._mcp_servers,
+            "include_partial_messages": True,
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "env": env,
+        }
+        if self._skip_permissions:
+            option_kwargs["permission_mode"] = _DEFAULT_PERMISSION_MODE
+        options = ClaudeAgentOptions(**option_kwargs)
         client = ClaudeSDKClient(options)
         self._client = await client.__aenter__()
         self._connected = True

@@ -45,7 +45,16 @@ _CODEX_TOOL_MAP: dict[str, str] = {
 }
 
 _CODEX_STDOUT_CHUNK_BYTES = 65536
-_DEFAULT_CODEX_SANDBOX = "danger-full-access"
+
+
+def _ensure_codex_home(env: dict[str, str]) -> None:
+    if env.get("CODEX_HOME"):
+        return
+    home = env.get("HOME")
+    if home:
+        env["CODEX_HOME"] = str(Path(home).expanduser() / ".codex")
+        return
+    env["CODEX_HOME"] = str(Path.home() / ".codex")
 
 
 def _map_codex_tool(codex_name: str) -> str:
@@ -110,6 +119,7 @@ class CodexSubprocessTransport(CLITransport):
         self._last_result: dict | None = None
         self._pending_text: list[str] = []
         self._env = dict(os.environ)
+        _ensure_codex_home(self._env)
 
     async def start(self) -> None:
         _, shim_env = ensure_codex_tool_shims(
@@ -134,17 +144,17 @@ class CodexSubprocessTransport(CLITransport):
         self._last_result = None
         self._pending_text = []
         codex_cli = resolve_codex_cli()
-        sandbox_mode = os.environ.get("SKULD_CODEX_SANDBOX", _DEFAULT_CODEX_SANDBOX)
+        sandbox_mode = os.environ.get("SKULD_CODEX_SANDBOX", "").strip()
 
         cmd = [
             codex_cli,
             "exec",
             "--model",
             self._model,
-            "--sandbox",
-            sandbox_mode,
             "--json",
         ]
+        if sandbox_mode:
+            cmd.extend(["--sandbox", sandbox_mode])
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
         cmd.append(content)

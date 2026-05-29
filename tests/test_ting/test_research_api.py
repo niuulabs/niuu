@@ -309,6 +309,36 @@ def _non_research_workflow(root: Path) -> WorkflowDefinition:
     )
 
 
+def _campaign_for_workflow(
+    workflow: WorkflowDefinition,
+    *,
+    slug: str,
+    name: str | None = None,
+    owner_id: str = "user-1",
+) -> WorkflowCampaign:
+    now = datetime.now(UTC)
+    return WorkflowCampaign(
+        id=uuid4(),
+        slug=slug,
+        name=name or slug.replace("-", " ").title(),
+        owner_id=owner_id,
+        workflow_id=workflow.id,
+        workflow_version=workflow.version,
+        workflow_name=workflow.name,
+        workflow_snapshot=build_workflow_snapshot(workflow),
+        session_id=f"session-{slug}",
+        session_name=slug,
+        status=WorkflowCampaignStatus.RUNNING,
+        active_stage_id="frame",
+        stage_state=[],
+        metadata={"question": "What should we research?"},
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        completed_at=None,
+    )
+
+
 def _make_client(
     workflow_repo: WorkflowRepository,
     campaign_repo: WorkflowCampaignRepository,
@@ -414,6 +444,60 @@ def test_create_campaign_prefers_research_tagged_workflow_by_default(tmp_path: P
     body = response.json()
     assert body["workflowId"] == str(research_workflow.id)
     assert body["workflowName"] == "Research Campaign"
+
+
+def test_patch_campaign_updates_title_and_slug(tmp_path: Path) -> None:
+    workflow = _research_workflow(tmp_path)
+    campaign = _campaign_for_workflow(
+        workflow,
+        slug="old-topic",
+        name="Old topic",
+    )
+    campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        campaign_repo,
+        RecordingVolundrFactory(RecordingVolundrPort()),
+    )
+
+    response = client.patch(
+        "/api/v1/ting/research/campaigns/old-topic",
+        headers=_headers(),
+        json={
+            "name": "Tenant notifications, events and alerting",
+            "slug": "Tenant notifications, events and alerting",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Tenant notifications, events and alerting"
+    assert body["slug"] == "tenant-notifications-events-and-alerting"
+    campaigns = client.get("/api/v1/ting/research/campaigns", headers=_headers()).json()
+    assert campaigns[0]["slug"] == "tenant-notifications-events-and-alerting"
+
+
+def test_patch_campaign_rejects_duplicate_slug(tmp_path: Path) -> None:
+    workflow = _research_workflow(tmp_path)
+    campaign_repo = InMemoryWorkflowCampaignRepository(
+        [
+            _campaign_for_workflow(workflow, slug="old-topic", name="Old topic"),
+            _campaign_for_workflow(workflow, slug="taken-topic", name="Taken topic"),
+        ]
+    )
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        campaign_repo,
+        RecordingVolundrFactory(RecordingVolundrPort()),
+    )
+
+    response = client.patch(
+        "/api/v1/ting/research/campaigns/old-topic",
+        headers=_headers(),
+        json={"slug": "Taken topic"},
+    )
+
+    assert response.status_code == 409
 
 
 def test_detail_reads_artifacts_from_mimir_and_uses_manifest_for_publish_state(

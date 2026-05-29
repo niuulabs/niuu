@@ -162,7 +162,6 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     setupScripts: [],
     definition: 'skuld-claude',
     model: 'sonnet-primary',
-    permission: 'restricted',
     cpu: '2',
     mem: '8Gi',
     gpu: '0',
@@ -422,7 +421,6 @@ describe('LaunchWizard step components', () => {
     );
 
     fireEvent.change(screen.getByTestId('model-select'), { target: { value: 'gpt-test' } });
-    fireEvent.change(screen.getByTestId('permission-select'), { target: { value: 'normal' } });
     fireEvent.change(screen.getByTestId('workspace-select'), { target: { value: '__new__' } });
     fireEvent.change(screen.getByPlaceholderText('2'), { target: { value: '3' } });
     fireEvent.change(screen.getByPlaceholderText('8Gi'), { target: { value: '12Gi' } });
@@ -440,7 +438,6 @@ describe('LaunchWizard step components', () => {
     fireEvent.click(screen.getByText('Github App · prod-github'));
 
     expect(update).toHaveBeenCalledWith({ model: 'gpt-test' });
-    expect(update).toHaveBeenCalledWith({ permission: 'normal' });
     expect(update).toHaveBeenCalledWith({ workspaceId: '' });
     expect(update).toHaveBeenCalledWith({ cpu: '3' });
     expect(update).toHaveBeenCalledWith({ mem: '12Gi' });

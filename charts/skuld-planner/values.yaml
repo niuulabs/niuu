@@ -117,7 +117,7 @@ git:
 broker:
   cliType: claude
   transport: sdk
-  skipPermissions: true
+  skipPermissions: false
   agentTeams: false
 
 # Volundr API (for token usage reporting)

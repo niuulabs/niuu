@@ -28,6 +28,14 @@ class _TransportBinding:
     supports_system_prompt: bool
 
 
+def _delegates_permission_config_to_cli(cls: type[CLITransport]) -> bool:
+    """Return true for transports whose native CLI profile owns permissions."""
+    return (
+        cls.__module__ == "skuld.transports.codex_ws"
+        and cls.__name__ == "CodexWebSocketTransport"
+    )
+
+
 def _sum_model_usage(raw: dict | None) -> TokenUsage:
     """Convert transport ``modelUsage`` payloads into ``TokenUsage``."""
     if not isinstance(raw, dict):
@@ -432,10 +440,11 @@ class CliTransportExecutor(ExecutorPort):
             "workspace_dir": workspace_dir,
             "model": str(kwargs.get("model", "")),
             "session_id": str(session.id),
-            "skip_permissions": permission_mode != "prompt",
             "system_prompt": str(kwargs.get("system_prompt", "")),
             "initial_prompt": "",
         }
+        if not _delegates_permission_config_to_cli(self._binding.cls):
+            transport_kwargs["skip_permissions"] = permission_mode != "prompt"
         if "mcp_servers" in kwargs:
             transport_kwargs["mcp_servers"] = kwargs["mcp_servers"]
         transport_kwargs.update(self._transport_kwargs)

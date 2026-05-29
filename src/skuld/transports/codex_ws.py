@@ -14,9 +14,11 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import shutil
 import tempfile
 from itertools import count
+from pathlib import Path
 
 import websockets
 from websockets.asyncio.client import ClientConnection, unix_connect
@@ -129,7 +131,9 @@ class CodexWebSocketTransport(CLITransport):
         workspace_dir: str,
         *,
         model: str = "o4-mini",
-        skip_permissions: bool = True,
+        skip_permissions: bool = False,
+        approval_policy: str = "",
+        sandbox: str = "",
         system_prompt: str = "",
         initial_prompt: str = "",
         codex_port: int = 0,
@@ -140,6 +144,8 @@ class CodexWebSocketTransport(CLITransport):
         self.workspace_dir = workspace_dir
         self._model = model
         self._skip_permissions = skip_permissions
+        self._approval_policy = approval_policy.strip()
+        self._sandbox = sandbox.strip()
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._codex_port = codex_port or _pick_free_port()
@@ -165,8 +171,39 @@ class CodexWebSocketTransport(CLITransport):
 
         # Pending RPC response futures keyed by request id.
         self._pending: dict[int, asyncio.Future] = {}
-        # Pending approval RPC ids keyed by string request_id.
-        self._pending_approvals: dict[str, int] = {}
+        # Pending approval RPC ids keyed by string request_id. The second value
+        # identifies which app-server approval response shape the request needs.
+        self._pending_approvals: dict[str, tuple[int, str] | int] = {}
+
+    def _permission_thread_params(self) -> dict[str, str]:
+        """Return Codex thread permission params for start/resume."""
+        if self._skip_permissions:
+            return {
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access",
+            }
+
+        params: dict[str, str] = {}
+        if self._approval_policy:
+            params["approvalPolicy"] = self._approval_policy
+        if self._sandbox:
+            params["sandbox"] = self._sandbox
+        if not params:
+            logger.info("Codex thread permissions are delegated to the Codex config file")
+        return params
+
+    @staticmethod
+    def _ensure_codex_home(env: dict[str, str]) -> None:
+        """Make the user's Codex config path explicit for spawned app-server."""
+        if env.get("CODEX_HOME"):
+            return
+
+        home = env.get("HOME")
+        if home:
+            env["CODEX_HOME"] = str(Path(home).expanduser() / ".codex")
+            return
+
+        env["CODEX_HOME"] = str(Path.home() / ".codex")
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -270,12 +307,17 @@ class CodexWebSocketTransport(CLITransport):
             cmd.extend(["-c", f"{key}={value}"])
 
         env = dict(self._env)
+        self._ensure_codex_home(env)
         if "OPENAI_API_KEY" not in env:
             logger.info(
                 "OPENAI_API_KEY not found — relying on Codex CLI auth state for app-server access"
             )
 
-        logger.info("Spawning Codex app-server on %s", listen_url)
+        logger.info(
+            "Spawning Codex app-server on %s with CODEX_HOME=%s",
+            listen_url,
+            env.get("CODEX_HOME", ""),
+        )
         self._process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=self.workspace_dir,
@@ -373,9 +415,7 @@ class CodexWebSocketTransport(CLITransport):
         }
         if self._model:
             thread_params["model"] = self._model
-        if self._skip_permissions:
-            thread_params["approvalPolicy"] = "never"
-            thread_params["sandbox"] = "danger-full-access"
+        thread_params.update(self._permission_thread_params())
         if self._system_prompt:
             # baseInstructions = role/persona ("you are a service developer…")
             # developerInstructions = per-session task instructions
@@ -432,7 +472,18 @@ class CodexWebSocketTransport(CLITransport):
                     await self._handle_server_message(data)
                     continue
 
-                logger.debug("Codex WS unknown frame: %.200s", raw)
+                if data.get("type") == "response_item":
+                    payload = data.get("payload")
+                    payload_type = payload.get("type") if isinstance(payload, dict) else ""
+                    logger.info("Codex response_item frame: %s", payload_type)
+                    await self._handle_response_item_frame(payload)
+                    continue
+
+                logger.info(
+                    "Codex WS unknown frame shape: type=%s keys=%s",
+                    data.get("type"),
+                    sorted(str(key) for key in data.keys()),
+                )
 
         except websockets.exceptions.ConnectionClosed as exc:
             logger.info("Codex WS closed: %s", exc)
@@ -564,6 +615,16 @@ class CodexWebSocketTransport(CLITransport):
             await self._handle_item_completed(item)
             return
 
+        if method == "rawResponseItem/completed":
+            item = params.get("item", {})
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                task = asyncio.create_task(
+                    self._handle_raw_function_call_item(item),
+                    name=f"codex-raw-function-{item.get('call_id') or item.get('name') or 'call'}",
+                )
+                task.add_done_callback(self._log_dynamic_tool_task_result)
+            return
+
         # --- Command / file output deltas ---
         if method == "item/commandExecution/outputDelta":
             self._buffer_item_output(params.get("itemId"), params.get("delta", ""))
@@ -598,6 +659,27 @@ class CodexWebSocketTransport(CLITransport):
 
         logger.debug("Codex: unhandled notification %s", method)
 
+    async def _handle_response_item_frame(self, payload: object) -> None:
+        """Handle rollout-style response_item frames emitted by app-server."""
+        if not isinstance(payload, dict):
+            return
+        if payload.get("type") == "function_call":
+            logger.info(
+                "Codex response_item function_call: name=%s call_id=%s",
+                payload.get("name"),
+                payload.get("call_id"),
+            )
+            task_name = (
+                "codex-response-function-"
+                f"{payload.get('call_id') or payload.get('name') or 'call'}"
+            )
+            task = asyncio.create_task(
+                self._handle_raw_function_call_item(payload),
+                name=task_name,
+            )
+            task.add_done_callback(self._log_dynamic_tool_task_result)
+            return
+
     # ------------------------------------------------------------------
     # Server requests (approval callbacks)
     # ------------------------------------------------------------------
@@ -620,7 +702,26 @@ class CodexWebSocketTransport(CLITransport):
                     "input": {"command": command},
                 }
             )
-            self._pending_approvals[request_id] = rid
+            self._pending_approvals[request_id] = (rid, "command_execution")
+            return
+
+        if method == "execCommandApproval":
+            request_id = str(rid)
+            command = self._display_command(params.get("command"))
+            await self._emit(
+                {
+                    "type": "control_request",
+                    "subtype": "can_use_tool",
+                    "request_id": request_id,
+                    "tool": "Bash",
+                    "input": {
+                        "command": command,
+                        "cwd": params.get("cwd"),
+                        "reason": params.get("reason"),
+                    },
+                }
+            )
+            self._pending_approvals[request_id] = (rid, "exec_command")
             return
 
         if method in (
@@ -638,7 +739,15 @@ class CodexWebSocketTransport(CLITransport):
                     "input": params,
                 }
             )
-            self._pending_approvals[request_id] = rid
+            self._pending_approvals[request_id] = (rid, "command_execution")
+            return
+
+        if method == "item/tool/call":
+            task = asyncio.create_task(
+                self._handle_dynamic_tool_call_request(rid, params),
+                name=f"codex-dynamic-tool-{rid}",
+            )
+            task.add_done_callback(self._log_dynamic_tool_task_result)
             return
 
         # Default: auto-approve unknown requests
@@ -651,6 +760,190 @@ class CodexWebSocketTransport(CLITransport):
             return
         msg = {"jsonrpc": "2.0", "id": rid, "result": result}
         await self._ws.send(json.dumps(msg))
+
+    @staticmethod
+    def _display_command(command: object) -> str:
+        if isinstance(command, str):
+            return command
+        if isinstance(command, list):
+            try:
+                return shlex.join([str(part) for part in command])
+            except Exception:
+                return " ".join(str(part) for part in command)
+        return str(command or "")
+
+    def _log_dynamic_tool_task_result(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            logger.warning("Codex dynamic tool task failed", exc_info=True)
+
+    async def _handle_dynamic_tool_call_request(self, rid: int, params: dict) -> None:
+        try:
+            result = await self._execute_dynamic_tool_call(params)
+        except Exception as exc:
+            logger.warning("Dynamic tool call failed", exc_info=True)
+            result = {
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": f"Tool execution error: {exc}",
+                    }
+                ],
+                "success": False,
+            }
+        await self._send_rpc_response(rid, result)
+
+    async def _handle_raw_function_call_item(self, item: dict) -> None:
+        """Execute Responses function_call items surfaced by newer app-server builds."""
+        call_id = str(item.get("call_id") or "")
+        name = str(item.get("name") or "").strip()
+        args = self._decode_function_arguments(item.get("arguments"))
+        ui_tool_id = call_id or f"function-{next(self._ids)}"
+        logger.info("Handling Codex raw function_call name=%s call_id=%s", name, call_id)
+
+        if name == "shell_command":
+            tool_input = args if isinstance(args, dict) else {}
+            await self._emit_tool_use(ui_tool_id, "Bash", tool_input)
+            result = await self._execute_shell_command_tool(tool_input)
+        else:
+            logger.warning("Unsupported Codex function call: %s", name or "<unknown>")
+            result = {
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": f"Unsupported function call: {name or '<unknown>'}",
+                    }
+                ],
+                "success": False,
+            }
+
+        output_text = self._dynamic_tool_content_text(result.get("contentItems"))
+        if not output_text:
+            output_text = ""
+
+        if call_id and self._thread_id:
+            await self._send_rpc(
+                "thread/inject_items",
+                {
+                    "threadId": self._thread_id,
+                    "items": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": output_text,
+                        }
+                    ],
+                },
+            )
+        elif not self._thread_id:
+            logger.warning("Cannot inject Codex function_call_output without thread id")
+
+        await self._emit_content_block_stop()
+        await self._emit_tool_result(
+            ui_tool_id,
+            output_text,
+            is_error=result.get("success") is False,
+        )
+
+    async def _execute_dynamic_tool_call(self, params: dict) -> dict:
+        tool = str(params.get("tool") or "").strip()
+        args = params.get("arguments")
+        if not isinstance(args, dict):
+            args = {}
+
+        if tool == "shell_command":
+            return await self._execute_shell_command_tool(args)
+
+        logger.warning("Unsupported Codex dynamic tool call: %s", tool)
+        return {
+            "contentItems": [
+                {
+                    "type": "inputText",
+                    "text": f"Unsupported dynamic tool: {tool or '<unknown>'}",
+                }
+            ],
+            "success": False,
+        }
+
+    async def _execute_shell_command_tool(self, args: dict) -> dict:
+        command = args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return {
+                "contentItems": [{"type": "inputText", "text": "No command provided."}],
+                "success": False,
+            }
+
+        cwd = args.get("workdir") or args.get("cwd") or self.workspace_dir
+        if not isinstance(cwd, str) or not cwd.strip():
+            cwd = self.workspace_dir
+
+        exec_params: dict = {
+            "command": ["/bin/zsh", "-lc", command],
+            "cwd": cwd,
+        }
+
+        timeout_ms = self._coerce_timeout_ms(args.get("timeout_ms"))
+        if timeout_ms is not None:
+            exec_params["timeoutMs"] = timeout_ms
+
+        env = args.get("env")
+        if isinstance(env, dict):
+            exec_params["env"] = {
+                str(key): (str(value) if value is not None else None)
+                for key, value in env.items()
+            }
+
+        result = await self._send_rpc("command/exec", exec_params)
+        exit_code = result.get("exitCode", 1)
+        try:
+            exit_code_int = int(exit_code)
+        except (TypeError, ValueError):
+            exit_code_int = 1
+
+        output = self._format_command_exec_result(exit_code_int, result)
+        return {
+            "contentItems": [{"type": "inputText", "text": output}],
+            "success": exit_code_int == 0,
+        }
+
+    @staticmethod
+    def _decode_function_arguments(raw: object) -> dict:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except json.JSONDecodeError:
+                return {}
+            if isinstance(decoded, dict):
+                return decoded
+        return {}
+
+    @staticmethod
+    def _coerce_timeout_ms(value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            timeout_ms = int(value)
+        except (TypeError, ValueError):
+            return None
+        if timeout_ms <= 0:
+            return None
+        return timeout_ms
+
+    @staticmethod
+    def _format_command_exec_result(exit_code: int, result: dict) -> str:
+        stdout = result.get("stdout")
+        stderr = result.get("stderr")
+        parts = [f"Exit code: {exit_code}"]
+        if isinstance(stdout, str) and stdout:
+            parts.append(f"stdout:\n{stdout}")
+        if isinstance(stderr, str) and stderr:
+            parts.append(f"stderr:\n{stderr}")
+        return "\n".join(parts)
 
     # ------------------------------------------------------------------
     # Item handling (tool calls, agent text, reasoning)
@@ -754,6 +1047,14 @@ class CodexWebSocketTransport(CLITransport):
             await self._emit_tool_use(item_id, normalized, args if isinstance(args, dict) else {})
             return
 
+        if item_type == "dynamicToolCall":
+            tool = item.get("tool", "")
+            args = item.get("arguments", {})
+            normalized = "Bash" if tool == "shell_command" else _map_codex_tool(tool)
+            tool_input = args if isinstance(args, dict) else {"arguments": args}
+            await self._emit_tool_use(item_id, normalized, tool_input)
+            return
+
         if item_type == "agentMessage":
             # Start a text content block — deltas will follow via agentMessage/delta.
             await self._emit_content_block_start({"type": "text"})
@@ -807,7 +1108,31 @@ class CodexWebSocketTransport(CLITransport):
                 await self._emit_tool_result(item_id, result_text, is_error=is_error)
             return
 
+        if item_type == "dynamicToolCall":
+            await self._emit_content_block_stop()
+            result_text = self._dynamic_tool_content_text(item.get("contentItems"))
+            if result_text:
+                await self._emit_tool_result(
+                    item_id,
+                    result_text,
+                    is_error=item.get("success") is False,
+                )
+            return
+
         self._buffered_item_output.pop(item_id, None)
+
+    @staticmethod
+    def _dynamic_tool_content_text(content_items: object) -> str:
+        if not isinstance(content_items, list):
+            return ""
+        parts: list[str] = []
+        for item in content_items:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "\n".join(parts)
 
     @staticmethod
     def _extract_item_result_text(item: dict) -> str:
@@ -886,18 +1211,25 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         """Respond to a Codex approval request."""
-        rid = self._pending_approvals.pop(request_id, None)
-        if rid is None:
+        pending = self._pending_approvals.pop(request_id, None)
+        if pending is None:
             logger.warning("No pending approval for request_id=%s", request_id)
             return
+        if isinstance(pending, tuple):
+            rid, approval_kind = pending
+        else:
+            rid, approval_kind = pending, "command_execution"
 
         # Map broker permission response to Codex approval decision.
-        # Codex uses camelCase enum variants: accept, acceptForSession, decline, cancel.
+        # New app-server exec approvals use review decisions; older item-level
+        # approvals use camelCase enum variants.
         behavior = response.get("behavior", "allow")
-        if behavior in ("allow", "allowForever"):
-            decision = "accept"
+        if approval_kind == "exec_command":
+            decision = "approved_for_session" if behavior == "allowForever" else "approved"
+            if behavior not in ("allow", "allowForever"):
+                decision = "denied"
         else:
-            decision = "decline"
+            decision = "accept" if behavior in ("allow", "allowForever") else "decline"
         await self._send_rpc_response(rid, {"decision": decision})
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
@@ -1065,9 +1397,7 @@ class CodexWebSocketTransport(CLITransport):
         }
         if self._model:
             params["model"] = self._model
-        if self._skip_permissions:
-            params["approvalPolicy"] = "never"
-            params["sandbox"] = "danger-full-access"
+        params.update(self._permission_thread_params())
 
         result = await self._send_rpc("thread/resume", params)
         thread = result.get("thread", {})

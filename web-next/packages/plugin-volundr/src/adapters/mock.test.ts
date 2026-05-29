@@ -631,6 +631,13 @@ describe('createMockVolundrService — full method sweep', () => {
     await svc.getAvailableSecrets();
     await svc.createSecret('sweep-secret', { key: 'val' });
     await svc.getClusterResources();
+    await svc.evaluatePermissionAutoApproval('sess-1', {
+      requestId: 'perm-1',
+      toolName: 'Bash',
+      description: './start-dev',
+      command: './start-dev',
+      input: { command: './start-dev' },
+    });
     await svc.updateSession('sess-1', { name: 'renamed' });
     await svc.stopSession('sess-1');
     await svc.resumeSession('sess-1');

@@ -150,13 +150,37 @@ describe('buildVolundrHttpAdapter', () => {
   it('getConversationHistory calls GET /sessions/:id/conversation', async () => {
     const client = makeClient();
     client.get.mockResolvedValue({
-      turns: [{ id: 'turn-1', role: 'assistant', content: 'archived reply' }],
+      turns: [
+        {
+          id: 'turn-1',
+          role: 'assistant',
+          content: 'archived reply',
+          parts: [{ type: 'text', text: 'archived reply' }],
+          participant_id: 'reviewer',
+          participant_meta: {
+            peer_id: 'reviewer',
+            persona: 'reviewer',
+            participant_type: 'ravn',
+            color: 'red',
+          },
+          thread_id: 'thread-1',
+          visibility: 'internal',
+        },
+      ],
     });
 
     const history = await buildVolundrHttpAdapter(client).getConversationHistory('sess-1');
 
     expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/conversation');
     expect(history.turns[0]).toMatchObject({ id: 'turn-1', role: 'assistant' });
+    expect(history.turns[0]?.parts).toEqual([{ type: 'text', text: 'archived reply' }]);
+    expect(history.turns[0]?.participant_id).toBe('reviewer');
+    expect(history.turns[0]?.participant_meta).toMatchObject({
+      peer_id: 'reviewer',
+      participant_type: 'ravn',
+    });
+    expect(history.turns[0]?.thread_id).toBe('thread-1');
+    expect(history.turns[0]?.visibility).toBe('internal');
   });
 
   it('getWorkflowGates calls GET /sessions/:id/workflow/gates', async () => {
@@ -637,8 +661,47 @@ describe('buildVolundrHttpAdapter', () => {
     };
     await buildVolundrHttpAdapter(client).startSession(config);
     expect(client.post).toHaveBeenCalledWith('/sessions', {
-      ...config,
+      name: 'test',
+      source: { type: 'git', repo: 'r', branch: 'main' },
+      model: 'claude-sonnet',
+      terminal_restricted: false,
       instance_id: null,
+      workload_config: {},
+    });
+  });
+
+  it('evaluatePermissionAutoApproval calls the session policy endpoint', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValueOnce({
+      can_auto_approve: true,
+      reason: 'allowed',
+      command: './start-dev',
+      delay_seconds: 5,
+      matched_pattern: '^\\s*\\./start-dev',
+    });
+
+    const result = await buildVolundrHttpAdapter(client).evaluatePermissionAutoApproval('sess-1', {
+      requestId: 'perm-1',
+      toolName: 'Bash',
+      description: './start-dev',
+      command: './start-dev',
+      input: { command: './start-dev' },
+    });
+
+    expect(client.post).toHaveBeenCalledWith(
+      '/sessions/sess-1/permissions/auto-approval/evaluate',
+      {
+        request_id: 'perm-1',
+        tool_name: 'Bash',
+        description: './start-dev',
+        command: './start-dev',
+        input: { command: './start-dev' },
+      },
+    );
+    expect(result).toMatchObject({
+      canAutoApprove: true,
+      reason: 'allowed',
+      delaySeconds: 5,
     });
   });
 
@@ -654,8 +717,12 @@ describe('buildVolundrHttpAdapter', () => {
 
     expect(getDerivedClient('http://localhost:8080/api/v1/forge')).toBeUndefined();
     expect(client.post).toHaveBeenCalledWith('/sessions', {
-      ...config,
+      name: 'test',
+      source: { type: 'git', repo: 'r', branch: 'main' },
+      model: 'claude-sonnet',
+      terminal_restricted: false,
       instance_id: null,
+      workload_config: {},
     });
   });
 

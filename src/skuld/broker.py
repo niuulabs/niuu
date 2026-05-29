@@ -118,6 +118,9 @@ FORGE_CHRONICLES_PATH = "/api/v1/forge/chronicles"
 FORGE_EVENTS_PATH = "/api/v1/forge/events"
 FORGE_TRACE_SPANS_START_PATH = "/api/v1/forge/spans/start"
 FORGE_TRACE_SPANS_COMPLETE_PATH = "/api/v1/forge/spans/complete"
+FORGE_PERMISSION_AUTO_APPROVAL_EVALUATE_PATH = (
+    f"{FORGE_SESSIONS_PATH}/{{session_id}}/permissions/auto-approval/evaluate"
+)
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
 
@@ -1016,6 +1019,8 @@ class Broker:
         self._assistant_pending_commands: dict[str, str] = {}
         self._trace_peer_turn_spans: dict[str, uuid.UUID] = {}
         self._trace_peer_tool_spans: dict[str, list[uuid.UUID]] = {}
+        self._pending_permission_requests: dict[str, dict[str, Any]] = {}
+        self._permission_auto_approval_tasks: dict[str, asyncio.Task[None]] = {}
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
@@ -1475,6 +1480,8 @@ class Broker:
             "sdk_port": self._settings.port,
             "session_id": self.session_id,
             "skip_permissions": self._settings.skip_permissions,
+            "approval_policy": self._settings.approval_policy,
+            "sandbox": self._settings.sandbox,
             "agent_teams": self._settings.agent_teams,
             "system_prompt": self._settings.session.system_prompt,
             "initial_prompt": (
@@ -1636,6 +1643,15 @@ class Broker:
             self._workflow_trigger_task.cancel()
             await asyncio.gather(self._workflow_trigger_task, return_exceptions=True)
             self._workflow_trigger_task = None
+
+        if self._permission_auto_approval_tasks:
+            for task in list(self._permission_auto_approval_tasks.values()):
+                task.cancel()
+            await asyncio.gather(
+                *self._permission_auto_approval_tasks.values(),
+                return_exceptions=True,
+            )
+            self._permission_auto_approval_tasks.clear()
         await self._finish_pending_assistant_tool_trace_spans(
             status="cancelled",
             attributes={"reason": "shutdown"},
@@ -2593,9 +2609,200 @@ class Broker:
             }
         )
 
+    @staticmethod
+    def _permission_request_id(data: dict[str, Any]) -> str:
+        request_id = data.get("request_id")
+        return str(request_id or "").strip()
+
+    @staticmethod
+    def _permission_input(data: dict[str, Any]) -> dict[str, Any]:
+        input_payload = data.get("input")
+        return input_payload if isinstance(input_payload, dict) else {}
+
+    @classmethod
+    def _permission_command(cls, data: dict[str, Any]) -> str | None:
+        direct_command = data.get("command")
+        if isinstance(direct_command, str) and direct_command.strip():
+            return direct_command.strip()
+
+        input_payload = cls._permission_input(data)
+        for key in ("command", "cmd", "shell_command"):
+            value = input_payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _permission_auto_approval_payload(self, data: dict[str, Any]) -> dict[str, Any]:
+        command = self._permission_command(data)
+        description = data.get("description")
+        if not isinstance(description, str) or not description.strip():
+            description = command or ""
+
+        tool_name = data.get("tool_name") or data.get("tool")
+        if not isinstance(tool_name, str):
+            tool_name = ""
+
+        return {
+            "request_id": self._permission_request_id(data),
+            "tool_name": tool_name,
+            "description": description,
+            "command": command,
+            "input": self._permission_input(data),
+        }
+
+    async def _evaluate_permission_auto_approval(
+        self,
+        data: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Ask Forge whether this pending permission may be auto-approved."""
+        if not self.volundr_api_url:
+            return None
+
+        try:
+            client = await self._get_http_client()
+            response = await client.post(
+                FORGE_PERMISSION_AUTO_APPROVAL_EVALUATE_PATH.format(
+                    session_id=self.session_id,
+                ),
+                json=self._permission_auto_approval_payload(data),
+            )
+            if response.status_code >= 300:
+                logger.warning(
+                    "Permission auto-approval policy check failed (%d): %s",
+                    response.status_code,
+                    response.text[:200],
+                )
+                return None
+            payload = response.json()
+        except Exception:
+            logger.warning("Permission auto-approval policy check failed", exc_info=True)
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    @staticmethod
+    def _decision_delay_seconds(decision: dict[str, Any]) -> float:
+        raw_delay = decision.get("delay_seconds", 0)
+        try:
+            delay = float(raw_delay)
+        except (TypeError, ValueError):
+            delay = 0.0
+        return max(0.0, delay)
+
+    def _clear_pending_permission_request(
+        self,
+        request_id: str,
+        *,
+        cancel_auto_approval: bool = True,
+    ) -> None:
+        self._pending_permission_requests.pop(request_id, None)
+        if not cancel_auto_approval:
+            return
+
+        task = self._permission_auto_approval_tasks.pop(request_id, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    def _track_pending_permission_request(self, data: dict[str, Any]) -> None:
+        request_id = self._permission_request_id(data)
+        if not request_id:
+            return
+
+        self._pending_permission_requests[request_id] = dict(data)
+
+        if not self.volundr_api_url:
+            return
+
+        existing_task = self._permission_auto_approval_tasks.pop(request_id, None)
+        if existing_task is not None:
+            existing_task.cancel()
+
+        task = asyncio.create_task(self._auto_approve_permission_request(request_id))
+        self._permission_auto_approval_tasks[request_id] = task
+
+        def _cleanup(done: asyncio.Task[None]) -> None:
+            current = self._permission_auto_approval_tasks.get(request_id)
+            if current is done:
+                self._permission_auto_approval_tasks.pop(request_id, None)
+
+        task.add_done_callback(_cleanup)
+
+    async def _send_permission_control_response(
+        self,
+        request_id: str,
+        response: dict[str, Any],
+        *,
+        auto_approved: bool,
+    ) -> None:
+        if not self._transport:
+            logger.warning("Cannot respond to permission request; transport is not initialized")
+            return
+
+        await self._transport.send_control_response(request_id, response)
+        self._clear_pending_permission_request(
+            request_id,
+            cancel_auto_approval=not auto_approved,
+        )
+        await self._channels.broadcast(
+            {
+                "type": "permission_resolved",
+                "request_id": request_id,
+                "behavior": response.get("behavior", "deny"),
+                "auto_approved": auto_approved,
+            }
+        )
+
+    async def _auto_approve_permission_request(self, request_id: str) -> None:
+        initial_request = self._pending_permission_requests.get(request_id)
+        if initial_request is None:
+            return
+
+        decision = await self._evaluate_permission_auto_approval(initial_request)
+        if not decision or decision.get("can_auto_approve") is not True:
+            return
+
+        delay_seconds = self._decision_delay_seconds(decision)
+        await self._channels.broadcast(
+            {
+                "type": "permission_auto_approval_scheduled",
+                "request_id": request_id,
+                "decision": decision,
+            }
+        )
+        await asyncio.sleep(delay_seconds)
+
+        latest_request = self._pending_permission_requests.get(request_id)
+        if latest_request is None:
+            return
+
+        # Re-check immediately before responding so policy changes or denylist
+        # additions win over a stale countdown.
+        latest_decision = await self._evaluate_permission_auto_approval(latest_request)
+        if not latest_decision or latest_decision.get("can_auto_approve") is not True:
+            await self._channels.broadcast(
+                {
+                    "type": "permission_auto_approval_cancelled",
+                    "request_id": request_id,
+                    "decision": latest_decision,
+                }
+            )
+            return
+
+        logger.info("Auto-approving permission request %s", _sanitize_log(request_id))
+        await self._send_permission_control_response(
+            request_id,
+            {"behavior": "allow", "updatedInput": {}},
+            auto_approved=True,
+        )
+
     async def _handle_cli_event(self, data: dict) -> None:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
+        if event_type == "control_request":
+            self._track_pending_permission_request(data)
+
         tool_result_only_user_event = (
             event_type == "user" and self._is_tool_result_only_user_event(data)
         )
@@ -2974,7 +3181,11 @@ class Broker:
                 }
                 if data.get("updated_permissions"):
                     response["updatedPermissions"] = data["updated_permissions"]
-                await self._transport.send_control_response(request_id, response)
+                await self._send_permission_control_response(
+                    str(request_id),
+                    response,
+                    auto_approved=False,
+                )
 
             # Phase 3: interrupt current turn
             case "interrupt":
@@ -4435,6 +4646,18 @@ class Broker:
                     self._room_bridge.get_room_state_event(),
                 ):
                     return
+
+            # Permission requests are transport RPCs, not conversation turns.
+            # Replay outstanding approvals so a browser that reconnects after
+            # the event was emitted still sees the allow/deny callout.
+            if self._pending_permission_requests:
+                logger.info(
+                    "Replaying %d pending permission request(s) to new browser",
+                    len(self._pending_permission_requests),
+                )
+                for permission_request in list(self._pending_permission_requests.values()):
+                    if not await self._safe_browser_send_json(websocket, permission_request):
+                        return
 
             # Handle messages from browser
             while True:

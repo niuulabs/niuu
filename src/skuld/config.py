@@ -238,7 +238,9 @@ class SkuldSettings(BaseSettings):
     cli_type: str = Field(default="claude")  # "claude" | "codex"
     transport: str = Field(default="sdk")  # claude only: "sdk" | "subprocess"
     transport_adapter: str = Field(default=_DEFAULT_TRANSPORT_ADAPTER)
-    skip_permissions: bool = Field(default=True)
+    skip_permissions: bool = Field(default=False)
+    approval_policy: str = Field(default="")
+    sandbox: str = Field(default="")
     agent_teams: bool = Field(default=False)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)

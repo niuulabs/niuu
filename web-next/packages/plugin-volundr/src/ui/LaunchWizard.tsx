@@ -64,7 +64,6 @@ export interface WizardForm {
   setupScripts: string[];
   definition: string;
   model: string;
-  permission: string;
   cpu: string;
   mem: string;
   gpu: string;
@@ -480,7 +479,10 @@ export function buildPresetRuntimePayload(
     systemPrompt: form.systemPrompt || null,
     resourceConfig: buildResourceConfig(form) ?? {},
     mcpServers: form.mcpServers,
-    terminalSidecar: { enabled: form.permission === 'restricted', allowedCommands: [] },
+    terminalSidecar: {
+      enabled: false,
+      allowedCommands: [],
+    },
     skills: [],
     rules: [],
     envVars: normalizeEnvVars(form.envVars),
@@ -544,7 +546,7 @@ export function buildYamlRuntimeFields(form: WizardForm) {
     resourceConfig: buildResourceConfig(form) ?? {},
     mcpServers: form.mcpServers,
     terminalSidecar: {
-      enabled: form.permission === 'restricted',
+      enabled: false,
       allowedCommands: [],
     },
     skills: [],
@@ -981,9 +983,6 @@ export function RuntimeStep({
       if (parsed.envSecretRefs) patch.selectedCredentials = parsed.envSecretRefs;
       if (parsed.integrationIds) patch.selectedIntegrations = parsed.integrationIds;
       if (parsed.setupScripts) patch.setupScripts = parsed.setupScripts;
-      if (parsed.terminalSidecar) {
-        patch.permission = parsed.terminalSidecar.enabled ? 'restricted' : 'normal';
-      }
       if (parsed.source !== undefined) {
         if (parsed.source === null) {
           patch.sourcetype = 'blank';
@@ -1120,7 +1119,7 @@ export function RuntimeStep({
               </button>
             ))}
           </div>
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-4">
+          <div className="niuu-grid niuu-grid-cols-1 niuu-gap-4">
             <Field label="Model">
               {modelOptions.length > 0 ? (
                 <WizardSelect
@@ -1137,18 +1136,6 @@ export function RuntimeStep({
                   placeholder="sonnet-primary"
                 />
               )}
-            </Field>
-            <Field label="Permission">
-              <WizardSelect
-                options={[
-                  { value: 'restricted', label: 'restricted' },
-                  { value: 'normal', label: 'normal' },
-                  { value: 'yolo', label: 'yolo' },
-                ]}
-                value={form.permission}
-                onChange={(v) => update({ permission: v })}
-                testId="permission-select"
-              />
             </Field>
           </div>
           {workspaceOptions.length > 1 ? (
@@ -1750,7 +1737,6 @@ export function ConfirmStep({
                 : 'none'
             }
           />
-          <ConfirmRow label="permission" value={form.permission} />
         </div>
       </SectionCard>
 
@@ -1984,7 +1970,6 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     setupScripts: [],
     definition: 'skuldClaude',
     model: 'sonnet-primary',
-    permission: 'restricted',
     cpu: '2',
     mem: '8Gi',
     gpu: '0',
@@ -2314,7 +2299,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         definition: form.definition,
         taskType: definitionToTaskType(form.definition),
         trackerIssue: form.trackerIssue ?? undefined,
-        terminalRestricted: form.permission === 'restricted',
+        terminalRestricted: false,
         instanceId: form.instanceId || undefined,
         workspaceId: form.workspaceId || undefined,
         credentialNames: form.selectedCredentials.length ? form.selectedCredentials : undefined,

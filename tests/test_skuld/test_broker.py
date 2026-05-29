@@ -380,6 +380,84 @@ class TestBroker:
         mock_ch2.send_event.assert_called_once_with(data)
 
     @pytest.mark.asyncio
+    async def test_handle_cli_event_tracks_permission_requests(self, test_broker):
+        data = {
+            "type": "control_request",
+            "request_id": "perm-1",
+            "tool": "Bash",
+            "input": {"command": "./start-dev"},
+        }
+
+        await test_broker._handle_cli_event(data)
+
+        assert test_broker._pending_permission_requests["perm-1"] == data
+
+    @pytest.mark.asyncio
+    async def test_handle_cli_event_auto_approves_allowed_permission(self, test_broker):
+        test_broker.volundr_api_url = "http://volundr.test:80"
+        mock_transport = AsyncMock()
+        test_broker._transport = mock_transport
+
+        policy_check = AsyncMock(
+            side_effect=[
+                {"can_auto_approve": True, "delay_seconds": 0, "reason": "allowed"},
+                {"can_auto_approve": True, "delay_seconds": 0, "reason": "allowed"},
+            ]
+        )
+
+        with patch.object(
+            test_broker,
+            "_evaluate_permission_auto_approval",
+            new=policy_check,
+        ):
+            await test_broker._handle_cli_event(
+                {
+                    "type": "control_request",
+                    "request_id": "perm-auto",
+                    "tool": "Bash",
+                    "input": {"command": "./start-dev"},
+                }
+            )
+            await asyncio.sleep(0.05)
+
+        assert policy_check.await_count == 2
+        mock_transport.send_control_response.assert_awaited_once_with(
+            "perm-auto",
+            {"behavior": "allow", "updatedInput": {}},
+        )
+        assert "perm-auto" not in test_broker._pending_permission_requests
+
+    @pytest.mark.asyncio
+    async def test_handle_cli_event_leaves_denied_permission_pending(self, test_broker):
+        test_broker.volundr_api_url = "http://volundr.test:80"
+        mock_transport = AsyncMock()
+        test_broker._transport = mock_transport
+
+        with patch.object(
+            test_broker,
+            "_evaluate_permission_auto_approval",
+            new=AsyncMock(
+                return_value={
+                    "can_auto_approve": False,
+                    "delay_seconds": 0,
+                    "reason": "denylist",
+                }
+            ),
+        ):
+            await test_broker._handle_cli_event(
+                {
+                    "type": "control_request",
+                    "request_id": "perm-denied",
+                    "tool": "Bash",
+                    "input": {"command": "rm -rf build"},
+                }
+            )
+            await asyncio.sleep(0.05)
+
+        mock_transport.send_control_response.assert_not_awaited()
+        assert "perm-denied" in test_broker._pending_permission_requests
+
+    @pytest.mark.asyncio
     async def test_handle_cli_event_reports_usage_on_result(self, test_broker):
         test_broker.volundr_api_url = "http://volundr:80"
 
@@ -1232,6 +1310,8 @@ class TestBroker:
             },
             port=9999,
             skip_permissions=False,
+            approval_policy="untrusted",
+            sandbox="workspace-write",
             agent_teams=True,
         )
         b = Broker(settings=settings)
@@ -1241,6 +1321,8 @@ class TestBroker:
         assert kwargs["sdk_port"] == 9999
         assert kwargs["session_id"] == "s1"
         assert kwargs["skip_permissions"] is False
+        assert kwargs["approval_policy"] == "untrusted"
+        assert kwargs["sandbox"] == "workspace-write"
         assert kwargs["agent_teams"] is True
         assert kwargs["system_prompt"] == "be helpful"
         assert kwargs["initial_prompt"] == "hello"
@@ -2821,6 +2903,28 @@ class TestHandleWebSocket:
         system_idx = types.index("system")
         caps_idx = types.index("capabilities")
         assert caps_idx > system_idx
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_replays_pending_permission_requests(self, test_broker):
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        test_broker._transport = mock_transport
+        pending = {
+            "type": "control_request",
+            "request_id": "perm-replay",
+            "tool": "Bash",
+            "input": {"command": "./stop-dev"},
+        }
+        test_broker._pending_permission_requests["perm-replay"] = pending
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
+
+        await test_broker.handle_websocket(mock_ws)
+
+        calls = [c[0][0] for c in mock_ws.send_json.call_args_list]
+        assert pending in calls
 
     @pytest.mark.asyncio
     async def test_handle_websocket_treats_not_connected_runtime_error_as_disconnect(

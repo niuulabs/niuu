@@ -7,6 +7,7 @@ import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
+from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from volundr.adapters.inbound.auth import extract_principal, require_role
+from volundr.config import PermissionAutoApprovalConfig
 from volundr.domain.models import (
     Chronicle,
     ChronicleStatus,
@@ -56,6 +58,9 @@ from volundr.domain.services import (
     SessionStateError,
     StatsService,
     TokenService,
+)
+from volundr.domain.services.permission_auto_approval import (
+    evaluate_permission_auto_approval,
 )
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
@@ -322,6 +327,26 @@ class SessionCreate(BaseModel):
             },
         },
     }
+
+
+class PermissionAutoApprovalCheck(BaseModel):
+    """Request model for checking one permission request against server policy."""
+
+    request_id: str | None = Field(default=None, max_length=255)
+    tool_name: str = Field(default="", max_length=255)
+    description: str = Field(default="", max_length=4096)
+    command: str | None = Field(default=None, max_length=100_000)
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class PermissionAutoApprovalResponse(BaseModel):
+    """Server-side decision for a permission request auto approval."""
+
+    can_auto_approve: bool
+    reason: str
+    command: str | None = None
+    delay_seconds: int
+    matched_pattern: str | None = None
 
 
 class SessionUpdate(BaseModel):
@@ -1287,6 +1312,52 @@ def create_router(
             )
 
         return SessionResponse.from_session(session)
+
+    @router.post(
+        "/sessions/{session_id}/permissions/auto-approval/evaluate",
+        response_model=PermissionAutoApprovalResponse,
+        responses={404: {"model": ErrorResponse}},
+        tags=["Sessions"],
+    )
+    async def evaluate_session_permission_auto_approval(
+        request: Request,
+        data: PermissionAutoApprovalCheck,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> PermissionAutoApprovalResponse:
+        """Evaluate whether a permission request may be auto-approved by policy."""
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+
+        principal = await _optional_principal(request)
+        try:
+            await forge.ensure_access(session, principal, "view")
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied to session {session_id}",
+            )
+
+        app_settings = getattr(request.app.state, "settings", None)
+        policy = getattr(app_settings, "permission_auto_approval", None)
+        if not isinstance(policy, PermissionAutoApprovalConfig):
+            policy = PermissionAutoApprovalConfig()
+
+        decision = evaluate_permission_auto_approval(
+            command=data.command,
+            input=data.input,
+            policy=policy,
+        )
+        return PermissionAutoApprovalResponse(
+            can_auto_approve=decision.can_auto_approve,
+            reason=decision.reason,
+            command=decision.command,
+            delay_seconds=decision.delay_seconds,
+            matched_pattern=decision.matched_pattern,
+        )
 
     @router.put(
         "/sessions/{session_id}",

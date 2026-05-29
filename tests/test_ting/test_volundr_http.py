@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -131,6 +132,52 @@ class TestSpawnSession:
         assert body["issue_id"] == "X-1"
         assert body["definition"] == "skuldCodex"
         assert body["issue_url"] == "https://example.com/X-1"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_local_repo_path_sends_local_mount(
+        self,
+        adapter: VolundrHTTPAdapter,
+        tmp_path: Path,
+    ):
+        local_repo = tmp_path / "repo"
+        local_repo.mkdir()
+        route = respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ses-local",
+                    "name": "n",
+                    "status": "creating",
+                    "source": {
+                        "type": "local_mount",
+                        "local_path": str(local_repo.resolve()),
+                    },
+                },
+            )
+        )
+
+        req = SpawnRequest(
+            name="n",
+            repo=str(local_repo),
+            branch="feature",
+            model="claude-opus-4-6",
+            tracker_issue_id="X-1",
+            tracker_issue_url="",
+            system_prompt="",
+            initial_prompt="go",
+            base_branch="dev",
+            workload_type="ravn_flock",
+        )
+        session = await adapter.spawn_session(req)
+
+        body = json.loads(route.calls[0].request.content)
+        assert body["source"] == {
+            "type": "local_mount",
+            "local_path": str(local_repo.resolve()),
+        }
+        assert body["workload_type"] == "ravn_flock"
+        assert session.repo == str(local_repo.resolve())
 
     @pytest.mark.asyncio
     @respx.mock

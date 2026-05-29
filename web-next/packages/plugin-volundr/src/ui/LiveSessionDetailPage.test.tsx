@@ -1203,6 +1203,46 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByText('Start the session to chat.')).not.toBeInTheDocument();
     });
 
+    it('rebuilds the outcome sidebar from a stopped session transcript', async () => {
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn().mockResolvedValue({
+            turns: [
+              {
+                id: 'turn-outcome-1',
+                role: 'assistant',
+                content: [
+                  '```outcome',
+                  'verdict: needs_changes',
+                  'summary: Review found missing telemetry coverage.',
+                  'details: |',
+                  '  ## Findings',
+                  '  - Add spans around tenant notification delivery.',
+                  '```',
+                ].join('\n'),
+                created_at: '2026-05-15T18:00:05Z',
+                participant_meta: {
+                  peer_id: 'workflow-reviewer',
+                  persona: 'reviewer',
+                  display_name: 'Reviewer',
+                  participant_type: 'ravn',
+                  color: 'red',
+                },
+              },
+            ],
+          }),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(await screen.findByTestId('mesh-cascade-panel')).toBeInTheDocument();
+      expect(screen.getAllByText('Review found missing telemetry coverage.').length).toBeGreaterThan(
+        1,
+      );
+      expect(screen.getByText('Changes Requested')).toBeInTheDocument();
+    });
+
     it('shows an archive-aware chronicle empty state for stopped sessions', async () => {
       wrap('test-session-id-1234', { session: STOPPED_SESSION });
       await screen.findByTestId('live-session-detail-page');

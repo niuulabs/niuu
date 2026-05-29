@@ -1395,6 +1395,14 @@ export function createMockVolundrService(): IVolundrService {
       instanceName: config.instanceId ? 'Selected Mock Volundr' : 'Mock Volundr',
     }),
 
+    evaluatePermissionAutoApproval: async (_sessionId, request) => ({
+      canAutoApprove: Boolean(request.command?.startsWith('./start-dev')),
+      reason: request.command?.startsWith('./start-dev') ? 'allowed' : 'no_allowlist_match',
+      command: request.command ?? null,
+      delaySeconds: 5,
+      matchedPattern: request.command?.startsWith('./start-dev') ? '^\\s*\\./start-dev' : null,
+    }),
+
     connectSession: async (config) => ({
       id: 'sess-ext',
       name: config.name,

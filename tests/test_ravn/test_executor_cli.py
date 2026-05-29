@@ -494,3 +494,48 @@ def test_cli_executor_passes_mcp_servers_to_codex_transport() -> None:
         ("mcp_servers.mimir-local.command", '"python3"'),
         ("mcp_servers.mimir-local.args", '["-m", "mimir"]'),
     ]
+
+
+def test_cli_executor_delegates_codex_ws_permissions_to_codex_config() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex_ws.CodexWebSocketTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a researcher.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-codex-ws-permissions",
+        persona="researcher",
+        workspace_dir="/tmp/workspace",
+        permission_mode="workspace_write",
+        tools=[],
+    )
+
+    assert "skip_permissions" not in agent._transport_kwargs
+
+
+def test_cli_executor_allows_explicit_codex_ws_permission_override() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex_ws.CodexWebSocketTransport",
+        transport_kwargs={"skip_permissions": True},
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a researcher.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-codex-ws-explicit-permissions",
+        persona="researcher",
+        workspace_dir="/tmp/workspace",
+        permission_mode="workspace_write",
+        tools=[],
+    )
+
+    assert agent._transport_kwargs["skip_permissions"] is True

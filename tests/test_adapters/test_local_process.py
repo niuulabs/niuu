@@ -163,6 +163,22 @@ class TestInit:
 
 
 class TestSkuldEnv:
+    def test_build_env_does_not_inherit_parent_permission_overrides(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Skuld permission knobs must come from session config, not parent env."""
+        monkeypatch.setenv("SKULD__SKIP_PERMISSIONS", "true")
+        monkeypatch.setenv("SKULD__APPROVAL_POLICY", "never")
+        monkeypatch.setenv("SKULD__SANDBOX", "danger-full-access")
+
+        spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert "SKULD__SKIP_PERMISSIONS" not in env
+        assert "SKULD__APPROVAL_POLICY" not in env
+        assert "SKULD__SANDBOX" not in env
+
     def test_build_env_includes_broker_overrides(self) -> None:
         """Broker values from session definitions are mapped to Skuld env vars."""
         spec = SessionSpec(
@@ -172,6 +188,8 @@ class TestSkuldEnv:
                     "transport": "sdk",
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
                     "skipPermissions": False,
+                    "approvalPolicy": "untrusted",
+                    "sandbox": "workspace-write",
                     "agentTeams": True,
                 }
             },
@@ -186,6 +204,8 @@ class TestSkuldEnv:
             "skuld.transports.codex_ws.CodexWebSocketTransport"
         )
         assert env["SKULD__SKIP_PERMISSIONS"] == "false"
+        assert env["SKULD__APPROVAL_POLICY"] == "untrusted"
+        assert env["SKULD__SANDBOX"] == "workspace-write"
         assert env["SKULD__AGENT_TEAMS"] == "true"
 
     def test_build_env_includes_telegram_runtime_channel(self) -> None:
@@ -491,6 +511,29 @@ class TestWorkspaceProvisioning:
         assert claude_md.exists()
         content = claude_md.read_text()
         assert "You are a helpful assistant." in content
+
+    async def test_git_source_local_path_uses_directory_directly(
+        self,
+        manager: LocalProcessPodManager,
+        default_spec: SessionSpec,
+        tmp_path: Path,
+    ) -> None:
+        """A local path in GitSource.repo is treated like mini/local mode."""
+        project = tmp_path / "project"
+        project.mkdir()
+        session = Session(
+            id=uuid4(),
+            name="local-git-path",
+            source=GitSource(repo=str(project), branch="feat/local"),
+        )
+
+        with patch.object(manager, "_clone_repo", new_callable=AsyncMock) as clone_repo:
+            workspace = await manager._provision_workspace(session, default_spec)
+
+        clone_repo.assert_not_called()
+        assert workspace == project.resolve()
+        assert not (manager._workspaces_dir / str(session.id)).exists()
+        assert "You are a helpful assistant." in (project / "CLAUDE.md").read_text()
 
     async def test_writes_claude_md_with_initial_prompt(
         self,
@@ -914,6 +957,8 @@ class TestProcessSpawning:
                     "transport": "sdk",
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
                     "skipPermissions": False,
+                    "approvalPolicy": "untrusted",
+                    "sandbox": "workspace-write",
                     "agentTeams": True,
                 }
             },
@@ -928,6 +973,8 @@ class TestProcessSpawning:
             "skuld.transports.codex_ws.CodexWebSocketTransport"
         )
         assert env["SKULD__SKIP_PERMISSIONS"] == "false"
+        assert env["SKULD__APPROVAL_POLICY"] == "untrusted"
+        assert env["SKULD__SANDBOX"] == "workspace-write"
         assert env["SKULD__AGENT_TEAMS"] == "true"
 
     def test_build_env_includes_telegram_runtime_channel(self) -> None:
@@ -969,6 +1016,8 @@ class TestProcessSpawning:
                     "cliType": "codex-ws",
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
                     "skipPermissions": False,
+                    "approvalPolicy": "untrusted",
+                    "sandbox": "workspace-write",
                 }
             },
             pod_spec=PodSpecAdditions(),
@@ -990,6 +1039,45 @@ class TestProcessSpawning:
             "skuld.transports.codex_ws.CodexWebSocketTransport"
         )
         assert env["SKULD__SKIP_PERMISSIONS"] == "false"
+        assert env["SKULD__APPROVAL_POLICY"] == "untrusted"
+        assert env["SKULD__SANDBOX"] == "workspace-write"
+        assert "SKULD__CLI_BINARY" not in env
+
+    async def test_spawn_skuld_does_not_default_to_skip_permissions(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        tmp_workspaces: Path,
+    ) -> None:
+        """Local Codex sessions should delegate permission behavior to the CLI config."""
+        workspace = tmp_workspaces / str(git_session.id)
+        workspace.mkdir(parents=True)
+
+        spec = SessionSpec(
+            values={
+                "broker": {
+                    "cliType": "codex-ws",
+                    "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                }
+            },
+            pod_spec=PodSpecAdditions(),
+        )
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=mock_proc,
+        ) as mock_exec:
+            await manager._spawn_skuld(git_session, spec, workspace, 9100)
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["SKULD__CLI_TYPE"] == "codex-ws"
+        assert "SKULD__SKIP_PERMISSIONS" not in env
+        assert "SKULD__APPROVAL_POLICY" not in env
+        assert "SKULD__SANDBOX" not in env
         assert "SKULD__CLI_BINARY" not in env
 
     async def test_spawn_skuld_uses_definition_default_model_without_hardcoded_claude_fallback(

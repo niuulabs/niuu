@@ -240,6 +240,63 @@ class TestHandshake:
         assert thread_params["approvalPolicy"] == "never"
         assert thread_params["sandbox"] == "danger-full-access"
 
+    @pytest.mark.asyncio
+    async def test_handshake_configured_permission_params(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            skip_permissions=False,
+            approval_policy="untrusted",
+            sandbox="workspace-write",
+        )
+        t._ws = FakeWebSocket()
+        t._alive = True
+
+        params_captured = []
+
+        async def fake_send_rpc(method, params=None):
+            params_captured.append((method, params))
+            if method == "initialize":
+                return {"userAgent": "codex"}
+            if method == "thread/start":
+                return {"thread": {"id": "t-1"}}
+            return {}
+
+        t._send_rpc = fake_send_rpc
+        t._send_notification = AsyncMock()
+        _collect_emits(t)
+
+        await t._handshake()
+
+        thread_params = params_captured[1][1]
+        assert thread_params["approvalPolicy"] == "untrusted"
+        assert thread_params["sandbox"] == "workspace-write"
+
+    @pytest.mark.asyncio
+    async def test_handshake_without_overrides_defers_to_codex_config(self, tmp_path):
+        t = _make_transport(tmp_path, skip_permissions=False)
+        t._ws = FakeWebSocket()
+        t._alive = True
+
+        params_captured = []
+
+        async def fake_send_rpc(method, params=None):
+            params_captured.append((method, params))
+            if method == "initialize":
+                return {"userAgent": "codex"}
+            if method == "thread/start":
+                return {"thread": {"id": "t-1"}}
+            return {}
+
+        t._send_rpc = fake_send_rpc
+        t._send_notification = AsyncMock()
+        _collect_emits(t)
+
+        await t._handshake()
+
+        thread_params = params_captured[1][1]
+        assert "approvalPolicy" not in thread_params
+        assert "sandbox" not in thread_params
+
 
 class TestSpawnAppServer:
     @pytest.mark.asyncio
@@ -287,6 +344,59 @@ class TestSpawnAppServer:
                 arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
             )
             assert mock_exec.call_args.kwargs["env"]["PATH"] == "/tmp/shims:/usr/bin"
+
+    @pytest.mark.asyncio
+    async def test_spawn_app_server_defaults_codex_home_from_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        t = _make_transport(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.stdout = None
+        mock_process.stderr = None
+        mock_process.pid = 12345
+
+        with patch(
+            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec, patch(
+            "skuld.transports.codex_ws.resolve_codex_cli",
+            return_value="/Applications/Codex.app/Contents/Resources/codex",
+        ), patch(
+            "skuld.transports.codex_ws.ensure_codex_tool_shims",
+            return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+        ):
+            mock_exec.return_value = mock_process
+            await t._spawn_app_server()
+
+        assert mock_exec.call_args.kwargs["env"]["CODEX_HOME"] == str(home / ".codex")
+
+    @pytest.mark.asyncio
+    async def test_spawn_app_server_preserves_existing_codex_home(self, tmp_path, monkeypatch):
+        codex_home = tmp_path / "custom-codex-home"
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        t = _make_transport(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.stdout = None
+        mock_process.stderr = None
+        mock_process.pid = 12345
+
+        with patch(
+            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec, patch(
+            "skuld.transports.codex_ws.resolve_codex_cli",
+            return_value="/Applications/Codex.app/Contents/Resources/codex",
+        ), patch(
+            "skuld.transports.codex_ws.ensure_codex_tool_shims",
+            return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+        ):
+            mock_exec.return_value = mock_process
+            await t._spawn_app_server()
+
+        assert mock_exec.call_args.kwargs["env"]["CODEX_HOME"] == str(codex_home)
 
 
 class TestFallbackTransport:
@@ -1030,6 +1140,39 @@ class TestApprovals:
         assert "99" in t._pending_approvals
 
     @pytest.mark.asyncio
+    async def test_exec_command_approval_uses_review_decision_shape(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._ws = FakeWebSocket()
+        emit = _collect_emits(t)
+
+        await t._handle_server_request(
+            {
+                "id": 43,
+                "method": "execCommandApproval",
+                "params": {
+                    "conversationId": "thread-1",
+                    "callId": "call-1",
+                    "approvalId": None,
+                    "command": ["/bin/zsh", "-lc", "echo hi"],
+                    "cwd": str(tmp_path),
+                    "reason": "needs shell",
+                    "parsedCmd": [],
+                },
+            }
+        )
+
+        event = emit.call_args[0][0]
+        assert event["type"] == "control_request"
+        assert event["tool"] == "Bash"
+        assert event["input"]["command"] == "/bin/zsh -lc 'echo hi'"
+
+        await t.send_control_response("43", {"behavior": "allow"})
+
+        sent = json.loads(t._ws.sent[0])
+        assert sent["id"] == 43
+        assert sent["result"]["decision"] == "approved"
+
+    @pytest.mark.asyncio
     async def test_send_control_response_approves(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
@@ -1070,6 +1213,197 @@ class TestApprovals:
         sent = json.loads(t._ws.sent[0])
         assert sent["id"] == 77
         assert sent["result"]["decision"] == "accept"
+
+    @pytest.mark.asyncio
+    async def test_dynamic_shell_command_call_executes_via_command_exec(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._ws = FakeWebSocket()
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            return {"exitCode": 0, "stdout": "hello\n", "stderr": ""}
+
+        t._send_rpc = fake_send_rpc
+
+        await t._handle_server_request(
+            {
+                "id": 123,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-1",
+                    "namespace": None,
+                    "tool": "shell_command",
+                    "arguments": {
+                        "command": "echo hello",
+                        "workdir": str(tmp_path),
+                        "timeout_ms": 10000,
+                    },
+                },
+            }
+        )
+        await asyncio.sleep(0.01)
+
+        assert calls == [
+            (
+                "command/exec",
+                {
+                    "command": ["/bin/zsh", "-lc", "echo hello"],
+                    "cwd": str(tmp_path),
+                    "timeoutMs": 10000,
+                },
+            )
+        ]
+        sent = json.loads(t._ws.sent[0])
+        assert sent["id"] == 123
+        assert sent["result"]["success"] is True
+        assert sent["result"]["contentItems"][0]["text"] == "Exit code: 0\nstdout:\nhello\n"
+
+    @pytest.mark.asyncio
+    async def test_dynamic_shell_command_failure_returns_tool_error(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._ws = FakeWebSocket()
+
+        async def fake_send_rpc(method, params=None):
+            return {"exitCode": 2, "stdout": "", "stderr": "nope\n"}
+
+        t._send_rpc = fake_send_rpc
+
+        await t._handle_server_request(
+            {
+                "id": 124,
+                "method": "item/tool/call",
+                "params": {
+                    "tool": "shell_command",
+                    "arguments": {"command": "false", "workdir": str(tmp_path)},
+                },
+            }
+        )
+        await asyncio.sleep(0.01)
+
+        sent = json.loads(t._ws.sent[0])
+        assert sent["result"]["success"] is False
+        assert sent["result"]["contentItems"][0]["text"] == "Exit code: 2\nstderr:\nnope\n"
+
+    @pytest.mark.asyncio
+    async def test_raw_function_shell_command_injects_output(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        emits = _collect_emits(t)
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            if method == "command/exec":
+                return {"exitCode": 0, "stdout": "hello\n", "stderr": ""}
+            if method == "thread/inject_items":
+                return {}
+            raise AssertionError(method)
+
+        t._send_rpc = fake_send_rpc
+
+        await t._handle_server_message(
+            {
+                "method": "rawResponseItem/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "item": {
+                        "type": "function_call",
+                        "name": "shell_command",
+                        "arguments": json.dumps(
+                            {
+                                "command": "echo hello",
+                                "workdir": str(tmp_path),
+                                "timeout_ms": 10000,
+                            }
+                        ),
+                        "call_id": "call-raw-1",
+                    },
+                },
+            }
+        )
+        await asyncio.sleep(0.01)
+
+        assert calls == [
+            (
+                "command/exec",
+                {
+                    "command": ["/bin/zsh", "-lc", "echo hello"],
+                    "cwd": str(tmp_path),
+                    "timeoutMs": 10000,
+                },
+            ),
+            (
+                "thread/inject_items",
+                {
+                    "threadId": "thread-1",
+                    "items": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": "call-raw-1",
+                            "output": "Exit code: 0\nstdout:\nhello\n",
+                        }
+                    ],
+                },
+            ),
+        ]
+        events = _emitted_events(emits)
+        assert any(
+            event.get("type") == "assistant"
+            and event.get("message", {}).get("content", [{}])[0].get("type") == "tool_use"
+            for event in events
+        )
+        assert any(
+            event.get("type") == "content_block_start"
+            and event.get("content_block", {}).get("type") == "tool_result"
+            and event.get("content_block", {}).get("tool_use_id") == "call-raw-1"
+            for event in events
+        )
+
+    @pytest.mark.asyncio
+    async def test_response_item_shell_command_frame_injects_output(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            if method == "command/exec":
+                return {"exitCode": 0, "stdout": str(tmp_path), "stderr": ""}
+            if method == "thread/inject_items":
+                return {}
+            raise AssertionError(method)
+
+        t._send_rpc = fake_send_rpc
+        _collect_emits(t)
+
+        await t._handle_response_item_frame(
+            {
+                "type": "function_call",
+                "name": "shell_command",
+                "arguments": json.dumps(
+                    {
+                        "command": "pwd",
+                        "workdir": str(tmp_path),
+                    }
+                ),
+                "call_id": "call-response-1",
+            }
+        )
+        await asyncio.sleep(0.01)
+
+        assert calls[0] == (
+            "command/exec",
+            {
+                "command": ["/bin/zsh", "-lc", "pwd"],
+                "cwd": str(tmp_path),
+            },
+        )
+        assert calls[1][0] == "thread/inject_items"
+        assert calls[1][1]["items"][0]["call_id"] == "call-response-1"
 
 
 # ---------------------------------------------------------------------------
@@ -1901,6 +2235,30 @@ class TestResumeEdgeCases:
         params = calls[0][1]
         assert params["approvalPolicy"] == "never"
         assert params["sandbox"] == "danger-full-access"
+
+    @pytest.mark.asyncio
+    async def test_resume_with_configured_permission_params(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            skip_permissions=False,
+            approval_policy="untrusted",
+            sandbox="read-only",
+        )
+
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            return {"thread": {"id": "resumed-t"}}
+
+        t._send_rpc = fake_send_rpc
+        _collect_emits(t)
+
+        await t.resume("old-id")
+
+        params = calls[0][1]
+        assert params["approvalPolicy"] == "untrusted"
+        assert params["sandbox"] == "read-only"
 
     @pytest.mark.asyncio
     async def test_resume_with_model(self, tmp_path):

@@ -60,7 +60,7 @@ git:
 broker:
   cliType: claude
   transport: sdk
-  skipPermissions: true
+  skipPermissions: false
 
 volundr:
   apiUrl: ""

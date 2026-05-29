@@ -73,6 +73,30 @@ export interface VolundrConversationHistory {
   last_activity?: string;
 }
 
+export type PermissionAutoApprovalReason =
+  | 'allowed'
+  | 'disabled'
+  | 'no_command'
+  | 'denylist'
+  | 'no_allowlist_match'
+  | 'endpoint_error';
+
+export interface PermissionAutoApprovalRequest {
+  requestId: string;
+  toolName: string;
+  description: string;
+  command?: string;
+  input?: Record<string, unknown>;
+}
+
+export interface PermissionAutoApprovalDecision {
+  canAutoApprove: boolean;
+  reason: PermissionAutoApprovalReason;
+  command: string | null;
+  delaySeconds: number;
+  matchedPattern?: string | null;
+}
+
 export interface ResolveWorkflowGateRequest {
   decision: 'APPROVE' | 'CHANGES_REQUESTED';
   notes?: string;
@@ -139,8 +163,12 @@ export interface IVolundrService {
     resourceConfig?: Record<string, string | undefined>;
     systemPrompt?: string;
     initialPrompt?: string;
-    workloadConfig?: Record<string, string | number | boolean | undefined>;
+    workloadConfig?: Record<string, unknown>;
   }): Promise<VolundrSession>;
+  evaluatePermissionAutoApproval(
+    sessionId: string,
+    request: PermissionAutoApprovalRequest,
+  ): Promise<PermissionAutoApprovalDecision>;
   connectSession(config: { name: string; hostname: string }): Promise<VolundrSession>;
   updateSession(
     sessionId: string,

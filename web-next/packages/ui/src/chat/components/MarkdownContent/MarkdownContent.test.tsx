@@ -140,6 +140,26 @@ describe('MarkdownContent', () => {
     expect(screen.getByText('blocked')).toBeInTheDocument();
   });
 
+  it('restores inline outcome details into markdown lists', () => {
+    render(
+      <MarkdownContent
+        content={[
+          '```outcome',
+          'verdict: needs_changes',
+          'summary: Needs another pass',
+          'details: Changes: - Added **spans** - Verified `go test`',
+          '```',
+        ].join('\n')}
+      />,
+    );
+
+    expect(screen.getByText('Changes:')).toBeInTheDocument();
+    expect(screen.getByText('spans').tagName).toBe('STRONG');
+    expect(screen.getByText('go test').tagName).toBe('CODE');
+    const listItems = screen.getAllByRole('listitem');
+    expect(listItems.map((item) => item.textContent)).toEqual(['Added spans', 'Verified go test']);
+  });
+
   it('renders archived session summary JSON as a formatted summary card', () => {
     render(
       <MarkdownContent

@@ -198,7 +198,7 @@ class TestSubprocessTransport:
     def test_init(self, transport, tmp_path):
         assert transport.workspace_dir == str(tmp_path)
         assert transport._model == ""
-        assert transport._skip_permissions is True
+        assert transport._skip_permissions is False
         assert transport._agent_teams is False
         assert transport._system_prompt == ""
         assert transport._initial_prompt == ""
@@ -311,8 +311,8 @@ class TestSubprocessTransport:
             assert "--output-format" in call_args
             assert "stream-json" in call_args
             assert "--input-format" in call_args
-            assert "--permission-mode" in call_args
-            assert "bypassPermissions" in call_args
+            assert "--permission-mode" not in call_args
+            assert "bypassPermissions" not in call_args
 
             stdin_payload = b"".join(
                 call.args[0] for call in mock_subprocess.stdin.write.call_args_list
@@ -769,8 +769,8 @@ class TestSdkWebSocketTransport:
             assert "--output-format" in call_args
             assert "stream-json" in call_args
             assert "--input-format" in call_args
-            assert "--permission-mode" in call_args
-            assert "bypassPermissions" in call_args
+            assert "--permission-mode" not in call_args
+            assert "bypassPermissions" not in call_args
 
     @pytest.mark.asyncio
     async def test_start_with_resume(self, transport):
@@ -1031,7 +1031,7 @@ class TestSdkWebSocketTransport:
             sdk_port=8081,
             session_id="s1",
         )
-        assert t._skip_permissions is True
+        assert t._skip_permissions is False
 
     def test_init_skip_permissions_false(self, tmp_path):
         t = SdkWebSocketTransport(
@@ -1586,8 +1586,7 @@ class TestCodexSubprocessTransport:
             assert call_args[1] == "exec"
             assert "--model" in call_args
             assert "o4-mini" in call_args
-            assert "--sandbox" in call_args
-            assert "danger-full-access" in call_args
+            assert "--sandbox" not in call_args
             assert "--json" in call_args
             assert "--quiet" not in call_args
             assert "refactor the auth module" in call_args

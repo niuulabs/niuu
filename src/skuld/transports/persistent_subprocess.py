@@ -60,7 +60,7 @@ class PersistentSubprocessTransport(CLITransport):
         self,
         workspace_dir: str,
         model: str = "",
-        skip_permissions: bool = True,
+        skip_permissions: bool = False,
         agent_teams: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",

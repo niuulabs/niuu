@@ -9,9 +9,8 @@ import {
   ErrorState,
   LoadingState,
   SessionChat,
-  cn,
   type MeshNotificationEvent,
-  type PermissionBehavior,
+  cn,
 } from '@niuulabs/ui';
 import {
   Archive,
@@ -57,6 +56,8 @@ import {
   useSkuldChat,
 } from './hooks/useSkuldChat';
 import { deriveTerminalWsUrl, normalizeSessionUrl, wsUrlToHttpBase } from './liveSessionTransport';
+import { PermissionApprovalPanel } from './PermissionApprovalPanel';
+import { buildPermissionAutoApprovalRequest } from './permissionAutoApproval';
 import { SessionTerminalLive } from './SessionTerminalLive';
 import { StructuredLogViewer } from './components/StructuredLogViewer';
 import './LiveSessionDetailPage.css';
@@ -3653,47 +3654,24 @@ export function LiveSessionDetailPage({
     }
   }, [activeTab, tabWasManuallySelected, tabs]);
 
-  const permissionRenderer = useMemo(
-    () =>
-      chat.pendingPermissions.length > 0
-        ? (
-            permissions: typeof chat.pendingPermissions,
-            onRespond: (requestId: string, behavior: PermissionBehavior) => void,
-          ) => (
-            <div className="niuu-flex niuu-flex-col niuu-gap-2 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-3">
-              {permissions.map((permission) => (
-                <div
-                  key={permission.requestId}
-                  className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-text-xs"
-                >
-                  <div>
-                    <div className="niuu-font-mono niuu-text-text-primary">
-                      {permission.toolName}
-                    </div>
-                    <div className="niuu-text-text-muted">{permission.description}</div>
-                  </div>
-                  <div className="niuu-flex niuu-gap-2">
-                    <button
-                      type="button"
-                      className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-px-2 niuu-py-1 niuu-text-text-secondary"
-                      onClick={() => onRespond(permission.requestId, 'deny')}
-                    >
-                      deny
-                    </button>
-                    <button
-                      type="button"
-                      className="niuu-rounded-md niuu-border niuu-border-brand niuu-bg-brand niuu-px-2 niuu-py-1 niuu-text-bg-primary"
-                      onClick={() => onRespond(permission.requestId, 'allow_once')}
-                    >
-                      allow
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )
-        : undefined,
-    [chat],
+  const evaluatePermissionAutoApproval = useCallback(
+    (permission: (typeof chat.pendingPermissions)[number]) =>
+      volundr.evaluatePermissionAutoApproval(
+        sessionId,
+        buildPermissionAutoApprovalRequest(permission),
+      ),
+    [chat, sessionId, volundr],
+  );
+
+  const permissionRenderer = useCallback(
+    (permissions: typeof chat.pendingPermissions, onRespond: typeof chat.respondToPermission) => (
+      <PermissionApprovalPanel
+        permissions={permissions}
+        onRespond={onRespond}
+        evaluateAutoApproval={evaluatePermissionAutoApproval}
+      />
+    ),
+    [chat, evaluatePermissionAutoApproval],
   );
 
   async function refreshSessionData() {

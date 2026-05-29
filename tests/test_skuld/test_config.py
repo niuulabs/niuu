@@ -212,12 +212,19 @@ class TestSkuldSettings:
 
     def test_skip_permissions_default(self):
         s = SkuldSettings()
-        assert s.skip_permissions is True
+        assert s.skip_permissions is False
 
     def test_skip_permissions_false(self, monkeypatch):
         monkeypatch.setenv("SKULD__SKIP_PERMISSIONS", "false")
         s = SkuldSettings()
         assert s.skip_permissions is False
+
+    def test_codex_permission_thread_params(self, monkeypatch):
+        monkeypatch.setenv("SKULD__APPROVAL_POLICY", "untrusted")
+        monkeypatch.setenv("SKULD__SANDBOX", "workspace-write")
+        s = SkuldSettings()
+        assert s.approval_policy == "untrusted"
+        assert s.sandbox == "workspace-write"
 
     def test_agent_teams_default(self):
         s = SkuldSettings()

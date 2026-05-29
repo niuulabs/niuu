@@ -11,7 +11,11 @@ import {
   type EventStreamHandle,
   type EventStreamOptions,
 } from '@niuulabs/query';
-import type { IVolundrService, VolundrConversationHistory } from '../ports/IVolundrService';
+import type {
+  IVolundrService,
+  PermissionAutoApprovalDecision,
+  VolundrConversationHistory,
+} from '../ports/IVolundrService';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import type {
   VolundrSession,
@@ -155,12 +159,17 @@ type ConversationPayload = {
     id: string;
     role: string;
     content: string;
+    parts?: Array<Record<string, unknown>>;
     created_at?: string;
     metadata?: {
       tokens_in?: number;
       tokens_out?: number;
       latency?: number;
     };
+    participant_id?: string;
+    participant_meta?: Record<string, unknown>;
+    thread_id?: string;
+    visibility?: 'visible' | 'internal';
   }>;
 };
 
@@ -359,6 +368,17 @@ type SessionDefinitionPayload = {
   compatibleProviders?: string[];
 };
 
+type PermissionAutoApprovalPayload = {
+  can_auto_approve?: boolean;
+  canAutoApprove?: boolean;
+  reason?: PermissionAutoApprovalDecision['reason'];
+  command?: string | null;
+  delay_seconds?: number;
+  delaySeconds?: number;
+  matched_pattern?: string | null;
+  matchedPattern?: string | null;
+};
+
 function normalizeSessionDefinition(payload: SessionDefinitionPayload): SessionDefinition {
   return {
     key: payload.key,
@@ -368,6 +388,47 @@ function normalizeSessionDefinition(payload: SessionDefinitionPayload): SessionD
     defaultModel: payload.defaultModel ?? payload.default_model ?? '',
     compatibleProviders: payload.compatibleProviders ?? payload.compatible_providers ?? [],
   };
+}
+
+function normalizePermissionAutoApproval(
+  payload: PermissionAutoApprovalPayload,
+): PermissionAutoApprovalDecision {
+  return {
+    canAutoApprove: Boolean(payload.canAutoApprove ?? payload.can_auto_approve),
+    reason: payload.reason ?? 'endpoint_error',
+    command: payload.command ?? null,
+    delaySeconds: payload.delaySeconds ?? payload.delay_seconds ?? 5,
+    matchedPattern: payload.matchedPattern ?? payload.matched_pattern ?? null,
+  };
+}
+
+function buildStartSessionBody(
+  config: Parameters<IVolundrService['startSession']>[0],
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    name: config.name,
+    source: config.source,
+    model: config.model,
+    definition: config.definition,
+    template_name: config.templateName,
+    preset_id: config.presetId,
+    terminal_restricted: Boolean(config.terminalRestricted),
+    instance_id: config.instanceId ?? null,
+    workspace_id: config.workspaceId,
+    credential_names: config.credentialNames,
+    integration_ids: config.integrationIds,
+    resource_config: config.resourceConfig,
+    system_prompt: config.systemPrompt,
+    initial_prompt: config.initialPrompt,
+    workload_config: config.workloadConfig ?? {},
+    issue_id: config.trackerIssue?.id,
+    issue_url: config.trackerIssue?.url,
+  };
+
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined) delete body[key];
+  }
+  return body;
 }
 
 function toEpochMs(value?: number | string | null): number {
@@ -553,8 +614,13 @@ function normalizeConversationHistory(payload: ConversationPayload): VolundrConv
       id: turn.id,
       role: turn.role,
       content: turn.content,
+      parts: turn.parts,
       created_at: turn.created_at ?? new Date(0).toISOString(),
       metadata: turn.metadata,
+      participant_id: turn.participant_id,
+      participant_meta: turn.participant_meta,
+      thread_id: turn.thread_id,
+      visibility: turn.visibility,
     })),
   };
 }
@@ -1340,10 +1406,20 @@ export function buildVolundrHttpAdapter(
 
     startSession: async (config) =>
       normalizeSession(
-        await forgeClient.post<SessionPayload>('/sessions', {
-          ...config,
-          instance_id: config.instanceId ?? null,
-        }),
+        await forgeClient.post<SessionPayload>('/sessions', buildStartSessionBody(config)),
+      ),
+    evaluatePermissionAutoApproval: async (sessionId, request) =>
+      normalizePermissionAutoApproval(
+        await forgeClient.post<PermissionAutoApprovalPayload>(
+          `/sessions/${sessionId}/permissions/auto-approval/evaluate`,
+          {
+            request_id: request.requestId,
+            tool_name: request.toolName,
+            description: request.description,
+            command: request.command ?? null,
+            input: request.input ?? {},
+          },
+        ),
       ),
     connectSession: async (config) =>
       normalizeSession(await forgeClient.post<SessionPayload>('/sessions/connect', config)),

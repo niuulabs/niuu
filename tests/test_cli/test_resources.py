@@ -60,6 +60,13 @@ class TestMigrationDir:
         assert result.is_dir()
         assert any(result.glob("*.up.sql"))
 
+    def test_volundr_migrations_include_session_spans(self):
+        """The source migration stream includes trace span persistence."""
+        result = migration_dir("volundr")
+        migration_names = {path.name for path in ordered_migration_files(result)}
+
+        assert "000042_session_spans.up.sql" in migration_names
+
     def test_ting_variant(self):
         """migration_dir('ting') returns a directory containing ting migrations."""
         result = migration_dir("ting")

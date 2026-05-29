@@ -425,7 +425,7 @@ export interface ResourceConfig {
 }
 
 export interface WorkloadConfig {
-  [key: string]: string | number | boolean | undefined;
+  [key: string]: unknown;
 }
 
 export interface SkillConfig {

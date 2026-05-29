@@ -100,6 +100,62 @@ class ProvisioningConfig(BaseModel):
     )
 
 
+def _default_auto_approval_allowlist() -> list[str]:
+    return [
+        r"^\s*\./start-dev(?:\s|$)",
+        r"^\s*\./stop-dev(?:\s|$)",
+        r"^\s*(?:pwd|ls|find|rg|grep|cat|sed|awk|head|tail|wc)(?:\s|$)",
+        r"^\s*git\s+(?:status|diff|log|show|branch|rev-parse)(?:\s|$)",
+        (
+            r"^\s*(?:pnpm\s+(?:exec\s+vitest|--filter\s+[^\s]+\s+"
+            r"(?:test|typecheck|build))|npm\s+(?:test|run\s+test)|"
+            r"\.venv/bin/pytest|pytest|python3?\s+-m\s+pytest|uv\s+run\s+pytest)(?:\s|$)"
+        ),
+    ]
+
+
+def _default_auto_approval_denylist() -> list[str]:
+    return [
+        (
+            r"(?:^|[;&|]\s*)(?:sudo|su|rm\s+-rf|mkfs|dd\b|shred|wipefs|fdisk|"
+            r"parted|diskutil|kill(?:all)?\b|pkill\b|launchctl|systemctl|"
+            r"chmod\s+-R|chown\s+-R)\b"
+        ),
+        (
+            r"\b(?:git\s+(?:reset\s+--hard|clean\s+-f|checkout\s+--)|"
+            r"pnpm\s+(?:install|add|remove)|npm\s+(?:install|i|add|uninstall)|"
+            r"brew\s+(?:install|uninstall))\b"
+        ),
+        r"\b(?:curl|wget)\b[^|]*\|\s*(?:sh|bash)\b",
+        r"\bfind\b.*(?:\s-delete\b|-exec\s+(?:rm|sh|bash)\b)",
+        r"(?:^|\s)>\s*/(?:dev|etc|bin|sbin|usr|System)\b",
+        r"(?:^|\s)--force(?:\s|$)",
+    ]
+
+
+class PermissionAutoApprovalConfig(BaseModel):
+    """Server-side policy for browser-displayed permission auto approvals."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Allow the UI to auto-approve permission requests that match this policy.",
+    )
+    delay_seconds: int = Field(
+        default=5,
+        ge=2,
+        le=30,
+        description="Countdown duration before an allowlisted request is auto-approved.",
+    )
+    allowlist: list[str] = Field(
+        default_factory=_default_auto_approval_allowlist,
+        description="Regex patterns that are eligible for auto approval.",
+    )
+    denylist: list[str] = Field(
+        default_factory=_default_auto_approval_denylist,
+        description="Regex patterns that are never eligible for auto approval.",
+    )
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration.
 
@@ -216,7 +272,6 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                     "cliType": "claude",
                     "transport": "sdk",
                     "transportAdapter": "skuld.transports.sdk.SDKTransport",
-                    "skipPermissions": True,
                     "agentTeams": False,
                 },
             },
@@ -232,7 +287,6 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "broker": {
                     "cliType": "codex-ws",
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
-                    "skipPermissions": True,
                     "agentTeams": False,
                 },
             },
@@ -241,8 +295,7 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             enabled=True,
             display_name="OpenAI Codex (Batch)",
             description=(
-                "OpenAI Codex — subprocess transport tuned for autonomous workflow "
-                "execution"
+                "OpenAI Codex — subprocess transport tuned for autonomous workflow execution"
             ),
             labels=["session", "codex", "batch"],
             default_model="",
@@ -251,7 +304,6 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "broker": {
                     "cliType": "codex",
                     "transportAdapter": "skuld.transports.codex.CodexSubprocessTransport",
-                    "skipPermissions": True,
                     "agentTeams": False,
                 },
             },
@@ -267,7 +319,6 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "broker": {
                     "cliType": "opencode",
                     "transportAdapter": "skuld.transports.opencode.OpenCodeHttpTransport",
-                    "skipPermissions": True,
                     "agentTeams": False,
                 },
             },
@@ -1346,6 +1397,10 @@ class Settings(BaseSettings):
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     provisioning: ProvisioningConfig = Field(default_factory=ProvisioningConfig)
+    permission_auto_approval: PermissionAutoApprovalConfig = Field(
+        default_factory=PermissionAutoApprovalConfig,
+        description="Server-side allow/deny policy for permission request auto approvals.",
+    )
     local_git: LocalGitConfig = Field(default_factory=LocalGitConfig)
     local_mounts: LocalMountsConfig = Field(default_factory=LocalMountsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)

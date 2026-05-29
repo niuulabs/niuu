@@ -76,7 +76,7 @@
 
 .niuu-chat-cascade-status-dot[data-verdict='needs_changes'],
 .niuu-chat-cascade-status-dot[data-verdict='needs_review'] {
-  background-color: var(--color-accent-amber);
+  background-color: color-mix(in srgb, var(--color-critical-fg) 82%, var(--color-text-muted));
 }
 
 .niuu-chat-cascade-header-right {

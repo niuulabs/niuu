@@ -215,6 +215,18 @@ def _inject_token_into_url(repo_url: str, token: str) -> str:
     return repo_url
 
 
+def _looks_like_local_path(value: str) -> bool:
+    trimmed = value.strip()
+    return trimmed.startswith(("/", "~", "./", "../"))
+
+
+def _local_workspace_from_repo(value: str) -> Path | None:
+    """Treat filesystem repo values as local workspaces instead of clone sources."""
+    if not _looks_like_local_path(value):
+        return None
+    return Path(value).expanduser()
+
+
 def _stage_personas(node: dict[str, Any]) -> set[str]:
     personas = {
         str(persona)
@@ -644,6 +656,16 @@ class LocalProcessPodManager(PodManager):
                 raise RuntimeError(f"local path {workspace!r} is not a directory")
             self._write_claude_md(workspace, spec)
             return workspace
+        if isinstance(session.source, GitSource) and session.source.repo:
+            local_workspace = _local_workspace_from_repo(session.source.repo)
+            if local_workspace is not None:
+                if not local_workspace.is_dir():
+                    raise RuntimeError(
+                        f"local repo path {local_workspace!r} is not a directory"
+                    )
+                workspace = local_workspace.resolve()
+                self._write_claude_md(workspace, spec)
+                return workspace
 
         workspace = self._workspaces_dir / str(session.id)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -921,7 +943,6 @@ class LocalProcessPodManager(PodManager):
         env["SKULD__HOST"] = "127.0.0.1"
         env["SKULD__PORT"] = str(port)
         env.setdefault("SKULD__TRANSPORT", "sdk")
-        env.setdefault("SKULD__SKIP_PERMISSIONS", "true")
         env["SKULD__PERSISTENCE_MOUNT_PATH"] = str(self._workspaces_dir)
 
         # Volundr API URL so Skuld can post chronicles/timeline events back
@@ -1384,6 +1405,12 @@ class LocalProcessPodManager(PodManager):
         """Build environment variables for the Skuld process."""
         env = dict(os.environ)
         env["WORKSPACE_DIR"] = str(workspace)
+        for key in (
+            "SKULD__SKIP_PERMISSIONS",
+            "SKULD__APPROVAL_POLICY",
+            "SKULD__SANDBOX",
+        ):
+            env.pop(key, None)
 
         api_key = spec.values.get("anthropic_api_key", "")
         if api_key:
@@ -1414,6 +1441,14 @@ class LocalProcessPodManager(PodManager):
 
             if "skipPermissions" in broker:
                 env["SKULD__SKIP_PERMISSIONS"] = str(bool(broker["skipPermissions"])).lower()
+
+            approval_policy = broker.get("approvalPolicy", broker.get("approval_policy"))
+            if approval_policy:
+                env["SKULD__APPROVAL_POLICY"] = str(approval_policy)
+
+            sandbox = broker.get("sandbox")
+            if sandbox:
+                env["SKULD__SANDBOX"] = str(sandbox)
 
             if "agentTeams" in broker:
                 env["SKULD__AGENT_TEAMS"] = str(bool(broker["agentTeams"])).lower()

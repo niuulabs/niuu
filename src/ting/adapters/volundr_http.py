@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -18,6 +19,18 @@ logger = logging.getLogger(__name__)
 
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 INTEGRATIONS_PATH = "/api/v1/integrations"
+
+
+def _looks_like_local_path(value: str) -> bool:
+    trimmed = value.strip()
+    return trimmed.startswith(("/", "~", "./", "../"))
+
+
+def _local_mount_path(value: str) -> str | None:
+    """Return an absolute local workspace path when a repo field is a path."""
+    if not _looks_like_local_path(value):
+        return None
+    return str(Path(value).expanduser().resolve())
 
 
 class VolundrHTTPAdapter(VolundrPort):
@@ -69,9 +82,10 @@ class VolundrHTTPAdapter(VolundrPort):
         principal: Principal | None = None,
     ) -> VolundrSession:
         repo = request.repo
+        local_path = _local_mount_path(repo)
         # Resolve bare org/repo shorthands to full URLs so Volundr's
         # GitContributor can produce an authenticated clone URL.
-        if repo and "://" not in repo and "@" not in repo:
+        if local_path is None and repo and "://" not in repo and "@" not in repo:
             resolved = await self._resolve_repo_url(
                 repo,
                 auth_token=auth_token,
@@ -80,6 +94,19 @@ class VolundrHTTPAdapter(VolundrPort):
             if resolved:
                 logger.info("Resolved repo shorthand %s → %s", repo, resolved)
                 repo = resolved
+        source_payload = (
+            {
+                "type": "local_mount",
+                "local_path": local_path,
+            }
+            if local_path is not None
+            else {
+                "type": "git",
+                "repo": repo,
+                "branch": request.branch,
+                "base_branch": request.base_branch,
+            }
+        )
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
@@ -88,12 +115,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 json={
                     "name": request.name,
                     "model": request.model,
-                    "source": {
-                        "type": "git",
-                        "repo": repo,
-                        "branch": request.branch,
-                        "base_branch": request.base_branch,
-                    },
+                    "source": source_payload,
                     "system_prompt": request.system_prompt,
                     "initial_prompt": request.initial_prompt,
                     "issue_id": request.tracker_issue_id,
@@ -117,7 +139,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 tracker_issue_id=data.get("tracker_issue_id"),
                 chat_endpoint=data.get("chat_endpoint"),
                 cluster_name=self._name,
-                repo=source.get("repo", ""),
+                repo=source.get("repo") or source.get("local_path", ""),
                 branch=source.get("branch", ""),
                 base_branch=source.get("base_branch", ""),
                 workload_type=data.get("workload_type", "default"),
@@ -147,7 +169,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 tracker_issue_id=data.get("tracker_issue_id"),
                 chat_endpoint=data.get("chat_endpoint"),
                 cluster_name=self._name,
-                repo=source.get("repo", ""),
+                repo=source.get("repo") or source.get("local_path", ""),
                 branch=source.get("branch", ""),
                 base_branch=source.get("base_branch", ""),
                 workload_type=data.get("workload_type", "default"),

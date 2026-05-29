@@ -11,6 +11,7 @@ from volundr.config import (
     GitLabInstance,
     IntegrationType,
     OtelConfig,
+    PermissionAutoApprovalConfig,
     RabbitMQConfig,
     SecretType,
     SeededIntegrationConnectionConfig,
@@ -104,6 +105,16 @@ class TestSettings:
         assert isinstance(settings.git, GitConfig)
         assert isinstance(settings.git.github, GitHubConfig)
         assert isinstance(settings.git.gitlab, GitLabConfig)
+
+    def test_permission_auto_approval_config_included(self):
+        """Test that Settings includes server-backed auto approval policy."""
+        settings = Settings()
+
+        assert isinstance(settings.permission_auto_approval, PermissionAutoApprovalConfig)
+        assert settings.permission_auto_approval.delay_seconds == 5
+        assert any(
+            "./start-dev" in pattern for pattern in settings.permission_auto_approval.allowlist
+        )
 
 
 class TestGitHubConfig:

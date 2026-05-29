@@ -1097,14 +1097,35 @@ export function useSkuldChat(
           }
           case 'control_request': {
             if (!event.request_id) break;
-            setPendingPermissions((prev) => [
-              ...prev,
-              {
+            const input = event.input && typeof event.input === 'object' ? event.input : {};
+            const command = typeof input.command === 'string' ? input.command.trim() : '';
+            const filePath =
+              typeof input.file_path === 'string'
+                ? input.file_path
+                : typeof input.path === 'string'
+                  ? input.path
+                  : '';
+            const detail = command || filePath;
+            setPendingPermissions((prev) => {
+              const nextPermission = {
                 requestId: event.request_id!,
                 toolName: event.tool ?? 'unknown',
-                description: `Allow ${event.tool ?? 'tool'} to run`,
-              },
-            ]);
+                description: detail || `Allow ${event.tool ?? 'tool'} to run`,
+                input,
+                command: command || undefined,
+              };
+              return [
+                ...prev.filter((permission) => permission.requestId !== nextPermission.requestId),
+                nextPermission,
+              ];
+            });
+            break;
+          }
+          case 'permission_resolved': {
+            if (!event.request_id) break;
+            setPendingPermissions((prev) =>
+              prev.filter((permission) => permission.requestId !== event.request_id),
+            );
             break;
           }
           case 'participant_joined': {

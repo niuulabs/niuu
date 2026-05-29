@@ -223,6 +223,21 @@ function parseFields(raw: string): Record<string, string> {
   return fields;
 }
 
+function restoreInlineMarkdownBreaks(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes('\n')) return trimmed;
+
+  return trimmed
+    .replace(/\s+(#{1,6}\s+)/g, '\n\n$1')
+    .replace(/(^|\s)([A-Z][A-Za-z0-9 /&()_-]{2,48}):\s+-\s+/g, (_match, prefix, label) => {
+      const spacer = prefix && String(prefix).trim() ? '\n\n' : '';
+      return `${spacer}${label}:\n- `;
+    })
+    .replace(/\s+-\s+(?=[A-Z0-9`*])/g, '\n- ')
+    .replace(/(#{2,6}\s+[^\n#-]{2,80})-\s+/g, '$1\n')
+    .trim();
+}
+
 interface OutcomeCardProps {
   raw: string;
 }
@@ -250,7 +265,7 @@ export function OutcomeCard({ raw }: OutcomeCardProps) {
       </div>
       {summary && (
         <div className="niuu-chat-outcome-summary">
-          <MarkdownContent content={summary} />
+          <MarkdownContent content={restoreInlineMarkdownBreaks(summary)} />
         </div>
       )}
       <div className="niuu-chat-outcome-fields">
@@ -260,7 +275,7 @@ export function OutcomeCard({ raw }: OutcomeCardProps) {
             <div key={k} className="niuu-chat-outcome-field">
               <span className="niuu-chat-outcome-field-key">{k}</span>
               <div className="niuu-chat-outcome-field-value">
-                <MarkdownContent content={v} />
+                <MarkdownContent content={restoreInlineMarkdownBreaks(v)} />
               </div>
             </div>
           ))}

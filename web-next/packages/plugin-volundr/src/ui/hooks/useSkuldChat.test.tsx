@@ -593,12 +593,20 @@ page_path: council/demo/opinion-b.md
         JSON.stringify({
           type: 'control_request',
           request_id: 'perm-1',
-          tool: 'web_fetch',
+          tool: 'Bash',
+          input: { command: './start-dev' },
         }),
       );
     });
 
     expect(result.current.pendingPermissions).toHaveLength(1);
+    expect(result.current.pendingPermissions[0]).toMatchObject({
+      requestId: 'perm-1',
+      toolName: 'Bash',
+      description: './start-dev',
+      command: './start-dev',
+      input: { command: './start-dev' },
+    });
 
     await act(async () => {
       result.current.respondToPermission('perm-1', 'allow_always');
@@ -637,6 +645,37 @@ page_path: council/demo/opinion-b.md
 
     expect(result.current.messages).toHaveLength(0);
     expect(result.current.meshEvents).toHaveLength(0);
+    expect(result.current.pendingPermissions).toHaveLength(0);
+  });
+
+  it('removes pending permissions when the broker resolves them', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'control_request',
+          request_id: 'perm-broker',
+          tool: 'Bash',
+          input: { command: './stop-dev' },
+        }),
+      );
+    });
+    expect(result.current.pendingPermissions).toHaveLength(1);
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'permission_resolved',
+          request_id: 'perm-broker',
+          behavior: 'allow',
+          auto_approved: true,
+        }),
+      );
+    });
+
     expect(result.current.pendingPermissions).toHaveLength(0);
   });
 

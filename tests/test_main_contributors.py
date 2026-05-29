@@ -39,3 +39,23 @@ def test_create_contributors_does_not_duplicate_notification_channels() -> None:
     ]
 
     assert len(notification_contributors) == 1
+
+
+def test_create_contributors_auto_wires_workload_config_once() -> None:
+    settings = Settings(
+        session_contributors=[
+            SessionContributorConfig(
+                adapter=(
+                    "volundr.adapters.outbound.contributors.workload_config."
+                    "WorkloadConfigContributor"
+                )
+            )
+        ]
+    )
+
+    contributors = _create_contributors(settings)
+    workload_contributors = [
+        contributor for contributor in contributors if contributor.name == "workload_config"
+    ]
+
+    assert len(workload_contributors) == 1

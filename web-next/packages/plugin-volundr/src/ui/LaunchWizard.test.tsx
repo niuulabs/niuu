@@ -128,7 +128,7 @@ describe('LaunchWizard', () => {
           templateName: 'niuu-platform',
           definition: 'skuldClaude',
           taskType: 'skuld-claude',
-          terminalRestricted: true,
+          terminalRestricted: false,
           resourceConfig: { cpu: '2', memory: '8Gi' },
           workloadConfig: {},
         }),

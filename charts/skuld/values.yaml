@@ -221,7 +221,7 @@ broker:
   transportAdapter: "skuld.transports.sdk.SDKTransport"
   # -- Skip tool permission prompts (true = --dangerously-skip-permissions for Claude,
   # --full-auto for Codex)
-  skipPermissions: true
+  skipPermissions: false
   # -- Enable Claude Code experimental Agent Teams (Claude only)
   agentTeams: false
 
