@@ -167,6 +167,19 @@ ed
     expect(screen.getByText('Keep manual approval for risky commands')).toBeInTheDocument();
     expect(screen.getByText('Auto-approve routine reads')).toBeInTheDocument();
   });
+
+  it('leaves lowercase labels inline when they are not intended as markdown sections', () => {
+    render(<OutcomeCard raw={'verdict: pass\nsummary: notes: - keep lowercase inline'} />);
+
+    expect(screen.getByText('notes: - keep lowercase inline')).toBeInTheDocument();
+  });
+
+  it('breaks heading lines that include an inline lowercase bullet payload', () => {
+    render(<OutcomeCard raw={'verdict: pass\nsummary: ## Heading - item'} />);
+
+    expect(screen.getByRole('heading', { name: 'Heading' })).toBeInTheDocument();
+    expect(screen.getByText('item')).toBeInTheDocument();
+  });
 });
 
 describe('extractOutcomeBlock', () => {
