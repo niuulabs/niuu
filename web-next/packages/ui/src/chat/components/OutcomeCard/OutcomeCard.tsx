@@ -258,14 +258,89 @@ function restoreInlineLabelBullets(value: string): string {
   return result;
 }
 
+function headingMarkerLength(value: string, index: number): number {
+  let cursor = index;
+  while (cursor < value.length && value[cursor] === '#' && cursor - index < 6) {
+    cursor += 1;
+  }
+  const markerLength = cursor - index;
+  if (markerLength < 1 || markerLength > 6) return 0;
+  return value[cursor] === ' ' ? markerLength : 0;
+}
+
+function restoreInlineHeadingBreaks(value: string): string {
+  let result = '';
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    const char = value[cursor] ?? '';
+    if (char.trim() === '' && headingMarkerLength(value, cursor + 1) > 0) {
+      result = result.trimEnd();
+      result += '\n\n';
+      cursor += 1;
+      while (cursor < value.length && (value[cursor] ?? '').trim() === '') {
+        cursor += 1;
+      }
+      continue;
+    }
+    result += char;
+    cursor += 1;
+  }
+
+  return result;
+}
+
+function isInlineBulletStart(value: string): boolean {
+  return /^[A-Z0-9`*]$/.test(value);
+}
+
+function restoreInlineBullets(value: string): string {
+  let result = '';
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    const marker = value.indexOf(' - ', cursor);
+    if (marker === -1) {
+      result += value.slice(cursor);
+      break;
+    }
+
+    const nextChar = value[marker + 3] ?? '';
+    if (!isInlineBulletStart(nextChar)) {
+      result += value.slice(cursor, marker + 3);
+      cursor = marker + 3;
+      continue;
+    }
+
+    result += value.slice(cursor, marker);
+    result += '\n- ';
+    cursor = marker + 3;
+  }
+
+  return result;
+}
+
+function restoreHeadingBulletBreaks(value: string): string {
+  const lines = value.split('\n');
+  return lines
+    .map((line) => {
+      const markerLength = headingMarkerLength(line, 0);
+      if (markerLength < 2) return line;
+
+      const bulletIndex = line.indexOf('- ');
+      if (bulletIndex <= markerLength + 1) return line;
+      return `${line.slice(0, bulletIndex)}\n${line.slice(bulletIndex)}`;
+    })
+    .join('\n');
+}
+
 function restoreInlineMarkdownBreaks(value: string): string {
   const trimmed = value.trim();
   if (!trimmed || trimmed.includes('\n')) return trimmed;
 
-  return restoreInlineLabelBullets(trimmed.replace(/\s+(#{1,6}\s+)/g, '\n\n$1'))
-    .replace(/\s+-\s+(?=[A-Z0-9`*])/g, '\n- ')
-    .replace(/(#{2,6}\s+[^\n#-]{2,80})-\s+/g, '$1\n')
-    .trim();
+  return restoreHeadingBulletBreaks(
+    restoreInlineBullets(restoreInlineLabelBullets(restoreInlineHeadingBreaks(trimmed))),
+  ).trim();
 }
 
 interface OutcomeCardProps {
