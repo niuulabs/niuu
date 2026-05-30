@@ -120,6 +120,19 @@ def _default_models() -> list[ManagedModelConfig]:
     """Built-in Bifrost model catalog used when no explicit catalog is configured."""
     return [
         ManagedModelConfig(
+            id="claude-opus-4-8",
+            name="Claude Opus 4.8 (1M)",
+            vendor="anthropic",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#8B5CF6",
+            description="Anthropic frontier reasoning model, 1M-token context.",
+            cost_per_million_tokens=15.0,
+            session_definition="skuldClaude",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
             id="claude-opus-4-7",
             name="Claude Opus 4.7",
             vendor="anthropic",
