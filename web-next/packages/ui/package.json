@@ -26,7 +26,7 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
-    "react": "^19.0.0"
+    "react": "^19.2.6"
   },
   "dependencies": {
     "@niuulabs/domain": "workspace:*",
@@ -36,17 +36,17 @@
     "@radix-ui/react-toast": "^1.2.4",
     "@radix-ui/react-tooltip": "^1.1.8",
     "clsx": "^2.1.1",
-    "lucide-react": "^0.468.0"
+    "lucide-react": "^1.17.0"
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
-    "@types/react": "^19.0.7",
+    "@types/react": "^19.2.15",
     "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.49",
+    "postcss": "^8.5.15",
     "postcss-import": "^16.1.0",
-    "react": "^19.0.0",
-    "tailwindcss": "^3.4.17",
+    "react": "^19.2.6",
+    "tailwindcss": "^4.3.0",
     "tsup": "^8.3.5",
-    "typescript": "^5.7.3"
+    "typescript": "^6.0.3"
   }
 }
