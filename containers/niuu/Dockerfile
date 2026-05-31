@@ -10,8 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
-    python3.12 \
-    python3.12-venv \
+    python3 \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv from a pinned release archive and resolve from the committed lockfile.
@@ -55,8 +55,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
-    python3.12 \
-    python3.12-venv \
+    python3 \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user
