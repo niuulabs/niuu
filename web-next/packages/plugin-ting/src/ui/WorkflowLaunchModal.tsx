@@ -50,9 +50,7 @@ export function WorkflowLaunchModal({
     }
   }, [open]);
 
-  function updateDraft(
-    patch: Partial<Omit<NonNullable<typeof draft>, 'workflowKey'>>,
-  ) {
+  function updateDraft(patch: Partial<Omit<NonNullable<typeof draft>, 'workflowKey'>>) {
     setDraft((prev) => ({
       ...(prev?.workflowKey === workflowKey ? prev : current),
       ...patch,

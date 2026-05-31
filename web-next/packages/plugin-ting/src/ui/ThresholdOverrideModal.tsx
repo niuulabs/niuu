@@ -65,9 +65,7 @@ export function ThresholdOverrideModal({
           max={THRESHOLD_MAX}
           step={THRESHOLD_STEP}
           value={value}
-          onChange={(e) =>
-            setDraft({ key: thresholdKey, value: parseFloat(e.target.value) })
-          }
+          onChange={(e) => setDraft({ key: thresholdKey, value: parseFloat(e.target.value) })}
           className="niuu-flex-1"
           aria-label="Threshold value"
         />

@@ -69,7 +69,10 @@ function triggerResize(width: number, height: number) {
   );
 }
 
-async function renderCanvas(topology: Topology | null, props: Partial<React.ComponentProps<typeof TopologyCanvas>> = {}) {
+async function renderCanvas(
+  topology: Topology | null,
+  props: Partial<React.ComponentProps<typeof TopologyCanvas>> = {},
+) {
   render(<TopologyCanvas topology={topology} {...props} />);
   const canvas = screen.getByTestId('topology-canvas') as HTMLCanvasElement;
   await waitFor(() => {
@@ -384,7 +387,9 @@ describe('TopologyCanvas', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId('zoom-display')).toHaveTextContent(`${Math.round(camera.zoom * 100)}%`),
+      expect(screen.getByTestId('zoom-display')).toHaveTextContent(
+        `${Math.round(camera.zoom * 100)}%`,
+      ),
     );
 
     fireEvent.mouseMove(canvas, point);

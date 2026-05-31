@@ -615,10 +615,9 @@ summary: Fetched review packet ready
       })),
     );
 
-    const { result, rerender } = renderHook(
-      ({ url }) => useSkuldChat(url),
-      { initialProps: { url: 'ws://localhost:8080/s/test/session' } },
-    );
+    const { result, rerender } = renderHook(({ url }) => useSkuldChat(url), {
+      initialProps: { url: 'ws://localhost:8080/s/test/session' },
+    });
 
     await act(async () => {
       await Promise.resolve();
@@ -2320,7 +2319,13 @@ page_path: council/demo/opinion-b.md
     expect(result.current.messages[1]).toMatchObject({
       participantId: 'peer-generated',
       content: '',
-      parts: [{ type: 'tool_result', tool_use_id: expect.stringMatching(/^tool-/), content: 'orphan result' }],
+      parts: [
+        {
+          type: 'tool_result',
+          tool_use_id: expect.stringMatching(/^tool-/),
+          content: 'orphan result',
+        },
+      ],
     });
   });
 

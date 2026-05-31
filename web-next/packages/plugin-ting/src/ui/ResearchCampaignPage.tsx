@@ -182,9 +182,10 @@ export function parseYamlScalar(raw: string): unknown {
   return value.replace(/^['"]|['"]$/g, '');
 }
 
-export function parseFrontmatter(
-  content: string,
-): { frontmatter: Record<string, unknown>; body: string } {
+export function parseFrontmatter(content: string): {
+  frontmatter: Record<string, unknown>;
+  body: string;
+} {
   const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!match) return { frontmatter: {}, body: content };
   const yaml = match[1] ?? '';
@@ -1070,13 +1071,13 @@ export function ResearchCampaignPage() {
     return { published, reviewReady, notebook };
   }, [parsedArtifacts]);
   const campaignPanelState = campaign ? deriveCampaignState(campaign, []) : 'draft';
-  const evidenceOpen = evidenceOpenOverride ?? (campaignPanelState === 'published');
+  const evidenceOpen = evidenceOpenOverride ?? campaignPanelState === 'published';
   const skepticOpen =
     skepticOpenOverride ??
     (campaignPanelState === 'running' ||
       campaignPanelState === 'review' ||
       campaignPanelState === 'blocked');
-  const memoryOpen = memoryOpenOverride ?? (campaignPanelState === 'published');
+  const memoryOpen = memoryOpenOverride ?? campaignPanelState === 'published';
   const learningsOpen =
     learningsOpenOverride ??
     (campaignPanelState === 'published' || campaignPanelState === 'review');

@@ -135,8 +135,7 @@ function CommandPaletteDialog({ open, onOpenChange, commands }: CommandPaletteDi
   const listId = useId();
 
   const filtered = commands.filter((c) => fuzzyMatch(query, c));
-  const activeIndex =
-    filtered.length === 0 ? 0 : Math.min(activeIndexState, filtered.length - 1);
+  const activeIndex = filtered.length === 0 ? 0 : Math.min(activeIndexState, filtered.length - 1);
 
   // Keep the active item visible during keyboard navigation
   // scrollIntoView is not available in jsdom so guard the call

@@ -199,7 +199,13 @@ describe('buildMimirHttpAdapter', () => {
 
       const mount = await buildMimirHttpAdapter(client).mounts.updateRegistryMount(
         'registry-shared',
-        { ...registryMount, authRef: null, enabled: false, healthStatus: 'down', healthMessage: 'offline' },
+        {
+          ...registryMount,
+          authRef: null,
+          enabled: false,
+          healthStatus: 'down',
+          healthMessage: 'offline',
+        },
       );
 
       expect(client.put).toHaveBeenCalledWith('/registry/mounts/registry-shared', {

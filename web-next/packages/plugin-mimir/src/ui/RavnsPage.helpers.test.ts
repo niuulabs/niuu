@@ -52,9 +52,9 @@ describe('RavnsPage helpers', () => {
     expect(toggleSelection(['a', 'b'], 'a', false)).toEqual(['b']);
 
     expect(formatModelOption('gpt-test')).toBe('gpt-test');
-    expect(formatModelOption('gpt-test', { name: 'GPT Test', provider: 'openai', tier: 'fast' })).toBe(
-      'GPT Test · openai · fast',
-    );
+    expect(
+      formatModelOption('gpt-test', { name: 'GPT Test', provider: 'openai', tier: 'fast' }),
+    ).toBe('GPT Test · openai · fast');
     expect(formatModelOption('gpt-test', { vendor: 'OpenAI' })).toBe('gpt-test · OpenAI');
   });
 
@@ -83,7 +83,11 @@ describe('RavnsPage helpers', () => {
 
     vi.stubGlobal('window', {
       ...(globalThis.window ?? {}),
-      location: { ...(globalThis.window?.location ?? {}), hostname: 'niuu.local', protocol: 'https:' },
+      location: {
+        ...(globalThis.window?.location ?? {}),
+        hostname: 'niuu.local',
+        protocol: 'https:',
+      },
     });
 
     try {
@@ -95,7 +99,9 @@ describe('RavnsPage helpers', () => {
       expect(
         consoleGatewayUrl({ console: { ...baseWarden.console, enabled: false } }, '/health'),
       ).toBeNull();
-      expect(consoleGatewayUrl({ console: { ...baseWarden.console, port: 0 } }, '/health')).toBeNull();
+      expect(
+        consoleGatewayUrl({ console: { ...baseWarden.console, port: 0 } }, '/health'),
+      ).toBeNull();
     } finally {
       vi.unstubAllGlobals();
     }

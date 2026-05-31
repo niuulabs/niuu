@@ -964,8 +964,7 @@ function TelemetryTurnInspector({
 function TelemetryTurnByTurn({ trace }: { trace: VolundrSessionTrace }) {
   const turns = useMemo(() => buildTelemetryTurnRows(trace), [trace]);
   const [selectedTurnIdState, setSelectedTurnId] = useState<string | null>(null);
-  const selectedTurnId =
-    turns.find((turn) => turn.id === selectedTurnIdState)?.id ?? null;
+  const selectedTurnId = turns.find((turn) => turn.id === selectedTurnIdState)?.id ?? null;
 
   const medianMs = useMemo(() => median(turns.map((turn) => turn.durationMs)), [turns]);
   const p95Ms = useMemo(
@@ -2656,8 +2655,7 @@ function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolu
     loading: true,
     logs: { lines: [], participants: [] },
   });
-  const logs =
-    logState.key === requestKey ? logState.logs : { lines: [], participants: [] };
+  const logs = logState.key === requestKey ? logState.logs : { lines: [], participants: [] };
   const loading = logState.key === requestKey ? logState.loading : true;
 
   useEffect(() => {

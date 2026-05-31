@@ -130,9 +130,9 @@ describe('LaunchWizard helpers', () => {
     expect(formatIntegrationMeta(integration)).toBe('source control · prod-github');
     expect(formatIntegrationMeta({ ...integration, credentialName: null })).toBe('source control');
     expect(formatIntegrationMeta({ ...integration, integrationType: null })).toBe('prod-github');
-    expect(formatIntegrationMeta({ ...integration, integrationType: null, credentialName: null })).toBe(
-      'github',
-    );
+    expect(
+      formatIntegrationMeta({ ...integration, integrationType: null, credentialName: null }),
+    ).toBe('github');
     expect(
       formatIntegrationLabel({ ...integration, slug: null, credentialName: null, id: 'raw-id' }),
     ).toBe('raw-id');
@@ -189,13 +189,10 @@ describe('LaunchWizard helpers', () => {
     );
     expect(getResourceErrors(makeForm({ mem: '1Gi', gpu: '0' }), clusterResources)).toEqual({});
     expect(
-      getResourceErrors(
-        makeForm({ gpu: '2' }),
-        {
-          ...clusterResources,
-          nodes: [{ name: 'node-a', available: { cpu: '4', memory: '16Gi' } }],
-        },
-      ),
+      getResourceErrors(makeForm({ gpu: '2' }), {
+        ...clusterResources,
+        nodes: [{ name: 'node-a', available: { cpu: '4', memory: '16Gi' } }],
+      }),
     ).toEqual({});
   });
 
@@ -268,9 +265,7 @@ describe('LaunchWizard helpers', () => {
       local_path: '~/code/niuu',
       paths: [{ host_path: '~/code/niuu', mount_path: '/workspace', read_only: false }],
     });
-    expect(
-      buildSessionSource(makeForm({ sourcetype: 'local_mount', mountPath: '   ' })),
-    ).toEqual({
+    expect(buildSessionSource(makeForm({ sourcetype: 'local_mount', mountPath: '   ' }))).toEqual({
       type: 'local_mount',
       local_path: '',
       paths: [],

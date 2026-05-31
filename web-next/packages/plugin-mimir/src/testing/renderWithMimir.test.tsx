@@ -67,7 +67,9 @@ describe('renderWithMimir helpers', () => {
 
     const started = await service.startWarden(created.id);
     expect(started.runtime?.state).toBe('active');
-    expect((await service.observeWarden(created.id)).supervisor?.observation?.status).toBe('running');
+    expect((await service.observeWarden(created.id)).supervisor?.observation?.status).toBe(
+      'running',
+    );
 
     const stopped = await service.stopWarden(created.id);
     expect(stopped.runtime?.state).toBe('idle');
@@ -84,8 +86,12 @@ describe('renderWithMimir helpers', () => {
     const service = createStatefulWardenService(createMimirMockAdapter());
     const created = await service.createWarden({ name: 'Needs Install' });
 
-    await expect(service.startWarden(created.id)).rejects.toThrow(/installed before it can be started/i);
-    await expect(service.stopWarden(created.id)).rejects.toThrow(/installed before it can be stopped/i);
+    await expect(service.startWarden(created.id)).rejects.toThrow(
+      /installed before it can be started/i,
+    );
+    await expect(service.stopWarden(created.id)).rejects.toThrow(
+      /installed before it can be stopped/i,
+    );
     await expect(service.getWarden('missing')).rejects.toThrow(/Warden not found/i);
     await expect(service.observeWarden('missing')).rejects.toThrow(/Warden not found/i);
     await expect(service.uninstallWarden('missing')).rejects.toThrow(/Warden not found/i);

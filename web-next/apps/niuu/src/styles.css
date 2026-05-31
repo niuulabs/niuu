@@ -31,4 +31,4 @@ select {
   line-height: inherit;
 }
 
-@import "tailwindcss";
+@import 'tailwindcss';

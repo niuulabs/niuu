@@ -152,9 +152,9 @@ describe('mimir http helpers', () => {
     expect(asRelationshipItems([{ slug: 'alice', note: 'friend' }, { foo: 'bar' }])).toEqual([
       { slug: 'alice', note: 'friend' },
     ]);
-    expect(asTimelineItems([{ date: '2026-05-01', note: 'Started', source: 'src-1' }, {}])).toEqual([
-      { date: '2026-05-01', note: 'Started', source: 'src-1' },
-    ]);
+    expect(asTimelineItems([{ date: '2026-05-01', note: 'Started', source: 'src-1' }, {}])).toEqual(
+      [{ date: '2026-05-01', note: 'Started', source: 'src-1' }],
+    );
 
     const explicit = normalizeZones({
       path: '/runs/demo.md',
@@ -191,10 +191,7 @@ Useful summary.
     ]);
 
     expect(
-      deriveZonesFromContent(
-        '# Demo\n\nBody copy\n\n<!-- sources:\n- src-1\n-->',
-        '/runs/demo.md',
-      ),
+      deriveZonesFromContent('# Demo\n\nBody copy\n\n<!-- sources:\n- src-1\n-->', '/runs/demo.md'),
     ).toEqual([{ kind: 'assessment', text: 'Body copy' }]);
   });
 
@@ -289,7 +286,9 @@ Useful summary.
       }),
     ).toMatchObject({ kind: 'write', page: '/a' });
 
-    const client = { get: vi.fn().mockResolvedValue([{ title: 'Legacy', ingested_at: '2026-05-01' }]) };
+    const client = {
+      get: vi.fn().mockResolvedValue([{ title: 'Legacy', ingested_at: '2026-05-01' }]),
+    };
     await expect(listLegacySources(client as never)).resolves.toEqual([
       expect.objectContaining({ id: 'Legacy', title: 'Legacy' }),
     ]);

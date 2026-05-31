@@ -165,7 +165,12 @@ describe('LiveSessionDetailPage helpers', () => {
       'guild.local',
     );
     expect(
-      sessionForgeLabel({ ...session, instanceName: undefined, instanceId: undefined, hostname: undefined }),
+      sessionForgeLabel({
+        ...session,
+        instanceName: undefined,
+        instanceId: undefined,
+        hostname: undefined,
+      }),
     ).toBe('shared');
 
     expect(fileChangeCount()).toBeUndefined();
@@ -234,11 +239,15 @@ describe('LiveSessionDetailPage helpers', () => {
     expect(normalizeRepoLink(undefined)).toBeNull();
     expect(normalizeRepoLink({ type: 'git', repo: '', branch: 'main' } as never)).toBeNull();
     expect(
-      normalizeRepoLink({ type: 'git', repo: 'https://github.com/niuulabs/volundr', branch: 'main' } as never),
+      normalizeRepoLink({
+        type: 'git',
+        repo: 'https://github.com/niuulabs/volundr',
+        branch: 'main',
+      } as never),
     ).toBe('https://github.com/niuulabs/volundr');
-    expect(normalizeRepoLink({ type: 'git', repo: 'niuulabs/volundr', branch: 'main' } as never)).toBe(
-      'https://github.com/niuulabs/volundr',
-    );
+    expect(
+      normalizeRepoLink({ type: 'git', repo: 'niuulabs/volundr', branch: 'main' } as never),
+    ).toBe('https://github.com/niuulabs/volundr');
 
     expect(formatRepoLabel('git@github.com:niuulabs/volundr.git')).toBe('niuulabs/volundr');
     expect(formatRepoLabel('niuulabs/volundr')).toBe('niuulabs/volundr');
@@ -263,7 +272,12 @@ describe('LiveSessionDetailPage helpers', () => {
   });
 
   it('covers median, percentile, and stage-label helpers', () => {
-    const toolSpan = makeSpan({ id: 'tool', parentSpanId: 'workflow', kind: 'tool.call', name: 'Write' });
+    const toolSpan = makeSpan({
+      id: 'tool',
+      parentSpanId: 'workflow',
+      kind: 'tool.call',
+      name: 'Write',
+    });
     const workflowSpan = makeSpan({
       id: 'workflow',
       parentSpanId: 'root',
@@ -287,22 +301,28 @@ describe('LiveSessionDetailPage helpers', () => {
           makeSpan({ id: 'root' }),
           workflowSpan,
           { ...toolSpan, durationMs: 21_000 },
-          makeSpan({ id: 'wait', parentSpanId: 'workflow', kind: 'wait.permission', durationMs: 12_000 }),
+          makeSpan({
+            id: 'wait',
+            parentSpanId: 'workflow',
+            kind: 'wait.permission',
+            durationMs: 12_000,
+          }),
         ]),
         { longestSpan: toolSpan } as never,
       )?.id,
     ).toBe('workflow');
-    expect(pickLongestStage(makeTrace([makeSpan({ id: 'root' })]), { longestSpan: toolSpan } as never)?.id).toBe(
-      'tool',
-    );
+    expect(
+      pickLongestStage(makeTrace([makeSpan({ id: 'root' })]), { longestSpan: toolSpan } as never)
+        ?.id,
+    ).toBe('tool');
 
     expect(formatStageLabel(null)).toBe('n/a');
     expect(formatStageLabel(workflowSpan)).toBe('execution');
     expect(formatStageLabel(makeSpan({ kind: 'turn.assistant', name: 'Draft' }))).toBe('draft');
     expect(formatStageLabel(toolSpan)).toBe('Write');
-    expect(formatStageLabel(makeSpan({ kind: 'custom.stage', name: '', actorLabel: 'unused' }))).toBe(
-      'custom.stage',
-    );
+    expect(
+      formatStageLabel(makeSpan({ kind: 'custom.stage', name: '', actorLabel: 'unused' })),
+    ).toBe('custom.stage');
   });
 
   it('normalizes telemetry row labels, categories, tones, and task labels', () => {
@@ -319,23 +339,36 @@ describe('LiveSessionDetailPage helpers', () => {
       actorType: 'user',
     });
     const sessionSpan = makeSpan({ kind: 'session.publish', name: 'Publish', actorType: 'system' });
-    const waitSpan = makeSpan({ kind: 'wait.permission', name: 'Await approval', actorType: 'assistant' });
-    const blockedSpan = makeSpan({ kind: 'tool.call', name: 'Write', status: 'failed', actorType: 'assistant' });
+    const waitSpan = makeSpan({
+      kind: 'wait.permission',
+      name: 'Await approval',
+      actorType: 'assistant',
+    });
+    const blockedSpan = makeSpan({
+      kind: 'tool.call',
+      name: 'Write',
+      status: 'failed',
+      actorType: 'assistant',
+    });
     const terminalSpan = makeSpan({ kind: 'terminal.command', name: 'npm test' });
 
-    expect(normalizeTimelineRowLabel(makeSpan({ kind: 'session.workflow', name: 'Execution' }))).toBe(
-      'execution',
-    );
+    expect(
+      normalizeTimelineRowLabel(makeSpan({ kind: 'session.workflow', name: 'Execution' })),
+    ).toBe('execution');
     expect(normalizeTimelineRowLabel(peerTurn)).toBe('execution');
     expect(normalizeTimelineRowLabel(userTurn)).toBe('input');
     expect(normalizeTimelineRowLabel(sessionSpan)).toBe('publish');
-    expect(normalizeTimelineRowLabel(makeSpan({ kind: 'custom.event', name: '' }))).toBe('custom.event');
+    expect(normalizeTimelineRowLabel(makeSpan({ kind: 'custom.event', name: '' }))).toBe(
+      'custom.event',
+    );
 
     expect(timelineRowCategory(waitSpan)).toBe('wait');
     expect(timelineRowCategory(peerTurn)).toBe('work');
     expect(timelineRowCategory(userTurn)).toBe('input');
     expect(timelineRowCategory(makeSpan({ kind: 'session.workflow' }))).toBe('workflow');
-    expect(timelineRowCategory(makeSpan({ kind: 'custom.event', actorType: undefined }))).toBe('system');
+    expect(timelineRowCategory(makeSpan({ kind: 'custom.event', actorType: undefined }))).toBe(
+      'system',
+    );
 
     expect(timelineRowTone(blockedSpan)).toBe('blocked');
     expect(timelineRowTone(waitSpan)).toBe('wait');
@@ -411,7 +444,16 @@ describe('LiveSessionDetailPage helpers', () => {
       durationMs: 4_000,
       attributes: 'skip-object' as never,
     });
-    const trace = makeTrace([root, workflow, lateTool, earlyTool, mcpTool, editTool, writeTool, otherTool]);
+    const trace = makeTrace([
+      root,
+      workflow,
+      lateTool,
+      earlyTool,
+      mcpTool,
+      editTool,
+      writeTool,
+      otherTool,
+    ]);
 
     const { root: builtRoot, nodeById } = buildTelemetrySpanTree(trace);
     expect(builtRoot?.span.id).toBe('root');
@@ -437,9 +479,18 @@ describe('LiveSessionDetailPage helpers', () => {
       title: 'github.search',
       subtitle: 'pulls',
     });
-    expect(extractTelemetryToolDescriptor(earlyTool)).toMatchObject({ category: 'read', badge: 'read' });
-    expect(extractTelemetryToolDescriptor(editTool)).toMatchObject({ category: 'edit', badge: 'edit' });
-    expect(extractTelemetryToolDescriptor(writeTool)).toMatchObject({ category: 'write', badge: 'write' });
+    expect(extractTelemetryToolDescriptor(earlyTool)).toMatchObject({
+      category: 'read',
+      badge: 'read',
+    });
+    expect(extractTelemetryToolDescriptor(editTool)).toMatchObject({
+      category: 'edit',
+      badge: 'edit',
+    });
+    expect(extractTelemetryToolDescriptor(writeTool)).toMatchObject({
+      category: 'write',
+      badge: 'write',
+    });
     expect(extractTelemetryToolDescriptor(otherTool)).toMatchObject({
       category: 'other',
       title: 'customaction',
@@ -586,8 +637,16 @@ describe('LiveSessionDetailPage helpers', () => {
   });
 
   it('covers additional telemetry helper fallbacks and clamps', () => {
-    const lifecycleRoot = makeSpan({ id: 'lifecycle-root', kind: 'session.lifecycle', name: 'Session' });
-    const alternateRoot = makeSpan({ id: 'alternate-root', kind: 'session.publish', name: 'Publish' });
+    const lifecycleRoot = makeSpan({
+      id: 'lifecycle-root',
+      kind: 'session.lifecycle',
+      name: 'Session',
+    });
+    const alternateRoot = makeSpan({
+      id: 'alternate-root',
+      kind: 'session.publish',
+      name: 'Publish',
+    });
     const waitStage = makeSpan({
       id: 'wait-stage',
       parentSpanId: 'lifecycle-root',
@@ -657,26 +716,39 @@ describe('LiveSessionDetailPage helpers', () => {
     );
     expect(root?.span.id).toBe('lifecycle-root');
     expect(nearestTurnAncestorLabel(nodeById.get('blocked-stage')!, nodeById)).toBeNull();
-    expect(nearestTurnAncestorLabel({ span: makeSpan({ parentSpanId: 'missing-parent' }), children: [] }, nodeById)).toBeNull();
+    expect(
+      nearestTurnAncestorLabel(
+        { span: makeSpan({ parentSpanId: 'missing-parent' }), children: [] },
+        nodeById,
+      ),
+    ).toBeNull();
 
     expect(spanAttributes(makeSpan({ attributes: null as never }))).toEqual({});
     expect(percentile([10, 20, 30], 2)).toBe(30);
     expect(percentile([10, 20, 30], -1)).toBe(10);
 
-    expect(extractTelemetryToolDescriptor(makeSpan({
-      kind: 'tool.call',
-      name: 'Fallback',
-      attributes: { tool_name: 'github.search' },
-    }))).toMatchObject({
+    expect(
+      extractTelemetryToolDescriptor(
+        makeSpan({
+          kind: 'tool.call',
+          name: 'Fallback',
+          attributes: { tool_name: 'github.search' },
+        }),
+      ),
+    ).toMatchObject({
       category: 'mcp',
       title: 'github.search',
       subtitle: null,
     });
-    expect(extractTelemetryToolDescriptor(makeSpan({
-      kind: 'tool.call',
-      name: 'Custom tool',
-      attributes: { command: 'pnpm test --runInBand' },
-    }))).toMatchObject({
+    expect(
+      extractTelemetryToolDescriptor(
+        makeSpan({
+          kind: 'tool.call',
+          name: 'Custom tool',
+          attributes: { command: 'pnpm test --runInBand' },
+        }),
+      ),
+    ).toMatchObject({
       category: 'shell',
       subtitle: 'pnpm test --runInBand',
     });
@@ -696,9 +768,11 @@ describe('LiveSessionDetailPage helpers', () => {
     expect(formatTelemetryTaskLabel(makeSpan({ kind: 'wait.permission', name: '' }))).toBe(
       'wait · permission',
     );
-    expect(formatTelemetryTaskLabel(makeSpan({ kind: 'turn.user', name: 'Question', actorLabel: 'Operator' }))).toBe(
-      'user · Operator',
-    );
+    expect(
+      formatTelemetryTaskLabel(
+        makeSpan({ kind: 'turn.user', name: 'Question', actorLabel: 'Operator' }),
+      ),
+    ).toBe('user · Operator');
 
     const directTurnRows = buildTelemetryTurnRows(trace);
     expect(directTurnRows).toHaveLength(1);

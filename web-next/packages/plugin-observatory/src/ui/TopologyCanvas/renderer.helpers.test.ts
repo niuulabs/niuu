@@ -62,7 +62,9 @@ describe('renderer helpers', () => {
       align: 'center',
       baseline: 'alphabetic',
     });
-    expect(workflowLabelPlacement({ ...runNode, layoutHints: { packGroup: 'resource' } }, 12)).toMatchObject({
+    expect(
+      workflowLabelPlacement({ ...runNode, layoutHints: { packGroup: 'resource' } }, 12),
+    ).toMatchObject({
       align: 'right',
       baseline: 'middle',
     });
@@ -83,10 +85,18 @@ describe('renderer helpers', () => {
     expect(nodeEdgeRadius(runNode)).toBe(50);
 
     expect(
-      trimToNodeBoundary(hostNode, { x: 0, y: 0, containerWidth: 120, containerHeight: 80 }, { x: 120, y: 0 }),
+      trimToNodeBoundary(
+        hostNode,
+        { x: 0, y: 0, containerWidth: 120, containerHeight: 80 },
+        { x: 120, y: 0 },
+      ),
     ).toMatchObject({ y: 0 });
     expect(
-      trimToNodeBoundary(runNode, { x: 0, y: 0, containerWidth: 100, containerHeight: 100 }, { x: 100, y: 0 }),
+      trimToNodeBoundary(
+        runNode,
+        { x: 0, y: 0, containerWidth: 100, containerHeight: 100 },
+        { x: 100, y: 0 },
+      ),
     ).toMatchObject({ y: 0 });
     expect(trimToNodeBoundary(realm, { x: 0, y: 0 }, { x: 0, y: 0 })).toMatchObject({ x: 0, y: 0 });
 

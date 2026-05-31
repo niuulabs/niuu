@@ -1071,7 +1071,9 @@ function IntegrationsResourceCard({
               credential: {
                 name: effectiveCredentialName,
                 data: Object.fromEntries(
-                  Object.entries(effectiveCredentialValues).filter(([, value]) => value.trim() !== ''),
+                  Object.entries(effectiveCredentialValues).filter(
+                    ([, value]) => value.trim() !== '',
+                  ),
                 ),
               },
             }

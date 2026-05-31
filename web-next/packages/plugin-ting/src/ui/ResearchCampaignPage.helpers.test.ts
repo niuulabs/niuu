@@ -87,7 +87,9 @@ describe('ResearchCampaignPage helpers', () => {
     expect(parsed.frontmatter).toEqual({ foo: 'bar', count: 2 });
     expect(parseFrontmatter('plain body')).toEqual({ frontmatter: {}, body: 'plain body' });
     expect(stripHeading('# Title\n\nFirst paragraph')).toBe('First paragraph');
-    expect(firstParagraph('# Title\n\nFirst paragraph.\n\nSecond paragraph.')).toBe('First paragraph.');
+    expect(firstParagraph('# Title\n\nFirst paragraph.\n\nSecond paragraph.')).toBe(
+      'First paragraph.',
+    );
     expect(sentenceCase('published')).toBe('Published');
     expect(sentenceCase('')).toBe('');
     expect(cx('a', false, 'b', null, undefined, 'c')).toBe('a b c');
@@ -114,15 +116,25 @@ describe('ResearchCampaignPage helpers', () => {
     );
     expect(
       deriveCampaignState(
-        { ...baseCampaign, status: 'running', stageState: [{ status: 'blocked', label: 'Explore' }] } as never,
+        {
+          ...baseCampaign,
+          status: 'running',
+          stageState: [{ status: 'blocked', label: 'Explore' }],
+        } as never,
         [] as never,
       ),
     ).toBe('blocked');
-    expect(deriveCampaignState({ ...baseCampaign, status: 'pending', stageState: [] } as never, [] as never)).toBe(
-      'draft',
-    );
     expect(
-      deriveCampaignState({ ...baseCampaign, status: 'completed', stageState: [] } as never, finalArtifact as never),
+      deriveCampaignState(
+        { ...baseCampaign, status: 'pending', stageState: [] } as never,
+        [] as never,
+      ),
+    ).toBe('draft');
+    expect(
+      deriveCampaignState(
+        { ...baseCampaign, status: 'completed', stageState: [] } as never,
+        finalArtifact as never,
+      ),
     ).toBe('published');
     expect(
       deriveCampaignState(
@@ -138,19 +150,28 @@ describe('ResearchCampaignPage helpers', () => {
     ).toBe('review');
     expect(
       deriveCampaignState(
-        { ...baseCampaign, status: 'running', stageState: [{ status: 'pending', label: 'Explore' }] } as never,
+        {
+          ...baseCampaign,
+          status: 'running',
+          stageState: [{ status: 'pending', label: 'Explore' }],
+        } as never,
         [] as never,
       ),
     ).toBe('running');
     expect(
-      deriveCampaignState({ ...baseCampaign, status: 'completed', stageState: [] } as never, [] as never),
+      deriveCampaignState(
+        { ...baseCampaign, status: 'completed', stageState: [] } as never,
+        [] as never,
+      ),
     ).toBe('running');
     expect(findActiveStage([{ status: 'complete' }, { status: 'failed' }] as never)).toMatchObject({
       status: 'failed',
     });
-    expect(findActiveStage([{ status: 'complete' }, { status: 'pending' }] as never)).toMatchObject({
-      status: 'pending',
-    });
+    expect(findActiveStage([{ status: 'complete' }, { status: 'pending' }] as never)).toMatchObject(
+      {
+        status: 'pending',
+      },
+    );
   });
 
   it('computes confidence and thesis defaults from artifact sets', () => {
@@ -161,12 +182,7 @@ describe('ResearchCampaignPage helpers', () => {
     expect(confidenceFromArtifacts('review', null, 0, 0)).toMatchObject({ label: 'high' });
     expect(confidenceFromArtifacts('blocked', null, 0, 0)).toMatchObject({ label: 'med' });
     expect(
-      confidenceFromArtifacts(
-        'running',
-        { frontmatter: { confidence: 'medium' } } as never,
-        2,
-        1,
-      ),
+      confidenceFromArtifacts('running', { frontmatter: { confidence: 'medium' } } as never, 2, 1),
     ).toMatchObject({ label: 'med' });
     expect(
       confidenceFromArtifacts('running', { frontmatter: { confidence: 'high' } } as never, 0, 0),
@@ -180,61 +196,53 @@ describe('ResearchCampaignPage helpers', () => {
     expect(confidenceFromArtifacts('running', null, 0, 0)).toMatchObject({ label: 'low' });
 
     expect(
-      deriveWorkingThesis(
-        [
-          {
-            kind: 'analysis',
-            path: 'research/campaigns/demo/analysis.md',
-            body: '# Title\n\nFirst useful paragraph.',
-          },
-          {
-            kind: 'final',
-            path: 'research/campaigns/demo/final.md',
-            body: '# Final\n\nIgnored because first candidate already wins.',
-          },
-        ] as never,
-      ),
+      deriveWorkingThesis([
+        {
+          kind: 'analysis',
+          path: 'research/campaigns/demo/analysis.md',
+          body: '# Title\n\nFirst useful paragraph.',
+        },
+        {
+          kind: 'final',
+          path: 'research/campaigns/demo/final.md',
+          body: '# Final\n\nIgnored because first candidate already wins.',
+        },
+      ] as never),
     ).toBe('First useful paragraph.');
     expect(
-      deriveWorkingThesis(
-        [
-          {
-            kind: 'final',
-            path: 'research/campaigns/demo/final.md',
-            body: '# Final\n\nFinal answer paragraph.',
-          },
-        ] as never,
-      ),
+      deriveWorkingThesis([
+        {
+          kind: 'final',
+          path: 'research/campaigns/demo/final.md',
+          body: '# Final\n\nFinal answer paragraph.',
+        },
+      ] as never),
     ).toBe('Final answer paragraph.');
     expect(
-      deriveWorkingThesis(
-        [
-          {
-            kind: 'note',
-            path: 'research/campaigns/demo/notes/exploration.md',
-            body: '# Notes\n\nExploration paragraph.',
-          },
-        ] as never,
-      ),
+      deriveWorkingThesis([
+        {
+          kind: 'note',
+          path: 'research/campaigns/demo/notes/exploration.md',
+          body: '# Notes\n\nExploration paragraph.',
+        },
+      ] as never),
     ).toBe('Exploration paragraph.');
     expect(
-      deriveWorkingThesis(
-        [
-          {
-            kind: 'brief',
-            path: 'research/campaigns/demo/brief.md',
-            body: '# Brief\n\nBrief paragraph.',
-          },
-        ] as never,
-      ),
+      deriveWorkingThesis([
+        {
+          kind: 'brief',
+          path: 'research/campaigns/demo/brief.md',
+          body: '# Brief\n\nBrief paragraph.',
+        },
+      ] as never),
     ).toBe('Brief paragraph.');
     expect(deriveWorkingThesis([] as never)).toContain('still building');
     expect(
       artifactDisplayTitle({ title: '', path: 'research/campaigns/demo/final.md' } as never),
     ).toBe('final.md');
-    expect(artifactDisplayTitle({ title: 'Named', path: 'research/campaigns/demo/final.md' } as never)).toBe(
-      'Named',
-    );
+    expect(
+      artifactDisplayTitle({ title: 'Named', path: 'research/campaigns/demo/final.md' } as never),
+    ).toBe('Named');
   });
 
   it('infers source domains, kinds, quality, and excerpts', () => {
@@ -242,7 +250,9 @@ describe('ResearchCampaignPage helpers', () => {
       inferDomain({ originUrl: 'https://www.example.com/path', originType: 'web' } as never),
     ).toBe('example.com');
     expect(inferDomain({ originUrl: 'not a url', originType: 'web' } as never)).toBe('not a url');
-    expect(inferDomain({ originPath: '/tmp/a.txt', originType: 'file' } as never)).toBe('/tmp/a.txt');
+    expect(inferDomain({ originPath: '/tmp/a.txt', originType: 'file' } as never)).toBe(
+      '/tmp/a.txt',
+    );
     expect(inferDomain({ originType: 'chat' } as never)).toBe('chat');
 
     expect(inferSourceKind({ originType: 'arxiv' } as never)).toBe('paper');
@@ -270,9 +280,9 @@ describe('ResearchCampaignPage helpers', () => {
     ).toMatchObject({
       citation: 'c1',
       against: 'thesis',
-        severity: 'high',
-        linkedArtifacts: ['final.md'],
-      });
+      severity: 'high',
+      linkedArtifacts: ['final.md'],
+    });
     expect(
       parseCritiques('# Skeptic\n\n## First objection\n\nBody\n\n## Second objection\n\nBody', [
         'final.md',

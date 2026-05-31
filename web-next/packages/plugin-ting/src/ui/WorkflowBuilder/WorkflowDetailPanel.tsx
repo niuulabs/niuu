@@ -74,10 +74,7 @@ export function personaGlyph(role?: string) {
   }
 }
 
-export function memberIssuesForPersona(
-  issues: WorkflowIssue[],
-  persona: PersonaEntry | undefined,
-) {
+export function memberIssuesForPersona(issues: WorkflowIssue[], persona: PersonaEntry | undefined) {
   if (!persona) return [];
   const keys = [persona.label, ...(persona.produces ?? []), ...(persona.consumes ?? [])].map((v) =>
     v.toLowerCase(),

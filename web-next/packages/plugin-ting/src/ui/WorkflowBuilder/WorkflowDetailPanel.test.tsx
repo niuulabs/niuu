@@ -181,15 +181,34 @@ const BASE_WORKFLOW: Workflow = {
   description: 'Collect sources and ship a recommendation.',
   tags: ['research', 'review'],
   nodes: [
-    { id: 'trigger-1', kind: 'trigger', label: 'Start', source: 'manual', dispatchEvent: 'code.requested', position: { x: 20, y: 60 } },
+    {
+      id: 'trigger-1',
+      kind: 'trigger',
+      label: 'Start',
+      source: 'manual',
+      dispatchEvent: 'code.requested',
+      position: { x: 20, y: 60 },
+    },
     STAGE_NODE,
     GATE_NODE,
     RESOURCE_NODE,
     { id: 'end-1', kind: 'end', label: 'Done', position: { x: 620, y: 120 } },
   ],
   edges: [
-    { id: 'edge-1', source: 'trigger-1', target: 'stage-1', cp1: { x: 40, y: 0 }, cp2: { x: -40, y: 0 } },
-    { id: 'edge-2', source: 'stage-1', target: 'gate-1', cp1: { x: 60, y: 0 }, cp2: { x: -60, y: 0 } },
+    {
+      id: 'edge-1',
+      source: 'trigger-1',
+      target: 'stage-1',
+      cp1: { x: 40, y: 0 },
+      cp2: { x: -40, y: 0 },
+    },
+    {
+      id: 'edge-2',
+      source: 'stage-1',
+      target: 'gate-1',
+      cp1: { x: 60, y: 0 },
+      cp2: { x: -60, y: 0 },
+    },
   ],
   resourceBindings: [
     {
@@ -316,7 +335,12 @@ describe('WorkflowDetailPanel', () => {
     fireEvent.change(selects[1]!, {
       target: { value: 'coder' },
     });
-    expect(props.onReplacePersona).toHaveBeenCalledWith('stage-1', 'planner', 'coder', 'claude-sonnet');
+    expect(props.onReplacePersona).toHaveBeenCalledWith(
+      'stage-1',
+      'planner',
+      'coder',
+      'claude-sonnet',
+    );
 
     fireEvent.click(screen.getByRole('button', { name: '×' }));
     expect(props.onRemovePersona).toHaveBeenCalledWith('stage-1', 'planner');

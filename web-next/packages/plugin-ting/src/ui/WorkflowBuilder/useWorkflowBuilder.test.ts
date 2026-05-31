@@ -1121,12 +1121,7 @@ describe('useWorkflowBuilder — stage member updates', () => {
     };
     const { result } = renderHook(() => useWorkflowBuilder(existing, PERSONAS, WORKFLOW_MODELS));
     act(() =>
-      result.current.replacePersonaInStage(
-        'stage-1',
-        'coder',
-        'reviewer',
-        'claude-sonnet-4-6',
-      ),
+      result.current.replacePersonaInStage('stage-1', 'coder', 'reviewer', 'claude-sonnet-4-6'),
     );
     const node = result.current.workflow.nodes.find((candidate) => candidate.id === 'stage-1');
     expect(node?.kind).toBe('stage');

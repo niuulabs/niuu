@@ -986,7 +986,9 @@ export function SessionsView() {
   }, []);
 
   const selectedSession =
-    sortedSessions.find((session) => session.id === resolvedSelectedId) ?? sortedSessions[0] ?? null;
+    sortedSessions.find((session) => session.id === resolvedSelectedId) ??
+    sortedSessions[0] ??
+    null;
 
   const {
     data: rawMessages,

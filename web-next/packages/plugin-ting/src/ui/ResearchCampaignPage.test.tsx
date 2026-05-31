@@ -725,16 +725,16 @@ const richMimirService = {
   },
 };
 
-function makeDispatcherService(activityLog: Array<Record<string, unknown>> = []): IDispatcherService {
+function makeDispatcherService(
+  activityLog: Array<Record<string, unknown>> = [],
+): IDispatcherService {
   const base = createMockDispatcherService();
   return {
     ...base,
     async getActivityLog(limit?: number) {
-      const all = (activityLog.length > 0
-        ? activityLog
-        : await base.getActivityLog(limit)) as Awaited<
-        ReturnType<IDispatcherService['getActivityLog']>
-      >;
+      const all = (
+        activityLog.length > 0 ? activityLog : await base.getActivityLog(limit)
+      ) as Awaited<ReturnType<IDispatcherService['getActivityLog']>>;
       return all.slice(0, limit ?? all.length ?? 100);
     },
   };
@@ -892,9 +892,13 @@ describe('ResearchCampaignPage', () => {
     await waitFor(() => expect(screen.getByText(/Critique · \[c1\]/i)).toBeInTheDocument());
     expect(screen.getAllByText(/We still need measured benchmarks/i).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole('button', { name: /research\/campaigns\/homelab-running\/critique\.md/i }));
+    fireEvent.click(
+      screen.getByRole('button', { name: /research\/campaigns\/homelab-running\/critique\.md/i }),
+    );
     await waitFor(() =>
-      expect(screen.getByText(/research\/campaigns\/homelab-running\/critique\.md/i)).toBeInTheDocument(),
+      expect(
+        screen.getByText(/research\/campaigns\/homelab-running\/critique\.md/i),
+      ).toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Operator ▸/i }));
@@ -958,7 +962,9 @@ describe('ResearchCampaignPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Actions$/i }));
     fireEvent.click(screen.getByRole('button', { name: /Open final synthesis/i }));
     await waitFor(() =>
-      expect(screen.getByText(/research\/campaigns\/skuld-fanout-options\/final\.md/i)).toBeInTheDocument(),
+      expect(
+        screen.getByText(/research\/campaigns\/skuld-fanout-options\/final\.md/i),
+      ).toBeInTheDocument(),
     );
   });
 
@@ -1257,7 +1263,9 @@ describe('ResearchCampaignPage', () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByRole('heading', { level: 1, name: 'Local model serving on the homelab' })).toBeInTheDocument(),
+      expect(
+        screen.getByRole('heading', { level: 1, name: 'Local model serving on the homelab' }),
+      ).toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Evidence/i }));
@@ -1280,11 +1288,15 @@ describe('ResearchCampaignPage', () => {
     await waitFor(() => expect(screen.queryByLabelText(/Research drawer/i)).toBeNull());
 
     fireEvent.click(screen.getByRole('button', { name: /Skeptic's pass/i }));
-    await waitFor(() => expect(screen.queryByText(/Throughput numbers are aspirational/i)).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByText(/Throughput numbers are aspirational/i)).toBeNull(),
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /Skeptic's pass/i }));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Throughput numbers are aspirational/i })).toBeInTheDocument(),
+      expect(
+        screen.getByRole('button', { name: /Throughput numbers are aspirational/i }),
+      ).toBeInTheDocument(),
     );
   });
 
@@ -1295,7 +1307,13 @@ describe('ResearchCampaignPage', () => {
       wrapper: wrap({
         'ting.research': makeResearchService(reviewMemoryCampaign, reviewMemoryArtifactDetails),
         'ting.dispatcher': createMockDispatcherService() as IDispatcherService,
-        mimir: { pages: { async listSources() { return []; } } },
+        mimir: {
+          pages: {
+            async listSources() {
+              return [];
+            },
+          },
+        },
       }),
     });
 

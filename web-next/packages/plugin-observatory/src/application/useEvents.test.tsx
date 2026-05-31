@@ -8,7 +8,11 @@ import type { IEventStream } from '../ports';
 
 function wrap(stream: IEventStream) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
-    return createElement(ServicesProvider, { services: { 'observatory.events': stream } }, children);
+    return createElement(
+      ServicesProvider,
+      { services: { 'observatory.events': stream } },
+      children,
+    );
   };
 }
 

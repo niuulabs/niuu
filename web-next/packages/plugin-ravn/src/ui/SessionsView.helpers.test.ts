@@ -69,9 +69,9 @@ describe('SessionsView helpers', () => {
       'mimir-curator',
     );
 
-    expect(deriveTrigger({ ...baseSession, personaRole: 'review', title: 'Review PR #42' } as never)).toBe(
-      'pr-review',
-    );
+    expect(
+      deriveTrigger({ ...baseSession, personaRole: 'review', title: 'Review PR #42' } as never),
+    ).toBe('pr-review');
     expect(deriveTrigger({ ...baseSession, personaRole: 'observe' } as never)).toBe('cron.hourly');
     expect(deriveTrigger({ ...baseSession, personaRole: 'knowledge' } as never)).toBe('docs.sync');
     expect(deriveTrigger({ ...baseSession, personaRole: 'report' } as never)).toBe('cron.daily');
@@ -137,7 +137,12 @@ describe('SessionsView helpers', () => {
     ).toContain('budget exceeded');
 
     expect(
-      synthesizeTranscript(baseSession as never, { personaName: 'Ravn' } as never, 'Coder', 'manual')
+      synthesizeTranscript(
+        baseSession as never,
+        { personaName: 'Ravn' } as never,
+        'Coder',
+        'manual',
+      )
         .map((entry) => entry.eventName)
         .filter(Boolean),
     ).toContain('work.completed');
@@ -146,15 +151,42 @@ describe('SessionsView helpers', () => {
   it('builds transcript entries, filters them, and summarizes the latest useful content', () => {
     const messages = [
       { id: 'u1', kind: 'user', ts: '2026-05-01T10:01:00.000Z', content: 'Do the thing' },
-      { id: 't1', kind: 'think', ts: '2026-05-01T10:02:00.000Z', content: 'Persona=Coder. Thinking carefully.' },
-      { id: 'c1', kind: 'tool_call', ts: '2026-05-01T10:03:00.000Z', toolName: 'read', content: '{"path":"src/a.ts"}' },
-      { id: 'r1', kind: 'tool_result', ts: '2026-05-01T10:04:00.000Z', toolName: 'read', content: '{"content":"// loaded"}' },
+      {
+        id: 't1',
+        kind: 'think',
+        ts: '2026-05-01T10:02:00.000Z',
+        content: 'Persona=Coder. Thinking carefully.',
+      },
+      {
+        id: 'c1',
+        kind: 'tool_call',
+        ts: '2026-05-01T10:03:00.000Z',
+        toolName: 'read',
+        content: '{"path":"src/a.ts"}',
+      },
+      {
+        id: 'r1',
+        kind: 'tool_result',
+        ts: '2026-05-01T10:04:00.000Z',
+        toolName: 'read',
+        content: '{"content":"// loaded"}',
+      },
       { id: 'a1', kind: 'asst', ts: '2026-05-01T10:05:00.000Z', content: 'All set.' },
-      { id: 'e1', kind: 'emit', ts: '2026-05-01T10:06:00.000Z', content: '{"event":"work.completed","payload":{"status":"ok"}}' },
+      {
+        id: 'e1',
+        kind: 'emit',
+        ts: '2026-05-01T10:06:00.000Z',
+        content: '{"event":"work.completed","payload":{"status":"ok"}}',
+      },
       { id: 's1', kind: 'system', ts: '2026-05-01T10:07:00.000Z', content: 'system note' },
     ];
 
-    const entries = buildTranscript(baseSession as never, { personaName: 'Ravn' } as never, 'Coder', messages as never);
+    const entries = buildTranscript(
+      baseSession as never,
+      { personaName: 'Ravn' } as never,
+      'Coder',
+      messages as never,
+    );
     expect(entries.map((entry) => entry.kind)).toEqual([
       'system',
       'user',
@@ -196,7 +228,14 @@ describe('SessionsView helpers', () => {
       { id: 'sys', kind: 'system', ts: baseSession.createdAt, text: 'init' },
       { id: 'usr', kind: 'user', ts: '2026-05-01T10:01:00.000Z', text: 'prompt' },
       { id: 'th', kind: 'thought', ts: '2026-05-01T10:02:00.000Z', text: 'thought' },
-      { id: 'tool', kind: 'tool', ts: '2026-05-01T10:03:00.000Z', toolName: 'read', args: '…', result: 'ok' },
+      {
+        id: 'tool',
+        kind: 'tool',
+        ts: '2026-05-01T10:03:00.000Z',
+        toolName: 'read',
+        args: '…',
+        result: 'ok',
+      },
       { id: 'asst', kind: 'assistant', ts: '2026-05-01T10:04:00.000Z', text: 'answer' },
       { id: 'emit', kind: 'emit', ts: '2026-05-01T10:05:00.000Z', eventName: 'work.completed' },
     ];
@@ -232,7 +271,10 @@ describe('SessionsView helpers', () => {
     ).toBe('run');
     expect(
       pickDefaultSession(
-        [{ ...baseSession, id: 'one', status: 'completed' }, { ...baseSession, id: 'two', status: 'failed' }] as never,
+        [
+          { ...baseSession, id: 'one', status: 'completed' },
+          { ...baseSession, id: 'two', status: 'failed' },
+        ] as never,
         'two',
       ),
     ).toBe('two');

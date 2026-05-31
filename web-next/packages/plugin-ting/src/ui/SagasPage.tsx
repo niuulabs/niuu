@@ -191,7 +191,9 @@ function SagasPageContent() {
   const [showNewSagaModal, setShowNewSagaModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [search, setSearch] = useState('');
-  const [selectedSagaIdState, setSelectedSagaIdState] = useState<string | null>(params.sagaId ?? null);
+  const [selectedSagaIdState, setSelectedSagaIdState] = useState<string | null>(
+    params.sagaId ?? null,
+  );
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [repoCandidate, setRepoCandidate] = useState('');
@@ -259,8 +261,10 @@ function SagasPageContent() {
       : baseBranch;
   const effectiveSelectedProjectId =
     showImportModal && !selectedProjectId && trackerProjects.length > 0
-      ? (trackerProjects.find((project) => !importedTrackerIds.has(project.id)) ?? trackerProjects[0]!)
-          .id
+      ? (
+          trackerProjects.find((project) => !importedTrackerIds.has(project.id)) ??
+          trackerProjects[0]!
+        ).id
       : selectedProjectId;
   const effectiveSelectedProject =
     trackerProjects.find((project) => project.id === effectiveSelectedProjectId) ?? null;

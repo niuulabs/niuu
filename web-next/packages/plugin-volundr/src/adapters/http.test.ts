@@ -148,7 +148,13 @@ describe('__testables', () => {
         source: { type: 'git', repo: 'r', branch: 'main' },
         model: 'sonnet',
         terminalRestricted: true,
-        trackerIssue: { id: 'NIU-1', identifier: 'NIU-1', title: 'Issue', status: 'todo', url: 'https://tracker/NIU-1' },
+        trackerIssue: {
+          id: 'NIU-1',
+          identifier: 'NIU-1',
+          title: 'Issue',
+          status: 'todo',
+          url: 'https://tracker/NIU-1',
+        },
       }),
     ).toEqual({
       name: 'alpha',
@@ -240,9 +246,7 @@ describe('__testables', () => {
     expect(deriveSharedApiBasePath()).toBeNull();
     expect(deriveSharedApiBasePath('http://host/api/v1')).toBe('http://host/api/v1');
     expect(deriveSharedApiBasePath('http://host/api/v1/niuu')).toBe('http://host/api/v1');
-    expect(deriveSharedApiBasePath('http://host/api/v1/niuu/volundr')).toBe(
-      'http://host/api/v1',
-    );
+    expect(deriveSharedApiBasePath('http://host/api/v1/niuu/volundr')).toBe('http://host/api/v1');
     expect(deriveSharedApiBasePath('http://host/api/v1/forge')).toBe('http://host/api/v1');
 
     expect(deriveCanonicalForgeBasePath()).toBeNull();
@@ -256,9 +260,7 @@ describe('__testables', () => {
 
     expect(deriveNiuuBasePath()).toBeNull();
     expect(deriveNiuuBasePath('http://host/api/v1/niuu')).toBe('http://host/api/v1/niuu');
-    expect(deriveNiuuBasePath('http://host/api/v1/niuu/volundr')).toBe(
-      'http://host/api/v1/niuu',
-    );
+    expect(deriveNiuuBasePath('http://host/api/v1/niuu/volundr')).toBe('http://host/api/v1/niuu');
     expect(deriveNiuuBasePath('http://host/api/v1/forge')).toBe('http://host/api/v1/niuu');
   });
 
@@ -281,7 +283,10 @@ describe('__testables', () => {
         type: 'custom',
         label: 'Custom',
         description: 'desc',
-        fields: [{ name: 'api_key' }, { key: 'region', label: 'Region', type: 'select', required: true }],
+        fields: [
+          { name: 'api_key' },
+          { key: 'region', label: 'Region', type: 'select', required: true },
+        ],
         default_mount_type: 'env_file',
       } as any),
     ).toEqual({
@@ -299,9 +304,7 @@ describe('__testables', () => {
       normalizeMessages('sess-1', {
         turns: [{ id: 'm1', role: 'assistant', content: 'hi', created_at: undefined }],
       }),
-    ).toEqual([
-      expect.objectContaining({ id: 'm1', timestamp: 0, role: 'assistant' }),
-    ]);
+    ).toEqual([expect.objectContaining({ id: 'm1', timestamp: 0, role: 'assistant' })]);
 
     expect(
       normalizeConversationHistory({
@@ -504,12 +507,15 @@ describe('__testables', () => {
       tokenBurn: [1],
     };
     expect(
-      applyChronicleEvent(existing as any, {
-        session_id: 'sess-1',
-        event: { t: 1, type: 'message', label: 'hello' },
-        files: [],
-        commits: [],
-      } as any),
+      applyChronicleEvent(
+        existing as any,
+        {
+          session_id: 'sess-1',
+          event: { t: 1, type: 'message', label: 'hello' },
+          files: [],
+          commits: [],
+        } as any,
+      ),
     ).toEqual({ ...existing, tokenBurn: [] });
     expect(
       applyChronicleEvent(undefined, {
@@ -548,9 +554,7 @@ describe('__testables', () => {
     });
     expect(toSessionPath('workspace', '')).toBe('/workspace');
     expect(toSessionPath('home', 'docs/readme.md')).toBe('/home/docs/readme.md');
-    expect(
-      toTreeNode({ name: 'docs', path: 'docs', type: 'directory' }, 'workspace', []),
-    ).toEqual({
+    expect(toTreeNode({ name: 'docs', path: 'docs', type: 'directory' }, 'workspace', [])).toEqual({
       name: 'docs',
       path: '/workspace/docs',
       kind: 'directory',
@@ -1920,9 +1924,7 @@ describe('buildVolundrHttpAdapter', () => {
     await expect(svc.getSessionTrace('sess-1')).resolves.toBeNull();
     await expect(svc.getSessionTraceSummary('sess-1')).resolves.toBeNull();
     await expect(svc.getSessionTrace('sess-2')).rejects.toThrow('500 trace exploded');
-    await expect(svc.getSessionTraceSummary('sess-2')).rejects.toThrow(
-      '500 summary exploded',
-    );
+    await expect(svc.getSessionTraceSummary('sess-2')).rejects.toThrow('500 summary exploded');
   });
 
   it('preserves repeated identical log lines as distinct live events', async () => {

@@ -203,12 +203,7 @@ export interface PersonaFormProps {
 
 export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormProps) {
   return (
-    <PersonaFormInner
-      key={persona.name}
-      persona={persona}
-      onSave={onSave}
-      isSaving={isSaving}
-    />
+    <PersonaFormInner key={persona.name} persona={persona} onSave={onSave} isSaving={isSaving} />
   );
 }
 

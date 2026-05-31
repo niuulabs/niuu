@@ -1275,9 +1275,9 @@ describe('LiveSessionDetailPage', () => {
     it('falls back to the first available tab when chat is hidden', async () => {
       wrap('test-session-id-1234', {
         volundr: {
-          getFeatureModules: vi.fn().mockResolvedValue(
-            SESSION_FEATURES.filter((feature) => feature.key !== 'chat'),
-          ),
+          getFeatureModules: vi
+            .fn()
+            .mockResolvedValue(SESSION_FEATURES.filter((feature) => feature.key !== 'chat')),
         },
       });
       await screen.findByTestId('live-session-detail-page');

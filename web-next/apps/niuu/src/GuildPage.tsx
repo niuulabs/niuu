@@ -1293,8 +1293,7 @@ export function GuildPage() {
         name: wizard.name.trim(),
         baseUrl: wizard.baseUrl.trim(),
         visibility: effectiveWizard.visibility,
-        tenantId:
-          effectiveWizard.visibility === 'tenant' ? currentIdentity?.tenantId : undefined,
+        tenantId: effectiveWizard.visibility === 'tenant' ? currentIdentity?.tenantId : undefined,
         config: {
           source: 'guild',
           authMethod: authMeta(wizard.authMethod).label,

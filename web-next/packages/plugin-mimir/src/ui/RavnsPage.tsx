@@ -447,17 +447,9 @@ function CreateWardenForm({
   const preferredMount =
     availableMounts.find((mount) => mount.name === 'local') ?? availableMounts[0] ?? null;
   const effectiveReadMountNames =
-    readMountNames.length > 0
-      ? readMountNames
-      : preferredMount
-        ? [preferredMount.name]
-        : [];
+    readMountNames.length > 0 ? readMountNames : preferredMount ? [preferredMount.name] : [];
   const effectiveWriteMountNames =
-    writeMountNames.length > 0
-      ? writeMountNames
-      : preferredMount
-        ? [preferredMount.name]
-        : [];
+    writeMountNames.length > 0 ? writeMountNames : preferredMount ? [preferredMount.name] : [];
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -728,11 +720,7 @@ function CreateWardenForm({
                   checked={effectiveReadMountNames.includes(mount.name)}
                   onChange={(event) =>
                     setReadMountNames(
-                      toggleSelection(
-                        effectiveReadMountNames,
-                        mount.name,
-                        event.target.checked,
-                      ),
+                      toggleSelection(effectiveReadMountNames, mount.name, event.target.checked),
                     )
                   }
                   aria-label={`Read mount ${mount.name}`}
@@ -760,11 +748,7 @@ function CreateWardenForm({
                   checked={effectiveWriteMountNames.includes(mount.name)}
                   onChange={(event) =>
                     setWriteMountNames(
-                      toggleSelection(
-                        effectiveWriteMountNames,
-                        mount.name,
-                        event.target.checked,
-                      ),
+                      toggleSelection(effectiveWriteMountNames, mount.name, event.target.checked),
                     )
                   }
                   aria-label={`Write mount ${mount.name}`}

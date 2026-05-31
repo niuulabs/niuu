@@ -236,7 +236,8 @@ export function PersonasPage() {
     setActiveTab('form');
   }, []);
 
-  const selectedPersona = personaList.find((persona) => persona.name === resolvedSelectedName) ?? null;
+  const selectedPersona =
+    personaList.find((persona) => persona.name === resolvedSelectedName) ?? null;
 
   if (isLoading) {
     return (

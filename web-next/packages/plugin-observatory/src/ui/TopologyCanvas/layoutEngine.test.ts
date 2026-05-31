@@ -197,13 +197,17 @@ describe('placeArcChildren', () => {
       status: 'healthy' as const,
     }));
 
-    const placements = placeArcChildren(children, { x: 10, y: -5 }, {
-      baseRadius: 40,
-      radialStep: 30,
-      minSpacing: 50,
-      arcCenter: 0,
-      arcSpan: Math.PI / 2,
-    });
+    const placements = placeArcChildren(
+      children,
+      { x: 10, y: -5 },
+      {
+        baseRadius: 40,
+        radialStep: 30,
+        minSpacing: 50,
+        arcCenter: 0,
+        arcSpan: Math.PI / 2,
+      },
+    );
 
     const radii = children.map((child) => {
       const pos = placements.get(child.id)!;
@@ -271,11 +275,7 @@ describe('packGroupsForNode', () => {
       },
     ]);
 
-    expect(groups.map((group) => group?.id)).toEqual([
-      'run-a:decision',
-      'run-a:run',
-      'run-a:main',
-    ]);
+    expect(groups.map((group) => group?.id)).toEqual(['run-a:decision', 'run-a:run', 'run-a:main']);
   });
 });
 

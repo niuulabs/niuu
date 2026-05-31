@@ -445,7 +445,9 @@ describe('SessionDetailPage', () => {
 
       const cascade = screen.getByTestId('mesh-cascade');
       fireEvent.click(within(cascade).getByText('›'));
-      expect(within(screen.getByTestId('mesh-cascade')).queryByTestId('cascade-filter-all')).not.toBeInTheDocument();
+      expect(
+        within(screen.getByTestId('mesh-cascade')).queryByTestId('cascade-filter-all'),
+      ).not.toBeInTheDocument();
 
       fireEvent.click(within(screen.getByTestId('mesh-cascade')).getByText('‹'));
       expect(await screen.findByTestId('cascade-filter-all')).toBeInTheDocument();

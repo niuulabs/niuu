@@ -564,7 +564,10 @@ describe('buildTingHttpAdapter', () => {
 
       const saga = await buildTingHttpAdapter(client).createSaga('spec', 'niuulabs/volundr');
 
-      expect(client.post).toHaveBeenCalledWith('/sagas', { spec: 'spec', repo: 'niuulabs/volundr' });
+      expect(client.post).toHaveBeenCalledWith('/sagas', {
+        spec: 'spec',
+        repo: 'niuulabs/volundr',
+      });
       expect(saga).toMatchObject({
         trackerType: 'linear',
         slug: 'my-new-saga',
@@ -800,19 +803,16 @@ describe('buildWorkflowHttpAdapter', () => {
       resourceBindings: undefined,
     } as Workflow);
 
-    expect(client.put).toHaveBeenCalledWith(
-      `/workflows/${encodeURIComponent(rawWorkflow.id)}`,
-      {
-        name: rawWorkflow.name,
-        description: '',
-        version: 'draft',
-        scope: 'user',
-        tags: [],
-        nodes: rawWorkflow.nodes,
-        edges: rawWorkflow.edges,
-        resourceBindings: [],
-      },
-    );
+    expect(client.put).toHaveBeenCalledWith(`/workflows/${encodeURIComponent(rawWorkflow.id)}`, {
+      name: rawWorkflow.name,
+      description: '',
+      version: 'draft',
+      scope: 'user',
+      tags: [],
+      nodes: rawWorkflow.nodes,
+      edges: rawWorkflow.edges,
+      resourceBindings: [],
+    });
   });
 
   it('creates workflows when the existence probe returns null instead of throwing', async () => {

@@ -362,12 +362,7 @@ describe('EntityDrawer', () => {
 
     for (const node of nodes) {
       const { unmount } = render(
-        <EntityDrawer
-          node={node}
-          topology={TOPOLOGY}
-          registry={REGISTRY}
-          onClose={vi.fn()}
-        />,
+        <EntityDrawer node={node} topology={TOPOLOGY} registry={REGISTRY} onClose={vi.fn()} />,
       );
 
       expect(screen.getByText('Properties')).toBeInTheDocument();

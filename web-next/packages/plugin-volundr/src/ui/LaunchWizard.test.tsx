@@ -23,7 +23,10 @@ function wrapWithServices(
   open = true,
   onOpenChange = vi.fn(),
   service = createMockVolundrService(),
-  repoService: { getRepos: () => Promise<unknown>; getBranches: (repoUrl: string) => Promise<string[]> },
+  repoService: {
+    getRepos: () => Promise<unknown>;
+    getBranches: (repoUrl: string) => Promise<string[]>;
+  },
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const templateStore = createMockTemplateStore();
@@ -402,7 +405,8 @@ source:
     fireEvent.click(screen.getByText('filesystem'));
     await screen.findByText('uvx mcp-filesystem /workspace');
 
-    const filesystemCard = screen.getByText('filesystem').parentElement?.parentElement as HTMLElement;
+    const filesystemCard = screen.getByText('filesystem').parentElement
+      ?.parentElement as HTMLElement;
     fireEvent.click(within(filesystemCard).getByRole('button', { name: 'remove' }));
     await waitFor(() => {
       expect(screen.queryByText('uvx mcp-filesystem /workspace')).not.toBeInTheDocument();
@@ -457,7 +461,8 @@ source:
 
     await screen.findByText('http://localhost:3010/mcp');
 
-    const reviewHttpCard = screen.getByText('review-http').parentElement?.parentElement as HTMLElement;
+    const reviewHttpCard = screen.getByText('review-http').parentElement
+      ?.parentElement as HTMLElement;
     fireEvent.click(within(reviewHttpCard).getByRole('button', { name: 'remove' }));
 
     await waitFor(() => {
@@ -527,7 +532,9 @@ source:
     expect(screen.getByTestId('step-runtime-content')).toBeInTheDocument();
 
     view.rerender(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
         <ServicesProvider
           services={{
             bifrost: createMockBifrostService(),
@@ -545,7 +552,9 @@ source:
     );
 
     view.rerender(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
         <ServicesProvider
           services={{
             bifrost: createMockBifrostService(),

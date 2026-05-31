@@ -1314,7 +1314,11 @@ export function useSkuldChat(
             });
             const participant = participantsRef.current.get(peerId);
             const existingStream = internalStreamsRef.current.get(peerId);
-            const initialStream = existingStream ?? { messageId: generateId(), parts: [], currentToolId: '' };
+            const initialStream = existingStream ?? {
+              messageId: generateId(),
+              parts: [],
+              currentToolId: '',
+            };
             if (!existingStream) {
               const messageId = generateId();
               const createdStream = { ...initialStream, messageId };

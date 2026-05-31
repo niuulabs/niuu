@@ -324,8 +324,18 @@ describe('GraphView', () => {
       nodes: [resourceNode, warningStage, errorStage],
       selectedNodeId: 'resource-1',
       issues: [
-        { kind: 'resource_warn', nodeId: 'resource-1', message: 'Resource warning', severity: 'warning' },
-        { kind: 'stage_warn', nodeId: 'stage-warning', message: 'Stage warning', severity: 'warning' },
+        {
+          kind: 'resource_warn',
+          nodeId: 'resource-1',
+          message: 'Resource warning',
+          severity: 'warning',
+        },
+        {
+          kind: 'stage_warn',
+          nodeId: 'stage-warning',
+          message: 'Stage warning',
+          severity: 'warning',
+        },
         { kind: 'stage_error', nodeId: 'stage-error', message: 'Stage error', severity: 'error' },
         { kind: 'ignored', nodeId: null, message: 'Ignored', severity: 'warning' },
       ],
@@ -644,9 +654,9 @@ describe('GraphView', () => {
       knownInputs: ['brief', 'notes'],
       knownOutputs: ['notes', 'summary'],
     });
-    expect(renderedStageHeight(stageWithMembers as never, personaFixtures as never)).toBeGreaterThan(
-      renderedStageHeight(stageNode as never, [] as never),
-    );
+    expect(
+      renderedStageHeight(stageWithMembers as never, personaFixtures as never),
+    ).toBeGreaterThan(renderedStageHeight(stageNode as never, [] as never));
   });
 
   it('splits edge labels into source and target ports', () => {
@@ -692,7 +702,9 @@ describe('GraphView', () => {
     ).toMatchObject({
       x: stageWithMembers.position.x + 10,
     });
-    expect(edgeAnchor(stageWithMembers as never, 'source', 'missing', personaFixtures as never)).toEqual({
+    expect(
+      edgeAnchor(stageWithMembers as never, 'source', 'missing', personaFixtures as never),
+    ).toEqual({
       x: 186,
       y: 157,
     });
@@ -773,8 +785,14 @@ describe('GraphView', () => {
     expect(props.onInspectNode).toHaveBeenCalledWith('gate-long');
     expect(props.onInspectNode).toHaveBeenCalledWith('cond-long');
 
-    fireEvent.mouseDown(screen.getByTestId('workflow-node-gate-long'), { clientX: 360, clientY: 120 });
-    fireEvent.mouseDown(screen.getByTestId('workflow-node-cond-long'), { clientX: 520, clientY: 120 });
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-gate-long'), {
+      clientX: 360,
+      clientY: 120,
+    });
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-cond-long'), {
+      clientX: 520,
+      clientY: 120,
+    });
 
     expect(props.onCompleteConnect).toHaveBeenCalledWith('gate-long');
     expect(props.onCompleteConnect).toHaveBeenCalledWith('cond-long');

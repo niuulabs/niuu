@@ -632,9 +632,7 @@ describe('ResearchCenterPage', () => {
     expect(
       screen.getByText('campaign needs human review before it can continue'),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText('awaiting artifact updates from live workflow'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('awaiting artifact updates from live workflow')).toBeInTheDocument();
     expect(screen.getByText('2d 3h')).toBeInTheDocument();
     expect(screen.getByText('1h 0m')).toBeInTheDocument();
     expect(screen.getByText('30s')).toBeInTheDocument();
