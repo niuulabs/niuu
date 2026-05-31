@@ -1,4 +1,4 @@
-FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c AS builder
+FROM ubuntu:24.10@sha256:cdf755952ed117f6126ff4e65810bf93767d4c38f5c7185b50ec1f1078b464cc AS builder
 
 ARG TARGETARCH
 
@@ -38,7 +38,7 @@ RUN uv sync --frozen --no-dev --no-editable --extra k8s
 # ---------------------------------------------------------------------------
 # Runtime — minimal image with no build tools or pip
 # ---------------------------------------------------------------------------
-FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
+FROM ubuntu:24.10@sha256:cdf755952ed117f6126ff4e65810bf93767d4c38f5c7185b50ec1f1078b464cc
 
 
 LABEL org.opencontainers.image.title="niuu"
