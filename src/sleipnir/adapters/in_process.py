@@ -8,6 +8,7 @@ Overflow evicts the oldest event with a warning log (ring buffer semantics).
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
@@ -39,10 +40,8 @@ class InProcessBus(SleipnirPublisher, SleipnirSubscriber):
         self._subscriptions: list[_BaseSubscription] = []
 
     def _remove_subscription(self, sub: _BaseSubscription) -> None:
-        try:
+        with suppress(ValueError):
             self._subscriptions.remove(sub)
-        except ValueError:
-            pass
 
     async def publish(self, event: SleipnirEvent) -> None:
         """Place *event* on every matching subscriber queue.

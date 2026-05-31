@@ -1,6 +1,7 @@
 """MimirView — navigable wiki browser with search, page content, and instance switching."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 from typing import Any
@@ -122,10 +123,8 @@ class MimirView(Widget):
             text = f"[#52525b]  {name}  ·  {suffix}[/]{switch_hint}"
         else:
             text = f"[#52525b]  {name}  ·  {len(self._pages)} pages[/]{switch_hint}"
-        try:
+        with suppress(Exception):
             self.query_one("#mv-instance-bar", Static).update(text)
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Loading
@@ -338,20 +337,16 @@ class MimirView(Widget):
         asyncio.create_task(self._load_pages(), name="mimir-switch")
 
     def action_search(self) -> None:
-        try:
+        with suppress(Exception):
             search = self.query_one("#mv-search", Input)
             search.add_class("visible")
             search.focus()
-        except Exception:
-            pass
 
     def action_cancel_search(self) -> None:
-        try:
+        with suppress(Exception):
             search = self.query_one("#mv-search", Input)
             search.remove_class("visible")
             search.clear()
-        except Exception:
-            pass
         if self._mode == "search":
             self._mode = "list"
             self._filtered_pages = []
@@ -364,10 +359,8 @@ class MimirView(Widget):
         if event.input.id != "mv-search":
             return
         query = event.value.strip()
-        try:
+        with suppress(Exception):
             self.query_one("#mv-search", Input).remove_class("visible")
-        except Exception:
-            pass
         if query:
             asyncio.create_task(self._do_search(query), name="mimir-search")
         else:
@@ -378,21 +371,15 @@ class MimirView(Widget):
     # ------------------------------------------------------------------
 
     def _show_info(self, text: str) -> None:
-        try:
+        with suppress(Exception):
             info = self.query_one("#mv-info", Static)
             info.update(f"[#3f3f46]  {text}[/]")
             info.add_class("visible")
-        except Exception:
-            pass
 
     def _hide_info(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#mv-info", Static).remove_class("visible")
-        except Exception:
-            pass
 
     def _write(self, text: str) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#mv-content", RichLog).write(text)
-        except Exception:
-            pass

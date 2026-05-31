@@ -29,3 +29,4 @@ def build_auth_adapter(mode: AuthMode, pat_secret: str = "") -> AuthPort:
             from bifrost.adapters.auth.open import OpenAuthAdapter
 
             return OpenAuthAdapter()
+    raise AssertionError("Unreachable build_auth_adapter fallthrough")

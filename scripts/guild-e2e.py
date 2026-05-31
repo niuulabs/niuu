@@ -492,7 +492,7 @@ def main() -> int:
             session_id=tenant_cross_dispatch["dispatch_result"]["session_id"],
             headers=tenant_a_headers,
         )
-        aggregate_tenant_sessions = _wait_for_aggregate_session(
+        _wait_for_aggregate_session(
             client,
             headers=tenant_a_headers,
             session_id=tenant_dispatch["dispatch_result"]["session_id"],

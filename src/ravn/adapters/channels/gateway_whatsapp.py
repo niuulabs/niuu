@@ -12,6 +12,7 @@ Design principles:
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import hashlib
@@ -93,10 +94,8 @@ class WhatsAppGateway(GatewayHttpMixin, GatewayChannelPort):
         """Start and run until cancelled (convenience for :func:`asyncio.create_task`)."""
         await self.start()
         if self._server_task is not None:
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._server_task
-            except asyncio.CancelledError:
-                pass
 
     async def send_text(self, chat_id: str, text: str) -> None:
         """Send a text message to *chat_id* via the Meta Cloud API."""

@@ -54,7 +54,7 @@ async def test_sse_stream_connects(volundr_app: object) -> None:
             collect_sse(base_url, SSE_URL, n=1),
             timeout=SSE_TIMEOUT,
         )
-        await publish_task
+        _ = await publish_task
 
         assert len(events) >= 1
         assert events[0]["event"] == EventType.HEARTBEAT.value
@@ -98,7 +98,7 @@ async def test_sse_receives_session_created_event(
             collect_sse(base_url, SSE_URL, n=1),
             timeout=SSE_TIMEOUT,
         )
-        await create_task
+        _ = await create_task
 
         assert len(events) >= 1
         session_events = [e for e in events if e["event"] == EventType.SESSION_CREATED.value]
@@ -143,7 +143,7 @@ async def test_sse_receives_stats_update(volundr_app: object) -> None:
             collect_sse(base_url, SSE_URL, n=1),
             timeout=SSE_TIMEOUT,
         )
-        await publish_task
+        _ = await publish_task
 
         assert len(events) >= 1
         stats_events = [e for e in events if e["event"] == EventType.STATS_UPDATED.value]

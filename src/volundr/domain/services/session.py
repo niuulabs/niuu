@@ -12,9 +12,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 try:
     from sleipnir.domain.catalog import volundr_session_failed as _catalog_failed
     from sleipnir.domain.catalog import volundr_session_started as _catalog_started
-    from sleipnir.ports.events import SleipnirPublisher as _SleipnirPublisher
 except ImportError:
-    _SleipnirPublisher = None  # type: ignore[assignment,misc]
     _catalog_started = None  # type: ignore[assignment]
     _catalog_failed = None  # type: ignore[assignment]
 

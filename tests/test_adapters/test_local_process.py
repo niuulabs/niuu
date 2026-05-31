@@ -2245,7 +2245,7 @@ class TestProcessMonitor:
             await asyncio.sleep(0.1)
             task.cancel()
             # Monitor catches CancelledError and returns cleanly
-            await task
+            _ = await task
         # State should remain RUNNING (not updated on cancel)
         assert manager._processes[sid].state == ProcessState.RUNNING
 

@@ -25,8 +25,8 @@ WORKDIR /build
 
 # Install only the @codingame/monaco-vscode-api package to read the VS Code
 # commit hash — no frontend source tree is required for this image build.
-RUN npm init -y >/dev/null 2>&1 && \
-    npm install --ignore-scripts --no-fund --no-audit @codingame/monaco-vscode-api@28.4.1
+COPY containers/vscode-reh/package.json containers/vscode-reh/package-lock.json ./
+RUN npm ci --ignore-scripts --no-fund --no-audit
 
 # Download the REH binary matching the npm package commit
 COPY containers/skuld/download-reh.sh ./download-reh.sh

@@ -13,4 +13,4 @@ class ChannelPort(ABC):
     @abstractmethod
     async def emit(self, event: RavnEvent) -> None:
         """Emit a Ravn event to the output surface."""
-        ...
+        raise NotImplementedError

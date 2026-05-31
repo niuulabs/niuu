@@ -7,6 +7,7 @@ milestones, issues) is fetched live from the tracker at read time.
 from __future__ import annotations
 
 import logging
+from inspect import isawaitable
 from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -371,6 +372,22 @@ async def resolve_volundr() -> VolundrPort:
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Volundr adapter not configured",
     )
+
+
+async def _resolve_git_for_request(request: Request) -> GitPort:
+    """Resolve the git dependency while honoring test overrides safely.
+
+    Some tests override ``resolve_git`` with ``AsyncMock`` directly. Letting
+    FastAPI inspect that callable causes it to treat ``args``/``kwargs`` as
+    required query params. We invoke the override manually so the endpoint
+    contract stays stable in both production and tests.
+    """
+
+    provider = request.app.dependency_overrides.get(resolve_git, resolve_git)
+    result = provider()
+    if isawaitable(result):
+        result = await result
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -986,7 +1003,7 @@ def create_sagas_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         saga_repo: SagaRepository = Depends(resolve_saga_repo),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
-        git: GitPort = Depends(resolve_git),
+        git: GitPort = Depends(_resolve_git_for_request),
     ) -> CommittedSagaResponse:
         """Commit a previewed saga structure.
 

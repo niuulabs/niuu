@@ -1138,13 +1138,6 @@ def create_router(
                 detail=str(e),
             )
 
-    async def _optional_user_id(request: Request) -> str | None:
-        """Extract user_id from auth principal if available, else None."""
-        principal = await _optional_principal(request)
-        if principal is None:
-            return None
-        return principal.user_id
-
     def _workspace_forge(request: Request) -> ForgeService:
         """Bind the shared Forge facade to the request-scoped workspace service."""
         return forge.with_workspace_service(request.app.state.workspace_service)

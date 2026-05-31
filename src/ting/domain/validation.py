@@ -5,6 +5,7 @@ against the SagaStructure schema and returns typed domain objects.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import json
 import re
@@ -144,12 +145,10 @@ def try_extract_structure(text: str) -> SagaStructure | None:
 
     if not candidates:
         # Try parsing the whole text as JSON (no fences)
-        try:
+        with suppress(json.JSONDecodeError, ValueError):
             data = json.loads(text.strip())
             if isinstance(data, dict) and "phases" in data:
                 candidates.append(text.strip())
-        except (json.JSONDecodeError, ValueError):
-            pass
 
     for candidate in candidates:
         try:

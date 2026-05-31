@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
 
 import pytest
 
-import sleipnir.adapters.serialization as _ser_module
 from sleipnir.adapters.serialization import (
     deserialize,
     msgpack_available,
@@ -98,13 +98,13 @@ def test_msgpack_available_returns_bool():
 
 
 def test_serialize_msgpack_raises_import_error_when_unavailable():
-    with patch.object(_ser_module, "_MSGPACK_AVAILABLE", False):
+    with patch.object(sys.modules["sleipnir.adapters.serialization"], "_MSGPACK_AVAILABLE", False):
         with pytest.raises(ImportError, match="msgpack is not installed"):
             serialize(make_event(), fmt="msgpack")
 
 
 def test_deserialize_msgpack_raises_import_error_when_unavailable():
-    with patch.object(_ser_module, "_MSGPACK_AVAILABLE", False):
+    with patch.object(sys.modules["sleipnir.adapters.serialization"], "_MSGPACK_AVAILABLE", False):
         with pytest.raises(ImportError, match="msgpack is not installed"):
             deserialize(b"\x80", fmt="msgpack")
 

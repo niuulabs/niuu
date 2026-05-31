@@ -18,6 +18,13 @@ from ravn.adapters.llm.anthropic import (
     AnthropicAdapter,
 )
 
+__all__ = [
+    "ANTHROPIC_API_VERSION",
+    "BifrostAdapter",
+    "HEADER_AGENT_ID",
+    "HEADER_SESSION_ID",
+]
+
 _DEFAULT_BASE_URL = "http://bifrost:8080"
 
 HEADER_AGENT_ID = "X-Ravn-Agent-Id"

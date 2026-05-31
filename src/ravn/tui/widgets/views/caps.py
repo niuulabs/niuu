@@ -8,13 +8,6 @@ from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import DataTable
 
-_TIER_STYLE: dict[str, str] = {
-    "full": "#10b981",
-    "medium": "#f59e0b",
-    "restricted": "#ef4444",
-    "readonly": "#71717a",
-}
-
 _KNOWN_CAPABILITIES = [
     "bash",
     "file_read",

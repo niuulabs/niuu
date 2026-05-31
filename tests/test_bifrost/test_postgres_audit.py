@@ -133,7 +133,7 @@ class TestPostgresAuditQuery:
         adapter, conn = pg_audit
         conn.fetch.return_value = []
         await adapter.query()
-        _sql, *params = conn.fetch.call_args[0]
+        _, *params = conn.fetch.call_args[0]
         assert 1000 in params
 
 

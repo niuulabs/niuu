@@ -187,6 +187,7 @@ def _translate(
             return _translate_issues(payload, delivery_id)
         case _:
             return None
+    return None
 
 
 # ---------------------------------------------------------------------------

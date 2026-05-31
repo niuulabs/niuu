@@ -68,8 +68,13 @@ class TestDatabasePool:
 
         with patch("ting.infrastructure.database.create_pool", new_callable=AsyncMock) as m_create:
             m_create.return_value = mock_pool
-            with pytest.raises(RuntimeError, match="boom"):
+            caught = False
+            try:
                 async with database_pool(config):
                     raise RuntimeError("boom")
+            except RuntimeError as exc:
+                caught = True
+                assert str(exc) == "boom"
+            assert caught
 
             mock_pool.close.assert_awaited_once()

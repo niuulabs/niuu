@@ -1973,7 +1973,7 @@ class TestStopEdgeCases:
             pass
 
         task = asyncio.ensure_future(noop())
-        await task  # Let it finish
+        _ = await task  # Let it finish
         t._receive_task = task
 
         await t.stop()

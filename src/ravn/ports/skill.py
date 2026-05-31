@@ -26,7 +26,7 @@ class SkillPort(ABC):
 
         The returned skill has already been persisted by the implementation.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def list_skills(self, query: str | None = None) -> list[Skill]:
@@ -34,12 +34,12 @@ class SkillPort(ABC):
 
         Returns all stored skills when *query* is ``None`` or empty.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def record_skill(self, skill: Skill) -> None:
         """Persist *skill* directly (bypass automatic discovery)."""
-        ...
+        raise NotImplementedError
 
     async def get_skill(self, name: str) -> Skill | None:
         """Return the skill with the given *name*, or None if not found.

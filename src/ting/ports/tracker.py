@@ -23,7 +23,8 @@ from ting.domain.models import (
 class TrackerFactory(Protocol):
     """Protocol for resolving per-owner TrackerPort adapters."""
 
-    async def for_owner(self, owner_id: str) -> list[TrackerPort]: ...
+    async def for_owner(self, owner_id: str) -> list[TrackerPort]:
+        raise NotImplementedError
 
 
 class TrackerPort(ABC):
@@ -32,15 +33,18 @@ class TrackerPort(ABC):
     # -- CRUD: create entities in the external tracker --
 
     @abstractmethod
-    async def create_saga(self, saga: Saga, *, description: str = "") -> str: ...
+    async def create_saga(self, saga: Saga, *, description: str = "") -> str:
+        raise NotImplementedError
 
     @abstractmethod
-    async def create_phase(self, phase: Phase, *, project_id: str = "") -> str: ...
+    async def create_phase(self, phase: Phase, *, project_id: str = "") -> str:
+        raise NotImplementedError
 
     @abstractmethod
     async def create_run(
         self, run: Run, *, project_id: str = "", milestone_id: str = ""
-    ) -> str: ...
+    ) -> str:
+        raise NotImplementedError
 
     async def attach_document(self, project_id: str, title: str, content: str) -> str:
         """Attach a document to a project. Returns document ID. Optional — noop by default."""
@@ -48,6 +52,7 @@ class TrackerPort(ABC):
 
     async def add_comment(self, issue_id: str, body: str) -> None:
         """Add a comment to an issue. Optional — noop by default."""
+        return None
 
     async def attach_issue_document(self, issue_id: str, title: str, content: str) -> str:
         """Attach a document to an issue. Returns document ID. Optional — noop by default."""
@@ -56,24 +61,30 @@ class TrackerPort(ABC):
     # -- CRUD: update / close --
 
     @abstractmethod
-    async def update_run_state(self, run_id: str, state: RunStatus) -> None: ...
+    async def update_run_state(self, run_id: str, state: RunStatus) -> None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def close_run(self, run_id: str) -> None: ...
+    async def close_run(self, run_id: str) -> None:
+        raise NotImplementedError
 
     # -- Read: fetch domain entities by tracker ID --
 
     @abstractmethod
-    async def get_saga(self, saga_id: str) -> Saga: ...
+    async def get_saga(self, saga_id: str) -> Saga:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_phase(self, tracker_id: str) -> Phase: ...
+    async def get_phase(self, tracker_id: str) -> Phase:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_run(self, tracker_id: str) -> Run: ...
+    async def get_run(self, tracker_id: str) -> Run:
+        raise NotImplementedError
 
     @abstractmethod
-    async def list_pending_runs(self, phase_id: str) -> list[Run]: ...
+    async def list_pending_runs(self, phase_id: str) -> list[Run]:
+        raise NotImplementedError
 
     # -- Dependency tracking --
 
@@ -87,20 +98,24 @@ class TrackerPort(ABC):
     # -- Browsing: read-only access to external tracker hierarchy --
 
     @abstractmethod
-    async def list_projects(self) -> list[TrackerProject]: ...
+    async def list_projects(self) -> list[TrackerProject]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_project(self, project_id: str) -> TrackerProject: ...
+    async def get_project(self, project_id: str) -> TrackerProject:
+        raise NotImplementedError
 
     @abstractmethod
-    async def list_milestones(self, project_id: str) -> list[TrackerMilestone]: ...
+    async def list_milestones(self, project_id: str) -> list[TrackerMilestone]:
+        raise NotImplementedError
 
     @abstractmethod
     async def list_issues(
         self,
         project_id: str,
         milestone_id: str | None = None,
-    ) -> list[TrackerIssue]: ...
+    ) -> list[TrackerIssue]:
+        raise NotImplementedError
 
     # -- Run progress: operational state (status, session, confidence, PR) --
 
@@ -122,56 +137,71 @@ class TrackerPort(ABC):
         chronicle_summary: str | None = None,
         reviewer_session_id: str | None = None,
         review_round: int | None = None,
-    ) -> Run: ...
+    ) -> Run:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_run_progress_for_saga(self, saga_tracker_id: str) -> list[Run]: ...
+    async def get_run_progress_for_saga(self, saga_tracker_id: str) -> list[Run]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_run_by_session(self, session_id: str) -> Run | None: ...
+    async def get_run_by_session(self, session_id: str) -> Run | None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def list_runs_by_status(self, status: RunStatus) -> list[Run]: ...
+    async def list_runs_by_status(self, status: RunStatus) -> list[Run]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_run_by_id(self, run_id: UUID) -> Run | None: ...
+    async def get_run_by_id(self, run_id: UUID) -> Run | None:
+        raise NotImplementedError
 
     # -- Confidence events --
 
     @abstractmethod
-    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None: ...
+    async def add_confidence_event(self, tracker_id: str, event: ConfidenceEvent) -> None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]: ...
+    async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
+        raise NotImplementedError
 
     # -- Phase gate management --
 
     @abstractmethod
-    async def all_runs_merged(self, phase_tracker_id: str) -> bool: ...
+    async def all_runs_merged(self, phase_tracker_id: str) -> bool:
+        raise NotImplementedError
 
     @abstractmethod
-    async def list_phases_for_saga(self, saga_tracker_id: str) -> list[Phase]: ...
+    async def list_phases_for_saga(self, saga_tracker_id: str) -> list[Phase]:
+        raise NotImplementedError
 
     @abstractmethod
     async def update_phase_status(
         self, phase_tracker_id: str, status: PhaseStatus
-    ) -> Phase | None: ...
+    ) -> Phase | None:
+        raise NotImplementedError
 
     # -- Cross-entity navigation --
 
     @abstractmethod
-    async def get_saga_for_run(self, tracker_id: str) -> Saga | None: ...
+    async def get_saga_for_run(self, tracker_id: str) -> Saga | None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_phase_for_run(self, tracker_id: str) -> Phase | None: ...
+    async def get_phase_for_run(self, tracker_id: str) -> Phase | None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_owner_for_run(self, tracker_id: str) -> str | None: ...
+    async def get_owner_for_run(self, tracker_id: str) -> str | None:
+        raise NotImplementedError
 
     # -- Session messages --
 
     @abstractmethod
-    async def save_session_message(self, message: SessionMessage) -> None: ...
+    async def save_session_message(self, message: SessionMessage) -> None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_session_messages(self, tracker_id: str) -> list[SessionMessage]: ...
+    async def get_session_messages(self, tracker_id: str) -> list[SessionMessage]:
+        raise NotImplementedError

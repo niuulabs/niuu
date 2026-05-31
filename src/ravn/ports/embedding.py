@@ -15,7 +15,7 @@ class EmbeddingPort(ABC):
     @abstractmethod
     async def embed(self, text: str) -> list[float]:
         """Generate a single embedding vector for *text*."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -24,10 +24,10 @@ class EmbeddingPort(ABC):
         Implementations should prefer batched inference where possible
         for efficiency.  Returns a list in the same order as *texts*.
         """
-        ...
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def dimension(self) -> int:
         """Dimensionality of embedding vectors produced by this adapter."""
-        ...
+        raise NotImplementedError

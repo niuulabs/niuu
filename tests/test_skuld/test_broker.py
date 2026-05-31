@@ -295,7 +295,7 @@ class TestBroker:
         started = time.monotonic()
         await broker._publish_workflow_trigger()
         elapsed = time.monotonic() - started
-        await waiter
+        _ = await waiter
 
         assert elapsed >= 0.02
         broker._mesh_adapter.publish.assert_awaited_once()
@@ -466,8 +466,6 @@ class TestBroker:
             await test_broker._handle_cli_event(data)
 
             # _report_usage is called via create_task — let the task run
-            import asyncio
-
             await asyncio.sleep(0.05)
 
             mock_report.assert_called_once_with(data)
@@ -3584,8 +3582,6 @@ class TestHandleCliEventTimeline:
             await test_broker._handle_cli_event(data)
 
             # Let background tasks complete
-            import asyncio
-
             await asyncio.sleep(0.05)
 
             # Should have reported a message timeline event
@@ -3612,8 +3608,6 @@ class TestHandleCliEventTimeline:
             }
             await test_broker._handle_cli_event(data)
 
-            import asyncio
-
             await asyncio.sleep(0.05)
 
             calls = mock_report.call_args_list
@@ -3638,8 +3632,6 @@ class TestHandleCliEventTimeline:
             }
             await test_broker._handle_cli_event(data)
 
-            import asyncio
-
             await asyncio.sleep(0.05)
 
             calls = mock_report.call_args_list
@@ -3657,8 +3649,6 @@ class TestHandleCliEventTimeline:
         ):
             data = {"type": "result", "modelUsage": {}}
             await test_broker._handle_cli_event(data)
-
-            import asyncio
 
             await asyncio.sleep(0.05)
 

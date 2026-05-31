@@ -1,6 +1,7 @@
 """Domain service for session chronicles."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 import logging
 from datetime import UTC, datetime
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
+
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
@@ -46,7 +48,7 @@ def _detect_git_info(path: str) -> dict[str, str]:
     Uses GitPython to inspect the repo. Returns empty dict if not a git repo.
     """
     result: dict[str, str] = {}
-    try:
+    with suppress(InvalidGitRepositoryError, Exception):
         from git import InvalidGitRepositoryError, Repo
 
         repo = Repo(path, search_parent_directories=True)
@@ -61,8 +63,6 @@ def _detect_git_info(path: str) -> dict[str, str]:
             url = repo.remotes[0].url
             result["remote"] = url
             result["project"] = url.rstrip("/").split("/")[-1].replace(".git", "")
-    except (InvalidGitRepositoryError, Exception):
-        pass
     return result
 
 

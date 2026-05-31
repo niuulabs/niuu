@@ -22,6 +22,7 @@ Event mapping
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
@@ -226,10 +227,8 @@ class TingSleipnirBridge:
         if self._task is None:
             return
         self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
+        with suppress(asyncio.CancelledError):
+            _ = await self._task
         self._task = None
         logger.info("TingSleipnirBridge stopped")
 

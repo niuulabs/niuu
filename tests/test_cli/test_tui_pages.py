@@ -259,9 +259,6 @@ class TestSessionsPage:
             page = app.query_one(SessionsPage)
             page.on_mount()
 
-            def capture(msg: SessionsPage.SessionAction) -> None:
-                messages.append(msg)
-
             # Verify selected session returns correctly
             selected = page._selected_session()
             assert selected is not None

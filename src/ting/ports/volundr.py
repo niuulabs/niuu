@@ -107,7 +107,8 @@ class VolundrPort(ABC):
         *,
         auth_token: str | None = None,
         principal: Principal | None = None,
-    ) -> VolundrSession: ...
+    ) -> VolundrSession:
+        raise NotImplementedError
 
     @abstractmethod
     async def get_session(
@@ -116,7 +117,8 @@ class VolundrPort(ABC):
         *,
         auth_token: str | None = None,
         principal: Principal | None = None,
-    ) -> VolundrSession | None: ...
+    ) -> VolundrSession | None:
+        raise NotImplementedError
 
     @abstractmethod
     async def list_sessions(
@@ -124,13 +126,16 @@ class VolundrPort(ABC):
         *,
         auth_token: str | None = None,
         principal: Principal | None = None,
-    ) -> list[VolundrSession]: ...
+    ) -> list[VolundrSession]:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_pr_status(self, session_id: str) -> PRStatus: ...
+    async def get_pr_status(self, session_id: str) -> PRStatus:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_chronicle_summary(self, session_id: str) -> str: ...
+    async def get_chronicle_summary(self, session_id: str) -> str:
+        raise NotImplementedError
 
     @abstractmethod
     async def send_message(
@@ -142,7 +147,7 @@ class VolundrPort(ABC):
         principal: Principal | None = None,
     ) -> None:
         """Send a human message to a running Volundr session."""
-        ...
+        raise NotImplementedError
 
     async def send_directed_room_message(
         self,
@@ -174,7 +179,7 @@ class VolundrPort(ABC):
         principal: Principal | None = None,
     ) -> None:
         """Stop a running Volundr session."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def list_integration_ids(
@@ -184,7 +189,7 @@ class VolundrPort(ABC):
         principal: Principal | None = None,
     ) -> list[str]:
         """Return the IDs of the user's enabled integrations on this Volundr instance."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def list_repos(
@@ -194,22 +199,22 @@ class VolundrPort(ABC):
         principal: Principal | None = None,
     ) -> list[dict]:
         """Return configured repos from Volundr, each with at least 'org', 'name', 'url'."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def get_last_assistant_message(self, session_id: str) -> str:
         """Return the last assistant message from the session's conversation history."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def get_conversation(self, session_id: str) -> dict:
         """Return the full conversation history for a session."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def subscribe_activity(self) -> AsyncGenerator[ActivityEvent, None]:
         """Subscribe to the Volundr SSE stream for session_activity events."""
-        ...
+        raise NotImplementedError
         yield  # type: ignore[misc]  # pragma: no cover
 
 
@@ -228,16 +233,16 @@ class VolundrFactory(Protocol):
         configured.  Callers must treat an empty result as a hard error
         or skip the operation with an explicit warning.
         """
-        ...
+        raise NotImplementedError
 
     async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
         """Return the primary (first) authenticated adapter, or ``None``."""
-        ...
+        raise NotImplementedError
 
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:
         """Return all visible adapters for a fully scoped principal."""
-        ...
+        raise NotImplementedError
 
     async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:
         """Return the primary visible adapter for a fully scoped principal."""
-        ...
+        raise NotImplementedError

@@ -26,6 +26,7 @@ Usage::
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import re
 from dataclasses import dataclass
@@ -93,7 +94,7 @@ def _compare(left: Any, op: str, right_str: str) -> bool:
     Numeric comparison is attempted first; falls back to string comparison.
     """
     # Try numeric comparison
-    try:
+    with suppress(ValueError, TypeError):
         left_num = float(str(left))
         right_num = float(right_str)
         match op:
@@ -109,8 +110,6 @@ def _compare(left: Any, op: str, right_str: str) -> bool:
                 return left_num > right_num
             case ">=":
                 return left_num >= right_num
-    except (ValueError, TypeError):
-        pass
 
     # String comparison
     left_str = str(left) if left is not None else ""

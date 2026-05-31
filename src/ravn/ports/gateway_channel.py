@@ -39,27 +39,27 @@ class GatewayChannelPort(ABC):
     @abstractmethod
     async def start(self) -> None:
         """Connect to the platform and begin receiving messages."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def stop(self) -> None:
         """Disconnect from the platform and release all resources."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def send_text(self, chat_id: str, text: str) -> None:
         """Send *text* to *chat_id*."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def send_image(self, chat_id: str, image: bytes, caption: str = "") -> None:
         """Send *image* bytes with optional *caption* to *chat_id*."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def send_audio(self, chat_id: str, audio: bytes) -> None:
         """Send *audio* bytes to *chat_id*."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def on_message(self, handler: MessageHandler) -> None:
@@ -68,4 +68,4 @@ class GatewayChannelPort(ABC):
         Must be called before :meth:`start`.  Only one handler is supported;
         a second call replaces the first.
         """
-        ...
+        raise NotImplementedError

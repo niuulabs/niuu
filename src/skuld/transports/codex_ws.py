@@ -488,7 +488,7 @@ class CodexWebSocketTransport(CLITransport):
         except websockets.exceptions.ConnectionClosed as exc:
             logger.info("Codex WS closed: %s", exc)
         except asyncio.CancelledError:
-            pass
+            return
         except Exception as exc:
             logger.warning("Codex WS receive error: %r", exc, exc_info=True)
         finally:

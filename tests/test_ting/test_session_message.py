@@ -123,7 +123,7 @@ def client(
     app.include_router(create_runs_router())
     app.dependency_overrides[resolve_tracker] = lambda: tracker
     app.dependency_overrides[resolve_volundr] = lambda: volundr
-    app.dependency_overrides[resolve_git] = lambda: MockGit()
+    app.dependency_overrides[resolve_git] = MockGit
 
     app.state.settings = SimpleNamespace(
         review=REVIEW_CFG,
@@ -528,7 +528,7 @@ class TestListMessagesEndpoint:
         app.include_router(create_runs_router())
         app.dependency_overrides[resolve_tracker] = lambda: tracker
         app.dependency_overrides[resolve_volundr] = lambda: volundr
-        app.dependency_overrides[resolve_git] = lambda: MockGit()
+        app.dependency_overrides[resolve_git] = MockGit
         app.state.settings = SimpleNamespace(
             review=REVIEW_CFG,
             auth=AuthConfig(allow_anonymous_dev=True),

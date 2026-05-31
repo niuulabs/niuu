@@ -9,6 +9,7 @@ LLM-powered review that understands code context, architecture, and quality.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import json
 import logging
@@ -207,11 +208,9 @@ def _try_parse_text(text: str) -> ReviewerResult | None:
         stripped = line.strip()
 
         if stripped.upper().startswith("CONFIDENCE:"):
-            try:
+            with suppress(ValueError, IndexError):
                 confidence = float(stripped.split(":", 1)[1].strip())
                 confidence = max(0.0, min(1.0, confidence))
-            except (ValueError, IndexError):
-                pass
             in_findings = False
             continue
 

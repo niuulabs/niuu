@@ -11,4 +11,5 @@ class LLMPort(ABC):
     """Abstract interface for LLM-based spec decomposition."""
 
     @abstractmethod
-    async def decompose_spec(self, spec: str, repo: str, *, model: str) -> SagaStructure: ...
+    async def decompose_spec(self, spec: str, repo: str, *, model: str) -> SagaStructure:
+        raise NotImplementedError

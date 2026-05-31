@@ -18,9 +18,9 @@ class EventTranslatorPort(ABC):
     @abstractmethod
     def translate(self, event: RavnEvent) -> list[dict]:
         """Return zero or more wire-format event dicts for *event*."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def reset(self) -> None:
         """Reset per-turn state (block indices, flags, etc.)."""
-        ...
+        raise NotImplementedError

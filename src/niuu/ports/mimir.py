@@ -36,7 +36,7 @@ class MimirPort(ABC):
         Returns a list of wiki page paths (relative to wiki root) that were
         created or updated.  Appends an entry to ``wiki/log.md``.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def query(self, question: str) -> MimirQueryResult:
@@ -44,7 +44,7 @@ class MimirPort(ABC):
 
         The adapter performs ranking; full synthesis is performed by the caller.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def lint(self, fix: bool = False) -> MimirLintReport:
@@ -54,12 +54,12 @@ class MimirPort(ABC):
         corrected in-place before the report is returned.  Appends an entry
         to ``wiki/log.md``.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def search(self, query: str) -> list[MimirPage]:
         """Full-text search over wiki pages, ranked by relevance."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def upsert_page(
@@ -82,7 +82,7 @@ class MimirPort(ABC):
         fields written by the thread enricher).  Adapters that support it will
         persist the metadata alongside the content; others may ignore it.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def read_page(self, path: str) -> str:
@@ -90,7 +90,7 @@ class MimirPort(ABC):
 
         Raises ``FileNotFoundError`` if the page does not exist.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def get_page(self, path: str) -> MimirPage:
@@ -99,7 +99,7 @@ class MimirPort(ABC):
         More efficient than calling ``read_page`` and ``list_pages`` separately.
         Raises ``FileNotFoundError`` if the page does not exist.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def list_pages(
@@ -111,12 +111,12 @@ class MimirPort(ABC):
 
         Returns lightweight metadata records — does not read full page content.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def read_source(self, source_id: str) -> MimirSource | None:
         """Return the full raw source by ID, or None if not found."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
@@ -125,7 +125,7 @@ class MimirPort(ABC):
         When *unprocessed_only* is True, returns only sources that are not yet
         referenced in any wiki page (i.e. no page carries a matching source_id).
         """
-        ...
+        raise NotImplementedError
 
     # ------------------------------------------------------------------
     # Thread methods — optional extension point

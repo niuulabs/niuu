@@ -43,6 +43,7 @@ Configuration example
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import json
@@ -184,10 +185,8 @@ class CLICommandTransport(SleipnirSubscriber):
     # ------------------------------------------------------------------
 
     def _remove_subscription(self, sub: _BaseSubscription) -> None:
-        try:
+        with suppress(ValueError):
             self._subscriptions.remove(sub)
-        except ValueError:
-            pass
 
     def _build_argv(self, event_json: str) -> list[str]:
         """Return the argv list for the subprocess."""

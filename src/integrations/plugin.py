@@ -35,7 +35,7 @@ class IntegrationsPlugin(ServicePlugin):
         return ServiceDefinition(
             name="integrations",
             description="Integration connection and OAuth service",
-            factory=lambda: _IntegrationsStub(),
+            factory=_IntegrationsStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8086,

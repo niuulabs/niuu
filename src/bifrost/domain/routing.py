@@ -134,3 +134,4 @@ def apply_rules(
         case _:
             logger.warning("Unknown rule action '%s'; ignoring", match_result.action)
             return request
+    raise AssertionError("Unreachable apply_rules fallthrough")

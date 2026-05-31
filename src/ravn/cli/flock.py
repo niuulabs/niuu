@@ -22,6 +22,7 @@ State files
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import json
@@ -397,10 +398,8 @@ def _stop_pids(pids: list[int], *, timeout_s: float = 5.0) -> None:
     """Send SIGTERM to all pids, then SIGKILL stragglers."""
     for pid in pids:
         if _is_alive(pid):
-            try:
+            with suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -410,10 +409,8 @@ def _stop_pids(pids: list[int], *, timeout_s: float = 5.0) -> None:
 
     for pid in pids:
         if _is_alive(pid):
-            try:
+            with suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
 
 
 # ---------------------------------------------------------------------------
@@ -821,10 +818,8 @@ def flock_logs(
         if follow:
             cmd.append("-f")
         cmd.extend(log_paths)
-        try:
+        with suppress(KeyboardInterrupt):
             subprocess.run(cmd)
-        except KeyboardInterrupt:
-            pass
         return
 
     _python_tail(log_paths, lines=lines, follow=follow)

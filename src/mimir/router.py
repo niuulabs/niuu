@@ -419,7 +419,6 @@ def _require_write_auth(authorization: Annotated[str | None, Header()] = None) -
 
 _LOG_HEADER_RE = re.compile(r"^## \[(?P<date>[^\]]+)\] (?P<prefix>[^|]+)\| (?P<subject>.+)$")
 _KV_TOKEN_RE = re.compile(r"(?P<key>[a-z_]+)=(?P<value>[^\s]+)")
-_COMPILED_SUBHEADING_RE = re.compile(r"^### (?P<heading>[^\n]+)\s*$", re.MULTILINE)
 _RELATIONSHIP_LINE_RE = re.compile(r"^- \[\[(?P<slug>[^\]]+)\]\]\s*(?:—|-)\s*(?P<note>.+)$")
 
 

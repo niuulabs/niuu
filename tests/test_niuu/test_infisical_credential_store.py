@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -17,7 +16,6 @@ from niuu.domain.models import SecretType
 # ---------------------------------------------------------------------------
 
 _NOW_STR = "2024-01-01T12:00:00+00:00"
-_NOW = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _make_store(**kwargs) -> InfisicalCredentialStore:

@@ -34,7 +34,7 @@ class PreToolHookPort(ABC):
         Raises:
             PermissionDeniedError: If the tool should be blocked.
         """
-        ...
+        raise NotImplementedError
 
 
 class PostToolHookPort(ABC):
@@ -62,7 +62,7 @@ class PostToolHookPort(ABC):
         Returns:
             Possibly modified ToolResult.
         """
-        ...
+        raise NotImplementedError
 
 
 class HookPipelinePort(ABC):
@@ -84,7 +84,7 @@ class HookPipelinePort(ABC):
         Raises:
             PermissionDeniedError: If any pre-hook blocks execution.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def run_post(
@@ -95,4 +95,4 @@ class HookPipelinePort(ABC):
         agent_state: dict,
     ) -> ToolResult:
         """Run all post-hooks in order and return the (possibly modified) result."""
-        ...
+        raise NotImplementedError

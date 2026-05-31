@@ -29,7 +29,7 @@ class BrowserPort(Protocol):
 
     async def navigate(self, url: str, *, wait_for: str = "domcontentloaded") -> PageSummary:
         """Navigate to *url* and return a page summary."""
-        ...  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def snapshot(self) -> str:
         """Return the page accessibility tree as compact text.
@@ -41,15 +41,15 @@ class BrowserPort(Protocol):
         Handles are referenced by ``@eN`` in subsequent tool calls.
         Typical output < 2 K tokens.
         """
-        ...  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def click(self, selector: str) -> None:
         """Click the element identified by *selector* or ``@eN`` handle."""
-        ...  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def type(self, selector: str, text: str) -> None:
         """Type *text* into the element identified by *selector* or ``@eN`` handle."""
-        ...  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def scroll(self, direction: str, amount: int = 3) -> None:
         """Scroll the page.
@@ -58,16 +58,16 @@ class BrowserPort(Protocol):
             direction: ``"up"`` | ``"down"`` | ``"left"`` | ``"right"``
             amount:    Number of scroll steps (default 3).
         """
-        ...  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def screenshot(self) -> bytes:
         """Capture a full-page screenshot and return raw PNG bytes."""
-        ...  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def evaluate(self, js: str) -> Any:
         """Evaluate a JavaScript expression and return the result."""
-        ...  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def close(self) -> None:
         """Close the browser session and release all resources."""
-        ...  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover

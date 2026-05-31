@@ -86,6 +86,7 @@ def _compare_numeric(value: float, expr: str) -> bool:
             return value != rhs
         case _:
             return False
+    raise AssertionError("Unreachable _compare_numeric fallthrough")
 
 
 def _thinking_enabled(request: AnthropicRequest) -> bool:

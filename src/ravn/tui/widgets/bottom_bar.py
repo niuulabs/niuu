@@ -1,6 +1,7 @@
 """BottomBar — contextual keybinding hints with kbd-style key boxes."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 from textual.app import ComposeResult
 from textual.widget import Widget
@@ -9,6 +10,7 @@ from textual.widgets import Static
 
 def _kbd(key: str) -> str:
     """Render a key as a subtle pill: key on dark background."""
+
     return f"[#c4c4c4 on #232326] {key} [/]"
 
 
@@ -97,7 +99,5 @@ class BottomBar(Widget):
         """Update hint text for the currently focused view type."""
         extra = _VIEW_HINTS.get(view_type, "")
         text = extra + _GLOBAL if extra else _GLOBAL
-        try:
+        with suppress(Exception):
             self.query_one("#bb-hints", Static).update(text)
-        except Exception:
-            pass

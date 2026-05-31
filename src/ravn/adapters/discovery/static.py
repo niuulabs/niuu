@@ -28,6 +28,7 @@ the file and updates the peer table (join/leave callbacks fire as needed).
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
@@ -110,10 +111,8 @@ class StaticDiscoveryAdapter:
         """Cancel the poll loop if running."""
         if self._poll_task is not None:
             self._poll_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._poll_task
-            except asyncio.CancelledError:
-                pass
             self._poll_task = None
 
         logger.info("static_discovery: stopped peer=%s", self._identity.peer_id)
@@ -214,20 +213,16 @@ class StaticDiscoveryAdapter:
         for peer_id in old_ids - new_ids:
             peer = self._peers[peer_id]
             for cb in self._on_leave:
-                try:
+                with suppress(Exception):
                     cb(peer)
-                except Exception:
-                    pass
             logger.debug("static_discovery: peer left: %s", peer_id)
 
         # Peers that joined
         for peer_id in new_ids - old_ids:
             peer = new_peers[peer_id]
             for cb in self._on_join:
-                try:
+                with suppress(Exception):
                     cb(peer)
-                except Exception:
-                    pass
             logger.debug("static_discovery: peer joined: %s", peer_id)
 
         self._peers = new_peers

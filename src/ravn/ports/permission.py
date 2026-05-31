@@ -71,7 +71,7 @@ class PermissionPort(ABC):
     @abstractmethod
     async def check(self, permission: str) -> bool:
         """Return True if the given permission is granted, False to deny."""
-        ...
+        raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ class PermissionEnforcerPort(ABC):
         Returns:
             Allow, Deny, or NeedsApproval decision.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def check_file_write(self, path: str | Path, workspace_root: Path) -> PermissionDecision:
@@ -111,7 +111,7 @@ class PermissionEnforcerPort(ABC):
         Returns:
             Allow if the path is safe, Deny otherwise.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def check_bash(self, command: str) -> PermissionDecision:
@@ -123,7 +123,7 @@ class PermissionEnforcerPort(ABC):
         Returns:
             Allow, Deny, or NeedsApproval depending on command analysis.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def record_approval(self, tool_name: str, args: dict) -> None:
@@ -137,4 +137,4 @@ class PermissionEnforcerPort(ABC):
             tool_name: Name of the tool the user approved.
             args: Arguments that were supplied to the tool.
         """
-        ...
+        raise NotImplementedError

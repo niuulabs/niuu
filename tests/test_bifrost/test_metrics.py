@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -171,8 +172,7 @@ class TestHelpers:
     def setup_method(self) -> None:
         # Create a fresh private registry so each test is isolated from the
         # global module-level singletons.
-        import bifrost.metrics as m
-
+        m = sys.modules["bifrost.metrics"]
         self._original_registry = m.REGISTRY
         m.REGISTRY = Registry()
         # Re-register metrics against the private registry
@@ -202,13 +202,11 @@ class TestHelpers:
         )
 
     def teardown_method(self) -> None:
-        import bifrost.metrics as m
-
+        m = sys.modules["bifrost.metrics"]
         m.REGISTRY = self._original_registry
 
     def test_record_request_increments_counter(self) -> None:
-        import bifrost.metrics as m
-
+        m = sys.modules["bifrost.metrics"]
         record_request(
             provider="anthropic",
             model="claude-sonnet-4-6",
@@ -222,8 +220,7 @@ class TestHelpers:
         assert data[LabelKey(("anthropic", "claude-sonnet-4-6", "200"))] == 1.0
 
     def test_record_request_increments_tokens(self) -> None:
-        import bifrost.metrics as m
-
+        m = sys.modules["bifrost.metrics"]
         record_request(
             provider="anthropic",
             model="claude-sonnet-4-6",
@@ -237,8 +234,7 @@ class TestHelpers:
         assert data[LabelKey(("anthropic", "claude-sonnet-4-6", "output"))] == 50.0
 
     def test_record_request_records_duration(self) -> None:
-        import bifrost.metrics as m
-
+        m = sys.modules["bifrost.metrics"]
         record_request(
             provider="openai",
             model="gpt-4o",
@@ -253,29 +249,25 @@ class TestHelpers:
         assert count == 1.0
 
     def test_record_cache_hit(self) -> None:
-        import bifrost.metrics as m
-
+        m = sys.modules["bifrost.metrics"]
         record_cache_hit(provider="anthropic", model="claude-haiku-4-5-20251001")
         data = m.cache_hits_total.collect()
         assert data[LabelKey(("anthropic", "claude-haiku-4-5-20251001"))] == 1.0
 
     def test_record_cache_miss(self) -> None:
-        import bifrost.metrics as m
-
+        m = sys.modules["bifrost.metrics"]
         record_cache_miss(provider="anthropic", model="claude-sonnet-4-6")
         data = m.cache_misses_total.collect()
         assert data[LabelKey(("anthropic", "claude-sonnet-4-6"))] == 1.0
 
     def test_record_quota_rejection(self) -> None:
-        import bifrost.metrics as m
-
+        m = sys.modules["bifrost.metrics"]
         record_quota_rejection(agent_id="ting")
         data = m.quota_rejections_total.collect()
         assert data[LabelKey(("ting",))] == 1.0
 
     def test_record_rule_hit(self) -> None:
-        import bifrost.metrics as m
-
+        m = sys.modules["bifrost.metrics"]
         record_rule_hit(rule_name="no-images", action="strip_images")
         data = m.rule_hits_total.collect()
         assert data[LabelKey(("no-images", "strip_images"))] == 1.0

@@ -7,6 +7,7 @@ chat bubble to the RichLog.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import json
@@ -118,28 +119,20 @@ class ChatView(Widget):
     # ------------------------------------------------------------------
 
     def action_scroll_down(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#cv-log", RichLog).scroll_down(animate=False)
-        except Exception:
-            pass
 
     def action_scroll_up(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#cv-log", RichLog).scroll_up(animate=False)
-        except Exception:
-            pass
 
     def action_scroll_bottom(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#cv-log", RichLog).scroll_end(animate=False)
-        except Exception:
-            pass
 
     def action_scroll_top(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#cv-log", RichLog).scroll_home(animate=False)
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # WebSocket connection
@@ -155,11 +148,9 @@ class ChatView(Widget):
                 self._ws = ws
                 self._append_system("connected")
                 async for raw in ws:
-                    try:
+                    with suppress(json.JSONDecodeError):
                         frame = json.loads(raw)
                         self._handle_frame(frame)
-                    except json.JSONDecodeError:
-                        pass
         except Exception as exc:
             self._append_system(f"[#ef4444]disconnected: {exc}[/]")
         finally:
@@ -247,22 +238,18 @@ class ChatView(Widget):
     # ------------------------------------------------------------------
 
     def _show_stream(self, text: str) -> None:
-        try:
+        with suppress(Exception):
             stream = self.query_one("#cv-stream", Static)
             stream.add_class("streaming")
             # Escape Rich markup in streamed text to avoid parse errors
             safe = text.replace("[", "\\[")
             stream.update(f"[#d4d4d8]  {safe}[/]")
-        except Exception:
-            pass
 
     def _clear_stream(self) -> None:
-        try:
+        with suppress(Exception):
             stream = self.query_one("#cv-stream", Static)
             stream.remove_class("streaming")
             stream.update("")
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Rendering helpers
@@ -294,26 +281,20 @@ class ChatView(Widget):
         log.scroll_end(animate=False)
 
     def _append_thought(self, text: str) -> None:
-        try:
+        with suppress(Exception):
             log = self.query_one("#cv-log", RichLog)
             safe = text.replace("[", "\\[")
             log.write(f"[italic #52525b]  ✦ {safe}[/]")
-        except Exception:
-            pass
 
     def _append_tool_start(self, tool: str) -> None:
-        try:
+        with suppress(Exception):
             log = self.query_one("#cv-log", RichLog)
             log.write(f"[#06b6d4 on #071a1e]  TOOL [/][#06b6d4] {tool}[/]")
-        except Exception:
-            pass
 
     def _append_system(self, text: str) -> None:
-        try:
+        with suppress(Exception):
             log = self.query_one("#cv-log", RichLog)
             log.write(f"[#3f3f46]  ── {text} ──[/]")
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------

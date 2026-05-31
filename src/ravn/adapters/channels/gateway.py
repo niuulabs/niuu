@@ -15,6 +15,7 @@ Usage::
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
@@ -207,7 +208,7 @@ class RavnGateway:
                 async for event in session.channel.stream():
                     yield event
             finally:
-                await run_task
+                _ = await run_task
                 session.channel.drain()
 
     async def _run_and_signal(self, session: GatewaySession, text: str) -> None:
@@ -229,10 +230,8 @@ class RavnGateway:
 
     def unsubscribe(self, q: asyncio.Queue[RavnEvent | None]) -> None:
         """Remove *q* from the broadcast subscriber list."""
-        try:
+        with suppress(ValueError):
             self._broadcast_queues.remove(q)
-        except ValueError:
-            pass
 
     async def _broadcast(self, event: RavnEvent) -> None:
         """Fan out *event* to all registered broadcast subscribers."""

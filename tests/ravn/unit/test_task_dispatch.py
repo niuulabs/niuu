@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -536,8 +537,7 @@ class TestRunMethod:
     @pytest.mark.asyncio
     async def test_run_exits_on_cancellation(self) -> None:
         """run() returns cleanly when the task is cancelled."""
-        import ravn.adapters.channels.event as event_mod
-
+        event_mod = sys.modules["ravn.adapters.channels.event"]
         ch = TaskDispatchChannel(_config())
 
         async def fake_connect_and_consume(*_args, **_kwargs):
@@ -553,8 +553,7 @@ class TestRunMethod:
     @pytest.mark.asyncio
     async def test_run_disabled_when_aio_pika_missing(self) -> None:
         """run() exits immediately when aio_pika is not installed."""
-        import ravn.adapters.channels.event as event_mod
-
+        event_mod = sys.modules["ravn.adapters.channels.event"]
         ch = TaskDispatchChannel(_config())
         with patch.object(event_mod, "aio_pika", None):
             # Should return without raising
@@ -563,8 +562,7 @@ class TestRunMethod:
     @pytest.mark.asyncio
     async def test_run_retries_on_connection_error(self) -> None:
         """run() retries after a connection error."""
-        import ravn.adapters.channels.event as event_mod
-
+        event_mod = sys.modules["ravn.adapters.channels.event"]
         ch = TaskDispatchChannel(_config(reconnect_delay_s=0.0))
         call_count = 0
 
@@ -721,9 +719,7 @@ class TestConnectAndConsume:
     async def test_no_amqp_url_sleeps_and_returns(self) -> None:
         """_connect_and_consume returns early when AMQP URL is not set."""
         import os
-
-        import ravn.adapters.channels.event as event_mod
-
+        event_mod = sys.modules["ravn.adapters.channels.event"]
         ch = TaskDispatchChannel(_config())
         enqueued: list = []
 
@@ -741,9 +737,7 @@ class TestConnectAndConsume:
     async def test_messages_are_consumed(self) -> None:
         """_connect_and_consume delivers messages via _handle_message."""
         import os
-
-        import ravn.adapters.channels.event as event_mod
-
+        event_mod = sys.modules["ravn.adapters.channels.event"]
         loader = _fake_persona_loader(["autonomous-agent"])
         ch = TaskDispatchChannel(_config(reconnect_delay_s=0.0), persona_loader=loader)
         enqueued: list = []

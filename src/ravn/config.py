@@ -25,6 +25,7 @@ without modifying the global ravn.yaml.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import os
 from dataclasses import dataclass, field
@@ -2755,12 +2756,10 @@ class ProjectConfig:
 
         raw: dict = {}
         if yaml_lines:
-            try:
+            with suppress(Exception):
                 parsed = yaml.safe_load("\n".join(yaml_lines))
                 if isinstance(parsed, dict):
                     raw = parsed
-            except Exception:
-                pass
 
         warnings: list[str] = []
 

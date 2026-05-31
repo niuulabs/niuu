@@ -50,7 +50,7 @@ class LLMPort(ABC):
         ``{"type": "enabled", "budget_tokens": N}``.  Ignored by adapters that
         do not support extended thinking (``supports_thinking == False``).
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def generate(
@@ -69,4 +69,4 @@ class LLMPort(ABC):
         ``{"type": "enabled", "budget_tokens": N}``.  Ignored by adapters that
         do not support extended thinking (``supports_thinking == False``).
         """
-        ...
+        raise NotImplementedError

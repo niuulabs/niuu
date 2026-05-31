@@ -48,9 +48,9 @@ class ProfilePort(ABC):
         Implementations should return ``None`` rather than raising when the
         profile does not exist, so callers can fall back gracefully.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def list_names(self) -> list[str]:
         """Return a sorted list of all resolvable profile names."""
-        ...
+        raise NotImplementedError

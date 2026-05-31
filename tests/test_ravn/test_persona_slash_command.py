@@ -9,21 +9,6 @@ import pytest
 from ravn.adapters.slash_commands import PersonaCommand, SlashCommandContext, default_registry
 from ravn.domain.models import Session
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-_CUSTOM_PERSONA_YAML = """\
-name: custom-agent
-system_prompt_template: |
-  You are a custom agent for testing.
-permission_mode: workspace-write
-llm:
-  primary_alias: balanced
-iteration_budget: 15
-"""
-
-
 def _ctx() -> SlashCommandContext:
     return SlashCommandContext(session=Session())
 

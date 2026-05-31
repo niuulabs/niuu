@@ -2,6 +2,7 @@
 
 from volundr.domain.models import Session, SessionStatus
 from volundr.domain.ports import PodManager, SessionRepository
+from volundr.domain.services import SessionService
 
 __all__ = [
     "Session",
@@ -15,7 +16,5 @@ __all__ = [
 def __getattr__(name: str):
     """Lazily import heavyweight service exports to avoid config import cycles."""
     if name == "SessionService":
-        from volundr.domain.services import SessionService
-
         return SessionService
     raise AttributeError(name)

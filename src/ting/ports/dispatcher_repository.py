@@ -13,7 +13,7 @@ class DispatcherRepository(ABC):
     @abstractmethod
     async def get_or_create(self, owner_id: str) -> DispatcherState:
         """Return the dispatcher state for *owner_id*, creating a default row if none exists."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def update(self, owner_id: str, **fields: object) -> DispatcherState:
@@ -22,9 +22,9 @@ class DispatcherRepository(ABC):
         Only the keys present in *fields* are written; the rest are untouched.
         Returns the full state after the update.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def list_active_owner_ids(self) -> list[str]:
         """Return owner_ids of all dispatchers with running=True."""
-        ...
+        raise NotImplementedError

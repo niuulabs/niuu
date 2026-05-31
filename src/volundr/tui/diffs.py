@@ -1,6 +1,7 @@
 """Diffs page — split view with file tree (left) and diff viewer (right)."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 from dataclasses import dataclass
 from typing import Any
@@ -43,6 +44,7 @@ def _status_color(status: str) -> str:
             return ACCENT_RED
         case _:
             return TEXT_MUTED
+    raise AssertionError("Unreachable _status_color fallthrough")
 
 
 def _truncate_path(path: str, max_len: int) -> str:
@@ -171,10 +173,8 @@ class DiffsPage(Widget):
             f"[{ACCENT_RED}]-{total_del}[/]  "
             f"[{TEXT_MUTED}]{len(self._all_files)} files changed[/]"
         )
-        try:
+        with suppress(Exception):
             self.query_one("#diffs-stats", Static).update(text)
-        except Exception:
-            pass
 
     # ── Tree ────────────────────────────────────────────────
 
@@ -258,10 +258,8 @@ class DiffsPage(Widget):
             return
         if value:
             box.add_class("visible")
-            try:
+            with suppress(Exception):
                 self.query_one("#diffs-search-input", Input).focus()
-            except Exception:
-                pass
         else:
             box.remove_class("visible")
 

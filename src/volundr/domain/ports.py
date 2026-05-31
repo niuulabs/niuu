@@ -66,6 +66,16 @@ from volundr.domain.models import (
     WorkspaceTemplate,
 )
 
+__all__ = [
+    "CredentialStorePort",
+    "GitAuthError",
+    "GitProvider",
+    "GitRepoNotFoundError",
+    "GitWorkflowProvider",
+    "IntegrationRepository",
+    "PATRepository",
+]
+
 
 @dataclass(frozen=True)
 class PodStartResult:
@@ -1267,14 +1277,16 @@ class SessionContributor(ABC):
 
     @property
     @abstractmethod
-    def name(self) -> str: ...
+    def name(self) -> str:
+        raise NotImplementedError
 
     @abstractmethod
     async def contribute(
         self,
         session: Session,
         context: SessionContext,
-    ) -> SessionContribution: ...
+    ) -> SessionContribution:
+        raise NotImplementedError
 
     async def cleanup(self, session: Session, context: SessionContext) -> None:
         """Clean up on stop/delete. Default no-op."""

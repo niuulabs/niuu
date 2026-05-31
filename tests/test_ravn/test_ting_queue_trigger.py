@@ -9,6 +9,7 @@ Covers:
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import importlib
@@ -520,10 +521,8 @@ class TestDriveLoopIntegration:
             task = asyncio.create_task(trigger.run(enqueue_mock))
             await asyncio.sleep(0.05)
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            with suppress(asyncio.CancelledError):
+                _ = await task
 
         assert len(calls) >= 1
 
@@ -545,10 +544,8 @@ class TestDriveLoopIntegration:
             task = asyncio.create_task(trigger.run(enqueue_mock))
             await asyncio.sleep(0.05)
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            with suppress(asyncio.CancelledError):
+                _ = await task
 
         assert call_count >= 3
 

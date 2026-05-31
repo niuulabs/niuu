@@ -15,6 +15,7 @@ Old snapshots are pruned when ``max_snapshots_per_task`` is exceeded.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import gzip
 import json
@@ -96,10 +97,8 @@ def _write_gz(path: Path, data: dict) -> None:
         os.chmod(tmp, _FILE_MODE)
         os.replace(tmp, path)
     except Exception:
-        try:
+        with suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
@@ -186,10 +185,8 @@ class DiskCheckpointAdapter(CheckpointPort):
                 json.dump(entries, fh)
             os.replace(tmp, path)
         except Exception:
-            try:
+            with suppress(OSError):
                 os.unlink(tmp)
-            except OSError:
-                pass
             raise
 
     def _next_seq(self, task_id: str) -> int:

@@ -12,6 +12,7 @@ itself performs no safety checks.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
@@ -95,10 +96,8 @@ async def run_sentinel_command(
                 line_bytes = await process.stdout.readline()
                 if not line_bytes:
                     # EOF — process exited (e.g. the command was "exit N").
-                    try:
+                    with suppress(TimeoutError):
                         await asyncio.wait_for(process.wait(), timeout=eof_wait_timeout)
-                    except TimeoutError:
-                        pass
                     actual_rc = process.returncode if process.returncode is not None else 1
                     return "\n".join(output_lines), actual_rc, True
                 line_str = line_bytes.decode(errors="replace").rstrip("\n")

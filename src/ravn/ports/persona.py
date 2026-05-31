@@ -50,12 +50,12 @@ class PersonaPort(ABC):
         Implementations should return ``None`` rather than raising when the
         persona does not exist, so callers can fall back gracefully.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def list_names(self) -> list[str]:
         """Return a sorted list of all resolvable persona names."""
-        ...
+        raise NotImplementedError
 
 
 class PersonaRegistryPort(PersonaPort):
@@ -76,7 +76,7 @@ class PersonaRegistryPort(PersonaPort):
         Creates the target directory if it does not exist.  Overwrites any
         existing file with the same name.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def delete(self, name: str) -> bool:
@@ -86,17 +86,17 @@ class PersonaRegistryPort(PersonaPort):
         ``False`` (without raising) when *name* is a pure built-in with no
         user-defined override file.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def is_builtin(self, name: str) -> bool:
         """Return ``True`` when *name* is a built-in persona."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def load_all(self) -> list[PersonaConfig]:
         """Return all resolvable personas with outcome instructions injected."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def source(self, name: str) -> str:
@@ -106,4 +106,4 @@ class PersonaRegistryPort(PersonaPort):
         Returns ``'[built-in]'`` when the persona comes from the built-in set.
         Returns an empty string when the persona cannot be resolved at all.
         """
-        ...
+        raise NotImplementedError

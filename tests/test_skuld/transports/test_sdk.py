@@ -473,7 +473,7 @@ async def test_send_control_steer_interrupts_and_continues(monkeypatch, tmp_path
 
     steer_task = asyncio.create_task(request_steer())
     await transport.send_message("Start with option A")
-    await steer_task
+    _ = await steer_task
 
     assert factory.client.query.await_args_list[0].args == ("Start with option A",)
     assert factory.client.query.await_args_list[1].args == ("Use option B instead",)
@@ -506,7 +506,7 @@ async def test_send_control_redirect_interrupts_and_continues(monkeypatch, tmp_p
 
     redirect_task = asyncio.create_task(request_redirect())
     await transport.send_message("Start with option A")
-    await redirect_task
+    _ = await redirect_task
 
     assert factory.client.query.await_args_list[0].args == ("Start with option A",)
     assert factory.client.query.await_args_list[1].args == ("Actually use option B",)

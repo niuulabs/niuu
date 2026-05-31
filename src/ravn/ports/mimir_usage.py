@@ -19,7 +19,7 @@ class MimirUsagePort(ABC):
     @abstractmethod
     async def record_access(self, path: str) -> None:
         """Record a single access to the wiki page at *path*."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def top_pages(self, n: int = 20) -> list[tuple[str, int]]:
@@ -27,9 +27,9 @@ class MimirUsagePort(ABC):
 
         Returns a list of ``(path, count)`` tuples, sorted descending by count.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def pages_above_threshold(self, min_accesses: int) -> list[str]:
         """Return paths of pages accessed at least *min_accesses* times."""
-        ...
+        raise NotImplementedError
