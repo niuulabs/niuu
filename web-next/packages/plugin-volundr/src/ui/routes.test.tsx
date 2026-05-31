@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { VolundrSessionRoute, VolundrArchivedRoute } from './routes';
 import {
   createMockVolundrService,
@@ -46,6 +47,7 @@ vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
 // TanStack Router: stub useParams so route components work outside a router.
 vi.mock('@tanstack/react-router', () => ({
+  useNavigate: vi.fn().mockReturnValue(vi.fn()),
   useParams: vi.fn().mockReturnValue({ sessionId: 'sess-route-test' }),
 }));
 
@@ -74,6 +76,7 @@ function wrap(ui: React.ReactNode) {
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
+          bifrost: createMockBifrostService(),
           volundr: createMockVolundrService(),
           ptyStream: buildPtyStream(),
           filesystem: buildFilesystem(),

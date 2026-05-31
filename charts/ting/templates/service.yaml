@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ting.fullname" . }}
+  labels:
+    {{- include "ting.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type | default "ClusterIP" }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port | default 80 }}
+      targetPort: {{ if .Values.envoy.enabled }}envoy{{ else }}http{{ end }}
+      protocol: TCP
+  selector:
+    {{- include "ting.selectorLabels" . | nindent 4 }}

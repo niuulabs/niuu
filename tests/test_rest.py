@@ -39,7 +39,7 @@ class TestSSEEndpoint:
         app.include_router(router)
 
         client = TestClient(app)
-        response = client.get("/api/v1/volundr/sessions/stream")
+        response = client.get("/api/v1/forge/sessions/stream")
 
         assert response.status_code == 503
         assert "Event streaming not available" in response.json()["detail"]
@@ -94,7 +94,7 @@ class TestSSEEndpoint:
         from httpx import ASGITransport, AsyncClient
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get("/api/v1/volundr/sessions/stream")
+            response = await client.get("/api/v1/forge/sessions/stream")
 
         assert response.status_code == 200
         assert "text/event-stream" in response.headers["content-type"]
@@ -140,7 +140,7 @@ class TestSessionEndpoints:
     def test_create_session(self, client, mock_broadcaster):
         """Creating a session via API creates and starts it, publishes events."""
         response = client.post(
-            "/api/v1/volundr/sessions",
+            "/api/v1/forge/sessions",
             json={
                 "name": "test-session",
                 "model": "claude-sonnet-4-20250514",
@@ -159,14 +159,14 @@ class TestSessionEndpoints:
 
     def test_list_sessions(self, client):
         """List sessions endpoint returns empty list initially."""
-        response = client.get("/api/v1/volundr/sessions")
+        response = client.get("/api/v1/forge/sessions")
 
         assert response.status_code == 200
         assert response.json() == []
 
     def test_get_session_not_found(self, client):
         """Getting a non-existent session returns 404."""
-        response = client.get("/api/v1/volundr/sessions/00000000-0000-0000-0000-000000000000")
+        response = client.get("/api/v1/forge/sessions/00000000-0000-0000-0000-000000000000")
 
         assert response.status_code == 404
 
@@ -174,7 +174,7 @@ class TestSessionEndpoints:
         """Updating a session via API publishes event."""
         # Create session first
         create_response = client.post(
-            "/api/v1/volundr/sessions",
+            "/api/v1/forge/sessions",
             json={
                 "name": "test-session",
                 "model": "claude-sonnet-4-20250514",
@@ -189,7 +189,7 @@ class TestSessionEndpoints:
 
         # Update session
         response = client.put(
-            f"/api/v1/volundr/sessions/{session_id}",
+            f"/api/v1/forge/sessions/{session_id}",
             json={"name": "updated-name"},
         )
 
@@ -203,7 +203,7 @@ class TestSessionEndpoints:
         """Deleting a session via API publishes event."""
         # Create session first
         create_response = client.post(
-            "/api/v1/volundr/sessions",
+            "/api/v1/forge/sessions",
             json={
                 "name": "test-session",
                 "model": "claude-sonnet-4-20250514",
@@ -214,7 +214,7 @@ class TestSessionEndpoints:
         session_id = create_response.json()["id"]
 
         # Delete session
-        response = client.delete(f"/api/v1/volundr/sessions/{session_id}")
+        response = client.delete(f"/api/v1/forge/sessions/{session_id}")
 
         assert response.status_code == 204
 
@@ -260,7 +260,7 @@ class TestStatsEndpoint:
             cost_today=Decimal("2.50"),
         )
 
-        response = client.get("/api/v1/volundr/stats")
+        response = client.get("/api/v1/forge/stats")
 
         assert response.status_code == 200
         data = response.json()
@@ -297,7 +297,7 @@ class TestModelsEndpoint:
 
     def test_list_models(self, client):
         """Models endpoint returns available models."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
 
         assert response.status_code == 200
         data = response.json()

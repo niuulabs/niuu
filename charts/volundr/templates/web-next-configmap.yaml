@@ -1,7 +1,22 @@
 {{- if .Values.webNext.enabled }}
-{{- $origin := trimSuffix "/" .Values.webNext.config.publicOrigin -}}
-{{- $sessionOrigin := trimSuffix "/" (default (printf "https://%s" (include "volundr.sessionGateway.hostname" .)) .Values.webNext.config.sessionOrigin) -}}
-{{- $sessionWsOrigin := $sessionOrigin | replace "https://" "wss://" | replace "http://" "ws://" -}}
+{{- $defaultServices := dict
+  "identity" (dict "mode" "http" "baseUrl" "/api/v1")
+  "credentials" (dict "mode" "http" "baseUrl" "/api/v1/credentials")
+  "integrations" (dict "mode" "http" "baseUrl" "/api/v1/integrations")
+  "features" (dict "mode" "http" "baseUrl" "/api/v1")
+  "tracker" (dict "mode" "http" "baseUrl" "/api/v1")
+  "audit" (dict "mode" "http" "baseUrl" "/api/v1")
+  "mimir" (dict "mode" "http" "baseUrl" "/api/v1/mimir")
+  "observatory" (dict "mode" "http" "baseUrl" "/api/v1/observatory")
+  "bifrost" (dict "mode" "http" "baseUrl" "/api/v1/bifrost")
+  "ravn" (dict "mode" "http" "baseUrl" "/api/v1/ravn")
+  "ravn.personas" (dict "mode" "http" "baseUrl" "/api/v1/ravn/personas")
+  "forge" (dict "mode" "http" "baseUrl" "/api/v1/forge")
+  "forge.pty" (dict "mode" "ws" "wsUrl" "/s/{sessionId}/session")
+  "ting" (dict "mode" "http" "baseUrl" "/api/v1/ting")
+  "filesystem" (dict "mode" "http" "baseUrl" "/")
+}}
+{{- $services := mergeOverwrite (deepCopy $defaultServices) (.Values.webNext.config.services | default dict) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,17 +29,8 @@ data:
       "theme": {{ .Values.webNext.config.theme | quote }},
       "plugins":
 {{ toPrettyJson .Values.webNext.config.plugins | nindent 8 }},
-      "services": {
-        "identity": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "features": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "tracker": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "audit": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "mimir": { "mode": "http", "baseUrl": {{ printf "%s/mimir" $origin | quote }} },
-        "forge": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/forge" $origin | quote }} },
-        "forge.pty": { "mode": "ws", "wsUrl": {{ printf "%s/s/{sessionId}/session" $sessionWsOrigin | quote }} },
-        "tyr": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/tyr" $origin | quote }} },
-        "filesystem": { "mode": "http", "baseUrl": {{ $sessionOrigin | quote }} }
-      },
+      "services":
+{{ toPrettyJson $services | nindent 8 }},
       "auth": {
         {{- if .Values.webNext.config.auth.issuer }}
         "issuer": {{ .Values.webNext.config.auth.issuer | quote }}
@@ -41,17 +47,8 @@ data:
       "theme": {{ .Values.webNext.config.theme | quote }},
       "plugins":
 {{ toPrettyJson .Values.webNext.config.plugins | nindent 8 }},
-      "services": {
-        "identity": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "features": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "tracker": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "audit": { "mode": "http", "baseUrl": {{ printf "%s/api/v1" $origin | quote }} },
-        "mimir": { "mode": "http", "baseUrl": {{ printf "%s/mimir" $origin | quote }} },
-        "forge": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/forge" $origin | quote }} },
-        "forge.pty": { "mode": "ws", "wsUrl": {{ printf "%s/s/{sessionId}/session" $sessionWsOrigin | quote }} },
-        "tyr": { "mode": "http", "baseUrl": {{ printf "%s/api/v1/tyr" $origin | quote }} },
-        "filesystem": { "mode": "http", "baseUrl": {{ $sessionOrigin | quote }} }
-      },
+      "services":
+{{ toPrettyJson $services | nindent 8 }},
       "auth": {
         {{- if .Values.webNext.config.auth.issuer }}
         "issuer": {{ .Values.webNext.config.auth.issuer | quote }}

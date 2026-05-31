@@ -12,7 +12,8 @@
 /** Service / persona-identity glyphs keyed by system name */
 export const SERVICE_RUNES = {
   volundr: 'ᚲ',
-  tyr: 'ᛃ',
+  guild: 'ᚹ',
+  ting: 'ᚦ',
   ravn: 'ᚱ',
   mimir: 'ᛗ',
   bifrost: 'ᚨ',
@@ -30,20 +31,19 @@ export const ENTITY_RUNES = {
   cluster: 'ᚲ',
   host: 'ᚦ',
   ravn_long: 'ᚱ',
-  ravn_raid: 'ᚲ',
+  ravn_run: 'ᚲ',
   skuld: 'ᛜ',
   valkyrie: 'ᛒ',
-  tyr: 'ᛃ',
+  ting: '✦',
   bifrost: 'ᚨ',
   volundr: 'ᚲ',
   mimir: 'ᛗ',
-  mimir_sub: 'ᛗ',
   service: 'ᛦ',
   model: 'ᛖ',
   printer: 'ᛈ',
   vaettir: 'ᚹ',
   beacon: 'ᚠ',
-  raid: 'ᚷ',
+  run: 'ᚷ',
 } as const satisfies Record<string, string>;
 
 /**

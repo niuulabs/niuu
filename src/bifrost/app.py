@@ -270,6 +270,11 @@ def create_app(config: BifrostConfig) -> FastAPI:
         response.headers["X-Correlation-ID"] = correlation_id
         return response
 
+    @app.get("/health")
+    @app.get("/api/v1/bifrost/health", include_in_schema=False)
+    async def health() -> dict:
+        return {"status": "ok"}
+
     api_router = create_router(
         config=config,
         router=router,
@@ -280,8 +285,12 @@ def create_app(config: BifrostConfig) -> FastAPI:
         cache=cache,
         audit=audit,
     )
+    # Expose native Bifrost routes for direct service usage and test compatibility,
+    # plus the canonical public prefix used by the unified niuu host and ingress.
     app.include_router(api_router)
+    app.include_router(api_router, prefix="/api/v1/bifrost")
     app.include_router(obs_router)
+    app.include_router(obs_router, prefix="/api/v1/bifrost")
 
     # Expose the audit adapter on app.state so route handlers can log events.
     app.state.audit = audit

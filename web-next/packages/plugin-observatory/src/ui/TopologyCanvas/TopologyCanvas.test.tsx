@@ -27,7 +27,7 @@ const MOCK_TOPOLOGY: Topology = {
       parentId: 'realm-asgard',
       status: 'healthy',
     },
-    { id: 'tyr-0', typeId: 'tyr', label: 'tyr-0', parentId: 'cluster-vk', status: 'healthy' },
+    { id: 'ting-0', typeId: 'ting', label: 'ting-0', parentId: 'cluster-vk', status: 'healthy' },
     {
       id: 'bifrost-0',
       typeId: 'bifrost',
@@ -42,14 +42,14 @@ const MOCK_TOPOLOGY: Topology = {
       parentId: 'realm-asgard',
       status: 'healthy',
     },
-    { id: 'raid-0', typeId: 'raid', label: 'raid-0', parentId: 'cluster-vk', status: 'observing' },
+    { id: 'run-0', typeId: 'run', label: 'run-0', parentId: 'cluster-vk', status: 'observing' },
   ],
   edges: [
-    { id: 'e1', sourceId: 'tyr-0', targetId: 'bifrost-0', kind: 'solid' },
-    { id: 'e2', sourceId: 'tyr-0', targetId: 'raid-0', kind: 'dashed-anim' },
+    { id: 'e1', sourceId: 'ting-0', targetId: 'bifrost-0', kind: 'solid' },
+    { id: 'e2', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-anim' },
     { id: 'e3', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'dashed-long' },
     { id: 'e4', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'soft' },
-    { id: 'e5', sourceId: 'raid-0', targetId: 'tyr-0', kind: 'raid' },
+    { id: 'e5', sourceId: 'run-0', targetId: 'ting-0', kind: 'run' },
   ],
 };
 
@@ -128,14 +128,14 @@ describe('TopologyCanvas', () => {
   it('camera reset button restores default zoom percentage', () => {
     render(<TopologyCanvas topology={MOCK_TOPOLOGY} />);
     const zoomDisplay = screen.getByTestId('zoom-display');
+    const initialPct = parseInt(zoomDisplay.textContent ?? '0', 10);
     // Zoom in twice
     fireEvent.click(screen.getByRole('button', { name: /zoom in/i }));
     fireEvent.click(screen.getByRole('button', { name: /zoom in/i }));
     // Reset
     fireEvent.click(screen.getByTestId('camera-reset'));
     const pct = parseInt(zoomDisplay.textContent ?? '0', 10);
-    // Default zoom is INITIAL_ZOOM (0.5) → 50%
-    expect(pct).toBe(50);
+    expect(pct).toBe(initialPct);
   });
 
   it('zoom cannot exceed ZOOM_MAX (300%)', () => {
@@ -182,11 +182,11 @@ describe('TopologyCanvas', () => {
     const allEdges: Topology = {
       ...MOCK_TOPOLOGY,
       edges: [
-        { id: 'e-solid', sourceId: 'tyr-0', targetId: 'bifrost-0', kind: 'solid' },
-        { id: 'e-dashed-anim', sourceId: 'tyr-0', targetId: 'raid-0', kind: 'dashed-anim' },
+        { id: 'e-solid', sourceId: 'ting-0', targetId: 'bifrost-0', kind: 'solid' },
+        { id: 'e-dashed-anim', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-anim' },
         { id: 'e-dashed-long', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'dashed-long' },
         { id: 'e-soft', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'soft' },
-        { id: 'e-raid', sourceId: 'raid-0', targetId: 'tyr-0', kind: 'raid' },
+        { id: 'e-run', sourceId: 'run-0', targetId: 'ting-0', kind: 'run' },
       ],
     };
     expect(() => render(<TopologyCanvas topology={allEdges} />)).not.toThrow();

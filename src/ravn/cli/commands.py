@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 import os
 import signal
 import sys
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import typer
+import yaml
 
 from ravn.agent import PostToolHook, PreToolHook
 from ravn.config import (
@@ -54,6 +57,13 @@ approvals_app = typer.Typer(
 )
 app.add_typer(approvals_app, name="approvals")
 
+warden_app = typer.Typer(
+    name="warden",
+    help="Manage persisted long-lived Ravn wardens.",
+    add_completion=False,
+)
+app.add_typer(warden_app, name="warden")
+
 from ravn.cli.flock import flock_app  # noqa: E402 — must be after app is defined
 
 app.add_typer(flock_app, name="flock")
@@ -91,6 +101,24 @@ def _resolve_workspace(settings: Settings) -> Path:
     return Path(ws).resolve() if ws else Path.cwd()
 
 
+def _warden_store():
+    from ravn.warden import build_warden_store
+
+    return build_warden_store()
+
+
+def _parse_deployment_kwargs(values: list[str] | None) -> dict[str, object]:
+    """Parse repeated ``key=value`` deployment options."""
+    parsed: dict[str, object] = {}
+    for item in values or []:
+        key, sep, raw_value = item.partition("=")
+        if not sep or not key.strip():
+            msg = f"Invalid deployment arg {item!r}; expected key=value"
+            raise typer.BadParameter(msg)
+        parsed[key.strip()] = yaml.safe_load(raw_value)
+    return parsed
+
+
 def _configure_logging(settings: Settings) -> None:
     """Apply logging config from settings."""
     level = getattr(logging, settings.logging.level.upper(), logging.WARNING)
@@ -117,6 +145,262 @@ def _log_effective_config(settings: Settings) -> None:
         budget,
         source,
     )
+
+
+@warden_app.command("list")
+def warden_list(
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    """List persisted wardens."""
+    store = _warden_store()
+    wardens = store.list()
+    payload = [warden.model_dump(mode="json") for warden in wardens]
+
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    if not wardens:
+        typer.echo("No wardens found.")
+        return
+
+    for warden in wardens:
+        mounts = ", ".join(warden.mimir.mount_names) if warden.mimir.mount_names else "none"
+        typer.echo(
+            f"{warden.id}  persona={warden.persona}  "
+            f"write_mount={warden.mimir.write_mount or '-'}  mounts={mounts}"
+        )
+
+
+@warden_app.command("show")
+def warden_show(
+    warden_id: str = typer.Argument(help="Warden id."),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    """Show one persisted warden."""
+    store = _warden_store()
+    warden = store.get(warden_id)
+    if warden is None:
+        typer.echo(f"Warden not found: {warden_id}", err=True)
+        raise typer.Exit(1)
+
+    payload = warden.model_dump(mode="json")
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    typer.echo(f"id: {warden.id}")
+    typer.echo(f"name: {warden.name}")
+    typer.echo(f"persona: {warden.persona}")
+    typer.echo(f"profile: {warden.profile or '-'}")
+    typer.echo(f"deployment: {warden.deployment}")
+    typer.echo(f"write_mount: {warden.mimir.write_mount or '-'}")
+    typer.echo(
+        "mounts: " + (", ".join(warden.mimir.mount_names) if warden.mimir.mount_names else "none")
+    )
+    typer.echo(f"autostart: {str(warden.autostart).lower()}")
+    typer.echo(f"installed: {str(warden.supervisor.installed).lower()}")
+    typer.echo(f"state: {warden.runtime.state}")
+    if warden.supervisor.service_file:
+        typer.echo(f"service_file: {warden.supervisor.service_file}")
+    if warden.supervisor.config_file:
+        typer.echo(f"config_file: {warden.supervisor.config_file}")
+
+
+@warden_app.command("create")
+def warden_create(
+    name: str = typer.Argument(help="Human-friendly warden name."),
+    persona: str = typer.Option(
+        "research-and-distill",
+        "--persona",
+        help="Default persona used by this warden.",
+    ),
+    profile: str = typer.Option("", "--profile", help="Optional Ravn profile name."),
+    deployment: str = typer.Option(
+        "launchd",
+        "--deployment",
+        help=(
+            "Deployment backend shorthand, for example launchd, systemd, k8s-apply, or k8s-gitops."
+        ),
+    ),
+    deployment_arg: list[str] = typer.Option(
+        None,
+        "--deployment-arg",
+        help="Repeat key=value pairs for deployment backend configuration.",
+    ),
+    mount: list[str] = typer.Option(
+        None,
+        "--mount",
+        help="Repeat to attach one or more Mimir mounts.",
+    ),
+    write_mount: str = typer.Option("", "--write-mount", help="Default Mimir write mount."),
+    autostart: bool = typer.Option(False, "--autostart", help="Mark this warden for autostart."),
+    created_by: str = typer.Option("cli", "--created-by", help="Creator label for provenance."),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    """Create and persist a new warden spec."""
+    from ravn.warden import WardenSpec, resolve_deployment_adapter
+
+    mounts = mount or []
+    deployment_kwargs = _parse_deployment_kwargs(deployment_arg)
+    spec = WardenSpec(
+        id="",
+        name=name,
+        persona=persona,
+        profile=profile,
+        deployment=deployment,
+        deployment_adapter=resolve_deployment_adapter(deployment),
+        deployment_kwargs=deployment_kwargs,
+        mimir={
+            "mount_names": mounts,
+            "write_mount": write_mount,
+        },
+        autostart=autostart,
+        created_by=created_by,
+    )
+
+    store = _warden_store()
+    created = store.create(spec)
+    payload = created.model_dump(mode="json")
+
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    typer.echo(f"Created warden {created.id}")
+    typer.echo(f"  persona: {created.persona}")
+    typer.echo(f"  write_mount: {created.mimir.write_mount or '-'}")
+    typer.echo(
+        "  mounts: "
+        + (", ".join(created.mimir.mount_names) if created.mimir.mount_names else "none")
+    )
+
+
+@warden_app.command("install")
+def warden_install(
+    warden_id: str = typer.Argument(help="Warden id."),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    """Generate local service artifacts for one warden."""
+    from ravn.ports.warden_deployer import WardenDeploymentError
+
+    store = _warden_store()
+    try:
+        installed = store.install(warden_id, workspace_root=Path.cwd())
+    except WardenDeploymentError as exc:
+        typer.echo(f"Failed to install warden {warden_id}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if installed is None:
+        typer.echo(f"Warden not found: {warden_id}", err=True)
+        raise typer.Exit(1)
+
+    payload = installed.model_dump(mode="json")
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    typer.echo(f"Installed warden {installed.id}")
+    typer.echo(f"  service: {installed.supervisor.service_label}")
+    typer.echo(f"  service_file: {installed.supervisor.service_file}")
+    typer.echo(f"  config_file: {installed.supervisor.config_file}")
+
+
+@warden_app.command("start")
+def warden_start(
+    warden_id: str = typer.Argument(help="Warden id."),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    """Mark an installed warden as started."""
+    from ravn.ports.warden_deployer import WardenDeploymentError
+
+    store = _warden_store()
+    warden = store.get(warden_id)
+    if warden is None:
+        typer.echo(f"Warden not found: {warden_id}", err=True)
+        raise typer.Exit(1)
+    if not warden.supervisor.installed:
+        typer.echo(f"Warden must be installed before it can be started: {warden_id}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        started = store.start(warden_id)
+    except WardenDeploymentError as exc:
+        typer.echo(f"Failed to start warden {warden_id}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if started is None:
+        typer.echo(f"Warden not found: {warden_id}", err=True)
+        raise typer.Exit(1)
+
+    payload = started.model_dump(mode="json")
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    typer.echo(f"Started warden {started.id}")
+    typer.echo(f"  state: {started.runtime.state}")
+
+
+@warden_app.command("stop")
+def warden_stop(
+    warden_id: str = typer.Argument(help="Warden id."),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    """Stop an installed warden."""
+    from ravn.ports.warden_deployer import WardenDeploymentError
+
+    store = _warden_store()
+    warden = store.get(warden_id)
+    if warden is None:
+        typer.echo(f"Warden not found: {warden_id}", err=True)
+        raise typer.Exit(1)
+    if not warden.supervisor.installed:
+        typer.echo(f"Warden must be installed before it can be stopped: {warden_id}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        stopped = store.stop(warden_id)
+    except WardenDeploymentError as exc:
+        typer.echo(f"Failed to stop warden {warden_id}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if stopped is None:
+        typer.echo(f"Warden not found: {warden_id}", err=True)
+        raise typer.Exit(1)
+
+    payload = stopped.model_dump(mode="json")
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    typer.echo(f"Stopped warden {stopped.id}")
+    typer.echo(f"  state: {stopped.runtime.state}")
+
+
+@warden_app.command("uninstall")
+def warden_uninstall(
+    warden_id: str = typer.Argument(help="Warden id."),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    """Uninstall a warden deployment while keeping the persisted spec."""
+    from ravn.ports.warden_deployer import WardenDeploymentError
+
+    store = _warden_store()
+    try:
+        uninstalled = store.uninstall(warden_id)
+    except WardenDeploymentError as exc:
+        typer.echo(f"Failed to uninstall warden {warden_id}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if uninstalled is None:
+        typer.echo(f"Warden not found: {warden_id}", err=True)
+        raise typer.Exit(1)
+
+    payload = uninstalled.model_dump(mode="json")
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    typer.echo(f"Uninstalled warden {uninstalled.id}")
+    typer.echo(f"  installed: {str(uninstalled.supervisor.installed).lower()}")
+    typer.echo(f"  state: {uninstalled.runtime.state}")
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +445,12 @@ def _build_llm(settings: Settings) -> Any:
 
 
 def _build_executor(persona_config: Any | None = None) -> ExecutorPort:
-    """Build the persona-selected executor adapter."""
+    """Build the runtime-selected executor adapter.
+
+    Persona-level runtime overrides win so mixed-provider workflows can run
+    different transports in one flock. Session/workload transport settings are
+    used as the default when a persona does not override them.
+    """
     adapter_path = "ravn.adapters.executors.agent.AgentExecutor"
     kwargs: dict[str, Any] = {}
 
@@ -171,6 +460,11 @@ def _build_executor(persona_config: Any | None = None) -> ExecutorPort:
         raw_kwargs = getattr(executor_cfg, "kwargs", {})
         if isinstance(raw_kwargs, dict):
             kwargs = dict(raw_kwargs)
+    else:
+        runtime_transport_adapter = str(os.environ.get("SKULD__TRANSPORT_ADAPTER") or "").strip()
+        if runtime_transport_adapter:
+            adapter_path = "ravn.adapters.executors.cli.CliTransportExecutor"
+            kwargs = {"transport_adapter": runtime_transport_adapter}
 
     cls = _import_class(adapter_path)
     return cls(**kwargs)
@@ -207,6 +501,20 @@ def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:
             }
         )
     return servers
+
+
+def _uses_cli_transport_runtime() -> bool:
+    """Return True when the daemon is configured to execute turns via CLI transport."""
+    return bool(str(os.environ.get("SKULD__TRANSPORT_ADAPTER") or "").strip())
+
+
+def _uses_cli_transport_executor(persona_config: Any | None = None) -> bool:
+    """Return True when the effective executor is the CLI transport wrapper."""
+    executor_cfg = getattr(persona_config, "executor", None)
+    adapter_path = str(getattr(executor_cfg, "adapter", "") or "").strip()
+    if adapter_path:
+        return adapter_path == "ravn.adapters.executors.cli.CliTransportExecutor"
+    return _uses_cli_transport_runtime()
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +722,7 @@ def _build_tools(
     persona_config: Any | None = None,
     profile: str = "default",
     discovery: Any | None = None,
+    mimir_event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
 ) -> list[Any]:
     """Build the tool list from the built-in registry, filtered by profile.
 
@@ -498,7 +807,14 @@ def _build_tools(
         entity_extractor = None
         if settings.mimir.ingest.entity_detection and llm is not None:
             entity_extractor = EntityExtractor(mimir=mimir, llm=llm, config=settings.mimir.ingest)
-        tools.extend(build_mimir_tools(mimir, entity_extractor=entity_extractor))
+        tools.extend(
+            build_mimir_tools(
+                mimir,
+                workspace=workspace,
+                entity_extractor=entity_extractor,
+                event_emitter=mimir_event_emitter,
+            )
+        )
 
     # -- Custom tools from config --
     for ct in settings.tools.custom:
@@ -769,6 +1085,8 @@ async def _start_mcp(
 
 async def _start_mcp_shared(
     settings: Settings,
+    *,
+    tool_result_hook: Any | None = None,
 ) -> tuple[Any | None, list[Any]]:
     """Start MCP servers and return (manager, tools) for gateway use.
 
@@ -799,7 +1117,7 @@ async def _start_mcp_shared(
         store = LocalEncryptedTokenStore(path=ts_cfg.local_path)
 
     auth_session = MCPAuthSession(store)
-    manager = MCPManager(settings.mcp_servers)
+    manager = MCPManager(settings.mcp_servers, tool_result_hook=tool_result_hook)
 
     try:
         mcp_tools: list[Any] = await manager.start()
@@ -817,6 +1135,87 @@ async def _start_mcp_shared(
         len(mcp_tools) - 1,  # exclude auth tool from count
     )
     return manager, mcp_tools
+
+
+def _mimir_mount_name_from_mcp_server_name(server_name: str) -> str | None:
+    if not server_name.startswith("mimir-"):
+        return None
+    mount_name = server_name.removeprefix("mimir-").strip()
+    return mount_name or None
+
+
+def _mimir_ingest_event_fields_from_mcp_result(
+    *,
+    server_name: str,
+    arguments: dict[str, Any],
+    result: ToolResult,
+) -> dict[str, Any] | None:
+    if result.is_error:
+        return None
+
+    try:
+        parsed = json.loads(result.content)
+    except Exception:
+        logger.debug("Failed to parse mimir_ingest MCP result from %s", server_name, exc_info=True)
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    source_id = str(parsed.get("source_id") or "").strip()
+    if not source_id:
+        return None
+
+    page_paths_raw = parsed.get("pages_updated")
+    page_paths = page_paths_raw if isinstance(page_paths_raw, list) else []
+    mount_name = _mimir_mount_name_from_mcp_server_name(server_name)
+    source_title = str(parsed.get("title") or arguments.get("title") or source_id).strip()
+    source_type = str(
+        parsed.get("source_type") or arguments.get("source_type") or "document"
+    ).strip()
+
+    fields: dict[str, Any] = {
+        "source_id": source_id,
+        "source_title": source_title or source_id,
+        "source_type": source_type or "document",
+        "page_paths": [str(path) for path in page_paths if str(path).strip()],
+        "mcp_server_name": server_name,
+    }
+    if mount_name:
+        fields["mount_name"] = mount_name
+        fields["mount_names"] = [mount_name]
+    return fields
+
+
+def _mimir_write_event_fields_from_mcp_result(
+    *,
+    server_name: str,
+    arguments: dict[str, Any],
+    result: ToolResult,
+) -> dict[str, Any] | None:
+    if result.is_error:
+        return None
+
+    page_path = str(arguments.get("path") or "").strip()
+    if not page_path:
+        content = str(result.content or "").strip()
+        prefix = "Page written: "
+        if content.startswith(prefix):
+            page_path = content[len(prefix) :].split(" (routed to:", 1)[0].strip()
+    if not page_path:
+        return None
+
+    explicit_mimir = str(arguments.get("mimir") or "").strip()
+    mount_name = explicit_mimir or _mimir_mount_name_from_mcp_server_name(server_name)
+
+    fields: dict[str, Any] = {
+        "page_path": page_path,
+        "mcp_server_name": server_name,
+    }
+    if mount_name:
+        fields["mount_name"] = mount_name
+        fields["mount_names"] = [mount_name]
+    return fields
 
 
 async def _shutdown_mcp(manager: Any | None) -> None:
@@ -1031,7 +1430,8 @@ def _build_agent(
     permission_mode = settings.permission.mode
     if persona_config is not None and persona_config.permission_mode:
         permission_mode = persona_config.permission_mode
-    llm = _build_llm(settings)
+    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    llm = None if cli_transport_executor else _build_llm(settings)
     session = session or Session()
     base_channel: CliChannel = CliChannel()
     channel: ChannelPort = base_channel
@@ -1067,13 +1467,15 @@ def _build_agent(
         no_tools=no_tools,
         persona_config=persona_config,
     )
-    compressor = _build_compressor(settings, llm)
+    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
     prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
     checkpoint_port = _build_checkpoint(settings)
 
     extended_thinking = (
-        settings.llm.extended_thinking if settings.llm.extended_thinking.enabled else None
+        settings.llm.extended_thinking
+        if settings.llm.extended_thinking.enabled and not cli_transport_executor
+        else None
     )
 
     cp_cfg = settings.checkpoint
@@ -1722,18 +2124,22 @@ async def _run_gateway(
 
     # Shared resources (safe to reuse across sessions)
     workspace = _resolve_workspace(settings)
-    llm = _build_llm(settings)
+    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings, llm=llm)
-    compressor = _build_compressor(settings, llm)
+    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
     prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
 
     extended_thinking = (
-        settings.llm.extended_thinking if settings.llm.extended_thinking.enabled else None
+        settings.llm.extended_thinking
+        if settings.llm.extended_thinking.enabled and not cli_transport_executor
+        else None
     )
 
     # Start MCP servers (shared across sessions)
-    mcp_manager, mcp_tools = await _start_mcp_shared(settings)
+    mcp_manager: Any | None = None
+    mcp_tools: list[Any] = []
 
     def _agent_factory(channel: ChannelPort) -> ExecutionAgentPort:
         # Per-session: fresh session, budget, and tools
@@ -1944,20 +2350,25 @@ async def _run_daemon(
                 max_iterations = persona_config.iteration_budget
 
     workspace = _resolve_workspace(settings)
-    llm = _build_llm(settings)
+    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
-    compressor = _build_compressor(settings, llm)
+    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
     prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
 
     extended_thinking = (
-        settings.llm.extended_thinking if settings.llm.extended_thinking.enabled else None
+        settings.llm.extended_thinking
+        if settings.llm.extended_thinking.enabled and not cli_transport_executor
+        else None
     )
 
-    mcp_manager, mcp_tools = await _start_mcp_shared(settings)
+    mcp_manager: Any | None = None
+    mcp_tools: list[Any] = []
 
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
+    drive_loop: Any | None = None
 
     # Populated by _wire_cron after drive_loop is created; captured by _agent_factory.
     cron_tools: list[Any] = []
@@ -1965,6 +2376,7 @@ async def _run_daemon(
     # NIU-598: shared in-process bus for post-session reflection (daemon mode).
     # Captured by _agent_factory so each agent created by the daemon publishes to it.
     daemon_bus: Any | None = None
+    sleipnir_catalog_publisher: Any | None = None
     if settings.reflection.enabled:
         from sleipnir.adapters.in_process import InProcessBus
 
@@ -2014,6 +2426,26 @@ async def _run_daemon(
         profile = "worker" if is_anonymous_cascade else "default"
         profile_cfg = _get_tool_group(settings, profile)
 
+        async def _emit_mimir_ingest_event(
+            event_type: str,
+            fields: dict[str, Any],
+        ) -> None:
+            if drive_loop is None or resolved_persona is None:
+                return
+            current_task = drive_loop.resolve_task_context(task_id)
+            if current_task is None:
+                logger.warning(
+                    "mimir_ingest: no task context available for persona=%s task_id=%s",
+                    resolved_persona.name,
+                    task_id,
+                )
+                return
+            drive_loop.record_tool_outcome_fields(
+                task=current_task,
+                event_type=event_type,
+                fields=fields,
+            )
+
         tools = _build_tools(
             settings,
             workspace,
@@ -2025,6 +2457,9 @@ async def _run_daemon(
             persona_config=resolved_persona,
             profile=profile,
             discovery=_cascade_participant.discovery if _cascade_participant is not None else None,
+            mimir_event_emitter=(
+                _emit_mimir_ingest_event if resolved_persona is not None else None
+            ),
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
@@ -2137,6 +2572,28 @@ async def _run_daemon(
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
             event_publisher = RabbitMQEventPublisher(settings.sleipnir)
+            amqp_url = os.environ.get(settings.sleipnir.amqp_url_env, "").strip()
+            if amqp_url:
+                try:
+                    from sleipnir.adapters.rabbitmq import RabbitMQPublisher
+
+                    sleipnir_catalog_publisher = RabbitMQPublisher(
+                        url=amqp_url,
+                        exchange_name=settings.sleipnir.exchange,
+                    )
+                    await sleipnir_catalog_publisher.start()
+                except Exception as exc:
+                    logger.warning(
+                        "sleipnir: catalog publisher unavailable; "
+                        "mimir.dream.completed emission will be skipped: %s",
+                        exc,
+                    )
+                    sleipnir_catalog_publisher = None
+            else:
+                logger.warning(
+                    "sleipnir: %s is not set; catalog events will not be published",
+                    settings.sleipnir.amqp_url_env,
+                )
 
         drive_loop = DriveLoop(
             agent_factory=_agent_factory,
@@ -2145,6 +2602,7 @@ async def _run_daemon(
             event_publisher=event_publisher,
             resume=resume,
             mimir=daemon_mimir,
+            sleipnir_publisher=sleipnir_catalog_publisher or daemon_bus,
         )
         _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
         cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
@@ -2186,6 +2644,55 @@ async def _run_daemon(
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
 
+    async def _handle_mcp_tool_result(
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        result: ToolResult,
+    ) -> None:
+        if tool_name not in {"mimir_ingest", "mimir_write"} or drive_loop is None:
+            return
+        current_task = drive_loop.resolve_task_context()
+        if current_task is None:
+            logger.warning(
+                "%s MCP hook: no task context available for server=%s",
+                tool_name,
+                server_name,
+            )
+            return
+        if tool_name == "mimir_ingest":
+            fields = _mimir_ingest_event_fields_from_mcp_result(
+                server_name=server_name,
+                arguments=arguments,
+                result=result,
+            )
+            if fields is None:
+                return
+            drive_loop.record_tool_outcome_fields(
+                task=current_task,
+                event_type="mimir.source.ingested",
+                fields=fields,
+            )
+            return
+
+        fields = _mimir_write_event_fields_from_mcp_result(
+            server_name=server_name,
+            arguments=arguments,
+            result=result,
+        )
+        if fields is None:
+            return
+        drive_loop.record_tool_outcome_fields(
+            task=current_task,
+            event_type="mimir.page.written",
+            fields=fields,
+        )
+
+    mcp_manager, mcp_tools = await _start_mcp_shared(
+        settings,
+        tool_result_hook=_handle_mcp_tool_result,
+    )
+
     # NIU-598: start post-session reflection service for daemon mode.
     daemon_reflection_svc: Any | None = None
     if daemon_bus is not None and daemon_mimir is not None:
@@ -2221,6 +2728,8 @@ async def _run_daemon(
                 pass
         if daemon_reflection_svc is not None:
             await daemon_reflection_svc.stop()
+        if sleipnir_catalog_publisher is not None:
+            await sleipnir_catalog_publisher.stop()
         return
 
     try:
@@ -2245,6 +2754,8 @@ async def _run_daemon(
                 pass
         if daemon_reflection_svc is not None:
             await daemon_reflection_svc.stop()
+        if sleipnir_catalog_publisher is not None:
+            await sleipnir_catalog_publisher.stop()
 
 
 def _wire_triggers(drive_loop: Any, initiative: InitiativeConfig) -> list[Any]:
@@ -2286,8 +2797,13 @@ def _wire_mimir_triggers(
     and ``settings.thread``.
     """
     mc = settings.mimir
+    workflow_runtime = bool(settings.workflow.graph)
 
-    if mc.source_trigger.enabled:
+    if workflow_runtime:
+        logger.info(
+            "mimir: workflow runtime detected — background source/staleness triggers disabled"
+        )
+    elif mc.source_trigger.enabled:
         from ravn.adapters.triggers.mimir_source import MimirSourceTrigger
 
         drive_loop.register_trigger(MimirSourceTrigger(mimir=mimir, config=mc.source_trigger))
@@ -2297,7 +2813,7 @@ def _wire_mimir_triggers(
             mc.source_trigger.persona,
         )
 
-    if mc.staleness_trigger.enabled:
+    if not workflow_runtime and mc.staleness_trigger.enabled:
         from ravn.adapters.mimir.usage_log import LogBasedUsageAdapter
         from ravn.adapters.triggers.mimir_staleness import MimirStalenessTrigger
 
@@ -2324,19 +2840,32 @@ def _wire_mimir_triggers(
 
     # Thread enricher (Sjón) — classifies new Mímir pages as threads.
     if settings.thread.enabled and llm is not None:
-        from ravn.adapters.triggers.thread_enricher import ThreadEnricher
+        if _uses_cli_transport_runtime():
+            logger.info(
+                "thread: enricher skipped for CLI-transport runtime; auxiliary LLM hooks still "
+                "need transport-backed support"
+            )
+        else:
+            from ravn.adapters.triggers.thread_enricher import ThreadEnricher
 
-        drive_loop.register_trigger(ThreadEnricher(mimir=mimir, llm=llm, config=settings.thread))
-        logger.info(
-            "thread: enricher registered (poll=%ds, confidence=%.2f, llm_alias=%s)",
-            settings.thread.enricher_poll_interval_seconds,
-            settings.thread.confidence_threshold,
-            settings.thread.enricher_llm_alias,
-        )
+            drive_loop.register_trigger(
+                ThreadEnricher(mimir=mimir, llm=llm, config=settings.thread)
+            )
+            logger.info(
+                "thread: enricher registered (poll=%ds, confidence=%.2f, llm_alias=%s)",
+                settings.thread.enricher_poll_interval_seconds,
+                settings.thread.confidence_threshold,
+                settings.thread.enricher_llm_alias,
+            )
 
     # Wakefulness trigger (NIU-565) — detects silence, reflects, emits intents.
     if settings.wakefulness.enabled and llm is not None:
-        if interaction_tracker is None:
+        if _uses_cli_transport_runtime():
+            logger.info(
+                "wakefulness: skipped for CLI-transport runtime; auxiliary LLM hooks still need "
+                "transport-backed support"
+            )
+        elif interaction_tracker is None:
             logger.warning("wakefulness: no interaction tracker provided — skipping")
         else:
             from ravn.adapters.triggers.wakefulness import WakefulnessTrigger
@@ -2409,8 +2938,12 @@ def _wire_cron(
     from ravn.adapters.tools.cron_tools import build_cron_tools
     from ravn.adapters.triggers.cron import make_cron_trigger
 
+    journal_dir = Path(initiative.queue_journal_path).expanduser().parent
     trigger, store = make_cron_trigger(
         jobs=cron_jobs,
+        jobs_path=journal_dir / "cron_jobs.json",
+        state_path=journal_dir / "cron_state.json",
+        lock_path=journal_dir / "cron.lock",
         tick_seconds=initiative.cron_tick_seconds,
     )
     drive_loop.register_trigger(trigger)
@@ -2463,6 +2996,32 @@ def _split_workflow_edge_label(label: Any) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _stage_personas(node: dict[str, Any]) -> set[str]:
+    personas = {
+        str(persona)
+        for persona in (node.get("personaIds") or [])
+        if isinstance(persona, str) and persona
+    }
+    for member in node.get("stageMembers") or []:
+        if not isinstance(member, dict):
+            continue
+        persona_id = member.get("personaId")
+        if isinstance(persona_id, str) and persona_id:
+            personas.add(persona_id)
+    return personas
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 def _join_mode_to_fan_in(join_mode: str) -> str:
     if join_mode == "all":
         return "all_must_pass"
@@ -2471,55 +3030,206 @@ def _join_mode_to_fan_in(join_mode: str) -> str:
     return "merge"
 
 
-def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict[str, Any] | None:
+def _workflow_graph(settings: Settings) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     workflow_cfg = getattr(settings, "workflow", None)
     graph = getattr(workflow_cfg, "graph", None)
     if not isinstance(graph, dict):
+        return [], []
+    nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
+    edges = [edge for edge in graph.get("edges", []) if isinstance(edge, dict)]
+    return nodes, edges
+
+
+def _normalize_workflow_event_filters(member: dict[str, Any]) -> dict[str, str]:
+    raw_filters = member.get("eventFilters")
+    if not isinstance(raw_filters, dict):
+        raw_filters = member.get("event_filters")
+    if not isinstance(raw_filters, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in raw_filters.items():
+        key_text = str(key).strip()
+        value_text = str(value).strip()
+        if key_text and value_text:
+            normalized[key_text] = value_text
+    return normalized
+
+
+def _workflow_event_matches_filters(
+    payload: dict[str, Any],
+    filters: dict[str, str],
+) -> bool:
+    if not filters:
+        return True
+
+    nested_fields = payload.get("fields")
+    if not isinstance(nested_fields, dict):
+        nested_fields = {}
+    nested_outcome = payload.get("outcome")
+    if not isinstance(nested_outcome, dict):
+        nested_outcome = {}
+
+    for key, expected in filters.items():
+        actual: Any = None
+        if key in payload:
+            actual = payload.get(key)
+        elif key in nested_fields:
+            actual = nested_fields.get(key)
+        elif key in nested_outcome:
+            actual = nested_outcome.get(key)
+
+        if isinstance(actual, list):
+            if expected not in {str(item).strip() for item in actual if str(item).strip()}:
+                return False
+            continue
+
+        if str(actual or "").strip() != expected:
+            return False
+
+    return True
+
+
+def _workflow_runtime_for_persona(settings: Settings, persona_name: str) -> dict[str, Any] | None:
+    nodes, edges = _workflow_graph(settings)
+    if not nodes:
         return None
 
-    nodes = list(graph.get("nodes") or [])
-    edges = list(graph.get("edges") or [])
-    if not nodes or not edges:
-        return None
-
-    matching_nodes: list[dict[str, Any]] = []
+    matching_nodes: list[tuple[dict[str, Any], list[str], dict[str, str]]] = []
     for node in nodes:
         if not isinstance(node, dict) or node.get("kind") != "stage":
             continue
         stage_members = list(node.get("stageMembers") or [])
-        if any(member.get("personaId") == persona_name for member in stage_members):
-            matching_nodes.append(node)
-            continue
-        persona_ids = list(node.get("personaIds") or [])
-        if persona_name in persona_ids:
-            matching_nodes.append(node)
+        for member in stage_members:
+            if not isinstance(member, dict) or member.get("personaId") != persona_name:
+                continue
+            member_override_events: list[str] = []
+            consumes_event_types = member.get("consumesEventTypes")
+            if not isinstance(consumes_event_types, list):
+                consumes_event_types = member.get("consumes_event_types")
+            if isinstance(consumes_event_types, list):
+                member_override_events.extend(
+                    str(event_type).strip()
+                    for event_type in consumes_event_types
+                    if str(event_type).strip()
+                )
+            matching_nodes.append(
+                (
+                    node,
+                    member_override_events,
+                    _normalize_workflow_event_filters(member),
+                )
+            )
+            break
+        else:
+            persona_ids = list(node.get("personaIds") or [])
+            if persona_name in persona_ids:
+                matching_nodes.append((node, [], {}))
 
     if not matching_nodes:
         return None
 
-    node_ids = {str(node.get("id")) for node in matching_nodes if node.get("id") is not None}
-    event_types: list[str] = []
-    fan_in_strategy = "merge"
+    consumer_groups: list[dict[str, Any]] = []
+    aggregated_event_types: list[str] = []
+    for index, (node, member_override_events, member_event_filters) in enumerate(matching_nodes):
+        node_id = str(node.get("id") or f"{persona_name}-stage-{index}")
+        group_event_types: list[str] = []
+        for edge in edges:
+            if str(edge.get("target")) != node_id:
+                continue
+            _, target_event = _split_workflow_edge_label(edge.get("label"))
+            if target_event:
+                group_event_types.append(target_event)
 
-    for edge in edges:
-        if str(edge.get("target")) not in node_ids:
+        resolved_event_types = _dedupe_preserve_order(member_override_events or group_event_types)
+        if not resolved_event_types:
             continue
-        _, target_event = _split_workflow_edge_label(edge.get("label"))
-        if target_event and target_event not in event_types:
-            event_types.append(target_event)
 
-    multi_input_nodes = [
-        node
-        for node in matching_nodes
-        if sum(1 for edge in edges if str(edge.get("target")) == str(node.get("id"))) > 1
-    ]
-    if len(multi_input_nodes) == 1:
-        fan_in_strategy = _join_mode_to_fan_in(str(multi_input_nodes[0].get("joinMode") or "all"))
+        fan_in_strategy = "merge"
+        if len(resolved_event_types) > 1:
+            fan_in_strategy = _join_mode_to_fan_in(str(node.get("joinMode") or "all"))
+
+        consumer_groups.append(
+            {
+                "id": node_id,
+                "label": str(node.get("label") or node_id),
+                "event_types": resolved_event_types,
+                "fan_in_strategy": fan_in_strategy,
+                **({"event_filters": member_event_filters} if member_event_filters else {}),
+            }
+        )
+        aggregated_event_types.extend(resolved_event_types)
+
+    if not consumer_groups:
+        return None
+
+    default_strategy = (
+        str(consumer_groups[0]["fan_in_strategy"]) if len(consumer_groups) == 1 else "merge"
+    )
 
     return {
-        "event_types": event_types,
-        "fan_in_strategy": fan_in_strategy,
+        "event_types": _dedupe_preserve_order(aggregated_event_types),
+        "fan_in_strategy": default_strategy,
+        "consumer_groups": consumer_groups,
     }
+
+
+def _workflow_allowed_task_targets(
+    settings: Settings,
+    persona_name: str,
+    *,
+    node_id: str | None = None,
+) -> set[str] | None:
+    nodes, edges = _workflow_graph(settings)
+    if not nodes or not edges:
+        return None
+
+    if node_id:
+        matching_node_ids = {node_id}
+    else:
+        matching_node_ids = {
+            str(node.get("id"))
+            for node in nodes
+            if node.get("kind") == "stage" and persona_name in _stage_personas(node)
+        }
+    if not matching_node_ids:
+        return None
+
+    allowed_personas: set[str] = set()
+    for edge in edges:
+        if str(edge.get("source")) not in matching_node_ids:
+            continue
+        target_id = str(edge.get("target"))
+        if not target_id:
+            continue
+        for node in nodes:
+            if str(node.get("id")) != target_id:
+                continue
+            if node.get("kind") != "stage":
+                continue
+            allowed_personas.update(_stage_personas(node))
+            break
+
+    return allowed_personas if allowed_personas else None
+
+
+def _workflow_allowed_outcome_topics(
+    settings: Settings,
+    *,
+    node_id: str | None,
+) -> set[str] | None:
+    if not node_id:
+        return None
+    nodes, edges = _workflow_graph(settings)
+    if not nodes or not edges:
+        return None
+    topics = {
+        source_event
+        for edge in edges
+        if str(edge.get("source")) == node_id
+        for source_event, _target_event in [_split_workflow_edge_label(edge.get("label"))]
+        if source_event
+    }
+    return topics if topics else None
 
 
 def _wire_cascade(
@@ -2555,12 +3265,42 @@ def _wire_cascade(
             logger.warning("cascade: failed to build mesh adapter: %s", exc)
 
     # Build cascade tools (Mode 1 always; Mode 2/3 when mesh/discovery available)
+    allowed_target_personas = None
+    if persona_config is not None:
+        allowed_target_personas = _workflow_allowed_task_targets(settings, persona_config.name)
+        if allowed_target_personas is not None:
+            logger.info(
+                "cascade: workflow graph restricts %s task_create targets to %s",
+                persona_config.name,
+                sorted(allowed_target_personas),
+            )
+
+    def _resolve_allowed_targets() -> set[str] | None:
+        if persona_config is None:
+            return None
+        current_task = drive_loop.current_task() if hasattr(drive_loop, "current_task") else None
+        current_node_id = (
+            str(getattr(current_task, "workflow_node_id", "") or "").strip() if current_task else ""
+        )
+        if current_node_id:
+            return (
+                _workflow_allowed_task_targets(
+                    settings,
+                    persona_config.name,
+                    node_id=current_node_id,
+                )
+                or set()
+            )
+        return _workflow_allowed_task_targets(settings, persona_config.name)
+
     cascade_tools = build_cascade_tools(
         drive_loop=drive_loop,
         mesh=mesh,
         discovery=discovery,
         spawn_adapter=None,  # spawn adapter wired separately if needed
         cascade_config=settings.cascade,
+        allowed_target_personas=allowed_target_personas,
+        allowed_target_resolver=_resolve_allowed_targets,
     )
     logger.info(
         "cascade: registered %d tools (mesh=%s, discovery=%s)",
@@ -2595,6 +3335,10 @@ def _wire_cascade(
                     persona=task_dict.get("persona"),
                     priority=int(task_dict.get("priority", 5)),
                 )
+                if task_dict.get("session_id"):
+                    task.session_id = str(task_dict["session_id"])
+                if task_dict.get("root_correlation_id"):
+                    task.root_correlation_id = str(task_dict["root_correlation_id"])
                 await drive_loop.enqueue(task)
                 return {"status": "accepted", "task_id": task.task_id}
             except Exception as exc:
@@ -2693,14 +3437,22 @@ def _wire_cascade(
     # Wire mesh and persona_config for outcome event publishing
     drive_loop.set_mesh(mesh)
     drive_loop.set_persona_config(persona_config)
+    drive_loop.set_workflow_allowed_outcomes_resolver(
+        lambda task, _persona: _workflow_allowed_outcome_topics(
+            settings,
+            node_id=str(getattr(task, "workflow_node_id", "") or "").strip() or None,
+        )
+    )
 
     # Subscribe to event types this persona consumes
     if mesh is not None and persona_config is not None:
         consumes = getattr(persona_config, "consumes", None)
         event_types = list(getattr(consumes, "event_types", []) if consumes else [])
+        workflow_consumer_groups: list[dict[str, Any]] = []
         workflow_runtime = _workflow_runtime_for_persona(settings, persona_config.name)
         if workflow_runtime is not None and workflow_runtime["event_types"]:
             event_types = list(workflow_runtime["event_types"])
+            workflow_consumer_groups = list(workflow_runtime.get("consumer_groups") or [])
             logger.info(
                 "mesh: workflow graph overrides consumed event_types for %s: %s",
                 persona_config.name,
@@ -2788,45 +3540,98 @@ def _wire_cascade(
                     # task dispatch happens via consumer accumulation below.
 
             # --- Consumer accumulation ---
-            result = drive_loop.fan_in.try_accept_consumer(
-                event_type=event_type,
-                event_payload=payload,
-                root_correlation_id=root_corr,
-                persona_name=persona_config.name if persona_config else "unknown",
-                consumes_event_types=list(event_types),
-                strategy=fan_in_strategy,
-            )
+            consumer_groups = workflow_consumer_groups or [
+                {
+                    "id": persona_config.name,
+                    "label": persona_config.name,
+                    "event_types": list(event_types),
+                    "fan_in_strategy": fan_in_strategy,
+                }
+            ]
+            pending_groups: list[str] = []
+            matched = False
+            for group in consumer_groups:
+                group_event_types = list(group.get("event_types") or [])
+                if event_type not in group_event_types:
+                    continue
+                group_filters = group.get("event_filters") or {}
+                if isinstance(group_filters, dict) and group_filters:
+                    normalized_filters = {
+                        str(key): str(value)
+                        for key, value in group_filters.items()
+                        if str(key).strip() and str(value).strip()
+                    }
+                    if normalized_filters and not _workflow_event_matches_filters(
+                        payload,
+                        normalized_filters,
+                    ):
+                        logger.debug(
+                            "mesh: filtered outcome event_type=%s for %s group=%s filters=%s",
+                            event_type,
+                            persona_config.name if persona_config else "unknown",
+                            group.get("id") or persona_config.name,
+                            normalized_filters,
+                        )
+                        continue
+                matched = True
+                group_id = str(group.get("id") or persona_config.name)
+                group_strategy = str(group.get("fan_in_strategy") or fan_in_strategy)
+                result = drive_loop.fan_in.try_accept_consumer(
+                    event_type=event_type,
+                    event_payload=payload,
+                    root_correlation_id=root_corr,
+                    persona_name=persona_config.name if persona_config else "unknown",
+                    consumes_event_types=group_event_types,
+                    strategy=group_strategy,
+                    consumer_key=group_id,
+                )
 
-            if result is None:
+                if result is None:
+                    pending_groups.append(group_id)
+                    continue
+
+                task_id_suffix = (root_corr or "unknown")[:8]
+                safe_group_id = group_id.replace(".", "_").replace("-", "_")
+                task = AgentTask(
+                    task_id=f"event_{safe_group_id}_{task_id_suffix}",
+                    title=f"Handle {result.triggered_by}",
+                    initiative_context=result.merged_context,
+                    triggered_by=result.triggered_by,
+                    output_mode=OutputMode.SILENT,
+                    persona=(
+                        result.persona_name if result.persona_name != persona_config.name else None
+                    ),
+                    priority=5,
+                    root_correlation_id=result.root_correlation_id,
+                    workflow_parent_event_id=source_task_id,
+                    workflow_node_id=group_id,
+                )
+                task.session_id = event.session_id or task.session_id
+
+                try:
+                    await drive_loop.enqueue(task)
+                    logger.info(
+                        "mesh: enqueued task %s for %s (fan-in: %s group=%s)",
+                        task.task_id,
+                        result.triggered_by,
+                        group_strategy,
+                        group_id,
+                    )
+                except Exception as exc:
+                    logger.error("mesh: failed to enqueue task for event: %s", exc)
+
+            if pending_groups:
                 logger.info(
-                    "mesh: fan-in pending for %s — waiting for more events",
+                    "mesh: fan-in pending for %s groups=%s — waiting for more events",
+                    persona_config.name if persona_config else "unknown",
+                    pending_groups,
+                )
+            elif not matched:
+                logger.debug(
+                    "mesh: ignoring outcome event_type=%s for %s",
+                    event_type,
                     persona_config.name if persona_config else "unknown",
                 )
-                return
-
-            task_id_suffix = (root_corr or "unknown")[:8]
-            task = AgentTask(
-                task_id=f"event_{event_type.replace('.', '_')}_{task_id_suffix}",
-                title=f"Handle {result.triggered_by}",
-                initiative_context=result.merged_context,
-                triggered_by=result.triggered_by,
-                output_mode=OutputMode.SILENT,
-                persona=result.persona_name if result.persona_name != persona_config.name else None,
-                priority=5,
-                root_correlation_id=result.root_correlation_id,
-            )
-            task.session_id = event.session_id or task.session_id
-
-            try:
-                await drive_loop.enqueue(task)
-                logger.info(
-                    "mesh: enqueued task %s for %s (fan-in: %s)",
-                    task.task_id,
-                    result.triggered_by,
-                    fan_in_strategy,
-                )
-            except Exception as exc:
-                logger.error("mesh: failed to enqueue task for event: %s", exc)
 
         # Store pending subscriptions - will be activated after mesh.start()
         mesh._pending_outcome_subscriptions = [(et, _handle_outcome_event) for et in event_types]
@@ -3205,7 +4010,7 @@ def web(
 ) -> None:
     """Start the standalone Ravn web UI with persona management.
 
-    Spins up a lightweight FastAPI + web UI server — no Volundr, Tyr, or
+    Spins up a lightweight FastAPI + web UI server — no Volundr, Ting, or
     PostgreSQL required.  Personas are loaded from the filesystem.
 
     \b

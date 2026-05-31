@@ -1,7 +1,7 @@
 import { useReducedMotion } from './useReducedMotion';
 import './ambient.css';
 
-const RUNES = ['ᚲ', 'ᛃ', 'ᚱ', 'ᛗ', 'ᚨ', 'ᛖ', 'ᚠ', 'ᛒ', 'ᛞ', 'ᛜ', 'ᚾ', 'ᚲ'] as const;
+const RUNES = ['ᚲ', '✦', 'ᚱ', 'ᛗ', 'ᚨ', 'ᛖ', 'ᚠ', 'ᛒ', 'ᛞ', 'ᛜ', 'ᚾ', 'ᚲ'] as const;
 const RUNE_ORBIT_R = 340;
 const RUNE_ROTATION_DUR = '220s';
 

@@ -1,5 +1,6 @@
 """Tests for the REST adapter."""
 
+import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -9,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.domain.models import Principal
 from tests.conftest import (
     InMemoryPricingProvider,
     InMemorySessionRepository,
@@ -22,6 +24,7 @@ from volundr.adapters.inbound.rest import (
     SessionResponse,
     SessionUpdate,
     StatsResponse,
+    _session_proxy_url,
     create_router,
 )
 from volundr.config import LocalMountsConfig
@@ -190,11 +193,11 @@ class TestSessionResponse:
 
 
 class TestListSessions:
-    """Tests for GET /api/v1/volundr/sessions."""
+    """Tests for GET /api/v1/forge/sessions."""
 
     def test_list_sessions_empty(self, client: TestClient):
         """Returns empty list when no sessions exist."""
-        response = client.get("/api/v1/volundr/sessions")
+        response = client.get("/api/v1/forge/sessions")
         assert response.status_code == 200
         assert response.json() == []
 
@@ -217,7 +220,7 @@ class TestListSessions:
             ),
         )
 
-        response = client.get("/api/v1/volundr/sessions")
+        response = client.get("/api/v1/forge/sessions")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
@@ -240,7 +243,7 @@ class TestListSessions:
 
 
 class TestCreateSession:
-    """Tests for POST /api/v1/volundr/sessions.
+    """Tests for POST /api/v1/forge/sessions.
 
     POST creates AND starts the session in one call.
     """
@@ -248,7 +251,7 @@ class TestCreateSession:
     def test_create_session_success(self, client: TestClient):
         """Creates and starts session, returns 201 with running status."""
         response = client.post(
-            "/api/v1/volundr/sessions",
+            "/api/v1/forge/sessions",
             json={
                 "name": "my-session",
                 "model": "claude-sonnet-4",
@@ -267,7 +270,7 @@ class TestCreateSession:
     def test_create_session_validation_error(self, client: TestClient):
         """Returns 422 for invalid data."""
         response = client.post(
-            "/api/v1/volundr/sessions",
+            "/api/v1/forge/sessions",
             json={
                 "name": "",
                 "model": "claude-sonnet-4",
@@ -279,7 +282,7 @@ class TestCreateSession:
     def test_create_session_missing_field(self, client: TestClient):
         """Returns 422 for missing required field (name)."""
         response = client.post(
-            "/api/v1/volundr/sessions",
+            "/api/v1/forge/sessions",
             json={
                 "model": "claude-sonnet-4",
                 "source": {"type": "git", "repo": "https://github.com/org/repo"},
@@ -289,7 +292,7 @@ class TestCreateSession:
 
 
 class TestGetSession:
-    """Tests for GET /api/v1/volundr/sessions/{id}."""
+    """Tests for GET /api/v1/forge/sessions/{id}."""
 
     async def test_get_session_success(self, client: TestClient, service: SessionService):
         """Returns session by ID."""
@@ -302,7 +305,7 @@ class TestGetSession:
             ),
         )
 
-        response = client.get(f"/api/v1/volundr/sessions/{session.id}")
+        response = client.get(f"/api/v1/forge/sessions/{session.id}")
         assert response.status_code == 200
         data = response.json()
         assert data["id"] == str(session.id)
@@ -313,18 +316,18 @@ class TestGetSession:
     def test_get_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
-        response = client.get(f"/api/v1/volundr/sessions/{fake_id}")
+        response = client.get(f"/api/v1/forge/sessions/{fake_id}")
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
     def test_get_session_invalid_uuid(self, client: TestClient):
         """Returns 422 for invalid UUID."""
-        response = client.get("/api/v1/volundr/sessions/not-a-uuid")
+        response = client.get("/api/v1/forge/sessions/not-a-uuid")
         assert response.status_code == 422
 
 
 class TestUpdateSession:
-    """Tests for PUT /api/v1/volundr/sessions/{id}."""
+    """Tests for PUT /api/v1/forge/sessions/{id}."""
 
     async def test_update_session_name(self, client: TestClient, service: SessionService):
         """Updates session name."""
@@ -338,7 +341,7 @@ class TestUpdateSession:
         )
 
         response = client.put(
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"name": "new-name"},
         )
         assert response.status_code == 200
@@ -358,7 +361,7 @@ class TestUpdateSession:
         )
 
         response = client.put(
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"model": "claude-opus-4"},
         )
         assert response.status_code == 200
@@ -377,7 +380,7 @@ class TestUpdateSession:
         )
 
         response = client.put(
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"branch": "feature/new"},
         )
         assert response.status_code == 200
@@ -396,7 +399,7 @@ class TestUpdateSession:
         )
 
         response = client.put(
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"name": "new", "model": "claude-opus-4", "branch": "dev"},
         )
         assert response.status_code == 200
@@ -409,14 +412,14 @@ class TestUpdateSession:
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
         response = client.put(
-            f"/api/v1/volundr/sessions/{fake_id}",
+            f"/api/v1/forge/sessions/{fake_id}",
             json={"name": "new-name"},
         )
         assert response.status_code == 404
 
 
 class TestDeleteSession:
-    """Tests for DELETE /api/v1/volundr/sessions/{id}."""
+    """Tests for DELETE /api/v1/forge/sessions/{id}."""
 
     async def test_delete_session_success(self, client: TestClient, service: SessionService):
         """Deletes session and returns 204."""
@@ -429,17 +432,17 @@ class TestDeleteSession:
             ),
         )
 
-        response = client.delete(f"/api/v1/volundr/sessions/{session.id}")
+        response = client.delete(f"/api/v1/forge/sessions/{session.id}")
         assert response.status_code == 204
 
         # Verify deleted
-        get_response = client.get(f"/api/v1/volundr/sessions/{session.id}")
+        get_response = client.get(f"/api/v1/forge/sessions/{session.id}")
         assert get_response.status_code == 404
 
     def test_delete_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
-        response = client.delete(f"/api/v1/volundr/sessions/{fake_id}")
+        response = client.delete(f"/api/v1/forge/sessions/{fake_id}")
         assert response.status_code == 404
 
     async def test_delete_session_with_cleanup_targets(
@@ -457,7 +460,7 @@ class TestDeleteSession:
 
         response = client.request(
             "DELETE",
-            f"/api/v1/volundr/sessions/{session.id}",
+            f"/api/v1/forge/sessions/{session.id}",
             json={"cleanup": ["workspace_storage", "chronicles"]},
         )
         assert response.status_code == 204
@@ -475,12 +478,12 @@ class TestDeleteSession:
             ),
         )
 
-        response = client.delete(f"/api/v1/volundr/sessions/{session.id}")
+        response = client.delete(f"/api/v1/forge/sessions/{session.id}")
         assert response.status_code == 204
 
 
 class TestStartSession:
-    """Tests for POST /api/v1/volundr/sessions/{id}/start."""
+    """Tests for POST /api/v1/forge/sessions/{id}/start."""
 
     async def test_start_session_success(self, client: TestClient, service: SessionService):
         """Starts session and returns endpoints."""
@@ -493,7 +496,7 @@ class TestStartSession:
             ),
         )
 
-        response = client.post(f"/api/v1/volundr/sessions/{session.id}/start")
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "starting"
@@ -504,7 +507,7 @@ class TestStartSession:
     def test_start_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
-        response = client.post(f"/api/v1/volundr/sessions/{fake_id}/start")
+        response = client.post(f"/api/v1/forge/sessions/{fake_id}/start")
         assert response.status_code == 404
 
     async def test_start_session_invalid_state(self, client: TestClient, service: SessionService):
@@ -520,13 +523,13 @@ class TestStartSession:
         await service.start_session(session.id)
 
         # Try to start again (already running)
-        response = client.post(f"/api/v1/volundr/sessions/{session.id}/start")
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
         assert response.status_code == 409
         assert "cannot start" in response.json()["detail"].lower()
 
 
 class TestStopSession:
-    """Tests for POST /api/v1/volundr/sessions/{id}/stop."""
+    """Tests for POST /api/v1/forge/sessions/{id}/stop."""
 
     async def test_stop_session_success(self, client: TestClient, service: SessionService):
         """Stops session and clears endpoints."""
@@ -540,7 +543,7 @@ class TestStopSession:
         )
         await service.start_session(session.id)
 
-        response = client.post(f"/api/v1/volundr/sessions/{session.id}/stop")
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/stop")
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "stopped"
@@ -550,7 +553,7 @@ class TestStopSession:
     def test_stop_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
-        response = client.post(f"/api/v1/volundr/sessions/{fake_id}/stop")
+        response = client.post(f"/api/v1/forge/sessions/{fake_id}/stop")
         assert response.status_code == 404
 
     async def test_stop_session_invalid_state(self, client: TestClient, service: SessionService):
@@ -565,9 +568,84 @@ class TestStopSession:
         )
 
         # Try to stop a created (not running) session
-        response = client.post(f"/api/v1/volundr/sessions/{session.id}/stop")
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/stop")
         assert response.status_code == 409
         assert "cannot stop" in response.json()["detail"].lower()
+
+
+class TestSessionMessages:
+    """Tests for POST /api/v1/volundr/sessions/{id}/messages."""
+
+    def test_send_message_uses_plain_ws_without_ssl(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+    ) -> None:
+        """ws:// chat endpoints should not receive an SSL context."""
+
+        class _FakeWebSocket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            async def recv(self) -> str:
+                raise TimeoutError
+
+            async def send(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        class _FakeConnect:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, object]]] = []
+                self.ws = _FakeWebSocket()
+
+            def __call__(self, url: str, **kwargs: object):
+                self.calls.append((url, kwargs))
+                ws = self.ws
+
+                class _Ctx:
+                    async def __aenter__(self) -> _FakeWebSocket:
+                        return ws
+
+                    async def __aexit__(self, exc_type, exc, tb) -> bool:
+                        return False
+
+                return _Ctx()
+
+        session = Session(
+            id=uuid4(),
+            name="message-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/message-session/session",
+        )
+        asyncio.run(repository.create(session))
+
+        fake_connect = _FakeConnect()
+        with (
+            patch("websockets.asyncio.client.connect", new=fake_connect),
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+        ):
+            response = client.post(
+                f"/api/v1/volundr/sessions/{session.id}/messages",
+                json={"content": "hello from rest"},
+            )
+
+        assert response.status_code == 200
+        assert fake_connect.calls == [
+            ("ws://localhost:8080/s/message-session/session", {"open_timeout": 10})
+        ]
+        assert fake_connect.ws.sent == ['{"type": "user", "content": "hello from rest"}']
 
 
 class TestSessionLogAggregationProxy:
@@ -617,7 +695,7 @@ class TestSessionLogAggregationProxy:
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
             response = client.get(
-                f"/api/v1/volundr/sessions/{session.id}/logs/aggregate?lines=50&level=WARNING&participants=coder&query=mesh"
+                f"/api/v1/forge/sessions/{session.id}/logs/aggregate?lines=50&level=WARNING&participants=coder&query=mesh"
             )
 
         assert response.status_code == 200
@@ -678,7 +756,7 @@ class TestSessionLogAggregationProxy:
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
             response = client.get(
-                f"/api/v1/volundr/sessions/{session.id}/logs/aggregate?lines=10&level=DEBUG"
+                f"/api/v1/forge/sessions/{session.id}/logs/aggregate?lines=10&level=DEBUG"
             )
 
         assert response.status_code == 200
@@ -690,13 +768,201 @@ class TestSessionLogAggregationProxy:
         }
         assert [line["participant"] for line in data["lines"]] == ["skuld", "coder"]
 
+    @pytest.mark.asyncio
+    async def test_get_conversation_falls_back_to_local_workspace_without_archive_service(
+        self,
+        client: TestClient,
+        service: SessionService,
+        tmp_path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        transcript_dir = workspace / ".skuld"
+        transcript_dir.mkdir(parents=True)
+
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        (transcript_dir / f"conversation_{session.id}.json").write_text(
+            '{"turns":[{"id":"1","role":"assistant","content":"from workspace"}]}',
+            encoding="utf-8",
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file://{workspace}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/conversation")
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+
+        assert response.status_code == 200
+        assert response.json()["turns"][0]["content"] == "from workspace"
+
+    @pytest.mark.asyncio
+    async def test_get_session_logs_aggregate_returns_503_without_archive_or_file_workspace(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            "https://workspace.example.com/session",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/logs/aggregate")
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/volundr/sessions/{session.id}/logs/aggregate")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Session archive service not available"
+
+
+class TestWorkflowGateProxy:
+    """Tests for native workflow gate proxy endpoints."""
+
+    def test_session_proxy_url_quotes_path_segments(self) -> None:
+        """Dynamic path segments should be encoded before proxying to a session pod."""
+        assert (
+            _session_proxy_url(
+                "http://localhost:8080/s/session-123",
+                "api",
+                "workflow",
+                "gates",
+                "gate needs review?step=1",
+                "resolve",
+            )
+            == "http://localhost:8080/s/session-123/api/workflow/gates/gate%20needs%20review%3Fstep%3D1/resolve"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_workflow_gate_quotes_gate_id(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        """Route-level gate resolution should proxy using an encoded gate path segment."""
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        await service.start_session(session.id)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"status": "resolved"}
+        mock_response.raise_for_status.return_value = None
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/workflow/gates/prd%20review%3Fstep%3D1/resolve",
+                json={"decision": "approved", "notes": "looks good", "source": "human"},
+                headers={"x-niuu-workflow-gate-intent": "resolve"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "resolved"}
+        mock_client.post.assert_awaited_once_with(
+            f"http://localhost:8080/s/{session.id}/api/workflow/gates/prd%20review%3Fstep%3D1/resolve",
+            headers={"x-niuu-workflow-gate-intent": "resolve"},
+            json={"decision": "approved", "notes": "looks good", "source": "human"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_returns_503_without_archive_or_file_workspace(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            "https://workspace.example.com/session",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 404
+        request = httpx.Request(
+            "GET",
+            f"http://localhost:8080/s/{session.id}/api/conversation/history",
+        )
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found",
+            request=request,
+            response=mock_response,
+        )
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Session archive service not available"
+
 
 class TestFeatureFlags:
-    """Tests for GET /api/v1/volundr/feature-flags."""
+    """Tests for GET /api/v1/forge/feature-flags."""
 
     def test_feature_flags_returns_local_mounts_flag(self, client: TestClient):
         """Returns feature flags including local_mounts_enabled."""
-        response = client.get("/api/v1/volundr/feature-flags")
+        response = client.get("/api/v1/forge/feature-flags")
         assert response.status_code == 200
         data = response.json()
         assert "local_mounts_enabled" in data
@@ -704,11 +970,11 @@ class TestFeatureFlags:
 
 
 class TestListModels:
-    """Tests for GET /api/v1/volundr/models."""
+    """Tests for GET /api/v1/forge/models."""
 
     def test_list_models_success(self, client: TestClient, pricing: InMemoryPricingProvider):
         """Returns list of available models."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == len(pricing.list_models())
@@ -718,7 +984,7 @@ class TestListModels:
 
     def test_list_models_contains_expected(self, client: TestClient):
         """Models list contains expected models."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         data = response.json()
         model_ids = [m["id"] for m in data]
         assert "claude-sonnet-4-20250514" in model_ids
@@ -726,7 +992,7 @@ class TestListModels:
 
     def test_list_models_has_extended_fields(self, client: TestClient):
         """Models include provider, tier, color, and pricing."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         assert response.status_code == 200
         data = response.json()
 
@@ -739,7 +1005,7 @@ class TestListModels:
 
     def test_list_models_cloud_has_pricing(self, client: TestClient):
         """Cloud models have pricing information."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         data = response.json()
 
         cloud_models = [m for m in data if m["provider"] == "cloud"]
@@ -751,7 +1017,7 @@ class TestListModels:
 
     def test_list_models_local_has_vram(self, client: TestClient):
         """Local models have VRAM requirements."""
-        response = client.get("/api/v1/volundr/models")
+        response = client.get("/api/v1/forge/models")
         data = response.json()
 
         local_models = [m for m in data if m["provider"] == "local"]
@@ -769,7 +1035,7 @@ class TestListModels:
         router = create_router(service, stats_service, pricing_provider=None)
         app.include_router(router)
         with TestClient(app) as client:
-            response = client.get("/api/v1/volundr/models")
+            response = client.get("/api/v1/forge/models")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
@@ -796,11 +1062,11 @@ class TestStatsResponse:
 
 
 class TestGetStats:
-    """Tests for GET /api/v1/volundr/stats."""
+    """Tests for GET /api/v1/forge/stats."""
 
     def test_get_stats_success(self, client: TestClient):
         """Returns aggregate statistics."""
-        response = client.get("/api/v1/volundr/stats")
+        response = client.get("/api/v1/forge/stats")
         assert response.status_code == 200
         data = response.json()
         assert data["active_sessions"] == 3
@@ -812,7 +1078,7 @@ class TestGetStats:
 
     def test_get_stats_has_all_fields(self, client: TestClient):
         """Stats response contains all expected fields."""
-        response = client.get("/api/v1/volundr/stats")
+        response = client.get("/api/v1/forge/stats")
         assert response.status_code == 200
         data = response.json()
         assert "active_sessions" in data
@@ -828,7 +1094,7 @@ class TestGetStats:
         router = create_router(service, stats_service=None)
         app.include_router(router)
         with TestClient(app) as client:
-            response = client.get("/api/v1/volundr/stats")
+            response = client.get("/api/v1/forge/stats")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
@@ -840,7 +1106,7 @@ class TestGetStats:
         router = create_router(service, stats_svc)
         app.include_router(router)
         with TestClient(app) as client:
-            response = client.get("/api/v1/volundr/stats")
+            response = client.get("/api/v1/forge/stats")
         assert response.status_code == 200
         data = response.json()
         assert data["active_sessions"] == 0

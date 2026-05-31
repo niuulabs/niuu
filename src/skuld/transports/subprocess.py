@@ -19,6 +19,7 @@ from niuu.adapters.cli.runtime import (
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.transports.mcp_config import build_claude_mcp_config
+from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
@@ -52,7 +53,7 @@ class SubprocessTransport(CLITransport):
         self,
         workspace_dir: str,
         model: str = "",
-        skip_permissions: bool = True,
+        skip_permissions: bool = False,
         agent_teams: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
@@ -65,6 +66,7 @@ class SubprocessTransport(CLITransport):
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
+        self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
         self._initial_prompt_sent = False
         self._process: asyncio.subprocess.Process | None = None
@@ -158,6 +160,12 @@ class SubprocessTransport(CLITransport):
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
+        _, shim_env = ensure_codex_tool_shims(
+            self.workspace_dir,
+            mcp_servers=self._raw_mcp_servers,
+        )
+        if shim_env:
+            env.update(shim_env)
 
         process = await asyncio.create_subprocess_exec(
             *cmd,

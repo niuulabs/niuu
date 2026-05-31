@@ -87,7 +87,7 @@ describe('resolveRoute', () => {
 
   it('matches the root catch-all prefix "/"', () => {
     const rules = [makeRule({ prefix: '/', mountName: 'shared', priority: 99 })];
-    const result = resolveRoute(rules, '/entities/tyr');
+    const result = resolveRoute(rules, '/entities/ting');
     expect(result.mountName).toBe('shared');
   });
 
@@ -111,6 +111,6 @@ describe('resolveRoute', () => {
     ];
     expect(resolveRoute(rules, '/api/v2/endpoints').mountName).toBe('api-v2');
     expect(resolveRoute(rules, '/api/v1/endpoints').mountName).toBe('api-mount');
-    expect(resolveRoute(rules, '/entities/tyr').mountName).toBe('shared');
+    expect(resolveRoute(rules, '/entities/ting').mountName).toBe('shared');
   });
 });

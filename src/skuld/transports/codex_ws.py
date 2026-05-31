@@ -1,8 +1,9 @@
 """CodexWebSocketTransport — Codex app-server over WebSocket (JSON-RPC 2.0).
 
-Spawns ``codex app-server --listen ws://127.0.0.1:{port}`` and connects to it
-as a WebSocket client.  Communication uses JSON-RPC 2.0 (requests, responses,
-notifications) rather than the NDJSON protocol used by Claude's ``--sdk-url``.
+Spawns ``codex app-server --listen unix://PATH`` and connects to it as a
+WebSocket client over the Unix socket. Communication uses JSON-RPC 2.0
+(requests, responses, notifications) rather than the NDJSON protocol used by
+Claude's ``--sdk-url``.
 
 The direction is reversed compared to SdkWebSocketTransport: here Skuld is the
 *client* connecting to the Codex app-server, whereas with Claude the CLI
@@ -13,10 +14,14 @@ import asyncio
 import json
 import logging
 import os
+import shlex
+import shutil
+import tempfile
 from itertools import count
+from pathlib import Path
 
 import websockets
-from websockets.asyncio.client import ClientConnection
+from websockets.asyncio.client import ClientConnection, unix_connect
 
 from niuu.adapters.cli.runtime import (
     drain_process_stream as _drain_stream,
@@ -28,10 +33,18 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
-from skuld.transports.codex import _map_codex_tool, resolve_codex_cli
+from skuld.transports.codex import (
+    CodexSubprocessTransport,
+    _map_codex_tool,
+    resolve_codex_cli,
+)
 from skuld.transports.mcp_config import build_codex_mcp_overrides
+from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
+
+_MAX_WS_FRAME_BYTES = 1024 * 1024
+_WS_FRAME_HEADROOM_BYTES = 8 * 1024
 
 # Monotonic request-ID generator for JSON-RPC calls.
 _next_id = count(1)
@@ -51,11 +64,60 @@ def _rpc_notification(method: str) -> dict:
     return {"jsonrpc": "2.0", "method": method}
 
 
+def _normalize_text_content(content: object) -> str:
+    """Return a safe plain-text representation for transport control content."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        attachment_labels: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").strip()
+            if item_type == "text":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text.strip())
+                continue
+            if item_type == "image":
+                attachment_labels.append("image attachment")
+            elif item_type:
+                attachment_labels.append(f"{item_type} attachment")
+        lines: list[str] = []
+        if text_parts:
+            lines.append("\n\n".join(text_parts))
+        if attachment_labels:
+            counts: dict[str, int] = {}
+            for label in attachment_labels:
+                counts[label] = counts.get(label, 0) + 1
+            summary = ", ".join(
+                f"{count} {label}" if count != 1 else f"1 {label}"
+                for label, count in sorted(counts.items())
+            )
+            lines.append(f"[User attached {summary}. This transport forwards text only.]")
+        return "\n\n".join(lines).strip()
+    return str(content or "").strip()
+
+
+def _encode_rpc_message(msg: dict, method: str) -> str:
+    """Serialize an outbound RPC message and fail early if it exceeds WS limits."""
+    encoded = json.dumps(msg)
+    encoded_size = len(encoded.encode("utf-8"))
+    limit = _MAX_WS_FRAME_BYTES - _WS_FRAME_HEADROOM_BYTES
+    if encoded_size > limit:
+        raise RuntimeError(
+            f"Codex WebSocket payload too large for {method}: "
+            f"{encoded_size} bytes exceeds safe limit of {limit} bytes"
+        )
+    return encoded
+
+
 class CodexWebSocketTransport(CLITransport):
     """Long-lived Codex app-server process controlled via WebSocket JSON-RPC.
 
     Lifecycle:
-        1. ``start()`` spawns ``codex app-server --listen ws://127.0.0.1:{port}``
+        1. ``start()`` spawns ``codex app-server --listen unix://PATH``
         2. Skuld connects to the server as a WebSocket client
         3. JSON-RPC ``initialize`` handshake, then ``thread/start``
         4. User messages are sent via ``turn/start``
@@ -69,7 +131,9 @@ class CodexWebSocketTransport(CLITransport):
         workspace_dir: str,
         *,
         model: str = "o4-mini",
-        skip_permissions: bool = True,
+        skip_permissions: bool = False,
+        approval_policy: str = "",
+        sandbox: str = "",
         system_prompt: str = "",
         initial_prompt: str = "",
         codex_port: int = 0,
@@ -80,39 +144,88 @@ class CodexWebSocketTransport(CLITransport):
         self.workspace_dir = workspace_dir
         self._model = model
         self._skip_permissions = skip_permissions
+        self._approval_policy = approval_policy.strip()
+        self._sandbox = sandbox.strip()
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._codex_port = codex_port or _pick_free_port()
-        self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
+        self._mcp_servers = list(mcp_servers or [])
+        self._mcp_overrides = build_codex_mcp_overrides(self._mcp_servers)
+        self._env = dict(os.environ)
 
         self._process: asyncio.subprocess.Process | None = None
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task | None = None
+        self._codex_socket_dir: str | None = None
+        self._codex_socket_path: str | None = None
+        self._fallback_transport: CodexSubprocessTransport | None = None
         self._thread_id: str | None = None
         self._current_turn_id: str | None = None
         self._last_result: dict | None = None
         self._last_usage: dict | None = None
         self._alive = False
         self._block_index: int = 0
+        self._pending_redirects: list[str] = []
+        self._redirect_interrupt_requested = False
+        self._buffered_item_output: dict[str, list[str]] = {}
 
         # Pending RPC response futures keyed by request id.
         self._pending: dict[int, asyncio.Future] = {}
-        # Pending approval RPC ids keyed by string request_id.
-        self._pending_approvals: dict[str, int] = {}
+        # Pending approval RPC ids keyed by string request_id. The second value
+        # identifies which app-server approval response shape the request needs.
+        self._pending_approvals: dict[str, tuple[int, str] | int] = {}
+
+    def _permission_thread_params(self) -> dict[str, str]:
+        """Return Codex thread permission params for start/resume."""
+        if self._skip_permissions:
+            return {
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access",
+            }
+
+        params: dict[str, str] = {}
+        if self._approval_policy:
+            params["approvalPolicy"] = self._approval_policy
+        if self._sandbox:
+            params["sandbox"] = self._sandbox
+        if not params:
+            logger.info("Codex thread permissions are delegated to the Codex config file")
+        return params
+
+    @staticmethod
+    def _ensure_codex_home(env: dict[str, str]) -> None:
+        """Make the user's Codex config path explicit for spawned app-server."""
+        if env.get("CODEX_HOME"):
+            return
+
+        home = env.get("HOME")
+        if home:
+            env["CODEX_HOME"] = str(Path(home).expanduser() / ".codex")
+            return
+
+        env["CODEX_HOME"] = str(Path.home() / ".codex")
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        await self._spawn_app_server()
-        await self._connect_ws()
-        await self._handshake()
+        try:
+            await self._spawn_app_server()
+            await self._connect_ws()
+            await self._handshake()
+        except Exception as exc:
+            await self._start_fallback_transport(exc)
+            return
 
         if self._initial_prompt:
             await self.send_message(self._initial_prompt)
 
     async def stop(self) -> None:
+        if self._fallback_transport is not None:
+            await self._fallback_transport.stop()
+            self._fallback_transport = None
+
         self._alive = False
 
         if self._receive_task and not self._receive_task.done():
@@ -129,6 +242,11 @@ class CodexWebSocketTransport(CLITransport):
             await _stop_process(self._process)
             self._process = None
 
+        if self._codex_socket_dir:
+            shutil.rmtree(self._codex_socket_dir, ignore_errors=True)
+            self._codex_socket_dir = None
+            self._codex_socket_path = None
+
         # Cancel any awaiting RPC futures.
         for fut in self._pending.values():
             if not fut.done():
@@ -137,13 +255,47 @@ class CodexWebSocketTransport(CLITransport):
 
         logger.info("CodexWebSocketTransport stopped")
 
+    def on_event(self, callback) -> None:  # type: ignore[override]
+        super().on_event(callback)
+        if self._fallback_transport is not None:
+            self._fallback_transport.on_event(callback)
+
+    async def _start_fallback_transport(self, cause: Exception) -> None:
+        logger.warning(
+            "Codex app-server transport unavailable; falling back to subprocess transport: %s",
+            cause,
+            exc_info=True,
+        )
+        await self.stop()
+        fallback = CodexSubprocessTransport(
+            workspace_dir=self.workspace_dir,
+            model=self._model,
+            mcp_servers=self._mcp_servers,
+        )
+        fallback.on_event(self.event_callback)
+        self._fallback_transport = fallback
+        await fallback.start()
+        if self._initial_prompt:
+            await fallback.send_message(self._initial_prompt)
+
     # ------------------------------------------------------------------
     # Spawn & connect
     # ------------------------------------------------------------------
 
     async def _spawn_app_server(self) -> None:
-        listen_url = f"ws://127.0.0.1:{self._codex_port}"
+        if self._codex_socket_dir:
+            shutil.rmtree(self._codex_socket_dir, ignore_errors=True)
+        self._codex_socket_dir = tempfile.mkdtemp(prefix="skuld-codex-")
+        self._codex_socket_path = os.path.join(self._codex_socket_dir, "app-server.sock")
+        listen_url = f"unix://{self._codex_socket_path}"
         codex_cli = resolve_codex_cli()
+
+        _, shim_env = ensure_codex_tool_shims(
+            self.workspace_dir,
+            mcp_servers=self._mcp_servers,
+        )
+        if shim_env:
+            self._env.update(shim_env)
 
         cmd = [
             codex_cli,
@@ -154,11 +306,18 @@ class CodexWebSocketTransport(CLITransport):
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
 
-        env = dict(os.environ)
+        env = dict(self._env)
+        self._ensure_codex_home(env)
         if "OPENAI_API_KEY" not in env:
-            logger.warning("OPENAI_API_KEY not found — Codex app-server may fail to authenticate")
+            logger.info(
+                "OPENAI_API_KEY not found — relying on Codex CLI auth state for app-server access"
+            )
 
-        logger.info("Spawning Codex app-server on %s", listen_url)
+        logger.info(
+            "Spawning Codex app-server on %s with CODEX_HOME=%s",
+            listen_url,
+            env.get("CODEX_HOME", ""),
+        )
         self._process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=self.workspace_dir,
@@ -173,13 +332,17 @@ class CodexWebSocketTransport(CLITransport):
 
     async def _connect_ws(self) -> None:
         """Connect to the Codex app-server with retries."""
-        url = f"ws://127.0.0.1:{self._codex_port}"
+        if not self._codex_socket_path:
+            raise RuntimeError("Codex socket path missing before connect")
+
+        socket_path = self._codex_socket_path
+        uri = "ws://localhost/"
         max_attempts = 30
         for attempt in range(1, max_attempts + 1):
             if self._process and self._process.returncode is not None:
                 raise RuntimeError(f"Codex app-server exited with code {self._process.returncode}")
             try:
-                self._ws = await websockets.connect(url)
+                self._ws = await unix_connect(path=socket_path, uri=uri, compression=None)
                 logger.info("Connected to Codex app-server (attempt %d)", attempt)
                 self._alive = True
                 self._receive_task = asyncio.create_task(self._receive_loop())
@@ -187,7 +350,7 @@ class CodexWebSocketTransport(CLITransport):
             except (OSError, websockets.exceptions.InvalidHandshake):
                 if attempt == max_attempts:
                     raise RuntimeError(
-                        f"Could not connect to Codex app-server at {url} "
+                        f"Could not connect to Codex app-server at {socket_path} "
                         f"after {max_attempts} attempts"
                     )
                 await asyncio.sleep(0.5)
@@ -206,7 +369,13 @@ class CodexWebSocketTransport(CLITransport):
         fut: asyncio.Future[dict] = loop.create_future()
         self._pending[rid] = fut
 
-        await self._ws.send(json.dumps(msg))
+        try:
+            payload = _encode_rpc_message(msg, method)
+        except Exception:
+            self._pending.pop(rid, None)
+            raise
+
+        await self._ws.send(payload)
         logger.debug("RPC → %s id=%d", method, rid)
 
         try:
@@ -219,7 +388,8 @@ class CodexWebSocketTransport(CLITransport):
         """Send a JSON-RPC notification (fire-and-forget)."""
         if not self._ws:
             return
-        await self._ws.send(json.dumps(_rpc_notification(method)))
+        payload = _encode_rpc_message(_rpc_notification(method), method)
+        await self._ws.send(payload)
 
     # ------------------------------------------------------------------
     # Handshake
@@ -245,9 +415,7 @@ class CodexWebSocketTransport(CLITransport):
         }
         if self._model:
             thread_params["model"] = self._model
-        if self._skip_permissions:
-            thread_params["approvalPolicy"] = "never"
-            thread_params["sandbox"] = "danger-full-access"
+        thread_params.update(self._permission_thread_params())
         if self._system_prompt:
             # baseInstructions = role/persona ("you are a service developer…")
             # developerInstructions = per-session task instructions
@@ -304,7 +472,18 @@ class CodexWebSocketTransport(CLITransport):
                     await self._handle_server_message(data)
                     continue
 
-                logger.debug("Codex WS unknown frame: %.200s", raw)
+                if data.get("type") == "response_item":
+                    payload = data.get("payload")
+                    payload_type = payload.get("type") if isinstance(payload, dict) else ""
+                    logger.info("Codex response_item frame: %s", payload_type)
+                    await self._handle_response_item_frame(payload)
+                    continue
+
+                logger.info(
+                    "Codex WS unknown frame shape: type=%s keys=%s",
+                    data.get("type"),
+                    sorted(str(key) for key in data.keys()),
+                )
 
         except websockets.exceptions.ConnectionClosed as exc:
             logger.info("Codex WS closed: %s", exc)
@@ -390,6 +569,13 @@ class CodexWebSocketTransport(CLITransport):
                 "modelUsage": usage,
             }
             await self._emit(self._last_result)
+            next_prompt = self._consume_pending_redirects()
+            if next_prompt is not None:
+                logger.info("Codex redirect: starting replacement turn after interrupt")
+                asyncio.create_task(
+                    self.send_message(next_prompt),
+                    name=f"codex-redirect-{self._thread_id or 'thread'}",
+                )
             return
 
         # --- Token usage (arrives before turn/completed) ---
@@ -429,17 +615,23 @@ class CodexWebSocketTransport(CLITransport):
             await self._handle_item_completed(item)
             return
 
-        # --- Command / file output deltas (show in chat as text) ---
+        if method == "rawResponseItem/completed":
+            item = params.get("item", {})
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                task = asyncio.create_task(
+                    self._handle_raw_function_call_item(item),
+                    name=f"codex-raw-function-{item.get('call_id') or item.get('name') or 'call'}",
+                )
+                task.add_done_callback(self._log_dynamic_tool_task_result)
+            return
+
+        # --- Command / file output deltas ---
         if method == "item/commandExecution/outputDelta":
-            delta = params.get("delta", "")
-            if delta:
-                await self._emit_text_delta(delta)
+            self._buffer_item_output(params.get("itemId"), params.get("delta", ""))
             return
 
         if method == "item/fileChange/outputDelta":
-            delta = params.get("delta", "")
-            if delta:
-                await self._emit_text_delta(delta)
+            self._buffer_item_output(params.get("itemId"), params.get("delta", ""))
             return
 
         # --- Errors ---
@@ -467,6 +659,27 @@ class CodexWebSocketTransport(CLITransport):
 
         logger.debug("Codex: unhandled notification %s", method)
 
+    async def _handle_response_item_frame(self, payload: object) -> None:
+        """Handle rollout-style response_item frames emitted by app-server."""
+        if not isinstance(payload, dict):
+            return
+        if payload.get("type") == "function_call":
+            logger.info(
+                "Codex response_item function_call: name=%s call_id=%s",
+                payload.get("name"),
+                payload.get("call_id"),
+            )
+            task_name = (
+                "codex-response-function-"
+                f"{payload.get('call_id') or payload.get('name') or 'call'}"
+            )
+            task = asyncio.create_task(
+                self._handle_raw_function_call_item(payload),
+                name=task_name,
+            )
+            task.add_done_callback(self._log_dynamic_tool_task_result)
+            return
+
     # ------------------------------------------------------------------
     # Server requests (approval callbacks)
     # ------------------------------------------------------------------
@@ -489,7 +702,26 @@ class CodexWebSocketTransport(CLITransport):
                     "input": {"command": command},
                 }
             )
-            self._pending_approvals[request_id] = rid
+            self._pending_approvals[request_id] = (rid, "command_execution")
+            return
+
+        if method == "execCommandApproval":
+            request_id = str(rid)
+            command = self._display_command(params.get("command"))
+            await self._emit(
+                {
+                    "type": "control_request",
+                    "subtype": "can_use_tool",
+                    "request_id": request_id,
+                    "tool": "Bash",
+                    "input": {
+                        "command": command,
+                        "cwd": params.get("cwd"),
+                        "reason": params.get("reason"),
+                    },
+                }
+            )
+            self._pending_approvals[request_id] = (rid, "exec_command")
             return
 
         if method in (
@@ -507,7 +739,15 @@ class CodexWebSocketTransport(CLITransport):
                     "input": params,
                 }
             )
-            self._pending_approvals[request_id] = rid
+            self._pending_approvals[request_id] = (rid, "command_execution")
+            return
+
+        if method == "item/tool/call":
+            task = asyncio.create_task(
+                self._handle_dynamic_tool_call_request(rid, params),
+                name=f"codex-dynamic-tool-{rid}",
+            )
+            task.add_done_callback(self._log_dynamic_tool_task_result)
             return
 
         # Default: auto-approve unknown requests
@@ -520,6 +760,190 @@ class CodexWebSocketTransport(CLITransport):
             return
         msg = {"jsonrpc": "2.0", "id": rid, "result": result}
         await self._ws.send(json.dumps(msg))
+
+    @staticmethod
+    def _display_command(command: object) -> str:
+        if isinstance(command, str):
+            return command
+        if isinstance(command, list):
+            try:
+                return shlex.join([str(part) for part in command])
+            except Exception:
+                return " ".join(str(part) for part in command)
+        return str(command or "")
+
+    def _log_dynamic_tool_task_result(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            logger.warning("Codex dynamic tool task failed", exc_info=True)
+
+    async def _handle_dynamic_tool_call_request(self, rid: int, params: dict) -> None:
+        try:
+            result = await self._execute_dynamic_tool_call(params)
+        except Exception as exc:
+            logger.warning("Dynamic tool call failed", exc_info=True)
+            result = {
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": f"Tool execution error: {exc}",
+                    }
+                ],
+                "success": False,
+            }
+        await self._send_rpc_response(rid, result)
+
+    async def _handle_raw_function_call_item(self, item: dict) -> None:
+        """Execute Responses function_call items surfaced by newer app-server builds."""
+        call_id = str(item.get("call_id") or "")
+        name = str(item.get("name") or "").strip()
+        args = self._decode_function_arguments(item.get("arguments"))
+        ui_tool_id = call_id or f"function-{next(self._ids)}"
+        logger.info("Handling Codex raw function_call name=%s call_id=%s", name, call_id)
+
+        if name == "shell_command":
+            tool_input = args if isinstance(args, dict) else {}
+            await self._emit_tool_use(ui_tool_id, "Bash", tool_input)
+            result = await self._execute_shell_command_tool(tool_input)
+        else:
+            logger.warning("Unsupported Codex function call: %s", name or "<unknown>")
+            result = {
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": f"Unsupported function call: {name or '<unknown>'}",
+                    }
+                ],
+                "success": False,
+            }
+
+        output_text = self._dynamic_tool_content_text(result.get("contentItems"))
+        if not output_text:
+            output_text = ""
+
+        if call_id and self._thread_id:
+            await self._send_rpc(
+                "thread/inject_items",
+                {
+                    "threadId": self._thread_id,
+                    "items": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": output_text,
+                        }
+                    ],
+                },
+            )
+        elif not self._thread_id:
+            logger.warning("Cannot inject Codex function_call_output without thread id")
+
+        await self._emit_content_block_stop()
+        await self._emit_tool_result(
+            ui_tool_id,
+            output_text,
+            is_error=result.get("success") is False,
+        )
+
+    async def _execute_dynamic_tool_call(self, params: dict) -> dict:
+        tool = str(params.get("tool") or "").strip()
+        args = params.get("arguments")
+        if not isinstance(args, dict):
+            args = {}
+
+        if tool == "shell_command":
+            return await self._execute_shell_command_tool(args)
+
+        logger.warning("Unsupported Codex dynamic tool call: %s", tool)
+        return {
+            "contentItems": [
+                {
+                    "type": "inputText",
+                    "text": f"Unsupported dynamic tool: {tool or '<unknown>'}",
+                }
+            ],
+            "success": False,
+        }
+
+    async def _execute_shell_command_tool(self, args: dict) -> dict:
+        command = args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return {
+                "contentItems": [{"type": "inputText", "text": "No command provided."}],
+                "success": False,
+            }
+
+        cwd = args.get("workdir") or args.get("cwd") or self.workspace_dir
+        if not isinstance(cwd, str) or not cwd.strip():
+            cwd = self.workspace_dir
+
+        exec_params: dict = {
+            "command": ["/bin/zsh", "-lc", command],
+            "cwd": cwd,
+        }
+
+        timeout_ms = self._coerce_timeout_ms(args.get("timeout_ms"))
+        if timeout_ms is not None:
+            exec_params["timeoutMs"] = timeout_ms
+
+        env = args.get("env")
+        if isinstance(env, dict):
+            exec_params["env"] = {
+                str(key): (str(value) if value is not None else None)
+                for key, value in env.items()
+            }
+
+        result = await self._send_rpc("command/exec", exec_params)
+        exit_code = result.get("exitCode", 1)
+        try:
+            exit_code_int = int(exit_code)
+        except (TypeError, ValueError):
+            exit_code_int = 1
+
+        output = self._format_command_exec_result(exit_code_int, result)
+        return {
+            "contentItems": [{"type": "inputText", "text": output}],
+            "success": exit_code_int == 0,
+        }
+
+    @staticmethod
+    def _decode_function_arguments(raw: object) -> dict:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except json.JSONDecodeError:
+                return {}
+            if isinstance(decoded, dict):
+                return decoded
+        return {}
+
+    @staticmethod
+    def _coerce_timeout_ms(value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            timeout_ms = int(value)
+        except (TypeError, ValueError):
+            return None
+        if timeout_ms <= 0:
+            return None
+        return timeout_ms
+
+    @staticmethod
+    def _format_command_exec_result(exit_code: int, result: dict) -> str:
+        stdout = result.get("stdout")
+        stderr = result.get("stderr")
+        parts = [f"Exit code: {exit_code}"]
+        if isinstance(stdout, str) and stdout:
+            parts.append(f"stdout:\n{stdout}")
+        if isinstance(stderr, str) and stderr:
+            parts.append(f"stderr:\n{stderr}")
+        return "\n".join(parts)
 
     # ------------------------------------------------------------------
     # Item handling (tool calls, agent text, reasoning)
@@ -545,6 +969,29 @@ class CodexWebSocketTransport(CLITransport):
     async def _emit_content_block_stop(self) -> None:
         """Emit a content_block_stop event."""
         await self._emit({"type": "content_block_stop"})
+
+    async def _emit_tool_result(
+        self, tool_use_id: str, content: str, *, is_error: bool = False
+    ) -> None:
+        """Emit a tool_result content block paired to a previous tool_use by id.
+
+        The browser groups tool_use + tool_result with the same id into a
+        single collapsible block (see ``groupContentBlocks`` in the UI).
+        Emitting the result as a tool_result — rather than a fresh text
+        block — keeps the output attached to the call instead of leaking
+        into the surrounding chat stream.
+        """
+        if not tool_use_id:
+            return
+        block: dict = {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content,
+        }
+        if is_error:
+            block["is_error"] = True
+        await self._emit_content_block_start(block)
+        await self._emit_content_block_stop()
 
     async def _emit_tool_use(self, item_id: str, name: str, tool_input: dict) -> None:
         """Emit an assistant event (for broker tracking) + content_block lifecycle (for browser).
@@ -600,6 +1047,14 @@ class CodexWebSocketTransport(CLITransport):
             await self._emit_tool_use(item_id, normalized, args if isinstance(args, dict) else {})
             return
 
+        if item_type == "dynamicToolCall":
+            tool = item.get("tool", "")
+            args = item.get("arguments", {})
+            normalized = "Bash" if tool == "shell_command" else _map_codex_tool(tool)
+            tool_input = args if isinstance(args, dict) else {"arguments": args}
+            await self._emit_tool_use(item_id, normalized, tool_input)
+            return
+
         if item_type == "agentMessage":
             # Start a text content block — deltas will follow via agentMessage/delta.
             await self._emit_content_block_start({"type": "text"})
@@ -616,18 +1071,21 @@ class CodexWebSocketTransport(CLITransport):
     async def _handle_item_completed(self, item: dict) -> None:
         """Emit content_block_stop and any final content when an item completes."""
         item_type = item.get("type", "")
+        item_id = item.get("id", "")
 
         if item_type == "commandExecution":
-            # Close the tool_use block
+            # Close the tool_use block, then emit the output as a tool_result
+            # paired by id so the UI groups it under the call.
             await self._emit_content_block_stop()
-            # Emit the output as a text block so the user sees the result
-            output = item.get("aggregatedOutput", "")
-            if output:
-                await self._emit_content_block_start({"type": "text"})
-                exit_code = item.get("exitCode", 0)
+            output = item.get("aggregatedOutput")
+            if not isinstance(output, str) or not output:
+                output = self._consume_buffered_item_output(item_id)
+            if not isinstance(output, str):
+                output = str(output)
+            exit_code = item.get("exitCode", 0)
+            if output or exit_code != 0:
                 prefix = "" if exit_code == 0 else f"[exit code {exit_code}] "
-                await self._emit_text_delta(prefix + output)
-                await self._emit_content_block_stop()
+                await self._emit_tool_result(item_id, prefix + output, is_error=exit_code != 0)
             return
 
         if item_type == "agentMessage":
@@ -642,7 +1100,71 @@ class CodexWebSocketTransport(CLITransport):
 
         if item_type in ("fileChange", "mcpToolCall", "webSearch"):
             await self._emit_content_block_stop()
+            result_text = self._extract_item_result_text(item)
+            if not result_text:
+                result_text = self._consume_buffered_item_output(item_id)
+            if result_text:
+                is_error = bool(item.get("isError") or item.get("is_error"))
+                await self._emit_tool_result(item_id, result_text, is_error=is_error)
             return
+
+        if item_type == "dynamicToolCall":
+            await self._emit_content_block_stop()
+            result_text = self._dynamic_tool_content_text(item.get("contentItems"))
+            if result_text:
+                await self._emit_tool_result(
+                    item_id,
+                    result_text,
+                    is_error=item.get("success") is False,
+                )
+            return
+
+        self._buffered_item_output.pop(item_id, None)
+
+    @staticmethod
+    def _dynamic_tool_content_text(content_items: object) -> str:
+        if not isinstance(content_items, list):
+            return ""
+        parts: list[str] = []
+        for item in content_items:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "\n".join(parts)
+
+    @staticmethod
+    def _extract_item_result_text(item: dict) -> str:
+        """Best-effort textual extraction of a completed item's result payload."""
+        for key in ("result", "output", "response", "text", "summary"):
+            val = item.get(key)
+            if val is None:
+                continue
+            if isinstance(val, str):
+                if val:
+                    return val
+                continue
+            try:
+                return json.dumps(val)
+            except (TypeError, ValueError):
+                return str(val)
+        return ""
+
+    def _buffer_item_output(self, item_id: object, delta: object) -> None:
+        """Accumulate incremental tool output until the item completes."""
+        if not isinstance(item_id, str) or not item_id:
+            return
+        if not isinstance(delta, str) or not delta:
+            return
+        self._buffered_item_output.setdefault(item_id, []).append(delta)
+
+    def _consume_buffered_item_output(self, item_id: object) -> str:
+        """Return and clear buffered incremental output for a completed item."""
+        if not isinstance(item_id, str) or not item_id:
+            return ""
+        chunks = self._buffered_item_output.pop(item_id, None) or []
+        return "".join(chunks)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -665,6 +1187,10 @@ class CodexWebSocketTransport(CLITransport):
     # ------------------------------------------------------------------
 
     async def send_message(self, content: str) -> None:
+        if self._fallback_transport is not None:
+            await self._fallback_transport.send_message(content)
+            return
+
         if not self._thread_id:
             raise RuntimeError("No active thread — call start() first")
 
@@ -675,32 +1201,50 @@ class CodexWebSocketTransport(CLITransport):
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": content, "textElements": []}],
         }
-        if self._model:
-            params["model"] = self._model
 
         logger.info("Sending turn/start to Codex (thread=%s)", self._thread_id)
         await self._send_rpc("turn/start", params)
 
     async def send_control_response(self, request_id: str, response: dict) -> None:
-        """Respond to a Codex approval request."""
-        rid = self._pending_approvals.pop(request_id, None)
-        if rid is None:
-            logger.warning("No pending approval for request_id=%s", request_id)
+        if self._fallback_transport is not None:
+            await self._fallback_transport.send_control_response(request_id, response)
             return
 
-        # Map broker permission response to Codex approval decision.
-        # Codex uses camelCase enum variants: accept, acceptForSession, decline, cancel.
-        behavior = response.get("behavior", "allow")
-        if behavior in ("allow", "allowForever"):
-            decision = "accept"
+        """Respond to a Codex approval request."""
+        pending = self._pending_approvals.pop(request_id, None)
+        if pending is None:
+            logger.warning("No pending approval for request_id=%s", request_id)
+            return
+        if isinstance(pending, tuple):
+            rid, approval_kind = pending
         else:
-            decision = "decline"
+            rid, approval_kind = pending, "command_execution"
+
+        # Map broker permission response to Codex approval decision.
+        # New app-server exec approvals use review decisions; older item-level
+        # approvals use camelCase enum variants.
+        behavior = response.get("behavior", "allow")
+        if approval_kind == "exec_command":
+            decision = "approved_for_session" if behavior == "allowForever" else "approved"
+            if behavior not in ("allow", "allowForever"):
+                decision = "denied"
+        else:
+            decision = "accept" if behavior in ("allow", "allowForever") else "decline"
         await self._send_rpc_response(rid, {"decision": decision})
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
+        if self._fallback_transport is not None:
+            await self._fallback_transport.send_control(subtype, **kwargs)
+            return
+
         """Handle control messages (interrupt, set_model, etc.)."""
         if subtype == "interrupt":
             if self._thread_id and self._current_turn_id:
+                logger.info(
+                    "Codex interrupt requested (thread=%s turn=%s)",
+                    self._thread_id,
+                    self._current_turn_id,
+                )
                 await self._send_rpc(
                     "turn/interrupt",
                     {
@@ -708,6 +1252,69 @@ class CodexWebSocketTransport(CLITransport):
                         "turnId": self._current_turn_id,
                     },
                 )
+            else:
+                logger.info(
+                    "Codex interrupt ignored without active turn (thread=%s turn=%s)",
+                    self._thread_id,
+                    self._current_turn_id,
+                )
+            return
+
+        if subtype == "steer":
+            content = _normalize_text_content(kwargs.get("content"))
+            if content and self._thread_id and self._current_turn_id:
+                logger.info(
+                    "Codex steer requested (thread=%s turn=%s)",
+                    self._thread_id,
+                    self._current_turn_id,
+                )
+                result = await self._send_rpc(
+                    "turn/steer",
+                    {
+                        "threadId": self._thread_id,
+                        "expectedTurnId": self._current_turn_id,
+                        "input": [{"type": "text", "text": content, "textElements": []}],
+                    },
+                )
+                logger.info("Codex steer response: %s", result)
+            elif content:
+                logger.info(
+                    "Codex steer ignored without active turn (thread=%s turn=%s)",
+                    self._thread_id,
+                    self._current_turn_id,
+                )
+            return
+
+        if subtype == "redirect":
+            content = _normalize_text_content(kwargs.get("content"))
+            if not content:
+                return
+
+            if not (self._thread_id and self._current_turn_id):
+                logger.info(
+                    "Codex redirect without active turn; sending replacement prompt immediately"
+                )
+                await self.send_message(content)
+                return
+
+            self._pending_redirects.append(content)
+            if self._redirect_interrupt_requested:
+                logger.info("Codex redirect queued while interrupt already pending")
+                return
+
+            self._redirect_interrupt_requested = True
+            logger.info(
+                "Codex redirect requested (thread=%s turn=%s)",
+                self._thread_id,
+                self._current_turn_id,
+            )
+            await self._send_rpc(
+                "turn/interrupt",
+                {
+                    "threadId": self._thread_id,
+                    "turnId": self._current_turn_id,
+                },
+            )
             return
 
         if subtype == "set_model":
@@ -720,22 +1327,38 @@ class CodexWebSocketTransport(CLITransport):
 
     @property
     def session_id(self) -> str | None:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.session_id
         return self._thread_id
 
     @property
     def last_result(self) -> dict | None:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.last_result
         return self._last_result
 
     @property
     def is_alive(self) -> bool:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.is_alive
         return self._alive
 
     @property
+    def is_turn_active(self) -> bool:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.is_turn_active
+        return bool(self._thread_id and self._current_turn_id)
+
+    @property
     def capabilities(self) -> TransportCapabilities:
+        if self._fallback_transport is not None:
+            return self._fallback_transport.capabilities
         return TransportCapabilities(
             cli_websocket=False,  # We don't expose a /ws/cli endpoint
             session_resume=True,
             interrupt=True,
+            steer=True,
+            steering_mode="live",
             set_model=True,
             set_thinking_tokens=False,
             set_permission_mode=False,
@@ -743,6 +1366,24 @@ class CodexWebSocketTransport(CLITransport):
             mcp_set_servers=False,
             permission_requests=True,
         )
+
+    def _consume_pending_redirects(self) -> str | None:
+        """Drain queued redirect messages into the next replacement prompt."""
+        self._redirect_interrupt_requested = False
+        if not self._pending_redirects:
+            return None
+
+        if len(self._pending_redirects) == 1:
+            return self._pending_redirects.pop(0)
+
+        pending = list(self._pending_redirects)
+        self._pending_redirects.clear()
+        lines = [
+            "The user redirected the work while the previous turn was still running.",
+            "Ignore the interrupted approach and follow all of these updates in order:",
+        ]
+        lines.extend(f"- {item}" for item in pending)
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Session resume
@@ -756,9 +1397,7 @@ class CodexWebSocketTransport(CLITransport):
         }
         if self._model:
             params["model"] = self._model
-        if self._skip_permissions:
-            params["approvalPolicy"] = "never"
-            params["sandbox"] = "danger-full-access"
+        params.update(self._permission_thread_params())
 
         result = await self._send_rpc("thread/resume", params)
         thread = result.get("thread", {})

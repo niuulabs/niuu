@@ -1,0 +1,1418 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ting.fullname" . }}-migrations
+  labels:
+    {{- include "ting.labels" . | nindent 4 }}
+data:
+  000001_initial_schema.down.sql: |
+    -- Rollback initial schema for ting saga coordinator
+
+    DROP TABLE IF EXISTS confidence_events;
+    DROP TABLE IF EXISTS dispatcher_state;
+    DROP TABLE IF EXISTS runs;
+    DROP TABLE IF EXISTS phases;
+    DROP TABLE IF EXISTS sagas;
+
+  000001_initial_schema.up.sql: |
+    -- Initial schema for ting saga coordinator
+
+    CREATE TABLE IF NOT EXISTS sagas (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tracker_id    TEXT NOT NULL,
+        tracker_type  TEXT NOT NULL,
+        slug          TEXT NOT NULL UNIQUE,
+        name          TEXT NOT NULL,
+        repos         TEXT[] NOT NULL DEFAULT '{}',
+        confidence    FLOAT DEFAULT 0,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS phases (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        saga_id       UUID NOT NULL REFERENCES sagas(id),
+        tracker_id    TEXT NOT NULL,
+        number        INT NOT NULL,
+        name          TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'GATED',
+        confidence    FLOAT DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_phases_saga_id ON phases(saga_id);
+
+    CREATE TABLE IF NOT EXISTS runs (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        phase_id      UUID NOT NULL REFERENCES phases(id),
+        tracker_id    TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        declared_files TEXT[],
+        estimate_hours FLOAT,
+        status        TEXT NOT NULL DEFAULT 'PENDING',
+        confidence    FLOAT DEFAULT 0,
+        session_id    TEXT,
+        branch        TEXT,
+        chronicle_summary TEXT,
+        retry_count   INT DEFAULT 0,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runs_phase_id ON runs(phase_id);
+    CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
+
+    CREATE TABLE IF NOT EXISTS confidence_events (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id       UUID NOT NULL REFERENCES runs(id),
+        event_type    TEXT NOT NULL,
+        delta         FLOAT NOT NULL,
+        score_after   FLOAT NOT NULL,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_confidence_events_run_id ON confidence_events(run_id);
+
+    CREATE TABLE IF NOT EXISTS dispatcher_state (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        running       BOOL DEFAULT TRUE,
+        threshold     FLOAT DEFAULT 0.75,
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+
+  000002_integration_connections.down.sql: |
+    DROP TABLE IF EXISTS integration_connections;
+
+  000002_integration_connections.up.sql: |
+    -- Integration connections (shared table used by niuu adapters)
+
+    CREATE TABLE IF NOT EXISTS integration_connections (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id VARCHAR(255) NOT NULL,
+        integration_type VARCHAR(50) NOT NULL,
+        adapter VARCHAR(500) NOT NULL,
+        credential_name VARCHAR(253) NOT NULL,
+        config JSONB NOT NULL DEFAULT '{}',
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        slug VARCHAR(100) NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_integration_connections_user
+        ON integration_connections(user_id, integration_type);
+
+  000003_saga_repos_array.down.sql: |
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS repo TEXT NOT NULL DEFAULT '';
+    UPDATE sagas SET repo = repos[1] WHERE array_length(repos, 1) > 0;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS repos;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS name;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS status;
+
+  000003_saga_repos_array.up.sql: |
+    -- Fix sagas table: ensure repos array, name, and status columns exist.
+    -- The initial schema may already have these columns; this migration is
+    -- idempotent for both old and new initial schemas.
+
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS repos TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ACTIVE';
+
+    -- Migrate existing data from singular repo column (only if it exists).
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'sagas' AND column_name = 'repo'
+        ) THEN
+            UPDATE sagas SET repos = ARRAY[repo] WHERE repo IS NOT NULL AND repo != '';
+        END IF;
+    END $$;
+
+    ALTER TABLE sagas DROP COLUMN IF EXISTS repo;
+
+  000004_owner_id_sagas.down.sql: |
+    -- Revert owner_id on sagas, restore user_id on integration_connections
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'integration_connections' AND column_name = 'owner_id'
+        ) THEN
+            ALTER TABLE integration_connections RENAME COLUMN owner_id TO user_id;
+        END IF;
+    END $$;
+
+    DROP INDEX IF EXISTS idx_sagas_owner_id;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS owner_id;
+
+  000004_owner_id_sagas.up.sql: |
+    -- Add owner_id to sagas, rename user_id→owner_id on integration_connections
+
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT 'default';
+    CREATE INDEX IF NOT EXISTS idx_sagas_owner_id ON sagas(owner_id);
+
+    -- Align with Volundr convention (sessions.owner_id, workspaces FK, etc.)
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'integration_connections' AND column_name = 'user_id'
+        ) THEN
+            ALTER TABLE integration_connections RENAME COLUMN user_id TO owner_id;
+        END IF;
+    END $$;
+
+  000005_dispatcher_owner.down.sql: |
+    -- Revert per-user dispatcher state
+
+    DROP INDEX IF EXISTS idx_dispatcher_state_owner;
+    ALTER TABLE dispatcher_state DROP COLUMN IF EXISTS max_concurrent_runs;
+    ALTER TABLE dispatcher_state DROP COLUMN IF EXISTS owner_id;
+
+  000005_dispatcher_owner.up.sql: |
+    -- Per-user dispatcher state: owner_id + max_concurrent_runs
+
+    ALTER TABLE dispatcher_state ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE dispatcher_state ADD COLUMN IF NOT EXISTS max_concurrent_runs INT NOT NULL DEFAULT 3;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatcher_state_owner ON dispatcher_state(owner_id);
+
+  000006_run_pr_fields.down.sql: |
+    -- Revert PR tracking fields on runs
+
+    DROP INDEX IF EXISTS idx_runs_session_id;
+    ALTER TABLE runs DROP COLUMN IF EXISTS pr_id;
+    ALTER TABLE runs DROP COLUMN IF EXISTS pr_url;
+
+  000006_run_pr_fields.up.sql: |
+    -- PR tracking fields on runs
+
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_url TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_id  TEXT;
+    CREATE INDEX IF NOT EXISTS idx_runs_session_id ON runs(session_id)
+        WHERE session_id IS NOT NULL;
+
+  000007_notification_subscriptions.down.sql: |
+    -- Revert notification subscriptions
+
+    DROP TABLE IF EXISTS notification_subscriptions;
+
+  000007_notification_subscriptions.up.sql: |
+    -- Notification subscriptions table
+
+    CREATE TABLE IF NOT EXISTS notification_subscriptions (
+        id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+        owner_id   TEXT        NOT NULL,
+        channel    TEXT        NOT NULL,
+        config     JSONB       NOT NULL DEFAULT '{}',
+        enabled    BOOLEAN     NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_notification_subs_owner
+        ON notification_subscriptions(owner_id);
+
+  000008_personal_access_tokens.down.sql: |
+    DROP TABLE IF EXISTS personal_access_tokens;
+
+  000008_personal_access_tokens.up.sql: |
+    -- Personal access tokens for Ting API callers (e.g. Telegram bot, ODIN/Móði)
+    -- owner_id is the IDP sub claim from Envoy headers, treated as an opaque string.
+    -- NOTE: Unlike Volundr's PAT table, there is no FK on owner_id because Ting does
+    -- not own a users table. owner_id is validated at the application layer via the
+    -- IDP subject claim propagated through Envoy.
+
+    CREATE TABLE IF NOT EXISTS personal_access_tokens (
+        id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+        owner_id     TEXT        NOT NULL,
+        name         TEXT        NOT NULL,
+        token_hash   TEXT        NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at   TIMESTAMPTZ,
+        last_used_at TIMESTAMPTZ
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pats_owner_id ON personal_access_tokens(owner_id);
+
+  000009_pat_unique_owner_name.down.sql: |
+    DROP INDEX IF EXISTS idx_pats_owner_name;
+
+  000009_pat_unique_owner_name.up.sql: |
+    -- Enforce one PAT name per owner
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pats_owner_name ON personal_access_tokens(owner_id, name);
+
+  000010_saga_base_branch.down.sql: |
+    ALTER TABLE sagas DROP COLUMN IF EXISTS base_branch;
+
+  000010_saga_base_branch.up.sql: |
+    -- Add base_branch column to sagas
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS base_branch TEXT NOT NULL DEFAULT 'main';
+
+  000011_runs_reason_column.down.sql: |
+    ALTER TABLE runs DROP COLUMN IF EXISTS reason;
+
+  000011_runs_reason_column.up.sql: |
+    -- Add reason column to runs for reject context
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS reason TEXT;
+
+  000012_run_description.down.sql: |
+    ALTER TABLE runs DROP COLUMN IF EXISTS acceptance_criteria;
+    ALTER TABLE runs DROP COLUMN IF EXISTS description;
+
+  000012_run_description.up.sql: |
+    -- Add description and acceptance_criteria columns to runs for NativeAdapter
+
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS acceptance_criteria TEXT[] NOT NULL DEFAULT '{}';
+
+  000013_runs_status_index.down.sql: |
+    DROP INDEX IF EXISTS idx_runs_status;
+
+  000013_runs_status_index.up.sql: |
+    CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status);
+
+  000014_run_pr_columns.down.sql: |
+    DROP INDEX IF EXISTS idx_runs_session_id;
+    ALTER TABLE runs DROP COLUMN IF EXISTS pr_id;
+    ALTER TABLE runs DROP COLUMN IF EXISTS pr_url;
+
+  000014_run_pr_columns.up.sql: |
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_url TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_id TEXT;
+    CREATE INDEX IF NOT EXISTS idx_runs_session_id ON runs(session_id) WHERE session_id IS NOT NULL;
+
+  000015_session_messages.down.sql: |
+    DROP TABLE IF EXISTS session_messages;
+
+  000015_session_messages.up.sql: |
+    CREATE TABLE IF NOT EXISTS session_messages (
+        id          UUID PRIMARY KEY,
+        run_id     UUID NOT NULL REFERENCES runs(id),
+        session_id  TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        sender      TEXT NOT NULL DEFAULT 'user',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_messages_run_id
+        ON session_messages (run_id);
+
+    CREATE INDEX IF NOT EXISTS idx_session_messages_session_id
+        ON session_messages (session_id);
+
+  000016_run_progress.down.sql: |
+    DROP TABLE IF EXISTS run_session_messages;
+    DROP TABLE IF EXISTS run_confidence_events;
+    DROP TABLE IF EXISTS run_progress;
+
+    -- Restore the dispatched_sessions table that migration 000016 up dropped.
+    CREATE TABLE IF NOT EXISTS dispatched_sessions (
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id        TEXT NOT NULL UNIQUE,
+        owner_id          TEXT NOT NULL,
+        saga_id           UUID NOT NULL,
+        tracker_issue_id  TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'running',
+        created_at        TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dispatched_sessions_status ON dispatched_sessions(status);
+    CREATE INDEX IF NOT EXISTS idx_dispatched_sessions_owner  ON dispatched_sessions(owner_id);
+
+  000016_run_progress.up.sql: |
+    -- Unified run progress tracking for all tracker adapters.
+    -- LinearAdapter stores progress alongside Linear API issue data.
+    -- NativeAdapter uses the existing runs table (no change needed).
+
+    DROP TABLE IF EXISTS dispatched_sessions;
+
+    CREATE TABLE IF NOT EXISTS run_progress (
+        tracker_id          TEXT PRIMARY KEY,
+        run_id             UUID NOT NULL DEFAULT gen_random_uuid(),
+        owner_id            TEXT,
+        phase_tracker_id    TEXT,
+        saga_tracker_id     TEXT,
+        status              TEXT NOT NULL DEFAULT 'PENDING',
+        session_id          TEXT,
+        confidence          FLOAT DEFAULT 0,
+        pr_url              TEXT,
+        pr_id               TEXT,
+        retry_count         INT DEFAULT 0,
+        reason              TEXT,
+        chronicle_summary   TEXT,
+        updated_at          TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_run_progress_status ON run_progress(status);
+    CREATE INDEX IF NOT EXISTS idx_run_progress_session ON run_progress(session_id) WHERE session_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_run_progress_run_id ON run_progress(run_id);
+    CREATE INDEX IF NOT EXISTS idx_run_progress_phase ON run_progress(phase_tracker_id) WHERE phase_tracker_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS run_confidence_events (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id     UUID NOT NULL,
+        tracker_id  TEXT NOT NULL,
+        event_type  TEXT NOT NULL,
+        delta       FLOAT NOT NULL,
+        score_after FLOAT NOT NULL,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_run_confidence_events_tracker ON run_confidence_events(tracker_id);
+
+    CREATE TABLE IF NOT EXISTS run_session_messages (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id     UUID NOT NULL,
+        tracker_id  TEXT NOT NULL,
+        session_id  TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        sender      TEXT NOT NULL DEFAULT 'user',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_run_session_messages_tracker ON run_session_messages(tracker_id);
+    CREATE INDEX IF NOT EXISTS idx_run_session_messages_session ON run_session_messages(session_id);
+
+  000017_run_depends_on.down.sql: |
+    -- Remove depends_on column from run_progress and runs.
+
+    ALTER TABLE run_progress DROP COLUMN IF EXISTS depends_on;
+    ALTER TABLE runs DROP COLUMN IF EXISTS depends_on;
+
+  000017_run_depends_on.up.sql: |
+    -- Add depends_on column to run_progress for inter-run dependency tracking.
+    -- Values are run names (not IDs) within the same saga.
+
+    ALTER TABLE run_progress ADD COLUMN IF NOT EXISTS depends_on TEXT[] DEFAULT '{}';
+
+    -- Also add to the runs table used by NativeAdapter.
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS depends_on TEXT[] DEFAULT '{}';
+
+  000018_run_reviewer_session.down.sql: |
+    DROP INDEX IF EXISTS idx_runs_reviewer_session;
+    ALTER TABLE runs DROP COLUMN IF EXISTS review_round;
+    ALTER TABLE runs DROP COLUMN IF EXISTS reviewer_session_id;
+    ALTER TABLE run_progress DROP COLUMN IF EXISTS review_round;
+    ALTER TABLE run_progress DROP COLUMN IF EXISTS reviewer_session_id;
+
+  000018_run_reviewer_session.up.sql: |
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS reviewer_session_id TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS review_round INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS idx_runs_reviewer_session ON runs (reviewer_session_id) WHERE reviewer_session_id IS NOT NULL;
+
+    ALTER TABLE run_progress ADD COLUMN IF NOT EXISTS reviewer_session_id TEXT;
+    ALTER TABLE run_progress ADD COLUMN IF NOT EXISTS review_round INTEGER NOT NULL DEFAULT 0;
+
+  000019_run_identifier_url.up.sql: |
+    -- Add identifier and url columns to runs for tracker display.
+
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS identifier TEXT NOT NULL DEFAULT '';
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS url TEXT NOT NULL DEFAULT '';
+
+  000020_saga_feature_branch.down.sql: |
+    ALTER TABLE sagas DROP COLUMN IF EXISTS feature_branch;
+
+  000020_saga_feature_branch.up.sql: |
+    -- Add feature_branch column to sagas (used by dispatch to set working branch)
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS feature_branch TEXT NOT NULL DEFAULT 'main';
+
+  000021_dispatcher_auto_continue.down.sql: |
+    ALTER TABLE dispatcher_state DROP COLUMN IF EXISTS auto_continue;
+
+  000021_dispatcher_auto_continue.up.sql: |
+    ALTER TABLE dispatcher_state ADD COLUMN IF NOT EXISTS auto_continue BOOLEAN NOT NULL DEFAULT FALSE;
+
+  000022_run_structured_outcome.down.sql: |
+    -- Rollback: remove structured_outcome and outcome_event_type from runs
+
+    ALTER TABLE runs DROP COLUMN IF EXISTS structured_outcome;
+    ALTER TABLE runs DROP COLUMN IF EXISTS outcome_event_type;
+
+  000022_run_structured_outcome.up.sql: |
+    -- Migration: add structured_outcome and outcome_event_type to runs
+    -- Stores the parsed outcome block from a completed Ravn session.
+
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS structured_outcome JSONB;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS outcome_event_type TEXT;
+
+  000023_workflows.down.sql: |
+    DROP INDEX IF EXISTS idx_workflows_name;
+    DROP INDEX IF EXISTS idx_workflows_owner_updated_at;
+    DROP INDEX IF EXISTS idx_workflows_scope_updated_at;
+    DROP TABLE IF EXISTS workflows;
+
+  000023_workflows.up.sql: |
+    -- Persisted workflow catalog for Ting workflow definitions.
+
+    CREATE TABLE IF NOT EXISTS workflows (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        version TEXT NOT NULL DEFAULT 'draft',
+        scope TEXT NOT NULL DEFAULT 'user',
+        owner_id TEXT,
+        definition_yaml TEXT,
+        graph_json JSONB NOT NULL DEFAULT '{"nodes": [], "edges": []}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT workflows_scope_check CHECK (scope IN ('system', 'user')),
+        CONSTRAINT workflows_owner_check CHECK (
+            (scope = 'system' AND owner_id IS NULL)
+            OR (scope = 'user' AND owner_id IS NOT NULL)
+        )
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workflows_scope_updated_at
+        ON workflows(scope, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_workflows_owner_updated_at
+        ON workflows(owner_id, updated_at DESC)
+        WHERE owner_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_workflows_name
+        ON workflows(name);
+
+  000024_saga_workflows.down.sql: |
+    DROP INDEX IF EXISTS idx_sagas_workflow_id;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS workflow_snapshot;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS workflow_version;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS workflow_id;
+
+  000024_saga_workflows.up.sql: |
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS workflow_id UUID;
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS workflow_version TEXT;
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS workflow_snapshot JSONB;
+
+    CREATE INDEX IF NOT EXISTS idx_sagas_workflow_id
+        ON sagas(workflow_id)
+        WHERE workflow_id IS NOT NULL;
+
+
+
+  000025_legacy_schema_compat.down.sql: |
+    -- Best-effort rollback for the legacy Ting schema compatibility rename.
+
+    ALTER INDEX IF EXISTS idx_run_session_messages_session RENAME TO idx_raid_session_messages_session;
+    ALTER INDEX IF EXISTS idx_run_session_messages_tracker RENAME TO idx_raid_session_messages_tracker;
+    ALTER INDEX IF EXISTS idx_run_confidence_events_tracker RENAME TO idx_raid_confidence_events_tracker;
+    ALTER INDEX IF EXISTS idx_run_progress_phase RENAME TO idx_raid_progress_phase;
+    ALTER INDEX IF EXISTS idx_run_progress_run_id RENAME TO idx_raid_progress_raid_id;
+    ALTER INDEX IF EXISTS idx_run_progress_session RENAME TO idx_raid_progress_session;
+    ALTER INDEX IF EXISTS idx_run_progress_status RENAME TO idx_raid_progress_status;
+    ALTER INDEX IF EXISTS idx_session_messages_run_id RENAME TO idx_session_messages_raid_id;
+    ALTER INDEX IF EXISTS idx_confidence_events_run_id RENAME TO idx_confidence_events_raid_id;
+    ALTER INDEX IF EXISTS idx_runs_status RENAME TO idx_raids_status;
+    ALTER INDEX IF EXISTS idx_runs_phase_id RENAME TO idx_raids_phase_id;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'dispatcher_state' AND column_name = 'max_concurrent_runs'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'dispatcher_state' AND column_name = 'max_concurrent_raids'
+        ) THEN
+            ALTER TABLE dispatcher_state RENAME COLUMN max_concurrent_runs TO max_concurrent_raids;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'run_session_messages' AND column_name = 'run_id'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'run_session_messages' AND column_name = 'raid_id'
+        ) THEN
+            ALTER TABLE run_session_messages RENAME COLUMN run_id TO raid_id;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'run_session_messages'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'raid_session_messages'
+        ) THEN
+            ALTER TABLE run_session_messages RENAME TO raid_session_messages;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'run_confidence_events' AND column_name = 'run_id'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'run_confidence_events' AND column_name = 'raid_id'
+        ) THEN
+            ALTER TABLE run_confidence_events RENAME COLUMN run_id TO raid_id;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'run_confidence_events'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'raid_confidence_events'
+        ) THEN
+            ALTER TABLE run_confidence_events RENAME TO raid_confidence_events;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'run_progress' AND column_name = 'run_id'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'run_progress' AND column_name = 'raid_id'
+        ) THEN
+            ALTER TABLE run_progress RENAME COLUMN run_id TO raid_id;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'run_progress'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'raid_progress'
+        ) THEN
+            ALTER TABLE run_progress RENAME TO raid_progress;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'session_messages' AND column_name = 'run_id'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'session_messages' AND column_name = 'raid_id'
+        ) THEN
+            ALTER TABLE session_messages RENAME COLUMN run_id TO raid_id;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'confidence_events' AND column_name = 'run_id'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'confidence_events' AND column_name = 'raid_id'
+        ) THEN
+            ALTER TABLE confidence_events RENAME COLUMN run_id TO raid_id;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'runs'
+        ) AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'raids'
+        ) THEN
+            ALTER TABLE runs RENAME TO raids;
+        END IF;
+    END $$;
+
+  000025_legacy_schema_compat.up.sql: |
+    -- Forward-compatibility migration for existing legacy Ting databases.
+    -- Fresh installs already create run-era tables; this heals older or partially
+    -- migrated databases before later DDL expects run-era names everywhere.
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'integration_connections'
+        ) THEN
+            UPDATE integration_connections
+            SET adapter = 'ting' || substr(adapter, 4)
+            WHERE adapter LIKE concat(chr(116), chr(121), chr(114), '.%');
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'raids'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'runs'
+            ) THEN
+                ALTER TABLE raids RENAME TO runs;
+            ELSE
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_url TEXT;
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS pr_id TEXT;
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS reason TEXT;
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS acceptance_criteria TEXT[] NOT NULL DEFAULT '{}';
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS reviewer_session_id TEXT;
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS review_round INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS identifier TEXT NOT NULL DEFAULT '';
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS url TEXT NOT NULL DEFAULT '';
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS depends_on TEXT[] DEFAULT '{}';
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS structured_outcome JSONB;
+                ALTER TABLE runs ADD COLUMN IF NOT EXISTS outcome_event_type TEXT;
+
+                INSERT INTO runs (
+                    id,
+                    phase_id,
+                    tracker_id,
+                    name,
+                    declared_files,
+                    estimate_hours,
+                    status,
+                    confidence,
+                    session_id,
+                    branch,
+                    chronicle_summary,
+                    retry_count,
+                    created_at,
+                    updated_at,
+                    pr_url,
+                    pr_id,
+                    reason,
+                    description,
+                    acceptance_criteria,
+                    reviewer_session_id,
+                    review_round,
+                    identifier,
+                    url,
+                    depends_on,
+                    structured_outcome,
+                    outcome_event_type
+                )
+                SELECT
+                    id,
+                    phase_id,
+                    tracker_id,
+                    name,
+                    declared_files,
+                    estimate_hours,
+                    status,
+                    confidence,
+                    session_id,
+                    branch,
+                    chronicle_summary,
+                    retry_count,
+                    created_at,
+                    updated_at,
+                    pr_url,
+                    pr_id,
+                    reason,
+                    description,
+                    acceptance_criteria,
+                    reviewer_session_id,
+                    review_round,
+                    identifier,
+                    url,
+                    depends_on,
+                    structured_outcome,
+                    outcome_event_type
+                FROM raids
+                ON CONFLICT (id) DO NOTHING;
+
+                DROP TABLE raids;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'confidence_events' AND column_name = 'raid_id'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'confidence_events' AND column_name = 'run_id'
+            ) THEN
+                ALTER TABLE confidence_events RENAME COLUMN raid_id TO run_id;
+            ELSE
+                UPDATE confidence_events SET run_id = COALESCE(run_id, raid_id) WHERE raid_id IS NOT NULL;
+                ALTER TABLE confidence_events DROP COLUMN raid_id;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'session_messages' AND column_name = 'raid_id'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'session_messages' AND column_name = 'run_id'
+            ) THEN
+                ALTER TABLE session_messages RENAME COLUMN raid_id TO run_id;
+            ELSE
+                UPDATE session_messages SET run_id = COALESCE(run_id, raid_id) WHERE raid_id IS NOT NULL;
+                ALTER TABLE session_messages DROP COLUMN raid_id;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'raid_progress'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'run_progress'
+            ) THEN
+                ALTER TABLE raid_progress RENAME TO run_progress;
+            ELSE
+                ALTER TABLE run_progress ADD COLUMN IF NOT EXISTS reviewer_session_id TEXT;
+                ALTER TABLE run_progress ADD COLUMN IF NOT EXISTS review_round INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE run_progress ADD COLUMN IF NOT EXISTS depends_on TEXT[] DEFAULT '{}';
+
+                INSERT INTO run_progress (
+                    tracker_id,
+                    run_id,
+                    owner_id,
+                    phase_tracker_id,
+                    saga_tracker_id,
+                    status,
+                    session_id,
+                    confidence,
+                    pr_url,
+                    pr_id,
+                    retry_count,
+                    reason,
+                    chronicle_summary,
+                    updated_at,
+                    reviewer_session_id,
+                    review_round,
+                    depends_on
+                )
+                SELECT
+                    tracker_id,
+                    raid_id,
+                    owner_id,
+                    phase_tracker_id,
+                    saga_tracker_id,
+                    status,
+                    session_id,
+                    confidence,
+                    pr_url,
+                    pr_id,
+                    retry_count,
+                    reason,
+                    chronicle_summary,
+                    updated_at,
+                    reviewer_session_id,
+                    review_round,
+                    depends_on
+                FROM raid_progress
+                ON CONFLICT (tracker_id) DO NOTHING;
+
+                DROP TABLE raid_progress;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'run_progress' AND column_name = 'raid_id'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'run_progress' AND column_name = 'run_id'
+            ) THEN
+                ALTER TABLE run_progress RENAME COLUMN raid_id TO run_id;
+            ELSE
+                UPDATE run_progress SET run_id = COALESCE(run_id, raid_id) WHERE raid_id IS NOT NULL;
+                ALTER TABLE run_progress DROP COLUMN raid_id;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'raid_confidence_events'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'run_confidence_events'
+            ) THEN
+                ALTER TABLE raid_confidence_events RENAME TO run_confidence_events;
+            ELSE
+                INSERT INTO run_confidence_events (
+                    id,
+                    run_id,
+                    tracker_id,
+                    event_type,
+                    delta,
+                    score_after,
+                    created_at
+                )
+                SELECT
+                    id,
+                    raid_id,
+                    tracker_id,
+                    event_type,
+                    delta,
+                    score_after,
+                    created_at
+                FROM raid_confidence_events
+                ON CONFLICT (id) DO NOTHING;
+
+                DROP TABLE raid_confidence_events;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'run_confidence_events' AND column_name = 'raid_id'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'run_confidence_events' AND column_name = 'run_id'
+            ) THEN
+                ALTER TABLE run_confidence_events RENAME COLUMN raid_id TO run_id;
+            ELSE
+                UPDATE run_confidence_events SET run_id = COALESCE(run_id, raid_id) WHERE raid_id IS NOT NULL;
+                ALTER TABLE run_confidence_events DROP COLUMN raid_id;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'raid_session_messages'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'run_session_messages'
+            ) THEN
+                ALTER TABLE raid_session_messages RENAME TO run_session_messages;
+            ELSE
+                INSERT INTO run_session_messages (
+                    id,
+                    run_id,
+                    tracker_id,
+                    session_id,
+                    content,
+                    sender,
+                    created_at
+                )
+                SELECT
+                    id,
+                    raid_id,
+                    tracker_id,
+                    session_id,
+                    content,
+                    sender,
+                    created_at
+                FROM raid_session_messages
+                ON CONFLICT (id) DO NOTHING;
+
+                DROP TABLE raid_session_messages;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'run_session_messages' AND column_name = 'raid_id'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'run_session_messages' AND column_name = 'run_id'
+            ) THEN
+                ALTER TABLE run_session_messages RENAME COLUMN raid_id TO run_id;
+            ELSE
+                UPDATE run_session_messages SET run_id = COALESCE(run_id, raid_id) WHERE raid_id IS NOT NULL;
+                ALTER TABLE run_session_messages DROP COLUMN raid_id;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'dispatcher_state' AND column_name = 'max_concurrent_raids'
+        ) THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'dispatcher_state' AND column_name = 'max_concurrent_runs'
+            ) THEN
+                ALTER TABLE dispatcher_state RENAME COLUMN max_concurrent_raids TO max_concurrent_runs;
+            ELSE
+                UPDATE dispatcher_state SET max_concurrent_runs = max_concurrent_raids;
+                ALTER TABLE dispatcher_state DROP COLUMN max_concurrent_raids;
+            END IF;
+        END IF;
+    END $$;
+
+    DO $$
+    DECLARE
+        old_title text := concat(chr(84), chr(121), chr(114));
+        old_lower text := lower(old_title);
+        old_run_title text := concat(chr(82), chr(97), chr(105), chr(100));
+        old_run_lower text := lower(old_run_title);
+        old_executor_name text := old_run_lower || '-executor';
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'ravn_personas'
+        ) THEN
+            UPDATE ravn_personas
+            SET
+                name = replace(name, old_executor_name, 'run-executor'),
+                config_json = CASE
+                    WHEN config_json IS NULL THEN NULL
+                    ELSE replace(
+                        replace(
+                            replace(
+                                replace(config_json::text, old_title, 'Ting'),
+                                old_lower,
+                                'ting'
+                            ),
+                            old_run_title,
+                            'Run'
+                        ),
+                        old_run_lower,
+                        'run'
+                    )::jsonb
+                END,
+                runtime_config_json = CASE
+                    WHEN runtime_config_json IS NULL THEN NULL
+                    ELSE replace(
+                        replace(
+                            replace(
+                                replace(runtime_config_json::text, old_title, 'Ting'),
+                                old_lower,
+                                'ting'
+                            ),
+                            old_run_title,
+                            'Run'
+                        ),
+                        old_run_lower,
+                        'run'
+                    )::jsonb
+                END
+            WHERE
+                name = old_executor_name
+                OR config_json::text ILIKE '%' || old_lower || '%'
+                OR config_json::text ILIKE '%' || old_run_lower || '%'
+                OR runtime_config_json::text ILIKE '%' || old_lower || '%'
+                OR runtime_config_json::text ILIKE '%' || old_run_lower || '%';
+        END IF;
+    END $$;
+
+    DO $$
+    DECLARE
+        old_title text := concat(chr(84), chr(121), chr(114));
+        old_lower text := lower(old_title);
+        old_run_title text := concat(chr(82), chr(97), chr(105), chr(100));
+        old_run_lower text := lower(old_run_title);
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'workflows'
+        ) THEN
+            UPDATE workflows
+            SET
+                name = replace(replace(replace(replace(name, old_title, 'Ting'), old_lower, 'ting'), old_run_title, 'Run'), old_run_lower, 'run'),
+                description = replace(replace(replace(replace(description, old_title, 'Ting'), old_lower, 'ting'), old_run_title, 'Run'), old_run_lower, 'run'),
+                definition_yaml = replace(replace(replace(replace(definition_yaml, old_title, 'Ting'), old_lower, 'ting'), old_run_title, 'Run'), old_run_lower, 'run'),
+                graph_json = replace(
+                    replace(
+                        replace(
+                            replace(graph_json::text, old_title, 'Ting'),
+                            old_lower,
+                            'ting'
+                        ),
+                        old_run_title,
+                        'Run'
+                    ),
+                    old_run_lower,
+                    'run'
+                )::jsonb
+            WHERE
+                name ILIKE '%' || old_lower || '%'
+                OR description ILIKE '%' || old_lower || '%'
+                OR definition_yaml ILIKE '%' || old_lower || '%'
+                OR graph_json::text ILIKE '%' || old_lower || '%'
+                OR name ILIKE '%' || old_run_lower || '%'
+                OR description ILIKE '%' || old_run_lower || '%'
+                OR definition_yaml ILIKE '%' || old_run_lower || '%'
+                OR graph_json::text ILIKE '%' || old_run_lower || '%';
+        END IF;
+    END $$;
+
+    DO $$
+    DECLARE
+        old_title text := concat(chr(84), chr(121), chr(114));
+        old_lower text := lower(old_title);
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'chronicles'
+        ) THEN
+            UPDATE chronicles
+            SET
+                branch = replace(replace(branch, old_title, 'Ting'), old_lower, 'ting'),
+                config_snapshot = CASE
+                    WHEN config_snapshot IS NULL THEN NULL
+                    ELSE replace(
+                        replace(config_snapshot::text, old_title, 'Ting'),
+                        old_lower,
+                        'ting'
+                    )::jsonb
+                END
+            WHERE
+                branch ILIKE '%' || old_lower || '%'
+                OR config_snapshot::text ILIKE '%' || old_lower || '%';
+        END IF;
+    END $$;
+
+    ALTER INDEX IF EXISTS raids_pkey RENAME TO runs_pkey;
+    ALTER INDEX IF EXISTS idx_raids_phase_id RENAME TO idx_runs_phase_id;
+    ALTER INDEX IF EXISTS idx_raids_status RENAME TO idx_runs_status;
+    ALTER INDEX IF EXISTS idx_raids_session_id RENAME TO idx_runs_session_id;
+    ALTER INDEX IF EXISTS idx_raids_reviewer_session RENAME TO idx_runs_reviewer_session;
+    ALTER INDEX IF EXISTS idx_confidence_events_raid_id RENAME TO idx_confidence_events_run_id;
+    ALTER INDEX IF EXISTS idx_session_messages_raid_id RENAME TO idx_session_messages_run_id;
+    ALTER INDEX IF EXISTS raid_progress_pkey RENAME TO run_progress_pkey;
+    ALTER INDEX IF EXISTS idx_raid_progress_status RENAME TO idx_run_progress_status;
+    ALTER INDEX IF EXISTS idx_raid_progress_session RENAME TO idx_run_progress_session;
+    ALTER INDEX IF EXISTS idx_raid_progress_raid_id RENAME TO idx_run_progress_run_id;
+    ALTER INDEX IF EXISTS idx_raid_progress_phase RENAME TO idx_run_progress_phase;
+    ALTER INDEX IF EXISTS raid_confidence_events_pkey RENAME TO run_confidence_events_pkey;
+    ALTER INDEX IF EXISTS idx_raid_confidence_events_tracker RENAME TO idx_run_confidence_events_tracker;
+    ALTER INDEX IF EXISTS raid_session_messages_pkey RENAME TO run_session_messages_pkey;
+    ALTER INDEX IF EXISTS idx_raid_session_messages_tracker RENAME TO idx_run_session_messages_tracker;
+    ALTER INDEX IF EXISTS idx_raid_session_messages_session RENAME TO idx_run_session_messages_session;
+
+  000026_legacy_naming_cleanup.down.sql: |
+    SELECT 1;
+
+  000026_legacy_naming_cleanup.up.sql: |
+    DO $$
+    DECLARE
+        old_title text := concat(chr(84), chr(121), chr(114));
+        old_lower text := lower(old_title);
+        old_accented text := convert_from(decode('54c3bd72', 'hex'), 'UTF8');
+        old_run_title text := concat(chr(82), chr(97), chr(105), chr(100));
+        old_run_lower text := lower(old_run_title);
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'chronicles'
+        ) THEN
+            UPDATE chronicles
+            SET
+                branch = replace(replace(replace(replace(replace(branch, old_accented, 'Ting'), old_title, 'Ting'), old_lower, 'ting'), old_run_title, 'Run'), old_run_lower, 'run'),
+                summary = CASE
+                    WHEN summary IS NULL THEN NULL
+                    ELSE replace(replace(replace(replace(replace(summary, old_accented, 'Ting'), old_title, 'Ting'), old_lower, 'ting'), old_run_title, 'Run'), old_run_lower, 'run')
+                END,
+                unfinished_work = CASE
+                    WHEN unfinished_work IS NULL THEN NULL
+                    ELSE replace(replace(replace(replace(replace(unfinished_work, old_accented, 'Ting'), old_title, 'Ting'), old_lower, 'ting'), old_run_title, 'Run'), old_run_lower, 'run')
+                END,
+                key_changes = CASE
+                    WHEN key_changes IS NULL THEN NULL
+                    ELSE replace(replace(replace(replace(replace(key_changes::text, old_accented, 'Ting'), old_title, 'Ting'), old_lower, 'ting'), old_run_title, 'Run'), old_run_lower, 'run')::jsonb
+                END,
+                config_snapshot = CASE
+                    WHEN config_snapshot IS NULL THEN NULL
+                    ELSE replace(replace(replace(replace(replace(config_snapshot::text, old_accented, 'Ting'), old_title, 'Ting'), old_lower, 'ting'), old_run_title, 'Run'), old_run_lower, 'run')::jsonb
+                END
+            WHERE
+                branch LIKE '%' || old_accented || '%'
+                OR branch ILIKE '%' || old_lower || '%'
+                OR coalesce(summary, '') LIKE '%' || old_accented || '%'
+                OR coalesce(summary, '') ILIKE '%' || old_lower || '%'
+                OR coalesce(unfinished_work, '') LIKE '%' || old_accented || '%'
+                OR coalesce(unfinished_work, '') ILIKE '%' || old_lower || '%'
+                OR coalesce(key_changes::text, '') LIKE '%' || old_accented || '%'
+                OR coalesce(key_changes::text, '') ILIKE '%' || old_lower || '%'
+                OR config_snapshot::text LIKE '%' || old_accented || '%'
+                OR config_snapshot::text ILIKE '%' || old_lower || '%'
+                OR branch ILIKE '%' || old_run_lower || '%'
+                OR coalesce(summary, '') ILIKE '%' || old_run_lower || '%'
+                OR coalesce(unfinished_work, '') ILIKE '%' || old_run_lower || '%'
+                OR coalesce(key_changes::text, '') ILIKE '%' || old_run_lower || '%'
+                OR config_snapshot::text ILIKE '%' || old_run_lower || '%';
+        END IF;
+    END $$;
+
+    DO $$
+    DECLARE
+        old_title text := concat(chr(84), chr(121), chr(114));
+        old_lower text := lower(old_title);
+        old_rune text := convert_from(decode('e19b83', 'hex'), 'UTF8');
+        old_accented text := convert_from(decode('54c3bd72', 'hex'), 'UTF8');
+        old_run_title text := concat(chr(82), chr(97), chr(105), chr(100));
+        old_run_lower text := lower(old_run_title);
+        old_pending_runs text := 'pending' || old_run_title || 's';
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'observatory_registries'
+        ) THEN
+            UPDATE observatory_registries
+            SET
+                version = GREATEST(version, 8),
+                updated_at = now(),
+                payload = jsonb_set(
+                    jsonb_set(
+                        replace(
+                            replace(
+                                replace(
+                                    replace(
+                                        replace(
+                                            replace(
+                                                replace(payload::text, old_rune, '✦'),
+                                                old_accented,
+                                                'Ting'
+                                            ),
+                                            old_title,
+                                            'Ting'
+                                        ),
+                                        old_lower,
+                                        'ting'
+                                    ),
+                                    old_pending_runs,
+                                    'pendingRuns'
+                                ),
+                                old_run_title,
+                                'Run'
+                            ),
+                            old_run_lower,
+                            'run'
+                        )::jsonb,
+                        '{version}',
+                        to_jsonb(8),
+                        true
+                    ),
+                    '{updatedAt}',
+                    to_jsonb(to_char(timezone('UTC', now()), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+                    true
+                )
+            WHERE
+                payload::text LIKE '%' || old_accented || '%'
+                OR payload::text ILIKE '%' || old_lower || '%'
+                OR payload::text ILIKE '%' || old_run_lower || '%'
+                OR payload::text LIKE '%' || old_rune || '%';
+        END IF;
+    END $$;
+
+    DO $$
+    DECLARE
+        old_title text := concat(chr(84), chr(121), chr(114));
+        old_lower text := lower(old_title);
+        old_accented text := convert_from(decode('54c3bd72', 'hex'), 'UTF8');
+        old_run_title text := concat(chr(82), chr(97), chr(105), chr(100));
+        old_run_lower text := lower(old_run_title);
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'sagas'
+        ) THEN
+            UPDATE sagas
+            SET workflow_snapshot = replace(
+                replace(
+                    replace(
+                        replace(
+                            replace(workflow_snapshot::text, old_accented, 'Ting'),
+                            old_title,
+                            'Ting'
+                        ),
+                        old_lower,
+                        'ting'
+                    ),
+                    old_run_title,
+                    'Run'
+                ),
+                old_run_lower,
+                'run'
+            )::jsonb
+            WHERE
+                workflow_snapshot::text LIKE '%' || old_accented || '%'
+                OR workflow_snapshot::text ILIKE '%' || old_lower || '%'
+                OR workflow_snapshot::text ILIKE '%' || old_run_lower || '%';
+        END IF;
+    END $$;
+
+    DO $$
+    DECLARE
+        old_title text := concat(chr(84), chr(121), chr(114));
+        old_lower text := lower(old_title);
+        old_accented text := convert_from(decode('54c3bd72', 'hex'), 'UTF8');
+        old_run_title text := concat(chr(82), chr(97), chr(105), chr(100));
+        old_run_lower text := lower(old_run_title);
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'chronicle_events'
+        ) THEN
+            UPDATE chronicle_events
+            SET label = replace(
+                replace(
+                    replace(
+                        replace(
+                            replace(label, old_accented, 'Ting'),
+                            old_title,
+                            'Ting'
+                        ),
+                        old_lower,
+                        'ting'
+                    ),
+                    old_run_title,
+                    'Run'
+                ),
+                old_run_lower,
+                'run'
+            )
+            WHERE
+                label LIKE '%' || old_accented || '%'
+                OR label ILIKE '%' || old_lower || '%'
+                OR label ILIKE '%' || old_run_lower || '%';
+        END IF;
+    END $$;
+
+  000027_saga_instance_assignment.down.sql: |
+    DROP INDEX IF EXISTS idx_sagas_instance_id;
+
+    ALTER TABLE sagas DROP COLUMN IF EXISTS instance_id;
+
+  000027_saga_instance_assignment.up.sql: |
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS instance_id UUID;
+
+    CREATE INDEX IF NOT EXISTS idx_sagas_instance_id ON sagas(instance_id);
+
+  000028_workflow_graph_only.down.sql: |
+    ALTER TABLE workflows
+        ADD COLUMN IF NOT EXISTS definition_yaml TEXT;
+
+  000028_workflow_graph_only.up.sql: |
+    ALTER TABLE workflows
+        DROP COLUMN IF EXISTS definition_yaml;
+
+  000029_workflow_campaigns.down.sql: |
+    DROP TABLE IF EXISTS workflow_campaigns;
+
+  000029_workflow_campaigns.up.sql: |
+    -- Trackerless workflow campaign records for long-running launched workflows.
+
+    CREATE TABLE IF NOT EXISTS workflow_campaigns (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        slug TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        workflow_id UUID NOT NULL,
+        workflow_version TEXT NOT NULL DEFAULT 'draft',
+        workflow_name TEXT NOT NULL DEFAULT '',
+        workflow_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+        session_id TEXT NOT NULL,
+        session_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        active_stage_id TEXT,
+        stage_state JSONB NOT NULL DEFAULT '[]'::jsonb,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_activity_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        CONSTRAINT workflow_campaigns_status_check CHECK (
+            status IN ('pending', 'running', 'blocked', 'completed', 'failed')
+        )
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workflow_campaigns_owner_updated_at
+        ON workflow_campaigns(owner_id, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_workflow_campaigns_status_updated_at
+        ON workflow_campaigns(status, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_workflow_campaigns_session_id
+        ON workflow_campaigns(session_id);
+
+{{- end }}

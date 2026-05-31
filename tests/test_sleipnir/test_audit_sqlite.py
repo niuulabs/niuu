@@ -104,7 +104,7 @@ async def test_optional_fields_roundtrip(repo):
 async def test_query_no_filters_returns_all(repo):
     events = [
         make_event(event_id="a", event_type="ravn.tool.complete", timestamp=_ts(0)),
-        make_event(event_id="b", event_type="tyr.task.started", timestamp=_ts(1)),
+        make_event(event_id="b", event_type="ting.task.started", timestamp=_ts(1)),
         make_event(event_id="c", event_type="volundr.session.started", timestamp=_ts(2)),
     ]
     for e in events:
@@ -116,7 +116,7 @@ async def test_query_no_filters_returns_all(repo):
 
 async def test_query_event_type_pattern_exact(repo):
     await repo.append(make_event(event_id="a", event_type="ravn.tool.complete"))
-    await repo.append(make_event(event_id="b", event_type="tyr.task.started"))
+    await repo.append(make_event(event_id="b", event_type="ting.task.started"))
 
     results = await repo.query(AuditQuery(event_type_pattern="ravn.tool.complete"))
     assert len(results) == 1
@@ -126,7 +126,7 @@ async def test_query_event_type_pattern_exact(repo):
 async def test_query_event_type_pattern_glob(repo):
     await repo.append(make_event(event_id="a", event_type="ravn.tool.complete"))
     await repo.append(make_event(event_id="b", event_type="ravn.step.start"))
-    await repo.append(make_event(event_id="c", event_type="tyr.task.started"))
+    await repo.append(make_event(event_id="c", event_type="ting.task.started"))
 
     results = await repo.query(AuditQuery(event_type_pattern="ravn.*"))
     ids = {r.event_id for r in results}
@@ -135,7 +135,7 @@ async def test_query_event_type_pattern_glob(repo):
 
 async def test_query_wildcard_matches_all(repo):
     await repo.append(make_event(event_id="a", event_type="ravn.tool.complete"))
-    await repo.append(make_event(event_id="b", event_type="tyr.task.started"))
+    await repo.append(make_event(event_id="b", event_type="ting.task.started"))
 
     results = await repo.query(AuditQuery(event_type_pattern="*"))
     assert len(results) == 2
@@ -170,7 +170,7 @@ async def test_query_correlation_id_filter(repo):
 
 async def test_query_source_filter(repo):
     await repo.append(make_event(event_id="a", source="ravn:agent-1"))
-    await repo.append(make_event(event_id="b", source="tyr:dispatcher"))
+    await repo.append(make_event(event_id="b", source="ting:dispatcher"))
 
     results = await repo.query(AuditQuery(source="ravn:agent-1"))
     assert len(results) == 1

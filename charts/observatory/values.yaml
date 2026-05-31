@@ -1,0 +1,191 @@
+# Observatory — topology and event stream service
+
+replicaCount: 1
+revisionHistoryLimit: 10
+
+image:
+  registry: ghcr.io/niuulabs
+  repository: niuu
+  tag: ""
+  pullPolicy: IfNotPresent
+
+command:
+  - observatory
+args: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8083
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: api.example.com
+      paths:
+        - path: /api/v1/observatory
+          pathType: Prefix
+  tls: []
+
+config:
+  logLevel: "info"
+  logFormat: "json"
+  host: "0.0.0.0"
+  port: 8083
+  cors:
+    allowedOrigins:
+      - "*"
+    allowCredentials: true
+  extra: {}
+
+database:
+  name: observatory
+  minPoolSize: 5
+  maxPoolSize: 20
+  createSecret: false
+  existingSecret: ""
+  userKey: username
+  passwordKey: password
+  username: ""
+  password: "CHANGE_ME"
+  extraSecretData: {}
+  secretAnnotations: {}
+  external:
+    enabled: true
+    host: postgresql.default.svc.cluster.local
+    port: 5432
+
+migrations:
+  enabled: true
+  image:
+    repository: migrate/migrate
+    tag: "v4.17.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+guild:
+  url: ""
+  timeoutSeconds: 10.0
+  auth:
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+    kwargs: {}
+    secretKwargs: []
+
+envoy:
+  enabled: false
+  image:
+    repository: envoyproxy/envoy
+    tag: "v1.32-latest"
+    pullPolicy: IfNotPresent
+  port: 8443
+  adminPort: 9901
+  connectTimeout: "0.25s"
+  upstreamTimeout: "300s"
+  ssePathPrefixes:
+    - /api/v1/observatory/topology
+    - /api/v1/observatory/topology/stream
+    - /api/v1/observatory/events
+    - /api/v1/observatory/events/stream
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  headerNames:
+    userId: x-auth-user-id
+    email: x-auth-email
+    tenant: x-auth-tenant
+    roles: x-auth-roles
+  jwt:
+    enabled: false
+    issuer: ""
+    audiences: []
+    jwksUri: ""
+    jwksTimeout: "5s"
+    jwksCacheDurationSeconds: 300
+    tenantClaim: "tenant_id"
+    rolesClaim: "resource_access.volundr-api.roles"
+    keycloakHost: ""
+    keycloakPort: 8080
+    keycloakTls: false
+    extraClaimHeaders: []
+    bypassPrefixes:
+      - /health
+  extraHttpFilters: []
+  extraClusters: []
+
+livenessProbe:
+  enabled: true
+  path: "/health"
+  initialDelaySeconds: 5
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  path: "/health"
+  initialDelaySeconds: 3
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+startupProbe:
+  enabled: false
+  path: "/health"
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 30
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+deploymentAnnotations: {}
+initContainers: []
+extraEnv: []
+extraVolumeMounts: []
+extraVolumes: []
+
+global:
+  imagePullSecrets: []
+  image:
+    registry: ""

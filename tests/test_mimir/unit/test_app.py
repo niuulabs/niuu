@@ -54,11 +54,42 @@ def test_create_app_mounts_mimir_router(tmp_path: Path) -> None:
     assert any("/mimir" in r for r in routes)
 
 
+def test_create_app_exposes_api_v1_mimir_routes(tmp_path: Path) -> None:
+    config = MimirServiceConfig(path=str(tmp_path / "mimir"))
+    app = create_app(config)
+    routes = [r.path for r in app.routes]  # type: ignore[attr-defined]
+    assert "/api/v1/mimir/stats" in routes
+    assert "/api/v1/mimir/mounts" in routes
+    assert "/api/v1/mimir/mcp" in routes
+
+
 def test_create_app_exposes_settings_schema(tmp_path: Path) -> None:
     config = MimirServiceConfig(path=str(tmp_path / "mimir"), name="shared", role="shared")
     app = create_app(config)
     with TestClient(app) as client:
         response = client.get("/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["title"] == "Mimir"
+    assert payload["sections"][0]["id"] == "service"
+
+
+def test_create_app_exposes_mounted_mimir_settings_alias(tmp_path: Path) -> None:
+    config = MimirServiceConfig(path=str(tmp_path / "mimir"), name="shared", role="shared")
+    app = create_app(config)
+    with TestClient(app) as client:
+        response = client.get("/mimir/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["title"] == "Mimir"
+    assert payload["sections"][0]["id"] == "service"
+
+
+def test_create_app_exposes_api_v1_mimir_settings_alias(tmp_path: Path) -> None:
+    config = MimirServiceConfig(path=str(tmp_path / "mimir"), name="shared", role="shared")
+    app = create_app(config)
+    with TestClient(app) as client:
+        response = client.get("/api/v1/mimir/settings")
     assert response.status_code == 200
     payload = response.json()
     assert payload["title"] == "Mimir"
@@ -96,10 +127,25 @@ def test_lifespan_rebuilds_search_index_on_startup(tmp_path: Path) -> None:
 
     # Using TestClient as context manager triggers lifespan startup/shutdown.
     with TestClient(app) as client:
-        # Just verify the app starts without error
         response = client.get("/mimir/health")
-        # Health endpoint may or may not exist; we just need startup to succeed.
-        assert response.status_code in (200, 404)
+        assert response.status_code == 200
+        assert response.json()["status"] == "healthy"
+
+
+def test_create_app_exposes_health_aliases(tmp_path: Path) -> None:
+    config = MimirServiceConfig(path=str(tmp_path / "mimir"), name="shared", role="shared")
+    app = create_app(config)
+    with TestClient(app) as client:
+        root = client.get("/health")
+        mounted = client.get("/mimir/health")
+        api = client.get("/api/v1/mimir/health")
+
+    assert root.status_code == 200
+    assert mounted.status_code == 200
+    assert api.status_code == 200
+    assert root.json() == {"status": "healthy", "name": "shared", "role": "shared"}
+    assert mounted.json() == root.json()
+    assert api.json() == root.json()
 
 
 def test_lifespan_handles_rebuild_failure_gracefully(tmp_path: Path) -> None:

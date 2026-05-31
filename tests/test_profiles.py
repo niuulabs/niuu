@@ -426,7 +426,7 @@ class TestConfigProfileProvider:
 
 class TestProfileEndpoints:
     def test_list_profiles(self, client: TestClient):
-        resp = client.get("/api/v1/volundr/profiles")
+        resp = client.get("/api/v1/forge/profiles")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 2
@@ -434,22 +434,22 @@ class TestProfileEndpoints:
         assert "default" in names
 
     def test_list_profiles_filter(self, client: TestClient):
-        resp = client.get("/api/v1/volundr/profiles", params={"workload_type": "session"})
+        resp = client.get("/api/v1/forge/profiles", params={"workload_type": "session"})
         assert resp.status_code == 200
         assert len(resp.json()) == 2
 
     def test_get_profile(self, client: TestClient):
-        resp = client.get("/api/v1/volundr/profiles/default")
+        resp = client.get("/api/v1/forge/profiles/default")
         assert resp.status_code == 200
         assert resp.json()["name"] == "default"
 
     def test_get_profile_not_found(self, client: TestClient):
-        resp = client.get("/api/v1/volundr/profiles/nonexistent")
+        resp = client.get("/api/v1/forge/profiles/nonexistent")
         assert resp.status_code == 404
 
     def test_create_profile(self, client: TestClient):
         resp = client.post(
-            "/api/v1/volundr/profiles",
+            "/api/v1/forge/profiles",
             json={
                 "name": "new-api-profile",
                 "description": "Created via API",
@@ -461,20 +461,20 @@ class TestProfileEndpoints:
         assert resp.json()["name"] == "new-api-profile"
 
         # Verify it's now listable
-        resp = client.get("/api/v1/volundr/profiles")
+        resp = client.get("/api/v1/forge/profiles")
         names = [p["name"] for p in resp.json()]
         assert "new-api-profile" in names
 
     def test_create_profile_duplicate(self, client: TestClient):
         resp = client.post(
-            "/api/v1/volundr/profiles",
+            "/api/v1/forge/profiles",
             json={"name": "default"},
         )
         assert resp.status_code == 409
 
     def test_create_profile_invalid(self, client: TestClient):
         resp = client.post(
-            "/api/v1/volundr/profiles",
+            "/api/v1/forge/profiles",
             json={
                 "name": "bad",
                 "resource_config": {"cpu": 999},
@@ -484,7 +484,7 @@ class TestProfileEndpoints:
 
     def test_update_profile(self, client: TestClient):
         resp = client.put(
-            "/api/v1/volundr/profiles/default",
+            "/api/v1/forge/profiles/default",
             json={"description": "Updated via API"},
         )
         assert resp.status_code == 200
@@ -492,28 +492,28 @@ class TestProfileEndpoints:
 
     def test_update_profile_not_found(self, client: TestClient):
         resp = client.put(
-            "/api/v1/volundr/profiles/nonexistent",
+            "/api/v1/forge/profiles/nonexistent",
             json={"description": "nope"},
         )
         assert resp.status_code == 404
 
     def test_update_profile_invalid(self, client: TestClient):
         resp = client.put(
-            "/api/v1/volundr/profiles/default",
+            "/api/v1/forge/profiles/default",
             json={"resource_config": {"gpu": 99}},
         )
         assert resp.status_code == 400
 
     def test_delete_profile(self, client: TestClient):
-        resp = client.delete("/api/v1/volundr/profiles/heavy")
+        resp = client.delete("/api/v1/forge/profiles/heavy")
         assert resp.status_code == 204
 
         # Verify it's gone
-        resp = client.get("/api/v1/volundr/profiles/heavy")
+        resp = client.get("/api/v1/forge/profiles/heavy")
         assert resp.status_code == 404
 
     def test_delete_profile_not_found(self, client: TestClient):
-        resp = client.delete("/api/v1/volundr/profiles/nonexistent")
+        resp = client.delete("/api/v1/forge/profiles/nonexistent")
         assert resp.status_code == 404
 
 
@@ -532,7 +532,7 @@ class TestReadOnlyEndpoints:
 
     def test_create_readonly(self, readonly_client: TestClient):
         resp = readonly_client.post(
-            "/api/v1/volundr/profiles",
+            "/api/v1/forge/profiles",
             json={"name": "new"},
         )
         assert resp.status_code == 400
@@ -540,11 +540,11 @@ class TestReadOnlyEndpoints:
 
     def test_update_readonly(self, readonly_client: TestClient):
         resp = readonly_client.put(
-            "/api/v1/volundr/profiles/ro-profile",
+            "/api/v1/forge/profiles/ro-profile",
             json={"description": "nope"},
         )
         assert resp.status_code == 400
 
     def test_delete_readonly(self, readonly_client: TestClient):
-        resp = readonly_client.delete("/api/v1/volundr/profiles/ro-profile")
+        resp = readonly_client.delete("/api/v1/forge/profiles/ro-profile")
         assert resp.status_code == 400

@@ -22,7 +22,6 @@ function makeReq(overrides: Partial<PersonaCreateRequest> = {}): PersonaCreateRe
     forbiddenTools: [],
     permissionMode: 'default',
     iterationBudget: 20,
-    llmPrimaryAlias: 'claude-sonnet-4-6',
     llmThinkingEnabled: false,
     llmMaxTokens: 8192,
     producesEventType: 'code.changed',

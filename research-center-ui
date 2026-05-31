@@ -1,0 +1,844 @@
+# Research Center — UI Specification
+
+Companion to `IMPLEMENTATION.md`. This document describes the UI itself — every screen, every component, every state, every interaction. It is the design contract: what's built today, what each piece is for, and what must be true for it to ship.
+
+The prototype lives at `ting/Research Center.html`. Open it for the live reference; this doc captures it in writing.
+
+---
+
+## Contents
+
+1. [Information architecture](#1-information-architecture)
+2. [Shell chrome](#2-shell-chrome)
+3. [Index page](#3-index-page)
+4. [New-campaign wizard](#4-new-campaign-wizard)
+5. [Campaign detail — the Reading view](#5-campaign-detail--the-reading-view)
+6. [Side drawer](#6-side-drawer)
+7. [Inline citations + provenance](#7-inline-citations--provenance)
+8. [State variants](#8-state-variants)
+9. [Components inventory](#9-components-inventory)
+10. [Visual language](#10-visual-language)
+11. [Interaction patterns](#11-interaction-patterns)
+12. [Responsive / density](#12-responsive--density)
+13. [Accessibility](#13-accessibility)
+14. [Out-of-scope alt layouts](#14-out-of-scope-alt-layouts)
+15. [Acceptance criteria (per route)](#15-acceptance-criteria-per-route)
+
+---
+
+## 1. Information architecture
+
+The Research Center is a top-level **Ting tab** — peer of Dashboard, Sagas, Dispatch, Plan, Workflows. Three routes:
+
+```
+/ting/research                 → Index (campaign list)
+/ting/research/new             → 5-step wizard
+/ting/research/{slug}          → Detail (Reading view)
+/ting/research/{slug}?drawer=… → Detail with drawer pre-opened (deep link)
+```
+
+The detail page is **one focused layout** — the Reading view. No layout switcher in production. (Four alt layouts exist in the prototype as visual exploration; they are not part of the ship surface.)
+
+### Mental model
+
+A **research campaign** is a Q&A object. A question goes in; a curated answer plus durable learnings come out. Everything in the UI orients around that:
+
+- The page title **is** the question.
+- The hero is the **answer** (or working thesis if not yet synthesized).
+- Evidence, critique, learnings, follow-ups, and Mímir state sit below the answer as **progressively-disclosed sections**.
+- A right-side drawer opens **any file, source, critique, or operator surface in place** without scrolling away.
+
+---
+
+## 2. Shell chrome
+
+The Niuu plugin rail (left, 48px) and Ting topbar (56px) are shared with every other Ting screen.
+
+### Plugin rail (left, 48px wide)
+
+Vertical strip with a brand mark (`ᚠ`) at the top and one rune per plugin: Observatory `ᛞ`, **Ting `ᛃ` (active)**, Bifröst `ᚨ`, Völundr `ᚲ`, Mímir `ᛗ`, Valkyrie `ᛒ`. Active plugin has a 2px left-border in `--color-brand` (ice blue in the prototype's default theme).
+
+### Topbar (top, 56px)
+
+Left: Ting glyph + name + sub-label "saga & run orchestration". Then the tab strip:
+
+- Dashboard
+- Sagas {count}
+- **Research {count} ← active**
+- Dispatch
+- Plan
+- Workflows
+
+Right: dispatcher status pills — `dispatcher on`, `threshold 0.70`, `concurrent 3/5`, `cluster valhalla`. Mono font; same shape as on the existing Ting pages.
+
+### Footer (bottom, 24px)
+
+Route path (`/ting/research`), workflow version `workflows v1.0.0`, current research-campaign workflow id, and "connected via skuld" status.
+
+---
+
+## 3. Index page
+
+`/ting/research`
+
+### Toolbar
+
+A row above the content:
+
+- **Search** — left-side input, mono font, placeholder `search by title, slug, question…`, `⌘K` hint.
+- **Filter chips** — `All {n}` · `Needs attention {n}` · `Running {n}` · `Published {n}` · `Drafts {n}`. "Needs attention" = `blocked + failed + review`.
+- **Grid / Table toggle** — segmented control, right-aligned.
+- **+ New campaign** — primary button, right-aligned.
+
+### Metrics strip
+
+Five cards spanning the width:
+
+- Running — count of `state=running`, accent color, sub "active runs"
+- Review-ready — count of `state=review`, brand color
+- Blocked / failed — count of `state ∈ {blocked,failed}`, critical color
+- Published — count of `state=published`, dim
+- Drafts — count of `state=draft`, dim
+
+Each card: 10px label (uppercase tracked), 22px mono value, 10px mono sub.
+
+### Campaign grid (default)
+
+Auto-fill, min 360px cards. Each card:
+
+```
+┌──────────────────────────────────────────────────┐
+│ ● running   evaluative          62% · med        │  ← state pip + mode chip + confidence
+│                                                  │
+│ Local model serving on the homelab               │  ← title (h4, 16px, semibold)
+│                                                  │
+│ Can a self-hosted vLLM + sglang stack absorb…    │  ← question (13px, secondary)
+│                                                  │
+│ ▰▰▰▱▱▱▱   (7-tick stage progress mini)           │
+│                                                  │
+│ 47m · 8 src · 5 crit · 0 learn                   │  ← meta row (mono 11px)
+│ ─────────────────────────────────────────────    │
+│ local-model-serving        run/c1-glitnir        │  ← footer (slug + run id)
+└──────────────────────────────────────────────────┘
+```
+
+The 7-tick stage progress turns segments green for `done`, animated brand for `active`, yellow for `blocked`, red for `failed`. Each tick has a tooltip with stage name + status.
+
+### Campaign table (toggle)
+
+Columns: State · Campaign · Mode · Stages · Confidence · Updated · Owner · Run.
+
+Compact, dense — for power-users. Row click opens detail.
+
+### Empty state (first run)
+
+```
+       ᚦ
+   No campaigns yet
+A research campaign starts with a question. Ting frames it,
+dispatches a run of ravens, and writes the durable
+learnings back to Mímir.
+      [ Start your first campaign ]
+```
+
+Big glyph (the research rune), title, body, primary CTA.
+
+### Filtered-empty state
+
+When a filter matches zero items: smaller `◦` glyph, message, "+ New campaign" CTA.
+
+### Requirements
+
+- List **must** be filterable by state (chip set or query param).
+- Sort options: Updated (default), Created, Confidence.
+- Each card click navigates to `/ting/research/{slug}`.
+- Status pip animates (pulse) only when `state=running`.
+- All counts pull from the same source (`GET /ting/research/campaigns` with `state` filter applied client-side or via separate aggregate endpoint).
+
+---
+
+## 4. New-campaign wizard
+
+`/ting/research/new`. Mirrors the existing `PlanWizard.tsx` pattern but tailored to research.
+
+Five steps, `StepDots` progress indicator at top:
+
+### Step 1 — Question
+
+Text area, autofocus, ~120px tall. Below: 3 hint chips that pre-fill an example:
+
+- `+ evaluative · Should we replace Skuld's WebSocket fan-out with…`
+- `+ investigative · Why has Bifröst p95 climbed 40% week-over-week…`
+- `+ exploratory · What design patterns work best for long-lived…`
+- `+ monitoring · Watch Anthropic ToS + rate-limit changes…`
+
+Slug preview at the bottom: `slug: research/campaigns/local-model-serving/`.
+
+### Step 2 — Mode
+
+2×2 grid of mode cards. Each card has:
+- monospace eyebrow (`exploratory` / `evaluative` / `investigative` / `monitoring`)
+- title in semibold
+- one-line description
+- selected state: brand-tinted border + background
+
+Below the grid: a row showing the **default deliverable** for the chosen mode, with "(editable next step)" muted.
+
+### Step 3 — Scope
+
+Three plain fields:
+
+- Audience — short text
+- Expected deliverable — textarea, pre-filled with mode default
+- Success criteria — textarea, pre-filled with sensible default
+
+### Step 4 — Constraints
+
+- Constraints — textarea
+- Tools the run may use — toggleable chips (`web`, `mimir`, `file`, `terminal`)
+- Budgets — three read-only chips (`tokens: 80k`, `web.fetch: 24`, `elapsed: 4h`)
+
+### Step 5 — Confirm
+
+Read-only review: Question · Mode · Audience · Slug · Deliverable · Success · Constraints. Plus a "Will dispatch" row showing: `7 stages · 8 personas · writes to mímir://research/campaigns/{slug}/`.
+
+### Footer (every step)
+
+Left: `Back` / `Cancel`. Right: `step N of 5` · `Continue →` (primary) or on the last step `Dispatch run →`.
+
+### Requirements
+
+- Continue disabled on step 1 unless question is at least 8 characters.
+- Slug derived live from question (lowercase, alnum + hyphens, max 64 chars).
+- Mode change updates default deliverable in step 3.
+- On dispatch: POST `/ting/research/campaigns` with the full payload, redirect to `/ting/research/{slug}`.
+
+---
+
+## 5. Campaign detail — the Reading view
+
+`/ting/research/{slug}`. The hero of the whole product.
+
+The page is one centered column (~1080px max width) with a sticky state strip at the top. Reading-first: when you land, you can immediately see the question and the current best answer.
+
+### 5a. State strip (sticky, top)
+
+A 5-column grid:
+
+```
+▰▰▰▱▱▱▱  stage 3/7 · Challenge  │ ● research-skeptic  critique pass started…  │ 62% · med  │ ⟨ run/c1-glitnir · 4 sessions ⟩  │ [Operator ▸]
+```
+
+Left → right:
+
+1. **Stage ticks** — 7 colored ticks, hover for stage name. Inline label `stage 3/7 · Challenge`. Becomes `complete · 7/7` when published, `failed at {stage}` when failed, `blocked at {stage}` when blocked.
+2. **Live ticker** — pulsing dot + persona name + latest activity line. Cycles every 3s through recent events. Hidden when not running.
+3. **Confidence badge** — 36px bar + percent + label (`high` / `med` / `low`).
+4. **Run chip** — Völundr-rune badge, `run/c1-glitnir · 4 sessions`. Opens Völundr in a new tab.
+5. **Operator button** — opens the side drawer to the Operator tab.
+
+Sticks to the top of the viewport when scrolling. Glass background.
+
+### 5b. Question hero
+
+Below the strip:
+
+```
+Research › local-model-serving · ● running · evaluative      [☰ Files · 10]
+
+Local model serving on the homelab
+
+Can a self-hosted vLLM + sglang stack absorb the memory and strength raven
+personas with low enough p95 to drop the routine Anthropic dependency?
+
+audience · Niuu ops + bifrost owners  ·  deliverable · Decision memo + 6-week phased plan  ·  updated 17:40:52  ·  @lars
+```
+
+- Crumbs row: link back to Research index, slug in mono, state pip, mode chip. Right side: a "Files · {n}" chip that opens the side drawer to Files. The state pip and mode chip are clickable for filtered navigation back to the index.
+- **Title** — `<h1>`, 28px, weight 600, letter-spacing `-0.02em`. The question's headline.
+- **Question body** — 14px secondary, max 64ch.
+- **Meta line** — mono 11px muted: audience · deliverable · updated · owner.
+
+### 5c. Hero answer card
+
+The single most important block on the page. Layout: 2-column grid (`1fr 250px`), left-aligned right column.
+
+Eyebrow varies by state:
+- `WORKING THESIS · STAGE N/7` (running)
+- `REVIEW-READY · AWAITING PUBLISH TO MÍMIR` (review)
+- `FINAL SYNTHESIS · PUBLISHED` (published)
+- `BLOCKED AT {stage}` (blocked)
+- `FAILED AT {stage}` (failed)
+- `DRAFT · NOT YET DISPATCHED` (draft)
+
+The card border + tint flexes per state (brand for running/review, brand-200 for published, yellow for blocked, red for failed, default for draft).
+
+#### Left column — the answer prose
+
+**Running:**
+- "Tentative answer in one line. {paragraph}"
+- A yellow callout box "What's being challenged right now" listing the top 3 high-severity critiques as `[cN] {claim}` bullets.
+- An italic muted footer note: "The synthesist will write the final answer after the challenge stage completes. The working thesis above is the explorer's best read so far."
+
+**Review / Published:**
+- The full `final.md` rendered as prose via the `ProseAnnotated` component.
+- Citations are inline `[s1]`, `[s2]`, `[c1]` chips.
+- A "Clean / Annotated" toggle sits **above** the card (top-right of the section) when the answer exists.
+
+**Blocked:**
+- A warning callout: "Why we paused. {blockedReason}. The {persona} cannot proceed until this is resolved."
+- "What we have so far" heading + a paragraph describing the partial state.
+
+**Failed:**
+- A critical callout: "Failure. {failedReason}."
+- "What we have so far" + a paragraph.
+
+**Draft:**
+- Muted "This campaign hasn't been dispatched yet. Frame the question, pick a mode, and Ting will run the 7-stage research workflow."
+
+#### Right column — meta-grid
+
+Vertical stack, **left-aligned**, separated by a left border-rule. Each row is a label (9px mono uppercase muted) above a value.
+
+Running:
+- Current stage → `Challenge` (16px brand-200)
+- Persona → `research-skeptic` (mono 13px)
+- Confidence so far → ConfidenceBadge
+- `[ Open notebook ]` ghost button
+
+Review:
+- Confidence → ConfidenceBadge (big)
+- Synthesis size → `6.8k`
+- Sources cited → `8`
+- Critiques addressed → `5`
+- `[ Publish to Mímir → ]` primary
+- `[ Send back for revision ]` ghost
+
+Published:
+- Final confidence → ConfidenceBadge (big)
+- Published → `2026-04-22T17:09:09Z`
+- Elapsed → `4d 9h`
+- Sources → `9`
+- Critiques addressed → `2`
+- `[ ᛗ open in Mímir ]` ext-link
+
+Blocked:
+- Status → `blocked` (big yellow)
+- At stage → stage name
+- Elapsed since block → `42m`
+- `[ Resume after fix ]` primary
+- `[ View blocking error ]` ghost
+- `[ Skip stage ]` ghost
+
+Failed:
+- Status → `failed` (big red)
+- At stage → stage name
+- Persona → persona id
+- `[ Retry from stage ]` primary
+- `[ Restart campaign ]` 
+- `[ View run logs ]` ghost
+
+Draft:
+- `[ Complete brief → dispatch ]` primary
+- `[ Discard draft ]` ghost
+
+### 5d. Section: Evidence (collapsible)
+
+Heading: `▸ Evidence · {n} sources cited`  →  right-aligned: `[ Open all in side panel → ]` chip.
+
+When expanded, a `sources-table`:
+
+| | Title | Domain | Quality | Cited | |
+|---|---|---|---|---|---|
+| `[s1]` | Efficient Memory Management for Large Language… | arxiv.org | ●●●●● | ×4 | ⟨ ᛗ open ⟩ |
+| `[s2]` | SGLang: Efficient Execution of Structured… | arxiv.org | ●●●●● | ×3 | ⟨ ᛗ open ⟩ |
+| `[s5]` | Glitnir cluster — capacity + power inventory | mimir://ops/glitnir | ●●●●● | ×5 | ⟨ ᛗ open ⟩ |
+
+Rows are clickable — open the drawer at Sources tab with that source selected. Default sort: `× cited` descending.
+
+Default open when `state=published`.
+
+### 5e. Section: Skeptic's pass (collapsible)
+
+Heading: `▸ Skeptic's pass · {n} challenges`  →  right-aligned: `[ Open all in side panel → ]` chip + count rollup (`2 high · 2 med`).
+
+When expanded, a vertical list of critique cards. Each card:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ [c1]  Throughput numbers are aspirational                  high │  ← claim + severity
+│                                                                 │
+│ against: 30 t/s on Spark                                        │
+│                                                                 │
+│ Single-stream Llama.cpp figure; not vLLM batched. Need          │
+│ benchmark before any "drop Anthropic" claim.                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Critical-color left border. Severity chip on the right. Clicking the card opens the drawer at Critiques tab with that critique selected.
+
+Default open when `state ∈ {running, review}`.
+
+### 5f. Section: Learnings & follow-ups (collapsible)
+
+Two sub-lists side-by-side or stacked:
+
+**Durable learnings** — `lf-card`s with title (semibold) + body (secondary 12px) + `[ ᛗ open ]` button (opens manifest in drawer).
+
+**Open follow-ups** — `lf-card`s with title + meta line (`owner · @lars`, `est · 2 weeks`) + `[ ᛗ open ]` button.
+
+Only renders when `state ∈ {published, review}` or when `state=blocked` and the block happened after stage 4 (curation).
+
+### 5g. Section: Durable memory (collapsible)
+
+Heading: `▸ Durable memory · what's in Mímir vs notebook`  →  rollup chip: `N published · N review-ready · N notebook`.
+
+When expanded:
+
+- **Published list** — brand-tinted cards, one per published Mímir page. Each shows title, mímir path (mono), file size, `[ ᛗ open ]` (opens in drawer at Files).
+- **Review-ready list** — dashed-border rows with path + Mímir pip.
+- **Local notebook only (details collapsed)** — `<details>` element. Expand to see notebook-only files.
+- **Side artifacts** — `learnings/research/{slug}.md` + `followups/research/{slug}.md` ext-links.
+
+Every row is clickable; all clicks route to the drawer.
+
+---
+
+## 6. Side drawer
+
+A single right-aligned panel, 560px wide, `position: absolute; right: 0`. **Overlays** the page — never pushes content. Stays open until the user closes it.
+
+### Header
+
+```
+ᚲ  Local model serving on the homelab                            ×
+   local-model-serving
+```
+
+Völundr rune + campaign title + slug. Close `×` on the far right.
+
+### Tab strip
+
+```
+Files 10  │  Sources 8  │  Critiques 5  │  Operator
+```
+
+Four tabs. Underline active. Counts in mono.
+
+### Tab — Files
+
+The default. Shows artifact bodies.
+
+- **Chip strip** along the top: every artifact in the campaign as a chip (`brief.md`, `plan.md`, `breadth.md`, `depth.md`, `contrarian.md`, `exploration.md`, `analysis.md`, `sources.md`, `critique.md`, `final.md`, `manifest.md`). Horizontally scrollable. Each chip shows `{path}` + a Mímir pip (`ᛗ` for published, `·` otherwise).
+- **File header**: title (semibold 14px) + path (mono 11px muted) + Mímir pip + file size.
+- **Body**: rendered prose via `ProseAnnotated`. For `sources.md` the body is a `SourcesTable`. For `critique.md` it's a `CritiqueList`. For unwritten files (`bytes === 0`), an empty state explaining which persona writes it.
+
+Order of chips follows persona-write order: brief, plan, notes/*, analysis, sources, critique, final, manifest.
+
+### Tab — Sources
+
+Master-detail.
+
+- **Top half** (max 220px tall, scrollable): list of all sources. Each row: `[sN]` tag + title + quality dots + cited count. Active row highlights.
+- **Bottom half** (fills the rest, scrollable):
+  - Eyebrow `Source · [sN]`
+  - Title (16px semibold)
+  - Domain (mono muted)
+  - 3-column meta block (quality, cited, kind)
+  - "Excerpt (would be pulled from Mímir)" — placeholder quote box
+  - **Cited in** list — deep-link buttons to the artifacts that cite this source (e.g. `final.md`, `notes/exploration.md`). Clicking jumps the drawer to Files tab at that artifact.
+  - Footer: `[ ᛗ open in Mímir ]` + `[ ↗ open external ]`.
+
+### Tab — Critiques
+
+Same master-detail as Sources.
+
+- Top: list of all critiques (`[cN]` + claim + severity).
+- Bottom: eyebrow, claim, against, skeptic's note, severity chip, linked artifacts (`critique.md`, `final.md`).
+
+### Tab — Operator
+
+Live operations surface.
+
+- Three sub-chips: `Activity` / `Run` / `Actions`.
+- **Activity**: live event stream (ActivityLog component), virtualized list of timestamps + personas + messages.
+- **Run**: run id, cluster, sessions, elapsed, plus a list of every persona on this run with its current status.
+- **Actions**: state-dependent buttons (Pause / Skip / Increase budget / Retry from stage / Restart / Publish / Send back / Open in Völundr / Open manifest / Archive).
+
+### URL state
+
+Drawer state lives in the URL so deep-linking works:
+
+```
+?drawer=files&file=brief.md
+?drawer=sources&n=s1
+?drawer=critiques&n=c2
+?drawer=operator&sub=activity
+```
+
+Close drawer → query params removed.
+
+### Keyboard
+
+- `Esc` closes the drawer.
+- `←/→` (optional v2) step through items within the active tab.
+
+### Requirements
+
+- The drawer must **overlay** — clicking outside does NOT close it (it's not a modal; reading-page underneath stays visible).
+- Every "open" link on the detail page routes to the drawer at the right tab + selected item.
+- Tab counts come from the campaign detail response, no separate fetches.
+- Switching tabs preserves the campaign — the header doesn't change.
+
+---
+
+## 7. Inline citations + provenance
+
+The Final synthesis must be readable without losing trust. The UX rule: **you cannot read a claim without being able to see what it stands on.**
+
+### Clean mode (default)
+
+Citations are inline chips: `[s1]`, `[c1]`. Brand-300 for sources, critical-red for critiques.
+
+Click → small popover anchored to the chip:
+
+```
+┌────────────────────────────────────────┐
+│  SOURCE · [s1]                         │
+│  Efficient Memory Management for…      │
+│  arxiv.org · cited ×4 · q5/5           │
+│                                        │
+│  ▌ Excerpt from this source            │
+│  ▌ supporting the claim…               │
+│                                        │
+│  [ ᛗ open ]  [ close ]                │
+└────────────────────────────────────────┘
+```
+
+For critique citations, the popover is critical-colored and shows the claim + "against" + skeptic's note.
+
+The popover's "open" button promotes to the side drawer at the right tab.
+
+### Annotated mode
+
+A toggle above the answer card flips reading mode. In annotated mode:
+
+- The prose stays in a left column (max 72ch).
+- A right gutter (260px) holds note cards aligned to the paragraph that cites them.
+- Each note card: tag chip ([sN] / [cN]), title, body, "open" button.
+- Source notes: brand-300 left border. Critique notes: critical left border.
+
+This is the **claim-attached provenance** mode — you can read with every supporting source visible in your peripheral vision.
+
+### Requirements
+
+- Citation tokens are stable per campaign — never renumbered.
+- Source / critique resolution is intra-campaign only in v1.
+- The Clean ↔ Annotated toggle is only present on `state ∈ {review, published}` — there's no synthesized answer to annotate before then.
+
+---
+
+## 8. State variants
+
+Each campaign state changes the hero card, the available actions, the section default-open state, and the meta-grid. The table:
+
+| State | Hero eyebrow | Hero body | Meta column action | Section defaults |
+|---|---|---|---|---|
+| `draft` | DRAFT · NOT YET DISPATCHED | "This campaign hasn't been dispatched…" | `[ Complete brief → dispatch ]` | all collapsed |
+| `running` | WORKING THESIS · STAGE N/7 | Tentative answer + "What's being challenged right now" | `[ Open notebook ]` | Skeptic's pass open |
+| `blocked` | BLOCKED AT {stage} | Why we paused callout + "What we have so far" | `[ Resume after fix ]` + `[ Skip stage ]` | Skeptic's pass open |
+| `failed` | FAILED AT {stage} | Failure callout + "What we have so far" | `[ Retry from stage ]` + `[ Restart ]` | all collapsed |
+| `review` | REVIEW-READY · AWAITING PUBLISH | Full final synthesis (prose with citations) | `[ Publish to Mímir → ]` + `[ Send back ]` | Skeptic's pass open |
+| `published` | FINAL SYNTHESIS · PUBLISHED | Full final synthesis | `[ ᛗ open in Mímir ]` | Evidence open |
+
+The state strip's stage-tick row + active label, the ticker line, and the meta-row pill colors all flex on the same axis.
+
+### Empty / loading / error
+
+- **Loading**: skeleton state — show the strip + question with skeletons, hide the hero card until data arrives.
+- **404**: show the index empty state with `glyph=◦` and a "Campaign not found" message.
+- **Network error**: muted banner above the question: "Couldn't reach Ting. Retrying…"; retain whatever was last cached.
+
+---
+
+## 9. Components inventory
+
+The ones to build / port. All live (in production) under `volundr/web-next/packages/plugin-ting/src/`.
+
+### New (to ui/research/)
+
+- `IndexPage.tsx`, `MetricsStrip.tsx`, `CampaignCard.tsx`, `CampaignRow.tsx`
+- `NewWizard/index.tsx`, `StepQuestion.tsx`, `StepMode.tsx`, `StepScope.tsx`, `StepConstraints.tsx`, `StepConfirm.tsx`, `useResearchWizard.ts`
+- `CampaignDetail.tsx` — the Reading page root
+- `StateStrip.tsx` — sticky header (stage ticks + ticker + confidence + run chip + operator button)
+- `HeroAnswer.tsx` — state-aware switch
+- `Collapsible.tsx` — section wrapper (promote to `@niuulabs/ui`)
+- `MemoryView.tsx` — Mímir state breakdown
+- `SourcesTable.tsx`, `CritiqueList.tsx`, `LFCard.tsx` — section bodies
+- `SideDrawer/index.tsx`, `FilesView.tsx`, `SourcesView.tsx`, `CritiquesView.tsx`, `OperatorView.tsx`, `FileChip.tsx`
+- `ActivityLog.tsx` — virtualized event tail
+- `AmbientTicker.tsx` — the rotating ticker for the state strip
+- `useResearchCampaigns.ts`, `useResearchCampaign.ts`, `useArtifact.ts`, `useSources.ts`, `useCritiques.ts` — hooks
+- `domain/research.ts` — types
+
+### New (to shared lib)
+
+- `ProseAnnotated.tsx` — markdown → JSX with inline citation chips + popover + annotated-mode gutter. Probably belongs in `@niuulabs/ui` or a new `@niuulabs/prose` package.
+
+### Reused from existing plugin-ting
+
+| Component | What for |
+|---|---|
+| `StageProgressRail.tsx` | The 7-tick strip in the header. **Do not duplicate.** |
+| `ConfidenceDriftCard.tsx` | Optional v1.5 — per-stage confidence drift visualization. |
+| `StepDots.tsx` | New wizard step indicator. |
+| `useSaga.ts`, `usePhases.ts` | Underlying queries; `useResearchCampaign` wraps. |
+| `TingTopbar.tsx`, `TingFooter.tsx` | Shell chrome. |
+
+### Reused from `@niuulabs/ui`
+
+| Token / component | Use |
+|---|---|
+| `--color-bg-*` family | Surfaces. |
+| `--brand-*` ramp | Highlights, ice-blue theme by default. |
+| `--color-critical*` | Critique / failed / blocked surfaces. |
+| `--color-text-*` | Hierarchy. |
+| `Rune` | Identity glyphs (`ᛃ`, `ᚲ`, `ᛗ`, `ᚱ`). |
+| `Sparkline`, `Pipe`, `StateDot` | Already exist in `@niuulabs/ui`. |
+
+---
+
+## 10. Visual language
+
+Pulled from the Niuu design system. Stay strict.
+
+### Palette
+
+- Canvas: `--color-bg-primary` (zinc-950)
+- Panels / cards: `--color-bg-secondary` (zinc-900)
+- Hover / wells: `--color-bg-tertiary` (zinc-800)
+- Tooltips / chips: `--color-bg-elevated` (zinc-700)
+- Text: 4-step from `#fafafa` → `#a1a1aa` → `#71717a` → `#52525b`
+- Borders: `--color-border` / `--color-border-subtle`
+
+### Brand (ice theme — research default)
+
+Brand ramp `--brand-100` (#f0f9ff) → `--brand-500` (#38bdf8) → `--brand-900` (#0c4a6e). The whole UI reads as a cold operator console.
+
+### Status
+
+- `running` / `dispatched` → animated brand-300 dot
+- `review` → solid brand-300
+- `published` / `complete` → brand-200
+- `blocked` → `#fbbf24` (amber yellow)
+- `failed` → `--color-critical` (#ef4444)
+- `draft` / `archived` / `idle` → muted text
+
+### Mode chip colors
+
+- `exploratory` → brand-300 (ice blue)
+- `evaluative` → `#a855f7` (purple)
+- `investigative` → `#f97316` (orange)
+- `monitoring` → `#10b981` (emerald)
+
+### Type
+
+- Sans: Inter — body, labels, titles.
+- Mono: JetBrainsMono NF — identifiers, ids, paths, runes, numeric.
+- 28px h1 with `-0.02em` letter-spacing — used once per page (question title).
+- 10px uppercase tracked (`0.07em`) — universal label / eyebrow.
+- 14px body default. 13px for secondary prose.
+
+### Density + spacing
+
+- `--space-3` (12px) row gap.
+- `--space-4` (16px) card padding.
+- `--space-5` (20px) card padding for hero.
+- `--space-6` (24px) page padding.
+
+### Motion
+
+- 150ms color transitions.
+- 200ms default.
+- One slow pulse (2.4s) for the running stage tick + live dot.
+- No bounce, no spring, no shadow lifts. Depth comes from border + bg contrast.
+
+### Borders, radii, shadows
+
+- Cards: 1px solid subtle border, `--radius-md` (8px).
+- Hero: `--radius-lg` (12px).
+- Drawer: no border-radius on the inside edge; lives flush right.
+- Shadows reserved for the drawer's left edge (`-8px 0 24px rgba(0,0,0,0.35)`); nowhere else.
+
+---
+
+## 11. Interaction patterns
+
+### Clicking artifact paths
+
+Any path-styled element (mono, brand color) opens the side drawer at Files with that path selected. Examples:
+- Sources table "open" buttons
+- Critique card "open" buttons
+- Memory section file rows
+- Hero meta column "Open notebook"
+- Cite-popover "open" buttons
+
+### Drawer navigation
+
+- Tabs are stateful; opening at Sources stays on Sources until you explicitly switch.
+- Source/critique selection is preserved when switching tabs.
+- Closing the drawer remembers the last tab; reopening goes back there.
+
+### Stage rail clicks
+
+In the state strip, clicking a stage tick scrolls the page to the section that maps to it (e.g. challenge → Skeptic's pass) and opens it. (Optional v2.)
+
+### Section collapsibles
+
+`▸` rotates to `▾` on open. Open state can be persisted per campaign per session (localStorage keyed by slug). Default-open depends on state (see §8).
+
+### Confidence display
+
+The ConfidenceBadge is the same control everywhere — 36px bar + percentage + label.
+
+### Citation chip click
+
+- Clean mode: opens the popover. Click again on same chip → closes.
+- Annotated mode: scrolls the gutter to the matching note card (and pulses it briefly).
+- Both modes: the popover's "open" button jumps to the side drawer.
+
+### Operator drawer
+
+Top-right `Operator ▸` in the state strip. Opens drawer at Operator tab. The button is always visible (even when state=published) so you can still review run logs.
+
+### Wizard
+
+Standard wizard pattern — Back/Cancel left, Continue/Dispatch right. Step dots in between. Field validation gates Continue.
+
+### Loading states
+
+Every section that fetches data has a skeleton: same dimensions as the real content, animated shimmer (very subtle).
+
+---
+
+## 12. Responsive / density
+
+**Desktop-first.** v1 ships at 1280px+ with graceful degradation to 1024px.
+
+- 1280px: full layout (1080px content + 200px side margins).
+- 1024px–1280px: content shrinks to ~960px, drawer takes 520px, side margins minimum.
+- < 1024px: not a v1 target. Acceptable to show a simple "open on desktop for the full operator surface" message.
+
+A **density toggle** (comfortable / compact) is mentioned as a possible Tweaks option but not in v1 scope. Comfortable is the default.
+
+---
+
+## 13. Accessibility
+
+### Keyboard
+
+- `Tab` traverses every interactive element.
+- `Enter` activates buttons / links.
+- `Esc` closes the drawer.
+- `←/→` step through drawer items within active tab (v2).
+- All citation chips are focusable; `Enter` opens the popover.
+
+### Screen reader
+
+- Stage ticks: each has `title` and `aria-label` (`stage 3 of 7 · Challenge · active`).
+- Status pip: `role="status"` with `aria-live="polite"` for ticker.
+- Section collapsibles: `aria-expanded` on the trigger.
+- Drawer: `role="dialog"` `aria-label="Campaign artifacts"`; not modal (doesn't trap focus, but `Esc` closes).
+- Mode chips: `role="status"`.
+
+### Color contrast
+
+- All text passes WCAG AA on the zinc-950 canvas.
+- Status colors are paired with shape / label (never color-only).
+- Brand ice-blue (`--brand-500: #38bdf8`) on `--color-bg-secondary` passes AA.
+
+### Motion
+
+- The pulse animation respects `prefers-reduced-motion: reduce` — falls back to a solid color, no pulsing.
+
+---
+
+## 14. Out-of-scope alt layouts
+
+The prototype contains four alternate detail-page layouts kept for visual reference but **not** part of the production build:
+
+- **Mission Control** — 3-column with artifact list + viewer + live panel. Operator-dense.
+- **Chronicle** — top-tabs + vertical timeline + ambient ticker. Storytelling-focused.
+- **Studio** — kanban of artifacts (7 columns, one per stage). Movement-focused.
+- **Atlas** — spatial canvas, stages on a serpentine arc, artifacts orbiting. Map-style.
+
+These shipped in the prototype's Tweaks panel as a "detail concept" switcher to give the designer feedback options. **Production ships only Reading.** Delete the alt-layout files when porting.
+
+---
+
+## 15. Acceptance criteria (per route)
+
+### `/ting/research` — Index
+
+- [ ] Lists all campaigns the user can see, sorted by Updated (default).
+- [ ] Filter chips re-render counts live as filter changes.
+- [ ] Search filters by title / slug / question (case-insensitive).
+- [ ] Empty-state shown when zero campaigns total. CTA goes to wizard.
+- [ ] Filtered-empty-state shown when filter eliminates all results.
+- [ ] Grid / Table toggle persists in localStorage.
+- [ ] Card click opens detail.
+- [ ] Status pip animates only when state=running.
+- [ ] Mode chip colors match §10.
+
+### `/ting/research/new` — Wizard
+
+- [ ] Five steps, StepDots progress indicator.
+- [ ] Continue disabled on step 1 unless question ≥ 8 chars.
+- [ ] Mode change updates default deliverable.
+- [ ] Slug derived live from question and shown.
+- [ ] Cancel returns to index without persisting.
+- [ ] Dispatch POSTs to backend and redirects to detail page.
+- [ ] Optimistic state on detail page: `state=running`, stages preset.
+
+### `/ting/research/{slug}` — Detail (Reading)
+
+- [ ] State strip sticks to top.
+- [ ] Stage ticks match `phases[].status` 1:1.
+- [ ] Live ticker visible only when state=running and updates every 3s.
+- [ ] Confidence badge value matches `Saga.confidence`.
+- [ ] Hero card eyebrow + meta column flexes per state (§8).
+- [ ] Working thesis (running) pulls from explorer's structured emission, NOT hardcoded.
+- [ ] Critiques callout shows top 3 by severity (high first).
+- [ ] All section collapsibles toggle independently and persist open-state.
+- [ ] All citation chips render as `[sN]` / `[cN]` and resolve in the campaign.
+- [ ] Clean ↔ Annotated toggle present only when `state ∈ {review, published}`.
+- [ ] Annotated mode renders gutter notes aligned to citing paragraphs.
+- [ ] Every "open" link on the page opens the drawer.
+
+### Side drawer
+
+- [ ] Opens at 560px overlay, no page reflow.
+- [ ] Files tab default; chip strip horizontally scrollable.
+- [ ] File selection updates URL `?drawer=files&file=…`.
+- [ ] Reload preserves drawer state from URL.
+- [ ] Sources/Critiques tabs use master-detail; selection preserved across tab switches.
+- [ ] Operator tab Activity is live (SSE-backed).
+- [ ] Action buttons in Operator/Actions fire the right backend endpoint per §8.
+- [ ] Esc closes the drawer.
+- [ ] Close button clears URL drawer params.
+
+### Live updates
+
+- [ ] SSE subscription opens on detail page mount and closes on unmount.
+- [ ] `research.{event}` invalidates the right TanStack Query caches.
+- [ ] Ticker rotates through the most recent 10 activity events.
+- [ ] State transitions in the UI happen within 2s of the corresponding event.
+
+---
+
+## Appendix — prototype-only features to drop
+
+- The **Tweaks panel** (theme, concept switcher, demo state) is a prototype host-feature. Not shipped.
+- The four **alt layouts** (Mission Control, Chronicle, Studio, Atlas). Reference only.
+- Hardcoded mock data in `research-data.jsx`. Replaced by real API.
+- The demo-state Tweaks dropdown. Real state comes from the backend.

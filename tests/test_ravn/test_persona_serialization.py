@@ -9,6 +9,7 @@ import pytest
 
 from niuu.domain.outcome import OutcomeField
 from ravn.adapters.personas.loader import (
+    _ARCHIVED_BUILTIN_PERSONAS_DIR,
     _BUILTIN_PERSONAS_DIR,
     FilesystemPersonaAdapter,
     PersonaConfig,
@@ -25,7 +26,9 @@ from ravn.adapters.personas.loader import (
 
 _loader = FilesystemPersonaAdapter()
 _builtin_personas = {
-    p.stem: _loader.load_from_file(p) for p in sorted(_BUILTIN_PERSONAS_DIR.glob("*.yaml"))
+    p.stem: _loader.load_from_file(p)
+    for directory in (_BUILTIN_PERSONAS_DIR, _ARCHIVED_BUILTIN_PERSONAS_DIR)
+    for p in sorted(directory.glob("*.yaml"))
 }
 
 
@@ -82,19 +85,19 @@ def test_to_dict_omits_default_llm() -> None:
 def test_to_dict_omits_false_thinking_enabled() -> None:
     p = PersonaConfig(
         name="test",
-        llm=PersonaLLMConfig(primary_alias="balanced", thinking_enabled=False),
+        llm=PersonaLLMConfig(thinking_enabled=False),
     )
     d = p.to_dict()
-    assert "thinking_enabled" not in d["llm"]
+    assert "llm" not in d
 
 
 def test_to_dict_omits_zero_max_tokens() -> None:
     p = PersonaConfig(
         name="test",
-        llm=PersonaLLMConfig(primary_alias="balanced", max_tokens=0),
+        llm=PersonaLLMConfig(max_tokens=0),
     )
     d = p.to_dict()
-    assert "max_tokens" not in d["llm"]
+    assert "llm" not in d
 
 
 def test_to_dict_omits_default_produces() -> None:
@@ -301,14 +304,14 @@ def test_to_yaml_includes_all_non_zero_fields() -> None:
         allowed_tools=["file"],
         forbidden_tools=["terminal"],
         permission_mode="read-only",
-        llm=PersonaLLMConfig(primary_alias="balanced", thinking_enabled=True, max_tokens=1000),
+        llm=PersonaLLMConfig(thinking_enabled=True, max_tokens=1000),
         iteration_budget=25,
     )
     d = p.to_dict()
     assert d["allowed_tools"] == ["file"]
     assert d["forbidden_tools"] == ["terminal"]
     assert d["permission_mode"] == "read-only"
-    assert d["llm"]["primary_alias"] == "balanced"
+    assert "primary_alias" not in d["llm"]
     assert d["llm"]["thinking_enabled"] is True
     assert d["llm"]["max_tokens"] == 1000
     assert d["iteration_budget"] == 25

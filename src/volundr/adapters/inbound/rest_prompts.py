@@ -111,9 +111,13 @@ class ErrorResponse(BaseModel):
 # --- Router factory ---
 
 
-def create_prompts_router(prompt_service: PromptService) -> APIRouter:
+def create_prompts_router(
+    prompt_service: PromptService,
+    *,
+    prefix: str = "/api/v1/forge",
+) -> APIRouter:
     """Create FastAPI router for saved prompt endpoints."""
-    router = APIRouter(prefix="/api/v1/volundr")
+    router = APIRouter(prefix=prefix)
 
     @router.get("/prompts", response_model=list[PromptResponse], tags=["Prompts"])
     async def list_prompts(

@@ -8,6 +8,8 @@
  * `failed` can transition to `terminated` (clean-up complete).
  */
 
+import type { TrackerIssue } from '../models/volundr.model';
+
 export type SessionState =
   | 'requested'
   | 'provisioning'
@@ -16,6 +18,7 @@ export type SessionState =
   | 'idle'
   | 'terminating'
   | 'terminated'
+  | 'archived'
   | 'failed';
 
 export interface SessionResources {
@@ -47,11 +50,14 @@ export type ConnectionType = 'cli' | 'ide' | 'api';
 export interface Session {
   id: string;
   ravnId: string;
+  name?: string;
+  title?: string;
   personaName: string;
   sagaId?: string;
-  raidId?: string;
+  runId?: string;
   templateId: string;
   clusterId: string;
+  clusterName?: string;
   state: SessionState;
   startedAt: string;
   readyAt?: string;
@@ -74,6 +80,8 @@ export interface Session {
   preview?: string;
   /** File change summary for this session's workspace. */
   files?: SessionFileStats;
+  /** Linked tracker issue when the session was launched from a ticket. */
+  trackerIssue?: TrackerIssue;
 }
 
 /** Legal transitions in the session lifecycle state machine. */
@@ -85,6 +93,7 @@ const VALID_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   idle: ['running', 'terminating', 'failed'],
   terminating: ['terminated', 'failed'],
   terminated: [],
+  archived: [],
   failed: ['terminated'],
 };
 

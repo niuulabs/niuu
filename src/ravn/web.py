@@ -1,7 +1,7 @@
 """Standalone Ravn web server.
 
 Spins up a lightweight FastAPI app serving the Ravn API (personas, agent
-status) and the web UI static files.  No Volundr, Tyr, or PostgreSQL
+status) and the web UI static files.  No Volundr, Ting, or PostgreSQL
 required — persona storage is filesystem-based (YAML in ~/.ravn/personas/).
 
 Usage::
@@ -35,7 +35,7 @@ _STANDALONE_CONFIG = {"modules": ["ravn"]}
 # Locate the compiled web UI dist directory.
 # web.py is at src/ravn/web.py → 3 parents reach the repo root.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_WEB_DIST = _REPO_ROOT / "web" / "dist"
+_WEB_DIST = _REPO_ROOT / "web-next" / "apps" / "niuu" / "dist"
 
 
 def create_standalone_app(persona_dirs: list[str] | None = None) -> FastAPI:
@@ -93,7 +93,7 @@ def create_standalone_app(persona_dirs: list[str] | None = None) -> FastAPI:
     else:
         logger.warning(
             "Web UI dist not found at %s — static file serving disabled. "
-            "Run 'npm run build' in the web/ directory to enable the UI.",
+            "Run 'make build-web' or build web-next/apps/niuu to enable the UI.",
             _WEB_DIST,
         )
 

@@ -8,6 +8,11 @@ import type {
 } from '../../types';
 import './MeshEventCard.css';
 
+function normalizeSummaryText(value: string | undefined): string | undefined {
+  if (!value) return value;
+  return value.replace(/([,;:!?])(?=[A-Za-z0-9])/g, '$1 ');
+}
+
 function getVerdictIcon(verdict: string | undefined) {
   switch (verdict) {
     case 'pass':
@@ -44,7 +49,9 @@ function OutcomeCard({
         {getVerdictIcon(event.verdict)}
       </div>
       <div className="niuu-chat-mesh-card-body">
-        {event.summary && <div className="niuu-chat-mesh-summary">{event.summary}</div>}
+        {event.summary && (
+          <div className="niuu-chat-mesh-summary">{normalizeSummaryText(event.summary)}</div>
+        )}
         {event.verdict && (
           <div className="niuu-chat-mesh-verdict" data-verdict={event.verdict}>
             {event.verdict === 'pass' && 'Passed'}
@@ -121,7 +128,7 @@ function NotificationCard({ event }: { event: MeshNotificationEvent }) {
         <span className="niuu-chat-mesh-event-type">{event.notificationType}</span>
       </div>
       <div className="niuu-chat-mesh-card-body">
-        <div className="niuu-chat-mesh-summary">{event.summary}</div>
+        <div className="niuu-chat-mesh-summary">{normalizeSummaryText(event.summary)}</div>
         {event.reason && <div className="niuu-chat-mesh-reason">Reason: {event.reason}</div>}
         {event.recommendation && (
           <div className="niuu-chat-mesh-recommendation">

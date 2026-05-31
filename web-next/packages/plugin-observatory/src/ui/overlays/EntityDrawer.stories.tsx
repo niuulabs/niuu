@@ -64,13 +64,13 @@ export const HostKind: Story = {
 
 export const EntityKind: Story = {
   render: () => (
-    <Controlled node={TOPOLOGY.nodes.find((n) => n.typeId === 'tyr')!} label="Open Týr drawer" />
+    <Controlled node={TOPOLOGY.nodes.find((n) => n.typeId === 'ting')!} label="Open Ting drawer" />
   ),
 };
 
-export const RaidKind: Story = {
+export const RunKind: Story = {
   render: () => (
-    <Controlled node={TOPOLOGY.nodes.find((n) => n.typeId === 'raid')!} label="Open Raid drawer" />
+    <Controlled node={TOPOLOGY.nodes.find((n) => n.typeId === 'run')!} label="Open Run drawer" />
   ),
 };
 

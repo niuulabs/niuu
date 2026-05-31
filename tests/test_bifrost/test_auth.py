@@ -83,7 +83,7 @@ class TestAuthIntegration:
     def test_pat_mode_rejects_missing_token(self):
         with self._client_with_pat() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 json={
                     "model": "claude-sonnet-4-6",
                     "max_tokens": 10,
@@ -96,7 +96,7 @@ class TestAuthIntegration:
         token = _make_token({"sub": "agent-test"})
         with self._client_with_pat() as client:
             resp = client.post(
-                "/v1/messages",
+                "/api/v1/bifrost/v1/messages",
                 headers={"Authorization": f"Bearer {token}"},
                 json={
                     "model": "claude-sonnet-4-6",
@@ -108,14 +108,14 @@ class TestAuthIntegration:
 
     def test_pat_mode_rejects_admin_endpoint_without_token(self):
         with self._client_with_pat() as client:
-            resp = client.post("/admin/reload-keys")
+            resp = client.post("/api/v1/bifrost/admin/reload-keys")
             assert resp.status_code == 401
 
     def test_pat_mode_accepts_admin_endpoint_with_valid_token(self):
         token = _make_token({"sub": "operator"})
         with self._client_with_pat() as client:
             resp = client.post(
-                "/admin/reload-keys",
+                "/api/v1/bifrost/admin/reload-keys",
                 headers={"Authorization": f"Bearer {token}"},
             )
             assert resp.status_code == 200

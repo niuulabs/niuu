@@ -14,15 +14,15 @@ export interface UseSearchReturn {
   error: unknown;
 }
 
-export function useSearch(): UseSearchReturn {
+export function useSearch(mountName?: string): UseSearchReturn {
   const [query, setQuery] = useState('architecture');
   const deferredQuery = useDeferredValue(query);
   const [mode, setMode] = useState<SearchMode>('hybrid');
   const service = useService<IMimirService>('mimir');
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['mimir', 'search', deferredQuery, mode],
-    queryFn: () => service.pages.search(deferredQuery, mode),
+    queryKey: ['mimir', 'search', deferredQuery, mode, mountName ?? null],
+    queryFn: () => service.pages.search(deferredQuery, mode, mountName),
     enabled: deferredQuery.trim().length > 0,
   });
 

@@ -110,7 +110,7 @@ recap:
 #   3. Audit and update compiled truth pages
 #   4. Run mimir_lint --fix for auto-fixable issues
 #   5. Add missing cross-reference links
-#   6. Write log entry and emit mimir.dream.completed event
+#   6. Write log entry; runner emits mimir.dream.completed event
 #
 # Idempotent: running twice in a row produces no additional changes.
 # ---------------------------------------------------------------------------

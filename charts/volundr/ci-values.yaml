@@ -6,7 +6,7 @@ revisionHistoryLimit: 1
 
 image:
   registry: ghcr.io
-  repository: niuulabs/volundr
+  repository: niuulabs/niuu
   tag: ""  # overridden by CI to use PR-tagged image
   pullPolicy: IfNotPresent
 

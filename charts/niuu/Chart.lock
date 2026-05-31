@@ -1,0 +1,33 @@
+dependencies:
+- name: volundr
+  repository: file://../volundr
+  version: 0.0.0-ting.160
+- name: ting
+  repository: file://../ting
+  version: 0.0.0-ting.159
+- name: niuu-shared
+  repository: file://../niuu-shared
+  version: 0.0.0-ting.243
+- name: guild
+  repository: file://../guild
+  version: 0.0.0-ting.159
+- name: bifrost
+  repository: file://../bifrost
+  version: 0.0.0
+- name: observatory
+  repository: file://../observatory
+  version: 0.0.0-ting.159
+- name: mimir
+  repository: file://../mimir
+  version: 0.0.0
+- name: ravn
+  repository: file://../ravn
+  version: 0.0.0-ting.159
+- name: mimir
+  repository: file://../mimir
+  version: 0.0.0
+- name: mimir
+  repository: file://../mimir
+  version: 0.0.0
+digest: sha256:a0e9c9c9fa3aceb32fc9031f2e13ebe84312c7ac7400f07f3a5b59da653495b7
+generated: "2026-05-23T09:34:07.064342-04:00"

@@ -1,6 +1,6 @@
 ---
 name: new-module
-description: Scaffold and implement a new UI module for the Odin platform. Use when the user wants to add a new product module (like Volundr or Tyr) to the web UI.
+description: Scaffold and implement a new UI module for the Odin platform. Use when the user wants to add a new product module (like Volundr or Ting) to the web UI.
 argument-hint: <module-name> [description of what the module does]
 ---
 
@@ -30,7 +30,7 @@ Before writing any code, read these files to understand the patterns:
 
 1. **Module contract**: `web/src/modules/shared/registry/types.ts` — the `ModuleDefinition` interface
 2. **Example (simple module)**: `web/src/modules/volundr/register.ts` — single-page module with many settings sections
-3. **Example (complex module)**: `web/src/modules/tyr/register.ts` — multi-page module with layout, nested routes, sections, and proxy config
+3. **Example (complex module)**: `web/src/modules/ting/register.ts` — multi-page module with layout, nested routes, sections, and proxy config
 4. **Shared API client**: `web/src/modules/shared/api/client.ts` — how to create API clients
 5. **Shared identity**: `web/src/contexts/useAppIdentity.ts` — how to access current user identity
 
@@ -52,7 +52,7 @@ Work through the module in this order:
 Define all TypeScript interfaces for the module's domain objects.
 
 ### 4b. Service port (`ports/<name>.port.ts`)
-Define the service interface with all methods the UI will call. Follow the pattern from `web/src/modules/volundr/ports/volundr.port.ts` or `web/src/modules/tyr/ports/tyr.port.ts`.
+Define the service interface with all methods the UI will call. Follow the pattern from `web/src/modules/volundr/ports/volundr.port.ts` or `web/src/modules/ting/ports/ting.port.ts`.
 
 ### 4c. Mock adapter (`adapters/mock/<name>.adapter.ts`)
 Implement the mock service with realistic fake data. This enables offline development and is required before the real API exists.
@@ -86,13 +86,13 @@ After implementation:
 2. Confirm the module appears in the sidebar
 3. Confirm all routes resolve correctly
 4. Confirm the module follows the project rules:
-   - No imports from other product modules (Volundr, Tyr) — only from `shared/`
+   - No imports from other product modules (Volundr, Ting) — only from `shared/`
    - CSS modules with design tokens (no inline styles or Tailwind)
    - Hexagonal architecture: pages import from ports, never from adapters directly
 
 ## Rules
 
-- **Module boundaries**: This module MUST NOT import from `volundr/` or `tyr/`. Shared code lives in `modules/shared/`. See `.claude/rules/module-boundaries.md`.
+- **Module boundaries**: This module MUST NOT import from `volundr/` or `ting/`. Shared code lives in `modules/shared/`. See `.claude/rules/module-boundaries.md`.
 - **No edits to App.tsx**: Routes are auto-generated from `register.ts`. If you're editing App.tsx, you're doing it wrong.
 - **No edits to vite.config.ts**: Proxy config comes from `web/src/modules/proxy-manifest.ts`.
 - **Identity**: Use `useAppIdentity()` from `@/contexts/useAppIdentity` — never import `volundrService` for identity checks.

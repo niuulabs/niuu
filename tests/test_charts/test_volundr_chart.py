@@ -135,12 +135,10 @@ class TestValuesDefaults:
         assert broker["cliType"] == "claude"
 
     def test_skuld_claude_broker_transport_adapter(self, values_yaml):
-        """Test skuld-claude broker defaults to the persistent subprocess adapter."""
+        """Test skuld-claude broker defaults to the SDK adapter."""
         broker = values_yaml["sessionDefinitions"]["skuldClaude"]["defaults"]["broker"]
-        assert broker["transport"] == "persistent_subprocess"
-        assert broker["transportAdapter"] == (
-            "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-        )
+        assert broker["transport"] == "sdk"
+        assert broker["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
 
     def test_skuld_codex_broker_cli_type(self, values_yaml):
         """Test skuld-codex broker cliType is codex-ws (WebSocket transport)."""

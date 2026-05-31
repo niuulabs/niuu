@@ -1,1 +1,0 @@
-export { ModuleRoutes } from './ModuleRouter';

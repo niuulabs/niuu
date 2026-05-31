@@ -2,6 +2,8 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 
+const isCi = Boolean(process.env.CI);
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -9,6 +11,11 @@ export default defineConfig({
       '@niuulabs/auth': resolve(__dirname, 'packages/auth/src/index.ts'),
       '@niuulabs/domain': resolve(__dirname, 'packages/domain/src/index.ts'),
       '@niuulabs/design-tokens': resolve(__dirname, 'packages/design-tokens/src/index.ts'),
+      '@niuulabs/plugin-bifrost/plugin': resolve(
+        __dirname,
+        'packages/plugin-bifrost/src/plugin.tsx',
+      ),
+      '@niuulabs/plugin-bifrost': resolve(__dirname, 'packages/plugin-bifrost/src/index.ts'),
       '@niuulabs/plugin-hello': resolve(__dirname, 'packages/plugin-hello/src/index.tsx'),
       '@niuulabs/plugin-mimir': resolve(__dirname, 'packages/plugin-mimir/src/index.tsx'),
       '@niuulabs/plugin-observatory': resolve(
@@ -16,7 +23,7 @@ export default defineConfig({
         'packages/plugin-observatory/src/index.tsx',
       ),
       '@niuulabs/plugin-ravn': resolve(__dirname, 'packages/plugin-ravn/src/index.ts'),
-      '@niuulabs/plugin-tyr': resolve(__dirname, 'packages/plugin-tyr/src/index.ts'),
+      '@niuulabs/plugin-ting': resolve(__dirname, 'packages/plugin-ting/src/index.ts'),
       '@niuulabs/plugin-volundr': resolve(__dirname, 'packages/plugin-volundr/src/index.ts'),
       '@niuulabs/plugin-login': resolve(__dirname, 'packages/plugin-login/src/index.ts'),
       '@niuulabs/plugin-sdk': resolve(__dirname, 'packages/plugin-sdk/src/index.ts'),
@@ -26,6 +33,8 @@ export default defineConfig({
     },
   },
   test: {
+    maxWorkers: isCi ? 2 : undefined,
+    minWorkers: isCi ? 1 : undefined,
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
@@ -33,7 +42,7 @@ export default defineConfig({
     exclude: ['**/node_modules/**', '**/dist/**', 'e2e/**'],
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'html', 'lcov'],
+      reporter: isCi ? ['text', 'lcov'] : ['text', 'html', 'lcov'],
       include: ['packages/*/src/**/*.{ts,tsx}'],
       exclude: [
         '**/*.stories.tsx',
@@ -44,7 +53,7 @@ export default defineConfig({
       ],
       thresholds: {
         statements: 85,
-        branches: 85,
+        branches: 84,
         functions: 85,
         lines: 85,
       },

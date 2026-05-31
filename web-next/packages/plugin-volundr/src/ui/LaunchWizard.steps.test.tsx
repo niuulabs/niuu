@@ -7,6 +7,7 @@ import type {
   StoredCredential,
   VolundrModel,
   VolundrPreset,
+  VolundrTarget,
   VolundrWorkspace,
 } from '../models/volundr.model';
 import type { Template } from '../domain/template';
@@ -135,6 +136,11 @@ const CLUSTER_RESOURCES: ClusterResourceInfo = {
   nodes: [{ name: 'node-a', available: { cpu: '4', memory: '16Gi', gpu: '1' } }],
 };
 
+const TARGETS: VolundrTarget[] = [
+  { id: 'forge-alpha', name: 'Forge Alpha', kind: 'volundr', isDefault: true },
+  { id: 'forge-beta', name: 'Forge Beta', kind: 'volundr', isDefault: false },
+];
+
 function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
   return {
     templateId: TEMPLATE.id,
@@ -156,11 +162,11 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     setupScripts: [],
     definition: 'skuld-claude',
     model: 'sonnet-primary',
-    permission: 'restricted',
     cpu: '2',
     mem: '8Gi',
     gpu: '0',
     cluster: '',
+    instanceId: 'forge-alpha',
     yamlMode: false,
     yamlContent: '',
     ...overrides,
@@ -186,6 +192,7 @@ describe('LaunchWizard step components', () => {
           models={MODELS}
           integrations={INTEGRATIONS}
           sessionDefinitions={DEFINITIONS}
+          targets={TARGETS}
         />
         <BootingStep bootStep={2} progress={0.5} />
       </div>,
@@ -322,6 +329,7 @@ describe('LaunchWizard step components', () => {
           { name: 'filesystem', type: 'stdio', command: 'uvx', args: ['mcp-filesystem'] },
         ]}
         sessionDefinitions={DEFINITIONS}
+        targets={TARGETS}
         onApplyPreset={onApplyPreset}
         onSavePreset={onSavePreset}
       />,
@@ -406,13 +414,13 @@ describe('LaunchWizard step components', () => {
           { name: 'filesystem', type: 'stdio', command: 'uvx', args: ['mcp-filesystem'] },
         ]}
         sessionDefinitions={DEFINITIONS}
+        targets={TARGETS}
         onApplyPreset={vi.fn()}
         onSavePreset={vi.fn(async () => {})}
       />,
     );
 
     fireEvent.change(screen.getByTestId('model-select'), { target: { value: 'gpt-test' } });
-    fireEvent.change(screen.getByTestId('permission-select'), { target: { value: 'normal' } });
     fireEvent.change(screen.getByTestId('workspace-select'), { target: { value: '__new__' } });
     fireEvent.change(screen.getByPlaceholderText('2'), { target: { value: '3' } });
     fireEvent.change(screen.getByPlaceholderText('8Gi'), { target: { value: '12Gi' } });
@@ -430,7 +438,6 @@ describe('LaunchWizard step components', () => {
     fireEvent.click(screen.getByText('Github App · prod-github'));
 
     expect(update).toHaveBeenCalledWith({ model: 'gpt-test' });
-    expect(update).toHaveBeenCalledWith({ permission: 'normal' });
     expect(update).toHaveBeenCalledWith({ workspaceId: '' });
     expect(update).toHaveBeenCalledWith({ cpu: '3' });
     expect(update).toHaveBeenCalledWith({ mem: '12Gi' });
@@ -479,6 +486,7 @@ describe('LaunchWizard step components', () => {
         selectedPreset={null}
         availableMcpServers={[]}
         sessionDefinitions={DEFINITIONS}
+        targets={TARGETS}
         onApplyPreset={vi.fn()}
         onSavePreset={vi.fn(async () => {})}
       />,

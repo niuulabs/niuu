@@ -1,5 +1,5 @@
 /**
- * Standalone consumer app — demonstrates that @niuulabs/plugin-tyr
+ * Standalone consumer app — demonstrates that @niuulabs/plugin-ting
  * can be installed from GitHub Packages and rendered in a third-party app
  * without pulling in the full Niuu monorepo.
  *
@@ -11,31 +11,31 @@ import { ConfigProvider, FeatureCatalogProvider, ServicesProvider } from '@niuul
 import { createQueryClient } from '@niuulabs/query';
 import { Shell } from '@niuulabs/shell';
 import {
-  tyrPlugin,
-  createMockTyrService,
+  tingPlugin,
+  createMockTingService,
   createMockDispatcherService,
-  createMockTyrSessionService,
+  createMockTingSessionService,
   createMockTrackerService,
   createMockWorkflowService,
+  createMockResearchService,
   createMockDispatchBus,
-  createMockTyrSettingsService,
+  createMockTingSettingsService,
   createMockAuditLogService,
-  createMockTyrIntegrationService,
-} from '@niuulabs/plugin-tyr';
+} from '@niuulabs/plugin-ting';
 
 const queryClient = createQueryClient();
 
-// All Tyr sub-services wired with mock adapters — no backend required
+// All Ting sub-services wired with mock adapters — no backend required
 const services = {
-  tyr: createMockTyrService(),
-  'tyr.dispatcher': createMockDispatcherService(),
-  'tyr.sessions': createMockTyrSessionService(),
-  'tyr.tracker': createMockTrackerService(),
-  'tyr.workflows': createMockWorkflowService(),
-  'tyr.dispatch': createMockDispatchBus(),
-  'tyr.settings': createMockTyrSettingsService(),
-  'tyr.audit': createMockAuditLogService(),
-  'tyr.integrations': createMockTyrIntegrationService(),
+  ting: createMockTingService(),
+  'ting.dispatcher': createMockDispatcherService(),
+  'ting.sessions': createMockTingSessionService(),
+  'ting.tracker': createMockTrackerService(),
+  'ting.workflows': createMockWorkflowService(),
+  'ting.research': createMockResearchService(),
+  'ting.dispatch': createMockDispatchBus(),
+  'ting.settings': createMockTingSettingsService(),
+  'ting.audit': createMockAuditLogService(),
 };
 
 export function App() {
@@ -49,7 +49,7 @@ export function App() {
         <QueryClientProvider client={queryClient}>
           <ServicesProvider services={services}>
             <FeatureCatalogProvider>
-              <Shell plugins={[tyrPlugin]} />
+              <Shell plugins={[tingPlugin]} />
             </FeatureCatalogProvider>
           </ServicesProvider>
         </QueryClientProvider>

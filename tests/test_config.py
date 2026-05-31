@@ -11,6 +11,7 @@ from volundr.config import (
     GitLabInstance,
     IntegrationType,
     OtelConfig,
+    PermissionAutoApprovalConfig,
     RabbitMQConfig,
     SecretType,
     SeededIntegrationConnectionConfig,
@@ -27,6 +28,8 @@ _VOLUNDR_SETTINGS_ENV_VARS = (
     "POD_MANAGER__KWARGS__CLAUDE_BINARY",
     "POD_MANAGER__KWARGS__MAX_CONCURRENT",
     "POD_MANAGER__KWARGS__SDK_PORT_START",
+    "STORAGE__KWARGS__WORKSPACE_MOUNT_PATH",
+    "STORAGE__KWARGS__HOME_MOUNT_PATH",
 )
 
 
@@ -102,6 +105,16 @@ class TestSettings:
         assert isinstance(settings.git, GitConfig)
         assert isinstance(settings.git.github, GitHubConfig)
         assert isinstance(settings.git.gitlab, GitLabConfig)
+
+    def test_permission_auto_approval_config_included(self):
+        """Test that Settings includes server-backed auto approval policy."""
+        settings = Settings()
+
+        assert isinstance(settings.permission_auto_approval, PermissionAutoApprovalConfig)
+        assert settings.permission_auto_approval.delay_seconds == 5
+        assert any(
+            "./start-dev" in pattern for pattern in settings.permission_auto_approval.allowlist
+        )
 
 
 class TestGitHubConfig:
@@ -736,6 +749,49 @@ pod_manager:
         defaults = Settings()
         assert defaults.pod_manager.kwargs == {}
 
+    def test_session_definitions_yaml_deep_merges_over_builtins(self, tmp_path, monkeypatch):
+        """A partial session_definitions override should preserve built-in definitions."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+session_definitions:
+  skuldClaude:
+    default_model: claude-opus-4-7
+""".strip()
+        )
+
+        monkeypatch.chdir(tmp_path)
+        _clear_settings_env(monkeypatch)
+
+        settings = Settings()
+
+        assert settings.session_definitions["skuldClaude"].default_model == "claude-opus-4-7"
+        assert settings.session_definitions["skuldClaude"].defaults["broker"]["cliType"] == "claude"
+        assert "skuldCodex" in settings.session_definitions
+
+    def test_session_definitions_defaults_merge_recursively(self, tmp_path, monkeypatch):
+        """Nested defaults should merge instead of replacing the whole broker config."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+session_definitions:
+  skuldClaude:
+    defaults:
+      broker:
+        skipPermissions: false
+""".strip()
+        )
+
+        monkeypatch.chdir(tmp_path)
+        _clear_settings_env(monkeypatch)
+
+        settings = Settings()
+
+        broker = settings.session_definitions["skuldClaude"].defaults["broker"]
+        assert broker["cliType"] == "claude"
+        assert broker["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
+        assert broker["skipPermissions"] is False
+
     def test_settings_loads_seeded_integrations_from_yaml(self, tmp_path, monkeypatch):
         """Settings parses config-seeded integration connections."""
         yaml_content = """
@@ -754,7 +810,7 @@ integrations:
           api_key: linear-foobar
     - owner_id: dev-user
       integration_type: messaging
-      adapter: tyr.adapters.telegram_notification.TelegramNotificationAdapter
+      adapter: ting.adapters.telegram_notification.TelegramNotificationAdapter
       credential_name: telegram-main
       slug: telegram
       enabled: true
@@ -789,7 +845,7 @@ integrations:
         assert isinstance(seed, SeededIntegrationConnectionConfig)
         assert seed.owner_id == "dev-user"
         assert seed.integration_type == IntegrationType.MESSAGING
-        assert seed.adapter == "tyr.adapters.telegram_notification.TelegramNotificationAdapter"
+        assert seed.adapter == "ting.adapters.telegram_notification.TelegramNotificationAdapter"
         assert seed.credential_name == "telegram-main"
         assert seed.slug == "telegram"
         assert seed.config == {"notify_only": True}

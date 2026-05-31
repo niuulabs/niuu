@@ -594,6 +594,69 @@ class TestPeerAutoRegistration:
         await bridge.stop()
 
     @pytest.mark.asyncio
+    async def test_routing_only_outcome_is_not_forwarded(self):
+        room = _make_room_bridge(known_peers=["flock-reviewer"])
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=room,
+            session_id="sess-abc",
+        )
+        await bridge.start()
+
+        evt = _make_event(
+            payload={
+                "ravn_event": {
+                    "persona": "reviewer",
+                    "event_type": "review.changes_requested",
+                    "routing_only": True,
+                    "canonical_event_type": "review.completed",
+                },
+                "ravn_type": "RavnEventType.OUTCOME",
+                "ravn_source": "ravn-reviewer-01",
+                "ravn_session_id": "sess-abc",
+                "ravn_urgency": 0.6,
+                "ravn_task_id": None,
+            },
+            source="ravn:ravn-reviewer-01",
+        )
+        await bridge._handle_event(evt)
+
+        room.handle_ravn_frame.assert_not_awaited()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_room_bridge_skip_outcome_is_not_forwarded(self):
+        room = _make_room_bridge(known_peers=["flock-coder"])
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=room,
+            session_id="sess-abc",
+        )
+        await bridge.start()
+
+        evt = _make_event(
+            payload={
+                "ravn_event": {
+                    "persona": "coder",
+                    "event_type": "code.changed",
+                    "room_bridge_skip": True,
+                },
+                "ravn_type": "RavnEventType.OUTCOME",
+                "ravn_source": "ravn-coder-01",
+                "ravn_session_id": "sess-abc",
+                "ravn_urgency": 0.6,
+                "ravn_task_id": None,
+            },
+            source="ravn:ravn-coder-01",
+        )
+        await bridge._handle_event(evt)
+
+        room.handle_ravn_frame.assert_not_awaited()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
     async def test_auto_registered_peer_has_correct_persona(self):
         room = _make_room_bridge(known_peers=[])
         bus = InProcessBus()

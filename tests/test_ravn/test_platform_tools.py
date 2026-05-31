@@ -1,4 +1,4 @@
-"""Tests for Ravn platform tools (volundr_session, volundr_git, tyr_saga, tracker_issue)."""
+"""Tests for Ravn platform tools."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import pytest
 import respx
 
 from ravn.adapters.tools.platform_tools import (
+    TingSagaTool,
+    TingWorkflowTool,
     TrackerIssueTool,
-    TyrSagaTool,
     VolundrGitTool,
     VolundrSessionTool,
 )
@@ -19,6 +20,7 @@ BASE_URL = "http://localhost:8080"
 FORGE_SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
 FORGE_GIT_URL = f"{BASE_URL}/api/v1/forge/repos"
 TRACKER_ISSUES_URL = f"{BASE_URL}/api/v1/tracker/issues"
+TING_WORKFLOWS_URL = f"{BASE_URL}/api/v1/ting/workflows"
 
 
 # ===========================================================================
@@ -223,16 +225,16 @@ class TestVolundrGitTool:
 
 
 # ===========================================================================
-# TyrSagaTool
+# TingSagaTool
 # ===========================================================================
 
 
-class TestTyrSagaTool:
+class TestTingSagaTool:
     def setup_method(self):
-        self.tool = TyrSagaTool(base_url=BASE_URL)
+        self.tool = TingSagaTool(base_url=BASE_URL)
 
     def test_name(self):
-        assert self.tool.name == "tyr_saga"
+        assert self.tool.name == "ting_saga"
 
     def test_required_permission(self):
         assert self.tool.required_permission == "platform:api"
@@ -240,14 +242,14 @@ class TestTyrSagaTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_list_sagas(self):
-        respx.get(f"{BASE_URL}/api/v1/tyr/sagas").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"{BASE_URL}/api/v1/ting/sagas").mock(return_value=httpx.Response(200, json=[]))
         result = await self.tool.execute({"action": "list"})
         assert not result.is_error
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_commit_saga(self):
-        respx.post(f"{BASE_URL}/api/v1/tyr/sagas/commit").mock(
+        respx.post(f"{BASE_URL}/api/v1/ting/sagas/commit").mock(
             return_value=httpx.Response(200, json={"id": "saga-1"})
         )
         result = await self.tool.execute(
@@ -257,7 +259,7 @@ class TestTyrSagaTool:
                 "slug": "my-saga",
                 "repos": ["org/repo"],
                 "base_branch": "main",
-                "phases": [{"name": "phase-1", "raids": [{"name": "raid-1"}]}],
+                "phases": [{"name": "phase-1", "runs": [{"name": "run-1"}]}],
             }
         )
         assert not result.is_error
@@ -272,7 +274,7 @@ class TestTyrSagaTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_dispatch_saga(self):
-        respx.post(f"{BASE_URL}/api/v1/tyr/dispatch/approve").mock(
+        respx.post(f"{BASE_URL}/api/v1/ting/dispatch/approve").mock(
             return_value=httpx.Response(200, json={"dispatched": 1})
         )
         result = await self.tool.execute(
@@ -293,7 +295,7 @@ class TestTyrSagaTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_get_saga(self):
-        respx.get(f"{BASE_URL}/api/v1/tyr/sagas/saga-1").mock(
+        respx.get(f"{BASE_URL}/api/v1/ting/sagas/saga-1").mock(
             return_value=httpx.Response(200, json={"id": "saga-1", "status": "ACTIVE"})
         )
         result = await self.tool.execute({"action": "get", "saga_id": "saga-1"})
@@ -303,11 +305,11 @@ class TestTyrSagaTool:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_list_raids(self):
-        respx.get(f"{BASE_URL}/api/v1/tyr/raids/active").mock(
+    async def test_list_runs(self):
+        respx.get(f"{BASE_URL}/api/v1/ting/runs/active").mock(
             return_value=httpx.Response(200, json=[])
         )
-        result = await self.tool.execute({"action": "raids"})
+        result = await self.tool.execute({"action": "runs"})
         assert not result.is_error
 
     @pytest.mark.asyncio
@@ -351,7 +353,7 @@ class TestTrackerIssueTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_update_status(self):
-        respx.post(f"{TRACKER_ISSUES_URL}/NIU-1").mock(
+        respx.patch(f"{TRACKER_ISSUES_URL}/NIU-1").mock(
             return_value=httpx.Response(200, json={"id": "NIU-1", "status": "Done"})
         )
         result = await self.tool.execute(
@@ -385,4 +387,94 @@ class TestTrackerIssueTool:
     @pytest.mark.asyncio
     async def test_unknown_action(self):
         result = await self.tool.execute({"action": "unknown"})
+        assert result.is_error
+
+
+# ===========================================================================
+# TingWorkflowTool
+# ===========================================================================
+
+
+class TestTingWorkflowTool:
+    def setup_method(self):
+        self.tool = TingWorkflowTool(base_url=BASE_URL)
+
+    def test_name(self):
+        assert self.tool.name == "ting_workflow"
+
+    def test_required_permission(self):
+        assert self.tool.required_permission == "platform:api"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_list_workflows(self):
+        respx.get(TING_WORKFLOWS_URL).mock(
+            return_value=httpx.Response(200, json=[{"id": "wf-1", "name": "Research Campaign"}])
+        )
+        result = await self.tool.execute({"action": "list"})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data[0]["id"] == "wf-1"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_workflow(self):
+        workflow_id = "wf-1"
+        respx.get(f"{TING_WORKFLOWS_URL}/{workflow_id}").mock(
+            return_value=httpx.Response(200, json={"id": workflow_id, "name": "Research Campaign"})
+        )
+        result = await self.tool.execute({"action": "get", "workflow_id": workflow_id})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["id"] == workflow_id
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_missing_id(self):
+        result = await self.tool.execute({"action": "get"})
+        assert result.is_error
+        assert "workflow_id" in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_launch_workflow(self):
+        workflow_id = "wf-1"
+        respx.post(f"{TING_WORKFLOWS_URL}/{workflow_id}/launch").mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "workflowId": workflow_id,
+                    "workflowName": "Research Campaign",
+                    "slug": "germany-market",
+                    "sessionId": "sess-1",
+                    "sessionName": "research-germany-market",
+                    "status": "running",
+                    "clusterName": "valhalla",
+                },
+            )
+        )
+        result = await self.tool.execute(
+            {
+                "action": "launch",
+                "workflow_id": workflow_id,
+                "prompt": "Research whether Germany is a good expansion market.",
+                "slug": "germany-market",
+                "context": {
+                    "mode": "evaluative",
+                    "seed_urls": ["https://example.com"],
+                },
+            }
+        )
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["sessionId"] == "sess-1"
+
+    @pytest.mark.asyncio
+    async def test_launch_workflow_missing_fields(self):
+        result = await self.tool.execute({"action": "launch", "workflow_id": "wf-1"})
+        assert result.is_error
+        assert "prompt" in result.content
+
+    @pytest.mark.asyncio
+    async def test_unknown_action(self):
+        result = await self.tool.execute({"action": "boom"})
         assert result.is_error

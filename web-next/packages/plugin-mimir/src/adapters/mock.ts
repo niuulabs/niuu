@@ -125,7 +125,7 @@ const MOCK_PAGES: Page[] = [
         items: [
           'Hexagonal architecture with ports and adapters',
           'Six cognitive regions (Sköll, Hati, Sága, Móði, Váli, Víðarr)',
-          'Tyr, Volundr, and Niuu are separate modules',
+          'Ting, Volundr, and Niuu are separate modules',
         ],
       },
       {
@@ -386,7 +386,7 @@ const MOCK_SOURCES: Source[] = [
     ingestedAt: '2026-04-18T15:00:00Z',
     ingestAgent: 'ravn-fjolnir',
     compiledInto: [],
-    content: 'Team session discussing the module boundary rules for Tyr, Volundr, and Niuu.',
+    content: 'Team session discussing the module boundary rules for Ting, Volundr, and Niuu.',
   },
 ];
 
@@ -407,13 +407,13 @@ const MOCK_ENTITY_PAGES: Page[] = [
     updatedAt: '2026-04-18T08:00:00Z',
     updatedBy: 'ravn-fjolnir',
     sourceIds: ['src-001'],
-    related: ['/entities/tyr', '/entities/volundr', '/entities/mimir'],
+    related: ['/entities/ting', '/entities/volundr', '/entities/mimir'],
     size: 800,
     zones: [
       {
         kind: 'relationships',
         items: [
-          { slug: '/entities/tyr', note: 'builds' },
+          { slug: '/entities/ting', note: 'builds' },
           { slug: '/entities/volundr', note: 'builds' },
           { slug: '/entities/mimir', note: 'builds' },
         ],
@@ -446,8 +446,8 @@ const MOCK_ENTITY_PAGES: Page[] = [
     ],
   },
   {
-    path: '/entities/tyr',
-    title: 'Tyr',
+    path: '/entities/ting',
+    title: 'Ting',
     summary: 'The autonomous dispatcher module of the Niuu platform.',
     category: 'component',
     type: 'entity',
@@ -500,8 +500,8 @@ const MOCK_GRAPH: MimirGraph = {
     { source: '/arch/overview', target: '/api/overview' },
     { source: '/infra/k8s', target: '/arch/overview' },
     { source: '/arch/overview', target: '/entities/hexagonal-arch' },
-    { source: '/entities/niuulabs', target: '/entities/tyr' },
-    { source: '/entities/tyr', target: '/arch/overview' },
+    { source: '/entities/niuulabs', target: '/entities/ting' },
+    { source: '/entities/ting', target: '/arch/overview' },
     { source: '/api/overview', target: '/entities/asyncpg' },
     { source: '/entities/hexagonal-arch', target: '/entities/asyncpg' },
   ],
@@ -699,10 +699,10 @@ const MOCK_RAVN_BINDINGS: RavnBinding[] = [
     mountNames: ['shared', 'forge'],
     writeMount: 'shared',
     lastDream: MOCK_DREAM_CYCLES[1] ?? null,
-    bio: 'Indexes saga histories and raid outcomes into long-term knowledge',
+    bio: 'Indexes saga histories and run outcomes into long-term knowledge',
     pagesTouched: 34,
-    expertise: ['sagas', 'raids'],
-    tools: ['mimir', 'tyr'],
+    expertise: ['sagas', 'runs'],
+    tools: ['mimir', 'ting'],
   },
   {
     ravnId: 'ravn-eir',
@@ -993,18 +993,23 @@ export function createMimirMockAdapter(): IMimirService {
         return pages.map(toPageMeta);
       },
 
-      async getPage(path: string): Promise<Page | null> {
-        return ALL_PAGES.find((p) => p.path === path) ?? null;
+      async getPage(path: string, mountName?: string): Promise<Page | null> {
+        return (
+          ALL_PAGES.find((p) => p.path === path && (!mountName || p.mounts.includes(mountName))) ??
+          null
+        );
       },
 
       async upsertPage(): Promise<void> {
         // no-op in mock
       },
 
-      async search(query: string): Promise<SearchResult[]> {
+      async search(query: string, _mode, mountName?: string): Promise<SearchResult[]> {
         const q = query.toLowerCase();
         return MOCK_PAGES.filter(
-          (p) => p.title.toLowerCase().includes(q) || p.summary.toLowerCase().includes(q),
+          (p) =>
+            (p.title.toLowerCase().includes(q) || p.summary.toLowerCase().includes(q)) &&
+            (!mountName || p.mounts.includes(mountName)),
         ).map((p, i) => ({
           path: p.path,
           title: p.title,

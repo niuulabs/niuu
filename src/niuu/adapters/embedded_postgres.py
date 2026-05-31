@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_STARTUP_TIMEOUT_S = 30
 _DEFAULT_CLEANUP_TIMEOUT_S = 10
 _PG_CTL_TIMEOUT_S = 10
+_DB_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Unix domain socket paths are limited to 104-108 bytes depending on OS.
 _MAX_SOCKET_PATH_LEN = 100
@@ -157,24 +159,16 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
 
         # Start server
         self._socket_dir = _choose_socket_dir(self._data_dir)
-        await loop.run_in_executor(None, self._start_server)
+        uri = f"postgresql://postgres:@/postgres?host={self._socket_dir}"
+        existing_conn = await self._try_connect_existing(uri)
+        if existing_conn is None:
+            await loop.run_in_executor(None, self._start_server)
+            existing_conn = await self._connect(uri)
 
         # Build connection info
-        uri = f"postgresql://postgres:@/postgres?host={self._socket_dir}"
         info = self._parse_uri(uri)
         self._connection_info = info
-
-        try:
-            import asyncpg  # noqa: PLC0415
-        except ImportError as exc:
-            raise RuntimeError(
-                "asyncpg is not installed. Install it with: pip install asyncpg"
-            ) from exc
-
-        self._conn = await asyncio.wait_for(
-            asyncpg.connect(dsn=uri),
-            timeout=self._startup_timeout_s,
-        )
+        self._conn = existing_conn
         logger.info("Embedded PG started — %s", uri)
         return info
 
@@ -184,6 +178,24 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
 
         result = await self._conn.fetch(sql, *args)
         return [dict(row) for row in result]
+
+    async def ensure_databases(self, names: list[str] | tuple[str, ...]) -> None:
+        """Create logical databases on the embedded PostgreSQL server if absent."""
+        if self._conn is None:
+            raise RuntimeError("Database not started — call start() first")
+
+        for raw_name in names:
+            name = raw_name.strip()
+            if not _DB_NAME_PATTERN.fullmatch(name):
+                raise ValueError(f"Invalid PostgreSQL database name: {raw_name!r}")
+
+            exists = await self._conn.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = $1",
+                name,
+            )
+            if exists:
+                continue
+            await self._conn.execute(f'CREATE DATABASE "{name}"')
 
     async def stop(self) -> None:
         if self._conn is not None:
@@ -336,3 +348,30 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
         user = parsed.username or "postgres"
 
         return ConnectionInfo(host=host, port=port, dbname=dbname, user=user)
+
+    async def _connect(self, uri: str):
+        """Open an asyncpg connection using the configured startup timeout."""
+        try:
+            import asyncpg  # noqa: PLC0415
+        except ImportError as exc:
+            raise RuntimeError(
+                "asyncpg is not installed. Install it with: pip install asyncpg"
+            ) from exc
+
+        return await asyncio.wait_for(
+            asyncpg.connect(dsn=uri),
+            timeout=self._startup_timeout_s,
+        )
+
+    async def _try_connect_existing(self, uri: str):
+        """Return an existing connection when the embedded cluster is already running."""
+        if self._data_dir is None or not (self._data_dir / "postmaster.pid").exists():
+            return None
+
+        try:
+            conn = await self._connect(uri)
+        except Exception:
+            return None
+
+        logger.info("Reusing existing embedded PostgreSQL instance — %s", uri)
+        return conn

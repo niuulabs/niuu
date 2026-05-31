@@ -8,17 +8,58 @@ import respx
 
 import niuu.domain.services.connection_tester as _ct
 
+
+def test_normalise_base_url_canonicalises_scheme_host_port_and_path() -> None:
+    assert (
+        _ct._normalise_base_url(" HTTPS://Example.COM:8443/api/v1/ ")
+        == "https://example.com:8443/api/v1"
+    )
+
+
+def test_normalise_base_url_wraps_ipv6_hosts() -> None:
+    assert _ct._normalise_base_url("http://[::1]:8080/") == "http://[::1]:8080"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("ftp://example.com", "Unsupported URL scheme"),
+        ("http:///missing-host", "no hostname"),
+        ("http://example.com/path?x=1", "query strings"),
+        ("http://example.com/path#frag", "query strings"),
+    ],
+)
+def test_normalise_base_url_rejects_invalid_inputs(url: str, expected: str) -> None:
+    with pytest.raises(ValueError, match=expected):
+        _ct._normalise_base_url(url)
+
+
+def test_resolve_trusted_code_forge_base_url_ignores_invalid_trusted_entries() -> None:
+    assert (
+        _ct._resolve_trusted_code_forge_base_url(
+            "https://trusted-host/api",
+            ("ftp://bad-entry", "https://trusted-host/api/"),
+        )
+        == "https://trusted-host/api"
+    )
+
+
 # ---------------------------------------------------------------------------
 # test_code_forge
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_code_forge_success():
-    respx.get("http://my-server/api/v1/volundr/me").mock(
+    respx.get("http://my-server/api/v1/identity/me").mock(
         return_value=httpx.Response(200, json={"email": "dev@example.com"})
     )
-    result = await _ct.test_code_forge(url="http://my-server", token="tok")
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="tok",
+        trusted_base_urls=("http://my-server",),
+    )
     assert result.success is True
     assert "dev@example.com" in result.message
     assert result.provider == "volundr"
@@ -28,10 +69,14 @@ async def test_code_forge_success():
 @pytest.mark.asyncio
 @respx.mock
 async def test_code_forge_uses_user_id_fallback():
-    respx.get("http://my-server/api/v1/volundr/me").mock(
+    respx.get("http://my-server/api/v1/identity/me").mock(
         return_value=httpx.Response(200, json={"user_id": "uid-123"})
     )
-    result = await _ct.test_code_forge(url="http://my-server", token="tok")
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="tok",
+        trusted_base_urls=("http://my-server",),
+    )
     assert result.success is True
     assert result.user == "uid-123"
 
@@ -39,21 +84,42 @@ async def test_code_forge_uses_user_id_fallback():
 @pytest.mark.asyncio
 @respx.mock
 async def test_code_forge_uses_authenticated_fallback():
-    respx.get("http://my-server/api/v1/volundr/me").mock(
-        return_value=httpx.Response(200, json={})
+    respx.get("http://my-server/api/v1/identity/me").mock(return_value=httpx.Response(200, json={}))
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="tok",
+        trusted_base_urls=("http://my-server",),
     )
-    result = await _ct.test_code_forge(url="http://my-server", token="tok")
     assert result.success is True
     assert result.user == "authenticated"
 
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_code_forge_allows_unauthenticated_probe_when_token_empty():
+    route = respx.get("http://my-server/api/v1/identity/me").mock(
+        return_value=httpx.Response(200, json={"user_id": "dev-user"})
+    )
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="",
+        trusted_base_urls=("http://my-server",),
+    )
+    assert result.success is True
+    assert route.calls[0].request.headers.get("Authorization") is None
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_code_forge_auth_failure():
-    respx.get("http://my-server/api/v1/volundr/me").mock(
+    respx.get("http://my-server/api/v1/identity/me").mock(
         return_value=httpx.Response(401, text="unauthorized")
     )
-    result = await _ct.test_code_forge(url="http://my-server", token="bad")
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="bad",
+        trusted_base_urls=("http://my-server",),
+    )
     assert result.success is False
     assert "401" in result.message
 
@@ -68,12 +134,51 @@ async def test_code_forge_empty_url():
 @pytest.mark.asyncio
 @respx.mock
 async def test_code_forge_connection_error():
-    respx.get("http://unreachable/api/v1/volundr/me").mock(
+    respx.get("http://unreachable/api/v1/identity/me").mock(
         side_effect=httpx.ConnectError("refused")
     )
-    result = await _ct.test_code_forge(url="http://unreachable", token="tok")
+    result = await _ct.test_code_forge(
+        url="http://unreachable",
+        token="tok",
+        trusted_base_urls=("http://unreachable",),
+    )
     assert result.success is False
     assert "unreachable" in result.message
+
+
+@pytest.mark.asyncio
+async def test_code_forge_rejects_untrusted_url():
+    result = await _ct.test_code_forge(
+        url="http://unknown-host",
+        token="tok",
+        trusted_base_urls=("http://trusted-host",),
+    )
+    assert result.success is False
+    assert "Untrusted code forge URL" in result.message
+
+
+@pytest.mark.asyncio
+async def test_code_forge_rejects_userinfo_in_url():
+    result = await _ct.test_code_forge(
+        url="http://user:pass@trusted-host",
+        token="tok",
+        trusted_base_urls=("http://trusted-host",),
+    )
+    assert result.success is False
+    assert "userinfo" in result.message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_code_forge_returns_generic_error_for_unexpected_exception():
+    respx.get("http://my-server/api/v1/identity/me").mock(side_effect=RuntimeError("boom"))
+    result = await _ct.test_code_forge(
+        url="http://my-server",
+        token="tok",
+        trusted_base_urls=("http://my-server",),
+    )
+    assert result.success is False
+    assert result.message == "boom"
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +223,19 @@ async def test_telegram_bot_network_error():
     assert result.success is False
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_telegram_bot_handles_valid_token_transport_error():
+    token = "123456:ABCdefGHIjklMNOpqrsTUVwxyz"
+    respx.get(f"https://api.telegram.org/bot{token}/getMe").mock(
+        side_effect=RuntimeError("telegram down")
+    )
+    result = await _ct.test_telegram_bot(bot_token=token)
+    assert result.success is False
+    assert result.provider == "telegram"
+    assert result.message == "telegram down"
+
+
 # ---------------------------------------------------------------------------
 # test_connection dispatch
 # ---------------------------------------------------------------------------
@@ -126,10 +244,15 @@ async def test_telegram_bot_network_error():
 @pytest.mark.asyncio
 @respx.mock
 async def test_connection_code_forge():
-    respx.get("http://forge/api/v1/volundr/me").mock(
+    respx.get("http://forge/api/v1/identity/me").mock(
         return_value=httpx.Response(200, json={"email": "x@y.com"})
     )
-    result = await _ct.test_connection("code_forge", {"url": "http://forge"}, {"token": "tok"})
+    result = await _ct.test_connection(
+        "code_forge",
+        {"url": "http://forge"},
+        {"token": "tok"},
+        trusted_code_forge_base_urls=("http://forge",),
+    )
     assert result.success is True
 
 

@@ -141,7 +141,7 @@ def test_fnmatch_to_amqp_mid_star_falls_back():
 
 def test_fnmatch_to_amqp_deep_namespace():
     """Three-level namespace wildcard is handled correctly."""
-    assert _fnmatch_to_amqp("tyr.saga.*") == "tyr.saga.#"
+    assert _fnmatch_to_amqp("ting.saga.*") == "ting.saga.#"
 
 
 # ---------------------------------------------------------------------------
@@ -562,13 +562,13 @@ async def test_subscribe_multiple_patterns_each_binds():
         async def handler(_: SleipnirEvent) -> None:
             pass
 
-        handle = await sub.subscribe(["ravn.*", "tyr.*"], handler)
+        handle = await sub.subscribe(["ravn.*", "ting.*"], handler)
         await sub.stop()
         await handle.unsubscribe()
 
     bound_keys = {c[1]["routing_key"] for c in mocks["queue"].bind.call_args_list}
     assert "ravn.#" in bound_keys
-    assert "tyr.#" in bound_keys
+    assert "ting.#" in bound_keys
 
 
 async def test_subscribe_star_binds_hash():
@@ -633,8 +633,8 @@ async def test_on_message_does_not_dispatch_to_non_matching_handler():
     with patch("aio_pika.connect_robust", return_value=mocks["connection"]):
         sub = RabbitMQSubscriber()
         await sub.start()
-        # Subscribe to tyr.* only
-        await sub.subscribe(["tyr.*"], handler)
+        # Subscribe to ting.* only
+        await sub.subscribe(["ting.*"], handler)
 
         event = make_event(event_type="ravn.tool.complete")
         msg = _make_mock_message(_encode_event(event))

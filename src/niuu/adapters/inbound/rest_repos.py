@@ -1,6 +1,6 @@
 """Shared repos REST endpoint — /api/v1/niuu/repos.
 
-Serves repository listings for all services (Volundr, Tyr, etc.).
+Serves repository listings for all services (Volundr, Ting, etc.).
 The RepoService is injected by the hosting application.
 """
 
@@ -46,7 +46,7 @@ def create_repos_router(repo_service: RepoService) -> APIRouter:
                     org=repo.org,
                     name=repo.name,
                     url=repo.url,
-                    clone_url=repo.url,
+                    clone_url=repo.clone_url,
                     default_branch=repo.default_branch,
                     branches=list(repo.branches),
                 )

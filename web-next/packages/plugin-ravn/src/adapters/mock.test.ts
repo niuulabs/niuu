@@ -12,10 +12,11 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('createMockPersonaStore', () => {
-  it('returns the 16 seeded personas', async () => {
+  it('returns the seeded personas including the warden curator', async () => {
     const store = createMockPersonaStore();
     const result = await store.listPersonas();
-    expect(result.length).toBe(16);
+    expect(result.length).toBe(17);
+    expect(result.some((persona) => persona.name === 'mimir-warden')).toBe(true);
   });
 
   it('filters to builtin personas only', async () => {
@@ -36,7 +37,7 @@ describe('createMockPersonaStore', () => {
     const detail = await store.getPersona('coder');
     expect(detail.name).toBe('coder');
     expect(detail.systemPromptTemplate).toBeDefined();
-    expect(detail.llm.primaryAlias).toBeDefined();
+    expect(detail.llm.maxTokens).toBeGreaterThan(0);
     expect(detail.fanIn.strategy).toBeDefined();
     expect(detail.yamlSource).toBe('[mock]');
   });
@@ -71,7 +72,6 @@ describe('createMockPersonaStore', () => {
       forbiddenTools: [],
       permissionMode: 'default',
       iterationBudget: 10,
-      llmPrimaryAlias: 'claude-haiku-4-5',
       llmThinkingEnabled: false,
       llmMaxTokens: 4096,
       producesEventType: 'custom.done',
@@ -82,7 +82,7 @@ describe('createMockPersonaStore', () => {
     const detail = await store.createPersona(req);
     expect(detail.name).toBe('my-custom');
     expect(detail.isBuiltin).toBe(false);
-    expect(detail.llm.primaryAlias).toBe('claude-haiku-4-5');
+    expect(detail.llm.maxTokens).toBe(4096);
 
     const all = await store.listPersonas();
     expect(all.some((p) => p.name === 'my-custom')).toBe(true);
@@ -102,7 +102,6 @@ describe('createMockPersonaStore', () => {
       forbiddenTools: [],
       permissionMode: 'default',
       iterationBudget: 50,
-      llmPrimaryAlias: 'claude-opus-4-6',
       llmThinkingEnabled: true,
       llmMaxTokens: 16384,
       producesEventType: 'code.changed',
@@ -113,7 +112,7 @@ describe('createMockPersonaStore', () => {
     };
     const detail = await store.updatePersona('coder', req);
     expect(detail.iterationBudget).toBe(50);
-    expect(detail.llm.primaryAlias).toBe('claude-opus-4-6');
+    expect(detail.llm.maxTokens).toBe(16384);
   });
 
   it('updatePersona throws for unknown persona', async () => {
@@ -131,7 +130,6 @@ describe('createMockPersonaStore', () => {
         forbiddenTools: [],
         permissionMode: 'default',
         iterationBudget: 0,
-        llmPrimaryAlias: '',
         llmThinkingEnabled: false,
         llmMaxTokens: 0,
         producesEventType: '',

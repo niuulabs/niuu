@@ -122,6 +122,8 @@ export interface PermissionRequest {
   requestId: string;
   toolName: string;
   description: string;
+  input?: Record<string, unknown>;
+  command?: string;
 }
 
 export type PermissionBehavior = 'allow_once' | 'allow_always' | 'deny';

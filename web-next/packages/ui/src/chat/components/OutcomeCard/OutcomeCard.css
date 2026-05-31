@@ -29,9 +29,12 @@
 .niuu-chat-outcome--fail .niuu-chat-outcome-icon {
   color: var(--color-critical);
 }
-.niuu-chat-outcome--needs_changes .niuu-chat-outcome-icon,
 .niuu-chat-outcome--retry .niuu-chat-outcome-icon {
   color: var(--brand-400);
+}
+.niuu-chat-outcome--needs_changes .niuu-chat-outcome-icon,
+.niuu-chat-outcome--needs_review .niuu-chat-outcome-icon {
+  color: color-mix(in srgb, var(--color-critical-fg) 84%, var(--color-text-muted));
 }
 
 .niuu-chat-outcome-label {
@@ -63,10 +66,14 @@
   background: var(--color-critical-bg);
   color: var(--color-critical-fg);
 }
-.niuu-chat-outcome-badge--retry,
-.niuu-chat-outcome-badge--needs_changes {
+.niuu-chat-outcome-badge--retry {
   background: color-mix(in srgb, var(--brand-400) 20%, transparent);
   color: var(--brand-400);
+}
+.niuu-chat-outcome-badge--needs_changes,
+.niuu-chat-outcome-badge--needs_review {
+  background: color-mix(in srgb, var(--color-critical) 12%, transparent);
+  color: color-mix(in srgb, var(--color-critical-fg) 86%, var(--color-text-muted));
 }
 .niuu-chat-outcome-badge--escalate {
   background: color-mix(in srgb, var(--color-tool-agent) 20%, transparent);

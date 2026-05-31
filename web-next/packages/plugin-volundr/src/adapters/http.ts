@@ -6,18 +6,21 @@
  */
 import {
   createApiClient,
-  getAccessToken,
+  getAuthHeaders,
   openEventStream,
   type EventStreamHandle,
   type EventStreamOptions,
 } from '@niuulabs/query';
-import type { IVolundrService } from '../ports/IVolundrService';
+import type {
+  IVolundrService,
+  PermissionAutoApprovalDecision,
+  VolundrConversationHistory,
+} from '../ports/IVolundrService';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import type {
   VolundrSession,
   VolundrStats,
   VolundrFeatures,
-  VolundrModel,
   VolundrRepo,
   VolundrMessage,
   VolundrLog,
@@ -50,6 +53,7 @@ import type {
   WorkspaceStatus,
   VolundrMember,
   VolundrProvisioningResult,
+  VolundrTarget,
   AdminSettings,
   AdminStorageSettings,
   FeatureModule,
@@ -57,6 +61,11 @@ import type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
+  VolundrWorkflowGate,
+  VolundrSessionTrace,
+  VolundrSessionTraceLane,
+  VolundrSessionTraceSpan,
+  VolundrSessionTraceSummary,
 } from '../models/volundr.model';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
@@ -64,13 +73,17 @@ export interface HttpClient {
   basePath?: string;
   get<T>(endpoint: string): Promise<T>;
   post<T>(endpoint: string, body?: unknown): Promise<T>;
-  delete<T>(endpoint: string): Promise<T>;
+  delete<T>(endpoint: string, body?: unknown): Promise<T>;
   patch<T>(endpoint: string, body?: unknown): Promise<T>;
   put<T>(endpoint: string, body?: unknown): Promise<T>;
 }
 
 type EventStreamOpener = (url: string, options: EventStreamOptions) => EventStreamHandle;
 const LIVE_POLL_MS = 2_000;
+
+interface VolundrHttpAdapterOptions {
+  niuuBasePath?: string | null;
+}
 
 interface FileEntryPayload {
   name: string;
@@ -119,6 +132,10 @@ type SessionPayload = {
   owner_id?: string | null;
   tenantId?: string | null;
   tenant_id?: string | null;
+  instanceId?: string | null;
+  instance_id?: string | null;
+  instanceName?: string | null;
+  instance_name?: string | null;
 };
 
 type StatsPayload = {
@@ -142,13 +159,44 @@ type ConversationPayload = {
     id: string;
     role: string;
     content: string;
+    parts?: Array<Record<string, unknown>>;
     created_at?: string;
     metadata?: {
       tokens_in?: number;
       tokens_out?: number;
       latency?: number;
     };
+    participant_id?: string;
+    participant_meta?: Record<string, unknown>;
+    thread_id?: string;
+    visibility?: 'visible' | 'internal';
   }>;
+};
+
+type WorkflowGatePayload = {
+  id: string;
+  node_id?: string;
+  activation_id?: string;
+  label?: string;
+  condition?: string;
+  status?: VolundrWorkflowGate['status'];
+  pending_behavior?: VolundrWorkflowGate['pending_behavior'];
+  approvers?: string[];
+  auto_forward_after?: string;
+  requested_at?: string;
+  updated_at?: string;
+  triggered_by_event_type?: string;
+  approval_event_type?: string;
+  changes_requested_event_type?: string;
+  attempt?: number;
+  decision?: string | null;
+  notes?: string;
+  source?: string;
+  summary?: string;
+};
+
+type WorkflowGateListPayload = {
+  gates?: WorkflowGatePayload[];
 };
 
 type LogPayload = {
@@ -187,6 +235,54 @@ type ChroniclePayload = {
   commits: SessionChronicle['commits'];
   token_burn?: number[];
   tokenBurn?: number[];
+};
+
+type TraceSpanPayload = {
+  id: string;
+  session_id?: string;
+  trace_id?: string;
+  parent_span_id?: string | null;
+  kind?: string;
+  name?: string;
+  status?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  duration_ms?: number | null;
+  actor_type?: string | null;
+  actor_id?: string | null;
+  actor_label?: string | null;
+  source_service?: string | null;
+  attributes?: Record<string, unknown>;
+};
+
+type TraceLanePayload = {
+  key: string;
+  label?: string;
+  kind?: string;
+};
+
+type TracePayload = {
+  trace_id?: string;
+  session_id?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  duration_ms?: number;
+  spans?: TraceSpanPayload[];
+  lanes?: TraceLanePayload[];
+};
+
+type TraceSummaryPayload = {
+  total_duration_ms?: number;
+  provisioning_duration_ms?: number;
+  setup_duration_ms?: number;
+  workflow_duration_ms?: number;
+  publish_duration_ms?: number;
+  cleanup_duration_ms?: number;
+  active_execution_duration_ms?: number;
+  waiting_duration_ms?: number;
+  turn_count?: number;
+  tool_call_count?: number;
+  longest_span?: TraceSpanPayload | null;
 };
 
 type ChronicleEventPayload = {
@@ -248,14 +344,16 @@ type SharedRepoPayload = {
 
 type SharedRepoResponse = Record<string, SharedRepoPayload[]>;
 
-type ApiModelInfo = {
+type InstanceTargetPayload = {
   id: string;
+  slug: string;
   name: string;
-  provider: VolundrModel['provider'];
-  tier: VolundrModel['tier'];
-  color: string;
-  cost_per_million_tokens?: number | null;
-  vram_required?: string | null;
+  baseUrl?: string;
+  base_url?: string;
+  enabled: boolean;
+  isDefault?: boolean;
+  is_default?: boolean;
+  visibility?: string;
 };
 
 type SessionDefinitionPayload = {
@@ -266,6 +364,19 @@ type SessionDefinitionPayload = {
   labels: string[];
   default_model?: string;
   defaultModel?: string;
+  compatible_providers?: string[];
+  compatibleProviders?: string[];
+};
+
+type PermissionAutoApprovalPayload = {
+  can_auto_approve?: boolean;
+  canAutoApprove?: boolean;
+  reason?: PermissionAutoApprovalDecision['reason'];
+  command?: string | null;
+  delay_seconds?: number;
+  delaySeconds?: number;
+  matched_pattern?: string | null;
+  matchedPattern?: string | null;
 };
 
 function normalizeSessionDefinition(payload: SessionDefinitionPayload): SessionDefinition {
@@ -275,7 +386,49 @@ function normalizeSessionDefinition(payload: SessionDefinitionPayload): SessionD
     description: payload.description,
     labels: payload.labels,
     defaultModel: payload.defaultModel ?? payload.default_model ?? '',
+    compatibleProviders: payload.compatibleProviders ?? payload.compatible_providers ?? [],
   };
+}
+
+function normalizePermissionAutoApproval(
+  payload: PermissionAutoApprovalPayload,
+): PermissionAutoApprovalDecision {
+  return {
+    canAutoApprove: Boolean(payload.canAutoApprove ?? payload.can_auto_approve),
+    reason: payload.reason ?? 'endpoint_error',
+    command: payload.command ?? null,
+    delaySeconds: payload.delaySeconds ?? payload.delay_seconds ?? 5,
+    matchedPattern: payload.matchedPattern ?? payload.matched_pattern ?? null,
+  };
+}
+
+function buildStartSessionBody(
+  config: Parameters<IVolundrService['startSession']>[0],
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    name: config.name,
+    source: config.source,
+    model: config.model,
+    definition: config.definition,
+    template_name: config.templateName,
+    preset_id: config.presetId,
+    terminal_restricted: Boolean(config.terminalRestricted),
+    instance_id: config.instanceId ?? null,
+    workspace_id: config.workspaceId,
+    credential_names: config.credentialNames,
+    integration_ids: config.integrationIds,
+    resource_config: config.resourceConfig,
+    system_prompt: config.systemPrompt,
+    initial_prompt: config.initialPrompt,
+    workload_config: config.workloadConfig ?? {},
+    issue_id: config.trackerIssue?.id,
+    issue_url: config.trackerIssue?.url,
+  };
+
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined) delete body[key];
+  }
+  return body;
 }
 
 function toEpochMs(value?: number | string | null): number {
@@ -297,8 +450,8 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     session.trackerIssue ??
     (() => {
       const identifier = session.trackerIssueId ?? session.tracker_issue_id ?? null;
-      const url = session.issueTrackerUrl ?? session.issue_tracker_url ?? null;
-      if (!identifier || !url) return undefined;
+      const url = session.issueTrackerUrl ?? session.issue_tracker_url ?? '';
+      if (!identifier) return undefined;
       return {
         id: identifier,
         identifier,
@@ -329,6 +482,20 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     activityState: session.activityState ?? session.activity_state ?? undefined,
     ownerId: session.ownerId ?? session.owner_id ?? undefined,
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
+    instanceId: session.instanceId ?? session.instance_id ?? undefined,
+    instanceName: session.instanceName ?? session.instance_name ?? undefined,
+  };
+}
+
+function normalizeTarget(payload: InstanceTargetPayload): VolundrTarget {
+  return {
+    id: payload.id,
+    slug: payload.slug,
+    name: payload.name,
+    baseUrl: payload.baseUrl ?? payload.base_url ?? '',
+    enabled: payload.enabled,
+    isDefault: payload.isDefault ?? payload.is_default ?? false,
+    visibility: payload.visibility,
   };
 }
 
@@ -355,7 +522,7 @@ function deriveCanonicalCredentialsBasePath(basePath?: string): string | null {
   if (normalized.endsWith('/api/v1/credentials')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/credentials`;
 
-  const derived = normalized.replace(/\/api\/v1\/(?:forge|volundr)$/, '/api/v1/credentials');
+  const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1/credentials');
   return derived === normalized ? null : derived;
 }
 
@@ -364,8 +531,11 @@ function deriveSharedApiBasePath(basePath?: string): string | null {
 
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1')) return normalized;
+  if (normalized.endsWith('/api/v1/niuu')) return normalized.replace(/\/niuu$/, '');
+  if (normalized.endsWith('/api/v1/niuu/volundr'))
+    return normalized.replace(/\/niuu\/volundr$/, '');
 
-  const derived = normalized.replace(/\/api\/v1\/(?:forge|volundr)$/, '/api/v1');
+  const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1');
   return derived === normalized ? null : derived;
 }
 
@@ -375,9 +545,9 @@ function deriveCanonicalForgeBasePath(basePath?: string): string | null {
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/forge')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/forge`;
-
-  const derived = normalized.replace(/\/api\/v1\/volundr$/, '/api/v1/forge');
-  return derived === normalized ? null : derived;
+  if (normalized.endsWith('/api/v1/niuu/volundr'))
+    return normalized.replace(/\/niuu\/volundr$/, '/forge');
+  return null;
 }
 
 function deriveNiuuBasePath(basePath?: string): string | null {
@@ -385,6 +555,7 @@ function deriveNiuuBasePath(basePath?: string): string | null {
 
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/niuu')) return normalized;
+  if (normalized.endsWith('/api/v1/niuu/volundr')) return normalized.replace(/\/volundr$/, '');
 
   const sharedBasePath = deriveSharedApiBasePath(normalized);
   return sharedBasePath ? `${sharedBasePath}/niuu` : null;
@@ -435,6 +606,47 @@ function normalizeMessages(sessionId: string, payload: ConversationPayload): Vol
     tokensOut: turn.metadata?.tokens_out,
     latency: turn.metadata?.latency,
   }));
+}
+
+function normalizeConversationHistory(payload: ConversationPayload): VolundrConversationHistory {
+  return {
+    turns: payload.turns.map((turn) => ({
+      id: turn.id,
+      role: turn.role,
+      content: turn.content,
+      parts: turn.parts,
+      created_at: turn.created_at ?? new Date(0).toISOString(),
+      metadata: turn.metadata,
+      participant_id: turn.participant_id,
+      participant_meta: turn.participant_meta,
+      thread_id: turn.thread_id,
+      visibility: turn.visibility,
+    })),
+  };
+}
+
+function normalizeWorkflowGate(payload: WorkflowGatePayload): VolundrWorkflowGate {
+  return {
+    id: payload.id,
+    node_id: payload.node_id ?? '',
+    activation_id: payload.activation_id ?? '',
+    label: payload.label ?? payload.id,
+    condition: payload.condition ?? '',
+    status: payload.status ?? 'pending',
+    pending_behavior: payload.pending_behavior ?? 'help_needed',
+    approvers: payload.approvers ?? [],
+    auto_forward_after: payload.auto_forward_after ?? '30m',
+    requested_at: payload.requested_at ?? new Date(0).toISOString(),
+    updated_at: payload.updated_at ?? payload.requested_at ?? new Date(0).toISOString(),
+    triggered_by_event_type: payload.triggered_by_event_type ?? '',
+    approval_event_type: payload.approval_event_type ?? '',
+    changes_requested_event_type: payload.changes_requested_event_type ?? '',
+    attempt: payload.attempt ?? 1,
+    decision: payload.decision ?? undefined,
+    notes: payload.notes ?? '',
+    source: payload.source ?? 'human',
+    summary: payload.summary ?? '',
+  };
 }
 
 function normalizeLogLevel(level?: string): VolundrLog['level'] {
@@ -524,25 +736,60 @@ function normalizeChronicle(payload: ChroniclePayload): SessionChronicle {
   };
 }
 
-function normalizeModel(payload: ApiModelInfo): VolundrModel {
+function normalizeTraceSpan(payload: TraceSpanPayload): VolundrSessionTraceSpan {
   return {
-    name: payload.name,
-    provider: payload.provider,
-    tier: payload.tier,
-    color: payload.color,
-    cost:
-      payload.cost_per_million_tokens != null ? `$${payload.cost_per_million_tokens}/M` : undefined,
-    vram: payload.vram_required ?? undefined,
+    id: payload.id,
+    sessionId: payload.session_id ?? '',
+    traceId: payload.trace_id ?? '',
+    parentSpanId: payload.parent_span_id ?? null,
+    kind: payload.kind ?? 'unknown',
+    name: payload.name ?? payload.kind ?? 'span',
+    status: payload.status ?? 'completed',
+    startedAt: payload.started_at ?? new Date(0).toISOString(),
+    endedAt: payload.ended_at ?? null,
+    durationMs: payload.duration_ms ?? null,
+    actorType: payload.actor_type ?? null,
+    actorId: payload.actor_id ?? null,
+    actorLabel: payload.actor_label ?? null,
+    sourceService: payload.source_service ?? null,
+    attributes: payload.attributes ?? {},
   };
 }
 
-function normalizeModelList(
-  payload: ApiModelInfo[] | Record<string, VolundrModel>,
-): Record<string, VolundrModel> {
-  if (Array.isArray(payload)) {
-    return Object.fromEntries(payload.map((model) => [model.id, normalizeModel(model)]));
-  }
-  return payload;
+function normalizeTraceLane(payload: TraceLanePayload): VolundrSessionTraceLane {
+  return {
+    key: payload.key,
+    label: payload.label ?? payload.key,
+    kind: payload.kind ?? 'system',
+  };
+}
+
+function normalizeTrace(payload: TracePayload): VolundrSessionTrace {
+  return {
+    traceId: payload.trace_id ?? '',
+    sessionId: payload.session_id ?? '',
+    startedAt: payload.started_at ?? null,
+    endedAt: payload.ended_at ?? null,
+    durationMs: payload.duration_ms ?? 0,
+    spans: (payload.spans ?? []).map(normalizeTraceSpan),
+    lanes: (payload.lanes ?? []).map(normalizeTraceLane),
+  };
+}
+
+function normalizeTraceSummary(payload: TraceSummaryPayload): VolundrSessionTraceSummary {
+  return {
+    totalDurationMs: payload.total_duration_ms ?? 0,
+    provisioningDurationMs: payload.provisioning_duration_ms ?? 0,
+    setupDurationMs: payload.setup_duration_ms ?? 0,
+    workflowDurationMs: payload.workflow_duration_ms ?? 0,
+    publishDurationMs: payload.publish_duration_ms ?? 0,
+    cleanupDurationMs: payload.cleanup_duration_ms ?? 0,
+    activeExecutionDurationMs: payload.active_execution_duration_ms ?? 0,
+    waitingDurationMs: payload.waiting_duration_ms ?? 0,
+    turnCount: payload.turn_count ?? 0,
+    toolCallCount: payload.tool_call_count ?? 0,
+    longestSpan: payload.longest_span ? normalizeTraceSpan(payload.longest_span) : null,
+  };
 }
 
 function normalizeRepo(payload: SharedRepoPayload): VolundrRepo {
@@ -721,12 +968,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
   }
 
   function withAuthHeaders(headers: HeadersInit = {}): Headers {
-    const nextHeaders = new Headers(headers);
-    const token = getAccessToken();
-    if (token) {
-      nextHeaders.set('Authorization', `Bearer ${token}`);
-    }
-    return nextHeaders;
+    return getAuthHeaders(headers);
   }
 
   async function listDirectory(
@@ -823,6 +1065,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
 export function buildVolundrHttpAdapter(
   client: HttpClient,
   openStream: EventStreamOpener = openEventStream,
+  options: VolundrHttpAdapterOptions = {},
 ): IVolundrService {
   const forgeClient = (() => {
     const forgeBasePath = deriveCanonicalForgeBasePath(client.basePath);
@@ -839,7 +1082,7 @@ export function buildVolundrHttpAdapter(
     return sharedBasePath ? createApiClient(sharedBasePath) : client;
   })();
   const niuuClient = (() => {
-    const niuuBasePath = deriveNiuuBasePath(client.basePath);
+    const niuuBasePath = options.niuuBasePath ?? deriveNiuuBasePath(client.basePath);
     return niuuBasePath ? createApiClient(niuuBasePath) : null;
   })();
   const trackerClient = sharedClient;
@@ -1102,16 +1345,19 @@ export function buildVolundrHttpAdapter(
     getSession: (id) => loadSession(id),
     getActiveSessions: () => loadSessions('/sessions?active=true'),
     getStats: () => loadStats(),
-    getModels: async () =>
-      normalizeModelList(
-        await forgeClient.get<ApiModelInfo[] | Record<string, VolundrModel>>('/models'),
-      ),
     getRepos: async () =>
       normalizeRepoList(
         await (niuuClient ?? forgeClient).get<
           SharedRepoResponse | SharedRepoPayload[] | VolundrRepo[]
         >('/repos'),
       ),
+    getTargets: async () => {
+      const targetClient = niuuClient ?? sharedClient;
+      const payload = await targetClient.get<InstanceTargetPayload[]>(
+        '/instances?kind=volundr&enabledOnly=true',
+      );
+      return payload.map(normalizeTarget);
+    },
 
     subscribe: (callback) => {
       sessionSubscribers.add(callback);
@@ -1159,7 +1405,22 @@ export function buildVolundrHttpAdapter(
     getClusterResources: () => forgeClient.get<ClusterResourceInfo>('/cluster/resources'),
 
     startSession: async (config) =>
-      normalizeSession(await forgeClient.post<SessionPayload>('/sessions', config)),
+      normalizeSession(
+        await forgeClient.post<SessionPayload>('/sessions', buildStartSessionBody(config)),
+      ),
+    evaluatePermissionAutoApproval: async (sessionId, request) =>
+      normalizePermissionAutoApproval(
+        await forgeClient.post<PermissionAutoApprovalPayload>(
+          `/sessions/${sessionId}/permissions/auto-approval/evaluate`,
+          {
+            request_id: request.requestId,
+            tool_name: request.toolName,
+            description: request.description,
+            command: request.command ?? null,
+            input: request.input ?? {},
+          },
+        ),
+      ),
     connectSession: async (config) =>
       normalizeSession(await forgeClient.post<SessionPayload>('/sessions/connect', config)),
     updateSession: (sessionId, updates) =>
@@ -1167,16 +1428,51 @@ export function buildVolundrHttpAdapter(
     stopSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/stop`),
     resumeSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/resume`),
     deleteSession: (sessionId, cleanup) =>
-      forgeClient.delete<void>(
-        `/sessions/${sessionId}${cleanup ? `?cleanup=${cleanup.join(',')}` : ''}`,
-      ),
-    archiveSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/archive`),
-    restoreSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/restore`),
+      forgeClient.delete<void>(`/sessions/${sessionId}`, {
+        cleanup: cleanup ?? [],
+      }),
+    archiveSession: (sessionId) =>
+      forgeClient.patch<void>(`/sessions/${sessionId}/archive`, undefined),
+    archiveStoppedSessions: () => forgeClient.post<string[]>('/sessions/archive-stopped'),
+    restoreSession: (sessionId) =>
+      forgeClient.patch<void>(`/sessions/${sessionId}/restore`, undefined),
     listArchivedSessions: () =>
       forgeClient
         .get<SessionPayload[]>('/sessions?status=archived')
         .then((sessions) => sessions.map(normalizeSession)),
 
+    getConversationHistory: (sessionId) =>
+      forgeClient
+        .get<ConversationPayload>(`/sessions/${sessionId}/conversation`)
+        .then(normalizeConversationHistory),
+    getWorkflowGates: async (sessionId) => {
+      const payload = await forgeClient.get<WorkflowGateListPayload>(
+        `/sessions/${sessionId}/workflow/gates`,
+      );
+      return (payload.gates ?? []).map(normalizeWorkflowGate);
+    },
+    resolveWorkflowGate: async (sessionId, gateId, request) => {
+      const response = await fetch(
+        `${forgeClient.basePath}/sessions/${sessionId}/workflow/gates/${gateId}/resolve`,
+        {
+          method: 'POST',
+          headers: getAuthHeaders({
+            'Content-Type': 'application/json',
+            'x-niuu-workflow-gate-intent': 'resolve',
+          }),
+          body: JSON.stringify(request),
+        },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        const detail =
+          payload && typeof payload === 'object' && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail ?? 'Unknown error')
+            : 'Unknown error';
+        throw new Error(`API request failed: ${response.status} ${detail}`);
+      }
+      return normalizeWorkflowGate(payload as WorkflowGatePayload);
+    },
     getMessages: (sessionId) => loadMessages(sessionId),
     sendMessage: (sessionId, content) =>
       forgeClient.post<VolundrMessage>(`/sessions/${sessionId}/messages`, { content }),
@@ -1256,6 +1552,26 @@ export function buildVolundrHttpAdapter(
         maybeCloseStream();
       };
     },
+    getSessionTrace: async (sessionId) => {
+      try {
+        const payload = await forgeClient.get<TracePayload>(`/sessions/${sessionId}/trace`);
+        return normalizeTrace(payload);
+      } catch (error) {
+        if (error instanceof Error && /404/.test(error.message)) return null;
+        throw error;
+      }
+    },
+    getSessionTraceSummary: async (sessionId) => {
+      try {
+        const payload = await forgeClient.get<TraceSummaryPayload>(
+          `/sessions/${sessionId}/trace/summary`,
+        );
+        return normalizeTraceSummary(payload);
+      } catch (error) {
+        if (error instanceof Error && /404/.test(error.message)) return null;
+        throw error;
+      }
+    },
 
     getPullRequests: (repoUrl, status) =>
       forgeClient.get<PullRequest[]>(
@@ -1281,7 +1597,7 @@ export function buildVolundrHttpAdapter(
     updateTrackerIssueStatus: (issueId, status) =>
       trackerClient.patch<TrackerIssue>(`/tracker/issues/${issueId}`, { status }),
 
-    getIdentity: () => sharedClient.get<VolundrIdentity>('/identity'),
+    getIdentity: () => sharedClient.get<VolundrIdentity>('/identity/me'),
     listUsers: () => client.get<VolundrUser[]>('/admin/users'),
 
     getTenants: () => client.get<VolundrTenant[]>('/tenants'),
@@ -1362,9 +1678,9 @@ export function buildVolundrHttpAdapter(
         { sessionIds },
       ),
 
-    getAdminSettings: () => client.get<AdminSettings>('/admin/settings'),
+    getAdminSettings: () => forgeClient.get<AdminSettings>('/admin/settings'),
     updateAdminSettings: (data: { storage?: AdminStorageSettings }) =>
-      client.patch<AdminSettings>('/admin/settings', data),
+      forgeClient.patch<AdminSettings>('/admin/settings', data),
 
     getFeatureModules: (scope?: FeatureScope) =>
       sharedClient.get<FeatureModule[]>(`/features/modules${scope ? `?scope=${scope}` : ''}`),

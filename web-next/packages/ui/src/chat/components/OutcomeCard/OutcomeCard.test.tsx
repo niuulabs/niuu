@@ -62,6 +62,124 @@ findings: |
     expect(routePairItem).toHaveTextContent('Route pair count: 26');
     expect(screen.getByText('/api/v1/credentials/secrets')).toBeInTheDocument();
   });
+
+  it('normalizes soft-wrapped outcome fields before rendering', () => {
+    render(
+      <OutcomeCard
+        raw={`ver
+dict
+:
+ opinion
+_sub
+mitted
+
+summary
+:
+ W
+rote
+ opinion
+ recommending
+ risk
+-tier
+ed
+ opt
+-out
+ autonomy
+.
+
+page
+_path
+:
+ council
+/
+demo
+/
+opinion
+-b
+.md`}
+      />,
+    );
+
+    expect(screen.getByText('opinion_submitted')).toBeInTheDocument();
+    expect(
+      screen.getByText('Wrote opinion recommending risk-tiered opt-out autonomy.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('council/demo/opinion-b.md')).toBeInTheDocument();
+  });
+
+  it('preserves spaces after soft-wrapped punctuation in summaries', () => {
+    render(
+      <OutcomeCard
+        raw={`ver
+dict
+:
+ opinion
+_sub
+mitted
+
+summary
+:
+ W
+rote
+ opinion
+ recommending
+ risk
+-tier
+ed
+ opt
+-out
+ autonomy
+ with
+ human
+ approval
+ for
+ low
+-confidence
+,
+ high
+-risk
+,
+ or
+ bootstrap
+/test
+ cases
+.`}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        'Wrote opinion recommending risk-tiered opt-out autonomy with human approval for low-confidence, high-risk, or bootstrap/test cases.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('restores inline label bullets without collapsing the label text', () => {
+    render(
+      <OutcomeCard
+        raw={
+          'verdict: pass\nsummary: Recommendations: - Keep manual approval for risky commands - Auto-approve routine reads'
+        }
+      />,
+    );
+
+    expect(screen.getByText('Recommendations:')).toBeInTheDocument();
+    expect(screen.getByText('Keep manual approval for risky commands')).toBeInTheDocument();
+    expect(screen.getByText('Auto-approve routine reads')).toBeInTheDocument();
+  });
+
+  it('leaves lowercase labels inline when they are not intended as markdown sections', () => {
+    render(<OutcomeCard raw={'verdict: pass\nsummary: notes: - keep lowercase inline'} />);
+
+    expect(screen.getByText('notes: - keep lowercase inline')).toBeInTheDocument();
+  });
+
+  it('breaks heading lines that include an inline lowercase bullet payload', () => {
+    render(<OutcomeCard raw={'verdict: pass\nsummary: ## Heading - item'} />);
+
+    expect(screen.getByRole('heading', { name: 'Heading' })).toBeInTheDocument();
+    expect(screen.getByText('item')).toBeInTheDocument();
+  });
 });
 
 describe('extractOutcomeBlock', () => {
@@ -94,6 +212,50 @@ describe('extractOutcomeBlock', () => {
     expect(result).toEqual({
       before: 'before\n',
       raw: 'verdict: pass\nsummary: All good',
+      after: '\nafter',
+    });
+  });
+
+  it('extracts and normalizes soft-wrapped dashed outcome markers', () => {
+    const text = `before
+---
+out
+come
+---
+
+ver
+dict
+:
+ review
+_sub
+mitted
+
+summary
+:
+ Prefer
+ Opinion
+ A
+.
+
+page
+_path
+:
+ council
+/
+demo
+/
+review
+-b
+.md
+
+---
+end
+---
+after`;
+    const result = extractOutcomeBlock(text);
+    expect(result).toEqual({
+      before: 'before\n',
+      raw: 'verdict: review_submitted\nsummary: Prefer Opinion A.\npage_path: council/demo/review-b.md',
       after: '\nafter',
     });
   });

@@ -60,7 +60,7 @@ const FULL_TOPOLOGY: Topology = {
       status: 'healthy',
     },
     // Coordinators
-    { id: 'tyr-0', typeId: 'tyr', label: 'tyr-0', parentId: 'cluster-vk', status: 'healthy' },
+    { id: 'ting-0', typeId: 'ting', label: 'ting-0', parentId: 'cluster-vk', status: 'healthy' },
     {
       id: 'bifrost-0',
       typeId: 'bifrost',
@@ -98,26 +98,26 @@ const FULL_TOPOLOGY: Topology = {
       parentId: 'cluster-vk',
       status: 'healthy',
     },
-    // Raid
+    // Run
     {
-      id: 'raid-omega',
-      typeId: 'raid',
-      label: 'raid-omega',
+      id: 'run-omega',
+      typeId: 'run',
+      label: 'run-omega',
       parentId: 'cluster-vk',
       status: 'observing',
     },
     {
       id: 'ravn-coord',
-      typeId: 'ravn_raid',
+      typeId: 'ravn_run',
       label: 'coord-1',
-      parentId: 'raid-omega',
+      parentId: 'run-omega',
       status: 'healthy',
     },
     {
       id: 'ravn-rev',
-      typeId: 'ravn_raid',
+      typeId: 'ravn_run',
       label: 'reviewer-1',
-      parentId: 'raid-omega',
+      parentId: 'run-omega',
       status: 'healthy',
     },
     // Services
@@ -179,35 +179,20 @@ const FULL_TOPOLOGY: Topology = {
       parentId: 'realm-midgard',
       status: 'healthy',
     },
-    // Sub-Mímirs
-    {
-      id: 'mimir-code',
-      typeId: 'mimir_sub',
-      label: 'mímir/code',
-      parentId: 'mimir-0',
-      status: 'healthy',
-    },
-    {
-      id: 'mimir-ops',
-      typeId: 'mimir_sub',
-      label: 'mímir/ops',
-      parentId: 'mimir-0',
-      status: 'healthy',
-    },
   ],
   edges: [
     // solid: coordinator links
-    { id: 'e-tyr-volundr', sourceId: 'tyr-0', targetId: 'volundr-0', kind: 'solid' },
-    // dashed-anim: raid dispatch
-    { id: 'e-tyr-raid', sourceId: 'tyr-0', targetId: 'raid-omega', kind: 'dashed-anim' },
+    { id: 'e-ting-volundr', sourceId: 'ting-0', targetId: 'volundr-0', kind: 'solid' },
+    // dashed-anim: run dispatch
+    { id: 'e-ting-run', sourceId: 'ting-0', targetId: 'run-omega', kind: 'dashed-anim' },
     // dashed-long: async memory access
     { id: 'e-huginn-mimir', sourceId: 'ravn-huginn', targetId: 'mimir-0', kind: 'dashed-long' },
     { id: 'e-muninn-mimir', sourceId: 'ravn-muninn', targetId: 'mimir-0', kind: 'dashed-long' },
     // soft: reference
     { id: 'e-bifrost-mimir', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'soft' },
-    // raid: inter-raven cohesion
-    { id: 'e-raid-coord', sourceId: 'raid-omega', targetId: 'ravn-coord', kind: 'raid' },
-    { id: 'e-raid-rev', sourceId: 'raid-omega', targetId: 'ravn-rev', kind: 'raid' },
+    // run: inter-raven cohesion
+    { id: 'e-run-coord', sourceId: 'run-omega', targetId: 'ravn-coord', kind: 'run' },
+    { id: 'e-run-rev', sourceId: 'run-omega', targetId: 'ravn-rev', kind: 'run' },
   ],
 };
 
@@ -224,9 +209,9 @@ const MINIMAL_TOPOLOGY: Topology = {
       parentId: 'realm-asgard',
       status: 'healthy',
     },
-    { id: 'tyr-0', typeId: 'tyr', label: 'tyr-0', parentId: 'cluster-vk', status: 'healthy' },
+    { id: 'ting-0', typeId: 'ting', label: 'ting-0', parentId: 'cluster-vk', status: 'healthy' },
   ],
-  edges: [{ id: 'e1', sourceId: 'tyr-0', targetId: 'mimir-0', kind: 'soft' }],
+  edges: [{ id: 'e1', sourceId: 'ting-0', targetId: 'mimir-0', kind: 'soft' }],
 };
 
 // ── Meta ──────────────────────────────────────────────────────────────────────
@@ -291,7 +276,7 @@ export const NoMinimap: Story = {
   },
 };
 
-/** Minimal topology — Mímir, one realm, one cluster, one Tyr. */
+/** Minimal topology — Mímir, one realm, one cluster, one Ting. */
 export const MinimalTopology: Story = {
   name: 'Minimal Topology',
   args: {
@@ -325,7 +310,7 @@ export const AllEdgeKinds: Story = {
           parentId: 'realm-a',
           status: 'healthy',
         },
-        { id: 'tyr-0', typeId: 'tyr', label: 'tyr', parentId: 'cluster-vk', status: 'healthy' },
+        { id: 'ting-0', typeId: 'ting', label: 'ting', parentId: 'cluster-vk', status: 'healthy' },
         {
           id: 'bifrost-0',
           typeId: 'bifrost',
@@ -348,26 +333,26 @@ export const AllEdgeKinds: Story = {
           status: 'healthy',
         },
         {
-          id: 'raid-0',
-          typeId: 'raid',
-          label: 'raid',
+          id: 'run-0',
+          typeId: 'run',
+          label: 'run',
           parentId: 'cluster-vk',
           status: 'observing',
         },
         {
-          id: 'ravn-raid-a',
-          typeId: 'ravn_raid',
+          id: 'ravn-run-a',
+          typeId: 'ravn_run',
           label: 'coord',
-          parentId: 'raid-0',
+          parentId: 'run-0',
           status: 'healthy',
         },
       ],
       edges: [
-        { id: 'e-solid', sourceId: 'tyr-0', targetId: 'volundr-0', kind: 'solid' },
-        { id: 'e-dashed-anim', sourceId: 'tyr-0', targetId: 'raid-0', kind: 'dashed-anim' },
+        { id: 'e-solid', sourceId: 'ting-0', targetId: 'volundr-0', kind: 'solid' },
+        { id: 'e-dashed-anim', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-anim' },
         { id: 'e-dashed-long', sourceId: 'ravn-a', targetId: 'mimir-0', kind: 'dashed-long' },
         { id: 'e-soft', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'soft' },
-        { id: 'e-raid', sourceId: 'raid-0', targetId: 'ravn-raid-a', kind: 'raid' },
+        { id: 'e-run', sourceId: 'run-0', targetId: 'ravn-run-a', kind: 'run' },
       ],
     } satisfies Topology,
     showMinimap: true,
@@ -377,11 +362,11 @@ export const AllEdgeKinds: Story = {
       description: {
         story:
           'Demonstrates all five connection-line styles:\n' +
-          '- **solid** — Týr → Völundr coordinator link (cyan)\n' +
-          '- **dashed-anim** — Týr → raid dispatch (animated blue)\n' +
+          '- **solid** — Ting → Völundr coordinator link (cyan)\n' +
+          '- **dashed-anim** — Ting → run dispatch (animated blue)\n' +
           '- **dashed-long** — raven → Mímir async memory (long dash)\n' +
           '- **soft** — Bifröst → Mímir soft reference (translucent)\n' +
-          '- **raid** — inter-raven cohesion within raid (frost)',
+          '- **run** — inter-raven cohesion within run (frost)',
       },
     },
   },

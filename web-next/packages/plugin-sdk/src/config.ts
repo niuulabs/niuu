@@ -1,5 +1,29 @@
 import { z } from 'zod';
 
+const absoluteOrRootRelativeUrlSchema = z.string().refine((value) => {
+  if (value.startsWith('/')) {
+    return true;
+  }
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, 'Invalid url');
+
+const absoluteOrRootRelativeWsUrlSchema = z.string().refine((value) => {
+  if (value.startsWith('/')) {
+    return true;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
+  } catch {
+    return false;
+  }
+}, 'Invalid websocket url');
+
 export const pluginConfigSchema = z.object({
   enabled: z.boolean().default(true),
   order: z.number().int().nonnegative().default(100),
@@ -8,13 +32,13 @@ export const pluginConfigSchema = z.object({
 
 export const serviceConfigSchema = z
   .object({
-    baseUrl: z.string().url().optional(),
+    baseUrl: absoluteOrRootRelativeUrlSchema.optional(),
     /**
      * Optional WebSocket URL for services with a bidirectional stream
      * component (e.g. Völundr PTY). Accepts ws:// or wss://. When present it
      * overrides `baseUrl` for the streaming adapter only.
      */
-    wsUrl: z.string().url().optional(),
+    wsUrl: absoluteOrRootRelativeWsUrlSchema.optional(),
     mode: z.enum(['http', 'mock', 'ws']).default('http'),
   })
   .catchall(z.unknown());

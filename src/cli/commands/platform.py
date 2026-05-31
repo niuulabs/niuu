@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import httpx
 import typer
 
 from cli.services.manager import ServiceState, StartupError
@@ -164,13 +163,19 @@ async def _startup(
     host = settings.server.host
     port = settings.server.port
 
-    # Expose server address so pod manager can construct chat_endpoint URLs
+    public_host = settings.server.external_host.strip() or host
+
+    # Expose bind/public server addresses so browser-facing URLs can differ
+    # from the interface uvicorn listens on.
     os.environ["NIUU_SERVER_HOST"] = host
+    os.environ["NIUU_SERVER_PUBLIC_HOST"] = public_host
     os.environ["NIUU_SERVER_PORT"] = str(port)
+    os.environ["NIUU_DATABASE_MODE"] = settings.database.mode
 
     root_server = RootServer(
         registry=manager._registry,
         host=host,
+        public_host=public_host,
         port=port,
         host_profile=host_profile,
         enabled_mounts=enabled_mounts,
@@ -367,12 +372,19 @@ MINI_POD_MANAGER_DEFAULTS: dict[str, Any] = {
     "claude_binary": "claude",
 }
 
+
 def _resolve_mini_pod_manager_env(settings: CLISettings) -> dict[str, str]:
     """Build env overrides for Volundr mini-mode runtime configuration."""
+    from pathlib import Path
+
     kwargs = dict(settings.pod_manager.adapter_kwargs())
+    workspaces_dir = Path(str(kwargs.get("workspaces_dir", "~/.niuu/workspaces"))).expanduser()
+    home_dir = workspaces_dir.parent / "home"
 
     env = {
         "POD_MANAGER__ADAPTER": settings.pod_manager.adapter,
+        "STORAGE__KWARGS__WORKSPACE_MOUNT_PATH": str(workspaces_dir),
+        "STORAGE__KWARGS__HOME_MOUNT_PATH": str(home_dir),
         "GIT__VALIDATE_ON_CREATE": "false",
     }
     for key, value in kwargs.items():
@@ -415,11 +427,6 @@ def _route_inventory_payload(inventory: list[Any] | tuple[Any, ...]) -> list[dic
         }
         for item in inventory
     ]
-
-
-def _legacy_route_hits_url(server: str) -> str:
-    """Build the host endpoint used for legacy-route usage snapshots."""
-    return f"{server.rstrip('/')}/api/v1/niuu/compat/legacy-routes"
 
 
 def create_platform_commands(
@@ -526,61 +533,6 @@ def create_platform_commands(
             prefixes = ", ".join(item["prefixes"]) or "(none)"
             plugin = item["plugin"] or "internal"
             typer.echo(f"  {item['name']}: {prefixes} [{item['source']}/{plugin}]")
-
-    @platform_app.command(name="legacy-routes")
-    def legacy_routes(
-        server: str = typer.Option(
-            "",
-            "--server",
-            help="Base URL for the running niuu host. Defaults to the configured local server.",
-        ),
-        json_output: bool = typer.Option(
-            False,
-            "--json",
-            help="Print the legacy-route usage snapshot as JSON.",
-        ),
-        clear: bool = typer.Option(
-            False,
-            "--clear",
-            help="Clear the legacy-route counters after returning the current snapshot.",
-        ),
-        out: str = typer.Option(
-            "",
-            "--out",
-            help="Optional file path to write the JSON legacy-route usage report.",
-        ),
-    ) -> None:
-        """Show the current legacy-route usage snapshot from a running niuu host."""
-        base_url = server or f"http://{settings.server.host}:{settings.server.port}"
-        url = _legacy_route_hits_url(base_url)
-
-        try:
-            response = httpx.delete(url, timeout=5.0) if clear else httpx.get(url, timeout=5.0)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            action = "clear" if clear else "fetch"
-            typer.echo(f"Failed to {action} legacy-route usage from {url}: {exc}")
-            raise typer.Exit(1) from None
-
-        payload = response.json()
-
-        if out:
-            output_path = Path(out)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(f"{json.dumps(payload, indent=2)}\n")
-            typer.echo(f"Wrote legacy-route usage to {output_path}")
-
-        if json_output:
-            typer.echo(json.dumps(payload, indent=2))
-            return
-
-        summary_label = "Cleared legacy route hits" if clear else "Legacy route hits"
-        typer.echo(f"{summary_label}: {payload.get('totalHits', 0)}")
-        for item in payload.get("items", []):
-            typer.echo(
-                f"  {item['method']} {item['legacyPath']} -> "
-                f"{item['canonicalPath']} ({item['hits']})"
-            )
 
     @platform_app.command()
     def init() -> None:

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { LoadingState, Sparkline, StateDot } from '@niuulabs/ui';
@@ -25,6 +25,7 @@ const SESSION_PRIORITY: Record<SessionState, number> = {
   failed: 5,
   terminating: 6,
   terminated: 7,
+  archived: 8,
 };
 
 const KIND_LABEL: Record<ClusterKind, string> = {
@@ -119,6 +120,29 @@ function templateCli(template: Template) {
 
 function displayCluster(session: Session, clusterMap: Map<string, ForgeClusterView>) {
   return clusterMap.get(normalizeKey(session.clusterId))?.displayName ?? session.clusterId;
+}
+
+function sessionPrimaryLabel(session: Session) {
+  return (
+    session.title?.trim() ||
+    session.name?.trim() ||
+    session.trackerIssue?.title?.trim() ||
+    session.id
+  );
+}
+
+function sessionSecondaryParts(session: Session, clusterLabel: string) {
+  const primary = sessionPrimaryLabel(session).trim();
+  const persona = session.personaName.trim();
+  return [
+    session.trackerIssue?.identifier ? (
+      <span className="vol-forge__ticket" data-testid="inflight-ticket" key="ticket">
+        {session.trackerIssue.identifier}
+      </span>
+    ) : null,
+    persona && persona !== primary ? <span key="persona">{persona}</span> : null,
+    <span key="cluster">{clusterLabel}</span>,
+  ].filter(Boolean);
 }
 
 function sessionDotState(session: Session) {
@@ -220,11 +244,16 @@ function InflightRow({
           pulse={!isBooting && session.state === 'running'}
         />
         <div className="vol-forge__inflight-namecol">
-          <div className="vol-forge__inflight-name">{session.id}</div>
+          <div className="vol-forge__inflight-name" title={session.id} data-testid="inflight-title">
+            {sessionPrimaryLabel(session)}
+          </div>
           <div className="vol-forge__inflight-sub">
-            <span>{session.personaName}</span>
-            <span className="vol-forge__sep">·</span>
-            <span>{clusterLabel}</span>
+            {sessionSecondaryParts(session, clusterLabel).map((part, index) => (
+              <Fragment key={index}>
+                {index > 0 ? <span className="vol-forge__sep">·</span> : null}
+                {part}
+              </Fragment>
+            ))}
           </div>
         </div>
       </div>
@@ -357,7 +386,16 @@ function RecentFleetItem({ session }: { session: Session }) {
     <li className="vol-forge__tail-row">
       <span className="vol-forge__tail-time">{compactAge(lastTouched(session))}</span>
       <StateDot state={sessionDotState(session)} />
-      <span className="vol-forge__tail-name">{session.id}</span>
+      <div className="vol-forge__tail-namewrap">
+        <span className="vol-forge__tail-name" title={session.id} data-testid="tail-title">
+          {sessionPrimaryLabel(session)}
+        </span>
+        {session.trackerIssue ? (
+          <span className="vol-forge__ticket" data-testid="tail-ticket">
+            {session.trackerIssue.identifier}
+          </span>
+        ) : null}
+      </div>
       <span className="vol-forge__tail-sep">·</span>
       <span className="vol-forge__tail-preview" title={statusLabel(session)}>
         {statusLabel(session)}
@@ -547,7 +585,7 @@ export function ForgePage() {
                   clusterLabel={displayCluster(session, clusterLookup)}
                   onClick={() =>
                     void navigate({
-                      to: '/volundr/session/$sessionId',
+                      to: '/volundr/sessions/$sessionId',
                       params: { sessionId: session.id },
                     })
                   }
@@ -568,7 +606,7 @@ export function ForgePage() {
               <button
                 type="button"
                 className="vol-forge__panel-link"
-                onClick={() => void navigate({ to: '/volundr/clusters' })}
+                onClick={() => void navigate({ to: '/guild' })}
                 data-testid="cluster-details-link"
               >
                 details ›

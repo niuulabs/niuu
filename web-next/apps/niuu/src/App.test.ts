@@ -70,6 +70,6 @@ describe('shouldBypassAuthGate', () => {
   it('protects non-login routes', () => {
     expect(shouldBypassAuthGate('/')).toBe(false);
     expect(shouldBypassAuthGate('/volundr')).toBe(false);
-    expect(shouldBypassAuthGate('/tyr/dispatch')).toBe(false);
+    expect(shouldBypassAuthGate('/ting/dispatch')).toBe(false);
   });
 });

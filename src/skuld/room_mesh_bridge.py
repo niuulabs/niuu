@@ -315,6 +315,13 @@ class RoomMeshBridge:
         ravn_event_payload: dict,
     ) -> None:
         """Translate an OUTCOME mesh event into a ``room_outcome`` wire event."""
+        if ravn_event_payload.get("routing_only") or ravn_event_payload.get("room_bridge_skip"):
+            logger.debug(
+                "RoomMeshBridge: skipping internal outcome peer_id=%s event_type=%s",
+                peer_id,
+                ravn_event_payload.get("event_type", mesh_topic),
+            )
+            return
         # Build a frame in the shape that RoomBridge.handle_ravn_frame() expects
         frame: dict = {
             "type": "outcome",
@@ -345,4 +352,3 @@ class RoomMeshBridge:
             if fragment in ravn_type_lower:
                 return activity
         return ""
-

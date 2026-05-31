@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from bifrost.auth import AuthMode
+from niuu.domain.model_catalog import ManagedModelProvider, ManagedModelTier
 
 
 class RoutingStrategy(StrEnum):
@@ -62,6 +63,206 @@ class ProviderConfig(BaseModel):
         if not self.api_key_env:
             return ""
         return os.environ.get(self.api_key_env, "")
+
+
+class ManagedModelConfig(BaseModel):
+    """Canonical Bifrost-owned model catalog entry."""
+
+    id: str
+    name: str
+    vendor: str = Field(
+        default="",
+        description="Stable vendor/runtime family (e.g. anthropic, openai, local).",
+    )
+    provider: ManagedModelProvider = Field(
+        default=ManagedModelProvider.CLOUD,
+        description="High-level provider kind used by platform UIs (cloud/local).",
+    )
+    tier: ManagedModelTier = Field(
+        default=ManagedModelTier.BALANCED,
+        description="Tier hint used by the UI and workflow selectors.",
+    )
+    color: str = Field(
+        default="#2563EB",
+        description="UI accent color for badges and chips.",
+    )
+    description: str = Field(
+        default="",
+        description="Human-readable capabilities summary.",
+    )
+    cost_per_million_tokens: float | None = Field(
+        default=None,
+        description="Approximate blended cost per million tokens in USD.",
+    )
+    vram_required: str | None = Field(
+        default=None,
+        description="VRAM hint for local models, when applicable.",
+    )
+    session_definition: str | None = Field(
+        default=None,
+        description="Preferred runtime/session definition for this model.",
+    )
+    supports_tools: bool = Field(
+        default=True,
+        description="Whether the model is expected to support tool use.",
+    )
+    supports_thinking: bool = Field(
+        default=True,
+        description="Whether the model supports higher-latency reasoning modes.",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether the model should be shown to operators and consumers.",
+    )
+
+
+def _default_models() -> list[ManagedModelConfig]:
+    """Built-in Bifrost model catalog used when no explicit catalog is configured."""
+    return [
+        ManagedModelConfig(
+            id="claude-opus-4-7",
+            name="Claude Opus 4.7",
+            vendor="anthropic",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#8B5CF6",
+            description="Anthropic frontier reasoning model.",
+            cost_per_million_tokens=15.0,
+            session_definition="skuldClaude",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="claude-opus-4-6",
+            name="Claude Opus 4.6",
+            vendor="anthropic",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#7C3AED",
+            description="Anthropic frontier model with strong complex reasoning.",
+            cost_per_million_tokens=15.0,
+            session_definition="skuldClaude",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="claude-sonnet-4-6",
+            name="Claude Sonnet 4.6",
+            vendor="anthropic",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.BALANCED,
+            color="#2563EB",
+            description="Anthropic balanced model for general execution and review work.",
+            cost_per_million_tokens=3.0,
+            session_definition="skuldClaude",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="claude-haiku-4-5-20251001",
+            name="Claude Haiku 4.5",
+            vendor="anthropic",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.EXECUTION,
+            color="#0EA5E9",
+            description="Fast Anthropic model for lightweight turns and summaries.",
+            cost_per_million_tokens=1.0,
+            session_definition="skuldClaude",
+            supports_tools=True,
+            supports_thinking=False,
+        ),
+        ManagedModelConfig(
+            id="gpt-5.5",
+            name="GPT-5.5",
+            vendor="openai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#10B981",
+            description="OpenAI frontier model for coding and mixed-tool workflows.",
+            cost_per_million_tokens=10.0,
+            session_definition="skuldCodex",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="gpt-5.4",
+            name="GPT-5.4",
+            vendor="openai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.BALANCED,
+            color="#14B8A6",
+            description="OpenAI balanced model for interactive development work.",
+            cost_per_million_tokens=5.0,
+            session_definition="skuldCodex",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="o4-mini",
+            name="o4-mini",
+            vendor="openai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.EXECUTION,
+            color="#22C55E",
+            description="Cheap OpenAI model for utility turns and guardrail fallbacks.",
+            cost_per_million_tokens=1.1,
+            session_definition="skuldCodex",
+            supports_tools=True,
+            supports_thinking=False,
+        ),
+        ManagedModelConfig(
+            id="o3",
+            name="o3",
+            vendor="openai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.REASONING,
+            color="#059669",
+            description="OpenAI reasoning model for slower, high-deliberation work.",
+            cost_per_million_tokens=10.0,
+            session_definition="skuldCodex",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="llama3.2:latest",
+            name="Llama 3.2",
+            vendor="local",
+            provider=ManagedModelProvider.LOCAL,
+            tier=ManagedModelTier.BALANCED,
+            color="#F59E0B",
+            description="Open source local model served through Ollama.",
+            vram_required="8GB",
+            session_definition="skuldOpenCode",
+            supports_tools=True,
+            supports_thinking=False,
+        ),
+        ManagedModelConfig(
+            id="codellama:latest",
+            name="Code Llama",
+            vendor="local",
+            provider=ManagedModelProvider.LOCAL,
+            tier=ManagedModelTier.EXECUTION,
+            color="#EF4444",
+            description="Local code-specialized model served through Ollama.",
+            vram_required="16GB",
+            session_definition="skuldOpenCode",
+            supports_tools=True,
+            supports_thinking=False,
+        ),
+        ManagedModelConfig(
+            id="deepseek-r1:latest",
+            name="DeepSeek R1",
+            vendor="local",
+            provider=ManagedModelProvider.LOCAL,
+            tier=ManagedModelTier.REASONING,
+            color="#8B5CF6",
+            description="Local reasoning-oriented model served through Ollama.",
+            vram_required="32GB",
+            session_definition="skuldOpenCode",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+    ]
 
 
 class PricingOverride(BaseModel):
@@ -502,6 +703,10 @@ class BifrostConfig(BaseModel):
         default_factory=dict,
         description="Map of provider name → provider config.",
     )
+    models: list[ManagedModelConfig] = Field(
+        default_factory=_default_models,
+        description="Canonical Bifrost-owned model catalog used across the platform.",
+    )
     aliases: dict[str, str] = Field(
         default_factory=dict,
         description="Model alias → canonical model name.",
@@ -648,16 +853,29 @@ class BifrostConfig(BaseModel):
         """Expand a model alias to its canonical name."""
         return self.aliases.get(model, model)
 
+    def model_entry(self, model: str) -> ManagedModelConfig | None:
+        """Return the configured catalog entry for a model or alias."""
+        canonical = self.resolve_alias(model)
+        for entry in self.models:
+            if entry.id == canonical:
+                return entry
+        return None
+
     def provider_for_model(self, model: str) -> str | None:
         """Return the provider name that owns *model*, or None if unknown."""
         for name, cfg in self.providers.items():
             if model in cfg.models:
                 return name
+        canonical = self.resolve_alias(model)
+        for name, cfg in self.providers.items():
+            if canonical in cfg.models:
+                return name
         return None
 
     def providers_for_model(self, model: str) -> list[str]:
         """Return all provider names that serve *model*, in config order."""
-        return [name for name, cfg in self.providers.items() if model in cfg.models]
+        canonical = self.resolve_alias(model)
+        return [name for name, cfg in self.providers.items() if canonical in cfg.models]
 
     def effective_base_url(self, provider_name: str) -> str:
         """Return the effective base URL for a provider, using defaults when absent."""
@@ -698,7 +916,7 @@ class BifrostConfig(BaseModel):
         Examples of supported patterns::
 
             volundr-session-*   # matches volundr-session-abc, volundr-session-xyz
-            tyr                 # exact match
+            ting                 # exact match
             claude-code         # exact match
         """
         # Exact match takes priority.

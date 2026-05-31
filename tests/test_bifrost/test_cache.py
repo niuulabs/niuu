@@ -317,8 +317,8 @@ class TestRoutesCacheIntegration:
         with patch("bifrost.router.ModelRouter.complete", new_callable=AsyncMock) as mc:
             mc.return_value = mock_resp
             with TestClient(app) as client:
-                r1 = client.post("/v1/messages", json=_BODY)
-                r2 = client.post("/v1/messages", json=_BODY)
+                r1 = client.post("/api/v1/bifrost/v1/messages", json=_BODY)
+                r2 = client.post("/api/v1/bifrost/v1/messages", json=_BODY)
         assert r1.status_code == 200
         assert r2.status_code == 200
         assert mc.call_count == 2  # Both requests hit the provider
@@ -337,8 +337,8 @@ class TestRoutesCacheIntegration:
             with patch("bifrost.router.ModelRouter.complete", new_callable=AsyncMock) as mc:
                 mc.return_value = mock_resp
                 with TestClient(app) as client:
-                    r1 = client.post("/v1/messages", json=_BODY)
-                    r2 = client.post("/v1/messages", json=_BODY)
+                    r1 = client.post("/api/v1/bifrost/v1/messages", json=_BODY)
+                    r2 = client.post("/api/v1/bifrost/v1/messages", json=_BODY)
         assert r1.status_code == 200
         assert r2.status_code == 200
         assert mc.call_count == 1  # Second request served from cache
@@ -359,8 +359,8 @@ class TestRoutesCacheIntegration:
             with patch("bifrost.router.ModelRouter.complete", new_callable=AsyncMock) as mc:
                 mc.return_value = mock_resp
                 with TestClient(app) as client:
-                    r1 = client.post("/v1/messages", json=body_hi)
-                    r2 = client.post("/v1/messages", json=body_bye)
+                    r1 = client.post("/api/v1/bifrost/v1/messages", json=body_hi)
+                    r2 = client.post("/api/v1/bifrost/v1/messages", json=body_bye)
         assert r1.status_code == 200
         assert r2.status_code == 200
         assert mc.call_count == 2  # Different prompts → both hit the provider
@@ -381,7 +381,7 @@ class TestRoutesCacheIntegration:
             with patch("bifrost.router.ModelRouter.stream", return_value=_fake_stream(None)):
                 with TestClient(app) as client:
                     client.post(
-                        "/v1/messages",
+                        "/api/v1/bifrost/v1/messages",
                         json={**_BODY, "stream": True},
                     )
         # Streaming must not populate the cache.
@@ -405,8 +405,11 @@ class TestRoutesCacheIntegration:
                 with patch("bifrost.router.ModelRouter.complete", new_callable=AsyncMock) as mc:
                     mc.return_value = mock_resp
                     with TestClient(app) as client:
-                        client.post("/v1/messages", json=_BODY)  # miss — populates cache
-                        client.post("/v1/messages", json=_BODY)  # hit
+                        client.post(
+                            "/api/v1/bifrost/v1/messages",
+                            json=_BODY,
+                        )  # miss — populates cache
+                        client.post("/api/v1/bifrost/v1/messages", json=_BODY)  # hit
 
         records = store._records
         assert len(records) == 2

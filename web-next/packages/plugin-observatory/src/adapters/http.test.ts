@@ -27,10 +27,18 @@ const topologyB: Topology = {
 
 const event1: ObservatoryEvent = {
   id: 'e1',
-  timestamp: '2026-01-01T00:00:00Z',
-  severity: 'info',
-  sourceId: 'n1',
-  message: 'online',
+  time: '00:00:00',
+  type: 'TING',
+  subject: 'n1',
+  body: 'online',
+};
+
+const liveGuildEvent = {
+  id: 'instance:valhalla:up',
+  level: 'info',
+  service: 'volundr',
+  message: 'Valhalla is reachable',
+  timestamp: '2026-05-23T20:29:44Z',
 };
 
 function fakeClient(registry: Registry): ApiClient {
@@ -76,6 +84,32 @@ describe('buildObservatoryRegistryHttpAdapter', () => {
     const adapter = buildObservatoryRegistryHttpAdapter(fakeClient(emptyRegistry));
     const result = await adapter.getRegistry();
     expect(result).toEqual(emptyRegistry);
+  });
+
+  it('persists the registry with PUT /registry', async () => {
+    const saved: Registry[] = [];
+    const client: ApiClient = {
+      async get<T>(): Promise<T> {
+        throw new Error('not used');
+      },
+      async post<T>(): Promise<T> {
+        throw new Error('not used');
+      },
+      async put<T>(_endpoint: string, body: unknown): Promise<T> {
+        saved.push(body as Registry);
+        return body as T;
+      },
+      async patch<T>(): Promise<T> {
+        throw new Error('not used');
+      },
+      async delete<T>(): Promise<T> {
+        throw new Error('not used');
+      },
+    };
+    const adapter = buildObservatoryRegistryHttpAdapter(client);
+    const result = await adapter.saveRegistry(emptyRegistry);
+    expect(result).toEqual(emptyRegistry);
+    expect(saved).toEqual([emptyRegistry]);
   });
 });
 
@@ -148,5 +182,28 @@ describe('buildObservatoryEventsSseStream', () => {
 
     expect(a).toEqual([event1]);
     expect(b).toEqual([event1]);
+  });
+
+  it('normalizes live guild snapshot events into observatory UI events', async () => {
+    global.fetch = vi.fn(async () =>
+      mockSseResponse([`data: ${JSON.stringify(liveGuildEvent)}\n\n`]),
+    ) as typeof fetch;
+
+    const stream = buildObservatoryEventsSseStream('/events/stream');
+    const received: ObservatoryEvent[] = [];
+    const unsubscribe = stream.subscribe((event) => received.push(event));
+
+    await new Promise((r) => setTimeout(r, 20));
+    unsubscribe();
+
+    expect(received).toEqual([
+      {
+        id: 'instance:valhalla:up',
+        time: '20:29:44',
+        type: 'RUN',
+        subject: 'volundr',
+        body: 'Valhalla is reachable',
+      },
+    ]);
   });
 });

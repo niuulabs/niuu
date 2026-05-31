@@ -20,7 +20,7 @@ class TestApplyDeprecationHeaders:
     def test_sets_standard_headers(self) -> None:
         response = Response()
         notice = LegacyRouteNotice(
-            legacy_path="/api/v1/volundr/me",
+            legacy_path="/api/v1/legacy/me",
             canonical_path="/api/v1/identity/me",
             sunset="Wed, 31 Dec 2026 23:59:59 GMT",
         )
@@ -28,7 +28,7 @@ class TestApplyDeprecationHeaders:
         apply_deprecation_headers(response, notice)
 
         assert response.headers["Deprecation"] == "true"
-        assert response.headers["X-Niuu-Legacy-Route"] == "/api/v1/volundr/me"
+        assert response.headers["X-Niuu-Legacy-Route"] == "/api/v1/legacy/me"
         assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/identity/me"
         assert response.headers["Link"] == '</api/v1/identity/me>; rel="successor-version"'
         assert response.headers["Sunset"] == "Wed, 31 Dec 2026 23:59:59 GMT"
@@ -39,7 +39,7 @@ class TestRecordLegacyRouteUse:
         app = FastAPI()
         app.state.legacy_route_hits = {}
         notice = LegacyRouteNotice(
-            legacy_path="/api/v1/volundr/me",
+            legacy_path="/api/v1/legacy/me",
             canonical_path="/api/v1/identity/me",
         )
 
@@ -48,9 +48,7 @@ class TestRecordLegacyRouteUse:
 
         assert count1 == 1
         assert count2 == 2
-        assert (
-            app.state.legacy_route_hits[("/api/v1/volundr/me", "/api/v1/identity/me", "GET")] == 2
-        )
+        assert app.state.legacy_route_hits[("/api/v1/legacy/me", "/api/v1/identity/me", "GET")] == 2
 
 
 class TestWarnOnLegacyRoute:
@@ -61,14 +59,14 @@ class TestWarnOnLegacyRoute:
             {
                 "type": "http",
                 "method": "GET",
-                "path": "/api/v1/volundr/me",
+                "path": "/api/v1/legacy/me",
                 "headers": [],
                 "app": app,
             }
         )
         response = Response()
         notice = LegacyRouteNotice(
-            legacy_path="/api/v1/volundr/me",
+            legacy_path="/api/v1/legacy/me",
             canonical_path="/api/v1/identity/me",
         )
 
@@ -84,15 +82,15 @@ class TestCollectLegacyRouteHits:
     def test_returns_sorted_snapshot(self) -> None:
         app = FastAPI()
         app.state.legacy_route_hits = {
-            ("/api/v1/volundr/me", "/api/v1/identity/me", "GET"): 2,
-            ("/api/v1/volundr/users", "/api/v1/volundr/admin/users", "GET"): 1,
+            ("/api/v1/legacy/me", "/api/v1/identity/me", "GET"): 2,
+            ("/api/v1/legacy/users", "/api/v1/identity/users", "GET"): 1,
         }
 
         snapshot = collect_legacy_route_hits(app)
 
-        assert snapshot[0].legacy_path == "/api/v1/volundr/me"
+        assert snapshot[0].legacy_path == "/api/v1/legacy/me"
         assert snapshot[0].hits == 2
-        assert snapshot[1].legacy_path == "/api/v1/volundr/users"
+        assert snapshot[1].legacy_path == "/api/v1/legacy/users"
 
     def test_handles_empty_state(self) -> None:
         app = FastAPI()
@@ -105,10 +103,10 @@ class TestResetLegacyRouteHits:
     def test_returns_snapshot_and_clears_state(self) -> None:
         app = FastAPI()
         app.state.legacy_route_hits = {
-            ("/api/v1/volundr/me", "/api/v1/identity/me", "GET"): 2,
+            ("/api/v1/legacy/me", "/api/v1/identity/me", "GET"): 2,
         }
 
         snapshot = reset_legacy_route_hits(app)
 
-        assert snapshot[0].legacy_path == "/api/v1/volundr/me"
+        assert snapshot[0].legacy_path == "/api/v1/legacy/me"
         assert app.state.legacy_route_hits == {}

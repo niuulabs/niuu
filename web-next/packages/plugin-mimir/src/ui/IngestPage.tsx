@@ -23,7 +23,7 @@ export function IngestPage() {
   const [title, setTitle] = useState('Niuu SDD §5 — dispatch protocol');
   const [path, setPath] = useState('projects/niuu/dispatch.md');
   const [content, setContent] = useState(
-    'The dispatch protocol specifies how Týr hands a saga off to a raid…',
+    'The dispatch protocol specifies how Ting hands a saga off to a run…',
   );
 
   const { rules, isLoading: rulesLoading } = useRouting();

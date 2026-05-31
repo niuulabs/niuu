@@ -58,18 +58,6 @@ data:
       secret_kwargs_env: {}
       {{- end }}
 
-    models:
-      {{- $models := .Values.aiModels }}
-      {{- if and .Values.global .Values.global.aiModels }}
-      {{- $models = .Values.global.aiModels }}
-      {{- end }}
-      {{- range $models }}
-      - id: {{ .id | quote }}
-        name: {{ .name | quote }}
-        provider: {{ .provider | default "" | quote }}
-        cost_per_million_tokens: {{ .costPerMillionTokens | default 0 }}
-      {{- end }}
-
     chronicle:
       auto_create_on_stop: {{ .Values.chronicle.autoCreateOnStop | default true }}
       summary_model: {{ .Values.chronicle.summaryModel | default "claude-haiku-4-5-20251001" | quote }}
@@ -305,6 +293,20 @@ data:
       {{- end }}
     {{- end }}
 
+    bifrost:
+      url: {{ .Values.bifrost.url | quote }}
+      timeout_seconds: {{ .Values.bifrost.timeoutSeconds | default 10.0 }}
+      auth:
+        adapter: {{ .Values.bifrost.auth.adapter | quote }}
+        kwargs: {{ .Values.bifrost.auth.kwargs | toJson }}
+        {{- if .Values.bifrost.auth.secretKwargs }}
+        secret_kwargs_env:
+          {{- range .Values.bifrost.auth.secretKwargs }}
+          {{ .kwarg }}: BIFROST_AUTH_SK_{{ .kwarg | upper }}
+          {{- end }}
+        {{- else }}
+        secret_kwargs_env: {}
+        {{- end }}
     gateway:
       adapter: {{ .Values.gateway.adapter | quote }}
       kwargs: {{ .Values.gateway.kwargs | toJson }}

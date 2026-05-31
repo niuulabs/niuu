@@ -66,7 +66,7 @@ async def test_batch_publish_ordering(redis_transport: RedisStreamsTransport):
 
 
 async def test_stream_per_namespace_mapping(redis_transport: RedisStreamsTransport):
-    """Events land in namespace-specific streams (sleipnir:ravn, sleipnir:tyr)."""
+    """Events land in namespace-specific streams (sleipnir:ravn, sleipnir:ting)."""
     received: list[SleipnirEvent] = []
 
     async def handler(event: SleipnirEvent) -> None:
@@ -76,7 +76,7 @@ async def test_stream_per_namespace_mapping(redis_transport: RedisStreamsTranspo
     await redis_transport.subscribe(["ravn.*"], handler)
 
     await redis_transport.publish(make_event(event_type="ravn.tool.complete"))
-    await redis_transport.publish(make_event(event_type="tyr.saga.created"))
+    await redis_transport.publish(make_event(event_type="ting.saga.created"))
 
     await collect_events(1, received, timeout=2.0)
     await asyncio.sleep(0.3)

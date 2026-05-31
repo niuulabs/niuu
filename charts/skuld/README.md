@@ -221,7 +221,7 @@ Core Skuld broker configuration controlling which AI CLI backend to use and how 
 | `broker.transportAdapter` | string | `"skuld.transports.sdk_websocket.SdkWebSocketTransport"` | Fully-qualified class path of the transport adapter. Replaces `broker.cliType` + `broker.transport` with a single, extensible field |
 | `broker.cliType` | string | `"claude"` | **(DEPRECATED)** AI CLI backend: `"claude"` (Claude Code) or `"codex"` (OpenAI Codex). Use `broker.transportAdapter` instead |
 | `broker.transport` | string | `"sdk"` | **(DEPRECATED)** CLI transport mode: `"sdk"` (WebSocket, default) or `"subprocess"` (legacy). Use `broker.transportAdapter` instead |
-| `broker.skipPermissions` | bool | `true` | Skip tool permission prompts (`--dangerously-skip-permissions` for Claude, `--full-auto` for Codex) |
+| `broker.skipPermissions` | bool | `false` | Skip tool permission prompts (`--dangerously-skip-permissions` for Claude, `--full-auto` for Codex) |
 | `broker.agentTeams` | bool | `false` | Enable Claude Code experimental Agent Teams (Claude only) |
 
 ### Volundr API
@@ -400,7 +400,7 @@ session:
 
 broker:
   transportAdapter: "skuld.transports.sdk_websocket.SdkWebSocketTransport"
-  skipPermissions: true
+  skipPermissions: false
 
 ingress:
   host: "my-session.dev.example.com"
@@ -422,7 +422,7 @@ session:
 
 broker:
   transportAdapter: "skuld.transports.codex_subprocess.CodexSubprocessTransport"
-  skipPermissions: true
+  skipPermissions: false
 
 image:
   repository: ghcr.io/niuulabs/skuld

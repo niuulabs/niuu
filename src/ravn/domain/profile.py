@@ -1,7 +1,7 @@
 """RavnProfile — complete deployment identity for a Ravn node.
 
 A ``RavnProfile`` is the answer to "who is this specific Ravn?".  It is
-serialisable to YAML so it can be stored in Mímir, passed to Tyr for spawn
+serialisable to YAML so it can be stored in Mímir, passed to Ting for spawn
 decisions, and announced over mDNS/Sleipnir.
 
 Design rules — what belongs here vs. PersonaConfig:
@@ -40,7 +40,7 @@ class RavnProfile:
 
     One of these per deployed Ravn — whether on Valaskjalf, a Pi, or a phone.
     The profile is serialisable to YAML and can be stored in Mímir, passed to
-    Tyr for spawn decisions, or used by the TUI to describe the Flokk.
+    Ting for spawn decisions, or used by the TUI to describe the Flokk.
 
     Fields are grouped by concern:
 

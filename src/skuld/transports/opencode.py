@@ -50,7 +50,7 @@ class OpenCodeHttpTransport(CLITransport):
         workspace_dir: str,
         *,
         model: str = "",
-        skip_permissions: bool = True,
+        skip_permissions: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
         opencode_port: int = 0,

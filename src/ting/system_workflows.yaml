@@ -1,0 +1,825 @@
+- name: Ting Run Flow + Security + Memory Curation
+  description: Ting to Volundr ravn_flock workflow with parallel review, security, post-mortem ingest, and visible Mimir curation.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: dispatch-root
+        kind: trigger
+        label: Dispatch run
+        source: ting dispatch
+        dispatchEvent: code.requested
+        position:
+          x: 96
+          y: 264
+      - id: run-coder
+        kind: stage
+        label: Implement code
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+            model: gpt-5.5
+        position:
+          x: 320
+          y: 264
+      - id: run-reviewer
+        kind: stage
+        label: Review changes
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 25
+            model: gpt-5.5
+        position:
+          x: 560
+          y: 160
+      - id: run-security
+        kind: stage
+        label: Security review
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: security-auditor
+            budget: 25
+            model: gpt-5.5
+        position:
+          x: 560
+          y: 352
+      - id: run-memory
+        kind: resource
+        label: Shared Mimir Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir-test
+        path: /tmp/mimir-test
+        role: shared
+        categories: [memory, postmortem]
+        position:
+          x: 560
+          y: 488
+      - id: run-postmortem
+        kind: stage
+        label: Capture post-mortem
+        executionMode: sequential
+        joinMode: all
+        stageMembers:
+          - personaId: postmortem-analyst
+            budget: 18
+            model: gpt-5.5
+        position:
+          x: 816
+          y: 232
+      - id: run-memory-curator
+        kind: stage
+        label: Curate shared memory
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: mimir-memory-curator
+            budget: 20
+            model: gpt-5.5
+            consumesEventTypes: [mimir.source.ingested]
+            eventFilters:
+              mount_names: tmp-mimir-test
+        position:
+          x: 1064
+          y: 232
+      - id: run-complete
+        kind: end
+        label: Run complete
+        joinMode: all
+        completionEvent: ravn.task.completed
+        position:
+          x: 1320
+          y: 232
+    edges:
+      - id: edge-dispatch-to-coder
+        source: dispatch-root
+        target: run-coder
+        label: code.requested -> code.requested
+      - id: edge-coder-to-reviewer
+        source: run-coder
+        target: run-reviewer
+        label: code.changed -> code.changed
+      - id: edge-coder-to-security
+        source: run-coder
+        target: run-security
+        label: code.changed -> code.changed
+      - id: edge-reviewer-to-coder
+        source: run-reviewer
+        target: run-coder
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-security-to-coder
+        source: run-security
+        target: run-coder
+        label: security.changes_requested -> security.changes_requested
+      - id: edge-reviewer-to-postmortem
+        source: run-reviewer
+        target: run-postmortem
+        label: review.completed -> review.completed
+      - id: edge-security-to-postmortem
+        source: run-security
+        target: run-postmortem
+        label: security.completed -> security.completed
+      - id: edge-postmortem-to-memory-curator
+        source: run-postmortem
+        target: run-memory-curator
+        label: mimir.source.ingested -> mimir.source.ingested
+      - id: edge-memory-curator-to-end
+        source: run-memory-curator
+        target: run-complete
+        label: mimir.curated -> mimir.curated
+    resourceBindings:
+      - id: binding-memory-workflow
+        resourceNodeId: run-memory
+        targetType: workflow
+        targetId: ting-run-flow-security-memory-curation
+        access: read_write
+        writePrefixes: [postmortems/]
+        readPriority: 1
+- name: Research Campaign
+  description: Flexible deep-research workflow that frames a question, explores the evidence deeply, challenges the thesis, and distills durable memory into Mimir.
+  version: 1.0.0
+  graph:
+    tags: [research, campaign]
+    nodes:
+      - id: research-request
+        kind: trigger
+        label: Start research campaign
+        source: user research
+        dispatchEvent: research.requested
+        position:
+          x: 96
+          y: 280
+      - id: research-memory
+        kind: resource
+        label: Research Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir
+        path: /tmp/mimir
+        role: shared
+        categories: [research, memory, sources]
+        position:
+          x: 320
+          y: 520
+      - id: research-frame
+        kind: stage
+        label: Frame the inquiry
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: research-framer
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [research.requested]
+        position:
+          x: 320
+          y: 280
+      - id: research-explore
+        kind: stage
+        label: Explore the evidence
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: research-explorer
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [research.framed]
+        position:
+          x: 608
+          y: 280
+      - id: research-challenge
+        kind: stage
+        label: Challenge the thesis
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: research-skeptic
+            budget: 14
+            model: gpt-5.5
+            consumesEventTypes: [research.explored]
+        position:
+          x: 928
+          y: 280
+      - id: research-synthesis
+        kind: stage
+        label: Synthesize the research
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: research-synthesist
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [research.challenged]
+        position:
+          x: 1216
+          y: 280
+      - id: research-curation
+        kind: stage
+        label: Curate learnings and follow-ups
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: research-curator
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [research.synthesized]
+        position:
+          x: 1504
+          y: 280
+      - id: research-publish
+        kind: stage
+        label: Publish to Mimir
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: research-publisher
+            budget: 10
+            model: gpt-5.5
+            consumesEventTypes: [research.curated]
+        position:
+          x: 1792
+          y: 280
+      - id: research-complete
+        kind: end
+        label: Research complete
+        joinMode: all
+        completionEvent: research.completed
+        position:
+          x: 2080
+          y: 280
+    edges:
+      - id: edge-research-request-to-frame
+        source: research-request
+        target: research-frame
+        label: research.requested -> research.requested
+      - id: edge-frame-to-explore
+        source: research-frame
+        target: research-explore
+        label: research.framed -> research.framed
+      - id: edge-explore-to-challenge
+        source: research-explore
+        target: research-challenge
+        label: research.explored -> research.explored
+      - id: edge-challenge-to-synthesis
+        source: research-challenge
+        target: research-synthesis
+        label: research.challenged -> research.challenged
+      - id: edge-synthesis-to-curation
+        source: research-synthesis
+        target: research-curation
+        label: research.synthesized -> research.synthesized
+      - id: edge-curation-to-publish
+        source: research-curation
+        target: research-publish
+        label: research.curated -> research.curated
+      - id: edge-publish-to-end
+        source: research-publish
+        target: research-complete
+        label: research.completed -> research.completed
+    resourceBindings:
+      - id: binding-research-memory
+        resourceNodeId: research-memory
+        targetType: workflow
+        targetId: research-campaign
+        access: read_write
+        writePrefixes: [research/, learnings/, followups/]
+        readPriority: 1
+- name: Specification Stack
+  description: End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with explicit review and approval gates between each artifact.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: spec-request
+        kind: trigger
+        label: Start specification stack
+        source: user specification request
+        dispatchEvent: spec.requested
+        position:
+          x: 96
+          y: 344
+      - id: spec-memory
+        kind: resource
+        label: Specification Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir
+        path: /tmp/mimir
+        role: shared
+        categories: [specifications, product, design, planning]
+        position:
+          x: 320
+          y: 624
+      - id: spec-frame
+        kind: stage
+        label: Frame initiative
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-framer
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [spec.requested]
+        position:
+          x: 320
+          y: 344
+      - id: spec-prd
+        kind: stage
+        label: Draft PRD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-prd-author
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [spec.framed, spec.prd.changes_requested]
+        position:
+          x: 608
+          y: 344
+      - id: spec-prd-review
+        kind: stage
+        label: Review PRD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-prd-critic
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [spec.prd.drafted]
+        position:
+          x: 896
+          y: 232
+      - id: spec-prd-gate
+        kind: gate
+        label: PRD approval gate
+        condition: Review the PRD and decide whether it is strong enough to unlock SRD drafting.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: spec.prd.approved
+        changesRequestedEvent: spec.prd.changes_requested
+        instructions: Review the PRD, approve it if it is strong enough to unlock SRD drafting, or request changes with clear feedback.
+        autoForwardAfter: 30m
+        position:
+          x: 896
+          y: 456
+      - id: spec-srd
+        kind: stage
+        label: Draft SRD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-srd-author
+            budget: 22
+            model: gpt-5.5
+            consumesEventTypes: [spec.prd.approved, spec.srd.changes_requested]
+        position:
+          x: 1184
+          y: 344
+      - id: spec-srd-review
+        kind: stage
+        label: Review SRD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-srd-critic
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [spec.srd.drafted]
+        position:
+          x: 1472
+          y: 232
+      - id: spec-srd-gate
+        kind: gate
+        label: SRD approval gate
+        condition: Review the SRD and decide whether the system requirements are complete and unambiguous enough to unlock design work.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: spec.srd.approved
+        changesRequestedEvent: spec.srd.changes_requested
+        instructions: Review the SRD, approve it if the system requirements are complete and unambiguous enough to unlock design work, or request changes with clear feedback.
+        autoForwardAfter: 30m
+        position:
+          x: 1472
+          y: 456
+      - id: spec-sdd
+        kind: stage
+        label: Draft SDD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-sdd-author
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [spec.srd.approved, spec.sdd.changes_requested]
+        position:
+          x: 1760
+          y: 344
+      - id: spec-sdd-review
+        kind: stage
+        label: Review SDD
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-sdd-critic
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [spec.sdd.drafted]
+        position:
+          x: 2048
+          y: 232
+      - id: spec-sdd-gate
+        kind: gate
+        label: SDD approval gate
+        condition: Review the SDD and decide whether the proposed design is coherent, realistic, and ready for breakdown planning.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: spec.sdd.approved
+        changesRequestedEvent: spec.sdd.changes_requested
+        instructions: Review the SDD, approve it if the design is coherent, realistic, and ready for breakdown planning, or request changes with clear feedback.
+        autoForwardAfter: 30m
+        position:
+          x: 2048
+          y: 456
+      - id: spec-breakdown
+        kind: stage
+        label: Draft breakdown
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-breakdown-planner
+            budget: 22
+            model: gpt-5.5
+            consumesEventTypes: [spec.sdd.approved, spec.breakdown.changes_requested]
+        position:
+          x: 2336
+          y: 344
+      - id: spec-breakdown-review
+        kind: stage
+        label: Review breakdown
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-breakdown-critic
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [spec.breakdown.drafted]
+        position:
+          x: 2624
+          y: 232
+      - id: spec-breakdown-gate
+        kind: gate
+        label: Breakdown approval gate
+        condition: Review the implementation breakdown and decide whether the plan is actionable enough to publish.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: spec.breakdown.approved
+        changesRequestedEvent: spec.breakdown.changes_requested
+        instructions: Review the implementation breakdown, approve it if the plan is actionable enough to publish, or request changes with clear feedback.
+        autoForwardAfter: 30m
+        position:
+          x: 2624
+          y: 456
+      - id: spec-publish
+        kind: stage
+        label: Publish specification pack
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-publisher
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [spec.breakdown.approved]
+        position:
+          x: 2912
+          y: 344
+      - id: spec-complete
+        kind: end
+        label: Specification stack complete
+        joinMode: all
+        completionEvent: spec.completed
+        position:
+          x: 3200
+          y: 344
+    edges:
+      - id: edge-spec-request-to-frame
+        source: spec-request
+        target: spec-frame
+        label: spec.requested -> spec.requested
+      - id: edge-frame-to-prd
+        source: spec-frame
+        target: spec-prd
+        label: spec.framed -> spec.framed
+      - id: edge-prd-to-review
+        source: spec-prd
+        target: spec-prd-review
+        label: spec.prd.drafted -> spec.prd.drafted
+      - id: edge-prd-review-to-prd
+        source: spec-prd-review
+        target: spec-prd
+        label: spec.prd.changes_requested -> spec.prd.changes_requested
+      - id: edge-prd-review-to-gate
+        source: spec-prd-review
+        target: spec-prd-gate
+        label: spec.prd.ready_for_gate -> spec.prd.ready_for_gate
+      - id: edge-prd-gate-to-prd
+        source: spec-prd-gate
+        target: spec-prd
+        label: spec.prd.changes_requested -> spec.prd.changes_requested
+      - id: edge-prd-gate-to-srd
+        source: spec-prd-gate
+        target: spec-srd
+        label: spec.prd.approved -> spec.prd.approved
+      - id: edge-srd-to-review
+        source: spec-srd
+        target: spec-srd-review
+        label: spec.srd.drafted -> spec.srd.drafted
+      - id: edge-srd-review-to-srd
+        source: spec-srd-review
+        target: spec-srd
+        label: spec.srd.changes_requested -> spec.srd.changes_requested
+      - id: edge-srd-review-to-gate
+        source: spec-srd-review
+        target: spec-srd-gate
+        label: spec.srd.ready_for_gate -> spec.srd.ready_for_gate
+      - id: edge-srd-gate-to-srd
+        source: spec-srd-gate
+        target: spec-srd
+        label: spec.srd.changes_requested -> spec.srd.changes_requested
+      - id: edge-srd-gate-to-sdd
+        source: spec-srd-gate
+        target: spec-sdd
+        label: spec.srd.approved -> spec.srd.approved
+      - id: edge-sdd-to-review
+        source: spec-sdd
+        target: spec-sdd-review
+        label: spec.sdd.drafted -> spec.sdd.drafted
+      - id: edge-sdd-review-to-sdd
+        source: spec-sdd-review
+        target: spec-sdd
+        label: spec.sdd.changes_requested -> spec.sdd.changes_requested
+      - id: edge-sdd-review-to-gate
+        source: spec-sdd-review
+        target: spec-sdd-gate
+        label: spec.sdd.ready_for_gate -> spec.sdd.ready_for_gate
+      - id: edge-sdd-gate-to-sdd
+        source: spec-sdd-gate
+        target: spec-sdd
+        label: spec.sdd.changes_requested -> spec.sdd.changes_requested
+      - id: edge-sdd-gate-to-breakdown
+        source: spec-sdd-gate
+        target: spec-breakdown
+        label: spec.sdd.approved -> spec.sdd.approved
+      - id: edge-breakdown-to-review
+        source: spec-breakdown
+        target: spec-breakdown-review
+        label: spec.breakdown.drafted -> spec.breakdown.drafted
+      - id: edge-breakdown-review-to-breakdown
+        source: spec-breakdown-review
+        target: spec-breakdown
+        label: spec.breakdown.changes_requested -> spec.breakdown.changes_requested
+      - id: edge-breakdown-review-to-gate
+        source: spec-breakdown-review
+        target: spec-breakdown-gate
+        label: spec.breakdown.ready_for_gate -> spec.breakdown.ready_for_gate
+      - id: edge-breakdown-gate-to-breakdown
+        source: spec-breakdown-gate
+        target: spec-breakdown
+        label: spec.breakdown.changes_requested -> spec.breakdown.changes_requested
+      - id: edge-breakdown-gate-to-publish
+        source: spec-breakdown-gate
+        target: spec-publish
+        label: spec.breakdown.approved -> spec.breakdown.approved
+      - id: edge-publish-to-end
+        source: spec-publish
+        target: spec-complete
+        label: spec.completed -> spec.completed
+    resourceBindings:
+      - id: binding-spec-memory
+        resourceNodeId: spec-memory
+        targetType: workflow
+        targetId: specification-stack
+        access: read_write
+        writePrefixes: [specifications/]
+        readPriority: 1
+- name: Tracker Delivery Flow
+  description: Tracker-driven developer workflow that implements a ticket, iterates through code review, updates the tracker, merges the branch, and publishes a durable delivery record.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: delivery-request
+        kind: trigger
+        label: Start tracker delivery
+        source: tracker delivery
+        dispatchEvent: delivery.requested
+        position:
+          x: 96
+          y: 280
+      - id: delivery-memory
+        kind: resource
+        label: Delivery Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir
+        path: /tmp/mimir
+        role: shared
+        categories: [delivery, tracker, review]
+        position:
+          x: 352
+          y: 520
+      - id: delivery-implement
+        kind: stage
+        label: Implement tracker ticket
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+            model: gpt-5.4
+            consumesEventTypes: [delivery.requested, review.changes_requested]
+        position:
+          x: 352
+          y: 280
+      - id: delivery-review
+        kind: stage
+        label: Review implementation
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 24
+            model: gpt-5.4
+            consumesEventTypes: [code.changed]
+        position:
+          x: 704
+          y: 280
+      - id: delivery-close
+        kind: stage
+        label: Merge and close ticket
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: closer
+            budget: 20
+            model: gpt-5.4
+            consumesEventTypes: [review.passed]
+        position:
+          x: 1056
+          y: 280
+      - id: delivery-publish
+        kind: stage
+        label: Publish delivery record
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: publisher
+            budget: 16
+            model: gpt-5.4
+            consumesEventTypes: [delivery.merged]
+        position:
+          x: 1408
+          y: 280
+      - id: delivery-complete
+        kind: end
+        label: Delivery complete
+        joinMode: all
+        completionEvent: delivery.completed
+        position:
+          x: 1760
+          y: 280
+    edges:
+      - id: edge-delivery-request-to-implement
+        source: delivery-request
+        target: delivery-implement
+        label: delivery.requested -> delivery.requested
+      - id: edge-delivery-implement-to-review
+        source: delivery-implement
+        target: delivery-review
+        label: code.changed -> code.changed
+      - id: edge-delivery-review-to-implement
+        source: delivery-review
+        target: delivery-implement
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-delivery-review-to-close
+        source: delivery-review
+        target: delivery-close
+        label: review.passed -> review.passed
+      - id: edge-delivery-close-to-publish
+        source: delivery-close
+        target: delivery-publish
+        label: delivery.merged -> delivery.merged
+      - id: edge-delivery-publish-to-end
+        source: delivery-publish
+        target: delivery-complete
+        label: delivery.completed -> delivery.completed
+    resourceBindings:
+      - id: binding-delivery-memory
+        resourceNodeId: delivery-memory
+        targetType: workflow
+        targetId: tracker-delivery-flow
+        access: read_write
+        writePrefixes: [deliveries/]
+        readPriority: 1
+- name: Code & Review Flow
+  description: Tracker-driven developer workflow that implements a ticket, iterates through code review, and merges the branch without publishing a delivery record.
+  version: 1.0.0
+  graph:
+    nodes:
+      - id: code-review-request
+        kind: trigger
+        label: Start tracker code & review
+        source: tracker delivery
+        dispatchEvent: delivery.requested
+        position:
+          x: 96
+          y: 280
+      - id: code-review-memory
+        kind: resource
+        label: Delivery Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: tmp-mimir
+        path: /tmp/mimir
+        role: shared
+        categories: [delivery, tracker, review]
+        position:
+          x: 352
+          y: 520
+      - id: code-review-implement
+        kind: stage
+        label: Implement tracker ticket
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 40
+            model: gpt-5.5
+            consumesEventTypes: [delivery.requested, review.changes_requested]
+        position:
+          x: 352
+          y: 280
+      - id: code-review-review
+        kind: stage
+        label: Review implementation
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [code.changed]
+        position:
+          x: 704
+          y: 280
+      - id: code-review-close
+        kind: stage
+        label: Merge and close ticket
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: closer
+            budget: 20
+            model: gpt-5.5
+            consumesEventTypes: [review.passed]
+        position:
+          x: 1056
+          y: 280
+      - id: code-review-complete
+        kind: end
+        label: Code & review complete
+        joinMode: all
+        completionEvent: delivery.merged
+        position:
+          x: 1408
+          y: 280
+    edges:
+      - id: edge-code-review-request-to-implement
+        source: code-review-request
+        target: code-review-implement
+        label: delivery.requested -> delivery.requested
+      - id: edge-code-review-implement-to-review
+        source: code-review-implement
+        target: code-review-review
+        label: code.changed -> code.changed
+      - id: edge-code-review-review-to-implement
+        source: code-review-review
+        target: code-review-implement
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-code-review-review-to-close
+        source: code-review-review
+        target: code-review-close
+        label: review.passed -> review.passed
+      - id: edge-code-review-close-to-end
+        source: code-review-close
+        target: code-review-complete
+        label: delivery.merged -> delivery.merged
+    resourceBindings:
+      - id: binding-code-review-memory
+        resourceNodeId: code-review-memory
+        targetType: workflow
+        targetId: tracker-code-review-flow
+        access: read_write
+        writePrefixes: [deliveries/]
+        readPriority: 1

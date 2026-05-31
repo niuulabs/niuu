@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ravn.adapters.personas.loader import (
+    _ARCHIVED_BUILTIN_PERSONAS_DIR,
     _BUILTIN_PERSONAS_DIR,
     FilesystemPersonaAdapter,
     PersonaConfig,
@@ -53,10 +54,13 @@ _NOT_A_DICT_YAML = """\
 # Convenience dict: load all built-in personas once for specialist persona tests
 _loader = FilesystemPersonaAdapter()
 _BUILTIN_PERSONAS: dict[str, PersonaConfig] = {}
-for _p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
-    _cfg = _loader.load_from_file(_p)
-    if _cfg is not None:
-        _BUILTIN_PERSONAS[_p.stem] = _cfg
+for _directory in (_BUILTIN_PERSONAS_DIR, _ARCHIVED_BUILTIN_PERSONAS_DIR):
+    if not _directory.is_dir():
+        continue
+    for _p in _directory.glob("*.yaml"):
+        _cfg = _loader.load_from_file(_p)
+        if _cfg is not None:
+            _BUILTIN_PERSONAS[_p.stem] = _cfg
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +130,7 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg.allowed_tools == ["file", "git"]
         assert cfg.forbidden_tools == ["cascade"]
         assert cfg.permission_mode == "workspace-write"
-        assert cfg.llm.primary_alias == "balanced"
+        assert cfg.llm.primary_alias == ""
         assert cfg.llm.thinking_enabled is True
         assert cfg.iteration_budget == 25
 
@@ -243,21 +247,36 @@ class TestFilesystemPersonaAdapterLoadFromFile:
 class TestListBuiltinNames:
     def test_returns_expected_personas(self) -> None:
         names = FilesystemPersonaAdapter().list_builtin_names()
-        assert "coding-agent" in names
-        assert "research-agent" in names
-        assert "planning-agent" in names
-        assert "autonomous-agent" in names
-        assert "draft-a-note" in names
-        assert "research-and-distill" in names
+        assert "coder" in names
+        assert "council-chair" in names
+        assert "council-member-a" in names
+        assert "council-member-b" in names
+        assert "council-member-c" in names
         assert "reviewer" in names
-        assert "qa-agent" in names
         assert "security-auditor" in names
-        assert "ship-agent" in names
-        assert "retro-analyst" in names
-        assert "mimir-curator" in names
+        assert "postmortem-analyst" in names
+        assert "mimir-memory-curator" in names
+        assert "mimir-warden" in names
+        assert "coding-agent" not in names
+
+
+class TestTrackerDeliveryPersonas:
+    def test_coder_uses_explicit_tracker_shim_path(self) -> None:
+        cfg = _BUILTIN_PERSONAS["coder"]
+        assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
+
+    def test_reviewer_uses_explicit_tracker_shim_path(self) -> None:
+        cfg = _BUILTIN_PERSONAS["reviewer"]
+        assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
+
+    def test_closer_uses_explicit_tracker_shim_path(self) -> None:
+        cfg = _BUILTIN_PERSONAS["closer"]
+        assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
 
     def test_returns_sorted_list(self) -> None:
         names = FilesystemPersonaAdapter().list_builtin_names()
+        assert "research-agent" not in names
+        assert "qa-agent" not in names
         assert names == sorted(names)
 
     def test_matches_builtin_dir_files(self) -> None:
@@ -275,9 +294,19 @@ class TestBuiltinPersonas:
     _loader = FilesystemPersonaAdapter()
 
     def _load(self, name: str) -> PersonaConfig:
-        cfg = self._loader.load_from_file(_BUILTIN_PERSONAS_DIR / f"{name}.yaml")
+        path = _BUILTIN_PERSONAS_DIR / f"{name}.yaml"
+        if not path.is_file():
+            path = _ARCHIVED_BUILTIN_PERSONAS_DIR / f"{name}.yaml"
+        cfg = self._loader.load_from_file(path)
         assert cfg is not None, f"Failed to load built-in persona {name!r}"
         return cfg
+
+    def test_archived_builtins_are_not_listed_but_are_loadable(self) -> None:
+        loader = FilesystemPersonaAdapter()
+        assert "coding-agent" not in loader.list_builtin_names()
+        cfg = loader.load("coding-agent")
+        assert cfg is not None
+        assert cfg.name == "coding-agent"
 
     def test_coding_agent_exists(self) -> None:
         cfg = self._load("coding-agent")
@@ -381,21 +410,22 @@ class TestBuiltinPersonas:
     def test_reviewer_exists(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
         assert cfg.name == "reviewer"
-        assert cfg.permission_mode == "read-only"
+        assert cfg.permission_mode == "workspace_write"
         assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
-        assert cfg.llm.primary_alias == "balanced"
+        assert cfg.llm.primary_alias == ""
 
     def test_reviewer_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
         assert "file" in cfg.allowed_tools
         assert "git" in cfg.allowed_tools
+        assert "terminal" in cfg.allowed_tools
         assert "web" in cfg.allowed_tools
         assert "ravn" in cfg.allowed_tools
+        assert "tracker_issue" in cfg.allowed_tools
 
     def test_reviewer_forbidden_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
-        assert "terminal" in cfg.forbidden_tools
         assert "cascade" in cfg.forbidden_tools
 
     def test_reviewer_system_prompt_mentions_sql_safety(self) -> None:
@@ -405,6 +435,32 @@ class TestBuiltinPersonas:
     def test_reviewer_system_prompt_mentions_error_handling(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
         assert "error" in cfg.system_prompt_template.lower()
+
+    def test_reviewer_maps_requested_changes_to_followup_event(self) -> None:
+        cfg = _BUILTIN_PERSONAS["reviewer"]
+        assert cfg.produces.event_type == "review.completed"
+        assert cfg.produces.event_type_map["pass"] == "review.passed"
+        assert cfg.produces.event_type_map["needs_changes"] == "review.changes_requested"
+        assert cfg.produces.event_type_map["fail"] == "review.changes_requested"
+
+    def test_security_auditor_maps_requested_changes_to_followup_event(self) -> None:
+        cfg = _BUILTIN_PERSONAS["security-auditor"]
+        assert cfg.produces.event_type == "security.completed"
+        assert cfg.produces.event_type_map["pass"] == "security.passed"
+        assert cfg.produces.event_type_map["needs_review"] == "security.changes_requested"
+        assert cfg.produces.event_type_map["fail"] == "security.changes_requested"
+
+    def test_coordinator_allowed_tools_are_delegation_only(self) -> None:
+        cfg = _BUILTIN_PERSONAS["coordinator"]
+        assert cfg.allowed_tools == ["task_create", "task_collect", "task_status", "todo"]
+
+    def test_coordinator_prompt_requires_coder_and_reviewer_delegation(self) -> None:
+        cfg = _BUILTIN_PERSONAS["coordinator"]
+        prompt = cfg.system_prompt_template
+        assert "persona` to `coder`" in prompt or "persona='coder'" in prompt
+        assert "reviewer" in prompt
+        assert "Do not create a separate review task" in prompt
+        assert "Do not write code yourself" in prompt
 
     def test_qa_agent_exists(self) -> None:
         cfg = _BUILTIN_PERSONAS["qa-agent"]
@@ -439,7 +495,7 @@ class TestBuiltinPersonas:
         assert cfg.permission_mode == "read-only"
         assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
-        assert cfg.llm.primary_alias == "balanced"
+        assert cfg.llm.primary_alias == ""
 
     def test_security_auditor_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
@@ -467,7 +523,7 @@ class TestBuiltinPersonas:
         assert cfg.permission_mode == "workspace-write"
         assert cfg.iteration_budget == 15
         assert cfg.llm.thinking_enabled is False
-        assert cfg.llm.primary_alias == "balanced"
+        assert cfg.llm.primary_alias == ""
 
     def test_ship_agent_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["ship-agent"]
@@ -527,7 +583,7 @@ class TestBuiltinPersonas:
             assert expected in names, f"{expected} missing from _BUILTIN_PERSONAS"
 
     def test_read_only_personas_cannot_write(self) -> None:
-        read_only = ["reviewer", "security-auditor", "retro-analyst"]
+        read_only = ["security-auditor", "retro-analyst"]
         for name in read_only:
             cfg = _BUILTIN_PERSONAS[name]
             assert cfg.permission_mode == "read-only", f"{name} should be read-only"
@@ -552,9 +608,9 @@ class TestBuiltinPersonas:
 class TestFilesystemPersonaAdapterLoad:
     def test_load_builtin_by_name(self) -> None:
         loader = FilesystemPersonaAdapter()
-        cfg = loader.load("coding-agent")
+        cfg = loader.load("coder")
         assert cfg is not None
-        assert cfg.name == "coding-agent"
+        assert cfg.name == "coder"
 
     def test_load_unknown_name_returns_none(self) -> None:
         loader = FilesystemPersonaAdapter()
@@ -592,7 +648,7 @@ class TestFilesystemPersonaAdapterLoad:
     def test_default_personas_dir_used_when_not_specified(self) -> None:
         loader = FilesystemPersonaAdapter()
         # Just ensure it doesn't crash; no ~/.ravn/personas likely in test env.
-        result = loader.load("coding-agent")
+        result = loader.load("coder")
         assert result is not None  # falls back to builtin
 
 
@@ -709,9 +765,9 @@ class TestResolvePersona:
     def test_resolve_builtin_by_name(self) -> None:
         from ravn.cli.commands import _resolve_persona
 
-        cfg = _resolve_persona("coding-agent", None)
+        cfg = _resolve_persona("coder", None)
         assert cfg is not None
-        assert cfg.name == "coding-agent"
+        assert cfg.name == "coder"
 
     def test_resolve_falls_back_to_project_config_persona(self) -> None:
         from ravn.cli.commands import _resolve_persona
@@ -751,7 +807,7 @@ class TestResolvePersona:
             permission_mode="read-only",
             iteration_budget=5,
         )
-        cfg = _resolve_persona("coding-agent", project)
+        cfg = _resolve_persona("coder", project)
         assert cfg is not None
         assert cfg.allowed_tools == ["web"]
         assert cfg.permission_mode == "read-only"
@@ -902,29 +958,19 @@ class TestCliPersonaFlag:
         assert "--persona" in plain
 
     def test_persona_flag_accepted(self) -> None:
-        from collections.abc import AsyncIterator
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock
 
         from typer.testing import CliRunner
 
         from ravn.cli.commands import app
-        from ravn.domain.models import StreamEvent, StreamEventType, TokenUsage
-
-        async def _stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
-            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="done")
-            yield StreamEvent(
-                type=StreamEventType.MESSAGE_DONE,
-                usage=TokenUsage(input_tokens=5, output_tokens=3),
-            )
 
         runner = CliRunner()
-        with (
-            patch("ravn.adapters.llm.anthropic.AnthropicAdapter") as mock_cls,
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
-        ):
-            mock_adapter = MagicMock()
-            mock_adapter.stream = _stream
-            mock_cls.return_value = mock_adapter
-
+        mock_run = AsyncMock(return_value=None)
+        with patch("ravn.cli.commands._run_with_signals", mock_run):
             result = runner.invoke(app, ["run", "--persona", "coding-agent", "hello"])
+
         assert result.exit_code == 0
+        assert mock_run.await_count == 1
+        persona = mock_run.await_args.kwargs["persona_config"]
+        assert persona is not None
+        assert persona.name == "coding-agent"

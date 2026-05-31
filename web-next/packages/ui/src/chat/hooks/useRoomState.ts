@@ -1,11 +1,12 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import type { ChatMessage, RoomParticipant } from '../types';
+import { useState, useMemo, useCallback } from 'react';
+import type { ChatMessage, ChatMessagePart, RoomParticipant } from '../types';
 
 export interface UseRoomStateReturn {
   isRoomMode: boolean;
   activeFilter: string;
   setActiveFilter: (f: string) => void;
   showInternal: boolean;
+  setShowInternal: (visible: boolean) => void;
   toggleInternal: () => void;
   visibleMessages: readonly ChatMessage[];
   collapsedThreads: ReadonlySet<string>;
@@ -13,6 +14,7 @@ export interface UseRoomStateReturn {
 }
 
 const FILTER_ALL = 'all';
+const INTERNAL_PART_TYPES = new Set<ChatMessagePart['type']>(['tool_use', 'tool_result']);
 
 function isVisibleMessage(msg: ChatMessage): boolean {
   if (msg.metadata?.messageType === 'system') return false;
@@ -27,8 +29,30 @@ function isVisibleMessage(msg: ChatMessage): boolean {
   return true;
 }
 
+function stripInternalParts(msg: ChatMessage): ChatMessage | null {
+  if (!msg.parts || msg.parts.length === 0) {
+    return msg;
+  }
+  const kept = msg.parts.filter((p) => !INTERNAL_PART_TYPES.has(p.type));
+  if (kept.length === msg.parts.length) {
+    return msg;
+  }
+  // If the message had only tool blocks and no text content, drop it entirely
+  // so the chat doesn't render an empty assistant bubble.
+  if (kept.length === 0 && !msg.content.trim()) {
+    return null;
+  }
+  return { ...msg, parts: kept };
+}
+
 /**
- * Manages filter/visibility state for room-mode sessions with multiple participants.
+ * Manages filter/visibility state for chat sessions.
+ *
+ * `showInternal` controls visibility of two kinds of "internal" content:
+ *  - Room-mode peer/delegation messages with ``visibility === 'internal'``.
+ *  - Tool calls (``tool_use``) and tool results (``tool_result``) inside
+ *    any assistant message — when off, these blocks are stripped from
+ *    ``parts`` and the assistant message is hidden if nothing else remains.
  */
 export function useRoomState(
   messages: readonly ChatMessage[],
@@ -37,20 +61,8 @@ export function useRoomState(
   const [activeFilter, setActiveFilter] = useState<string>(FILTER_ALL);
   const [showInternal, setShowInternal] = useState(false);
   const [expandedThreads, setExpandedThreads] = useState<ReadonlySet<string>>(new Set());
-  const initializedRoomModeRef = useRef(false);
 
   const isRoomMode = participants.size > 1;
-
-  useEffect(() => {
-    if (isRoomMode && !initializedRoomModeRef.current) {
-      initializedRoomModeRef.current = true;
-      setShowInternal(true);
-      return;
-    }
-    if (!isRoomMode) {
-      initializedRoomModeRef.current = false;
-    }
-  }, [isRoomMode]);
 
   const toggleInternal = useCallback(() => {
     setShowInternal((prev) => !prev);
@@ -68,13 +80,23 @@ export function useRoomState(
     });
   }, []);
 
-  const filteredMessages = useMemo(() => {
-    if (!isRoomMode) return messages;
-    return messages.filter((msg) => {
-      if (!showInternal && msg.visibility === 'internal') return false;
-      if (activeFilter !== FILTER_ALL && msg.participant?.peerId !== activeFilter) return false;
-      return true;
-    });
+  const filteredMessages = useMemo<readonly ChatMessage[]>(() => {
+    const out: ChatMessage[] = [];
+    for (const msg of messages) {
+      if (isRoomMode && !showInternal && msg.visibility === 'internal') continue;
+      if (isRoomMode && activeFilter !== FILTER_ALL && msg.participant?.peerId !== activeFilter) {
+        continue;
+      }
+      if (showInternal) {
+        out.push(msg);
+        continue;
+      }
+      const stripped = stripInternalParts(msg);
+      if (stripped) {
+        out.push(stripped);
+      }
+    }
+    return out;
   }, [messages, isRoomMode, activeFilter, showInternal]);
 
   const visibleMessages = useMemo(
@@ -131,6 +153,7 @@ export function useRoomState(
     activeFilter,
     setActiveFilter,
     showInternal,
+    setShowInternal,
     toggleInternal,
     visibleMessages,
     collapsedThreads,

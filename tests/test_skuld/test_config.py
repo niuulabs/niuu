@@ -62,6 +62,10 @@ class TestSkuldSettings:
         assert s.session.name == "unknown"
         assert s.session.model == "claude-sonnet-4-6"
         assert s.persistence_mount_path == "/volundr/sessions"
+        assert s.peer_watchdog.enabled is True
+        assert s.peer_watchdog.poll_seconds == 5.0
+        assert s.peer_watchdog.silence_seconds == 300.0
+        assert s.peer_watchdog.tool_silence_seconds == 300.0
 
     def test_workspace_path_computed(self, monkeypatch):
         """Test workspace_path computed from session ID when workspace_dir is None."""
@@ -97,6 +101,14 @@ class TestSkuldSettings:
         s = SkuldSettings()
         assert s.session.id == "nested-id"
         assert s.session.model == "opus"
+
+    def test_peer_watchdog_nested_env_vars(self, monkeypatch):
+        monkeypatch.setenv("SKULD__PEER_WATCHDOG__SILENCE_SECONDS", "600")
+        monkeypatch.setenv("SKULD__PEER_WATCHDOG__TOOL_SILENCE_SECONDS", "900")
+
+        s = SkuldSettings()
+        assert s.peer_watchdog.silence_seconds == 600.0
+        assert s.peer_watchdog.tool_silence_seconds == 900.0
 
     def test_mcp_servers_from_env(self, monkeypatch):
         monkeypatch.setenv(
@@ -200,12 +212,19 @@ class TestSkuldSettings:
 
     def test_skip_permissions_default(self):
         s = SkuldSettings()
-        assert s.skip_permissions is True
+        assert s.skip_permissions is False
 
     def test_skip_permissions_false(self, monkeypatch):
         monkeypatch.setenv("SKULD__SKIP_PERMISSIONS", "false")
         s = SkuldSettings()
         assert s.skip_permissions is False
+
+    def test_codex_permission_thread_params(self, monkeypatch):
+        monkeypatch.setenv("SKULD__APPROVAL_POLICY", "untrusted")
+        monkeypatch.setenv("SKULD__SANDBOX", "workspace-write")
+        s = SkuldSettings()
+        assert s.approval_policy == "untrusted"
+        assert s.sandbox == "workspace-write"
 
     def test_agent_teams_default(self):
         s = SkuldSettings()
@@ -254,13 +273,13 @@ class TestSkuldSettings:
 class TestTransportAdapter:
     """Tests for the transport_adapter config field and legacy migration."""
 
-    def test_default_resolves_to_sdk_websocket(self, monkeypatch):
-        """Default config resolves to SdkWebSocketTransport."""
+    def test_default_resolves_to_sdk(self, monkeypatch):
+        """Default config resolves to SDKTransport."""
         for var in ["CLI_TYPE", "SKULD__CLI_TYPE", "SKULD__TRANSPORT"]:
             monkeypatch.delenv(var, raising=False)
 
         s = SkuldSettings()
-        assert s.transport_adapter == "skuld.transports.sdk_websocket.SdkWebSocketTransport"
+        assert s.transport_adapter == "skuld.transports.sdk.SDKTransport"
 
     def test_cli_type_codex_resolves_to_codex_transport(self, monkeypatch):
         """cli_type=codex maps to CodexSubprocessTransport."""

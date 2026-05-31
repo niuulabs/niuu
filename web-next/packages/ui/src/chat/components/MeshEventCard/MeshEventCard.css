@@ -67,7 +67,7 @@
 }
 
 .niuu-chat-mesh-verdict-icon[data-verdict='changes'] {
-  color: var(--color-accent-amber);
+  color: color-mix(in srgb, var(--color-critical-fg) 82%, var(--color-text-muted));
 }
 
 .niuu-chat-mesh-arrow-icon {
@@ -104,7 +104,7 @@
 }
 .niuu-chat-mesh-verdict[data-verdict='needs_changes'],
 .niuu-chat-mesh-verdict[data-verdict='needs_review'] {
-  color: var(--color-accent-amber);
+  color: color-mix(in srgb, var(--color-critical-fg) 82%, var(--color-text-muted));
 }
 
 .niuu-chat-mesh-detail-link {

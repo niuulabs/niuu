@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { ForgePage } from './ForgePage';
 import {
   createMockVolundrService,
@@ -41,6 +42,7 @@ function wrap(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
+          bifrost: createMockBifrostService(),
           'niuu.repos': repoCatalog,
           volundr: service,
           clusterAdapter,
@@ -289,6 +291,139 @@ describe('ForgePage', () => {
     expect(screen.getByTestId('inflight-preview').textContent).toBe(
       'Implement the new batch import pipeline for the analytics service',
     );
+  });
+
+  it('prefers session title and tracker issue in forge lists when present', async () => {
+    const session: Session = {
+      id: 'sess-issue-1',
+      title: 'OIDC auth hardening',
+      trackerIssue: {
+        id: 'issue-900',
+        identifier: 'NIU-900',
+        title: 'OIDC auth hardening',
+        status: 'in_progress',
+        url: 'https://linear.app/niuu/issue/NIU-900',
+      },
+      ravnId: 'r-issue',
+      personaName: 'OIDC auth hardening',
+      templateId: 'tpl-default',
+      clusterId: 'cl-eitri',
+      state: 'running',
+      startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      lastActivityAt: new Date(Date.now() - 45_000).toISOString(),
+      preview: 'validating callback edge cases',
+      resources: {
+        cpuRequest: 1,
+        cpuLimit: 2,
+        cpuUsed: 0.6,
+        memRequestMi: 512,
+        memLimitMi: 1_024,
+        memUsedMi: 384,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [],
+    };
+
+    const store = createMockSessionStore();
+    const overriddenStore: ISessionStore = {
+      ...store,
+      listSessions: async () => [session],
+      subscribe: (cb) => {
+        cb([session]);
+        return () => {};
+      },
+    };
+
+    wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
+    await waitFor(() => expect(screen.getByTestId('inflight-panel')).toBeInTheDocument());
+
+    const inflight = screen.getByTestId('inflight-panel');
+    expect(within(inflight).getByTestId('inflight-title')).toHaveTextContent('OIDC auth hardening');
+    expect(within(inflight).getByTestId('inflight-ticket')).toHaveTextContent('NIU-900');
+    expect(within(inflight).queryByText('sess-issue-1')).not.toBeInTheDocument();
+    expect(within(inflight).getAllByText('OIDC auth hardening')).toHaveLength(1);
+
+    const recent = screen.getByTestId('recent-panel');
+    expect(within(recent).getByTestId('tail-title')).toHaveTextContent('OIDC auth hardening');
+    expect(within(recent).getByTestId('tail-ticket')).toHaveTextContent('NIU-900');
+    expect(within(recent).queryByText('sess-issue-1')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the raw cluster id and requested label for requested sessions', async () => {
+    const session: Session = {
+      id: 'req-sess',
+      ravnId: 'r-req',
+      personaName: 'planner',
+      templateId: 'tpl-default',
+      clusterId: 'cl-unknown',
+      state: 'requested',
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      resources: {
+        cpuRequest: 1,
+        cpuLimit: 0,
+        cpuUsed: 0,
+        memRequestMi: 512,
+        memLimitMi: 0,
+        memUsedMi: 0,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [{ id: 'evt-1', at: new Date().toISOString(), body: 'Waiting for capacity' }],
+    };
+
+    const store = createMockSessionStore();
+    const overriddenStore: ISessionStore = {
+      ...store,
+      listSessions: async () => [session],
+      subscribe: (cb) => {
+        cb([session]);
+        return () => {};
+      },
+    };
+
+    wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
+    await waitFor(() => expect(screen.getAllByText('req-sess').length).toBeGreaterThan(0));
+    expect(screen.getByText('cl-unknown')).toBeInTheDocument();
+    expect(screen.getAllByText('requested').length).toBeGreaterThan(0);
+  });
+
+  it('falls back to the latest event body when no preview is available', async () => {
+    const session: Session = {
+      id: 'evt-sess',
+      ravnId: 'r-evt',
+      personaName: 'planner',
+      templateId: 'tpl-default',
+      clusterId: 'cl-unknown',
+      state: 'running',
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      resources: {
+        cpuRequest: 1,
+        cpuLimit: 2,
+        cpuUsed: 0.1,
+        memRequestMi: 512,
+        memLimitMi: 1024,
+        memUsedMi: 128,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [{ id: 'evt-1', at: new Date().toISOString(), body: 'Waiting for capacity' }],
+    };
+
+    const store = createMockSessionStore();
+    const overriddenStore: ISessionStore = {
+      ...store,
+      listSessions: async () => [session],
+      subscribe: (cb) => {
+        cb([session]);
+        return () => {};
+      },
+    };
+
+    wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
+    await waitFor(() => expect(screen.getAllByText('evt-sess').length).toBeGreaterThan(0));
+    expect(screen.getByText('cl-unknown')).toBeInTheDocument();
+    expect(screen.getAllByText('Waiting for capacity').length).toBeGreaterThan(0);
   });
 
   it('renders all sessions link in inflight header', async () => {

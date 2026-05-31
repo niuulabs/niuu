@@ -1004,6 +1004,143 @@ async def test_drive_loop_cancel_unknown_task_is_no_op(tmp_path: Path) -> None:
     await loop.cancel("nonexistent_task_id")
 
 
+@pytest.mark.asyncio
+async def test_directed_message_steers_single_active_agent(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    loop.enqueue = AsyncMock()
+
+    steerable = MagicMock()
+    steerable.supports_steering = True
+    steerable.steering_mode = "live"
+    steerable.steer = AsyncMock(return_value=True)
+    loop._active_agents["task-1"] = steerable
+
+    await loop._handle_directed_message("Change course")
+
+    steerable.steer.assert_awaited_once_with("Change course")
+    loop.enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_directed_message_falls_back_to_enqueue_when_steering_unavailable(
+    tmp_path: Path,
+) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    loop.enqueue = AsyncMock()
+
+    first = MagicMock()
+    first.supports_steering = True
+    first.steering_mode = "live"
+    first.steer = AsyncMock(return_value=True)
+
+    second = MagicMock()
+    second.supports_steering = True
+    second.steering_mode = "live"
+    second.steer = AsyncMock(return_value=True)
+
+    loop._active_agents = {"task-1": first, "task-2": second}
+
+    await loop._handle_directed_message("Queue this instead")
+
+    loop.enqueue.assert_awaited_once()
+    first.steer.assert_not_called()
+    second.steer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_try_steer_active_agent_handles_blank_missing_and_errors(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+
+    assert await loop._try_steer_active_agent("   ") is False
+
+    class _NoSteer:
+        supports_steering = True
+        steering_mode = "live"
+
+    loop._active_agents = {"task-1": _NoSteer()}
+    assert await loop._try_steer_active_agent("Keep going") is False
+
+    class _BrokenSteer:
+        supports_steering = True
+        steering_mode = "live"
+
+        async def steer(self, content: str) -> bool:
+            raise RuntimeError("boom")
+
+    loop._active_agents = {"task-1": _BrokenSteer()}
+    assert await loop._try_steer_active_agent("Keep going") is False
+
+
+@pytest.mark.asyncio
+async def test_run_task_removes_active_agent_after_interrupted_turn(tmp_path: Path) -> None:
+    loop, factory = _make_drive_loop(tmp_path)
+
+    async def _cancelled(prompt: str) -> None:
+        raise asyncio.CancelledError()
+
+    mock_agent = AsyncMock()
+    mock_agent.run_turn = _cancelled
+    mock_agent.emit_session_ended = AsyncMock()
+    factory.return_value = mock_agent
+
+    task = _make_task()
+    await loop._run_task(task)
+
+    assert task.task_id not in loop._active_agents
+    mock_agent.emit_session_ended.assert_awaited_once_with("interrupted")
+
+
+@pytest.mark.asyncio
+async def test_run_task_logs_response_and_redelivers_surface_output(tmp_path: Path) -> None:
+    journal = tmp_path / "queue.json"
+    config = _make_initiative_config(queue_journal_path=str(journal))
+    settings = Settings()
+    settings.cascade.enabled = True
+    emitted_channels: list = []
+
+    def agent_factory(channel, task_id=None, persona=None, triggered_by=None):
+        emitted_channels.append(channel)
+
+        async def _run_turn(prompt: str) -> None:
+            await channel.emit(
+                RavnEvent.response(
+                    "agent",
+                    "[SURFACE] Show this to the user",
+                    correlation_id=task_id or "task",
+                    session_id=task_id or "task",
+                    task_id=task_id or "task",
+                )
+            )
+
+        agent = AsyncMock()
+        agent.run_turn = _run_turn
+        agent.emit_session_ended = AsyncMock()
+        return agent
+
+    loop = DriveLoop(agent_factory=agent_factory, config=config, settings=settings)
+    loop._re_deliver_surface = AsyncMock()  # type: ignore[method-assign]
+
+    task = _make_task(output_mode=OutputMode.SURFACE)
+    await loop._run_task(task)
+
+    loop._re_deliver_surface.assert_awaited_once_with(task, "[SURFACE] Show this to the user")
+
+
+@pytest.mark.asyncio
+async def test_run_task_swallows_emit_session_ended_errors(tmp_path: Path) -> None:
+    loop, factory = _make_drive_loop(tmp_path)
+
+    mock_agent = AsyncMock()
+    mock_agent.run_turn = AsyncMock(return_value=None)
+    mock_agent.emit_session_ended = AsyncMock(side_effect=RuntimeError("boom"))
+    factory.return_value = mock_agent
+
+    task = _make_task()
+    await loop._run_task(task)
+
+    assert task.task_id not in loop._active_agents
+
+
 # ---------------------------------------------------------------------------
 # DriveLoop — integration: cron trigger fires run_turn
 # ---------------------------------------------------------------------------
@@ -1095,6 +1232,7 @@ async def test_finalise_thread_success_closes_thread(tmp_path: Path) -> None:
 
     mock_agent = AsyncMock()
     mock_agent.run_turn = AsyncMock(return_value=None)
+    mock_agent.emit_session_ended = AsyncMock()
     factory.return_value = mock_agent
 
     task = _make_thread_task("threads/my-thread")
@@ -1102,6 +1240,28 @@ async def test_finalise_thread_success_closes_thread(tmp_path: Path) -> None:
 
     mock_mimir.update_thread_state.assert_awaited_once_with("threads/my-thread", ThreadState.closed)
     mock_mimir.assign_thread_owner.assert_not_awaited()
+    mock_agent.emit_session_ended.assert_awaited_once_with("success")
+    assert task.task_id not in loop._active_agents
+
+
+@pytest.mark.asyncio
+async def test_finalise_thread_interrupted_swallow_emit_session_ended_errors(
+    tmp_path: Path,
+) -> None:
+    loop, factory, mock_mimir = _make_drive_loop_with_mimir(tmp_path)
+
+    async def _cancelled(prompt: str) -> None:
+        raise asyncio.CancelledError()
+
+    mock_agent = AsyncMock()
+    mock_agent.run_turn = _cancelled
+    mock_agent.emit_session_ended = AsyncMock(side_effect=RuntimeError("boom"))
+    factory.return_value = mock_agent
+
+    task = _make_thread_task("threads/my-thread")
+    await loop._run_task(task)
+
+    mock_mimir.update_thread_state.assert_awaited_once()
 
 
 @pytest.mark.asyncio

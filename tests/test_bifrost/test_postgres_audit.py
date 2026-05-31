@@ -176,16 +176,13 @@ class TestPostgresAuditDsnEnv:
 
 
 class TestPostgresAuditSchemaInit:
-    async def test_schema_created_on_first_pool_acquire(self):
+    async def test_schema_is_not_created_on_first_pool_acquire(self):
         pool, conn = make_pool_mock()
         with patch(_PATCH_PATH, new_callable=AsyncMock) as mock_cp:
             mock_cp.return_value = pool
             adapter = PostgresAuditAdapter(dsn="postgresql://fake/db")
             await adapter._get_pool()
 
-        # Three execute calls: CREATE TABLE + CREATE INDEXES + MIGRATE COLUMNS
-        assert conn.execute.call_count == 3
-        calls = [c[0][0] for c in conn.execute.call_args_list]
-        assert any("CREATE TABLE IF NOT EXISTS bifrost_audit" in sql for sql in calls)
-        assert any("CREATE INDEX" in sql for sql in calls)
-        assert any("ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS" in sql for sql in calls)
+        # Schema ownership lives in explicit service migrations, so first pool
+        # acquisition should not emit runtime auto-DDL.
+        conn.execute.assert_not_called()

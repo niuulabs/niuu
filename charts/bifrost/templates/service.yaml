@@ -12,12 +12,12 @@ spec:
   type: {{ .Values.service.type | default "ClusterIP" }}
   ports:
     - port: {{ .Values.service.port | default 80 }}
-      targetPort: {{ .Values.service.targetPort | default 8088 }}
+      targetPort: {{ if .Values.envoy.enabled }}envoy{{ else }}http{{ end }}
       protocol: TCP
       name: http
     {{- if .Values.metrics.enabled }}
     - port: {{ .Values.metrics.port | default 9090 }}
-      targetPort: {{ .Values.service.targetPort | default 8088 }}
+      targetPort: http
       protocol: TCP
       name: metrics
     {{- end }}

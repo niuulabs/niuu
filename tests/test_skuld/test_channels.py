@@ -5,6 +5,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import WebSocketDisconnect
 
 from skuld.channels import (
     ChannelRegistry,
@@ -51,6 +52,12 @@ class TestWebSocketChannel:
         mock_ws.send_text.assert_called_once_with(json.dumps(event))
 
     @pytest.mark.asyncio
+    async def test_send_event_marks_channel_closed_on_disconnect(self, channel, mock_ws):
+        mock_ws.send_text = AsyncMock(side_effect=WebSocketDisconnect())
+        await channel.send_event({"type": "assistant", "content": "hello"})
+        assert channel.is_open is False
+
+    @pytest.mark.asyncio
     async def test_send_event_after_close_is_noop(self, channel, mock_ws):
         await channel.close()
         await channel.send_event({"type": "test"})
@@ -75,6 +82,163 @@ class TestWebSocketChannel:
         channel = WebSocketChannel(mock_ws)
         await channel.close()
         assert channel.is_open is False
+
+
+# ---------------------------------------------------------------------------
+# Internal-message filtering on WebSocketChannel
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketChannelInternalFilter:
+    """The WebSocketChannel default hides tool_use / tool_result events,
+    matching the browser toggle which also defaults to hide. The browser
+    flips the channel's preference via the ``set_internal_visibility``
+    control message."""
+
+    @pytest.fixture
+    def mock_ws(self):
+        ws = AsyncMock()
+        ws.send_text = AsyncMock()
+        ws.close = AsyncMock()
+        return ws
+
+    def test_default_is_hide(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        assert ch.show_internal is False
+
+    @pytest.mark.asyncio
+    async def test_drops_tool_use_content_block_start(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        await ch.send_event(
+            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1"}}
+        )
+        mock_ws.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_drops_tool_result_content_block_start(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        await ch.send_event(
+            {
+                "type": "content_block_start",
+                "content_block": {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+            }
+        )
+        mock_ws.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_drops_delta_inside_tool_use_block(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        # Open a tool_use block (filtered out)
+        await ch.send_event(
+            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1"}}
+        )
+        # Delta inside that block should also be filtered
+        await ch.send_event(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "input_json_delta", "partial_json": "{}"},
+            }
+        )
+        # And the closing stop too
+        await ch.send_event({"type": "content_block_stop"})
+        mock_ws.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_passes_through_text_block_around_tool_use(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        # Text block opens, streams, closes — all forwarded
+        await ch.send_event({"type": "content_block_start", "content_block": {"type": "text"}})
+        await ch.send_event(
+            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}}
+        )
+        await ch.send_event({"type": "content_block_stop"})
+        # Then a tool_use block — fully suppressed
+        await ch.send_event(
+            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1"}}
+        )
+        await ch.send_event(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "input_json_delta", "partial_json": "{"},
+            }
+        )
+        await ch.send_event({"type": "content_block_stop"})
+        # Then another text block — forwarded again
+        await ch.send_event({"type": "content_block_start", "content_block": {"type": "text"}})
+        # 4 sends: text-start, text-delta, text-stop, second text-start
+        assert mock_ws.send_text.call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_strips_tool_use_blocks_from_assistant_event(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        await ch.send_event(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}},
+                    ]
+                },
+            }
+        )
+        mock_ws.send_text.assert_called_once()
+        sent = json.loads(mock_ws.send_text.call_args.args[0])
+        assert sent["message"]["content"] == [{"type": "text", "text": "hello"}]
+
+    @pytest.mark.asyncio
+    async def test_drops_assistant_event_with_only_tool_use(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        await ch.send_event(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]
+                },
+            }
+        )
+        mock_ws.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_drops_user_event_with_only_tool_results(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        await ch.send_event(
+            {
+                "type": "user",
+                "message": {
+                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "out"}]
+                },
+            }
+        )
+        mock_ws.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_show_internal_forwards_everything(self, mock_ws):
+        ch = WebSocketChannel(mock_ws, show_internal=True)
+        await ch.send_event(
+            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1"}}
+        )
+        await ch.send_event(
+            {"type": "content_block_delta", "delta": {"type": "input_json_delta"}}
+        )
+        await ch.send_event({"type": "content_block_stop"})
+        assert mock_ws.send_text.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_set_show_internal_toggles_filter(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        # Default hidden — drops tool_use
+        await ch.send_event(
+            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1"}}
+        )
+        assert mock_ws.send_text.call_count == 0
+
+        # Toggle to show
+        ch.set_show_internal(True)
+        await ch.send_event(
+            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t2"}}
+        )
+        assert mock_ws.send_text.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -216,8 +380,8 @@ class TestFormatTelegramEvent:
         assert result == "Nested hello"
 
     def test_user_confirmed_event(self):
-        event = {"type": "user_confirmed", "content": "Kick off the raid"}
-        assert format_telegram_event(event) == "[prompt] Kick off the raid"
+        event = {"type": "user_confirmed", "content": "Kick off the run"}
+        assert format_telegram_event(event) == "[prompt] Kick off the run"
 
     def test_user_confirmed_external_source_skipped(self):
         event = {

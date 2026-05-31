@@ -1,15 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { select } from 'd3-selection';
+import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior } from 'd3-zoom';
 import type { Topology } from '../../domain';
 import {
   clampZoom,
-  applyDragPan,
-  applyScrollZoom,
   applyKeyPan,
   defaultCamera,
+  fitCameraToBounds,
+  screenToWorld,
   type Camera,
 } from './canvasMath';
-import { computeLayout, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
-import { drawStars, drawZones, drawEdges, drawNode, drawMimir, drawMinimap } from './renderer';
+import { computeLayout, computeLayoutBounds, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
+import {
+  drawStars,
+  drawZones,
+  drawEdges,
+  drawNode,
+  drawMimir,
+  drawMinimap,
+  getStructureLabelBounds,
+} from './renderer';
 import { CANVAS, HIT_RADIUS } from './config';
 import './TopologyCanvas.css';
 
@@ -25,13 +35,6 @@ export interface TopologyCanvasProps {
   className?: string;
   /** Inline style applied to the wrapper div. */
   style?: React.CSSProperties;
-}
-
-interface DragState {
-  active: boolean;
-  startX: number;
-  startY: number;
-  startCam: Camera;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -54,22 +57,74 @@ export function TopologyCanvas({
   const minimapRef = useRef<HTMLCanvasElement>(null);
   const sizeRef = useRef({ w: 0, h: 0 });
   const camRef = useRef<Camera>(defaultCamera());
-  const dragRef = useRef<DragState>({
-    active: false,
-    startX: 0,
-    startY: 0,
-    startCam: defaultCamera(),
-  });
+  const zoomBehaviorRef = useRef<ZoomBehavior<HTMLCanvasElement, unknown> | null>(null);
+  const userAdjustedCameraRef = useRef(false);
+  const lastTopologySignatureRef = useRef('');
+  const lastFitKeyRef = useRef('');
+  const suppressZoomAdjustmentRef = useRef(false);
+  const isDraggingRef = useRef(false);
   const hoveredIdRef = useRef<string | null>(null);
   const [zoomPct, setZoomPct] = useState(Math.round(CANVAS.INITIAL_ZOOM * 100));
+  const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
 
   // Compute layout whenever topology changes (memoised — pure function)
   const positions = useMemo(() => (topology ? computeLayout(topology) : new Map()), [topology]);
+  const topologySignature = useMemo(() => {
+    if (!topology) return 'empty';
+    return topology.nodes
+      .map((node) => `${node.id}:${node.parentId ?? ''}:${node.typeId}`)
+      .sort()
+      .join('|');
+  }, [topology]);
 
   // Stable reference to drawing data so the rAF loop always reads fresh values
   // without being re-subscribed on every state tick.
   const drawRef = useRef({ topology, positions, hoveredId: null as string | null });
   drawRef.current = { topology, positions, hoveredId: hoveredIdRef.current };
+
+  const cameraToZoomTransform = useCallback((cam: Camera) => {
+    const { w, h } = sizeRef.current;
+    return zoomIdentity
+      .translate(w / 2 - cam.x * cam.zoom, h / 2 - cam.y * cam.zoom)
+      .scale(cam.zoom);
+  }, []);
+
+  const zoomTransformToCamera = useCallback(
+    (transform: { x: number; y: number; k: number }): Camera => {
+      const { w, h } = sizeRef.current;
+      return {
+        x: (w / 2 - transform.x) / transform.k,
+        y: (h / 2 - transform.y) / transform.k,
+        zoom: clampZoom(transform.k),
+      };
+    },
+    [],
+  );
+
+  const syncCamera = useCallback(
+    (camera: Camera, markAdjusted: boolean) => {
+      camRef.current = camera;
+      if (markAdjusted) userAdjustedCameraRef.current = true;
+      setZoomPct(Math.round(camera.zoom * 100));
+
+      const canvas = canvasRef.current;
+      const zoomBehavior = zoomBehaviorRef.current;
+      if (!canvas || !zoomBehavior) return;
+      suppressZoomAdjustmentRef.current = !markAdjusted;
+      select(canvas).call(zoomBehavior.transform, cameraToZoomTransform(camera));
+      suppressZoomAdjustmentRef.current = false;
+    },
+    [cameraToZoomTransform],
+  );
+
+  const fitCamera = useCallback(() => {
+    if (!topology) {
+      syncCamera(defaultCamera(), false);
+      return;
+    }
+    const bounds = computeLayoutBounds(topology, positions);
+    syncCamera(fitCameraToBounds(bounds, sizeRef.current.w, sizeRef.current.h, 86), false);
+  }, [positions, syncCamera, topology]);
 
   // ── Canvas sizing ───────────────────────────────────────────────────────────
 
@@ -85,6 +140,9 @@ export function TopologyCanvas({
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       sizeRef.current = { w: width, h: height };
+      setViewportSize((prev) =>
+        prev.w === width && prev.h === height ? prev : { w: width, h: height },
+      );
     };
 
     apply(canvas.clientWidth, canvas.clientHeight);
@@ -96,25 +154,61 @@ export function TopologyCanvas({
     return () => ro.disconnect();
   }, []);
 
-  // ── Scroll-wheel zoom ───────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!viewportSize.w || !viewportSize.h) return;
+
+    if (lastTopologySignatureRef.current !== topologySignature) {
+      userAdjustedCameraRef.current = false;
+      lastTopologySignatureRef.current = topologySignature;
+    }
+
+    const fitKey = `${topologySignature}:${viewportSize.w}x${viewportSize.h}`;
+    if (!userAdjustedCameraRef.current && lastFitKeyRef.current !== fitKey) {
+      fitCamera();
+      lastFitKeyRef.current = fitKey;
+    }
+  }, [fitCamera, topologySignature, viewportSize.h, viewportSize.w]);
+
+  // ── D3 zoom / pan ───────────────────────────────────────────────────────────
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const behavior = zoom<HTMLCanvasElement, unknown>()
+      .scaleExtent([CANVAS.ZOOM_MIN, CANVAS.ZOOM_MAX])
+      .clickDistance(8)
+      .filter((event) => !(event.type === 'dblclick'))
+      .on('start', (event: D3ZoomEvent<HTMLCanvasElement, unknown>) => {
+        if (event.sourceEvent?.type === 'mousedown') {
+          isDraggingRef.current = true;
+          canvas.style.cursor = 'grabbing';
+        }
+      })
+      .on('zoom', (event: D3ZoomEvent<HTMLCanvasElement, unknown>) => {
+        camRef.current = zoomTransformToCamera(event.transform);
+        if (!suppressZoomAdjustmentRef.current) {
+          userAdjustedCameraRef.current = true;
+        }
+        setZoomPct(Math.round(camRef.current.zoom * 100));
+      })
+      .on('end', () => {
+        isDraggingRef.current = false;
+        canvas.style.cursor = hoveredIdRef.current ? 'pointer' : 'grab';
+      });
 
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const { w, h } = sizeRef.current;
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      camRef.current = applyScrollZoom(camRef.current, e.deltaY, mx, my, w, h);
-      setZoomPct(Math.round(camRef.current.zoom * 100));
+    zoomBehaviorRef.current = behavior;
+    const selection = select(canvas);
+    selection.call(behavior);
+    selection.on('dblclick.zoom', null);
+    suppressZoomAdjustmentRef.current = true;
+    selection.call(behavior.transform, cameraToZoomTransform(camRef.current));
+    suppressZoomAdjustmentRef.current = false;
+
+    return () => {
+      selection.on('.zoom', null);
+      zoomBehaviorRef.current = null;
     };
-
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [cameraToZoomTransform, zoomTransformToCamera]);
 
   // ── Keyboard pan (arrow keys) ───────────────────────────────────────────────
 
@@ -126,31 +220,58 @@ export function TopologyCanvas({
       const panKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
       if (!panKeys.includes(e.key)) return;
       e.preventDefault();
-      camRef.current = applyKeyPan(camRef.current, e.key, CANVAS.PAN_KEY_STEP);
+      syncCamera(applyKeyPan(camRef.current, e.key, CANVAS.PAN_KEY_STEP), true);
     };
 
     canvas.addEventListener('keydown', onKeyDown);
     return () => canvas.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [syncCamera]);
 
   // ── Hit detection ───────────────────────────────────────────────────────────
 
   const hitTest = useCallback((sx: number, sy: number): string | null => {
     const { w, h } = sizeRef.current;
     const cam = camRef.current;
-    const wx = (sx - w / 2) / cam.zoom + cam.x;
-    const wy = (sy - h / 2) / cam.zoom + cam.y;
+    const { x: wx, y: wy } = screenToWorld(sx, sy, cam, w, h);
 
     const { topology: topo, positions: pos } = drawRef.current;
     if (!topo) return null;
 
     for (const node of topo.nodes) {
+      if (node.typeId !== 'realm' && node.typeId !== 'cluster' && node.typeId !== 'run') continue;
+      const p = pos.get(node.id);
+      if (!p) continue;
+      const bounds = getStructureLabelBounds(node, p);
+      if (!bounds) continue;
+      if (
+        wx >= bounds.x &&
+        wx <= bounds.x + bounds.width &&
+        wy >= bounds.y &&
+        wy <= bounds.y + bounds.height
+      ) {
+        return node.id;
+      }
+    }
+
+    const orderedNodes = [...topo.nodes].sort((a, b) => {
+      const aContainer = a.typeId === 'host';
+      const bContainer = b.typeId === 'host';
+      if (aContainer && !bContainer) return 1;
+      if (bContainer && !aContainer) return -1;
+      return 0;
+    });
+
+    for (const node of orderedNodes) {
       const p = pos.get(node.id);
       if (!p) continue;
       if (node.typeId === 'host') {
-        if (Math.abs(wx - p.x) < HOST_HALF_W && Math.abs(wy - p.y) < HOST_HALF_H) return node.id;
+        const containerRadius = Math.max(
+          (p.containerWidth ?? HOST_HALF_W * 2) / 2,
+          (p.containerHeight ?? HOST_HALF_H * 2) / 2,
+        );
+        if ((wx - p.x) ** 2 + (wy - p.y) ** 2 < containerRadius * containerRadius) return node.id;
       } else {
-        const r = HIT_RADIUS[node.typeId] ?? HIT_RADIUS['tyr']!;
+        const r = HIT_RADIUS[node.typeId] ?? HIT_RADIUS['ting']!;
         if ((wx - p.x) ** 2 + (wy - p.y) ** 2 < r * r) return node.id;
       }
     }
@@ -161,19 +282,10 @@ export function TopologyCanvas({
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (isDraggingRef.current) return;
       const rect = canvasRef.current!.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
-      const drag = dragRef.current;
-
-      if (drag.active) {
-        const dx = sx - drag.startX;
-        const dy = sy - drag.startY;
-        const { x, y } = applyDragPan(drag.startCam, dx, dy);
-        camRef.current = { ...camRef.current, x, y };
-        canvasRef.current!.style.cursor = 'grabbing';
-        return;
-      }
 
       const hitId = hitTest(sx, sy);
       hoveredIdRef.current = hitId;
@@ -181,28 +293,6 @@ export function TopologyCanvas({
     },
     [hitTest],
   );
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      const rect = canvasRef.current!.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      if (hitTest(sx, sy)) return; // let the click handler deal with it
-      dragRef.current = {
-        active: true,
-        startX: sx,
-        startY: sy,
-        startCam: { ...camRef.current },
-      };
-      canvasRef.current!.style.cursor = 'grabbing';
-    },
-    [hitTest],
-  );
-
-  const handleMouseUp = useCallback(() => {
-    dragRef.current.active = false;
-    canvasRef.current!.style.cursor = 'grab';
-  }, []);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -214,42 +304,52 @@ export function TopologyCanvas({
   );
 
   const handleMouseLeave = useCallback(() => {
-    dragRef.current.active = false;
+    isDraggingRef.current = false;
     hoveredIdRef.current = null;
     if (canvasRef.current) canvasRef.current.style.cursor = 'grab';
   }, []);
 
   // ── Minimap click-to-pan ────────────────────────────────────────────────────
 
-  const handleMinimapClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const mm = minimapRef.current;
-    if (!mm) return;
-    const rect = mm.getBoundingClientRect();
-    const fx = (e.clientX - rect.left) / rect.width;
-    const fy = (e.clientY - rect.top) / rect.height;
-    camRef.current = {
-      ...camRef.current,
-      x: fx * CANVAS.WORLD_W - CANVAS.WORLD_W / 2,
-      y: fy * CANVAS.WORLD_H - CANVAS.WORLD_H / 2,
-    };
-  }, []);
+  const handleMinimapClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      const mm = minimapRef.current;
+      if (!mm) return;
+      const rect = mm.getBoundingClientRect();
+      const fx = (e.clientX - rect.left) / rect.width;
+      const fy = (e.clientY - rect.top) / rect.height;
+      syncCamera(
+        {
+          ...camRef.current,
+          x: fx * CANVAS.WORLD_W - CANVAS.WORLD_W / 2,
+          y: fy * CANVAS.WORLD_H - CANVAS.WORLD_H / 2,
+        },
+        true,
+      );
+    },
+    [syncCamera],
+  );
 
   // ── Camera controls ─────────────────────────────────────────────────────────
 
   const zoomIn = useCallback(() => {
-    camRef.current = { ...camRef.current, zoom: clampZoom(camRef.current.zoom * CANVAS.ZOOM_STEP) };
-    setZoomPct(Math.round(camRef.current.zoom * 100));
+    const canvas = canvasRef.current;
+    const zoomBehavior = zoomBehaviorRef.current;
+    if (!canvas || !zoomBehavior) return;
+    select(canvas).call(zoomBehavior.scaleBy, CANVAS.ZOOM_STEP);
   }, []);
 
   const zoomOut = useCallback(() => {
-    camRef.current = { ...camRef.current, zoom: clampZoom(camRef.current.zoom / CANVAS.ZOOM_STEP) };
-    setZoomPct(Math.round(camRef.current.zoom * 100));
+    const canvas = canvasRef.current;
+    const zoomBehavior = zoomBehaviorRef.current;
+    if (!canvas || !zoomBehavior) return;
+    select(canvas).call(zoomBehavior.scaleBy, 1 / CANVAS.ZOOM_STEP);
   }, []);
 
   const resetCamera = useCallback(() => {
-    camRef.current = defaultCamera();
-    setZoomPct(Math.round(defaultCamera().zoom * 100));
-  }, []);
+    userAdjustedCameraRef.current = false;
+    fitCamera();
+  }, [fitCamera]);
 
   // ── Animation loop ──────────────────────────────────────────────────────────
 
@@ -312,7 +412,7 @@ export function TopologyCanvas({
         for (const node of topo.nodes) {
           if (node.typeId !== 'mimir') continue;
           const p = pos.get(node.id);
-          if (p) drawMimir(ctx, p, now, 1, node.label.toUpperCase());
+          if (p) drawMimir(ctx, p, now, node.parentId ? 0.8 : 1, node.label.toUpperCase());
         }
       }
 
@@ -361,8 +461,6 @@ export function TopologyCanvas({
         aria-label="Live topology canvas — drag to pan, scroll to zoom, arrow keys to pan"
         className="topology-canvas"
         onMouseMove={handleMouseMove}
-        onMouseDown={handleMouseDown}
-        onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
         onClick={handleClick}
       />

@@ -71,10 +71,12 @@ export type SessionOrigin = 'managed' | 'manual';
 export interface VolundrModel {
   name: string;
   provider: ModelProvider;
+  vendor?: string;
   tier: ModelTier;
   color: string;
   cost?: string;
   vram?: string;
+  sessionDefinition?: string;
 }
 
 export interface VolundrRepo {
@@ -161,6 +163,33 @@ export interface VolundrSession {
   activityState?: 'active' | 'idle' | 'tool_executing' | null;
   ownerId?: string;
   tenantId?: string;
+  instanceId?: string;
+  instanceName?: string;
+}
+
+export type WorkflowGateStatus = 'pending' | 'approved' | 'changes_requested';
+export type WorkflowGatePendingBehavior = 'silent' | 'notify_only' | 'help_needed';
+
+export interface VolundrWorkflowGate {
+  id: string;
+  node_id: string;
+  activation_id: string;
+  label: string;
+  condition: string;
+  status: WorkflowGateStatus;
+  pending_behavior: WorkflowGatePendingBehavior;
+  approvers: string[];
+  auto_forward_after: string;
+  requested_at: string;
+  updated_at: string;
+  triggered_by_event_type: string;
+  approval_event_type: string;
+  changes_requested_event_type: string;
+  attempt: number;
+  decision?: string | null;
+  notes?: string;
+  source?: string;
+  summary?: string;
 }
 
 export interface VolundrStats {
@@ -177,6 +206,16 @@ export interface VolundrStats {
     costToday?: number[];
     gpus?: number[];
   };
+}
+
+export interface VolundrTarget {
+  id: string;
+  slug: string;
+  name: string;
+  baseUrl: string;
+  enabled: boolean;
+  isDefault: boolean;
+  visibility?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +302,54 @@ export interface SessionChronicle {
   tokenBurn: number[];
 }
 
+export interface VolundrSessionTraceSpan {
+  id: string;
+  sessionId: string;
+  traceId: string;
+  parentSpanId: string | null;
+  kind: string;
+  name: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | string;
+  startedAt: string;
+  endedAt: string | null;
+  durationMs: number | null;
+  actorType?: string | null;
+  actorId?: string | null;
+  actorLabel?: string | null;
+  sourceService?: string | null;
+  attributes: Record<string, unknown>;
+}
+
+export interface VolundrSessionTraceLane {
+  key: string;
+  label: string;
+  kind: string;
+}
+
+export interface VolundrSessionTrace {
+  traceId: string;
+  sessionId: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number;
+  spans: VolundrSessionTraceSpan[];
+  lanes: VolundrSessionTraceLane[];
+}
+
+export interface VolundrSessionTraceSummary {
+  totalDurationMs: number;
+  provisioningDurationMs: number;
+  setupDurationMs: number;
+  workflowDurationMs: number;
+  publishDurationMs: number;
+  cleanupDurationMs: number;
+  activeExecutionDurationMs: number;
+  waitingDurationMs: number;
+  turnCount: number;
+  toolCallCount: number;
+  longestSpan: VolundrSessionTraceSpan | null;
+}
+
 // ---------------------------------------------------------------------------
 // Pull requests / CI
 // ---------------------------------------------------------------------------
@@ -323,6 +410,7 @@ export interface SessionDefinition {
   description: string;
   labels: string[];
   defaultModel: string;
+  compatibleProviders: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +425,7 @@ export interface ResourceConfig {
 }
 
 export interface WorkloadConfig {
-  [key: string]: string | number | boolean | undefined;
+  [key: string]: unknown;
 }
 
 export interface SkillConfig {

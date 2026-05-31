@@ -14,7 +14,7 @@ describe('ConnectionLegend', () => {
     expect(screen.getByTestId('legend-dashed-anim')).toBeInTheDocument();
     expect(screen.getByTestId('legend-dashed-long')).toBeInTheDocument();
     expect(screen.getByTestId('legend-soft')).toBeInTheDocument();
-    expect(screen.getByTestId('legend-raid')).toBeInTheDocument();
+    expect(screen.getByTestId('legend-run')).toBeInTheDocument();
   });
 
   it('has accessible list role with label', () => {
@@ -24,11 +24,11 @@ describe('ConnectionLegend', () => {
 
   it('renders web2-matching label text for each edge kind', () => {
     render(<ConnectionLegend />);
-    expect(screen.getByText('Týr → Völundr')).toBeInTheDocument();
-    expect(screen.getByText('Týr ⇝ raid coord')).toBeInTheDocument();
+    expect(screen.getByText('Ting → Völundr')).toBeInTheDocument();
+    expect(screen.getByText('Ting ⇝ run coord')).toBeInTheDocument();
     expect(screen.getByText('Bifröst → ext. model')).toBeInTheDocument();
     expect(screen.getByText('ravn → Mímir')).toBeInTheDocument();
-    expect(screen.getByText('raid cohesion')).toBeInTheDocument();
+    expect(screen.getByText('run cohesion')).toBeInTheDocument();
   });
 
   it('renders an SVG swatch for each edge kind', () => {
@@ -43,11 +43,11 @@ describe('ConnectionLegend', () => {
     expect(animItem.querySelector('animate')).toBeInTheDocument();
   });
 
-  it('renders raid kind with circles', () => {
+  it('renders run kind with circles', () => {
     render(<ConnectionLegend />);
-    const raidItem = screen.getByTestId('legend-raid');
-    expect(raidItem.querySelector('circle')).toBeInTheDocument();
-    expect(raidItem.querySelector('g')).toBeInTheDocument();
+    const runItem = screen.getByTestId('legend-run');
+    expect(runItem.querySelector('circle')).toBeInTheDocument();
+    expect(runItem.querySelector('g')).toBeInTheDocument();
   });
 
   it('renders solid kind with a plain line', () => {

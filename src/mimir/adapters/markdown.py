@@ -294,6 +294,13 @@ class MarkdownMimirAdapter(MimirPort):
             )
         return resolved
 
+    def _wiki_relative_path(self, path: Path) -> Path:
+        """Return *path* relative to the wiki root, tolerant of symlink aliases."""
+        try:
+            return path.relative_to(self._wiki)
+        except ValueError:
+            return path.resolve().relative_to(self._wiki.resolve())
+
     # ------------------------------------------------------------------
     # MimirPort implementation
     # ------------------------------------------------------------------
@@ -430,11 +437,13 @@ class MarkdownMimirAdapter(MimirPort):
             if md_path.name in {"index.md", "log.md"}:
                 continue
             content = md_path.read_text(encoding="utf-8")
-            lower = content.lower()
-            score = sum(lower.count(kw) for kw in keywords)
+            meta = self._build_page_meta(md_path, content)
+            haystack = "\n".join(
+                part for part in (meta.title, meta.path, meta.summary, content) if part
+            ).lower()
+            score = sum(haystack.count(kw) for kw in keywords)
             if score == 0:
                 continue
-            meta = self._build_page_meta(md_path, content)
             results.append((score, MimirPage(meta=meta, content=content)))
 
         results.sort(key=lambda t: t[0], reverse=True)
@@ -503,9 +512,13 @@ class MarkdownMimirAdapter(MimirPort):
     async def list_pages(
         self,
         category: str | None = None,
+        prefix: str | None = None,
     ) -> list[MimirPageMeta]:
-        """List all wiki pages, optionally filtered by category."""
-        return [meta for meta, _ in self._list_pages_with_content(category)]
+        """List all wiki pages, optionally filtered by category or path prefix."""
+        pages = [meta for meta, _ in self._list_pages_with_content(category)]
+        if prefix is None:
+            return pages
+        return [meta for meta in pages if meta.path.startswith(prefix)]
 
     async def read_source(self, source_id: str) -> MimirSource | None:
         """Return the full raw source by ID, or None if not found."""
@@ -808,7 +821,7 @@ class MarkdownMimirAdapter(MimirPort):
             if md_path.name in {"index.md", "log.md"}:
                 continue
             content = md_path.read_text(encoding="utf-8")
-            rel = str(md_path.relative_to(self._wiki))
+            rel = str(self._wiki_relative_path(md_path))
             await self._reindex_page(rel, content)
             count += 1
 
@@ -829,7 +842,8 @@ class MarkdownMimirAdapter(MimirPort):
         category = parts[0] if len(parts) > 1 else "uncategorised"
         page_type = "thread" if path.startswith("threads/") else "wiki"
 
-        chunks = _chunk_markdown(content, path, category, page_type)
+        page_title = _extract_title(content, path)
+        chunks = _chunk_markdown(content, path, category, page_type, page_title=page_title)
         for i, (chunk_content, chunk_meta) in enumerate(chunks):
             await self._search_port.index(f"{path}::{i}", chunk_content, chunk_meta)
 
@@ -904,7 +918,7 @@ class MarkdownMimirAdapter(MimirPort):
 
     def _add_to_index(self, path: str, content: str) -> None:
         """Append a new entry to index.md."""
-        title = _extract_title(content)
+        title = _extract_title(content, path)
         summary = _extract_summary(content)
         category = path.split("/")[0] if "/" in path else "uncategorised"
         date_str = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -917,7 +931,7 @@ class MarkdownMimirAdapter(MimirPort):
         if not self._index.exists():
             return
         index_content = self._index.read_text(encoding="utf-8")
-        title = _extract_title(content)
+        title = _extract_title(content, path)
         summary = _extract_summary(content)
         new_lines = []
         for line in index_content.splitlines(keepends=True):
@@ -1374,7 +1388,7 @@ class MarkdownMimirAdapter(MimirPort):
 
     def _build_page_meta(self, md_path: Path, content: str) -> MimirPageMeta:
         """Build a MimirPageMeta from a path and its already-read content."""
-        rel = md_path.relative_to(self._wiki)
+        rel = self._wiki_relative_path(md_path)
         path_str = str(rel)
         parts = path_str.split("/")
         category = parts[0] if len(parts) > 1 else "uncategorised"
@@ -1383,7 +1397,7 @@ class MarkdownMimirAdapter(MimirPort):
         source_ids = self._extract_source_ids(content)
         return MimirPageMeta(
             path=path_str,
-            title=_extract_title(content),
+            title=_extract_title(content, path_str),
             summary=_extract_summary(content),
             category=category,
             updated_at=updated_at,
@@ -1428,13 +1442,41 @@ def _build_thread_md(title: str, created_at: datetime, context_ref_summary: str)
     )
 
 
-def _extract_title(content: str) -> str:
-    """Return the first H1 heading from *content*, or 'Untitled'."""
+def _fallback_title_from_path(path: str | None) -> str:
+    """Derive a readable title from a page path when no explicit title exists."""
+    if not path:
+        return "Untitled"
+
+    stem = Path(path).stem.strip()
+    if not stem:
+        return "Untitled"
+
+    ticket_match = re.match(r"^([A-Z]+-\d+)[-_](.+)$", stem)
+    if ticket_match:
+        ticket_id, remainder = ticket_match.groups()
+        remainder_title = re.sub(r"[-_]+", " ", remainder).strip().title()
+        return f"{ticket_id} {remainder_title}".strip()
+
+    return re.sub(r"[-_]+", " ", stem).strip().title() or "Untitled"
+
+
+def _extract_title(content: str, path: str | None = None) -> str:
+    """Return the best available page title from frontmatter, H1, or path."""
+    frontmatter_match = re.match(r"^---\n(.*?)\n---\n?", content, re.DOTALL)
+    if frontmatter_match:
+        try:
+            parsed = yaml.safe_load(frontmatter_match.group(1)) or {}
+        except yaml.YAMLError:
+            parsed = {}
+        title = str(parsed.get("title", "")).strip()
+        if title:
+            return title
+
     for line in content.splitlines():
         stripped = line.strip()
         if stripped.startswith("# "):
             return stripped[2:].strip()
-    return "Untitled"
+    return _fallback_title_from_path(path)
 
 
 def _extract_summary(content: str) -> str:
@@ -1458,6 +1500,7 @@ def _chunk_markdown(
     category: str,
     page_type: str = "wiki",
     *,
+    page_title: str | None = None,
     max_chars: int = _CHUNK_MAX_CHARS,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Split markdown content into searchable chunks.
@@ -1477,6 +1520,8 @@ def _chunk_markdown(
         "category": category,
         "page_type": page_type,
     }
+    resolved_title = page_title or _extract_title(content, page_path)
+    search_prefix = f"# {resolved_title}\nPath: {page_path}\nCategory: {category}\n\n"
 
     # Split on H2 boundaries, keeping the heading with each section.
     h2_pattern = re.compile(r"(?=^## )", re.MULTILINE)
@@ -1493,7 +1538,7 @@ def _chunk_markdown(
 
         if len(section) <= max_chars:
             meta = {**base_meta, "section_heading": heading}
-            chunks.append((section.strip(), meta))
+            chunks.append((f"{search_prefix}{section.strip()}", meta))
             continue
 
         # Section too large — try splitting on H3 headings first.
@@ -1514,8 +1559,8 @@ def _chunk_markdown(
 
     # Always return at least one chunk containing the full content.
     if not chunks:
-        meta = {**base_meta, "section_heading": _extract_title(content)}
-        chunks.append((content.strip(), meta))
+        meta = {**base_meta, "section_heading": resolved_title}
+        chunks.append((f"{search_prefix}{content.strip()}", meta))
 
     return chunks
 

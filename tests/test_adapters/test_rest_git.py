@@ -67,7 +67,7 @@ def client(mock_service: MagicMock) -> TestClient:
 
 
 class TestCreatePR:
-    """Tests for POST /api/v1/volundr/repos/prs."""
+    """Tests for POST /api/v1/forge/repos/prs."""
 
     def test_create_pr_success(self, client: TestClient, mock_service: MagicMock):
         """Creates a PR and returns 201."""
@@ -75,7 +75,7 @@ class TestCreatePR:
         mock_service.create_pr_from_session.return_value = pr
 
         resp = client.post(
-            "/api/v1/volundr/repos/prs",
+            "/api/v1/forge/repos/prs",
             json={"session_id": str(uuid4()), "target_branch": "main"},
         )
 
@@ -90,7 +90,7 @@ class TestCreatePR:
         mock_service.create_pr_from_session.side_effect = SessionNotFoundError("not found")
 
         resp = client.post(
-            "/api/v1/volundr/repos/prs",
+            "/api/v1/forge/repos/prs",
             json={"session_id": str(uuid4())},
         )
 
@@ -101,7 +101,7 @@ class TestCreatePR:
         mock_service.create_pr_from_session.side_effect = ValueError("no repository")
 
         resp = client.post(
-            "/api/v1/volundr/repos/prs",
+            "/api/v1/forge/repos/prs",
             json={"session_id": str(uuid4())},
         )
 
@@ -112,7 +112,7 @@ class TestCreatePR:
         mock_service.create_pr_from_session.side_effect = RuntimeError("API error")
 
         resp = client.post(
-            "/api/v1/volundr/repos/prs",
+            "/api/v1/forge/repos/prs",
             json={"session_id": str(uuid4())},
         )
 
@@ -120,14 +120,14 @@ class TestCreatePR:
 
 
 class TestListPRs:
-    """Tests for GET /api/v1/volundr/repos/prs."""
+    """Tests for GET /api/v1/forge/repos/prs."""
 
     def test_list_prs(self, client: TestClient, mock_service: MagicMock):
         """Lists PRs for a repo."""
         mock_service.list_prs.return_value = [_make_pr(1), _make_pr(2)]
 
         resp = client.get(
-            "/api/v1/volundr/repos/prs",
+            "/api/v1/forge/repos/prs",
             params={"repo_url": "https://github.com/user/repo"},
         )
 
@@ -139,7 +139,7 @@ class TestListPRs:
         mock_service.list_prs.return_value = []
 
         resp = client.get(
-            "/api/v1/volundr/repos/prs",
+            "/api/v1/forge/repos/prs",
             params={
                 "repo_url": "https://github.com/user/repo",
                 "status": "closed",
@@ -151,19 +151,19 @@ class TestListPRs:
 
     def test_list_prs_missing_repo_url(self, client: TestClient, mock_service: MagicMock):
         """Returns 422 when repo_url is missing."""
-        resp = client.get("/api/v1/volundr/repos/prs")
+        resp = client.get("/api/v1/forge/repos/prs")
         assert resp.status_code == 422
 
 
 class TestGetPR:
-    """Tests for GET /api/v1/volundr/repos/prs/{pr_number}."""
+    """Tests for GET /api/v1/forge/repos/prs/{pr_number}."""
 
     def test_get_pr(self, client: TestClient, mock_service: MagicMock):
         """Gets a PR by number."""
         mock_service.get_pr.return_value = _make_pr(42)
 
         resp = client.get(
-            "/api/v1/volundr/repos/prs/42",
+            "/api/v1/forge/repos/prs/42",
             params={"repo_url": "https://github.com/user/repo"},
         )
 
@@ -175,7 +175,7 @@ class TestGetPR:
         mock_service.get_pr.return_value = None
 
         resp = client.get(
-            "/api/v1/volundr/repos/prs/999",
+            "/api/v1/forge/repos/prs/999",
             params={"repo_url": "https://github.com/user/repo"},
         )
 
@@ -183,14 +183,14 @@ class TestGetPR:
 
 
 class TestMergePR:
-    """Tests for POST /api/v1/volundr/repos/prs/{pr_number}/merge."""
+    """Tests for POST /api/v1/forge/repos/prs/{pr_number}/merge."""
 
     def test_merge_pr_success(self, client: TestClient, mock_service: MagicMock):
         """Merges a PR successfully."""
         mock_service.merge_pr.return_value = True
 
         resp = client.post(
-            "/api/v1/volundr/repos/prs/42/merge",
+            "/api/v1/forge/repos/prs/42/merge",
             params={"repo_url": "https://github.com/user/repo"},
             json={"merge_method": "squash"},
         )
@@ -203,7 +203,7 @@ class TestMergePR:
         mock_service.merge_pr.return_value = False
 
         resp = client.post(
-            "/api/v1/volundr/repos/prs/42/merge",
+            "/api/v1/forge/repos/prs/42/merge",
             params={"repo_url": "https://github.com/user/repo"},
             json={"merge_method": "squash"},
         )
@@ -212,14 +212,14 @@ class TestMergePR:
 
 
 class TestCIStatus:
-    """Tests for GET /api/v1/volundr/repos/prs/{pr_number}/ci."""
+    """Tests for GET /api/v1/forge/repos/prs/{pr_number}/ci."""
 
     def test_get_ci_status(self, client: TestClient, mock_service: MagicMock):
         """Gets CI status for a branch."""
         mock_service.get_ci_status.return_value = CIStatus.PASSING
 
         resp = client.get(
-            "/api/v1/volundr/repos/prs/42/ci",
+            "/api/v1/forge/repos/prs/42/ci",
             params={
                 "repo_url": "https://github.com/user/repo",
                 "branch": "feature/test",
@@ -231,7 +231,7 @@ class TestCIStatus:
 
 
 class TestConfidence:
-    """Tests for POST /api/v1/volundr/repos/confidence."""
+    """Tests for POST /api/v1/forge/repos/confidence."""
 
     def test_calculate_confidence(self, client: TestClient, mock_service: MagicMock):
         """Calculates merge confidence."""
@@ -243,7 +243,7 @@ class TestConfidence:
         )
 
         resp = client.post(
-            "/api/v1/volundr/repos/confidence",
+            "/api/v1/forge/repos/confidence",
             json={
                 "tests_pass": True,
                 "coverage_delta": 0.0,

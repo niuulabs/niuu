@@ -399,7 +399,7 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
         )
 
         assert chronicle.session_id == session.id
-        assert chronicle.status == ChronicleStatus.DRAFT
+        assert chronicle.status == ChronicleStatus.COMPLETE
         assert chronicle.summary == "Did some work"
         assert chronicle.key_changes == ["main.py: added feature"]
         assert chronicle.duration_seconds == 120
@@ -432,18 +432,19 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
         )
 
         assert updated.id == existing.id  # same chronicle, updated
+        assert updated.status == ChronicleStatus.COMPLETE
         assert updated.summary == "Session summary from broker"
         assert updated.key_changes == ["app.py: refactored"]
         assert updated.unfinished_work == "Tests still needed"
         assert updated.duration_seconds == 300
 
-    async def test_does_not_overwrite_complete_chronicle(
+    async def test_reuses_existing_complete_chronicle(
         self,
         chronicle_repository: ChronRepo,
         repository: SessRepo,
         pod_manager: Pods,
     ):
-        """Creates a new chronicle if the existing one is COMPLETE."""
+        """Reuses the same chronicle when the broker reports twice for one session."""
         session_service = SessionService(repository, pod_manager)
         chronicle_service = ChronicleService(chronicle_repository, session_service)
 
@@ -455,13 +456,14 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
         existing = await chronicle_service.create_chronicle(session.id)
         await chronicle_service.update_chronicle(existing.id, status=ChronicleStatus.COMPLETE)
 
-        new_chronicle = await chronicle_service.create_or_update_from_broker(
+        updated = await chronicle_service.create_or_update_from_broker(
             session_id=session.id,
             summary="New session work",
         )
 
-        assert new_chronicle.id != existing.id
-        assert new_chronicle.summary == "New session work"
+        assert updated.id == existing.id
+        assert updated.status == ChronicleStatus.COMPLETE
+        assert updated.summary == "New session work"
 
     async def test_nonexistent_session_raises(
         self,
@@ -505,6 +507,7 @@ class TestChronicleServiceCreateOrUpdateFromBroker:
         )
 
         assert updated.id == existing.id
+        assert updated.status == ChronicleStatus.COMPLETE
         assert updated.duration_seconds == 60
         # Existing fields should be preserved
         assert updated.tags == ["python"]

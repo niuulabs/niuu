@@ -141,6 +141,39 @@ CREATE INDEX IF NOT EXISTS idx_session_events_sequence
     ON session_events(session_id, sequence);
 """
 
+SESSION_SPANS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS session_spans (
+    id              UUID PRIMARY KEY,
+    session_id      UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    trace_id        UUID NOT NULL,
+    parent_span_id  UUID,
+    kind            VARCHAR(64) NOT NULL,
+    name            TEXT NOT NULL,
+    status          VARCHAR(24) NOT NULL,
+    started_at      TIMESTAMP WITH TIME ZONE NOT NULL,
+    ended_at        TIMESTAMP WITH TIME ZONE,
+    duration_ms     INTEGER,
+    actor_type      VARCHAR(32),
+    actor_id        TEXT,
+    actor_label     TEXT,
+    source_service  VARCHAR(32) NOT NULL,
+    attributes      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+"""
+
+SESSION_SPANS_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_session_spans_session_started
+    ON session_spans(session_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_session_spans_parent
+    ON session_spans(parent_span_id);
+CREATE INDEX IF NOT EXISTS idx_session_spans_trace
+    ON session_spans(trace_id);
+CREATE INDEX IF NOT EXISTS idx_session_spans_kind
+    ON session_spans(kind);
+"""
+
 TENANTS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tenants (
     id              TEXT PRIMARY KEY,
@@ -456,56 +489,12 @@ async def create_pool(config: DatabaseConfig) -> asyncpg.Pool:
 
 
 async def init_db(pool: asyncpg.Pool) -> None:
-    """Initialize database schema (create tables if not exist).
+    """Initialize database schema.
 
-    Note: Schema migrations are handled by the migrate init container.
-    This function only creates tables if they don't exist (for development).
+    Schema ownership now lives in service migrations. The runtime no longer
+    creates or mutates tables on first connection.
     """
-    async with pool.acquire() as conn:
-        await conn.execute(SESSIONS_TABLE_SQL)
-        await conn.execute(CREATE_INDEX_SQL)
-        await conn.execute(TOKEN_USAGE_TABLE_SQL)
-        await conn.execute(TOKEN_USAGE_INDEX_SQL)
-        await conn.execute(CHRONICLES_TABLE_SQL)
-        await conn.execute(CHRONICLES_INDEX_SQL)
-        await conn.execute(CHRONICLE_EVENTS_TABLE_SQL)
-        await conn.execute(CHRONICLE_EVENTS_INDEX_SQL)
-        await conn.execute(SESSION_EVENTS_TABLE_SQL)
-        await conn.execute(SESSION_EVENTS_INDEX_SQL)
-        # Identity tables (must come before FK columns on sessions)
-        await conn.execute(TENANTS_TABLE_SQL)
-        await conn.execute(TENANTS_INDEX_SQL)
-        await conn.execute(USERS_TABLE_SQL)
-        await conn.execute(USERS_INDEX_SQL)
-        await conn.execute(TENANT_MEMBERSHIPS_TABLE_SQL)
-        await conn.execute(TENANT_MEMBERSHIPS_INDEX_SQL)
-        await conn.execute(SESSIONS_IDENTITY_COLUMNS_SQL)
-        await conn.execute(SESSIONS_WORKLOAD_TYPE_COLUMN_SQL)
-        await conn.execute(SESSIONS_IDENTITY_INDEX_SQL)
-        await conn.execute(COMMUNICATION_ROUTES_TABLE_SQL)
-        await conn.execute(COMMUNICATION_ROUTES_INDEX_SQL)
-        await conn.execute(COMMUNICATION_CURSORS_TABLE_SQL)
-        await conn.execute(COMMUNICATION_CURSORS_INDEX_SQL)
-        # Additional tables from migrations
-        await conn.execute(SAVED_PROMPTS_TABLE_SQL)
-        await conn.execute(SAVED_PROMPTS_INDEX_SQL)
-        await conn.execute(PROJECT_MAPPINGS_TABLE_SQL)
-        await conn.execute(PROJECT_MAPPINGS_INDEX_SQL)
-        await conn.execute(VOLUNDR_PRESETS_TABLE_SQL)
-        await conn.execute(VOLUNDR_PRESETS_INDEX_SQL)
-        await conn.execute(CREDENTIAL_METADATA_TABLE_SQL)
-        await conn.execute(CREDENTIAL_METADATA_INDEX_SQL)
-        await conn.execute(INTEGRATION_CONNECTIONS_TABLE_SQL)
-        await conn.execute(INTEGRATION_CONNECTIONS_INDEX_SQL)
-        await conn.execute(WORKSPACES_TABLE_SQL)
-        await conn.execute(WORKSPACES_INDEX_SQL)
-        await conn.execute(FEATURE_TOGGLES_TABLE_SQL)
-        await conn.execute(USER_FEATURE_PREFERENCES_TABLE_SQL)
-        await conn.execute(USER_FEATURE_PREFERENCES_INDEX_SQL)
-        await conn.execute(PERSONAL_ACCESS_TOKENS_TABLE_SQL)
-        await conn.execute(PERSONAL_ACCESS_TOKENS_INDEX_SQL)
-        await conn.execute(SLEIPNIR_EVENTS_TABLE_SQL)
-        await conn.execute(SLEIPNIR_EVENTS_INDEX_SQL)
+    _ = pool
 
 
 @asynccontextmanager

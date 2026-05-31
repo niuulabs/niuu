@@ -349,7 +349,7 @@ async def test_rest_archive_endpoint(
     session = _make_session(SessionStatus.STOPPED)
     await repository.create(session)
 
-    response = client.patch(f"/api/v1/volundr/sessions/{session.id}/archive")
+    response = client.patch(f"/api/v1/forge/sessions/{session.id}/archive")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "archived"
@@ -367,7 +367,7 @@ async def test_rest_restore_endpoint(
     session = _make_session(SessionStatus.ARCHIVED)
     await repository.create(session)
 
-    response = client.patch(f"/api/v1/volundr/sessions/{session.id}/restore")
+    response = client.patch(f"/api/v1/forge/sessions/{session.id}/restore")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "stopped"
@@ -381,7 +381,7 @@ async def test_rest_archive_not_found(
     """Archive endpoint returns 404 for missing session."""
     client = TestClient(_make_test_app(service))
 
-    response = client.patch(f"/api/v1/volundr/sessions/{uuid4()}/archive")
+    response = client.patch(f"/api/v1/forge/sessions/{uuid4()}/archive")
     assert response.status_code == 404
 
 
@@ -396,7 +396,7 @@ async def test_rest_archive_conflict(
     session = _make_session(SessionStatus.STOPPING)
     await repository.create(session)
 
-    response = client.patch(f"/api/v1/volundr/sessions/{session.id}/archive")
+    response = client.patch(f"/api/v1/forge/sessions/{session.id}/archive")
     assert response.status_code == 409
 
 
@@ -411,7 +411,7 @@ async def test_rest_restore_conflict(
     session = _make_session(SessionStatus.STOPPED)
     await repository.create(session)
 
-    response = client.patch(f"/api/v1/volundr/sessions/{session.id}/restore")
+    response = client.patch(f"/api/v1/forge/sessions/{session.id}/restore")
     assert response.status_code == 409
 
 
@@ -430,7 +430,7 @@ async def test_rest_bulk_archive(
     for s in [s1, s2, s3]:
         await repository.create(s)
 
-    response = client.post("/api/v1/volundr/sessions/archive-stopped")
+    response = client.post("/api/v1/forge/sessions/archive-stopped")
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 2
@@ -450,7 +450,7 @@ async def test_rest_list_excludes_archived(
     for s in [s1, s2]:
         await repository.create(s)
 
-    response = client.get("/api/v1/volundr/sessions")
+    response = client.get("/api/v1/forge/sessions")
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 1
@@ -471,7 +471,7 @@ async def test_rest_list_with_status_filter(
     for s in [s1, s2]:
         await repository.create(s)
 
-    response = client.get("/api/v1/volundr/sessions?status=archived")
+    response = client.get("/api/v1/forge/sessions?status=archived")
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 1
@@ -492,7 +492,7 @@ async def test_rest_list_with_include_archived(
     for s in [s1, s2]:
         await repository.create(s)
 
-    response = client.get("/api/v1/volundr/sessions?include_archived=true")
+    response = client.get("/api/v1/forge/sessions?include_archived=true")
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 2

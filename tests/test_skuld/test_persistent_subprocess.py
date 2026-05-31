@@ -203,6 +203,30 @@ async def test_start_without_initial_prompt_does_not_write(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_injects_tracker_shim_env(tmp_path) -> None:
+    proc = _make_proc([])
+    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    shim_env = {
+        "PATH": f"{tmp_path}/.skuld-tools/bin:/usr/bin",
+        "RAVN_WORKSPACE_DIR": str(tmp_path),
+    }
+
+    with (
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as spawn,
+        patch(
+            "skuld.transports.persistent_subprocess.ensure_codex_tool_shims",
+            return_value=(tmp_path / ".skuld-tools" / "bin", shim_env),
+        ),
+    ):
+        await transport.start()
+
+    env = spawn.call_args.kwargs["env"]
+    assert env["PATH"] == shim_env["PATH"]
+    assert env["RAVN_WORKSPACE_DIR"] == str(tmp_path)
+    await transport.stop()
+
+
+@pytest.mark.asyncio
 async def test_send_message_concurrency_is_serialized(tmp_path) -> None:
     """Two concurrent send_message calls run sequentially under the lock."""
     proc = _make_proc(

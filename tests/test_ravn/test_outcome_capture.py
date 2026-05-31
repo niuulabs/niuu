@@ -95,6 +95,20 @@ def _research_persona() -> PersonaConfig:
     )
 
 
+def _research_alias_persona() -> PersonaConfig:
+    return PersonaConfig(
+        name="council-chair",
+        produces=PersonaProduces(
+            event_type="council.chair.turn.completed",
+            event_type_map={"research_published": "research.completed"},
+            schema={
+                "summary": OutcomeField(type="string", description="summary"),
+                "page_path": OutcomeField(type="string", description="page path"),
+            },
+        ),
+    )
+
+
 class _FakeMimir:
     def __init__(
         self,
@@ -303,6 +317,42 @@ class TestValidateMimirOutcomeForPersona:
 
         assert validated.valid is False
         assert any("self-ingested page content" in error for error in validated.errors)
+
+    @pytest.mark.asyncio
+    async def test_research_alias_outcome_still_validates_permanent_page(self) -> None:
+        persona = _research_alias_persona()
+        parsed = _parse_outcome_block_for_persona(
+            (
+                "---outcome---\n"
+                "verdict: research_published\n"
+                "summary: done\n"
+                "page_path: research/example.md\n"
+                "---end---\n"
+            ),
+            persona,
+        )
+        assert parsed is not None
+
+        page = MimirPage(
+            meta=MimirPageMeta(
+                path="research/example.md",
+                title="Example",
+                summary="summary",
+                category="research",
+                updated_at=datetime.now(UTC),
+                source_ids=[],
+                produced_by_thread=True,
+            ),
+            content="# Example\n\nBody.",
+        )
+        validated = await _validate_mimir_outcome_for_persona(
+            parsed,
+            persona_config=persona,
+            mimir=_FakeMimir(page=page),
+        )
+
+        assert validated.valid is False
+        assert any("no source_ids provenance" in error for error in validated.errors)
 
 
 # ---------------------------------------------------------------------------

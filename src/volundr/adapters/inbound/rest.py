@@ -7,22 +7,24 @@ import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from skuld.log_aggregate import aggregate_workspace_logs
 from volundr.adapters.inbound.auth import extract_principal, require_role
+from volundr.config import PermissionAutoApprovalConfig
 from volundr.domain.models import (
     Chronicle,
     ChronicleStatus,
     CleanupTarget,
     GitProviderType,
     GitSource,
+    LocalMountSource,
     Model,
     ModelProvider,
     ModelTier,
@@ -49,6 +51,7 @@ from volundr.domain.services import (
     RepoService,
     RepoValidationError,
     SessionAccessDeniedError,
+    SessionArchiveNotAvailableError,
     SessionNotFoundError,
     SessionNotRunningError,
     SessionService,
@@ -56,8 +59,14 @@ from volundr.domain.services import (
     StatsService,
     TokenService,
 )
+from volundr.domain.services.permission_auto_approval import (
+    evaluate_permission_auto_approval,
+)
+from volundr.log_aggregate import aggregate_workspace_logs
+from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
+WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 
 
 def _public_session_endpoint(endpoint: str | None) -> str | None:
@@ -70,7 +79,11 @@ def _public_session_endpoint(endpoint: str | None) -> str | None:
         return endpoint
     if parsed.hostname != "127.0.0.1":
         return endpoint
-    host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    host = (
+        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
+        or os.environ.get("NIUU_SERVER_HOST")
+        or "127.0.0.1"
+    ).strip() or "127.0.0.1"
     public_host = "localhost" if host == "127.0.0.1" else host
     netloc = public_host
     if parsed.port is not None:
@@ -103,6 +116,68 @@ def _workspace_dir_from_code_endpoint(code_endpoint: str | None) -> FilePath | N
         return None
     path = FilePath(parsed.path)
     return path if path.exists() else None
+
+
+def _workspace_dir_from_session(session: Session) -> FilePath | None:
+    """Resolve a local workspace path from session metadata when possible."""
+    workspace_dir = _workspace_dir_from_code_endpoint(session.code_endpoint)
+    if workspace_dir is not None:
+        return workspace_dir
+    if isinstance(session.source, LocalMountSource) and session.source.local_path:
+        path = FilePath(session.source.local_path)
+        return path if path.exists() else None
+    return None
+
+
+def _session_proxy_url(base_url: str, *path_segments: str) -> str:
+    """Build a validated session-pod URL from a trusted base and encoded path segments."""
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Session proxy target must be an absolute http(s) URL")
+
+    segments = [quote(segment, safe="") for segment in path_segments]
+    base_path = parsed.path.rstrip("/")
+    suffix = "/".join(segments)
+    if base_path and suffix:
+        path = f"{base_path}/{suffix}"
+    elif base_path:
+        path = base_path
+    elif suffix:
+        path = f"/{suffix}"
+    else:
+        path = "/"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _fallback_workspace_logs(
+    session: Session,
+    *,
+    lines: int,
+    level: str,
+    participants: set[str] | None,
+    query: str,
+) -> dict | None:
+    """Read logs directly from a local file:// workspace when available."""
+    workspace_dir = _workspace_dir_from_session(session)
+    if workspace_dir is None:
+        return None
+    payload = aggregate_workspace_logs(
+        workspace_dir,
+        lines=lines,
+        level=level,
+        participants=participants,
+        query=query,
+    )
+    payload["session_id"] = str(session.id)
+    return payload
+
+
+def _fallback_workspace_transcript(session: Session) -> dict | None:
+    """Read the persisted transcript directly from a local file:// workspace."""
+    workspace_dir = _workspace_dir_from_session(session)
+    if workspace_dir is None:
+        return None
+    return load_workspace_transcript(workspace_dir, str(session.id))
 
 
 _RFC1123_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -216,12 +291,27 @@ class SessionCreate(BaseModel):
     workload_type: str = Field(
         default="session",
         max_length=100,
-        description="Workload type: 'session' (default) or 'ravn_flock' for raiding parties",
+        description="Workload type: 'session' (default) or 'ravn_flock' for runing parties",
     )
     workload_config: dict = Field(
         default_factory=dict,
         description="Workload-specific configuration (e.g. personas, mesh, mimir settings)",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_session_definition(cls, data: object) -> object:
+        """Accept ``session_definition`` as a backwards-compatible alias for ``definition``."""
+        if not isinstance(data, dict):
+            return data
+        if data.get("definition"):
+            return data
+        alias_value = data.get("session_definition")
+        if alias_value:
+            merged = dict(data)
+            merged["definition"] = alias_value
+            return merged
+        return data
 
     model_config = {
         "json_schema_extra": {
@@ -237,6 +327,26 @@ class SessionCreate(BaseModel):
             },
         },
     }
+
+
+class PermissionAutoApprovalCheck(BaseModel):
+    """Request model for checking one permission request against server policy."""
+
+    request_id: str | None = Field(default=None, max_length=255)
+    tool_name: str = Field(default="", max_length=255)
+    description: str = Field(default="", max_length=4096)
+    command: str | None = Field(default=None, max_length=100_000)
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class PermissionAutoApprovalResponse(BaseModel):
+    """Server-side decision for a permission request auto approval."""
+
+    can_auto_approve: bool
+    reason: str
+    command: str | None = None
+    delay_seconds: int
+    matched_pattern: str | None = None
 
 
 class SessionUpdate(BaseModel):
@@ -455,6 +565,7 @@ class ModelInfo(BaseModel):
     name: str = Field(description="Human-readable model name")
     description: str = Field(description="Model capabilities description")
     provider: ModelProvider = Field(description="Provider type: cloud or local")
+    vendor: str = Field(description="Model vendor/runtime family (e.g. anthropic, openai)")
     tier: ModelTier = Field(description="Model tier classification")
     color: str = Field(description="UI color code for the model badge")
     cost_per_million_tokens: float | None = Field(
@@ -465,6 +576,10 @@ class ModelInfo(BaseModel):
         default=None,
         description="VRAM required for local models (e.g. 24GB)",
     )
+    session_definition: str | None = Field(
+        default=None,
+        description="Resolved model-specific runtime override, when configured.",
+    )
 
     @classmethod
     def from_model(cls, model: Model) -> "ModelInfo":
@@ -474,10 +589,12 @@ class ModelInfo(BaseModel):
             name=model.name,
             description=model.description,
             provider=model.provider,
+            vendor=model.vendor,
             tier=model.tier,
             color=model.color,
             cost_per_million_tokens=model.cost_per_million_tokens,
             vram_required=model.vram_required,
+            session_definition=model.session_definition,
         )
 
 
@@ -503,6 +620,14 @@ class RepoResponse(BaseModel):
     url: str = Field(description="Web URL for the repository")
     default_branch: str = Field(description="Default branch name")
     branches: list[str] = Field(description="Available branch names")
+
+
+class WorkflowGateResolveRequest(BaseModel):
+    """Request body for resolving a live workflow gate."""
+
+    decision: str
+    notes: str = ""
+    source: str = "human"
 
 
 class ErrorResponse(BaseModel):
@@ -917,11 +1042,13 @@ def create_router(
     broadcaster: EventBroadcaster | None = None,
     repo_service: RepoService | None = None,
     chronicle_service: ChronicleService | None = None,
+    archive_service=None,
     *,
-    prefix: str = "/api/v1/volundr",
+    prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
+    compat_router = APIRouter(prefix="/api/v1/volundr") if prefix == "/api/v1/forge" else None
     forge = ForgeService(
         session_service,
         stats_service=stats_service,
@@ -929,6 +1056,7 @@ def create_router(
         pricing_provider=pricing_provider,
         repo_service=repo_service,
         chronicle_service=chronicle_service,
+        archive_service=archive_service,
     )
 
     async def _optional_principal(request: Request) -> Principal | None:
@@ -957,6 +1085,14 @@ def create_router(
             logger.warning("JIT user provisioning failed for %s", principal.user_id, exc_info=True)
 
         return principal
+
+    def _strict_identity_enabled(request: Request) -> bool:
+        identity = getattr(request.app.state, "identity", None)
+        if identity is None:
+            return False
+        from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
+
+        return not isinstance(identity, AllowAllIdentityAdapter)
 
     @router.get("/feature-flags", tags=["Features"])
     async def get_feature_flags(request: Request) -> dict:
@@ -1002,33 +1138,6 @@ def create_router(
                 detail=str(e),
             )
 
-    @router.get("/auth/config", tags=["Auth"])
-    async def get_auth_config(request: Request) -> dict:
-        """Public auth discovery endpoint for CLI and external clients.
-
-        Returns OIDC configuration so CLI clients can auto-discover how
-        to authenticate. This endpoint does NOT require authentication.
-        """
-        settings = request.app.state.settings
-
-        issuer = settings.auth_discovery.issuer
-        if not issuer:
-            # Fall back to gateway adapter's issuer_url kwarg
-            issuer = settings.gateway.kwargs.get("issuer_url", "")
-
-        if not issuer:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Auth discovery not configured",
-            )
-
-        return {
-            "issuer": issuer,
-            "client_id": settings.auth_discovery.cli_client_id,
-            "scopes": settings.auth_discovery.scopes,
-            "device_authorization_supported": True,
-        }
-
     async def _optional_user_id(request: Request) -> str | None:
         """Extract user_id from auth principal if available, else None."""
         principal = await _optional_principal(request)
@@ -1052,6 +1161,8 @@ def create_router(
     ) -> list[SessionResponse]:
         """List all sessions. Archived sessions are excluded by default."""
         principal = await _optional_principal(request)
+        if principal is None and _strict_identity_enabled(request):
+            return []
         sessions = await forge.list_sessions(
             status=status_filter,
             include_archived=include_archived,
@@ -1201,6 +1312,52 @@ def create_router(
             )
 
         return SessionResponse.from_session(session)
+
+    @router.post(
+        "/sessions/{session_id}/permissions/auto-approval/evaluate",
+        response_model=PermissionAutoApprovalResponse,
+        responses={404: {"model": ErrorResponse}},
+        tags=["Sessions"],
+    )
+    async def evaluate_session_permission_auto_approval(
+        request: Request,
+        data: PermissionAutoApprovalCheck,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> PermissionAutoApprovalResponse:
+        """Evaluate whether a permission request may be auto-approved by policy."""
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+
+        principal = await _optional_principal(request)
+        try:
+            await forge.ensure_access(session, principal, "view")
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied to session {session_id}",
+            )
+
+        app_settings = getattr(request.app.state, "settings", None)
+        policy = getattr(app_settings, "permission_auto_approval", None)
+        if not isinstance(policy, PermissionAutoApprovalConfig):
+            policy = PermissionAutoApprovalConfig()
+
+        decision = evaluate_permission_auto_approval(
+            command=data.command,
+            input=data.input,
+            policy=policy,
+        )
+        return PermissionAutoApprovalResponse(
+            can_auto_approve=decision.can_auto_approve,
+            reason=decision.reason,
+            command=decision.command,
+            delay_seconds=decision.delay_seconds,
+            matched_pattern=decision.matched_pattern,
+        )
 
     @router.put(
         "/sessions/{session_id}",
@@ -1358,7 +1515,7 @@ def create_router(
         """Report a session activity state change from Skuld.
 
         Updates the session's activity_state and broadcasts a
-        session_activity SSE event for downstream consumers (e.g. Tyr).
+        session_activity SSE event for downstream consumers (e.g. Ting).
         """
         # Authorization: caller must own the session
         principal = await _optional_principal(request)
@@ -1488,8 +1645,12 @@ def create_router(
         return [ModelInfo.from_model(m) for m in models]
 
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
-    async def get_stats() -> StatsResponse:
+    async def get_stats(request: Request) -> StatsResponse:
         """Get aggregate statistics for the dashboard."""
+        if _strict_identity_enabled(request):
+            principal = await _optional_principal(request)
+            if principal is None:
+                return StatsResponse()
         try:
             stats = await forge.get_stats()
         except RuntimeError as exc:
@@ -1614,7 +1775,7 @@ def create_router(
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    f"{base_url}/api/logs",
+                    _session_proxy_url(base_url, "api", "logs"),
                     params={"lines": lines, "level": level},
                 )
                 response.raise_for_status()
@@ -1665,70 +1826,63 @@ def create_router(
             description="Case-insensitive text filter applied to participant, source, and message",
         ),
     ) -> dict:
-        """Proxy aggregated broker + flock logs from a running session pod."""
-        try:
-            session, base_url = await forge.get_session_proxy_target(session_id)
-        except LookupError:
+        """Return aggregated logs from a live session or stopped-session workspace."""
+        session = await forge.get_session(session_id)
+        if session is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session {session_id} has no active endpoint",
+
+        try:
+            if session.chat_endpoint:
+                _, base_url = await forge.get_session_proxy_target(session_id)
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(
+                        _session_proxy_url(base_url, "api", "logs", "aggregate"),
+                        params={
+                            "lines": lines,
+                            "level": level,
+                            "participants": participants,
+                            "query": query,
+                        },
+                    )
+                    response.raise_for_status()
+                    return response.json()
+        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.info(
+                "Falling back to workspace logs for session %s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
             )
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{base_url}/api/logs/aggregate",
-                    params={
-                        "lines": lines,
-                        "level": level,
-                        "participants": participants,
-                        "query": query,
-                    },
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == status.HTTP_404_NOT_FOUND:
-                workspace_dir = _workspace_dir_from_code_endpoint(session.code_endpoint)
-                if workspace_dir is not None:
-                    requested_participants = (
-                        {item.strip() for item in participants.split(",") if item.strip()}
-                        if participants
-                        else None
-                    )
-                    payload = aggregate_workspace_logs(
-                        workspace_dir,
-                        lines=lines,
-                        level=level,
-                        participants=requested_participants,
-                        query=query,
-                    )
-                    payload["session_id"] = str(session.id)
-                    return payload
-            logger.warning(
-                "Aggregate log proxy failed for session %s: %s",
-                _sanitize_log(session_id),
-                e,
+            requested_participants = (
+                {item.strip() for item in participants.split(",") if item.strip()}
+                if participants
+                else None
             )
+            return await forge.get_aggregated_logs(
+                session_id,
+                lines=lines,
+                level=level,
+                participants=requested_participants,
+                query=query,
+            )
+        except RuntimeError as e:
+            fallback = _fallback_workspace_logs(
+                session,
+                lines=lines,
+                level=level,
+                participants=requested_participants,
+                query=query,
+            )
+            if fallback is not None:
+                return fallback
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to fetch aggregate logs from session pod: {e.response.status_code}",
-            )
-        except httpx.RequestError as e:
-            logger.warning(
-                "Aggregate log proxy connection failed for session %s: %s",
-                _sanitize_log(session_id),
-                e,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Could not connect to session pod: {e}",
-            )
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e) or "Session archive service not available",
+            ) from None
 
     @router.post(
         "/sessions/{session_id}/messages",
@@ -1783,19 +1937,18 @@ def create_router(
             sep = "&" if "?" in ws_url else "?"
             ws_url = f"{ws_url}{sep}access_token={token}"
 
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        connect_kwargs: dict[str, object] = {"open_timeout": 10}
+        if ws_url.startswith("wss://"):
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            connect_kwargs["ssl"] = ssl_ctx
 
         try:
-            async with connect(ws_url, ssl=ssl_ctx, open_timeout=10) as ws:
-                # Drain any pending messages from the server
-                try:
-                    while True:
-                        await asyncio.wait_for(ws.recv(), timeout=1)
-                except TimeoutError:
-                    pass
-                # Send the user message
+            async with connect(ws_url, **connect_kwargs) as ws:
+                # Send immediately. Draining startup traffic here can delay or
+                # drop the first user turn for transports that emit welcome or
+                # capability events while still coming online.
                 await ws.send(json.dumps({"type": "user", "content": content}))
         except Exception as e:
             raise HTTPException(
@@ -1817,9 +1970,119 @@ def create_router(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
     ) -> dict:
-        """Proxy conversation history retrieval from a running session pod."""
+        """Return conversation history from a live session or stopped-session workspace."""
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+
+        try:
+            if session.chat_endpoint:
+                _, base_url = await forge.get_session_proxy_target(session_id)
+
+                headers = {}
+                auth = request.headers.get("authorization")
+                if auth:
+                    headers["Authorization"] = auth
+
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(
+                        _session_proxy_url(base_url, "api", "conversation", "history"),
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                    return response.json()
+        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.info(
+                "Falling back to workspace transcript for session %s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
+            )
+
+        try:
+            return await forge.get_transcript(session_id)
+        except RuntimeError as e:
+            fallback = _fallback_workspace_transcript(session)
+            if fallback is not None:
+                return fallback
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e) or "Session archive service not available",
+            ) from None
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+
+    @router.get(
+        "/sessions/{session_id}/workflow/gates",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def get_workflow_gates(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Return native workflow gate state for a live session."""
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        if not session.chat_endpoint:
+            return {"gates": []}
+
         try:
             _, base_url = await forge.get_session_proxy_target(session_id)
+            headers = {}
+            auth = request.headers.get("authorization")
+            if auth:
+                headers["Authorization"] = auth
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    _session_proxy_url(base_url, "api", "workflow", "gates"),
+                    headers=headers,
+                )
+                response.raise_for_status()
+                return response.json()
+        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.warning(
+                "Workflow gate proxy failed for session %s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to fetch workflow gates from session pod: {e}",
+            )
+
+    @router.post(
+        "/sessions/{session_id}/workflow/gates/{gate_id}/resolve",
+        tags=["Sessions"],
+        responses={
+            400: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def resolve_workflow_gate(
+        request: Request,
+        body: WorkflowGateResolveRequest,
+        session_id: UUID = Path(description="Unique session identifier"),
+        gate_id: str = Path(description="Workflow gate identifier"),
+    ) -> dict:
+        """Resolve a pending native workflow gate for a live session."""
+        principal = await extract_principal(request)
+        try:
+            session, base_url = await forge.get_session_proxy_target(session_id)
         except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1830,35 +2093,137 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session {session_id} has no active endpoint",
             )
+        if session.owner_id and session.owner_id != principal.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to resolve gates for this session",
+            )
 
-        # Forward the caller's auth to the session pod
         headers = {}
         auth = request.headers.get("authorization")
         if auth:
             headers["Authorization"] = auth
+        intent = request.headers.get(WORKFLOW_GATE_INTENT_HEADER)
+        if intent:
+            headers[WORKFLOW_GATE_INTENT_HEADER] = intent
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{base_url}/api/conversation/history",
+                response = await client.post(
+                    _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve"),
                     headers=headers,
+                    json=body.model_dump(),
                 )
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as e:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to fetch conversation from session pod: {e.response.status_code}",
-            )
+            status_code = e.response.status_code
+            detail = e.response.text[:500]
+            raise HTTPException(status_code=status_code, detail=detail)
         except httpx.RequestError as e:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Could not connect to session pod: {e}",
             )
 
+    @router.get(
+        "/sessions/{session_id}/transcript",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+    )
+    async def get_session_transcript(
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Return the persisted session transcript directly from workspace storage."""
+        try:
+            return await forge.get_transcript(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except SessionArchiveNotAvailableError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+
+    @router.get(
+        "/sessions/{session_id}/transcript/download",
+        tags=["Sessions"],
+        responses={
+            400: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+    )
+    async def download_session_transcript(
+        session_id: UUID = Path(description="Unique session identifier"),
+        format: str = Query(default="md", pattern="^(md|json)$"),
+    ) -> FileResponse:
+        """Download the persisted transcript as Markdown or JSON."""
+        try:
+            path = await forge.get_transcript_download_path(session_id, format)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except SessionArchiveNotAvailableError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+
+        media_type = "text/markdown; charset=utf-8" if format == "md" else "application/json"
+        filename = f"session-{session_id}-transcript.{format}"
+        return FileResponse(path, media_type=media_type, filename=filename)
+
+    @router.get(
+        "/sessions/{session_id}/archive",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+    )
+    async def get_session_archive_manifest(
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Return the workspace-backed archive manifest for a session."""
+        try:
+            return await forge.get_archive_manifest(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except SessionArchiveNotAvailableError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e),
             )
 
@@ -2327,7 +2692,7 @@ def create_router(
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
-                    f"{base_url}/api/diff",
+                    _session_proxy_url(base_url, "api", "diff"),
                     params={"file": file, "base": base},
                     headers=proxy_headers,
                 )
@@ -2506,4 +2871,41 @@ def create_router(
                 failed.append({"session_id": sid, "error": "Internal error"})
         return {"deleted": deleted, "failed": failed}
 
-    return router
+    if compat_router is None:
+        return router
+
+    compat_router.add_api_route(
+        "/sessions/{session_id}/logs/aggregate",
+        get_session_logs_aggregate,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    compat_router.add_api_route(
+        "/sessions/{session_id}/messages",
+        send_session_message,
+        methods=["POST"],
+        include_in_schema=False,
+    )
+    compat_router.add_api_route(
+        "/sessions/{session_id}/conversation",
+        get_conversation,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    compat_router.add_api_route(
+        "/sessions/{session_id}/transcript",
+        get_session_transcript,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    compat_router.add_api_route(
+        "/sessions/{session_id}/transcript/download",
+        download_session_transcript,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+
+    combined_router = APIRouter()
+    combined_router.include_router(router)
+    combined_router.include_router(compat_router)
+    return combined_router

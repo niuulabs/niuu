@@ -2,7 +2,7 @@ apiVersion: v2
 name: skuld-planner
 description: "Skuld Planner — lightweight AI planning session broker (no IDE, no terminal)"
 type: application
-version: 0.0.0-tyr.241
+version: 0.0.0-ting.241
 appVersion: "0.1.0"
 keywords:
   - claude

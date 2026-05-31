@@ -32,19 +32,19 @@ pnpm exec playwright show-report
 
 | Date           | Pass/Total | Key changes                                                                                                         |
 | -------------- | ---------- | ------------------------------------------------------------------------------------------------------------------- |
-| Apr 20 (start) | 0/35       | App was blank (broken plugin-tyr export). Tests had wrong selectors.                                                |
+| Apr 20 (start) | 0/35       | App was blank (broken plugin-ting export). Tests had wrong selectors.                                               |
 | Apr 20 (mid)   | 33/33      | Fixed app render, test selectors, but baselines were self-referential (not web2)                                    |
 | Apr 20 (late)  | 10/33      | Switched baselines to web2 screenshots. Real comparison.                                                            |
-| Apr 21 (early) | 16/33      | Tyr subnav route-awareness, Mimir /pages + /sources routes added                                                    |
+| Apr 21 (early) | 16/33      | Ting subnav route-awareness, Mimir /pages + /sources routes added                                                   |
 | Apr 21 (mid)   | 15/33      | Fixed 27 missing CSS imports in @niuulabs/ui (KpiCard, Table, etc.). Ravn overview regressed slightly from new CSS. |
 
 ## Root causes found and fixed
 
-1. **App wouldn't render at all** — `plugin-tyr` dist was stale, missing `buildTyrAuditLogHttpAdapter` export. Fixed by rebuilding packages.
-2. **Web2 baselines were unstyled** — Tyr prototype's `styles.css?v=4` query string caused 404. Fixed with URL query-string stripping in HTTP server.
+1. **App wouldn't render at all** — `plugin-ting` dist was stale, missing `buildTingAuditLogHttpAdapter` export. Fixed by rebuilding packages.
+2. **Web2 baselines were unstyled** — Ting prototype's `styles.css?v=4` query string caused 404. Fixed with URL query-string stripping in HTTP server.
 3. **Web2 Mimir baselines showed Observatory** — Flokk shell defaulted to Observatory plugin. Fixed with explicit rail click to activate Mimir.
 4. **CORS blocking web2 prototype rendering** — Babel's XHR-based JSX loading blocked on `file://`. Fixed by serving via HTTP.
-5. **Tyr Settings subnav on all pages** — `subnav: () => SettingsRail()` was unconditional. Fixed with route-aware `TyrSubnav` wrapper.
+5. **Ting Settings subnav on all pages** — `subnav: () => SettingsRail()` was unconditional. Fixed with route-aware `TingSubnav` wrapper.
 6. **Mimir /pages and /sources routes missing** — PagesView and SourcesView were internal tabs without dedicated routes. Visual tests 404'd. Fixed by adding routes.
 7. **27 CSS files missing from @niuulabs/ui build** — KpiStrip, Table, LifecycleBadge, PersonaAvatar, MountChip, all chat components etc. existed in source but weren't imported in `styles.css` entrypoint. Pages rendered without card/table/badge styling. Fixed.
 8. **Live clock in web2 baselines** — UTC clock changed every capture. Fixed by hiding clock elements before screenshots.
@@ -78,7 +78,7 @@ pnpm exec playwright show-report
 | Budget   | **PASS**    | —                                                |
 | Personas | **PASS**    | —                                                |
 
-### Tyr (7 tickets) — NIU-708 to NIU-714
+### Ting (7 tickets) — NIU-708 to NIU-714
 
 | Page        | Status      | Gaps remaining                                    |
 | ----------- | ----------- | ------------------------------------------------- |

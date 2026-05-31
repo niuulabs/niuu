@@ -644,175 +644,28 @@ def _build_credentials_router(
 
 def create_credentials_router(
     credential_service: CredentialService,
+    prefix: str = "/api/v1/credentials",
 ) -> APIRouter:
-    """Create the legacy Volundr credentials router."""
+    """Create the canonical shared credentials router."""
     return _build_credentials_router(
         credential_service,
-        prefix="/api/v1/volundr/credentials",
-        deprecated=True,
-        canonical_prefix="/api/v1/credentials",
-        compatibility_summary_lists=True,
+        prefix=prefix,
     )
 
 
 def create_canonical_credentials_router(
     credential_service: CredentialService,
+    prefix: str = "/api/v1/credentials",
 ) -> APIRouter:
-    """Create the canonical shared credentials router."""
-    return _build_credentials_router(
-        credential_service,
-        prefix="/api/v1/credentials",
-    )
+    """Backward-compatible alias for the canonical shared credentials router."""
+    return create_credentials_router(credential_service, prefix=prefix)
 
 
 def create_legacy_secret_store_router(
     credential_service: CredentialService,
 ) -> APIRouter:
-    """Create root-level Volundr secret-store compatibility routes."""
-    router = APIRouter(prefix="/api/v1/volundr", tags=["Credentials"])
-
-    def _cred_to_legacy_store_response(cred) -> LegacyStoreCredentialResponse:
-        return LegacyStoreCredentialResponse(
-            id=cred.id,
-            name=cred.name,
-            secret_type=cred.secret_type.value,
-            keys=list(cred.keys),
-            metadata=cred.metadata,
-            created_at=cred.created_at.isoformat(),
-            updated_at=cred.updated_at.isoformat(),
-        )
-
-    @router.get("/secrets/types", response_model=list[LegacySecretTypeInfoResponse])
-    async def list_secret_types(
-        request: Request,
-        response: Response,
-    ):
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path="/api/v1/volundr/secrets/types",
-                canonical_path="/api/v1/credentials/types",
-            ),
-        )
-        return [
-            LegacySecretTypeInfoResponse(
-                type=entry["type"],
-                label=entry["label"],
-                description=entry["description"],
-                fields=entry["fields"],
-                default_mount_type=entry["default_mount_type"],
-            )
-            for entry in credential_service.get_types()
-        ]
-
-    @router.get("/secrets/store", response_model=list[LegacyStoreCredentialResponse])
-    async def list_store_credentials(
-        request: Request,
-        response: Response,
-        type: str | None = Query(None),
-        principal: Principal = Depends(extract_principal),
-    ):
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path="/api/v1/volundr/secrets/store",
-                canonical_path="/api/v1/credentials/user",
-            ),
-        )
-        st = SecretType(type) if type else None
-        creds = await credential_service.list("user", principal.user_id, st)
-        return [_cred_to_legacy_store_response(c) for c in creds]
-
-    @router.get("/secrets/store/{name}", response_model=LegacyStoreCredentialResponse)
-    async def get_store_credential(
-        request: Request,
-        response: Response,
-        name: str,
-        principal: Principal = Depends(extract_principal),
-    ):
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path=f"/api/v1/volundr/secrets/store/{name}",
-                canonical_path=f"/api/v1/credentials/user/{name}",
-            ),
-        )
-        cred = await credential_service.get("user", principal.user_id, name)
-        if cred is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Credential not found",
-            )
-        return _cred_to_legacy_store_response(cred)
-
-    @router.post(
-        "/secrets/store",
-        response_model=LegacyStoreCredentialResponse,
-        status_code=status.HTTP_201_CREATED,
+    """Backward-compatible alias for the canonical secret-store routes."""
+    return _build_credentials_router(
+        credential_service,
+        prefix="/api/v1/credentials",
     )
-    async def create_store_credential(
-        request: Request,
-        response: Response,
-        body: LegacyStoreCredentialCreate,
-        principal: Principal = Depends(extract_principal),
-    ):
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path="/api/v1/volundr/secrets/store",
-                canonical_path="/api/v1/credentials/user",
-            ),
-        )
-        try:
-            st = SecretType(body.secret_type)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid secret_type: {body.secret_type}",
-            )
-
-        try:
-            cred = await credential_service.create(
-                owner_type="user",
-                owner_id=principal.user_id,
-                name=body.name,
-                secret_type=st,
-                data=body.data,
-                metadata=body.metadata,
-            )
-        except CredentialValidationError as e:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail={"errors": e.errors},
-            )
-
-        return _cred_to_legacy_store_response(cred)
-
-    @router.delete("/secrets/store/{name}", status_code=status.HTTP_204_NO_CONTENT)
-    async def delete_store_credential(
-        request: Request,
-        response: Response,
-        name: str,
-        principal: Principal = Depends(extract_principal),
-    ):
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path=f"/api/v1/volundr/secrets/store/{name}",
-                canonical_path=f"/api/v1/credentials/user/{name}",
-            ),
-        )
-        cred = await credential_service.get("user", principal.user_id, name)
-        if cred is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Credential not found",
-            )
-        await credential_service.delete("user", principal.user_id, name)
-
-    return router

@@ -15,9 +15,158 @@ const VERDICT_ICONS: Record<MeshVerdict, typeof CheckCircle> = {
   needs_review: AlertTriangle,
 };
 
+const WRAPPED_OUTCOME_START = /---\s*o\s*u\s*t\s*c\s*o\s*m\s*e\s*---/i;
+const WRAPPED_OUTCOME_END = /---\s*e\s*n\s*d\s*---/i;
+const SOFT_KEY_FRAGMENT = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const INLINE_LABEL_TEXT = /^[A-Z][A-Za-z0-9 /&()_-]{2,48}$/;
+const INLINE_LABEL_CHAR = /[A-Za-z0-9 /&()_-]/;
+
+function parseKeyValueLine(line: string): { key: string; value: string } | null {
+  const colon = line.indexOf(':');
+  if (colon <= 0) return null;
+
+  const key = line.slice(0, colon).trim();
+  if (!key || !SOFT_KEY_FRAGMENT.test(key)) return null;
+
+  return {
+    key,
+    value: line.slice(colon + 1).trim(),
+  };
+}
+
+function joinSoftWrappedParts(parts: string[], compact = false): string {
+  const cleaned = parts.map((part) => part.trim()).filter(Boolean);
+  if (compact) return cleaned.join('');
+
+  let result = '';
+  let previous = '';
+  for (const part of cleaned) {
+    if (!result) {
+      result = part;
+    } else if (/^[.,;:!?)]/.test(part) || result.endsWith('(') || result.endsWith('/')) {
+      result += part;
+    } else if (/^[.,;:!?)]$/.test(previous)) {
+      result += ` ${part}`;
+    } else if (part.startsWith('/') || part.startsWith('_') || part.startsWith('-')) {
+      result += part;
+    } else if (previous.length === 1 && /^[a-z]/.test(part)) {
+      result += part;
+    } else if (previous.startsWith('-') && /^[a-z]{1,3}$/.test(part)) {
+      result += part;
+    } else {
+      result += ` ${part}`;
+    }
+    previous = part;
+  }
+  return result;
+}
+
+function mergeSoftWrappedKeyLine(lines: string[], startIndex: number): [string, number] {
+  const stripped = (lines[startIndex] ?? '').trim();
+  const inlineMatch = parseKeyValueLine(stripped);
+  if (inlineMatch) return [stripped, startIndex + 1];
+  if (!SOFT_KEY_FRAGMENT.test(stripped)) return [stripped, startIndex + 1];
+
+  const fragments = [stripped];
+  let index = startIndex + 1;
+  while (index < lines.length) {
+    const next = (lines[index] ?? '').trim();
+    if (!next) break;
+
+    const inline = parseKeyValueLine(next);
+    if (inline) {
+      const mergedKey = `${fragments.join('')}${inline.key}`;
+      const mergedValue = inline.value;
+      return [mergedValue ? `${mergedKey}: ${mergedValue}` : `${mergedKey}:`, index + 1];
+    }
+
+    if (next.startsWith(':')) {
+      return [`${fragments.join('')}${next}`, index + 1];
+    }
+
+    if (!SOFT_KEY_FRAGMENT.test(next)) break;
+    fragments.push(next);
+    index += 1;
+  }
+
+  return [stripped, startIndex + 1];
+}
+
+function shouldNormalizeSoftWrappedOutcomeRaw(raw: string): boolean {
+  const lines = raw.split(/\r?\n/).map((line) => line.trim());
+  for (let index = 0; index < lines.length; index += 1) {
+    const current = lines[index] ?? '';
+    const next = lines[index + 1] ?? '';
+    if (current === ':') return true;
+    if (SOFT_KEY_FRAGMENT.test(current) && (SOFT_KEY_FRAGMENT.test(next) || next.startsWith(':'))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeSoftWrappedOutcomeRaw(raw: string): string {
+  if (!shouldNormalizeSoftWrappedOutcomeRaw(raw)) return raw.trim();
+  const lines = raw.split(/\r?\n/);
+  const entries: Array<[string, string]> = [];
+  let currentKey: string | null = null;
+  let scalarParts: string[] = [];
+  let index = 0;
+
+  const flush = () => {
+    if (!currentKey) return;
+    const compactKey =
+      currentKey === 'verdict' || currentKey === 'page_path' || currentKey === 'source_id';
+    entries.push([currentKey, joinSoftWrappedParts(scalarParts, compactKey)]);
+    currentKey = null;
+    scalarParts = [];
+  };
+
+  while (index < lines.length) {
+    const [merged, nextIndex] = mergeSoftWrappedKeyLine(lines, index);
+    index = nextIndex;
+    if (!merged) continue;
+
+    const match = parseKeyValueLine(merged);
+    if (match) {
+      flush();
+      const key = match.key;
+      if (!key) continue;
+      currentKey = key;
+      const value = match.value;
+      if (value) scalarParts.push(value);
+      continue;
+    }
+
+    if (currentKey) {
+      scalarParts.push(merged);
+    }
+  }
+
+  flush();
+  if (entries.length === 0) return raw.trim();
+  return entries
+    .map(([key, value]) => {
+      if (!value.includes('\n')) return `${key}: ${value}`;
+      const indented = value
+        .split('\n')
+        .map((line) => `  ${line}`)
+        .join('\n');
+      return `${key}: |\n${indented}`;
+    })
+    .join('\n');
+}
+
+function normalizeOutcomeMarkers(text: string): string {
+  return text
+    .replace(WRAPPED_OUTCOME_START, '---outcome---')
+    .replace(WRAPPED_OUTCOME_END, '---end---');
+}
+
 function parseFields(raw: string): Record<string, string> {
+  const normalizedRaw = normalizeSoftWrappedOutcomeRaw(raw);
   const fields: Record<string, string> = {};
-  const lines = raw.split('\n');
+  const lines = normalizedRaw.split('\n');
 
   let i = 0;
   while (i < lines.length) {
@@ -76,6 +225,124 @@ function parseFields(raw: string): Record<string, string> {
   return fields;
 }
 
+function restoreInlineLabelBullets(value: string): string {
+  let result = '';
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    const marker = value.indexOf(': - ', cursor);
+    if (marker === -1) {
+      result += value.slice(cursor);
+      break;
+    }
+
+    let labelStart = marker - 1;
+    while (labelStart >= cursor && INLINE_LABEL_CHAR.test(value[labelStart] ?? '')) {
+      labelStart -= 1;
+    }
+    labelStart += 1;
+
+    const label = value.slice(labelStart, marker).trimStart();
+    if (!INLINE_LABEL_TEXT.test(label)) {
+      result += value.slice(cursor, marker + 4);
+      cursor = marker + 4;
+      continue;
+    }
+
+    result += value.slice(cursor, labelStart).trimEnd();
+    const spacer = result.trim() ? '\n\n' : '';
+    result += `${spacer}${label}:\n- `;
+    cursor = marker + 4;
+  }
+
+  return result;
+}
+
+function headingMarkerLength(value: string, index: number): number {
+  let cursor = index;
+  while (cursor < value.length && value[cursor] === '#' && cursor - index < 6) {
+    cursor += 1;
+  }
+  const markerLength = cursor - index;
+  if (markerLength < 1 || markerLength > 6) return 0;
+  return value[cursor] === ' ' ? markerLength : 0;
+}
+
+function restoreInlineHeadingBreaks(value: string): string {
+  let result = '';
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    const char = value[cursor] ?? '';
+    if (char.trim() === '' && headingMarkerLength(value, cursor + 1) > 0) {
+      result = result.trimEnd();
+      result += '\n\n';
+      cursor += 1;
+      while (cursor < value.length && (value[cursor] ?? '').trim() === '') {
+        cursor += 1;
+      }
+      continue;
+    }
+    result += char;
+    cursor += 1;
+  }
+
+  return result;
+}
+
+function isInlineBulletStart(value: string): boolean {
+  return /^[A-Z0-9`*]$/.test(value);
+}
+
+function restoreInlineBullets(value: string): string {
+  let result = '';
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    const marker = value.indexOf(' - ', cursor);
+    if (marker === -1) {
+      result += value.slice(cursor);
+      break;
+    }
+
+    const nextChar = value[marker + 3] ?? '';
+    if (!isInlineBulletStart(nextChar)) {
+      result += value.slice(cursor, marker + 3);
+      cursor = marker + 3;
+      continue;
+    }
+
+    result += value.slice(cursor, marker);
+    result += '\n- ';
+    cursor = marker + 3;
+  }
+
+  return result;
+}
+
+function restoreHeadingBulletBreaks(value: string): string {
+  const lines = value.split('\n');
+  return lines
+    .map((line) => {
+      const markerLength = headingMarkerLength(line, 0);
+      if (markerLength < 2) return line;
+
+      const bulletIndex = line.indexOf('- ');
+      if (bulletIndex <= markerLength + 1) return line;
+      return `${line.slice(0, bulletIndex)}\n${line.slice(bulletIndex)}`;
+    })
+    .join('\n');
+}
+
+function restoreInlineMarkdownBreaks(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes('\n')) return trimmed;
+
+  return restoreHeadingBulletBreaks(
+    restoreInlineBullets(restoreInlineLabelBullets(restoreInlineHeadingBreaks(trimmed))),
+  ).trim();
+}
+
 interface OutcomeCardProps {
   raw: string;
 }
@@ -103,7 +370,7 @@ export function OutcomeCard({ raw }: OutcomeCardProps) {
       </div>
       {summary && (
         <div className="niuu-chat-outcome-summary">
-          <MarkdownContent content={summary} />
+          <MarkdownContent content={restoreInlineMarkdownBreaks(summary)} />
         </div>
       )}
       <div className="niuu-chat-outcome-fields">
@@ -113,7 +380,7 @@ export function OutcomeCard({ raw }: OutcomeCardProps) {
             <div key={k} className="niuu-chat-outcome-field">
               <span className="niuu-chat-outcome-field-key">{k}</span>
               <div className="niuu-chat-outcome-field-value">
-                <MarkdownContent content={v} />
+                <MarkdownContent content={restoreInlineMarkdownBreaks(v)} />
               </div>
             </div>
           ))}
@@ -136,9 +403,10 @@ export function OutcomeCard({ raw }: OutcomeCardProps) {
 export function extractOutcomeBlock(
   text: string,
 ): { before: string; raw: string; after: string } | null {
-  const fenced = extractFencedOutcomeBlock(text);
-  const tagged = extractTaggedOutcomeBlock(text);
-  const dashed = extractDashedOutcomeBlock(text);
+  const normalizedText = normalizeOutcomeMarkers(text);
+  const fenced = extractFencedOutcomeBlock(normalizedText);
+  const tagged = extractTaggedOutcomeBlock(normalizedText);
+  const dashed = extractDashedOutcomeBlock(normalizedText);
 
   const candidates = [fenced, tagged, dashed].filter(
     (candidate): candidate is { before: string; raw: string; after: string } => candidate !== null,
@@ -167,7 +435,7 @@ function extractFencedOutcomeBlock(
 
   return {
     before: text.slice(0, start),
-    raw: text.slice(contentStart, end).trim(),
+    raw: normalizeSoftWrappedOutcomeRaw(text.slice(contentStart, end).trim()),
     after: text.slice(end + 3),
   };
 }
@@ -186,7 +454,7 @@ function extractTaggedOutcomeBlock(
 
   return {
     before: text.slice(0, start),
-    raw: text.slice(contentStart, end).trim(),
+    raw: normalizeSoftWrappedOutcomeRaw(text.slice(contentStart, end).trim()),
     after: text.slice(end + closeTag.length),
   };
 }
@@ -207,7 +475,7 @@ function extractDashedOutcomeBlock(
   const endMarker = findDashedOutcomeEnd(lower, contentStart);
   if (endMarker == null) return null;
 
-  const raw = text.slice(contentStart, endMarker.start).trim();
+  const raw = normalizeSoftWrappedOutcomeRaw(text.slice(contentStart, endMarker.start).trim());
 
   return {
     before: text.slice(0, start),

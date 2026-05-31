@@ -17,7 +17,7 @@ export interface SchemaEditorProps {
 /**
  * SchemaEditor — key/type grid for editing event payload schemas.
  *
- * Promoted to @niuulabs/ui because Tyr's WorkflowBuilder will need it too.
+ * Promoted to @niuulabs/ui because Ting's WorkflowBuilder will need it too.
  * Built here in NIU-673 (Ravn personas page).
  */
 export function SchemaEditor({ value, onChange, readonly = false, className }: SchemaEditorProps) {

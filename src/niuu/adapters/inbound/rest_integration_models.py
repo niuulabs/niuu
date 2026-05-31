@@ -1,6 +1,6 @@
 """Shared Pydantic models for integration REST endpoints.
 
-Used by both Tyr and Volundr integration routers.
+Used by both Ting and Volundr integration routers.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ class IntegrationResponse(BaseModel):
     """Response model for an integration connection."""
 
     id: str = Field(description="Unique connection identifier")
+    owner_id: str | None = Field(default=None, description="Owning user identifier")
     integration_type: str = Field(description="Integration category")
     adapter: str = Field(description="Fully-qualified adapter class path")
     credential_name: str = Field(description="Stored credential name")
@@ -40,6 +41,7 @@ class IntegrationResponse(BaseModel):
         """Create response from domain model."""
         return cls(
             id=conn.id,
+            owner_id=conn.owner_id,
             integration_type=conn.integration_type,
             adapter=conn.adapter,
             credential_name=conn.credential_name,

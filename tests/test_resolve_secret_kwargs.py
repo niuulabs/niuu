@@ -1,9 +1,9 @@
-"""Tests for _resolve_secret_kwargs in volundr.main."""
+"""Tests for resolve_secret_kwargs in niuu.utils."""
 
 import os
 from unittest.mock import patch
 
-from volundr.main import _resolve_secret_kwargs
+from niuu.utils import resolve_secret_kwargs
 
 
 class TestResolveSecretKwargs:
@@ -11,7 +11,7 @@ class TestResolveSecretKwargs:
 
     def test_empty_secret_kwargs_env_returns_kwargs_unchanged(self) -> None:
         kwargs = {"url": "http://example.com", "timeout": 30}
-        result = _resolve_secret_kwargs(kwargs, {})
+        result = resolve_secret_kwargs(kwargs, {})
         assert result == kwargs
         # Should return same object when nothing to resolve
         assert result is kwargs
@@ -21,7 +21,7 @@ class TestResolveSecretKwargs:
         secret_kwargs_env = {"api_key": "MY_API_KEY_ENV"}
 
         with patch.dict(os.environ, {"MY_API_KEY_ENV": "secret-value-123"}):
-            result = _resolve_secret_kwargs(kwargs, secret_kwargs_env)
+            result = resolve_secret_kwargs(kwargs, secret_kwargs_env)
 
         assert result == {"url": "http://example.com", "api_key": "secret-value-123"}
 
@@ -30,7 +30,7 @@ class TestResolveSecretKwargs:
         secret_kwargs_env = {"token": "TOKEN_FROM_SECRET"}
 
         with patch.dict(os.environ, {"TOKEN_FROM_SECRET": "encrypted-token"}):
-            result = _resolve_secret_kwargs(kwargs, secret_kwargs_env)
+            result = resolve_secret_kwargs(kwargs, secret_kwargs_env)
 
         assert result["token"] == "encrypted-token"
         assert result["url"] == "http://example.com"
@@ -42,7 +42,7 @@ class TestResolveSecretKwargs:
         with patch.dict(os.environ, {}, clear=False):
             # Ensure the env var doesn't exist
             os.environ.pop("NONEXISTENT_ENV_VAR", None)
-            result = _resolve_secret_kwargs(kwargs, secret_kwargs_env)
+            result = resolve_secret_kwargs(kwargs, secret_kwargs_env)
 
         assert result == {"url": "http://example.com"}
         assert "missing_key" not in result
@@ -61,7 +61,7 @@ class TestResolveSecretKwargs:
             "VAULT_TOKEN": "tok-123",
         }
         with patch.dict(os.environ, env):
-            result = _resolve_secret_kwargs(kwargs, secret_kwargs_env)
+            result = resolve_secret_kwargs(kwargs, secret_kwargs_env)
 
         assert result == {
             "url": "http://vault.example.com",
@@ -75,7 +75,7 @@ class TestResolveSecretKwargs:
         secret_kwargs_env = {"token": "MY_TOKEN"}
 
         with patch.dict(os.environ, {"MY_TOKEN": "secret"}):
-            result = _resolve_secret_kwargs(kwargs, secret_kwargs_env)
+            result = resolve_secret_kwargs(kwargs, secret_kwargs_env)
 
         assert "token" not in kwargs
         assert "token" in result
@@ -90,7 +90,7 @@ class TestResolveSecretKwargs:
 
         with patch.dict(os.environ, {"PRESENT_ENV": "found"}, clear=False):
             os.environ.pop("ABSENT_ENV", None)
-            result = _resolve_secret_kwargs(kwargs, secret_kwargs_env)
+            result = resolve_secret_kwargs(kwargs, secret_kwargs_env)
 
         assert result == {"url": "http://example.com", "present_key": "found"}
         assert "absent_key" not in result

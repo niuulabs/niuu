@@ -135,7 +135,7 @@ async def test_get_events_response_schema(repo, client):
 
 async def test_get_events_filter_event_type(repo, client):
     await repo.append(make_event(event_id="a", event_type="ravn.tool.complete"))
-    await repo.append(make_event(event_id="b", event_type="tyr.task.started"))
+    await repo.append(make_event(event_id="b", event_type="ting.task.started"))
 
     response = client.get("/audit/events", params={"event_type": "ravn.*"})
     assert response.status_code == 200
@@ -190,7 +190,7 @@ async def test_get_events_to_param(repo, client):
 
 async def test_get_events_filter_source(repo, client):
     await repo.append(make_event(event_id="a", source="ravn:agent-1"))
-    await repo.append(make_event(event_id="b", source="tyr:dispatcher"))
+    await repo.append(make_event(event_id="b", source="ting:dispatcher"))
 
     response = client.get("/audit/events", params={"source": "ravn:agent-1"})
     assert response.status_code == 200
@@ -201,7 +201,7 @@ async def test_get_events_filter_source(repo, client):
 
 async def test_get_events_filter_service(repo, client):
     await repo.append(make_event(event_id="a", source="ravn:agent-1"))
-    await repo.append(make_event(event_id="b", source="tyr:dispatcher"))
+    await repo.append(make_event(event_id="b", source="ting:dispatcher"))
     await repo.append(make_event(event_id="c", source="ravn:agent-2"))
 
     response = client.get("/api/v1/audit/events", params={"service": "ravn", "limit": 10})

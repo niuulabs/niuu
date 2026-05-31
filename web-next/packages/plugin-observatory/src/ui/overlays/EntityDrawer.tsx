@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { Sparkline, StateDot } from '@niuulabs/ui';
 import type { DotState } from '@niuulabs/ui';
 import type { TopologyNode, Topology, Registry, NodeActivity } from '../../domain';
+import { humanizeObservatoryText } from '../displayLabels';
 import './EntityDrawer.css';
 
 export interface EntityDrawerProps {
@@ -44,9 +45,10 @@ function KindProperties({ node }: { node: TopologyNode }) {
 
   if (
     ![
-      'tyr',
+      'ting',
       'bifrost',
       'volundr',
+      'mimir',
       'ravn_long',
       'valkyrie',
       'host',
@@ -54,6 +56,7 @@ function KindProperties({ node }: { node: TopologyNode }) {
       'vaettir',
       'service',
       'model',
+      'run',
     ].includes(kind)
   ) {
     return null;
@@ -63,7 +66,7 @@ function KindProperties({ node }: { node: TopologyNode }) {
     <section className="obs-entity-drawer__section">
       <h4 className="obs-entity-drawer__section-title">Properties</h4>
       <dl className="obs-entity-drawer__prop-grid">
-        {kind === 'tyr' && (
+        {kind === 'ting' && (
           <>
             <dt>mode</dt>
             <dd>
@@ -73,8 +76,8 @@ function KindProperties({ node }: { node: TopologyNode }) {
             </dd>
             <dt>active sagas</dt>
             <dd>{node.activeSagas ?? 0}</dd>
-            <dt>pending raids</dt>
-            <dd>{node.pendingRaids ?? 0}</dd>
+            <dt>pending runs</dt>
+            <dd>{node.pendingRuns ?? 0}</dd>
           </>
         )}
         {kind === 'bifrost' && (
@@ -95,6 +98,22 @@ function KindProperties({ node }: { node: TopologyNode }) {
             <dd>
               {node.activeSessions ?? 0} / {node.maxSessions ?? 0}
             </dd>
+          </>
+        )}
+        {kind === 'mimir' && (
+          <>
+            <dt>pages</dt>
+            <dd>{node.pages ?? 0}</dd>
+            <dt>writes</dt>
+            <dd>{node.writes ?? 0}</dd>
+            <dt>mounts</dt>
+            <dd>{node.mountCount ?? node.mounts?.length ?? 0}</dd>
+            {node.mounts && node.mounts.length > 0 && (
+              <>
+                <dt>surface</dt>
+                <dd className="obs-entity-drawer__plain">{node.mounts.join(', ')}</dd>
+              </>
+            )}
           </>
         )}
         {kind === 'ravn_long' && (
@@ -179,9 +198,44 @@ function KindProperties({ node }: { node: TopologyNode }) {
             <dd>{node.location ?? '—'}</dd>
           </>
         )}
+        {kind === 'run' && (
+          <>
+            <dt>state</dt>
+            <dd>{node.state ?? '—'}</dd>
+            {node.flockId && (
+              <>
+                <dt>flock</dt>
+                <dd>{node.flockId}</dd>
+              </>
+            )}
+            {node.purpose && (
+              <>
+                <dt>purpose</dt>
+                <dd className="obs-entity-drawer__plain">
+                  {humanizeObservatoryText(node.purpose)}
+                </dd>
+              </>
+            )}
+          </>
+        )}
       </dl>
     </section>
   );
+}
+
+function sortContainedNodes(nodes: TopologyNode[]): TopologyNode[] {
+  return [...nodes].sort((a, b) => {
+    const aOrder = a.layoutHints?.order ?? Number.POSITIVE_INFINITY;
+    const bOrder = b.layoutHints?.order ?? Number.POSITIVE_INFINITY;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return humanizeObservatoryText(a.label).localeCompare(
+      humanizeObservatoryText(b.label),
+      undefined,
+      {
+        sensitivity: 'base',
+      },
+    );
+  });
 }
 
 // ── Realm drawer body ─────────────────────────────────────────────────────────
@@ -243,7 +297,9 @@ function RealmDrawer({ node, topology, onNodeSelect }: RealmDrawerProps) {
                     data-testid={`resident-${resident.id}`}
                   >
                     {resident.activity && <ActivityDot activity={resident.activity} />}
-                    <span className="obs-entity-drawer__resident-label">{resident.label}</span>
+                    <span className="obs-entity-drawer__resident-label">
+                      {humanizeObservatoryText(resident.label)}
+                    </span>
                     <span className="obs-entity-drawer__resident-kind">{resident.typeId}</span>
                   </button>
                 </li>
@@ -316,7 +372,9 @@ function ClusterDrawer({ node, topology, onNodeSelect }: ClusterDrawerProps) {
                     data-testid={`resident-${member.id}`}
                   >
                     {member.activity && <ActivityDot activity={member.activity} />}
-                    <span className="obs-entity-drawer__resident-label">{member.label}</span>
+                    <span className="obs-entity-drawer__resident-label">
+                      {humanizeObservatoryText(member.label)}
+                    </span>
                     <span className="obs-entity-drawer__resident-kind">{member.typeId}</span>
                   </button>
                 </li>
@@ -339,10 +397,14 @@ export function EntityDrawer({
   onNodeSelect,
 }: EntityDrawerProps) {
   const entityType = node ? registry?.types.find((t) => t.id === node.typeId) : undefined;
-  const residents = node && topology ? topology.nodes.filter((n) => n.parentId === node.id) : [];
+  const residents =
+    node && topology
+      ? sortContainedNodes(topology.nodes.filter((n) => n.parentId === node.id))
+      : [];
   const isRealm = node?.typeId === 'realm';
   const isCluster = node?.typeId === 'cluster';
-  const isContainer = ['realm', 'cluster', 'host'].includes(node?.typeId ?? '');
+  const isContainer = ['realm', 'cluster', 'host', 'run'].includes(node?.typeId ?? '');
+  const containedSectionTitle = node?.typeId === 'run' ? 'Members' : 'Residents';
 
   // Sparkline seed: deterministic per-entity pseudo-random values.
   const sparkValues = useMemo(() => {
@@ -368,7 +430,11 @@ export function EntityDrawer({
   if (!node) return null;
 
   return (
-    <aside role="dialog" aria-label={node.label} className="obs-entity-drawer__panel">
+    <aside
+      role="dialog"
+      aria-label={humanizeObservatoryText(node.label)}
+      className="obs-entity-drawer__panel"
+    >
       <button className="obs-entity-drawer__close-btn" aria-label="Close" onClick={onClose}>
         <span aria-hidden="true">✕</span>
       </button>
@@ -387,7 +453,7 @@ export function EntityDrawer({
               )}
               <div className="obs-entity-drawer__meta">
                 <span className="obs-entity-drawer__type-label">
-                  {entityType?.label ?? node.typeId} · entity
+                  {humanizeObservatoryText(entityType?.label ?? node.typeId)} · entity
                 </span>
                 <div className="obs-entity-drawer__status">
                   <StateDot state={node.status as DotState} />
@@ -415,7 +481,7 @@ export function EntityDrawer({
 
             {entityType?.description && (
               <p className="obs-entity-drawer__description">
-                {entityType.description.split('.')[0]}.
+                {humanizeObservatoryText(entityType.description.split('.')[0] ?? '')}.
               </p>
             )}
 
@@ -470,7 +536,7 @@ export function EntityDrawer({
             {/* Residents for host containers */}
             {isContainer && residents.length > 0 && (
               <section className="obs-entity-drawer__section">
-                <h4 className="obs-entity-drawer__section-title">Residents</h4>
+                <h4 className="obs-entity-drawer__section-title">{containedSectionTitle}</h4>
                 <ul className="obs-entity-drawer__resident-list">
                   {residents.map((resident) => {
                     const residentType = registry?.types.find((t) => t.id === resident.typeId);
@@ -487,7 +553,7 @@ export function EntityDrawer({
                             </span>
                           )}
                           <span className="obs-entity-drawer__resident-label">
-                            {resident.label}
+                            {humanizeObservatoryText(resident.label)}
                           </span>
                           <StateDot state={resident.status as DotState} />
                         </button>

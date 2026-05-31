@@ -35,6 +35,12 @@ describe('GraphPage', () => {
     expect(screen.getByText(/edges/)).toBeInTheDocument();
   });
 
+  it('shows the active mount in the graph info card', async () => {
+    wrap(<GraphPage />, undefined, { tweaks: { activeMount: 'local' } });
+    await waitFor(() => screen.getByTestId('graph-info'));
+    expect(screen.getByText('local')).toBeInTheDocument();
+  });
+
   it('SVG contains glow filter definition', async () => {
     wrap(<GraphPage />);
     await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));

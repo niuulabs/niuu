@@ -267,165 +267,23 @@ def _build_secrets_router(
     return router
 
 
-def _build_legacy_secrets_router(
-    mcp_provider: MCPServerProvider,
-    secret_manager: SecretManager,
-) -> APIRouter:
-    """Create the legacy Volundr secrets router with old adapter response shapes."""
-    prefix = "/api/v1/volundr"
-    canonical_prefix = "/api/v1/credentials"
-    router = APIRouter(prefix=prefix)
-
-    @router.get(
-        "/mcp-servers",
-        response_model=list[MCPServerResponse],
-        tags=["MCP Servers"],
-    )
-    async def list_mcp_servers(
-        request: Request,
-        response: Response,
-    ) -> list[MCPServerResponse]:
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path=f"{prefix}/mcp-servers",
-                canonical_path=f"{canonical_prefix}/mcp-servers",
-            ),
-        )
-        servers = mcp_provider.list()
-        return [MCPServerResponse.from_config(s) for s in servers]
-
-    @router.get(
-        "/mcp-servers/{server_name}",
-        response_model=MCPServerResponse,
-        responses={404: {"model": ErrorResponse}},
-        tags=["MCP Servers"],
-    )
-    async def get_mcp_server(
-        request: Request,
-        response: Response,
-        server_name: str = Path(description="MCP server name to retrieve"),
-    ) -> MCPServerResponse:
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path=f"{prefix}/mcp-servers/{server_name}",
-                canonical_path=f"{canonical_prefix}/mcp-servers/{server_name}",
-            ),
-        )
-        server = mcp_provider.get(server_name)
-        if server is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"MCP server not found: {server_name}",
-            )
-        return MCPServerResponse.from_config(server)
-
-    @router.get(
-        "/secrets",
-        response_model=list[str],
-        tags=["Secrets"],
-    )
-    async def list_secrets(
-        request: Request,
-        response: Response,
-    ) -> list[str]:
-        """Legacy Volundr adapter expects a bare list of secret names."""
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path=f"{prefix}/secrets",
-                canonical_path=f"{canonical_prefix}/secrets",
-            ),
-        )
-        secrets = await secret_manager.list()
-        return [secret.name for secret in secrets]
-
-    @router.get(
-        "/secrets/{secret_name}",
-        response_model=SecretResponse,
-        responses={404: {"model": ErrorResponse}},
-        tags=["Secrets"],
-    )
-    async def get_secret(
-        request: Request,
-        response: Response,
-        secret_name: str = Path(description="Kubernetes secret name to retrieve"),
-    ) -> SecretResponse:
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path=f"{prefix}/secrets/{secret_name}",
-                canonical_path=f"{canonical_prefix}/secrets/{secret_name}",
-            ),
-        )
-        secret = await secret_manager.get(secret_name)
-        if secret is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Secret not found: {secret_name}",
-            )
-        return SecretResponse.from_info(secret)
-
-    @router.post(
-        "/secrets",
-        response_model=SecretResponse,
-        status_code=status.HTTP_201_CREATED,
-        responses={
-            400: {"model": ErrorResponse},
-            409: {"model": ErrorResponse},
-        },
-        tags=["Secrets"],
-    )
-    async def create_secret(
-        request: Request,
-        response: Response,
-        req: SecretCreateRequest,
-    ) -> SecretResponse:
-        warn_on_legacy_route(
-            request=request,
-            response=response,
-            notice=LegacyRouteNotice(
-                legacy_path=f"{prefix}/secrets",
-                canonical_path=f"{canonical_prefix}/secrets",
-            ),
-        )
-        try:
-            info = await secret_manager.create(req.name, req.data)
-            return SecretResponse.from_info(info)
-        except SecretValidationError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(exc),
-            ) from exc
-        except SecretAlreadyExistsError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-
-    return router
-
-
 def create_secrets_router(
     mcp_provider: MCPServerProvider,
     secret_manager: SecretManager,
-) -> APIRouter:
-    """Create the legacy Volundr secrets router."""
-    return _build_legacy_secrets_router(mcp_provider, secret_manager)
-
-
-def create_canonical_secrets_router(
-    mcp_provider: MCPServerProvider,
-    secret_manager: SecretManager,
+    prefix: str = "/api/v1/credentials",
 ) -> APIRouter:
     """Create the canonical shared credential metadata router."""
     return _build_secrets_router(
         mcp_provider,
         secret_manager,
-        prefix="/api/v1/credentials",
+        prefix=prefix,
     )
+
+
+def create_canonical_secrets_router(
+    mcp_provider: MCPServerProvider,
+    secret_manager: SecretManager,
+    prefix: str = "/api/v1/credentials",
+) -> APIRouter:
+    """Backward-compatible alias for the canonical shared credential metadata router."""
+    return create_secrets_router(mcp_provider, secret_manager, prefix=prefix)

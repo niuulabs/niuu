@@ -20,7 +20,7 @@ export const mimirPlugin = definePlugin({
   subtitle: 'the well of knowledge',
   tabs: [
     { id: 'overview', label: 'Overview', rune: '◎', path: '/mimir' },
-    { id: 'pages', label: 'Pages', rune: '❑', path: '/mimir/pages' },
+    { id: 'pages', label: 'Pages', rune: '▤', path: '/mimir/pages' },
     { id: 'search', label: 'Search', rune: '⌕', path: '/mimir/search' },
     { id: 'graph', label: 'Graph', rune: '⌖', path: '/mimir/graph' },
     { id: 'registry', label: 'Registry', rune: '⛁', path: '/mimir/registry' },

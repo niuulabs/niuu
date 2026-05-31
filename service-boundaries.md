@@ -1,705 +1,253 @@
-# Service Boundaries And API Consolidation Plan
+# Service Boundaries
 
-## Why this exists
+This document describes the boundary model that is now in the repo after the
+canonical route cutover and control-plane extraction work.
 
-The current backend shape is drifting toward a monolith of large named services (`volundr`, `tyr`) that own routes far outside their natural domain. At the same time, `web-next` is pushing toward a cleaner plugin-oriented API surface.
+## Current State
 
-We need to restore domain boundaries without turning every router into its own container or its own `main.py`.
+As of May 8, 2026:
 
-This document proposes:
+- the legacy public `/api/v1/volundr/*` surface is gone
+- `web/` is gone and `web-next` is the only browser UI
+- `niuu` is the composition root and shared host
+- Forge remains the public face of Volundr
+- shared platform domains are extracted as their own top-level packages and
+  plugins
+- the Python control plane ships as one `niuu` image, even though domains are
+  still mounted as separate services/plugins
 
-- a domain-first route ownership model
-- a small number of deployable processes
-- extraction of overlapping capabilities into standalone route modules
-- a concrete mapping from current backend routes to the APIs `web-next` expects
-- a path for future service separation without forcing it now
+That means we now have:
 
-## Design principles
+- namespace separation
+- plugin/package separation
+- shared-host deployment by default
 
-### 1. Separate domain ownership from deployment
+We do not yet require separate processes or separate images for each domain.
 
-A route can belong to the `identity` domain without requiring a dedicated `identity` container today.
+## Boundary Model
 
-Target rule:
+### `niuu`
 
-- each bounded context owns its own router, service layer, and persistence contracts
-- multiple bounded contexts may be mounted into the same FastAPI process
-- a bounded context only becomes its own deployable when there is a real operational reason
+`niuu` is the host and composition root.
 
-### 2. Optimize for a modular monolith first
+It owns:
 
-Preferred shape:
+- plugin discovery and host profiles
+- shared service startup/runtime helpers
+- shared route inventory and mounting
+- co-hosting multiple FastAPI apps in one local/dev control plane
 
-- few deployables
-- many explicit routers
-- no ambiguous ownership
+Shared code that multiple domains need should move here rather than back into
+`volundr`.
 
-This gives us:
+### `volundr`
 
-- cleaner APIs
-- fewer cross-domain leaks
-- easier future extraction
-- lower operational overhead than full microservices
+`volundr` is now the Forge domain, not the junk drawer.
 
-### 3. Treat route modules as the unit of future extraction
-
-Every extracted domain should be packaged so it can be:
-
-- mounted into a shared `platform-api` process now
-- moved into its own process later with minimal code movement
-
-That means each domain should expose something like:
-
-- `create_router(...)`
-- `register_background_tasks(...)` if needed
-- domain services and ports that do not depend on a specific host app
-
-## The core problem in the current repo
-
-### What we have now
-
-- `volundr` owns sessions, templates, clusters, secrets, credentials, tenants, users, features, PATs, integrations, tracker mappings, admin settings, git operations, audit, and more
-- `tyr` owns saga and dispatch concerns, but `web-next` expects additional settings, session approval, and audit surfaces that are partly missing or overlap with Volundr
-- `ravn` currently exposes personas plus a small stub session surface
-- `mimir` is a smaller real service, but its HTTP surface is behind `web-next`
-- `observatory` exists in `web-next` but not as a backend service yet
-
-### Why this is bad
-
-- service names no longer reflect bounded contexts
-- route ownership is unclear
-- duplication is growing around identity, features, tokens, audit, sessions, integrations, and tracker APIs
-- `web-next` is being forced to adapt to historical route placement instead of stable domain APIs
-
-## Proposed target bounded contexts
-
-These are domain boundaries, not mandatory deployables.
-
-### 1. `identity`
-
-Owns:
-
-- current user identity
-- users
-- tenants and membership
-- PATs / access tokens
-- feature catalog and user feature preferences
-- auth-adjacent runtime metadata if any remains
-
-Canonical routes:
-
-- `/api/v1/identity/me`
-- `/api/v1/identity/users`
-- `/api/v1/identity/tenants`
-- `/api/v1/identity/tenants/{tenant_id}/members`
-- `/api/v1/identity/tokens`
-- `/api/v1/identity/features/modules`
-- `/api/v1/identity/features/preferences`
-
-Current overlap to extract:
-
-- `src/volundr/adapters/inbound/rest_tenants.py`
-- `src/volundr/adapters/inbound/rest_features.py`
-- PAT routing currently split between Volundr and `src/niuu/adapters/inbound/rest_pats.py`
-
-Why this should be its own route domain:
-
-- `web-next/packages/plugin-sdk` already wants identity and feature catalog as platform capabilities, not Volundr-only concerns
-- PATs, tenants, and users are not session-forge concerns
-
-### 2. `forge`
-
-This is the actual Völundr core.
-
-Owns:
-
-- workspaces and sessions
-- templates and presets
-- session messages, logs, chronicle, live stats
-- cluster resources
-- MCP server attachment to sessions
-- code-server access
-- workspace cleanup / restore
-
-Canonical routes:
+It owns:
 
 - `/api/v1/forge/sessions`
-- `/api/v1/forge/sessions/{id}`
-- `/api/v1/forge/sessions/{id}/messages`
-- `/api/v1/forge/sessions/{id}/logs`
-- `/api/v1/forge/sessions/{id}/chronicle`
-- `/api/v1/forge/sessions/{id}/code-server-url`
-- `/api/v1/forge/sessions/{id}/mcp-servers`
+- `/api/v1/forge/workspaces`
 - `/api/v1/forge/templates`
 - `/api/v1/forge/presets`
-- `/api/v1/forge/workspaces`
-- `/api/v1/forge/cluster/resources`
-- `/api/v1/forge/stats`
-- `/api/v1/forge/models`
-- `/api/v1/forge/repos`
+- `/api/v1/forge/profiles`
+- `/api/v1/forge/resources`
+- `/api/v1/forge/prompts`
+- `/api/v1/forge/events`
+- `/api/v1/forge/chronicles`
+- `/api/v1/forge/admin`
+- Forge git and repo flows
 
-Current overlap to keep inside forge:
+Rule:
 
-- most of `src/volundr/adapters/inbound/rest.py`
-- `rest_presets.py`
-- `rest_profiles.py`
-- `rest_resources.py`
-- parts of `rest_secrets.py` related to forge attachment and cluster use
+- if a public route exists because it is part of the Forge experience, it may
+  belong here
+- if it exists only because Volundr happened to host it, it should move out
 
-Current overlap to remove from forge:
+### `identity`
 
-- identity, tenants, users, feature catalog, tokens
-- generic audit
-- tracker catalog if we centralize tracker integration later
+`identity` owns identity and tenant context.
 
-### 3. `integrations`
+It owns:
 
-Owns:
+- `/api/v1/identity/me`
+- `/api/v1/identity/auth/config`
+- `/api/v1/identity/users`
+- `/api/v1/identity/tenants`
+- `/api/v1/tokens`
 
-- integration catalog
-- connection CRUD
-- connection tests
-- OAuth callbacks and setup flows
-- credential-backed external connector wiring
+### `features`
 
-Canonical routes:
+`features` owns feature catalog and user feature preferences.
 
-- `/api/v1/integrations/catalog`
-- `/api/v1/integrations`
-- `/api/v1/integrations/{id}`
-- `/api/v1/integrations/{id}/test`
-- `/api/v1/integrations/oauth/*`
+It owns:
 
-Current overlap to extract:
+- `/api/v1/features`
+- `/api/v1/features/modules`
+- `/api/v1/features/preferences`
 
-- `src/volundr/adapters/inbound/rest_integrations.py`
-- `src/volundr/adapters/inbound/rest_oauth.py`
+### `credentials`
 
-Why extract as its own route domain:
+`credentials` owns generic credential and secret-store capabilities.
 
-- both Tyr and Forge need integrations
-- connector management should not be owned by session orchestration
+It owns:
 
-### 4. `credentials`
+- `/api/v1/credentials/*`
 
-Owns:
+This is the place for shared credential and MCP-server metadata, not Forge.
 
-- user and tenant credential stores
-- pluggable secret store surfaces
-- secret types
-- cluster-available secret definitions if they are generic
+### `integrations`
 
-Canonical routes:
+`integrations` owns generic connection management and OAuth flows.
 
-- `/api/v1/credentials/user`
-- `/api/v1/credentials/tenant`
-- `/api/v1/credentials/store`
-- `/api/v1/credentials/store/{name}`
-- `/api/v1/credentials/types`
-- `/api/v1/credentials/mcp-servers`
+It owns:
 
-Current overlap to extract:
+- `/api/v1/integrations/*`
 
-- `src/volundr/adapters/inbound/rest_credentials.py`
-- `src/volundr/adapters/inbound/rest_secrets.py`
+This is the domain for reusable external connector setup, not Ting- or
+Forge-specific orchestration.
 
-Why this may stay in the same deployable for now:
+### `tracker`
 
-- low operational need to separate
-- high conceptual value in separating ownership from Forge
+`tracker` owns generic tracker state and mappings.
 
-### 5. `tracker`
+It owns:
 
-Owns:
-
-- tracker project and issue browsing
-- project-to-repo mappings
-- generic issue search/update
-- import flows from tracker to saga or forge
-
-Canonical routes:
-
-- `/api/v1/tracker/projects`
-- `/api/v1/tracker/projects/{id}`
-- `/api/v1/tracker/projects/{id}/milestones`
-- `/api/v1/tracker/projects/{id}/issues`
+- `/api/v1/tracker/status`
 - `/api/v1/tracker/issues`
-- `/api/v1/tracker/issues/{id}`
 - `/api/v1/tracker/repo-mappings`
-- `/api/v1/tracker/import`
 
-Current overlap to extract:
+### `audit`
 
-- `src/tyr/api/tracker.py`
-- `src/volundr/adapters/inbound/rest_tracker.py`
-- `src/volundr/adapters/inbound/rest_issues.py`
+`audit` owns shared audit-query surfaces.
 
-Why extract:
-
-- tracker browsing is shared infrastructure
-- it should not be split between Tyr and Forge by accident
-
-### 6. `tyr`
-
-Owns:
-
-- sagas
-- phases
-- raids
-- planning
-- dispatch queue orchestration
-- dispatcher runtime state
-- Tyr-specific settings and execution policy
-- Tyr event stream
-
-Canonical routes:
-
-- `/api/v1/tyr/sagas`
-- `/api/v1/tyr/sagas/{id}`
-- `/api/v1/tyr/sagas/{id}/phases`
-- `/api/v1/tyr/sagas/decompose`
-- `/api/v1/tyr/sagas/plan`
-- `/api/v1/tyr/sagas/commit`
-- `/api/v1/tyr/sagas/extract-structure`
-- `/api/v1/tyr/dispatcher`
-- `/api/v1/tyr/dispatcher/log`
-- `/api/v1/tyr/dispatch/{raid_id}`
-- `/api/v1/tyr/dispatch/batch`
-- `/api/v1/tyr/settings/flock`
-- `/api/v1/tyr/settings/dispatch`
-- `/api/v1/tyr/settings/notifications`
-- `/api/v1/tyr/events`
-
-What Tyr should stop owning:
-
-- generic integrations CRUD if moved to `integrations`
-- tracker browsing if moved to `tracker`
-- generic audit if moved to `audit`
-- non-Tyr sessions if those are really Forge-owned workspaces
-
-### 7. `ravn`
-
-Owns:
-
-- personas
-- ravn process / fleet state
-- ravn sessions and transcripts
-- triggers
-- budget projections for ravns
-
-Canonical routes:
-
-- `/api/v1/ravn/personas`
-- `/api/v1/ravn/ravens`
-- `/api/v1/ravn/sessions`
-- `/api/v1/ravn/sessions/{id}`
-- `/api/v1/ravn/sessions/{id}/messages`
-- `/api/v1/ravn/triggers`
-- `/api/v1/ravn/budget/{ravn_id}`
-- `/api/v1/ravn/budget/fleet`
-
-Current state:
-
-- personas are real
-- sessions exist only as a small stub
-- ravens, triggers, budget, transcript APIs are not implemented
-
-### 8. `mimir`
-
-Owns:
-
-- pages and sources
-- ingest
-- search
-- embeddings
-- lint
-- entities
-- mount registry and write routing
-- activity and dream-cycle logs
-
-Canonical routes:
-
-- `/api/v1/mimir/stats`
-- `/api/v1/mimir/pages`
-- `/api/v1/mimir/page`
-- `/api/v1/mimir/page/sources`
-- `/api/v1/mimir/search`
-- `/api/v1/mimir/graph`
-- `/api/v1/mimir/entities`
-- `/api/v1/mimir/sources`
-- `/api/v1/mimir/sources/ingest/url`
-- `/api/v1/mimir/sources/ingest/file`
-- `/api/v1/mimir/mounts`
-- `/api/v1/mimir/mounts/recent-writes`
-- `/api/v1/mimir/routing/rules`
-- `/api/v1/mimir/ravns/bindings`
-- `/api/v1/mimir/embeddings/search`
-- `/api/v1/mimir/lint`
-- `/api/v1/mimir/lint/fix`
-- `/api/v1/mimir/lint/reassign`
-- `/api/v1/mimir/dreams`
-- `/api/v1/mimir/activity`
-
-### 9. `observatory`
-
-Owns:
-
-- topology snapshots
-- registry of observable entities/types
-- observatory event firehose
-
-Canonical routes:
-
-- `/api/v1/observatory/registry`
-- `/api/v1/observatory/topology/stream`
-- `/api/v1/observatory/events/stream`
-
-Likely implementation home:
-
-- route module can live in a new `observatory` package
-- event projection may reuse Skuld or Sleipnir subscribers
-
-### 10. `audit`
-
-Owns:
-
-- audit log queries
-- service-scoped audit filtering
-
-Canonical routes:
+It owns:
 
 - `/api/v1/audit`
-- or `/api/v1/audit/events`
+- `/api/v1/audit/events`
 
-Current overlap to extract:
+### `ting`
 
-- `src/volundr/adapters/inbound/rest_audit.py`
-- Tyr audit expectations in `web-next` currently have no matching router
+`ting` owns planning, review, dispatch, workflow execution, and operator control.
 
-Recommendation:
+It owns:
 
-- centralize audit as shared infrastructure
-- allow `service=tyr|forge|identity|ravn|mimir` filtering
+- `/api/v1/ting/sagas`
+- `/api/v1/ting/runs`
+- `/api/v1/ting/sessions`
+- `/api/v1/ting/dispatch`
+- `/api/v1/ting/dispatcher`
+- `/api/v1/ting/events`
+- `/api/v1/ting/flock`
+- `/api/v1/ting/flock_flows`
+- `/api/v1/ting/pipelines`
+- `/api/v1/ting/settings`
 
-## What `web-next` expects and where the gaps are
+### `mimir`
 
-## Identity and feature catalog
+`mimir` owns memory, search, sources, graph, and linting.
 
-Expected by `plugin-sdk`:
+It should continue to be treated as its own domain even when it is co-hosted in
+the same image.
 
-- `IIdentityService`
-- `IFeatureCatalogService`
+### `ravn`
 
-Current reality:
+`ravn` owns personas, runtime sessions, triggers, and agent-facing execution
+surfaces.
 
-- frontend SDK still uses Volundr-backed `/me` and `/features*` adapters
-- backend currently exposes `/api/v1/volundr/me`
-- feature toggles live under Volundr as well
-- PATs are split and not aligned to the frontend model
+### `skuld`
 
-Required consolidation:
+`skuld` remains the room/session mediation layer, not a generic REST domain.
 
-- move identity, tenants, users, features, and tokens under one `identity` route module
-- keep old Volundr routes as temporary compatibility shims
+## Intentional Ting-Owned Edge Surfaces
 
-## Völundr / Forge
+Two remaining public route groups can look like boundary leakage if you only
+read the path names. They are intentional Ting edges.
 
-Expected by `plugin-volundr`:
+### `tracker-intake-api`
 
-- sessions, templates, presets, workspaces, cluster resources, logs, messages, chronicle, PR/CI, admin settings, credentials, tokens, feature modules, identity
+Prefixes:
 
-Current reality:
+- `/api/v1/tracker/projects`
+- `/api/v1/tracker/import`
 
-- core CRUD mostly exists
-- live subscriptions are mostly mocked in the frontend adapter
-- identity / features / tokens are mixed into the same service interface even though they are not Forge concerns
+Why Ting owns them:
 
-Required consolidation:
+- they are not generic tracker state
+- they are intake routes for browsing external tracker projects in order to
+  create Ting saga state
+- `/import` writes into Ting-owned workflow objects
 
-- shrink `IVolundrService` over time or keep it as a facade backed by multiple route domains
-- real Forge ownership should focus on sessions/workspaces/templates/cluster/stats
+Rule:
 
-Required missing APIs:
+- generic tracker browsing/search/mapping stays in `tracker`
+- project intake that exists to create or shape Ting work may stay in `ting`
 
-- real SSE for session list, stats, messages, logs, chronicle
-- cleaner archived session route handling
+### `ting-channel-api`
 
-## Tyr
+Prefixes:
 
-Expected by `plugin-tyr`:
+- `/api/v1/ting/integrations`
+- `/api/v1/ting/telegram`
 
-- sagas
-- saga phases
-- dispatcher control
-- dispatch bus endpoints
-- settings for flock, dispatch, notifications
-- audit
-- tracker browsing
-- session approval
+Why Ting owns them:
 
-Current reality:
+- they are operator-channel routes for Ting-specific control and notification
+  flows
+- Telegram webhook/setup is a Ting ingress channel, not a generic platform
+  integration
 
-- sagas and dispatcher are strong
-- SSE exists
-- `GET /sagas/{id}/phases` is missing
-- dispatch bus REST endpoints are missing
-- settings coverage is incomplete
-- audit endpoint is missing
-- tracker exists but is a candidate for extraction
-- session approval ownership is muddy
+Rule:
 
-Required consolidation:
+- reusable OAuth and connector management stays in `integrations`
+- channels whose purpose is to steer or notify Ting may stay in `ting`
 
-- Tyr keeps saga/dispatch ownership
-- tracker and audit should move out
-- session approval should be explicitly either Tyr-native or backed by Forge
+## Rules Going Forward
 
-## Ravn
+### 1. No new public `volundr` namespace
 
-Expected by `plugin-ravn`:
+Do not introduce any new `/api/v1/volundr/*` routes.
 
-- personas
-- ravens
-- sessions
-- messages
-- triggers
-- budget
+### 2. Shared code belongs in `niuu`
 
-Current reality:
+If `identity`, `credentials`, `integrations`, `tracker`, `features`, `audit`,
+and `volundr` all need the same startup or storage helpers, those helpers move
+to `niuu`.
 
-- personas are real
-- sessions are stubbed
-- rest is missing
+### 3. Domain packages should not import `volundr`
 
-Required work:
+Extracted packages should depend on `niuu` shared helpers and their own domain
+code, not on `volundr` internals.
 
-- create a proper `ravn` route domain
-- make Ravn state and session ownership explicit rather than leaking through other services
+### 4. Route-domain names should describe intent
 
-## Mimir
+Names like `tracker-intake-api` are preferable to overloaded names like
+`tracker-project-api` because they tell the reader why a surface exists.
 
-Expected by `plugin-mimir`:
+### 5. Package split first, deployment split later
 
-- a much broader API than the current backend exposes
+The default path is:
 
-Current reality:
+- extract boundary into its own package/plugin
+- keep it co-hosted in `niuu`
+- only give it a dedicated runtime if there is a real operational reason
 
-- current Mimir backend is smaller and mounted at `/mimir`
+### 6. Avoid image proliferation
 
-Required work:
+Separate code ownership does not imply separate container images. The current
+default is one Python control-plane image and multiple command-selected entry
+surfaces.
 
-- expand Mimir route surface to match the plugin
-- remount under `/api/v1/mimir`
-- keep `/mimir` as a compatibility alias during migration
+## What Is Still Outstanding
 
-## Observatory
+These are the real remaining gaps after the boundary cleanup:
 
-Expected by `plugin-observatory`:
-
-- registry plus two SSE streams
-
-Current reality:
-
-- backend missing
-
-Required work:
-
-- greenfield route domain
-
-## Proposed deployment model
-
-We should not create a separate container per route domain by default.
-
-### Near-term deployables
-
-Recommended target:
-
-- `platform-api`
-- `tyr-api`
-- `mimir-api`
-
-Optional later:
-
-- `ravn-api`
-- `observatory-api`
-
-### What lives in `platform-api`
-
-Mount these route domains in one process:
-
-- `identity`
-- `forge`
-- `integrations`
-- `credentials`
-- `tracker`
-- `audit`
-- maybe `ravn` initially
-- maybe `observatory` initially
-
-This keeps operational count low while still restoring code boundaries.
-
-### What stays separate first
-
-- `tyr`
-- `mimir`
-
-Reasons:
-
-- clearer independent domain behavior
-- Tyr has its own lifecycle and event stream
-- Mimir has its own storage and search concerns
-
-## Refactor shape in code
-
-Use route modules as extraction seams.
-
-Suggested package layout:
-
-- `src/platform_api/app.py`
-- `src/identity/api.py`
-- `src/forge/api.py`
-- `src/integrations/api.py`
-- `src/credentials/api.py`
-- `src/tracker/api.py`
-- `src/audit/api.py`
-- `src/ravn/api.py`
-- `src/mimir/api.py`
-- `src/observatory/api.py`
-- `src/tyr/api.py`
-
-Each domain should expose:
-
-- a router factory
-- dependency wiring
-- domain service composition
-
-Do not couple domain routers to a giant host application module.
-
-## Consolidation map from current routes
-
-### Move out of Volundr
-
-Move logically into `identity`:
-
-- `/me`
-- `/users`
-- `/tenants*`
-- feature catalog routes
-- PAT/token routes
-
-Move logically into `integrations`:
-
-- integration catalog / CRUD / test
-- OAuth flows
-
-Move logically into `credentials`:
-
-- user/tenant credentials
-- secret store
-- secret types
-- MCP server catalog if shared
-
-Move logically into `tracker`:
-
-- tracker issue browsing
-- repo mappings
-- generic issue APIs
-
-Move logically into `audit`:
-
-- audit query routes
-
-Keep in `forge`:
-
-- sessions
-- workspaces
-- templates
-- presets
-- stats
-- models
-- repos
-- chronicle/log/message streams
-- cluster resources
-- PR/CI flows
-
-### Move out of Tyr
-
-Move logically into `tracker`:
-
-- project browsing
-- milestones
-- issue import inputs
-
-Move logically into `audit`:
-
-- audit page backing APIs
-
-Keep in `tyr`:
-
-- saga, phase, raid, dispatch, runtime policy, Tyr events
-
-### Keep inside Mimir
-
-Do not split Mimir by feature yet. It is already a coherent domain, just incomplete.
-
-### Build Ravn as a proper bounded context
-
-Do not push Ravn sessions or budgets into Forge or Tyr. Those are Ravn concepts.
-
-## Compatibility strategy
-
-We do not need a flag day.
-
-### Phase 1
-
-- create new route modules with canonical ownership
-- mount them in existing processes
-- keep legacy Volundr and Tyr paths as compatibility shims
-
-### Phase 2
-
-- update `web-next` service config and adapters to use canonical routes
-- stop adding new functionality to legacy route placements
-
-### Phase 3
-
-- remove or deprecate old paths
-- split deployables only where runtime pressure justifies it
-
-## Priority implementation order
-
-### Priority 1: boundary repair
-
-- create `identity` route domain
-- carve `forge` out of the current Volundr surface conceptually
-- create `integrations`, `credentials`, `tracker`, and `audit` route modules even if they remain mounted in the same process
-
-### Priority 2: meet `web-next` contracts
-
-- complete Mimir API surface
-- complete Tyr missing endpoints
-- build Observatory backend
-- build Ravn beyond personas
-- add real Forge SSE surfaces
-
-### Priority 3: simplify frontend contracts
-
-- stop teaching `web-next` that identity and tokens are Volundr concerns
-- either slim `IVolundrService` or make it an explicit facade over multiple backend domains
-
-## Recommended final stance
-
-We should move from:
-
-- "large named services that happen to own many unrelated routes"
-
-to:
-
-- "clear route domains with a small number of host processes"
-
-That gives us a stable architecture:
-
-- modular in code
-- cheap in operations
-- compatible with `web-next`
-- ready for future extraction where it actually matters
+- Forge still needs a more truthful live-data and SSE story for the daily-driver
+  path.
+- Mimir still needs a broader parity pass against the `web-next` contract.
+- Ravn still needs a tighter runtime/persona/session pass for daily-driver use.
+- Observatory still needs a first-class backend story.
+- The unified `niuu` image path still needs full end-to-end runtime smoke in a
+  cluster.
+- The daily-driver experience still needs a stronger single front door on top
+  of Ting -> Volundr -> Skuld -> Flokk.

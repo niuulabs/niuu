@@ -28,7 +28,7 @@ export type EntityShape = z.infer<typeof entityShapeSchema>;
 /**
  * Grouping categories for the Registry editor type grid.
  *
- * Owner: **Observatory**. Consumed by: **Tyr** (saga member badges).
+ * Owner: **Observatory**. Consumed by: **Ting** (saga member badges).
  */
 export const entityCategorySchema = z.enum([
   'topology',
@@ -54,7 +54,7 @@ export type EntityCategory = z.infer<typeof entityCategorySchema>;
  * `canContain` with cycle-protection).
  *
  * **Consumed by:**
- * - `plugin-tyr` — topology sidebar labels raid participants with their
+ * - `plugin-ting` — topology sidebar labels run participants with their
  *   entity type's shape + rune.
  * - `plugin-mimir` — entity pages reference `entity_type` by id.
  * - `plugin-ravn` — raven nodes in the fleet console use the `agent`
@@ -102,8 +102,8 @@ export type EntityType = z.infer<typeof entityTypeSchema>;
  * **Consumed by:**
  * - `plugin-ravn` — `PluginCtx.registry` is threaded through the shell so
  *   Ravn can resolve entity types for live topology labels.
- * - `plugin-tyr` — same shell context; saga members resolve their entity type
- *   shape for the raid panel.
+ * - `plugin-ting` — same shell context; saga members resolve their entity type
+ *   shape for the run panel.
  */
 export const typeRegistrySchema = z.object({
   /** Monotonically incrementing version, bumped on every registry edit. */

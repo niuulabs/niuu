@@ -82,19 +82,61 @@ as literal service names to keep the route table extensible.
 {{ printf "%s-web" (include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr)) }}
 {{- else if eq $service "volundr-web-next" -}}
 {{ printf "%s-web-next" (include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr)) }}
-{{- else if eq $service "tyr" -}}
-{{ include "niuu.componentFullname" (dict "root" $root "name" "tyr" "values" $root.Values.tyr) }}
+{{- else if eq $service "ting" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "ting" "values" $root.Values.ting) }}
 {{- else if eq $service "niuu-shared" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "niuu-shared" "values" (index $root.Values "niuu-shared")) }}
+{{- else if eq $service "guild" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "guild" "values" $root.Values.guild) }}
 {{- else if eq $service "bifrost" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "bifrost" "values" $root.Values.bifrost) }}
+{{- else if eq $service "observatory" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "observatory" "values" $root.Values.observatory) }}
 {{- else if eq $service "mimir-shared" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-shared" "values" (index $root.Values "mimir-shared")) }}
+{{- else if eq $service "ravn" -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "ravn" "values" $root.Values.ravn) }}
 {{- else if eq $service "mimir-kanuck" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-kanuck" "values" (index $root.Values "mimir-kanuck")) }}
 {{- else if eq $service "mimir-research" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "mimir-research" "values" (index $root.Values "mimir-research")) }}
 {{- else -}}
 {{- $service -}}
+{{- end }}
+{{- end }}
+
+{{/*
+Return whether an ingress backend is enabled for the current umbrella values.
+Unknown service names are treated as enabled so custom routes still render.
+*/}}
+{{- define "niuu.ingressServiceEnabled" -}}
+{{- $root := .root -}}
+{{- $service := .service -}}
+{{- if eq $service "volundr" -}}
+{{ ternary "true" "false" ($root.Values.volundr.enabled | default false) }}
+{{- else if eq $service "volundr-web" -}}
+{{ ternary "true" "false" (and ($root.Values.volundr.enabled | default false) ($root.Values.volundr.web.enabled | default false)) }}
+{{- else if eq $service "volundr-web-next" -}}
+{{ ternary "true" "false" (and ($root.Values.volundr.enabled | default false) ($root.Values.volundr.webNext.enabled | default false)) }}
+{{- else if eq $service "ting" -}}
+{{ ternary "true" "false" ($root.Values.ting.enabled | default false) }}
+{{- else if eq $service "niuu-shared" -}}
+{{ ternary "true" "false" ((index $root.Values "niuu-shared").enabled | default false) }}
+{{- else if eq $service "guild" -}}
+{{ ternary "true" "false" ($root.Values.guild.enabled | default false) }}
+{{- else if eq $service "bifrost" -}}
+{{ ternary "true" "false" ($root.Values.bifrost.enabled | default false) }}
+{{- else if eq $service "observatory" -}}
+{{ ternary "true" "false" ($root.Values.observatory.enabled | default false) }}
+{{- else if eq $service "mimir-shared" -}}
+{{ ternary "true" "false" ((index $root.Values "mimir-shared").enabled | default false) }}
+{{- else if eq $service "ravn" -}}
+{{ ternary "true" "false" ($root.Values.ravn.enabled | default false) }}
+{{- else if eq $service "mimir-kanuck" -}}
+{{ ternary "true" "false" ((index $root.Values "mimir-kanuck").enabled | default false) }}
+{{- else if eq $service "mimir-research" -}}
+{{ ternary "true" "false" ((index $root.Values "mimir-research").enabled | default false) }}
+{{- else -}}
+true
 {{- end }}
 {{- end }}

@@ -334,6 +334,46 @@ class DirectK8sPodManager(PodManager):
 
         broker_config = spec.values.get("broker", {})
         if isinstance(broker_config, dict):
+            if cli_type := broker_config.get("cliType"):
+                env.append({"name": "SKULD__CLI_TYPE", "value": str(cli_type)})
+
+            if transport := broker_config.get("transport"):
+                env.append({"name": "SKULD__TRANSPORT", "value": str(transport)})
+
+            if transport_adapter := broker_config.get("transportAdapter"):
+                env.append(
+                    {
+                        "name": "SKULD__TRANSPORT_ADAPTER",
+                        "value": str(transport_adapter),
+                    }
+                )
+
+            if "skipPermissions" in broker_config:
+                env.append(
+                    {
+                        "name": "SKULD__SKIP_PERMISSIONS",
+                        "value": str(bool(broker_config["skipPermissions"])).lower(),
+                    }
+                )
+
+            approval_policy = broker_config.get(
+                "approvalPolicy",
+                broker_config.get("approval_policy"),
+            )
+            if approval_policy:
+                env.append({"name": "SKULD__APPROVAL_POLICY", "value": str(approval_policy)})
+
+            if sandbox := broker_config.get("sandbox"):
+                env.append({"name": "SKULD__SANDBOX", "value": str(sandbox)})
+
+            if "agentTeams" in broker_config:
+                env.append(
+                    {
+                        "name": "SKULD__AGENT_TEAMS",
+                        "value": str(bool(broker_config["agentTeams"])).lower(),
+                    }
+                )
+
             telegram_cfg = broker_config.get("telegram")
             if isinstance(telegram_cfg, dict):
                 if "enabled" in telegram_cfg:

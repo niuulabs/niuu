@@ -169,6 +169,9 @@ spec:
                 git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                 echo "Repository cloned successfully"
               fi
+              mkdir -p "$WORKSPACE/.services"
+              touch "$WORKSPACE/.services/nginx.conf"
+              echo "Ensured dynamic service nginx config exists"
               {{- if .Values.git.credentials.secretName }}
               # Configure credential helper so git push uses GIT_TOKEN env var
               git -C "$WORKSPACE" config credential.helper \

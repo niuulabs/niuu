@@ -1,4 +1,4 @@
-FROM python:3.14-slim-bookworm@sha256:2e256d0381371566ed96980584957ed31297f437569b79b0e5f7e17f2720e53a
+FROM python:3.14-slim-bookworm@sha256:a3974109d36f164ca70024bc0d0828ac706e4ccda849f8638d879e91f79e90ec
 
 ARG TARGETARCH
 
@@ -86,7 +86,8 @@ RUN uv pip install --system --break-system-packages --upgrade pip==26.1.1
 # Common Python packages for web dev
 RUN uv pip install --system --break-system-packages \
     uvicorn==0.41.0 \
-    fastapi==0.135.1 \
+    fastapi==0.136.3 \
+    starlette==1.1.0 \
     flask==3.1.3 \
     gunicorn==25.1.0 \
     psycopg2-binary==2.9.11 \

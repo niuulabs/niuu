@@ -66,7 +66,7 @@ async def test_batch_publish_ordering(rabbitmq_transport: RabbitMQTransport):
 
 
 async def test_topic_exchange_routing(rabbitmq_transport: RabbitMQTransport):
-    """Subscriber with 'ravn.*' receives ravn events but not tyr events."""
+    """Subscriber with 'ravn.*' receives ravn events but not ting events."""
     received: list[SleipnirEvent] = []
 
     async def handler(event: SleipnirEvent) -> None:
@@ -75,7 +75,7 @@ async def test_topic_exchange_routing(rabbitmq_transport: RabbitMQTransport):
     await rabbitmq_transport.subscribe(["ravn.*"], handler)
 
     await rabbitmq_transport.publish(make_event(event_type="ravn.tool.complete"))
-    await rabbitmq_transport.publish(make_event(event_type="tyr.saga.created"))
+    await rabbitmq_transport.publish(make_event(event_type="ting.saga.created"))
 
     await collect_events(1, received, timeout=2.0)
     await asyncio.sleep(0.3)
@@ -152,7 +152,7 @@ async def test_multiple_independent_subscribers(rabbitmq_transport: RabbitMQTran
     await rabbitmq_transport.subscribe(["*"], all_handler)
 
     await rabbitmq_transport.publish(make_event(event_type="ravn.tool.complete"))
-    await rabbitmq_transport.publish(make_event(event_type="tyr.saga.created"))
+    await rabbitmq_transport.publish(make_event(event_type="ting.saga.created"))
 
     await collect_events(1, ravn_received)
     await collect_events(2, all_received)

@@ -39,10 +39,10 @@ from pathlib import Path
 import pytest
 
 from niuu.domain.llm_merge import merge_llm
-from tyr.adapters.flows.config import ConfigFlockFlowProvider
-from tyr.domain.flock_flow import FlockFlowConfig, FlockPersonaOverride
-from tyr.domain.flock_merge import build_flock_workload_config, merge_persona_override
-from tyr.domain.templates import TemplateRaid
+from ting.adapters.flows.config import ConfigFlockFlowProvider
+from ting.domain.flock_flow import FlockFlowConfig, FlockPersonaOverride
+from ting.domain.flock_merge import build_flock_workload_config, merge_persona_override
+from ting.domain.templates import TemplateRun
 
 # ---------------------------------------------------------------------------
 # Shared test data
@@ -103,13 +103,13 @@ def _make_flow() -> FlockFlowConfig:
     )
 
 
-def _make_template_raid() -> TemplateRaid:
-    """Build a TemplateRaid with stage-level persona_overrides."""
-    return TemplateRaid(
+def _make_template_run() -> TemplateRun:
+    """Build a TemplateRun with stage-level persona_overrides."""
+    return TemplateRun(
         name="Review PR #1",
-        description="End-to-end acceptance test raid",
+        description="End-to-end acceptance test run",
         acceptance_criteria=["All tests pass", "No security issues"],
-        declared_files=["src/tyr/domain/flock_flow.py"],
+        declared_files=["src/ting/domain/flock_flow.py"],
         estimate_hours=1.0,
         prompt="Review the flock composition implementation",
         persona=_PERSONA_NAME,
@@ -136,7 +136,7 @@ class TestInProcessParity:
 
         workload = build_flock_workload_config(
             flow_name=_FLOW_NAME,
-            tpl_raid=_make_template_raid(),
+            tpl_run=_make_template_run(),
             flow_provider=provider,
             initial_prompt="Implement the feature",
         )
@@ -159,7 +159,7 @@ class TestInProcessParity:
 
         workload = build_flock_workload_config(
             flow_name=_FLOW_NAME,
-            tpl_raid=_make_template_raid(),
+            tpl_run=_make_template_run(),
             flow_provider=provider,
             initial_prompt="Implement the feature",
         )
@@ -179,7 +179,7 @@ class TestInProcessParity:
 
         workload = build_flock_workload_config(
             flow_name=_FLOW_NAME,
-            tpl_raid=_make_template_raid(),
+            tpl_run=_make_template_run(),
             flow_provider=provider,
             initial_prompt="Implement the feature",
         )
@@ -206,7 +206,7 @@ class TestInProcessParity:
         provider.save(_make_flow())
         workload = build_flock_workload_config(
             flow_name=_FLOW_NAME,
-            tpl_raid=_make_template_raid(),
+            tpl_run=_make_template_run(),
             flow_provider=provider,
             initial_prompt="Implement the feature",
         )
@@ -235,7 +235,7 @@ class TestInProcessParity:
 
         workload = build_flock_workload_config(
             flow_name=_FLOW_NAME,
-            tpl_raid=_make_template_raid(),
+            tpl_run=_make_template_run(),
             flow_provider=provider,
             initial_prompt="Implement the feature",
         )
@@ -246,7 +246,7 @@ class TestInProcessParity:
         """build_flock_workload_config returns None when flow_provider is None."""
         workload = build_flock_workload_config(
             flow_name=_FLOW_NAME,
-            tpl_raid=_make_template_raid(),
+            tpl_run=_make_template_run(),
             flow_provider=None,
             initial_prompt="Implement the feature",
         )
@@ -272,7 +272,7 @@ class TestInProcessParity:
 
         workload = build_flock_workload_config(
             flow_name="attack-flow",
-            tpl_raid=TemplateRaid(
+            tpl_run=TemplateRun(
                 name="test",
                 description="",
                 acceptance_criteria=[],
@@ -322,7 +322,7 @@ class TestInProcessParity:
 
         workload = build_flock_workload_config(
             flow_name="",
-            tpl_raid=_make_template_raid(),
+            tpl_run=_make_template_run(),
             flow_provider=provider,
             initial_prompt="test",
         )
@@ -383,7 +383,7 @@ class TestMountedVolumeScenario:
                 },
             },
             "flockFlows": {
-                "adapter": "tyr.adapters.flows.configmap.KubernetesConfigMapFlockFlowProvider",
+                "adapter": "ting.adapters.flows.configmap.KubernetesConfigMapFlockFlowProvider",
                 "namespace": "default",
             },
         }
@@ -458,7 +458,7 @@ class TestMountedVolumeScenario:
 
         # Step 7: Assert /etc/ravn/config.yaml reflects the flow-level model override.
         # Stage-level persona_overrides (e.g. thinking_enabled) are applied at dispatch
-        # time by Tyr — not installed here — and are covered by TestInProcessParity.
+        # time by Ting — not installed here — and are covered by TestInProcessParity.
         config = read_sidecar_config(kind_cluster, pod_name, namespace="default")
         persona_cfg = config.get("persona", {})
         llm_cfg = persona_cfg.get("llm", {})
@@ -534,7 +534,7 @@ class TestHTTPScenario:
                 },
             },
             "flockFlows": {
-                "adapter": "tyr.adapters.flows.configmap.KubernetesConfigMapFlockFlowProvider",
+                "adapter": "ting.adapters.flows.configmap.KubernetesConfigMapFlockFlowProvider",
                 "namespace": "default",
             },
         }

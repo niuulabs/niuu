@@ -1,0 +1,18 @@
+apiVersion: v2
+name: guild
+description: "Guild — shared instance registry, discovery, and aggregation APIs"
+type: application
+version: 0.0.0-ting.159
+appVersion: "0.0.0-ting.159"
+keywords:
+  - guild
+  - registry
+  - discovery
+  - niuu
+maintainers:
+  - name: Niuu Labs
+    url: https://github.com/niuulabs
+home: https://github.com/niuulabs/volundr
+sources:
+  - https://github.com/niuulabs/volundr
+dependencies: []

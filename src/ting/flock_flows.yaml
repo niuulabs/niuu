@@ -1,0 +1,11 @@
+- name: ting-run-flow
+  description: Default Ting run flock using the legacy Volundr coordinator, coder, and reviewer personas.
+  personas:
+    - name: coordinator
+      iteration_budget: 40
+    - name: coder
+      iteration_budget: 40
+    - name: reviewer
+      iteration_budget: 25
+  mesh_transport: nng
+  max_concurrent_tasks: 3

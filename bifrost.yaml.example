@@ -161,7 +161,7 @@ bifrost:
   #   # Example: wildcard pattern matching agent IDs
   #   volundr-session-*:
   #     allowed_models: [balanced, fast, local]
-  #   tyr:
+  #   ting:
   #     allowed_models: [best, balanced]
   #   claude-code:
   #     allowed_models: ['*']        # unrestricted

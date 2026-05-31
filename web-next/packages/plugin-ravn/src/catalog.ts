@@ -21,7 +21,7 @@ export const PERSONA_ROLE_ORDER: PersonaRole[] = [
   'report',
   'review',
   'write',
-  // Legacy roles — kept for backward compatibility with Tyr / Observatory
+  // Legacy roles — kept for backward compatibility with Ting / Observatory
   'audit',
   'gate',
   'index',
@@ -59,6 +59,42 @@ export const SEED_EVENT_CATALOG: EventCatalog = [
   },
   {
     name: 'research.completed',
+    schema: { summary: 'string', page_path: 'string' },
+  },
+  {
+    name: 'council.briefed',
+    schema: { summary: 'string', page_path: 'string' },
+  },
+  {
+    name: 'council.review.requested',
+    schema: { summary: 'string', page_path: 'string' },
+  },
+  {
+    name: 'council.human_input.requested',
+    schema: { summary: 'string', reason: 'string', recommendation: 'string' },
+  },
+  {
+    name: 'council.a.opinion.submitted',
+    schema: { summary: 'string', page_path: 'string' },
+  },
+  {
+    name: 'council.b.opinion.submitted',
+    schema: { summary: 'string', page_path: 'string' },
+  },
+  {
+    name: 'council.c.opinion.submitted',
+    schema: { summary: 'string', page_path: 'string' },
+  },
+  {
+    name: 'council.a.review.submitted',
+    schema: { summary: 'string', page_path: 'string' },
+  },
+  {
+    name: 'council.b.review.submitted',
+    schema: { summary: 'string', page_path: 'string' },
+  },
+  {
+    name: 'council.c.review.submitted',
     schema: { summary: 'string', page_path: 'string' },
   },
   { name: 'incident.opened', schema: { id: 'string', severity: 'string' } },

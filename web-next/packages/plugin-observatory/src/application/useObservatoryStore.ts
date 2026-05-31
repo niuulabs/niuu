@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type ObservatoryFilter = 'all' | 'agents' | 'raids' | 'services' | 'devices';
+export type ObservatoryFilter = 'all' | 'agents' | 'runs' | 'services' | 'devices';
 
 interface ObservatoryStoreState {
   selectedId: string | null;

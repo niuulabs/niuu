@@ -133,7 +133,7 @@ def test_custom_persona_dirs_accepted(tmp_path: Path) -> None:
 
 
 def test_spa_fallback_serves_index_for_unknown_route(tmp_path: Path) -> None:
-    """When web/dist exists, unknown routes return index.html."""
+    """When the built UI dist exists, unknown routes return index.html."""
     dist = tmp_path / "dist"
     assets = dist / "assets"
     assets.mkdir(parents=True)
@@ -168,6 +168,19 @@ def test_spa_fallback_serves_existing_static_file(tmp_path: Path) -> None:
     assert b"app" in resp.content
 
 
+def test_create_standalone_app_warns_when_web_dist_missing(tmp_path: Path) -> None:
+    """Missing UI assets should only disable static serving, not app startup."""
+    missing_dist = tmp_path / "missing-dist"
+
+    with patch("ravn.web._WEB_DIST", missing_dist), patch("ravn.web.logger.warning") as warning:
+        app = create_standalone_app()
+
+    assert isinstance(app, FastAPI)
+    warning.assert_called_once()
+    assert "static file serving disabled" in warning.call_args.args[0]
+    assert warning.call_args.args[1] == missing_dist
+
+
 # ---------------------------------------------------------------------------
 # serve() — calls uvicorn.run
 # ---------------------------------------------------------------------------
@@ -195,3 +208,19 @@ def test_serve_default_port(tmp_path: Path) -> None:
     mock_uvicorn.run.assert_called_once()
     _, kwargs = mock_uvicorn.run.call_args
     assert kwargs.get("port") == DEFAULT_WEB_PORT
+
+
+def test_serve_reload_uses_import_string_factory() -> None:
+    """Reload mode should use the factory import path instead of a materialized app."""
+    mock_uvicorn = MagicMock()
+
+    with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
+        serve(host="0.0.0.0", port=7478, reload=True)
+
+    mock_uvicorn.run.assert_called_once_with(
+        "ravn.web:create_standalone_app",
+        host="0.0.0.0",
+        port=7478,
+        reload=True,
+        factory=True,
+    )

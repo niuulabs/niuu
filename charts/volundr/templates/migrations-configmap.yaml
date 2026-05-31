@@ -197,6 +197,26 @@ data:
     DROP INDEX IF EXISTS idx_chronicle_events_chronicle_id;
     DROP TABLE IF EXISTS chronicle_events;
 
+  000038_chronicle_history_survives_session_delete.up.sql: |
+    -- Preserve chronicles and timeline history after session deletion
+
+    ALTER TABLE chronicles
+        DROP CONSTRAINT IF EXISTS chronicles_session_id_fkey;
+
+    ALTER TABLE chronicle_events
+        DROP CONSTRAINT IF EXISTS chronicle_events_session_id_fkey;
+
+  000038_chronicle_history_survives_session_delete.down.sql: |
+    -- Restore session foreign keys for chronicles and timeline events
+
+    ALTER TABLE chronicles
+        ADD CONSTRAINT chronicles_session_id_fkey
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL;
+
+    ALTER TABLE chronicle_events
+        ADD CONSTRAINT chronicle_events_session_id_fkey
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE;
+
   000007_session_events.up.sql: |
     -- Add session_events table for the event pipeline
 
@@ -1012,4 +1032,109 @@ data:
   000034_ravn_personas.down.sql: |
     DROP INDEX IF EXISTS idx_ravn_personas_owner_updated;
     DROP TABLE IF EXISTS ravn_personas;
+
+  000035_sessions_workload_type.up.sql: |
+    ALTER TABLE sessions
+        ADD COLUMN IF NOT EXISTS workload_type VARCHAR(100) NOT NULL DEFAULT 'session';
+
+  000035_sessions_workload_type.down.sql: |
+    ALTER TABLE sessions
+        DROP COLUMN IF EXISTS workload_type;
+
+  000036_communication_routes.up.sql: |
+    CREATE TABLE IF NOT EXISTS communication_routes (
+        id UUID PRIMARY KEY,
+        platform TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        thread_id TEXT,
+        session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        owner_id TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'room',
+        default_target TEXT,
+        active BOOLEAN NOT NULL DEFAULT true,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_comm_routes_session_id
+        ON communication_routes(session_id);
+
+    CREATE INDEX IF NOT EXISTS idx_comm_routes_owner_id
+        ON communication_routes(owner_id);
+
+    CREATE INDEX IF NOT EXISTS idx_comm_routes_active_lookup
+        ON communication_routes(platform, conversation_id, thread_id, active);
+
+  000036_communication_routes.down.sql: |
+    DROP INDEX IF EXISTS idx_comm_routes_active_lookup;
+    DROP INDEX IF EXISTS idx_comm_routes_owner_id;
+    DROP INDEX IF EXISTS idx_comm_routes_session_id;
+    DROP TABLE IF EXISTS communication_routes;
+
+  000037_communication_cursors.up.sql: |
+    CREATE TABLE IF NOT EXISTS communication_cursors (
+        platform TEXT NOT NULL,
+        consumer_key TEXT NOT NULL,
+        cursor TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (platform, consumer_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_comm_cursors_updated_at
+        ON communication_cursors(updated_at);
+
+  000037_communication_cursors.down.sql: |
+    DROP TABLE IF EXISTS communication_cursors;
+
+  000039_observatory_registry.up.sql: |
+    CREATE TABLE IF NOT EXISTS observatory_registries (
+        registry_key TEXT PRIMARY KEY,
+        version BIGINT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        payload JSONB NOT NULL
+    );
+
+  000039_observatory_registry.down.sql: |
+    DROP TABLE IF EXISTS observatory_registries;
+  000040_niuu_instances.up.sql: |
+    -- Shared runtime instance registry for multi-instance Niuu deployments.
+
+    CREATE TABLE IF NOT EXISTS niuu_instances (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        kind TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'system',
+        owner_id TEXT,
+        tenant_id TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        is_default BOOLEAN NOT NULL DEFAULT false,
+        config JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT niuu_instances_kind_check CHECK (kind IN ('volundr')),
+        CONSTRAINT niuu_instances_visibility_check CHECK (visibility IN ('system', 'tenant', 'user')),
+        CONSTRAINT niuu_instances_scope_check CHECK (
+            (visibility = 'system' AND owner_id IS NULL)
+            OR (visibility = 'tenant' AND owner_id IS NULL AND tenant_id IS NOT NULL)
+            OR (visibility = 'user' AND owner_id IS NOT NULL AND tenant_id IS NULL)
+        )
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_scope_slug
+        ON niuu_instances(kind, slug, COALESCE(owner_id, ''), COALESCE(tenant_id, ''));
+
+    CREATE INDEX IF NOT EXISTS idx_niuu_instances_kind_enabled
+        ON niuu_instances(kind, enabled);
+
+    CREATE INDEX IF NOT EXISTS idx_niuu_instances_visibility
+        ON niuu_instances(visibility, owner_id, tenant_id);
+
+  000040_niuu_instances.down.sql: |
+    DROP INDEX IF EXISTS idx_niuu_instances_visibility;
+    DROP INDEX IF EXISTS idx_niuu_instances_kind_enabled;
+    DROP INDEX IF EXISTS idx_niuu_instances_scope_slug;
+    DROP TABLE IF EXISTS niuu_instances;
 {{- end }}

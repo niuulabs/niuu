@@ -16,7 +16,7 @@ PACKAGE_JSON="node_modules/@codingame/monaco-vscode-api/package.json"
 
 if [ ! -f "$PACKAGE_JSON" ]; then
   echo "ERROR: $PACKAGE_JSON not found." >&2
-  echo "Run 'npm install' in the web/ directory first." >&2
+  echo "Install @codingame/monaco-vscode-api in the build context first." >&2
   exit 1
 fi
 

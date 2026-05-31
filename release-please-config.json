@@ -38,8 +38,8 @@
     "web-next/packages/plugin-sdk": {
       "component": "@niuulabs/plugin-sdk"
     },
-    "web-next/packages/plugin-tyr": {
-      "component": "@niuulabs/plugin-tyr"
+    "web-next/packages/plugin-ting": {
+      "component": "@niuulabs/plugin-ting"
     },
     "web-next/packages/plugin-volundr": {
       "component": "@niuulabs/plugin-volundr"

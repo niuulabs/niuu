@@ -42,12 +42,12 @@ describe('UserMessage', () => {
       <UserMessage
         message={{
           ...userMsg,
-          content: '# Raid\n\n- update the README\n- add an ownership map',
+          content: '# Run\n\n- update the README\n- add an ownership map',
         }}
       />,
     );
 
-    expect(screen.getByRole('heading', { name: 'Raid' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Run' })).toBeInTheDocument();
     expect(screen.getByText('update the README')).toBeInTheDocument();
     expect(screen.getByText('add an ownership map')).toBeInTheDocument();
   });

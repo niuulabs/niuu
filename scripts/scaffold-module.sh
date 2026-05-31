@@ -168,7 +168,7 @@ INDEX_FILE="$ROOT_DIR/web/src/modules/index.ts"
 if grep -q "import './$NAME/register';" "$INDEX_FILE"; then
   echo "Module already registered in $INDEX_FILE"
 else
-  sed -i "/import '\.\/tyr\/register';/a import './$NAME/register';" "$INDEX_FILE"
+  sed -i "/import '\.\/ting\/register';/a import './$NAME/register';" "$INDEX_FILE"
 fi
 
 echo ""

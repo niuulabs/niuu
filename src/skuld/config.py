@@ -14,6 +14,7 @@ Environment variable override format:
   SESSION_ID, MODEL, HOST, PORT, VOLUNDR_API_URL, SERVICE_USER_ID, WORKSPACE_DIR
 """
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -41,7 +42,7 @@ def _config_paths() -> list[Path]:
 
 CONFIG_PATHS = _config_paths()
 
-_DEFAULT_TRANSPORT_ADAPTER = "skuld.transports.sdk_websocket.SdkWebSocketTransport"
+_DEFAULT_TRANSPORT_ADAPTER = "skuld.transports.sdk.SDKTransport"
 
 
 _DEFAULT_PARTICIPANT_COLORS = [
@@ -112,6 +113,31 @@ class WorkflowTriggerConfig(BaseModel):
     startup_delay_s: float = Field(default=3.0)
 
 
+class WorkflowRuntimeConfig(BaseModel):
+    """Workflow graph metadata injected into Skuld-backed flock sessions."""
+
+    workflow_id: str = Field(default="")
+    name: str = Field(default="")
+    version: str = Field(default="")
+    scope: str = Field(default="")
+    initial_context: str = Field(default="")
+    graph: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_graph_json(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        graph = value.get("graph")
+        if isinstance(graph, str) and graph.strip():
+            try:
+                value = dict(value)
+                value["graph"] = json.loads(graph)
+            except Exception:
+                pass
+        return value
+
+
 class RoomConfig(BaseModel):
     """Multi-agent room chat configuration.
 
@@ -141,6 +167,24 @@ class TelegramConfig(BaseModel):
     message_thread_id: int | None = Field(default=None)
 
 
+class PeerWatchdogConfig(BaseModel):
+    """Silence watchdog settings for workflow flock peers."""
+
+    enabled: bool = Field(default=True)
+    poll_seconds: float = Field(
+        default=5.0,
+        description="Seconds between silence watchdog checks.",
+    )
+    silence_seconds: float = Field(
+        default=300.0,
+        description="Seconds of no visible peer progress before warning in normal execution.",
+    )
+    tool_silence_seconds: float = Field(
+        default=300.0,
+        description="Seconds of no visible peer progress before warning while a tool is running.",
+    )
+
+
 class SkuldSessionConfig(BaseModel):
     """Per-session configuration (set by Volundr at pod creation)."""
 
@@ -151,7 +195,17 @@ class SkuldSessionConfig(BaseModel):
     system_prompt: str = Field(default="")
     initial_prompt: str = Field(default="")
     saga_id: str | None = Field(default=None)
-    raid_id: str | None = Field(default=None)
+    run_id: str | None = Field(default=None)
+
+
+class ArchiveStoreConfig(BaseModel):
+    """Dynamic archive store adapter configuration."""
+
+    adapter: str = Field(
+        default="volundr.adapters.outbound.archive_store.FileSystemArchiveStore",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
 class SkuldSettings(BaseSettings):
@@ -184,7 +238,9 @@ class SkuldSettings(BaseSettings):
     cli_type: str = Field(default="claude")  # "claude" | "codex"
     transport: str = Field(default="sdk")  # claude only: "sdk" | "subprocess"
     transport_adapter: str = Field(default=_DEFAULT_TRANSPORT_ADAPTER)
-    skip_permissions: bool = Field(default=True)
+    skip_permissions: bool = Field(default=False)
+    approval_policy: str = Field(default="")
+    sandbox: str = Field(default="")
     agent_teams: bool = Field(default=False)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
@@ -192,14 +248,17 @@ class SkuldSettings(BaseSettings):
     service_user_id: str = Field(default="skuld-broker")
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")
+    archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     chronicle_watcher_enabled: bool = Field(default=True)
     chronicle_watcher_debounce_ms: int = Field(default=500)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)
     workflow_trigger: WorkflowTriggerConfig = Field(default_factory=WorkflowTriggerConfig)
+    workflow: WorkflowRuntimeConfig = Field(default_factory=WorkflowRuntimeConfig)
 
     @model_validator(mode="after")
     def _apply_legacy_env_vars(self) -> "SkuldSettings":

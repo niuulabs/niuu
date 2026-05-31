@@ -30,9 +30,8 @@ DEFINITIONS = {
         defaults={
             "broker": {
                 "cliType": "claude",
-                "transportAdapter": (
-                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-                ),
+                "transport": "sdk",
+                "transportAdapter": "skuld.transports.sdk.SDKTransport",
             },
         },
     ),
@@ -88,6 +87,7 @@ class TestSessionDefinitionContributor:
         result = await contributor.contribute(_mock_session(), context)
 
         assert result.values["broker"]["cliType"] == "claude"
+        assert result.values["model"] == "claude-sonnet-4-6"
 
     @pytest.mark.asyncio
     async def test_explicit_definition_overrides_default(self):
@@ -99,6 +99,7 @@ class TestSessionDefinitionContributor:
         result = await contributor.contribute(_mock_session(), context)
 
         assert result.values["broker"]["cliType"] == "codex-ws"
+        assert "model" not in result.values
 
     @pytest.mark.asyncio
     async def test_disabled_definition_returns_empty(self):
@@ -161,11 +162,8 @@ class TestDefaultSessionDefinitions:
         claude = _default_session_definitions()["skuldClaude"]
         assert claude.display_name == "Claude Code"
         assert claude.defaults["broker"]["cliType"] == "claude"
-        assert claude.defaults["broker"]["transport"] == "persistent_subprocess"
-        assert (
-            claude.defaults["broker"]["transportAdapter"]
-            == "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-        )
+        assert claude.defaults["broker"]["transport"] == "sdk"
+        assert claude.defaults["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
 
     def test_codex_defaults(self):
         codex = _default_session_definitions()["skuldCodex"]
@@ -188,3 +186,4 @@ class TestDefaultSessionDefinitions:
         context = SessionContext()
         result = await contributor.contribute(_mock_session(), context)
         assert result.values["broker"]["cliType"] == "claude"
+        assert result.values["model"] == "claude-sonnet-4-6"

@@ -6,6 +6,7 @@ test client, so no network is involved.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -134,6 +135,53 @@ def client_with_sourced_page(tmp_path: Path) -> TestClient:
 
 
 @pytest.fixture()
+def client_with_compiled_truth_page(tmp_path: Path) -> TestClient:
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    router = MimirRouter(adapter=adapter, name="test", role="local")
+    app = FastAPI()
+    app.include_router(router.router, prefix="/mimir")
+    tc = TestClient(app)
+
+    ingest = tc.post(
+        "/mimir/ingest",
+        json={
+            "title": "Postmortem Source",
+            "content": "Shared postmortem source content.",
+            "source_type": "document",
+        },
+    )
+    source_id = ingest.json()["source_id"]
+    tc.put(
+        "/mimir/page",
+        json={
+            "path": "runs/NIU-912-postmortem.md",
+            "content": (
+                "---\n"
+                "type: topic\n"
+                "confidence: medium\n"
+                "related_entities: [project-volundr]\n"
+                f"source_ids: [{source_id}]\n"
+                "---\n\n"
+                "# NIU-912 Postmortem\n\n"
+                "Curated run summary.\n\n"
+                "## Compiled Truth\n\n"
+                "### Key Facts\n"
+                "- Step 1 proof artifact was present.\n"
+                "- Step 2 curator proof artifact was created.\n\n"
+                "### Relationships\n"
+                "- [[project-volundr]] — the workflow ran inside the Volundr stack.\n\n"
+                "### Assessment\n"
+                "The staged workflow completed cleanly and produced the expected proof.\n\n"
+                "## Timeline\n\n"
+                "- 2026-05-10: Curated the NIU-912 postmortem. "
+                "[Source: tester, local, 2026-05-10]\n"
+            ),
+        },
+    )
+    return tc
+
+
+@pytest.fixture()
 def composite_client(tmp_path: Path) -> TestClient:
     tc = TestClient(_make_composite_app(tmp_path))
     tc.put(
@@ -204,6 +252,33 @@ def test_list_pages_category_filter(client_with_page: TestClient) -> None:
     assert len(resp2.json()) == 0
 
 
+def test_list_pages_prefix_filter(tmp_path: Path) -> None:
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    router = MimirRouter(adapter=adapter, name="test", role="local")
+    app = FastAPI()
+    app.include_router(router.router, prefix="/mimir")
+    client = TestClient(app)
+
+    client.put(
+        "/mimir/page",
+        json={
+            "path": "research/campaigns/alpha/final.md",
+            "content": "# Alpha\n",
+        },
+    )
+    client.put(
+        "/mimir/page",
+        json={
+            "path": "research/campaigns/beta/final.md",
+            "content": "# Beta\n",
+        },
+    )
+
+    resp = client.get("/mimir/pages", params={"prefix": "research/campaigns/alpha/"})
+    assert resp.status_code == 200
+    assert [page["path"] for page in resp.json()] == ["research/campaigns/alpha/final.md"]
+
+
 def test_registry_mount_crud(registry_client: TestClient) -> None:
     create = registry_client.post(
         "/mimir/registry/mounts",
@@ -258,6 +333,68 @@ def test_registry_mount_crud(registry_client: TestClient) -> None:
     assert all(item["id"] != created["id"] for item in remaining.json())
 
 
+def test_registry_local_mount_is_browsable_without_http_server(
+    tmp_path: Path,
+    registry_client: TestClient,
+) -> None:
+    external_root = tmp_path / "mimir-test"
+    external = MarkdownMimirAdapter(root=external_root)
+    asyncio.run(
+        external.upsert_page(
+            "technical/external.md",
+            "# External Memory\nBrowsable local mount page.\n<!-- sources: src_external -->",
+        )
+    )
+
+    create = registry_client.post(
+        "/mimir/registry/mounts",
+        json={
+            "name": "mimir-test",
+            "kind": "local",
+            "lifecycle": "registered",
+            "role": "local",
+            "url": "",
+            "path": str(external_root),
+            "categories": ["technical"],
+            "default_read_priority": 4,
+            "enabled": True,
+            "health_status": "unknown",
+            "health_message": "",
+            "desc": "tmp local mount",
+        },
+    )
+    assert create.status_code == 200
+
+    mounts = registry_client.get("/mimir/mounts")
+    assert mounts.status_code == 200
+    mount = next(item for item in mounts.json() if item["name"] == "mimir-test")
+    assert mount["pages"] == 1
+    assert mount["status"] == "healthy"
+
+    pages = registry_client.get("/mimir/pages", params={"mount": "mimir-test"})
+    assert pages.status_code == 200
+    listed_pages = pages.json()
+    assert len(listed_pages) == 1
+    assert listed_pages[0]["path"] == "technical/external.md"
+    assert listed_pages[0]["title"] == "External Memory"
+    assert listed_pages[0]["summary"] == "Browsable local mount page."
+    assert listed_pages[0]["mounts"] == ["mimir-test"]
+
+    read_page = registry_client.get(
+        "/mimir/page",
+        params={"mount": "mimir-test", "path": "technical/external.md"},
+    )
+    assert read_page.status_code == 200
+    assert "External Memory" in read_page.json()["content"]
+
+    search = registry_client.get(
+        "/mimir/search",
+        params={"mount": "mimir-test", "q": "browsable local"},
+    )
+    assert search.status_code == 200
+    assert [item["path"] for item in search.json()] == ["technical/external.md"]
+
+
 # ---------------------------------------------------------------------------
 # GET /mimir/page
 # ---------------------------------------------------------------------------
@@ -269,6 +406,88 @@ def test_read_page_found(client_with_page: TestClient) -> None:
     data = resp.json()
     assert "Test Page" in data["content"]
     assert data["path"] == "technical/test.md"
+
+
+def test_read_page_returns_explicit_zones(client_with_compiled_truth_page: TestClient) -> None:
+    resp = client_with_compiled_truth_page.get(
+        "/mimir/page",
+        params={"path": "runs/NIU-912-postmortem.md"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["related"] == ["project-volundr"]
+    assert data["zones"] == [
+        {
+            "kind": "key-facts",
+            "items": [
+                "Step 1 proof artifact was present.",
+                "Step 2 curator proof artifact was created.",
+            ],
+        },
+        {
+            "kind": "relationships",
+            "items": [
+                {
+                    "slug": "project-volundr",
+                    "note": "the workflow ran inside the Volundr stack.",
+                }
+            ],
+        },
+        {
+            "kind": "assessment",
+            "text": "The staged workflow completed cleanly and produced the expected proof.",
+        },
+        {
+            "kind": "timeline",
+            "items": [
+                {
+                    "date": "2026-05-10",
+                    "note": "Curated the NIU-912 postmortem",
+                    "source": "tester, local, 2026-05-10",
+                }
+            ],
+        },
+    ]
+
+
+def test_read_page_falls_back_to_assessment_for_legacy_compiled_truth(
+    tmp_path: Path,
+) -> None:
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    router = MimirRouter(adapter=adapter, name="test", role="local")
+    app = FastAPI()
+    app.include_router(router.router, prefix="/mimir")
+    tc = TestClient(app)
+
+    tc.put(
+        "/mimir/page",
+        json={
+            "path": "runs/legacy-postmortem.md",
+            "content": (
+                "# Legacy Postmortem\n\n"
+                "## Compiled Truth\n\n"
+                "**Outcome**: Complete.\n\n"
+                "### What was done\n\n"
+                "- Verified the step-1 artifact.\n"
+                "- Created the step-2 artifact.\n"
+            ),
+        },
+    )
+
+    resp = tc.get("/mimir/page", params={"path": "runs/legacy-postmortem.md"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["zones"] == [
+        {
+            "kind": "assessment",
+            "text": (
+                "**Outcome**: Complete.\n\n"
+                "### What was done\n\n"
+                "- Verified the step-1 artifact.\n"
+                "- Created the step-2 artifact."
+            ),
+        }
+    ]
 
 
 def test_read_page_not_found(client: TestClient) -> None:

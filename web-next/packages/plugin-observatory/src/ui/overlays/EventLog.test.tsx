@@ -7,9 +7,9 @@ const EVENTS: ObservatoryEvent[] = [
   {
     id: 'ev-1',
     time: '00:00:01',
-    type: 'TYR',
-    subject: 'tyr-0',
-    body: 'raid-omega formed: 2 ravens conscripted',
+    type: 'TING',
+    subject: 'ting-0',
+    body: 'run-omega formed: 2 ravens conscripted',
   },
   {
     id: 'ev-2',
@@ -42,13 +42,13 @@ describe('EventLog', () => {
 
   it('renders all event body text', () => {
     render(<EventLog events={EVENTS} />);
-    expect(screen.getByText('raid-omega formed: 2 ravens conscripted')).toBeInTheDocument();
+    expect(screen.getByText('run-omega formed: 2 ravens conscripted')).toBeInTheDocument();
     expect(screen.getByText('inference timeout')).toBeInTheDocument();
   });
 
   it('renders all event subjects', () => {
     render(<EventLog events={EVENTS} />);
-    expect(screen.getByText('tyr-0')).toBeInTheDocument();
+    expect(screen.getByText('ting-0')).toBeInTheDocument();
     expect(screen.getByText('mimir-0')).toBeInTheDocument();
   });
 
@@ -59,7 +59,7 @@ describe('EventLog', () => {
 
   it('renders event type tags', () => {
     render(<EventLog events={EVENTS} />);
-    expect(screen.getByText('TYR')).toBeInTheDocument();
+    expect(screen.getByText('TING')).toBeInTheDocument();
     expect(screen.getByText('MIMIR')).toBeInTheDocument();
     expect(screen.getByText('BIFROST')).toBeInTheDocument();
     expect(screen.getByText('RAVN')).toBeInTheDocument();
@@ -67,8 +67,8 @@ describe('EventLog', () => {
 
   it('sets data-type attribute on each entry', () => {
     render(<EventLog events={EVENTS} />);
-    const tyrEntry = screen.getByTestId('event-ev-1');
-    expect(tyrEntry).toHaveAttribute('data-type', 'TYR');
+    const tingEntry = screen.getByTestId('event-ev-1');
+    expect(tingEntry).toHaveAttribute('data-type', 'TING');
     const mimirEntry = screen.getByTestId('event-ev-2');
     expect(mimirEntry).toHaveAttribute('data-type', 'MIMIR');
   });
@@ -90,16 +90,27 @@ describe('EventLog', () => {
     expect(screen.queryByText('no events')).toBeNull();
   });
 
-  it('renders RAID type events', () => {
-    const raidEvent: ObservatoryEvent = {
-      id: 'ev-raid',
+  it('renders RUN type events', () => {
+    const runEvent: ObservatoryEvent = {
+      id: 'ev-run',
       time: '00:01:00',
-      type: 'RAID',
-      subject: 'raid-omega',
-      body: 'tyr dispatched raid',
+      type: 'RUN',
+      subject: 'run-omega',
+      body: 'ting dispatched run',
     };
-    render(<EventLog events={[raidEvent]} />);
-    expect(screen.getByText('RAID')).toBeInTheDocument();
-    expect(screen.getByText('raid-omega')).toBeInTheDocument();
+    render(<EventLog events={[runEvent]} />);
+    expect(screen.getByText('RUN')).toBeInTheDocument();
+    expect(screen.getByText('run-omega')).toBeInTheDocument();
+  });
+
+  it('renders sparse events without crashing', () => {
+    const sparseEvent = {
+      id: 'ev-sparse',
+      time: '00:02:00',
+      type: 'RUN',
+      subject: undefined,
+      body: undefined,
+    } as unknown as ObservatoryEvent;
+    expect(() => render(<EventLog events={[sparseEvent]} />)).not.toThrow();
   });
 });

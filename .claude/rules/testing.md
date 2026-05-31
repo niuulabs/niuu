@@ -3,6 +3,7 @@
 ## Coverage Requirements
 
 - **Minimum 85% coverage** required for both backend and web
+- Do not lower Codecov targets, thresholds, or coverage gates to get a PR through. Raise coverage instead.
 - Tests MUST exist and pass before completing work
 
 ## Backend Testing

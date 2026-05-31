@@ -6,6 +6,7 @@ import {
   applyScrollZoom,
   applyKeyPan,
   defaultCamera,
+  fitCameraToBounds,
   type Camera,
 } from './canvasMath';
 import { CANVAS } from './config';
@@ -206,5 +207,23 @@ describe('defaultCamera', () => {
     const { zoom } = defaultCamera();
     expect(zoom).toBeGreaterThanOrEqual(CANVAS.ZOOM_MIN);
     expect(zoom).toBeLessThanOrEqual(CANVAS.ZOOM_MAX);
+  });
+});
+
+describe('fitCameraToBounds', () => {
+  it('centres the camera on the bounds midpoint', () => {
+    const cam = fitCameraToBounds({ minX: -200, minY: -100, maxX: 600, maxY: 300 }, 1200, 800);
+    expect(cam.x).toBe(200);
+    expect(cam.y).toBe(100);
+  });
+
+  it('returns a zoom within allowed bounds', () => {
+    const cam = fitCameraToBounds({ minX: -100, minY: -100, maxX: 100, maxY: 100 }, 1200, 800);
+    expect(cam.zoom).toBeGreaterThanOrEqual(CANVAS.ZOOM_MIN);
+    expect(cam.zoom).toBeLessThanOrEqual(CANVAS.ZOOM_MAX);
+  });
+
+  it('falls back to default camera for missing bounds', () => {
+    expect(fitCameraToBounds(null, 1200, 800)).toEqual(defaultCamera());
   });
 });

@@ -1,7 +1,12 @@
 import { useMemo, useState, useCallback, type ReactNode } from 'react';
 import { RouterProvider } from '@tanstack/react-router';
 import type { RouterHistory } from '@tanstack/react-router';
-import { useFeatureCatalog, type PluginDescriptor, type PluginCtx } from '@niuulabs/plugin-sdk';
+import {
+  PluginCtxProvider,
+  useFeatureCatalog,
+  type PluginDescriptor,
+  type PluginCtx,
+} from '@niuulabs/plugin-sdk';
 import { CommandPaletteProvider } from '@niuulabs/ui';
 import { ShellContext } from './ShellContext';
 import { composeRouter } from './composeRouter';
@@ -42,9 +47,11 @@ export function Shell({ plugins, brand = 'ᚾ', version = '0.0.1', _testHistory 
 
   return (
     <ShellContext.Provider value={{ enabled, brand, version, ctx }}>
-      <CommandPaletteProvider>
-        <RouterProvider router={router} />
-      </CommandPaletteProvider>
+      <PluginCtxProvider value={ctx}>
+        <CommandPaletteProvider>
+          <RouterProvider router={router} />
+        </CommandPaletteProvider>
+      </PluginCtxProvider>
     </ShellContext.Provider>
   );
 }

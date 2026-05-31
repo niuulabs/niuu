@@ -77,6 +77,25 @@ class CompositeMimirAdapter(MimirPort):
         self._mount_map = {m.name: m for m in mounts}
         self._write_routing = write_routing or WriteRouting()
 
+    def ingest_targets(self, explicit: str | None = None) -> list[str]:
+        """Return the mount names an ingest should target.
+
+        Explicit routing wins. Otherwise we prefer the configured default write
+        targets and fall back to all mounted instances to preserve the legacy
+        fan-out behavior.
+        """
+        if explicit:
+            return [explicit] if explicit in self._mount_map else []
+
+        configured_default = [
+            mount_name
+            for mount_name in self._write_routing.default
+            if mount_name in self._mount_map
+        ]
+        if configured_default:
+            return configured_default
+        return [mount.name for mount in self._mounts]
+
     # ------------------------------------------------------------------
     # MimirPort — read operations (fan-out, merge, de-dup by path)
     # ------------------------------------------------------------------
@@ -91,6 +110,17 @@ class CompositeMimirAdapter(MimirPort):
             except Exception as exc:
                 logger.warning("composite mimir: ingest failed on %r: %s", mount.name, exc)
         return list(dict.fromkeys(all_paths))
+
+    async def ingest_to(self, source: MimirSource, mount_name: str) -> list[str]:
+        """Ingest into a specific mount only.
+
+        Used by workflow-scoped memory producers that need deterministic routing
+        to one mounted Mimir instance.
+        """
+        mount = self._mount_map.get(mount_name)
+        if mount is None:
+            raise ValueError(f"Unknown Mimir mount: {mount_name}")
+        return await mount.port.ingest(source)
 
     async def query(self, question: str) -> MimirQueryResult:
         """Query all mounts in priority order, merge sources (de-dup by path)."""
@@ -148,14 +178,18 @@ class CompositeMimirAdapter(MimirPort):
                 logger.warning("composite mimir: read_page failed on %r: %s", mount.name, exc)
         raise FileNotFoundError(f"Mímir page not found in any mount: {path}")
 
-    async def list_pages(self, category: str | None = None) -> list[MimirPageMeta]:
+    async def list_pages(
+        self,
+        category: str | None = None,
+        prefix: str | None = None,
+    ) -> list[MimirPageMeta]:
         """List pages from all mounts in priority order, de-dup by path."""
         seen_paths: set[str] = set()
         results: list[MimirPageMeta] = []
 
         for mount in self._mounts:
             try:
-                pages = await mount.port.list_pages(category)
+                pages = await mount.port.list_pages(category=category, prefix=prefix)
                 for meta in pages:
                     if meta.path not in seen_paths:
                         seen_paths.add(meta.path)
@@ -175,6 +209,25 @@ class CompositeMimirAdapter(MimirPort):
             except Exception as exc:
                 logger.debug("composite mimir: read_source failed on %r: %s", mount.name, exc)
         return None
+
+    async def read_source_from_mount(
+        self,
+        source_id: str,
+        mount_name: str,
+    ) -> MimirSource | None:
+        """Return a raw source from the named mount only."""
+        mount = self._mount_map.get(mount_name)
+        if mount is None:
+            return None
+        try:
+            return await mount.port.read_source(source_id)
+        except Exception as exc:
+            logger.debug(
+                "composite mimir: read_source_from_mount failed on %r: %s",
+                mount_name,
+                exc,
+            )
+            return None
 
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
         """List sources from all mounts, de-duplicated by source_id.

@@ -155,12 +155,18 @@ class HttpMimirAdapter(MimirPort):
         response.raise_for_status()
         return response.json()["content"]
 
-    async def list_pages(self, category: str | None = None) -> list[MimirPageMeta]:
-        """GET /mimir/pages — list pages, optionally filtered by category."""
+    async def list_pages(
+        self,
+        category: str | None = None,
+        prefix: str | None = None,
+    ) -> list[MimirPageMeta]:
+        """GET /mimir/pages — list pages, optionally filtered by category or prefix."""
         client = self._get_client()
         params: dict[str, Any] = {}
         if category is not None:
             params["category"] = category
+        if prefix is not None:
+            params["prefix"] = prefix
         response = await client.get("/mimir/pages", params=params)
         response.raise_for_status()
         return [_parse_page_meta(m) for m in response.json()]

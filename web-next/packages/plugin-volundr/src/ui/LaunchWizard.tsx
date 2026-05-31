@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
+import type { BifrostModel, IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
   BranchSelect,
@@ -22,10 +23,10 @@ import type {
   SessionSource,
   SessionDefinition,
   IntegrationConnection,
+  VolundrTarget,
   StoredCredential,
   TrackerIssue,
   VolundrPreset,
-  VolundrModel,
   VolundrWorkspace,
 } from '../models/volundr.model';
 import { parsePresetYaml, serializePresetYaml } from '../utils/presetYaml';
@@ -35,6 +36,13 @@ import { parsePresetYaml, serializePresetYaml } from '../utils/presetYaml';
 // ---------------------------------------------------------------------------
 
 type WizardStep = 'template' | 'source' | 'runtime' | 'confirm' | 'booting';
+
+type RuntimeModelDescriptor = Pick<
+  BifrostModel,
+  'name' | 'provider' | 'vendor' | 'tier' | 'color' | 'vram' | 'sessionDefinition'
+> & {
+  cost?: string | number;
+};
 
 export interface WizardForm {
   templateId: string;
@@ -56,11 +64,11 @@ export interface WizardForm {
   setupScripts: string[];
   definition: string;
   model: string;
-  permission: string;
   cpu: string;
   mem: string;
   gpu: string;
   cluster: string;
+  instanceId: string;
   yamlMode: boolean;
   yamlContent: string;
 }
@@ -76,6 +84,11 @@ const STEP_LABELS: Record<string, string> = {
 
 /** Map definition keys to runes for visual branding. */
 const DEFINITION_RUNES: Record<string, string> = {
+  skuldClaude: '\u16D7',
+  skuldCodex: '\u16B2',
+  skuldGemini: '\u16C7',
+  skuldAider: '\u16A8',
+  skuldOpenCode: '\u16A0',
   'skuld-claude': '\u16D7',
   'skuld-codex': '\u16B2',
   'skuld-gemini': '\u16C7',
@@ -89,25 +102,85 @@ const DEFINITION_RUNES: Record<string, string> = {
 
 const FALLBACK_SESSION_DEFINITIONS: SessionDefinition[] = [
   {
-    key: 'skuld-claude',
+    key: 'skuldClaude',
     displayName: 'Claude Code',
     description: '',
     labels: [],
     defaultModel: '',
+    compatibleProviders: ['anthropic'],
   },
-  { key: 'skuld-codex', displayName: 'Codex', description: '', labels: [], defaultModel: '' },
-  { key: 'skuld-gemini', displayName: 'Gemini', description: '', labels: [], defaultModel: '' },
-  { key: 'skuld-aider', displayName: 'Aider', description: '', labels: [], defaultModel: '' },
+  {
+    key: 'skuldCodex',
+    displayName: 'Codex',
+    description: '',
+    labels: [],
+    defaultModel: '',
+    compatibleProviders: ['openai'],
+  },
+  {
+    key: 'skuldGemini',
+    displayName: 'Gemini',
+    description: '',
+    labels: [],
+    defaultModel: '',
+    compatibleProviders: ['google'],
+  },
+  {
+    key: 'skuldAider',
+    displayName: 'Aider',
+    description: '',
+    labels: [],
+    defaultModel: '',
+    compatibleProviders: [],
+  },
 ];
 
 export function getDefinitionRune(key: string): string {
   return DEFINITION_RUNES[key] ?? '\u16A0';
 }
 
+export function normalizeDefinitionKey(definitionKey: string): string {
+  const normalized = definitionKey.trim();
+  const legacyMap: Record<string, string> = {
+    claude: 'skuldClaude',
+    codex: 'skuldCodex',
+    gemini: 'skuldGemini',
+    aider: 'skuldAider',
+    opencode: 'skuldOpenCode',
+    'skuld-claude': 'skuldClaude',
+    'skuld-codex': 'skuldCodex',
+    'skuld-gemini': 'skuldGemini',
+    'skuld-aider': 'skuldAider',
+    'skuld-opencode': 'skuldOpenCode',
+  };
+  return legacyMap[normalized] ?? normalized;
+}
+
 /** Derive a CLI tool name from a definition key for backward compat. */
 export function deriveCliTool(definitionKey: string): string {
-  if (definitionKey.startsWith('skuld-')) return definitionKey.slice('skuld-'.length);
-  return definitionKey;
+  const normalized = normalizeDefinitionKey(definitionKey);
+  const cliToolMap: Record<string, string> = {
+    skuldClaude: 'claude',
+    skuldCodex: 'codex',
+    skuldGemini: 'gemini',
+    skuldAider: 'aider',
+    skuldOpenCode: 'opencode',
+  };
+  if (normalized in cliToolMap) return cliToolMap[normalized]!;
+  if (normalized.startsWith('skuld-')) return normalized.slice('skuld-'.length);
+  return normalized;
+}
+
+export function definitionToTaskType(definitionKey: string): string {
+  const normalized = normalizeDefinitionKey(definitionKey);
+  const taskTypeMap: Record<string, string> = {
+    skuldClaude: 'skuld-claude',
+    skuldCodex: 'skuld-codex',
+    skuldGemini: 'skuld-gemini',
+    skuldAider: 'skuld-aider',
+    skuldOpenCode: 'skuld-opencode',
+  };
+  return taskTypeMap[normalized] ?? normalized;
 }
 
 const BOOT_STEPS = [
@@ -184,12 +257,12 @@ export function normalizeRepoUrl(url: string): string {
     .replace(/\.git$/, '');
 }
 
-export function pickDefaultModel(models: Record<string, VolundrModel>): string {
+export function pickDefaultModel(models: Record<string, RuntimeModelDescriptor>): string {
   if ('sonnet-primary' in models) return 'sonnet-primary';
   return Object.keys(models)[0] ?? '';
 }
 
-export function formatModelOption(id: string, model?: VolundrModel): string {
+export function formatModelOption(id: string, model?: RuntimeModelDescriptor): string {
   if (!model) return id;
   const parts = [model.name || id, model.provider];
   if (model.tier) parts.push(model.tier);
@@ -401,14 +474,15 @@ export function buildPresetRuntimePayload(
     description: '',
     isDefault: false,
     cliTool: deriveCliTool(form.definition) as VolundrPreset['cliTool'],
-    workloadType: form.definition.startsWith('skuld-')
-      ? form.definition
-      : `skuld-${form.definition}`,
+    workloadType: definitionToTaskType(form.definition),
     model: form.model || null,
     systemPrompt: form.systemPrompt || null,
     resourceConfig: buildResourceConfig(form) ?? {},
     mcpServers: form.mcpServers,
-    terminalSidecar: { enabled: form.permission === 'restricted', allowedCommands: [] },
+    terminalSidecar: {
+      enabled: false,
+      allowedCommands: [],
+    },
     skills: [],
     rules: [],
     envVars: normalizeEnvVars(form.envVars),
@@ -466,15 +540,13 @@ export function buildPresetComparisonPayload(
 export function buildYamlRuntimeFields(form: WizardForm) {
   return {
     cliTool: deriveCliTool(form.definition) as 'claude' | 'codex' | 'gemini' | 'aider',
-    workloadType: form.definition.startsWith('skuld-')
-      ? form.definition
-      : `skuld-${form.definition}`,
+    workloadType: definitionToTaskType(form.definition),
     model: form.model,
     systemPrompt: form.systemPrompt,
     resourceConfig: buildResourceConfig(form) ?? {},
     mcpServers: form.mcpServers,
     terminalSidecar: {
-      enabled: form.permission === 'restricted',
+      enabled: false,
       allowedCommands: [],
     },
     skills: [],
@@ -804,6 +876,7 @@ export function RuntimeStep({
   update,
   models,
   workspaces,
+  targets,
   credentials,
   integrations,
   clusterResources,
@@ -816,8 +889,9 @@ export function RuntimeStep({
 }: {
   form: WizardForm;
   update: (patch: Partial<WizardForm>) => void;
-  models: Record<string, VolundrModel>;
+  models: Record<string, RuntimeModelDescriptor>;
   workspaces: VolundrWorkspace[];
+  targets: VolundrTarget[];
   credentials: StoredCredential[];
   integrations: IntegrationConnection[];
   clusterResources: ClusterResourceInfo | null;
@@ -909,9 +983,6 @@ export function RuntimeStep({
       if (parsed.envSecretRefs) patch.selectedCredentials = parsed.envSecretRefs;
       if (parsed.integrationIds) patch.selectedIntegrations = parsed.integrationIds;
       if (parsed.setupScripts) patch.setupScripts = parsed.setupScripts;
-      if (parsed.terminalSidecar) {
-        patch.permission = parsed.terminalSidecar.enabled ? 'restricted' : 'normal';
-      }
       if (parsed.source !== undefined) {
         if (parsed.source === null) {
           patch.sourcetype = 'blank';
@@ -1048,7 +1119,7 @@ export function RuntimeStep({
               </button>
             ))}
           </div>
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-4">
+          <div className="niuu-grid niuu-grid-cols-1 niuu-gap-4">
             <Field label="Model">
               {modelOptions.length > 0 ? (
                 <WizardSelect
@@ -1066,18 +1137,6 @@ export function RuntimeStep({
                 />
               )}
             </Field>
-            <Field label="Permission">
-              <WizardSelect
-                options={[
-                  { value: 'restricted', label: 'restricted' },
-                  { value: 'normal', label: 'normal' },
-                  { value: 'yolo', label: 'yolo' },
-                ]}
-                value={form.permission}
-                onChange={(v) => update({ permission: v })}
-                testId="permission-select"
-              />
-            </Field>
           </div>
           {workspaceOptions.length > 1 ? (
             <Field label="Workspace reuse">
@@ -1088,6 +1147,20 @@ export function RuntimeStep({
                   update({ workspaceId: value === NEW_WORKSPACE_VALUE ? '' : value })
                 }
                 testId="workspace-select"
+              />
+            </Field>
+          ) : null}
+          {targets.length > 0 ? (
+            <Field label="Forge">
+              <WizardSelect
+                options={targets.map((target) => ({
+                  value: target.id,
+                  label: `${target.name}${target.isDefault ? ' (default)' : ''}`,
+                }))}
+                value={form.instanceId}
+                onChange={(value) => update({ instanceId: value })}
+                placeholder="Select forge"
+                testId="forge-target-select"
               />
             </Field>
           ) : null}
@@ -1172,10 +1245,15 @@ export function RuntimeStep({
               {credentials.map((credential) => (
                 <label
                   key={credential.name}
-                  className="niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-primary"
+                  className={`vol-launch-wizard__access-option ${
+                    form.selectedCredentials.includes(credential.name)
+                      ? 'vol-launch-wizard__access-option--checked'
+                      : ''
+                  }`}
                 >
                   <input
                     type="checkbox"
+                    className="vol-launch-wizard__access-option-input"
                     checked={form.selectedCredentials.includes(credential.name)}
                     onChange={(event) =>
                       update({
@@ -1184,7 +1262,11 @@ export function RuntimeStep({
                           : form.selectedCredentials.filter((name) => name !== credential.name),
                       })
                     }
+                    aria-label={credential.name}
                   />
+                  <span className="vol-launch-wizard__access-option-box" aria-hidden="true">
+                    {form.selectedCredentials.includes(credential.name) ? '✓' : ''}
+                  </span>
                   <span className="niuu-font-mono">{credential.name}</span>
                 </label>
               ))}
@@ -1198,10 +1280,15 @@ export function RuntimeStep({
               {integrations.map((integration) => (
                 <label
                   key={integration.id}
-                  className="niuu-flex niuu-items-start niuu-gap-2 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-primary"
+                  className={`vol-launch-wizard__access-option vol-launch-wizard__access-option--stacked ${
+                    form.selectedIntegrations.includes(integration.id)
+                      ? 'vol-launch-wizard__access-option--checked'
+                      : ''
+                  }`}
                 >
                   <input
                     type="checkbox"
+                    className="vol-launch-wizard__access-option-input"
                     checked={form.selectedIntegrations.includes(integration.id)}
                     onChange={(event) =>
                       update({
@@ -1210,7 +1297,11 @@ export function RuntimeStep({
                           : form.selectedIntegrations.filter((id) => id !== integration.id),
                       })
                     }
+                    aria-label={formatIntegrationLabel(integration)}
                   />
+                  <span className="vol-launch-wizard__access-option-box" aria-hidden="true">
+                    {form.selectedIntegrations.includes(integration.id) ? '✓' : ''}
+                  </span>
                   <span className="niuu-flex niuu-flex-col">
                     <span>{formatIntegrationLabel(integration)}</span>
                     {formatIntegrationMeta(integration) ? (
@@ -1592,17 +1683,21 @@ export function ConfirmStep({
   models,
   integrations,
   sessionDefinitions,
+  targets,
 }: {
   form: WizardForm;
   templates: Template[];
-  models: Record<string, VolundrModel>;
+  models: Record<string, RuntimeModelDescriptor>;
   integrations: IntegrationConnection[];
   sessionDefinitions: SessionDefinition[];
+  targets: VolundrTarget[];
 }) {
   const tpl = templates.find((t) => t.id === form.templateId);
   const modelLabel = formatModelOption(form.model, models[form.model]);
   const definitionLabel =
     sessionDefinitions.find((d) => d.key === form.definition)?.displayName ?? form.definition;
+  const targetLabel =
+    targets.find((target) => target.id === form.instanceId)?.name || form.instanceId || 'default';
   const integrationLabels = form.selectedIntegrations.map((id) => {
     const integration = integrations.find((item) => item.id === id);
     return integration ? formatIntegrationLabel(integration) : id;
@@ -1616,6 +1711,7 @@ export function ConfirmStep({
         <div className="niuu-flex niuu-flex-col niuu-divide-y niuu-divide-border-subtle">
           <ConfirmRow label="session" value={deriveSessionName(form, tpl)} />
           <ConfirmRow label="template" value={tpl?.name ?? form.templateId} />
+          <ConfirmRow label="forge" value={targetLabel} />
           <ConfirmRow label="definition" value={definitionLabel} />
           <ConfirmRow label="model" value={modelLabel} />
           <ConfirmRow
@@ -1641,7 +1737,6 @@ export function ConfirmStep({
                 : 'none'
             }
           />
-          <ConfirmRow label="permission" value={form.permission} />
         </div>
       </SectionCard>
 
@@ -1834,6 +1929,7 @@ export function BootingStep({ bootStep, progress }: { bootStep: number; progress
 /** 4-step modal wizard for launching new Volundr sessions. */
 export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWizardProps) {
   const volundr = useService<IVolundrService>('volundr');
+  const bifrost = useService<IBifrostService>('bifrost');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1841,12 +1937,13 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   const allTemplates = useMemo(() => templates.data ?? [], [templates.data]);
   const [repos, setRepos] = useState<RepoRecord[]>([]);
   const [manualBranches, setManualBranches] = useState<string[]>([]);
-  const [models, setModels] = useState<Record<string, VolundrModel>>({});
+  const [models, setModels] = useState<Record<string, RuntimeModelDescriptor>>({});
   const [workspaces, setWorkspaces] = useState<VolundrWorkspace[]>([]);
   const [credentials, setCredentials] = useState<StoredCredential[]>([]);
   const [integrations, setIntegrations] = useState<IntegrationConnection[]>([]);
   const [clusterResources, setClusterResources] = useState<ClusterResourceInfo | null>(null);
   const [presets, setPresets] = useState<VolundrPreset[]>([]);
+  const [targets, setTargets] = useState<VolundrTarget[]>([]);
   const [availableMcpServers, setAvailableMcpServers] = useState<McpServerConfig[]>([]);
   const [sessionDefinitions, setSessionDefinitions] = useState<SessionDefinition[]>([]);
   const [trackerResults, setTrackerResults] = useState<TrackerIssue[]>([]);
@@ -1871,13 +1968,13 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     mcpServers: [],
     envVars: [],
     setupScripts: [],
-    definition: 'skuld-claude',
+    definition: 'skuldClaude',
     model: 'sonnet-primary',
-    permission: 'restricted',
     cpu: '2',
     mem: '8Gi',
     gpu: '0',
     cluster: '',
+    instanceId: '',
     yamlMode: false,
     yamlContent: '',
   }));
@@ -1894,7 +1991,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
 
     void Promise.all([
       repoCatalog.getRepos().catch(() => []),
-      volundr.getModels().catch(() => ({})),
+      bifrost.getModelCatalog().catch((): Record<string, BifrostModel> => ({})),
       Promise.all([
         volundr.listWorkspaces('archived').catch(() => []),
         volundr.listWorkspaces('active').catch(() => []),
@@ -1903,6 +2000,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       volundr.getIntegrations().catch(() => []),
       volundr.getClusterResources().catch(() => null),
       volundr.getPresets().catch(() => []),
+      volundr.getTargets().catch(() => []),
       volundr.getAvailableMcpServers().catch(() => []),
       volundr.getSessionDefinitions().catch(() => FALLBACK_SESSION_DEFINITIONS),
     ]).then(
@@ -1914,6 +2012,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         nextIntegrations,
         nextClusterResources,
         nextPresets,
+        nextTargets,
         nextMcpServers,
         nextSessionDefinitions,
       ]) => {
@@ -1925,6 +2024,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         setIntegrations(nextIntegrations);
         setClusterResources(nextClusterResources);
         setPresets(nextPresets);
+        setTargets(nextTargets);
         setAvailableMcpServers(nextMcpServers);
         setSessionDefinitions(
           nextSessionDefinitions.length > 0 ? nextSessionDefinitions : FALLBACK_SESSION_DEFINITIONS,
@@ -1935,7 +2035,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     return () => {
       cancelled = true;
     };
-  }, [open, repoCatalog, volundr]);
+  }, [bifrost, open, repoCatalog, volundr]);
 
   // Update template ID when templates load
   useEffect(() => {
@@ -1994,9 +2094,17 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         changed = true;
       }
 
+      if (targets.length > 0) {
+        const matchingTarget = targets.find((target) => target.id === current.instanceId);
+        if (!matchingTarget) {
+          next.instanceId = targets.find((target) => target.isDefault)?.id ?? targets[0]!.id;
+          changed = true;
+        }
+      }
+
       return changed ? next : current;
     });
-  }, [repos, models]);
+  }, [repos, models, targets]);
 
   useEffect(() => {
     const query = form.trackerQuery.trim();
@@ -2041,7 +2149,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       setForm((current) => ({
         ...current,
         presetId,
-        definition: preset.workloadType || `skuld-${preset.cliTool}`,
+        definition: normalizeDefinitionKey(preset.workloadType || `skuld-${preset.cliTool}`),
         model: preset.model ?? current.model,
         systemPrompt: preset.systemPrompt ?? '',
         selectedCredentials: [...preset.envSecretRefs],
@@ -2189,11 +2297,10 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         templateName: selectedTemplate?.name,
         presetId,
         definition: form.definition,
-        taskType: form.definition.startsWith('skuld-')
-          ? form.definition
-          : `skuld-${form.definition}`,
+        taskType: definitionToTaskType(form.definition),
         trackerIssue: form.trackerIssue ?? undefined,
-        terminalRestricted: form.permission === 'restricted',
+        terminalRestricted: false,
+        instanceId: form.instanceId || undefined,
         workspaceId: form.workspaceId || undefined,
         credentialNames: form.selectedCredentials.length ? form.selectedCredentials : undefined,
         integrationIds: form.selectedIntegrations.length ? form.selectedIntegrations : undefined,
@@ -2284,6 +2391,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
               update={update}
               models={models}
               workspaces={workspaces}
+              targets={targets}
               credentials={credentials}
               integrations={integrations}
               clusterResources={clusterResources}
@@ -2306,6 +2414,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
               sessionDefinitions={
                 sessionDefinitions.length > 0 ? sessionDefinitions : FALLBACK_SESSION_DEFINITIONS
               }
+              targets={targets}
             />
           )}
           {step === 'booting' && <BootingStep bootStep={bootStep} progress={bootProgress} />}
@@ -2339,7 +2448,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
                   if (!createdSessionId) return;
                   onOpenChange(false);
                   void navigate({
-                    to: '/volundr/session/$sessionId',
+                    to: '/volundr/sessions/$sessionId',
                     params: { sessionId: createdSessionId },
                   });
                 }}

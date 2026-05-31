@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+BASE_URL = 'http://localhost:8080'.rstrip("/")
+TIMEOUT = 30.0
+AUTH_HEADER = ''
+TRACKER_PATH = "/api/v1/tracker/issues"
+USAGE = "usage: tracker_issue <search|get|update-status|update_status> ..."
+
+def _request(method, path, params=None, body=None):
+    url = BASE_URL + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    data = None
+    headers = {"Accept": "application/json"}
+    if AUTH_HEADER:
+        headers["Authorization"] = AUTH_HEADER
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in {"-h", "--help", "help"}:
+        print(USAGE)
+        return 0
+    command = argv[1]
+    try:
+        if command == "search" and len(argv) == 3:
+            payload = _request("GET", TRACKER_PATH, params={"q": argv[2]})
+        elif command == "get" and len(argv) == 3:
+            payload = _request("GET", f"{TRACKER_PATH}/{argv[2]}")
+        elif command in {"update-status", "update_status"} and len(argv) == 4:
+            payload = _request(
+                "PATCH",
+                f"{TRACKER_PATH}/{argv[2]}",
+                body={"status": argv[3]},
+            )
+        elif command == "search":
+            print("usage: tracker_issue search <query>")
+            return 1
+        elif command == "get":
+            print("usage: tracker_issue get <issue-id>")
+            return 1
+        elif command in {"update-status", "update_status"}:
+            print("usage: tracker_issue update-status <issue-id> <status>")
+            return 1
+        else:
+            raise SystemExit(
+                f"unsupported tracker_issue invocation: {' '.join(argv[1:])}"
+            )
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"error": raw or str(exc)}
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 1
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 1
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

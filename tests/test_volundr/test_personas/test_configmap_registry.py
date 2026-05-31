@@ -361,7 +361,7 @@ class TestPersonaRegistryPortCompliance:
             name="test-persona",
             system_prompt_template="You are a test agent.",
             permission_mode="workspace-read",
-            llm=PersonaLLMConfig(primary_alias="fast"),
+            llm=PersonaLLMConfig(thinking_enabled=True, max_tokens=1024),
         )
 
         registry.save(config)
@@ -370,4 +370,6 @@ class TestPersonaRegistryPortCompliance:
         assert loaded is not None
         assert loaded.name == "test-persona"
         assert loaded.permission_mode == "workspace-read"
-        assert loaded.llm.primary_alias == "fast"
+        assert loaded.llm.primary_alias == ""
+        assert loaded.llm.thinking_enabled is True
+        assert loaded.llm.max_tokens == 1024

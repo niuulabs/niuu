@@ -208,9 +208,10 @@ describe('createMockVolundrService', () => {
     expect(definitions[0]).toHaveProperty('description');
     expect(definitions[0]).toHaveProperty('labels');
     expect(definitions[0]).toHaveProperty('defaultModel');
+    expect(definitions[0]).toHaveProperty('compatibleProviders');
     const keys = definitions.map((d) => d.key);
-    expect(keys).toContain('skuld-claude');
-    expect(keys).toContain('skuld-codex');
+    expect(keys).toContain('skuldClaude');
+    expect(keys).toContain('skuldCodex');
   });
 });
 
@@ -617,7 +618,6 @@ describe('createMockVolundrService — full method sweep', () => {
       workloadConfig: {},
     } as const;
 
-    await svc.getModels();
     await svc.getRepos();
     await svc.getTemplates();
     await svc.getTemplate('t1');
@@ -631,11 +631,19 @@ describe('createMockVolundrService — full method sweep', () => {
     await svc.getAvailableSecrets();
     await svc.createSecret('sweep-secret', { key: 'val' });
     await svc.getClusterResources();
+    await svc.evaluatePermissionAutoApproval('sess-1', {
+      requestId: 'perm-1',
+      toolName: 'Bash',
+      description: './start-dev',
+      command: './start-dev',
+      input: { command: './start-dev' },
+    });
     await svc.updateSession('sess-1', { name: 'renamed' });
     await svc.stopSession('sess-1');
     await svc.resumeSession('sess-1');
     await svc.deleteSession('sess-1');
     await svc.archiveSession('sess-1');
+    await svc.archiveStoppedSessions();
     await svc.restoreSession('sess-1');
     await svc.listArchivedSessions();
     await svc.getMessages('sess-1');

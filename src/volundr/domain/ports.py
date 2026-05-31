@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -47,6 +48,7 @@ from volundr.domain.models import (
     SessionCommunicationTarget,
     SessionEvent,
     SessionEventType,
+    SessionSpan,
     SessionSpec,
     SessionStatus,
     Stats,
@@ -471,6 +473,32 @@ class SessionEventRepository(ABC):
     @abstractmethod
     async def delete_by_session(self, session_id: UUID) -> int:
         """Delete all events for a session. Returns count deleted."""
+
+
+class SessionSpanRepository(ABC):
+    """Read/write port for persisted session trace spans."""
+
+    @abstractmethod
+    async def upsert_span(self, span: SessionSpan) -> SessionSpan:
+        """Create or replace a span."""
+
+    @abstractmethod
+    async def finish_span(
+        self,
+        span_id: UUID,
+        ended_at: datetime,
+        status: str,
+        attributes: dict | None = None,
+    ) -> SessionSpan | None:
+        """Finish an existing span and optionally merge terminal attributes."""
+
+    @abstractmethod
+    async def list_spans(self, session_id: UUID) -> list[SessionSpan]:
+        """List all spans for a session ordered by start time."""
+
+    @abstractmethod
+    async def delete_by_session(self, session_id: UUID) -> int:
+        """Delete all spans for a session. Returns count deleted."""
 
 
 class SavedPromptRepository(ABC):
@@ -927,6 +955,86 @@ class StoragePort(ABC):
         """Get the workspace PVC for a session. Returns None if not found."""
         return None
 
+    def resolve_session_workspace_path(self, session_id: str) -> str | None:
+        """Resolve the local filesystem path for a session workspace if accessible.
+
+        Returns ``None`` when the storage backend does not expose the workspace
+        on the current host filesystem.
+        """
+        return None
+
+
+class ArchiveStorePort(ABC):
+    """Port for persisted session transcript/log archives."""
+
+    @abstractmethod
+    def load_manifest(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> dict[str, Any] | None:
+        """Load an archive manifest if one has already been materialized."""
+
+    @abstractmethod
+    def load_transcript(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> dict[str, Any] | None:
+        """Load an archived transcript payload if one exists."""
+
+    @abstractmethod
+    def load_aggregated_logs(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> dict[str, Any] | None:
+        """Load archived aggregate logs if they exist."""
+
+    @abstractmethod
+    def write_archive(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path,
+        transcript_payload: dict[str, Any],
+        aggregated_logs: dict[str, Any],
+        chronicle_payload: dict[str, Any] | None = None,
+        timeline_payload: dict[str, Any] | None = None,
+        event_source_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Materialize an archive snapshot and return its manifest."""
+
+    @abstractmethod
+    def transcript_json_path(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> Path:
+        """Return the local JSON transcript artifact path."""
+
+    @abstractmethod
+    def transcript_markdown_path(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> Path:
+        """Return the local Markdown transcript artifact path."""
+
+    @abstractmethod
+    def archive_root(
+        self,
+        *,
+        session_id: str,
+        workspace_dir: str | Path | None = None,
+    ) -> Path:
+        """Return the root directory for a session archive."""
+
 
 class GatewayPort(ABC):
     """Port for Gateway API resource management.
@@ -989,6 +1097,7 @@ class SecretInjectionPort(ABC):
         user_id: str,
         credential_mappings: list[CredentialMapping],
         session_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Create or update backend resources to mount the given credentials.
 

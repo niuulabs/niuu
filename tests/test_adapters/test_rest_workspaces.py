@@ -168,7 +168,7 @@ class TestWorkspaceResponse:
 class TestListWorkspaces:
     async def test_list_empty(self, app):
         with patch(_PATCH_TARGET, _extract_user):
-            resp = TestClient(app).get("/api/v1/volundr/workspaces")
+            resp = TestClient(app).get("/api/v1/forge/workspaces")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -181,7 +181,7 @@ class TestListWorkspaces:
         await storage.create_session_workspace(str(session.id), "user-1", "t1")
 
         with patch(_PATCH_TARGET, _extract_user):
-            resp = TestClient(app).get("/api/v1/volundr/workspaces")
+            resp = TestClient(app).get("/api/v1/forge/workspaces")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
@@ -191,7 +191,7 @@ class TestListWorkspaces:
 
     async def test_list_with_status_filter(self, app):
         with patch(_PATCH_TARGET, _extract_user):
-            resp = TestClient(app).get("/api/v1/volundr/workspaces?status=archived")
+            resp = TestClient(app).get("/api/v1/forge/workspaces?status=archived")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -209,7 +209,7 @@ class TestListWorkspaces:
         app.state.workspace_service = workspace_service
         app.state.session_service = session_service
         # Intentionally NOT setting app.state.identity
-        resp = TestClient(app).get("/api/v1/volundr/workspaces")
+        resp = TestClient(app).get("/api/v1/forge/workspaces")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -223,12 +223,12 @@ class TestDeleteWorkspace:
         await storage.create_session_workspace(sid, "user-1", "t1")
 
         with patch(_PATCH_TARGET, _extract_user):
-            resp = TestClient(app).delete(f"/api/v1/volundr/workspaces/{sid}")
+            resp = TestClient(app).delete(f"/api/v1/forge/workspaces/{sid}")
         assert resp.status_code == 204
 
     async def test_delete_nonexistent(self, app):
         with patch(_PATCH_TARGET, _extract_user):
-            resp = TestClient(app).delete(f"/api/v1/volundr/workspaces/{uuid4()}")
+            resp = TestClient(app).delete(f"/api/v1/forge/workspaces/{uuid4()}")
         assert resp.status_code == 404
 
     async def test_delete_returns_not_found_when_service_fails(
@@ -242,7 +242,7 @@ class TestDeleteWorkspace:
             patch(_PATCH_TARGET, _extract_user),
             patch.object(workspace_service, "delete_workspace_by_session", return_value=False),
         ):
-            resp = TestClient(app).delete(f"/api/v1/volundr/workspaces/{sid}")
+            resp = TestClient(app).delete(f"/api/v1/forge/workspaces/{sid}")
         assert resp.status_code == 404
 
 
@@ -253,7 +253,7 @@ class TestBulkDeleteWorkspaces:
     async def test_empty_list(self, app):
         with patch(_PATCH_TARGET, _extract_user):
             resp = TestClient(app).post(
-                "/api/v1/volundr/workspaces/bulk-delete",
+                "/api/v1/forge/workspaces/bulk-delete",
                 json={"session_ids": []},
             )
         assert resp.status_code == 200
@@ -267,7 +267,7 @@ class TestBulkDeleteWorkspaces:
 
         with patch(_PATCH_TARGET, _extract_user):
             resp = TestClient(app).post(
-                "/api/v1/volundr/workspaces/bulk-delete",
+                "/api/v1/forge/workspaces/bulk-delete",
                 json={"session_ids": [sid1, sid2]},
             )
         assert resp.status_code == 200
@@ -281,7 +281,7 @@ class TestBulkDeleteWorkspaces:
 
         with patch(_PATCH_TARGET, _extract_user):
             resp = TestClient(app).post(
-                "/api/v1/volundr/workspaces/bulk-delete",
+                "/api/v1/forge/workspaces/bulk-delete",
                 json={"sessionIds": [sid]},
             )
         assert resp.status_code == 200
@@ -295,7 +295,7 @@ class TestBulkDeleteWorkspaces:
 
         with patch(_PATCH_TARGET, _extract_user):
             resp = TestClient(app).post(
-                "/api/v1/volundr/workspaces/bulk-delete",
+                "/api/v1/forge/workspaces/bulk-delete",
                 json={"session_ids": [sid]},
             )
         assert resp.status_code == 200
@@ -314,7 +314,7 @@ class TestBulkDeleteWorkspaces:
             patch.object(workspace_service, "delete_workspace_by_session", return_value=False),
         ):
             resp = TestClient(app).post(
-                "/api/v1/volundr/workspaces/bulk-delete",
+                "/api/v1/forge/workspaces/bulk-delete",
                 json={"session_ids": [sid]},
             )
         assert resp.status_code == 200
@@ -335,7 +335,7 @@ class TestBulkDeleteWorkspaces:
             ),
         ):
             resp = TestClient(app).post(
-                "/api/v1/volundr/workspaces/bulk-delete",
+                "/api/v1/forge/workspaces/bulk-delete",
                 json={"session_ids": [sid]},
             )
         assert resp.status_code == 200
@@ -352,7 +352,7 @@ class TestAdminBulkDelete:
     async def test_empty_list(self, admin_app):
         with patch(_PATCH_TARGET, _extract_admin):
             resp = TestClient(admin_app).post(
-                "/api/v1/volundr/admin/workspaces/bulk-delete",
+                "/api/v1/forge/admin/workspaces/bulk-delete",
                 json={"session_ids": []},
             )
         assert resp.status_code == 200
@@ -364,7 +364,7 @@ class TestAdminBulkDelete:
 
         with patch(_PATCH_TARGET, _extract_admin):
             resp = TestClient(admin_app).post(
-                "/api/v1/volundr/admin/workspaces/bulk-delete",
+                "/api/v1/forge/admin/workspaces/bulk-delete",
                 json={"session_ids": [sid]},
             )
         assert resp.status_code == 200
@@ -376,7 +376,7 @@ class TestAdminBulkDelete:
 
         with patch(_PATCH_TARGET, _extract_admin):
             resp = TestClient(admin_app).post(
-                "/api/v1/volundr/admin/workspaces/bulk-delete",
+                "/api/v1/forge/admin/workspaces/bulk-delete",
                 json={"sessionIds": [sid]},
             )
         assert resp.status_code == 200
@@ -385,7 +385,7 @@ class TestAdminBulkDelete:
     async def test_delete_nonexistent(self, admin_app):
         with patch(_PATCH_TARGET, _extract_admin):
             resp = TestClient(admin_app).post(
-                "/api/v1/volundr/admin/workspaces/bulk-delete",
+                "/api/v1/forge/admin/workspaces/bulk-delete",
                 json={"session_ids": [str(uuid4())]},
             )
         data = resp.json()
@@ -405,7 +405,7 @@ class TestAdminBulkDelete:
             ),
         ):
             resp = TestClient(admin_app).post(
-                "/api/v1/volundr/admin/workspaces/bulk-delete",
+                "/api/v1/forge/admin/workspaces/bulk-delete",
                 json={"session_ids": [sid]},
             )
         assert resp.status_code == 200
@@ -427,7 +427,7 @@ class TestAdminListWorkspaces:
         await storage.create_session_workspace(str(session.id), "any-user", "t1")
 
         with patch(_PATCH_TARGET, _extract_admin):
-            resp = TestClient(admin_app).get("/api/v1/volundr/admin/workspaces")
+            resp = TestClient(admin_app).get("/api/v1/forge/admin/workspaces")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
@@ -440,7 +440,7 @@ class TestAdminListWorkspaces:
         await storage.create_session_workspace(str(uuid4()), "user-b", "t1")
 
         with patch(_PATCH_TARGET, _extract_admin):
-            resp = TestClient(admin_app).get("/api/v1/volundr/admin/workspaces?user_id=user-a")
+            resp = TestClient(admin_app).get("/api/v1/forge/admin/workspaces?user_id=user-a")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1

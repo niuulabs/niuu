@@ -79,15 +79,27 @@ class _BuiltinLoader:
                 iteration_budget=40,
             )
         }
+        self._archived = {
+            "run-executor": PersonaConfig(
+                name="run-executor",
+                system_prompt_template="Archived run executor.",
+                allowed_tools=["task_create"],
+                permission_mode="workspace-write",
+                iteration_budget=40,
+            )
+        }
 
     def list_names(self) -> list[str]:
         return sorted(self._personas)
 
+    def list_builtin_names(self) -> list[str]:
+        return self.list_names()
+
     def load(self, name: str) -> PersonaConfig | None:
-        return self._personas.get(name)
+        return self._personas.get(name) or self._archived.get(name)
 
     def is_builtin(self, name: str) -> bool:
-        return name in self._personas
+        return name in self._personas or name in self._archived
 
 
 def _make_registry():
@@ -117,6 +129,80 @@ class TestListPersonas:
         result = await registry.list_personas("user-1", source="custom")
 
         assert [item.payload["name"] for item in result] == ["custom-agent"]
+
+    async def test_hides_archived_builtin_overrides_from_active_listing(self):
+        registry, pool = _make_registry()
+        pool.fetch.return_value = [
+            _mock_row(
+                name="run-executor",
+                config_json={
+                    "name": "run-executor",
+                    "role": "build",
+                    "letter": "R",
+                    "color": "var(--color-accent-indigo)",
+                    "summary": "Legacy run executor",
+                    "description": "Legacy run executor",
+                    "system_prompt_template": "Legacy prompt.",
+                    "allowed_tools": ["task_create"],
+                    "forbidden_tools": [],
+                    "permission_mode": "default",
+                    "executor": None,
+                    "iteration_budget": 7,
+                    "llm_primary_alias": "balanced",
+                    "llm_thinking_enabled": False,
+                    "llm_max_tokens": 4096,
+                    "llm_temperature": None,
+                    "produces_event_type": "ravn.task.completed",
+                    "produces_schema": {},
+                    "consumes_events": [{"name": "run.requested"}],
+                    "fan_in_strategy": "merge",
+                    "fan_in_params": {},
+                    "mimir_write_routing": None,
+                },
+            )
+        ]
+
+        result = await registry.list_personas("user-1")
+
+        assert [item.payload["name"] for item in result] == ["coding-agent"]
+
+    async def test_direct_lookup_still_resolves_archived_builtin_override(self):
+        registry, pool = _make_registry()
+        pool.fetch.return_value = [
+            _mock_row(
+                name="run-executor",
+                config_json={
+                    "name": "run-executor",
+                    "role": "build",
+                    "letter": "R",
+                    "color": "var(--color-accent-indigo)",
+                    "summary": "Legacy run executor",
+                    "description": "Legacy run executor",
+                    "system_prompt_template": "Legacy prompt.",
+                    "allowed_tools": ["task_create"],
+                    "forbidden_tools": [],
+                    "permission_mode": "default",
+                    "executor": None,
+                    "iteration_budget": 7,
+                    "llm_primary_alias": "balanced",
+                    "llm_thinking_enabled": False,
+                    "llm_max_tokens": 4096,
+                    "llm_temperature": None,
+                    "produces_event_type": "ravn.task.completed",
+                    "produces_schema": {},
+                    "consumes_events": [{"name": "run.requested"}],
+                    "fan_in_strategy": "merge",
+                    "fan_in_params": {},
+                    "mimir_write_routing": None,
+                },
+            )
+        ]
+
+        result = await registry.get_persona("user-1", "run-executor")
+
+        assert result is not None
+        assert result.is_builtin is True
+        assert result.has_override is True
 
 
 class TestGetPersona:

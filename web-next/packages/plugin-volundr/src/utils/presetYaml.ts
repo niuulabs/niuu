@@ -1,5 +1,3 @@
-/// <reference path="../types/js-yaml.d.ts" />
-
 import yaml from 'js-yaml';
 import type {
   CliTool,
@@ -41,7 +39,7 @@ interface PresetYamlDoc {
     | null;
   integration_ids?: string[];
   setup_scripts?: string[];
-  workload_config?: Record<string, string | number | boolean | undefined>;
+  workload_config?: WorkloadConfig;
 }
 
 export interface PresetRuntimeFields {

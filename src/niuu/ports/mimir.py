@@ -105,8 +105,9 @@ class MimirPort(ABC):
     async def list_pages(
         self,
         category: str | None = None,
+        prefix: str | None = None,
     ) -> list[MimirPageMeta]:
-        """List all wiki pages, optionally filtered to *category*.
+        """List all wiki pages, optionally filtered to *category* and/or *prefix*.
 
         Returns lightweight metadata records — does not read full page content.
         """

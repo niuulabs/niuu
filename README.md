@@ -7,18 +7,34 @@
 [![Coverage](https://codecov.io/gh/niuulabs/volundr/branch/main/graph/badge.svg)](https://codecov.io/gh/niuulabs/volundr)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-Self-hosted AI-native development platform. Provisions ephemeral coding sessions on Kubernetes where AI agents assist with real-time development, runs autonomous task agents, and routes across multiple LLM providers — all under your own infrastructure.
+The self-hosted platform for AI workspaces, custom AI teams, always-on assistants, shared knowledge, and local or cloud AI.
 
 <p align="center">
-  <img src="docs/site/images/dashboard.png" alt="Session dashboard" width="720">
+  <img src="docs/site/images/ui-ting-workflows.png" alt="Ting workflow builder in Niuu" width="960">
 </p>
 
-## Platform Components
+<p align="center">
+  <img src="docs/site/images/ui-guild-instances.png" alt="Guild instance registry" width="49%">
+  <img src="docs/site/images/ui-niuu-home.png" alt="Volundr forge dashboard" width="49%">
+</p>
+
+## What Niuu Is
+
+Niuu brings four operating modes into one platform you can run on your own machine, on Kubernetes, or inside your own infrastructure:
+
+- **AI workspaces** for hands-on work with one assistant or several assistants working together in a live coding environment
+- **Custom AI teams** you can design, launch, and steer for coding, research, operations, approvals, and your own multi-step flows
+- **Always-on assistants** that monitor sources, revisit knowledge, refresh documents, and stay available for live operator guidance
+- **Local and cloud AI** managed in one place, including what models are available, where they run, and when they are used
+
+The result is a self-hosted system where you can move smoothly between direct operator work, autonomous execution, durable memory, and local or third-party models without handing control to an external vendor platform.
+
+## Platform Map
 
 ```
                          Users
                     ┌───────────┐
-                    │  Web UI   │  React/Vite, OIDC auth
+                    │ Niuu Web  │  React/Vite, OIDC auth
                     │ (browser) │
                     └─────┬─────┘
                           │
@@ -30,8 +46,8 @@ Self-hosted AI-native development platform. Provisions ephemeral coding sessions
           git, etc.)
               │                       │
     ┌─────────▼──────────┐            │
-    │   Volundr API      │            │
-    │   (FastAPI)        │            │
+    │ Volundr / Shared   │            │
+    │ platform APIs      │            │
     └────────┬───────────┘            │
              │                        │
     ┌────────┴──────────────────────┐ │
@@ -50,33 +66,42 @@ Self-hosted AI-native development platform. Provisions ephemeral coding sessions
     └───────────────────────────────┘ │
                                        │
     ┌──────────────────────────────────┘
-    │  Autonomous Agents
-    │  ┌──────┐   ┌──────┐
-    │  │ Tyr  │   │ Ravn │
-    │  │(saga)│   │(agent│
-    │  └──────┘   │frame)│
-    │             └──────┘
+    │  Coordination & Runtime
+    │  ┌──────┐  ┌──────┐  ┌──────┐
+    │  │ Ting │  │ Ravn │  │Guild │
+    │  │flows │  │agents│  │regis.│
+    │  └──────┘  └──────┘  └──────┘
     │
     │  Supporting Services
-    │  ┌──────────┐ ┌────────┐ ┌───────────┐
-    │  │ Bifröst  │ │  Mimir │ │ Sleipnir  │
-    │  │(LLM gw)  │ │(memory)│ │(transport)│
-    └──┴──────────┴─┴────────┴─┴───────────┘
+    │  ┌──────────┐ ┌────────┐ ┌────────────┐ ┌─────────────┐
+    │  │ Bifröst  │ │ Mimir  │ │ Observatory│ │  Sleipnir   │
+    │  │(LLM gw)  │ │(memory)│ │ (ops view) │ │ (transport) │
+    └──┴──────────┴─┴────────┴─┴────────────┴─┴─────────────┘
 ```
 
 | Component | Role |
 |-----------|------|
-| **Volundr** | Core API — session lifecycle, workspace provisioning, git workflows, multi-tenancy, event pipeline |
-| **Skuld** | WebSocket broker connecting the browser to AI coding agents inside session pods |
-| **Web UI** | React frontend — session management, chronicles, diffs, terminal access, admin |
-| **Tyr** | Saga coordinator — decomposes GitHub/Linear issues into typed tasks and dispatches autonomous coding agents |
-| **Ravn** | Agent framework — long-running AI agents with personas, memory, wakefulness triggers, and dream cycles |
-| **Bifröst** | Multi-provider LLM gateway — OpenAI-compatible API with failover, cost-optimised and latency-optimised routing |
-| **Mimir** | Knowledge and context system — structured memory for agents, thread enrichment, and RAG over project history |
-| **Sleipnir** | Transport abstraction — NATS, NNG, RabbitMQ, and subprocess adapters behind a single event backbone |
+| **Niuu Web** | Operator interface for sessions, workflows, registered instances, memory, assistants, and platform settings |
+| **Volundr** | Live AI workspaces, session lifecycle, workspace provisioning, chronicles, git workflows, and direct operator pairing |
+| **Skuld** | Live broker inside session pods connecting the browser to coding agents, tools, terminals, and workflow runtime events |
+| **Ting** | Workflow and coordination layer for teams, review loops, staged execution, and launchable flows |
+| **Ravn** | Assistant runtime and persona harness for one assistant or a connected team, with tools, wakefulness, and long-lived behaviors |
+| **Guild** | Shared registry for platform instances and targets, so Niuu can discover and use Volundr, Ting, Mimir, and other services across environments |
+| **Mimir** | Shared knowledge and memory system for durable documentation, ingest, research artifacts, curation, and assistant recall |
+| **Bifröst** | Local and cloud model gateway that decides what models are available, where they run, and how callers route between them |
+| **Observatory** | Platform topology and operations view for health, discovery, and event visibility across the running system |
+| **Sleipnir** | Transport abstraction for events and messaging across NATS, NNG, RabbitMQ, subprocesses, and other backbones |
 | **niuu CLI** | Unified CLI and TUI for managing local and remote services |
 
 Chat traffic flows directly from the browser to Skuld inside the session pod — Volundr is never in the chat data path.
+
+## What Niuu Lets You Build
+
+- **Live AI workspaces** with repos, terminals, diffs, and direct conversation with one assistant or several assistants working together
+- **Custom AI teams** for coding, review, security, research, approvals, retries, and your own staged workflows
+- **Shared knowledge systems** where research, chronicles, postmortems, curated memory, and Warden-maintained docs accumulate
+- **Long-lived assistants** that continue working after the interactive session ends by watching sources, refreshing documents, and staying reachable for operator guidance
+- **Local and cloud model operations** where you decide what models are available, whether work stays local or uses third-party providers, and how the rest of the platform can use them
 
 ## Features
 
@@ -91,8 +116,8 @@ Chat traffic flows directly from the browser to Skuld inside the session pod —
 
 ### AI Agents
 
-- **Tyr saga dispatch** — decomposes issues from GitHub or Linear into typed tasks (feat, fix, refactor, test) and spawns coding agents for each
-- **Raid planning** — multi-agent coordination where sub-agents work on decomposed tasks in parallel
+- **Ting saga dispatch** — decomposes issues from GitHub or Linear into typed tasks (feat, fix, refactor, test) and spawns coding agents for each
+- **Run planning** — multi-agent coordination where sub-agents work on decomposed tasks in parallel
 - **Ravn personas** — configurable agent identities with tone, expertise, and behaviour profiles
 - **Dream cycles** — background reflection and knowledge consolidation for long-running Ravn agents
 - **Wakefulness triggers** — schedule or event-driven agent activation
@@ -129,39 +154,16 @@ Chat traffic flows directly from the browser to Skuld inside the session pod —
 # Install dependencies
 uv sync --all-extras --dev
 
-# Copy and edit configs
-cp config.yaml.example config.yaml
-cp bifrost.yaml.example bifrost.yaml    # optional: LLM gateway
-cp tyr.yaml.example tyr.yaml            # optional: saga coordinator
+# Start the local platform stack
+./start-dev
 
-# Start the Volundr API
-uv run volundr
-
-# Or with auto-reload
-uv run uvicorn volundr.main:app --reload --port 8080
-
-# Start other services (each in its own terminal)
-uv run bifrost --config bifrost.yaml
-uv run tyr --config tyr.yaml
+# Stop it again
+./stop-dev
 ```
 
-The Volundr API serves at `http://localhost:8080`. Interactive docs at `/docs`.
+The local Niuu stack serves at `http://localhost:8080`. Interactive API docs are available under `/docs` for the relevant services.
 
-### Bifröst — Pi mode (offline)
-
-Run the LLM gateway entirely without cloud APIs using [Ollama](https://ollama.com):
-
-```bash
-# Pull models
-ollama pull llama3.2:1b      # fast   — 1.3 GB
-ollama pull llama3.2:3b      # balanced — 2.0 GB
-ollama pull llama3.1:8b      # best   — 4.7 GB (Pi 5 + 8 GB RAM recommended)
-
-# Start gateway with Pi-mode config
-bifrost --config bifrost.pi.example.yaml
-```
-
-The gateway starts at `http://localhost:8088`. See `bifrost.pi.example.yaml` for the full annotated config.
+If you want to run pieces manually instead of the dev stack, you can still start the individual services directly from their config files, but `./start-dev` and `./stop-dev` are the normal way to bring the platform up locally.
 
 ## Configuration
 
@@ -171,7 +173,7 @@ Each service loads config from YAML with environment variable overrides using `_
 |---------|------------|
 | Volundr | `config.yaml` or `/etc/volundr/config.yaml` |
 | Bifröst | `bifrost.yaml` |
-| Tyr | `tyr.yaml` |
+| Ting | `ting.yaml` |
 | Ravn | `ravn.yaml` |
 
 ```bash
@@ -199,21 +201,20 @@ uv run ruff check src/ tests/
 
 ## Deployment
 
-Each component has its own Helm chart under `charts/`:
+The main install surface is the `niuu` umbrella chart under `charts/`, which deploys the platform components together:
 
 ```bash
-# Core platform
-helm install volundr ./charts/volundr -n niuu \
+# Full Niuu platform
+helm install niuu ./charts/niuu -n niuu \
   --set database.external.host=postgres.svc.cluster.local \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=niuu.example.com
 
-# LLM gateway
-helm install bifrost ./charts/bifrost -n niuu
-
-# Saga coordinator
-helm install tyr ./charts/tyr -n niuu
+# Or upgrade an existing release
+helm upgrade niuu ./charts/niuu -n niuu
 ```
+
+You can still deploy individual component charts when you need to, but the default platform deployment path should be the `niuu` chart.
 
 See the [deployment guide](https://niuulabs.github.io/volundr/deployment/) for Helm values, migrations, and production setup.
 

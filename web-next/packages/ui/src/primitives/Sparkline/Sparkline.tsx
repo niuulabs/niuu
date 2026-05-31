@@ -65,6 +65,8 @@ export function Sparkline({
       <svg
         width={width}
         height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
         className={cn('niuu-sparkline', className)}
         style={{ display: 'block' }}
         aria-hidden="true"
@@ -79,6 +81,8 @@ export function Sparkline({
       <svg
         width={width}
         height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
         className={cn('niuu-sparkline', className)}
         style={{ display: 'block' }}
         aria-hidden="true"
@@ -110,6 +114,8 @@ export function Sparkline({
     <svg
       width={width}
       height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
       className={cn('niuu-sparkline', className)}
       style={{ display: 'block' }}
       aria-hidden="true"

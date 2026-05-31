@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -25,12 +25,15 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from bifrost.config import BifrostConfig
 from niuu.config import (
     CorsConfig,
     GitHubConfig,  # noqa: F401
     GitHubInstance,  # noqa: F401
     GitLabConfig,  # noqa: F401
     GitLabInstance,  # noqa: F401
+    HttpAuthAdapterConfig,
+    InstanceRegistryConfig,
 )
 from ravn.config import PersonaSourceConfig
 from volundr.domain.models import IntegrationType, SecretType
@@ -94,6 +97,62 @@ class ProvisioningConfig(BaseModel):
     initial_delay_seconds: float = Field(
         default=5.0,
         description="Initial delay before starting readiness polls in seconds.",
+    )
+
+
+def _default_auto_approval_allowlist() -> list[str]:
+    return [
+        r"^\s*\./start-dev(?:\s|$)",
+        r"^\s*\./stop-dev(?:\s|$)",
+        r"^\s*(?:pwd|ls|find|rg|grep|cat|sed|awk|head|tail|wc)(?:\s|$)",
+        r"^\s*git\s+(?:status|diff|log|show|branch|rev-parse)(?:\s|$)",
+        (
+            r"^\s*(?:pnpm\s+(?:exec\s+vitest|--filter\s+[^\s]+\s+"
+            r"(?:test|typecheck|build))|npm\s+(?:test|run\s+test)|"
+            r"\.venv/bin/pytest|pytest|python3?\s+-m\s+pytest|uv\s+run\s+pytest)(?:\s|$)"
+        ),
+    ]
+
+
+def _default_auto_approval_denylist() -> list[str]:
+    return [
+        (
+            r"(?:^|[;&|]\s*)(?:sudo|su|rm\s+-rf|mkfs|dd\b|shred|wipefs|fdisk|"
+            r"parted|diskutil|kill(?:all)?\b|pkill\b|launchctl|systemctl|"
+            r"chmod\s+-R|chown\s+-R)\b"
+        ),
+        (
+            r"\b(?:git\s+(?:reset\s+--hard|clean\s+-f|checkout\s+--)|"
+            r"pnpm\s+(?:install|add|remove)|npm\s+(?:install|i|add|uninstall)|"
+            r"brew\s+(?:install|uninstall))\b"
+        ),
+        r"\b(?:curl|wget)\b[^|]*\|\s*(?:sh|bash)\b",
+        r"\bfind\b.*(?:\s-delete\b|-exec\s+(?:rm|sh|bash)\b)",
+        r"(?:^|\s)>\s*/(?:dev|etc|bin|sbin|usr|System)\b",
+        r"(?:^|\s)--force(?:\s|$)",
+    ]
+
+
+class PermissionAutoApprovalConfig(BaseModel):
+    """Server-side policy for browser-displayed permission auto approvals."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Allow the UI to auto-approve permission requests that match this policy.",
+    )
+    delay_seconds: int = Field(
+        default=5,
+        ge=2,
+        le=30,
+        description="Countdown duration before an allowlisted request is auto-approved.",
+    )
+    allowlist: list[str] = Field(
+        default_factory=_default_auto_approval_allowlist,
+        description="Regex patterns that are eligible for auto approval.",
+    )
+    denylist: list[str] = Field(
+        default_factory=_default_auto_approval_denylist,
+        description="Regex patterns that are never eligible for auto approval.",
     )
 
 
@@ -211,12 +270,8 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             defaults={
                 "broker": {
                     "cliType": "claude",
-                    "transport": "persistent_subprocess",
-                    "transportAdapter": (
-                        "skuld.transports.persistent_subprocess."
-                        "PersistentSubprocessTransport"
-                    ),
-                    "skipPermissions": True,
+                    "transport": "sdk",
+                    "transportAdapter": "skuld.transports.sdk.SDKTransport",
                     "agentTeams": False,
                 },
             },
@@ -232,7 +287,23 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "broker": {
                     "cliType": "codex-ws",
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
-                    "skipPermissions": True,
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldCodexExec": SessionDefinitionConfig(
+            enabled=True,
+            display_name="OpenAI Codex (Batch)",
+            description=(
+                "OpenAI Codex — subprocess transport tuned for autonomous workflow execution"
+            ),
+            labels=["session", "codex", "batch"],
+            default_model="",
+            compatible_providers=["openai"],
+            defaults={
+                "broker": {
+                    "cliType": "codex",
+                    "transportAdapter": "skuld.transports.codex.CodexSubprocessTransport",
                     "agentTeams": False,
                 },
             },
@@ -248,12 +319,55 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "broker": {
                     "cliType": "opencode",
                     "transportAdapter": "skuld.transports.opencode.OpenCodeHttpTransport",
-                    "skipPermissions": True,
                     "agentTeams": False,
                 },
             },
         ),
     }
+
+
+def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge ``override`` into ``base`` without mutating either input."""
+    merged: dict[str, Any] = dict(base)
+    for key, value in override.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dicts(base_value, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _merge_session_definition_configs(
+    base: SessionDefinitionConfig,
+    override: SessionDefinitionConfig,
+) -> SessionDefinitionConfig:
+    """Merge explicit override fields onto a built-in session definition."""
+    merged = base.model_copy(deep=True)
+    explicit_fields = set(getattr(override, "model_fields_set", set()))
+    for field_name in explicit_fields:
+        value = getattr(override, field_name)
+        if field_name == "defaults":
+            merged.defaults = _deep_merge_dicts(merged.defaults, value)
+        else:
+            setattr(merged, field_name, value)
+    return merged
+
+
+def merge_session_definitions(
+    overrides: dict[str, SessionDefinitionConfig] | None,
+) -> dict[str, SessionDefinitionConfig]:
+    """Deep-merge configured session definition overrides onto built-in defaults."""
+    merged = {
+        key: definition.model_copy(deep=True)
+        for key, definition in _default_session_definitions().items()
+    }
+    for key, override in (overrides or {}).items():
+        if key in merged:
+            merged[key] = _merge_session_definition_configs(merged[key], override)
+        else:
+            merged[key] = override.model_copy(deep=True)
+    return merged
 
 
 class ProfileConfig(BaseModel):
@@ -304,6 +418,23 @@ class ChronicleConfig(BaseModel):
     summary_model: str = Field(default="claude-haiku-4-5-20251001")
     summary_max_tokens: int = Field(default=2000)
     retention_days: int | None = Field(default=None)  # None = keep forever
+
+
+class ArchiveStoreConfig(BaseModel):
+    """Dynamic archive store adapter configuration."""
+
+    adapter: str = Field(
+        default="volundr.adapters.outbound.archive_store.FileSystemArchiveStore",
+        description="Fully-qualified class path for the archive store adapter.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra kwargs forwarded to the archive store adapter constructor.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of kwarg names to env var names holding secret values.",
+    )
 
 
 class GitWorkflowConfig(BaseModel):
@@ -439,11 +570,11 @@ class CredentialStoreConfig(BaseModel):
     Example YAML::
 
         credential_store:
-          adapter: "volundr.adapters.outbound.vault_credential_store.VaultCredentialStore"
+          adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
           kwargs:
-            url: "http://vault:8200"
-            auth_method: "kubernetes"
-            mount_path: "secret"
+            url: "http://openbao:8200"
+            mount_path: "volundr"
+            auth_method: "token"
     """
 
     adapter: str = Field(
@@ -505,7 +636,7 @@ class SecretInjectionConfig(BaseModel):
         secret_injection:
           adapter: >-
             volundr.adapters.outbound.infisical_secret_injection
-            .InfisicalCSISecretInjectionAdapter
+            .InfisicalAgentInjectionAdapter
           kwargs:
             infisical_url: "https://infisical.example.com"
             client_id: "..."
@@ -1053,8 +1184,8 @@ def _default_feature_modules() -> list[FeatureModuleConfig]:
             order=30,
         ),
         FeatureModuleConfig(
-            key="tyr-connections",
-            label="Tyr Connections",
+            key="ting-connections",
+            label="Ting Connections",
             icon="Compass",
             scope="user",
             default_enabled=True,
@@ -1172,73 +1303,54 @@ class GitConfig(BaseModel):
     workflow: GitWorkflowConfig = Field(default_factory=GitWorkflowConfig)
 
 
-class AIModelConfig(BaseModel):
-    """Available AI model — configured via Helm values.
-
-    Mirrors niuu.domain.models.AIModelConfig but as a pydantic model
-    for settings deserialization.
-    """
-
-    id: str
-    name: str
-    provider: str = Field(
-        default="",
-        description=(
-            "Model provider/vendor (e.g. 'anthropic', 'openai', 'google'). "
-            "Used to filter the model dropdown by the chosen session runtime."
-        ),
-    )
-    cost_per_million_tokens: float = 0.0
-
-
-def _default_models() -> list[AIModelConfig]:
-    """Built-in model catalog so the wizard works without Helm config."""
-    return [
-        AIModelConfig(
-            id="claude-opus-4-7", name="Claude Opus 4.7",
-            provider="anthropic", cost_per_million_tokens=15.0,
-        ),
-        AIModelConfig(
-            id="claude-opus-4-6", name="Claude Opus 4.6",
-            provider="anthropic", cost_per_million_tokens=15.0,
-        ),
-        AIModelConfig(
-            id="claude-sonnet-4-6", name="Claude Sonnet 4.6",
-            provider="anthropic", cost_per_million_tokens=3.0,
-        ),
-        AIModelConfig(
-            id="claude-haiku-4-5-20251001", name="Claude Haiku 4.5",
-            provider="anthropic", cost_per_million_tokens=1.0,
-        ),
-        AIModelConfig(
-            id="gpt-5.5", name="GPT-5.5", provider="openai", cost_per_million_tokens=10.0,
-        ),
-        AIModelConfig(
-            id="gpt-5.4", name="GPT-5.4", provider="openai", cost_per_million_tokens=5.0,
-        ),
-        AIModelConfig(
-            id="o4-mini", name="o4-mini", provider="openai", cost_per_million_tokens=1.1,
-        ),
-        AIModelConfig(
-            id="o3", name="o3", provider="openai", cost_per_million_tokens=10.0,
-        ),
-    ]
-
-
 class TelegramIngressConfig(BaseModel):
     """Toggle for the Volundr-side Telegram update poller.
 
     Volundr's TelegramIngressService runs ``getUpdates`` long-polling on every
     enabled MESSAGING integration to route inbound Telegram messages into
     Skuld session rooms. Telegram allows only one active poller per bot
-    token, so this conflicts with Tyr's polling shim (``telegram.polling``)
-    when both target the same bot. Disable here when Tyr's shim is the
+    token, so this conflicts with Ting's polling shim (``telegram.polling``)
+    when both target the same bot. Disable here when Ting's shim is the
     intended consumer (``./start-dev`` solo dev). Defaults to True for
     backwards compatibility with deployed environments that rely on the
     in-session reply feature.
     """
 
     enabled: bool = Field(default=True)
+
+
+class VolundrBifrostConfig(BifrostConfig):
+    """Volundr-facing Bifrost dependency configuration."""
+
+    url: str = Field(
+        default="http://localhost:8080",
+        description="Base URL for the mounted Bifrost API host.",
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        description="HTTP timeout for Bifrost catalog calls.",
+    )
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
+
+
+class ObservatoryGuildConfig(BaseModel):
+    """Guild dependency config consumed by the host-mounted Observatory app."""
+
+    url: str = Field(
+        default="http://localhost:8080",
+        description="Base URL for the mounted Guild/niuu API host.",
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        description="HTTP timeout for Observatory Guild discovery calls.",
+    )
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
+
+
+class ObservatoryConfig(BaseModel):
+    """Observatory plugin configuration."""
+
+    guild: ObservatoryGuildConfig = Field(default_factory=ObservatoryGuildConfig)
 
 
 class Settings(BaseSettings):
@@ -1266,7 +1378,9 @@ class Settings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     git: GitConfig = Field(default_factory=GitConfig)
+    niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)
+    archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
@@ -1283,6 +1397,10 @@ class Settings(BaseSettings):
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     provisioning: ProvisioningConfig = Field(default_factory=ProvisioningConfig)
+    permission_auto_approval: PermissionAutoApprovalConfig = Field(
+        default_factory=PermissionAutoApprovalConfig,
+        description="Server-side allow/deny policy for permission request auto approvals.",
+    )
     local_git: LocalGitConfig = Field(default_factory=LocalGitConfig)
     local_mounts: LocalMountsConfig = Field(default_factory=LocalMountsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
@@ -1291,12 +1409,11 @@ class Settings(BaseSettings):
         default_factory=_default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
     )
+    bifrost: VolundrBifrostConfig = Field(default_factory=VolundrBifrostConfig)
     default_definition: str = Field(
         default="skuldClaude",
         description="Fallback definition key when no explicit definition is specified.",
     )
-
-    models: list[AIModelConfig] = Field(default_factory=_default_models)
     profiles: list[ProfileConfig] = Field(default_factory=list)
     templates: list[TemplateConfig] = Field(default_factory=list)
     mcp_servers: list[MCPServerEntry] = Field(default_factory=list)
@@ -1305,6 +1422,13 @@ class Settings(BaseSettings):
         description="Feature module catalog — defines available UI modules.",
     )
     ravn: RavnConfig = Field(default_factory=RavnConfig)
+    observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)
+
+    @model_validator(mode="after")
+    def _merge_built_in_session_definitions(self) -> "Settings":
+        """Keep built-in session definitions unless config explicitly overrides them."""
+        self.session_definitions = merge_session_definitions(self.session_definitions)
+        return self
 
     @classmethod
     def settings_customise_sources(

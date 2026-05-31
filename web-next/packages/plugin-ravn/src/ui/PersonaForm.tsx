@@ -8,23 +8,13 @@ import {
   MountChip,
 } from '@niuulabs/ui';
 import type { FieldType, PersonaRole } from '@niuulabs/domain';
-import type {
-  PersonaDetail,
-  PersonaCreateRequest,
-  PersonaConsumesEvent,
-  PersonaExecutor,
-} from '../ports';
+import type { PersonaDetail, PersonaCreateRequest, PersonaConsumesEvent } from '../ports';
 import { validatePersona } from './validatePersona';
 import { SEED_EVENT_CATALOG, SEED_TOOL_REGISTRY } from '../catalog';
 import './PersonaForm.css';
 
 const PERMISSION_MODES = ['default', 'safe', 'loose'] as const;
 const MIMIR_ROUTINGS = ['local', 'shared', 'domain'] as const;
-const CLI_EXECUTOR_ADAPTER = 'ravn.adapters.executors.cli.CliTransportExecutor';
-const CODEX_WS_TRANSPORT_ADAPTER = 'skuld.transports.codex_ws.CodexWebSocketTransport';
-
-type ExecutorMode = 'ravn' | 'codex_ws' | 'custom';
-
 // ── Fan-in strategy definitions ────────────────────────────────────────────
 
 const FAN_IN_STRATEGIES = [
@@ -144,9 +134,7 @@ function detailToRequest(d: PersonaDetail): PersonaCreateRequest {
     allowedTools: d.allowedTools,
     forbiddenTools: d.forbiddenTools,
     permissionMode: d.permissionMode,
-    executor: d.executor,
     iterationBudget: d.iterationBudget,
-    llmPrimaryAlias: d.llm.primaryAlias,
     llmThinkingEnabled: d.llm.thinkingEnabled,
     llmMaxTokens: d.llm.maxTokens,
     llmTemperature: d.llm.temperature,
@@ -158,51 +146,6 @@ function detailToRequest(d: PersonaDetail): PersonaCreateRequest {
     fanInParams: d.fanIn?.params,
     mimirWriteRouting: d.mimirWriteRouting,
   };
-}
-
-function defaultCodexExecutor(): PersonaExecutor {
-  return {
-    adapter: CLI_EXECUTOR_ADAPTER,
-    kwargs: {
-      transport_adapter: CODEX_WS_TRANSPORT_ADAPTER,
-      transport_kwargs: { model: '' },
-    },
-  };
-}
-
-function inferExecutorMode(executor: PersonaCreateRequest['executor']): ExecutorMode {
-  if (!executor?.adapter) return 'ravn';
-  if (
-    executor.adapter === CLI_EXECUTOR_ADAPTER &&
-    executor.kwargs?.transport_adapter === CODEX_WS_TRANSPORT_ADAPTER
-  ) {
-    return 'codex_ws';
-  }
-  return 'custom';
-}
-
-function normalizeExecutor(
-  executor: PersonaCreateRequest['executor'],
-): PersonaCreateRequest['executor'] {
-  if (!executor) return undefined;
-  const adapter = executor.adapter.trim();
-  const kwargs = { ...(executor.kwargs ?? {}) };
-  if (!adapter && Object.keys(kwargs).length === 0) return undefined;
-  return { adapter, kwargs };
-}
-
-function getExecutorTransportAdapter(executor: PersonaCreateRequest['executor']): string {
-  const value = executor?.kwargs?.transport_adapter;
-  return typeof value === 'string' ? value : '';
-}
-
-function getExecutorTransportModel(executor: PersonaCreateRequest['executor']): string {
-  const transportKwargs = executor?.kwargs?.transport_kwargs;
-  if (!transportKwargs || typeof transportKwargs !== 'object' || Array.isArray(transportKwargs)) {
-    return '';
-  }
-  const value = (transportKwargs as Record<string, unknown>).model;
-  return typeof value === 'string' ? value : '';
 }
 
 // ── Section components ─────────────────────────────────────────────────────
@@ -274,83 +217,12 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
   }, [persona.name]);
 
   const validationErrors = validatePersona(form, SEED_EVENT_CATALOG);
-  const executorMode = inferExecutorMode(form.executor);
-
   const update = useCallback(
     <K extends keyof PersonaCreateRequest>(key: K, value: PersonaCreateRequest[K]) => {
       setForm((prev) => ({ ...prev, [key]: value }));
       setDirty(true);
     },
     [],
-  );
-
-  const updateExecutor = useCallback(
-    (patch: Partial<PersonaExecutor> | undefined) => {
-      const current = form.executor ?? { adapter: '', kwargs: {} };
-      const next = patch
-        ? normalizeExecutor({
-            adapter: patch.adapter ?? current.adapter,
-            kwargs: patch.kwargs ?? current.kwargs,
-          })
-        : undefined;
-      update('executor', next);
-    },
-    [form.executor, update],
-  );
-
-  const updateExecutorMode = useCallback(
-    (mode: ExecutorMode) => {
-      if (mode === 'ravn') {
-        update('executor', undefined);
-        return;
-      }
-      if (mode === 'codex_ws') {
-        update('executor', defaultCodexExecutor());
-        return;
-      }
-      update(
-        'executor',
-        normalizeExecutor(form.executor ?? { adapter: CLI_EXECUTOR_ADAPTER, kwargs: {} }),
-      );
-    },
-    [form.executor, update],
-  );
-
-  const updateTransportAdapter = useCallback(
-    (transportAdapter: string) => {
-      const current = form.executor ?? { adapter: CLI_EXECUTOR_ADAPTER, kwargs: {} };
-      updateExecutor({
-        adapter: current.adapter || CLI_EXECUTOR_ADAPTER,
-        kwargs: {
-          ...current.kwargs,
-          transport_adapter: transportAdapter,
-        },
-      });
-    },
-    [form.executor, updateExecutor],
-  );
-
-  const updateTransportModel = useCallback(
-    (model: string) => {
-      const current = form.executor ?? { adapter: CLI_EXECUTOR_ADAPTER, kwargs: {} };
-      const transportKwargs =
-        current.kwargs.transport_kwargs &&
-        typeof current.kwargs.transport_kwargs === 'object' &&
-        !Array.isArray(current.kwargs.transport_kwargs)
-          ? { ...(current.kwargs.transport_kwargs as Record<string, unknown>) }
-          : {};
-      updateExecutor({
-        adapter: current.adapter || CLI_EXECUTOR_ADAPTER,
-        kwargs: {
-          ...current.kwargs,
-          transport_kwargs: {
-            ...transportKwargs,
-            model,
-          },
-        },
-      });
-    },
-    [form.executor, updateExecutor],
   );
 
   const handleReset = useCallback(() => {
@@ -468,8 +340,11 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
         </Section>
 
         {/* Runtime — combined section matching web2 (iteration_budget + permission_mode + LLM) */}
-        <Section title="Runtime" subtitle="Iteration budget, permissions and LLM config.">
-          <div className="rv-pf-grid-3">
+        <Section
+          title="Runtime"
+          subtitle="Iteration budget, permissions, and non-model LLM behavior."
+        >
+          <div className="rv-pf-grid-2">
             <label className="rv-pf-field">
               <span className="rv-pf-field__label">iteration_budget</span>
               <input
@@ -493,18 +368,6 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
                     {m}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label className="rv-pf-field">
-              <span className="rv-pf-field__label">llm.alias</span>
-              <select
-                className="niuu-form-control niuu-font-mono"
-                value={form.llmPrimaryAlias}
-                onChange={(e) => update('llmPrimaryAlias', e.target.value)}
-              >
-                <option value="claude-sonnet-4-6">sonnet-primary</option>
-                <option value="claude-opus-4-6">opus-primary</option>
-                <option value="claude-haiku-4-5">haiku-primary</option>
               </select>
             </label>
           </div>
@@ -534,54 +397,6 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
               />
             </label>
           </div>
-        </Section>
-
-        <Section title="Execution" subtitle="How this persona actually runs turns.">
-          <div className="rv-pf-grid-2">
-            <label className="rv-pf-field">
-              <span className="rv-pf-field__label">execution_mode</span>
-              <select
-                className="niuu-form-control niuu-font-mono"
-                value={executorMode}
-                onChange={(e) => updateExecutorMode(e.target.value as ExecutorMode)}
-              >
-                <option value="ravn">embedded ravn agent</option>
-                <option value="codex_ws">codex streaming</option>
-                <option value="custom">custom executor</option>
-              </select>
-            </label>
-            {executorMode !== 'ravn' && (
-              <label className="rv-pf-field">
-                <span className="rv-pf-field__label">executor.adapter</span>
-                <input
-                  className="niuu-form-control niuu-font-mono"
-                  value={form.executor?.adapter ?? ''}
-                  onChange={(e) => updateExecutor({ adapter: e.target.value })}
-                />
-              </label>
-            )}
-          </div>
-          {executorMode !== 'ravn' && (
-            <div className="rv-pf-grid-2">
-              <label className="rv-pf-field">
-                <span className="rv-pf-field__label">transport_adapter</span>
-                <input
-                  className="niuu-form-control niuu-font-mono"
-                  value={getExecutorTransportAdapter(form.executor)}
-                  onChange={(e) => updateTransportAdapter(e.target.value)}
-                />
-              </label>
-              <label className="rv-pf-field">
-                <span className="rv-pf-field__label">transport.model</span>
-                <input
-                  className="niuu-form-control niuu-font-mono"
-                  value={getExecutorTransportModel(form.executor)}
-                  onChange={(e) => updateTransportModel(e.target.value)}
-                  placeholder="inherit transport default"
-                />
-              </label>
-            </div>
-          )}
         </Section>
 
         {/* Tool access */}
@@ -766,7 +581,7 @@ export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormPr
         {/* Fan-in */}
         <Section
           title="Fan-in"
-          subtitle="How Týr combines this persona's output with others emitting the same event."
+          subtitle="How Ting combines this persona's output with others emitting the same event."
         >
           <div className="rv-fanin-grid" data-testid="fanin-cards">
             {FAN_IN_STRATEGIES.map((s) => {

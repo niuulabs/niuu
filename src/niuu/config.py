@@ -20,6 +20,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from niuu.domain.models import InstanceKind, InstanceVisibility
+
 
 @dataclass(frozen=True)
 class GitHubInstance:
@@ -128,6 +130,98 @@ class GitConfig(BaseModel):
 
     github: GitHubConfig = Field(default_factory=GitHubConfig)
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
+
+
+class HttpAuthAdapterConfig(BaseModel):
+    """Dynamic adapter config for outbound HTTP auth/header providers."""
+
+    adapter: str = Field(
+        default="niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
+class InstanceSeedConfig(BaseModel):
+    """Config-seeded runtime instance registration."""
+
+    id: str | None = Field(default=None)
+    kind: InstanceKind = Field(default=InstanceKind.VOLUNDR)
+    slug: str = Field(default="")
+    name: str = Field(default="")
+    base_url: str = Field(default="")
+    visibility: InstanceVisibility = Field(default=InstanceVisibility.SYSTEM)
+    owner_id: str | None = Field(default=None)
+    tenant_id: str | None = Field(default=None)
+    enabled: bool = Field(default=True)
+    is_default: bool = Field(default=False)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class InstanceCatalogEntryConfig(BaseModel):
+    """Config-driven runtime kind metadata for Guild registration UX."""
+
+    kind: InstanceKind = Field(default=InstanceKind.VOLUNDR)
+    label: str = Field(default="")
+    rune: str = Field(default="")
+    summary: str = Field(default="")
+    detail: str = Field(default="")
+    registerable: bool = Field(default=True)
+    filterable: bool = Field(default=True)
+
+
+def _default_instance_catalog() -> list[InstanceCatalogEntryConfig]:
+    return [
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.VOLUNDR,
+            label="Volundr",
+            rune="ᚲ",
+            summary="session forge",
+            detail="spawns remote dev pods",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.MIMIR,
+            label="Mimir",
+            rune="ᛗ",
+            summary="knowledge index",
+            detail="chronicles, embeddings, graph",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.BIFROST,
+            label="Bifrost",
+            rune="ᚨ",
+            summary="LLM gateway",
+            detail="routes inference",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.TING,
+            label="Tyr",
+            rune="✦",
+            summary="saga coordinator",
+            detail="dispatch ravens",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.RAVN,
+            label="Ravn",
+            rune="ᚱ",
+            summary="agent runtime",
+            detail="runs ravens and wardens",
+        ),
+        InstanceCatalogEntryConfig(
+            kind=InstanceKind.OBSERVATORY,
+            label="Observatory",
+            rune="◉",
+            summary="topology surface",
+            detail="discovers and streams platform state",
+        ),
+    ]
+
+
+class InstanceRegistryConfig(BaseModel):
+    """Shared registry config for runtime instances."""
+
+    instances: list[InstanceSeedConfig] = Field(default_factory=list)
+    catalog: list[InstanceCatalogEntryConfig] = Field(default_factory=_default_instance_catalog)
 
 
 def _env_csv_list(name: str, default: list[str]) -> list[str]:

@@ -4,7 +4,7 @@ interface LogoRuneRingProps {
   glow?: boolean;
 }
 
-const RUNES = ['ᚲ', 'ᛃ', 'ᚱ', 'ᛗ', 'ᚨ', 'ᛖ', 'ᚠ', 'ᛒ'] as const;
+const RUNES = ['ᚲ', '✦', 'ᚱ', 'ᛗ', 'ᚨ', 'ᛖ', 'ᚠ', 'ᛒ'] as const;
 const ORBIT_R = 22;
 
 /**

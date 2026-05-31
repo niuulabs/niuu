@@ -98,7 +98,7 @@ class TestIngestEvent:
     def test_ingest_single_event(self, client, sink):
         session_id = str(uuid4())
         resp = client.post(
-            "/api/v1/volundr/events",
+            "/api/v1/forge/events",
             json={
                 "session_id": session_id,
                 "event_type": "message_assistant",
@@ -118,7 +118,7 @@ class TestIngestEvent:
 
     def test_ingest_invalid_event_type(self, client):
         resp = client.post(
-            "/api/v1/volundr/events",
+            "/api/v1/forge/events",
             json={
                 "session_id": str(uuid4()),
                 "event_type": "invalid_type",
@@ -132,7 +132,7 @@ class TestIngestEvent:
     def test_ingest_all_event_types(self, client, sink):
         for et in SessionEventType:
             resp = client.post(
-                "/api/v1/volundr/events",
+                "/api/v1/forge/events",
                 json={
                     "session_id": str(uuid4()),
                     "event_type": et.value,
@@ -145,7 +145,7 @@ class TestIngestEvent:
 
     def test_ingest_with_cost_and_model(self, client, sink):
         resp = client.post(
-            "/api/v1/volundr/events",
+            "/api/v1/forge/events",
             json={
                 "session_id": str(uuid4()),
                 "event_type": "token_usage",
@@ -167,7 +167,7 @@ class TestIngestBatch:
     def test_ingest_batch(self, client, sink):
         session_id = str(uuid4())
         resp = client.post(
-            "/api/v1/volundr/events/batch",
+            "/api/v1/forge/events/batch",
             json={
                 "events": [
                     {
@@ -187,7 +187,7 @@ class TestIngestBatch:
 
     def test_ingest_batch_rejects_invalid_type(self, client):
         resp = client.post(
-            "/api/v1/volundr/events/batch",
+            "/api/v1/forge/events/batch",
             json={
                 "events": [
                     {
@@ -204,7 +204,7 @@ class TestIngestBatch:
 
     def test_ingest_batch_rejects_empty(self, client):
         resp = client.post(
-            "/api/v1/volundr/events/batch",
+            "/api/v1/forge/events/batch",
             json={"events": []},
         )
         assert resp.status_code == 422
@@ -227,7 +227,7 @@ class TestQueryEvents:
                     sequence=i,
                 )
             )
-        resp = client.get(f"/api/v1/volundr/sessions/{session_id}/events")
+        resp = client.get(f"/api/v1/forge/sessions/{session_id}/events")
         assert resp.status_code == 200
         assert len(resp.json()) == 3
 
@@ -254,7 +254,7 @@ class TestQueryEvents:
             )
         )
         resp = client.get(
-            f"/api/v1/volundr/sessions/{session_id}/events",
+            f"/api/v1/forge/sessions/{session_id}/events",
             params={"event_type": "file_modified"},
         )
         assert resp.status_code == 200
@@ -262,7 +262,7 @@ class TestQueryEvents:
 
     def test_get_session_events_invalid_type_filter(self, client):
         resp = client.get(
-            f"/api/v1/volundr/sessions/{uuid4()}/events",
+            f"/api/v1/forge/sessions/{uuid4()}/events",
             params={"event_type": "nonexistent"},
         )
         assert resp.status_code == 422
@@ -285,14 +285,14 @@ class TestQueryEvents:
                     sequence=0,
                 )
             )
-        resp = client.get(f"/api/v1/volundr/sessions/{session_id}/events/counts")
+        resp = client.get(f"/api/v1/forge/sessions/{session_id}/events/counts")
         assert resp.status_code == 200
         body = resp.json()
         assert body["file_modified"] == 2
         assert body["git_commit"] == 1
 
     def test_get_token_timeline(self, client):
-        resp = client.get(f"/api/v1/volundr/sessions/{uuid4()}/events/tokens")
+        resp = client.get(f"/api/v1/forge/sessions/{uuid4()}/events/tokens")
         assert resp.status_code == 200
         assert len(resp.json()) >= 1
 
@@ -301,7 +301,7 @@ class TestSinkHealth:
     """Tests for GET /events/health."""
 
     def test_get_sink_health(self, client):
-        resp = client.get("/api/v1/volundr/events/health")
+        resp = client.get("/api/v1/forge/events/health")
         assert resp.status_code == 200
         body = resp.json()
         assert "sinks" in body

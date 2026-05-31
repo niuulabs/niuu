@@ -1,1 +1,1 @@
-"""Niuu — shared modules used across Volundr, Tyr, and other packages."""
+"""Niuu — shared modules used across Volundr, Ting, and other packages."""

@@ -18,9 +18,9 @@ const MOCK_TOPOLOGY: Topology = {
     { id: 'realm-asgard', typeId: 'realm', label: 'asgard', parentId: null, status: 'healthy' },
     { id: 'realm-midgard', typeId: 'realm', label: 'midgard', parentId: null, status: 'healthy' },
     { id: 'ravn-huginn', typeId: 'ravn_long', label: 'huginn', parentId: null, status: 'healthy' },
-    { id: 'ravn-muninn', typeId: 'ravn_raid', label: 'muninn', parentId: null, status: 'healthy' },
-    { id: 'raid-1', typeId: 'raid', label: 'raid-omega', parentId: null, status: 'observing' },
-    { id: 'raid-2', typeId: 'raid', label: 'raid-beta', parentId: null, status: 'observing' },
+    { id: 'ravn-muninn', typeId: 'ravn_run', label: 'muninn', parentId: null, status: 'healthy' },
+    { id: 'run-1', typeId: 'run', label: 'run-omega', parentId: null, status: 'observing' },
+    { id: 'run-2', typeId: 'run', label: 'run-beta', parentId: null, status: 'observing' },
     { id: 'svc-1', typeId: 'service', label: 'keycloak', parentId: null, status: 'healthy' },
   ],
 };
@@ -44,10 +44,10 @@ describe('ObservatoryTopbar', () => {
     expect(screen.getByText('ravens')).toBeInTheDocument();
   });
 
-  it('renders the raids count label', () => {
+  it('renders the runs count label', () => {
     vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
     render(<ObservatoryTopbar />);
-    expect(screen.getByText('raids')).toBeInTheDocument();
+    expect(screen.getByText('runs')).toBeInTheDocument();
   });
 
   it('shows correct realm count (2)', () => {
@@ -58,7 +58,7 @@ describe('ObservatoryTopbar', () => {
     expect(topbar).toHaveTextContent('2');
   });
 
-  it('shows correct raven count (ravn_long + ravn_raid = 2)', () => {
+  it('shows correct raven count (ravn_long + ravn_run = 2)', () => {
     vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
     const { container } = render(<ObservatoryTopbar />);
     // ravens stat value
@@ -67,11 +67,11 @@ describe('ObservatoryTopbar', () => {
     expect(ravensStat).toHaveTextContent('2');
   });
 
-  it('shows correct raid count (2)', () => {
+  it('shows correct run count (2)', () => {
     vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
     const { container } = render(<ObservatoryTopbar />);
     const accentStats = container.querySelectorAll('.obs-topbar__stat--accent');
-    // Second accent stat is raids
+    // Second accent stat is runs
     expect(accentStats[1]).toHaveTextContent('2');
   });
 
@@ -92,13 +92,13 @@ describe('ObservatoryTopbar', () => {
     values.forEach((v) => expect(v.textContent).toBe('0'));
   });
 
-  it('counts only ravn_long and ravn_raid as ravens', () => {
+  it('counts only ravn_long and ravn_run as ravens', () => {
     const topo: Topology = {
       timestamp: '',
       edges: [],
       nodes: [
         { id: 'r1', typeId: 'ravn_long', label: 'r1', parentId: null, status: 'healthy' },
-        { id: 'r2', typeId: 'ravn_raid', label: 'r2', parentId: null, status: 'healthy' },
+        { id: 'r2', typeId: 'ravn_run', label: 'r2', parentId: null, status: 'healthy' },
         { id: 'r3', typeId: 'service', label: 'r3', parentId: null, status: 'healthy' },
       ],
     };

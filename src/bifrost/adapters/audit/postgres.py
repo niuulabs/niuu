@@ -135,11 +135,8 @@ class PostgresAuditAdapter(PostgresBase, AuditPort):
     _create_indexes_sql = _CREATE_INDEXES
 
     async def _init_schema(self, pool: asyncpg.Pool) -> None:
-        """Create table, indexes, and apply NIU-462 column migrations."""
-        async with pool.acquire() as conn:
-            await conn.execute(_CREATE_TABLE)
-            await conn.execute(_CREATE_INDEXES)
-            await conn.execute(_MIGRATE_COLUMNS)
+        """Schema initialization is handled by service migrations."""
+        _ = pool
 
     # ------------------------------------------------------------------
     # Port implementation

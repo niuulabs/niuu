@@ -108,7 +108,7 @@ async def test_subscriber_captures_multiple_event_types():
 
     events = [
         make_event(event_type="ravn.tool.complete"),
-        make_event(event_id="evt-002", event_type="tyr.task.started"),
+        make_event(event_id="evt-002", event_type="ting.task.started"),
         make_event(event_id="evt-003", event_type="volundr.session.started"),
     ]
     for evt in events:

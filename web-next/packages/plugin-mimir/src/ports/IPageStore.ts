@@ -36,7 +36,7 @@ export interface IPageStore {
    * Full-text, semantic, or hybrid search across pages.
    * Defaults to hybrid mode.
    */
-  search(query: string, mode?: SearchMode): Promise<SearchResult[]>;
+  search(query: string, mode?: SearchMode, mountName?: string): Promise<SearchResult[]>;
 
   /**
    * List raw source records, optionally filtered by origin type and/or mount.

@@ -46,11 +46,9 @@ class TestValuesDefaults:
         values_path = CHART_DIR / "values.yaml"
         return yaml.safe_load(values_path.read_text())
 
-    def test_transport_adapter_defaults_to_sdk_websocket(self, values_yaml):
-        """Test broker transportAdapter defaults to SdkWebSocketTransport."""
-        assert values_yaml["broker"]["transportAdapter"] == (
-            "skuld.transports.sdk_websocket.SdkWebSocketTransport"
-        )
+    def test_transport_adapter_defaults_to_sdk(self, values_yaml):
+        """Test broker transportAdapter defaults to SDKTransport."""
+        assert values_yaml["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
 
     def test_broker_cli_type_defaults_to_claude(self, values_yaml):
         """Test legacy broker cliType defaults to claude (backward compat)."""
@@ -188,6 +186,11 @@ class TestDeploymentTemplate:
     def test_sessions_volume_mounted(self, deployment_yaml):
         """Test sessions volume is mounted by multiple containers."""
         assert deployment_yaml.count("name: sessions") >= 2
+
+    def test_git_clone_ensures_dynamic_nginx_include_exists(self, deployment_yaml):
+        """Test session bootstrap always pre-creates .services/nginx.conf."""
+        assert 'mkdir -p "$WORKSPACE/.services"' in deployment_yaml
+        assert 'touch "$WORKSPACE/.services/nginx.conf"' in deployment_yaml
 
     def test_has_no_reh_container(self, deployment_yaml):
         """Test deployment no longer contains the retired REH container."""

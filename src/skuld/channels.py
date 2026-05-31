@@ -13,6 +13,8 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 
+from fastapi import WebSocketDisconnect
+
 from niuu.domain.outcome import parse_outcome_block
 
 logger = logging.getLogger("skuld.channels")
@@ -25,6 +27,20 @@ TELEGRAM_BUFFER_FLUSH_INTERVAL = 1.5
 TELEGRAM_TOPIC_NAME_MAX_LENGTH = 128
 
 TelegramTopicMode = Literal["shared_chat", "fixed_topic", "topic_per_session"]
+
+
+def _is_expected_ws_disconnect(exc: Exception) -> bool:
+    if isinstance(exc, WebSocketDisconnect):
+        return True
+    if exc.__class__.__name__ == "ClientDisconnected":
+        return True
+    if isinstance(exc, RuntimeError):
+        text = str(exc)
+        return (
+            "WebSocket is not connected" in text
+            or 'Cannot call "send" once a close message has been sent.' in text
+        )
+    return False
 
 try:
     from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -77,6 +93,80 @@ class MessageChannel(ABC):
 # ---------------------------------------------------------------------------
 
 
+_INTERNAL_BLOCK_TYPES = ("tool_use", "tool_result")
+
+
+def filter_internal_blocks(
+    event: dict,
+    *,
+    open_block_type: str | None,
+) -> tuple[dict | None, str | None]:
+    """Drop tool_use/tool_result content from an event for an "hide internal" channel.
+
+    Returns ``(event_to_send_or_None, new_open_block_type)``.
+
+    For streaming content_block events, only one block is open at a time
+    in the current transports — track the open block's type sequentially so
+    we know whether the matching ``content_block_delta`` and
+    ``content_block_stop`` belong to an internal block.
+
+    For ``assistant`` / ``user`` events that arrive with a content list
+    (Anthropic SDK shape), strip internal blocks and drop the event when
+    nothing meaningful remains.
+    """
+    et = event.get("type")
+
+    if et == "content_block_start":
+        block_type = event.get("content_block", {}).get("type")
+        next_open = block_type
+        if block_type in _INTERNAL_BLOCK_TYPES:
+            return None, next_open
+        return event, next_open
+
+    if et == "content_block_delta":
+        if open_block_type in _INTERNAL_BLOCK_TYPES:
+            return None, open_block_type
+        return event, open_block_type
+
+    if et == "content_block_stop":
+        if open_block_type in _INTERNAL_BLOCK_TYPES:
+            return None, None
+        return event, None
+
+    if et in ("assistant", "user"):
+        message = event.get("message")
+        content = (
+            message.get("content")
+            if isinstance(message, dict) and isinstance(message.get("content"), list)
+            else event.get("content")
+            if isinstance(event.get("content"), list)
+            else None
+        )
+        if content is None:
+            return event, open_block_type
+
+        kept = [
+            b
+            for b in content
+            if not (isinstance(b, dict) and b.get("type") in _INTERNAL_BLOCK_TYPES)
+        ]
+        if len(kept) == len(content):
+            return event, open_block_type
+        if not kept:
+            return None, open_block_type
+
+        new_event = dict(event)
+        if isinstance(message, dict) and isinstance(message.get("content"), list):
+            new_message = dict(message)
+            new_message["content"] = kept
+            new_event["message"] = new_message
+        else:
+            new_event["content"] = kept
+        return new_event, open_block_type
+
+    return event, open_block_type
+
+
 class WebSocketChannel(MessageChannel):
     """Message channel backed by a FastAPI WebSocket connection.
 
@@ -84,21 +174,48 @@ class WebSocketChannel(MessageChannel):
     broker's channel registry alongside other channel types.
     """
 
-    def __init__(self, ws: object) -> None:
+    def __init__(self, ws: object, *, show_internal: bool = False) -> None:
         """Initialize with a FastAPI WebSocket instance.
 
         Args:
             ws: A FastAPI WebSocket (typed as object to avoid import
                 dependency at module level).
+            show_internal: Whether to forward tool_use/tool_result blocks
+                to this channel. Default ``False`` (hide), matching the
+                browser's default toggle position.
         """
         self._ws = ws
         self._closed = False
+        self._show_internal = show_internal
+        self._open_block_type: str | None = None
+
+    def set_show_internal(self, visible: bool) -> None:
+        """Update the per-channel filter for tool_use / tool_result events."""
+        self._show_internal = visible
+        if visible:
+            self._open_block_type = None
+
+    @property
+    def show_internal(self) -> bool:
+        return self._show_internal
 
     async def send_event(self, event: dict) -> None:
         """Send a JSON-encoded CLI event over the WebSocket."""
         if self._closed:
             return
-        await self._ws.send_text(json.dumps(event))
+        if not self._show_internal:
+            filtered, self._open_block_type = filter_internal_blocks(
+                event, open_block_type=self._open_block_type
+            )
+            if filtered is None:
+                return
+            event = filtered
+        try:
+            await self._ws.send_text(json.dumps(event))
+        except Exception as exc:
+            if not _is_expected_ws_disconnect(exc):
+                raise
+            self._closed = True
 
     async def close(self) -> None:
         """Close the underlying WebSocket connection."""
@@ -380,14 +497,14 @@ def _render_inline_telegram_html(text: str) -> str:
         if text.startswith("**", cursor):
             end = text.find("**", cursor + 2)
             if end != -1:
-                parts.append(f"<b>{_render_inline_telegram_html(text[cursor + 2:end])}</b>")
+                parts.append(f"<b>{_render_inline_telegram_html(text[cursor + 2 : end])}</b>")
                 cursor = end + 2
                 continue
 
         if text[cursor] == "`":
             end = text.find("`", cursor + 1)
             if end != -1:
-                code = html.escape(text[cursor + 1:end])
+                code = html.escape(text[cursor + 1 : end])
                 parts.append(f"<code>{code}</code>")
                 cursor = end + 1
                 continue
@@ -397,8 +514,8 @@ def _render_inline_telegram_html(text: str) -> str:
             if label_end != -1 and label_end + 1 < len(text) and text[label_end + 1] == "(":
                 url_end = text.find(")", label_end + 2)
                 if url_end != -1:
-                    label = html.escape(text[cursor + 1:label_end])
-                    href = html.escape(text[label_end + 2:url_end], quote=True)
+                    label = html.escape(text[cursor + 1 : label_end])
+                    href = html.escape(text[label_end + 2 : url_end], quote=True)
                     parts.append(f'<a href="{href}">{label}</a>')
                     cursor = url_end + 1
                     continue

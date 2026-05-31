@@ -2,7 +2,10 @@
   display: flex;
   flex-direction: column;
   width: 360px;
+  height: 100%;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
   background-color: var(--color-bg-secondary);
   border-left: 1px solid var(--color-border-subtle);
 }
@@ -10,6 +13,7 @@
 .niuu-chat-cascade-panel--collapsed {
   position: relative;
   width: 54px;
+  height: 100%;
   overflow: hidden;
 }
 
@@ -72,7 +76,7 @@
 
 .niuu-chat-cascade-status-dot[data-verdict='needs_changes'],
 .niuu-chat-cascade-status-dot[data-verdict='needs_review'] {
-  background-color: var(--color-accent-amber);
+  background-color: color-mix(in srgb, var(--color-critical-fg) 82%, var(--color-text-muted));
 }
 
 .niuu-chat-cascade-header-right {

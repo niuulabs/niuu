@@ -10,7 +10,7 @@
  * callback and get back a `close()` to tear the connection down.
  */
 
-import { getAccessToken } from './http-client';
+import { getAuthHeaders } from './http-client';
 
 export interface EventStreamOptions {
   /** Called for every SSE data frame. `raw` is the concatenated `data:` content. */
@@ -66,9 +66,7 @@ async function pump(
   onEvent: ((frame: { event?: string; data: string }) => void) | undefined,
   signal: AbortSignal,
 ): Promise<void> {
-  const headers: Record<string, string> = { Accept: 'text/event-stream' };
-  const token = getAccessToken();
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const headers = getAuthHeaders({ Accept: 'text/event-stream' });
 
   const res = await fetch(url, { headers, signal });
   if (!res.ok || !res.body) {

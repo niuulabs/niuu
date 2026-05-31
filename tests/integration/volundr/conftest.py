@@ -19,6 +19,7 @@ import httpx
 import pytest_asyncio
 from fastapi import FastAPI
 
+from bifrost.config import BifrostConfig
 from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
 from tests.integration.pool_wrapper import TransactionalPool
 from volundr.adapters.inbound.rest import create_router as create_session_router
@@ -152,7 +153,7 @@ async def volundr_app(
 
     # Services — use SyncSessionService to avoid background task hangs
     broadcaster = InMemoryEventBroadcaster()
-    pricing = HardcodedPricingProvider()
+    pricing = HardcodedPricingProvider(list(BifrostConfig().models))
     pod_manager = NoOpPodManager()
 
     session_service = SyncSessionService(

@@ -320,6 +320,62 @@ class TestMeshOutcomeFlow:
         ]
 
     @pytest.mark.asyncio
+    async def test_reviewer_changes_requested_routes_back_to_coder(self) -> None:
+        """Reviewer can send the coder back around with review.changes_requested."""
+        transport = _FakeSleipnirTransport()
+
+        coder_mesh = SleipnirMeshAdapter(
+            publisher=transport, subscriber=transport, own_peer_id="coder"
+        )
+        reviewer_mesh = SleipnirMeshAdapter(
+            publisher=transport, subscriber=transport, own_peer_id="reviewer"
+        )
+
+        chain_log: list[str] = []
+
+        async def reviewer_handler(event: RavnEvent) -> None:
+            chain_log.append(f"reviewer received: {event.payload.get('event_type')}")
+            changes_requested = RavnEvent(
+                type=RavnEventType.OUTCOME,
+                source="reviewer",
+                payload={
+                    "event_type": "review.changes_requested",
+                    "canonical_event_type": "review.completed",
+                    "persona": "reviewer",
+                    "outcome": {"verdict": "needs_changes", "comments": "Fix edge case"},
+                },
+                timestamp=datetime.now(UTC),
+                urgency=0.3,
+                correlation_id=event.correlation_id,
+                session_id="",
+                task_id="review-001",
+            )
+            await reviewer_mesh.publish(changes_requested, topic="review.changes_requested")
+
+        async def coder_handler(event: RavnEvent) -> None:
+            chain_log.append(f"coder received: {event.payload.get('event_type')}")
+
+        await reviewer_mesh.subscribe("code.changed", reviewer_handler)
+        await coder_mesh.subscribe("review.changes_requested", coder_handler)
+
+        code_outcome = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source="coder",
+            payload={"event_type": "code.changed", "persona": "coder"},
+            timestamp=datetime.now(UTC),
+            urgency=0.3,
+            correlation_id="task-001",
+            session_id="",
+            task_id="code-001",
+        )
+        await coder_mesh.publish(code_outcome, topic="code.changed")
+
+        assert chain_log == [
+            "reviewer received: code.changed",
+            "coder received: review.changes_requested",
+        ]
+
+    @pytest.mark.asyncio
     async def test_no_cross_talk_different_topics(self) -> None:
         """Personas only receive events they subscribed to."""
         transport = _FakeSleipnirTransport()

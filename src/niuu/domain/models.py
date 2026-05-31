@@ -31,6 +31,26 @@ class IntegrationType(StrEnum):
     CODE_FORGE = "code_forge"
 
 
+class InstanceKind(StrEnum):
+    """Supported registered runtime instance kinds."""
+
+    VOLUNDR = "volundr"
+    TING = "ting"
+    MIMIR = "mimir"
+    BIFROST = "bifrost"
+    RAVN = "ravn"
+    OBSERVATORY = "observatory"
+    GENERIC = "generic"
+
+
+class InstanceVisibility(StrEnum):
+    """Visibility / ownership scope for a registered runtime instance."""
+
+    SYSTEM = "system"
+    TENANT = "tenant"
+    USER = "user"
+
+
 @dataclass(frozen=True)
 class IntegrationConnection:
     """A configured integration connection (e.g., issue tracker)."""
@@ -48,12 +68,22 @@ class IntegrationConnection:
 
 
 @dataclass(frozen=True)
-class AIModelConfig:
-    """Available AI model — shared across Tyr and Volundr."""
+class RegisteredInstance:
+    """A registered runtime instance visible to one or more principals."""
 
     id: str
+    kind: InstanceKind
+    slug: str
     name: str
-    cost_per_million_tokens: float = 0.0
+    base_url: str
+    visibility: InstanceVisibility
+    owner_id: str | None
+    tenant_id: str | None
+    enabled: bool
+    is_default: bool
+    config: dict
+    created_at: datetime
+    updated_at: datetime
 
 
 class SecretType(StrEnum):

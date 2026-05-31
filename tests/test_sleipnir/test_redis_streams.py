@@ -327,13 +327,13 @@ def test_streams_for_patterns_namespace_wildcard():
 
 def test_streams_for_patterns_exact():
     """An exact event type maps to its namespace stream."""
-    assert _streams_for_patterns("sleipnir", ["tyr.task.started"]) == ["sleipnir:tyr"]
+    assert _streams_for_patterns("sleipnir", ["ting.task.started"]) == ["sleipnir:ting"]
 
 
 def test_streams_for_patterns_multiple():
     """Multiple distinct namespaces are sorted and deduplicated."""
-    streams = _streams_for_patterns("sleipnir", ["ravn.*", "tyr.*", "ravn.tool.complete"])
-    assert streams == ["sleipnir:ravn", "sleipnir:tyr"]
+    streams = _streams_for_patterns("sleipnir", ["ravn.*", "ting.*", "ravn.tool.complete"])
+    assert streams == ["sleipnir:ravn", "sleipnir:ting"]
 
 
 def test_streams_for_patterns_wildcard_namespace():
@@ -432,8 +432,8 @@ async def test_publish_writes_to_correct_stream():
 
 async def test_publish_stream_key_uses_prefix():
     transport, fake = make_transport(stream_prefix="myapp")
-    await transport.publish(make_event(event_type="tyr.task.started"))
-    assert fake.xadd_calls[0]["stream"] == "myapp:tyr"
+    await transport.publish(make_event(event_type="ting.task.started"))
+    assert fake.xadd_calls[0]["stream"] == "myapp:ting"
 
 
 async def test_publish_payload_field_present():
@@ -509,12 +509,12 @@ async def test_publish_batch_correct_streams():
     await transport.publish_batch(
         [
             make_event(event_type="ravn.tool.complete"),
-            make_event(event_type="tyr.task.started"),
+            make_event(event_type="ting.task.started"),
             make_event(event_type="system.health.ping"),
         ]
     )
     streams = [c["stream"] for c in fake.xadd_calls]
-    assert streams == ["sleipnir:ravn", "sleipnir:tyr", "sleipnir:system"]
+    assert streams == ["sleipnir:ravn", "sleipnir:ting", "sleipnir:system"]
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +633,7 @@ async def test_multiple_subscribers_receive_independently():
 
 
 async def test_pattern_filtering_ravn_star():
-    """'ravn.*' receives ravn events and rejects tyr events."""
+    """'ravn.*' receives ravn events and rejects ting events."""
     transport, _ = make_transport()
     received_types: list[str] = []
 
@@ -642,7 +642,7 @@ async def test_pattern_filtering_ravn_star():
 
     sub = await transport.subscribe(["ravn.*"], handler)
     await transport.publish(make_event(event_type="ravn.tool.complete", event_id="e1"))
-    # tyr events go to a different stream, so this subscribe call won't see it —
+    # ting events go to a different stream, so this subscribe call won't see it —
     # but even if it did land in the queue, the pattern filter would drop it.
     await drain(transport)
 
@@ -662,7 +662,7 @@ async def test_pattern_filtering_star_receives_all():
 
     event_types = [
         "ravn.tool.complete",
-        "tyr.task.started",
+        "ting.task.started",
         "system.health.ping",
     ]
     for i, et in enumerate(event_types):

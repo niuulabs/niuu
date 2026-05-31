@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from volundr.domain.ports import PricingProvider
     from volundr.domain.services.chronicle import ChronicleService
     from volundr.domain.services.repo import ProviderInfo, RepoService
+    from volundr.domain.services.session_archive import SessionArchiveService
     from volundr.domain.services.stats import StatsService
     from volundr.domain.services.token import TokenService
     from volundr.domain.services.workspace import WorkspaceService
@@ -40,6 +41,7 @@ class ForgeService:
         pricing_provider: PricingProvider | None = None,
         repo_service: RepoService | None = None,
         chronicle_service: ChronicleService | None = None,
+        archive_service: SessionArchiveService | None = None,
         workspace_service: WorkspaceService | None = None,
     ) -> None:
         self._session_service = session_service
@@ -48,6 +50,7 @@ class ForgeService:
         self._pricing_provider = pricing_provider
         self._repo_service = repo_service
         self._chronicle_service = chronicle_service
+        self._archive_service = archive_service
         self._workspace_service = workspace_service
 
     @property
@@ -62,6 +65,7 @@ class ForgeService:
             pricing_provider=self._pricing_provider,
             repo_service=self._repo_service,
             chronicle_service=self._chronicle_service,
+            archive_service=self._archive_service,
             workspace_service=workspace_service,
         )
 
@@ -87,6 +91,7 @@ class ForgeService:
         *,
         principal: Principal | None = None,
     ) -> Session:
+        resolved_definition = self._resolve_session_definition(data.model, data.definition)
         session = await self._session_service.create_session(
             name=data.name,
             model=data.model,
@@ -100,7 +105,7 @@ class ForgeService:
         )
         return await self._session_service.start_session(
             session.id,
-            definition=data.definition,
+            definition=resolved_definition,
             profile_name=data.profile_name,
             template_name=data.template_name,
             principal=principal,
@@ -113,6 +118,25 @@ class ForgeService:
             workload_type=data.workload_type,
             workload_config=data.workload_config or None,
         )
+
+    def _resolve_session_definition(
+        self,
+        model: str,
+        explicit_definition: str | None,
+    ) -> str | None:
+        if explicit_definition:
+            return explicit_definition
+        if self._pricing_provider is None:
+            return None
+        normalized_model = str(model or "").strip()
+        if not normalized_model:
+            return None
+        for candidate in self._pricing_provider.list_models():
+            if str(getattr(candidate, "id", "") or "").strip() != normalized_model:
+                continue
+            definition = str(getattr(candidate, "session_definition", "") or "").strip()
+            return definition or None
+        return None
 
     async def get_session(self, session_id: UUID) -> Session | None:
         return await self._session_service.get_session(session_id)
@@ -221,10 +245,10 @@ class ForgeService:
         self,
         *,
         session_id: UUID,
-        summary: str,
-        key_changes: list[str],
-        unfinished_work: list[str],
-        duration_seconds: int,
+        summary: str | None = None,
+        key_changes: list[str] | None = None,
+        unfinished_work: str | None = None,
+        duration_seconds: int | None = None,
     ) -> Chronicle:
         if self._chronicle_service is None:
             raise RuntimeError("Chronicle service not available")
@@ -360,6 +384,45 @@ class ForgeService:
         if base_url.endswith("/session"):
             base_url = base_url[: -len("/session")]
         return session, base_url
+
+    async def get_transcript(self, session_id: UUID) -> dict:
+        if self._archive_service is None:
+            raise RuntimeError("Session archive service not available")
+        return await self._archive_service.get_transcript(session_id)
+
+    async def get_transcript_download_path(self, session_id: UUID, fmt: str):
+        if self._archive_service is None:
+            raise RuntimeError("Session archive service not available")
+        return await self._archive_service.get_transcript_download_path(session_id, fmt)
+
+    async def get_archive_manifest(self, session_id: UUID) -> dict:
+        if self._archive_service is None:
+            raise RuntimeError("Session archive service not available")
+        return await self._archive_service.get_archive_manifest(session_id)
+
+    async def build_archive(self, session_id: UUID, *, force: bool = False) -> dict:
+        if self._archive_service is None:
+            raise RuntimeError("Session archive service not available")
+        return await self._archive_service.build_archive(session_id, force=force)
+
+    async def get_aggregated_logs(
+        self,
+        session_id: UUID,
+        *,
+        lines: int = 200,
+        level: str = "DEBUG",
+        participants: set[str] | None = None,
+        query: str = "",
+    ) -> dict:
+        if self._archive_service is None:
+            raise RuntimeError("Session archive service not available")
+        return await self._archive_service.get_logs(
+            session_id,
+            lines=lines,
+            level=level,
+            participants=participants,
+            query=query,
+        )
 
     async def get_stats(self):
         if self._stats_service is None:

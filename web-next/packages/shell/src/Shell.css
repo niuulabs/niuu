@@ -82,6 +82,24 @@
   padding: 10px 0;
 }
 
+.niuu-shell__rail-tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.niuu-shell__rail-tooltip strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.niuu-shell__rail-tooltip span {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
 /* ── Topbar ─────────────────────────────────────────── */
 .niuu-shell__topbar {
   grid-area: topbar;
@@ -244,9 +262,8 @@
     border-color var(--transition-normal);
 }
 .niuu-shell__subnav--collapsed {
-  width: 0;
-  min-width: 0;
-  border-right-color: transparent;
+  width: 48px;
+  min-width: 48px;
 }
 .niuu-shell__subnav:empty {
   width: 0;

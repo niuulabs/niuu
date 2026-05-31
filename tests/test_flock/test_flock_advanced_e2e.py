@@ -1,11 +1,11 @@
-"""Advanced E2E scenarios for M6 raiding parties — gap coverage.
+"""Advanced E2E scenarios for M6 runing parties — gap coverage.
 
 Covers scenarios not in test_flock_e2e.py:
 
 1. Scope breach: outcome with low scope_adherence → SCOPE_BREACH signal
 2. Max retries exhaustion: retry verdict after retries exhausted → FAILED
 3. Approve with low confidence: approve verdict but score < threshold → ESCALATED
-4. Fan-in: two raids in same phase must both merge before phase gate unlocks
+4. Fan-in: two runs in same phase must both merge before phase gate unlocks
 5. Unknown verdict: unrecognized verdict falls back to escalation
 """
 
@@ -17,14 +17,14 @@ from tests.test_flock.harness import (
     OUTCOME_RETRY,
     FlockTestHarness,
 )
-from tests.test_tyr.stubs import make_raid
-from tyr.config import ReviewConfig
-from tyr.domain.models import (
+from tests.test_ting.stubs import make_run
+from ting.config import ReviewConfig
+from ting.domain.models import (
     ConfidenceEventType,
     Phase,
     PhaseStatus,
-    Raid,
-    RaidStatus,
+    Run,
+    RunStatus,
     Saga,
     SagaStatus,
 )
@@ -36,14 +36,14 @@ from tyr.domain.models import (
 _DEFAULT_OWNER = "test-owner"
 
 
-def _make_running_raid(
-    tracker_id: str = "raid-001",
+def _make_running_run(
+    tracker_id: str = "run-001",
     session_id: str = "sess-001",
     retry_count: int = 0,
     declared_files: list[str] | None = None,
-) -> Raid:
-    return make_raid(
-        status=RaidStatus.RUNNING,
+) -> Run:
+    return make_run(
+        status=RunStatus.RUNNING,
         confidence=0.5,
         session_id=session_id,
         retry_count=retry_count,
@@ -71,9 +71,9 @@ async def test_scope_breach_confidence_event_recorded() -> None:
         cli_responses=[OUTCOME_LOW_SCOPE],
         scope_adherence_threshold=0.7,
     ) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        events = await h.tracker.get_confidence_events(raid.tracker_id)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        events = await h.tracker.get_confidence_events(run.tracker_id)
         event_types = [e.event_type.value for e in events]
         assert "scope_breach" in event_types, (
             f"Expected scope_breach confidence event; got {event_types}"
@@ -86,9 +86,9 @@ async def test_scope_breach_reduces_confidence() -> None:
         cli_responses=[OUTCOME_LOW_SCOPE],
         scope_adherence_threshold=0.7,
     ) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        events = await h.tracker.get_confidence_events(raid.tracker_id)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        events = await h.tracker.get_confidence_events(run.tracker_id)
         breach_events = [e for e in events if e.event_type == ConfidenceEventType.SCOPE_BREACH]
         assert len(breach_events) == 1
         assert breach_events[0].delta < 0
@@ -107,9 +107,9 @@ summary: Clean implementation
         cli_responses=[outcome_high_scope],
         scope_adherence_threshold=0.7,
     ) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        events = await h.tracker.get_confidence_events(raid.tracker_id)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        events = await h.tracker.get_confidence_events(run.tracker_id)
         event_types = [e.event_type.value for e in events]
         assert "scope_breach" not in event_types
 
@@ -120,7 +120,7 @@ summary: Clean implementation
 
 
 async def test_retry_exhausted_transitions_to_failed() -> None:
-    """Retry verdict when retry_count >= max_retries transitions raid to FAILED."""
+    """Retry verdict when retry_count >= max_retries transitions run to FAILED."""
     config = ReviewConfig(
         auto_approve_threshold=0.70,
         confidence_delta_ci_pass=0.30,
@@ -133,10 +133,10 @@ async def test_retry_exhausted_transitions_to_failed() -> None:
         cli_responses=[OUTCOME_RETRY],
         review_config=config,
     ) as h:
-        # Raid already exhausted retries
-        raid = _make_running_raid(retry_count=2)
-        await h.dispatch_raid(raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.FAILED)
+        # Run already exhausted retries
+        run = _make_running_run(retry_count=2)
+        await h.dispatch_run(run)
+        await h.assert_run_state(run.tracker_id, RunStatus.FAILED)
 
 
 async def test_retry_exhausted_one_below_then_exhausts() -> None:
@@ -154,18 +154,18 @@ async def test_retry_exhausted_one_below_then_exhausts() -> None:
         review_config=config,
     ) as h:
         # First attempt: retry_count=0, max_retries=1 → PENDING (can retry)
-        raid = _make_running_raid(session_id="sess-001")
-        await h.dispatch_raid(raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.PENDING)
+        run = _make_running_run(session_id="sess-001")
+        await h.dispatch_run(run)
+        await h.assert_run_state(run.tracker_id, RunStatus.PENDING)
 
         # Second attempt: retry_count=1 (incremented), max_retries=1 → FAILED
-        retry_raid = await h.tracker.update_raid_progress(
-            raid.tracker_id,
-            status=RaidStatus.RUNNING,
+        retry_run = await h.tracker.update_run_progress(
+            run.tracker_id,
+            status=RunStatus.RUNNING,
             session_id="sess-002",
         )
-        await h.dispatch_raid(retry_raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.FAILED)
+        await h.dispatch_run(retry_run)
+        await h.assert_run_state(run.tracker_id, RunStatus.FAILED)
 
 
 # ---------------------------------------------------------------------------
@@ -188,9 +188,9 @@ async def test_approve_with_failing_ci_escalates() -> None:
     Verdict is approve, but the score is too low to auto-approve.
     """
     async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE_LOW_CI]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.ESCALATED)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        await h.assert_run_state(run.tracker_id, RunStatus.ESCALATED)
 
 
 # ---------------------------------------------------------------------------
@@ -209,25 +209,25 @@ summary: Some unclear outcome
 async def test_unknown_verdict_escalates() -> None:
     """Unknown verdict string falls back to escalation."""
     async with FlockTestHarness(cli_responses=[OUTCOME_UNKNOWN_VERDICT]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        await h.assert_raid_state(raid.tracker_id, RaidStatus.ESCALATED)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        await h.assert_run_state(run.tracker_id, RunStatus.ESCALATED)
 
 
 # ---------------------------------------------------------------------------
-# Scenario 9: Fan-in — multiple raids in a phase
+# Scenario 9: Fan-in — multiple runs in a phase
 # ---------------------------------------------------------------------------
 
 
 async def test_fan_in_first_merge_does_not_unlock_phase() -> None:
-    """When two raids exist in a phase, merging only one does NOT unlock next phase."""
+    """When two runs exist in a phase, merging only one does NOT unlock next phase."""
     async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE]) as h:
-        # Signal that not all raids are merged yet
+        # Signal that not all runs are merged yet
         h.tracker._all_merged = False
 
-        raid1 = _make_running_raid(tracker_id="raid-001", session_id="sess-001")
-        await h.dispatch_raid(raid1)
-        await h.assert_raid_state("raid-001", RaidStatus.MERGED)
+        run1 = _make_running_run(tracker_id="run-001", session_id="sess-001")
+        await h.dispatch_run(run1)
+        await h.assert_run_state("run-001", RunStatus.MERGED)
 
         # Phase gate should NOT have been triggered (tracker reports not all merged)
         # Verify: no phase status changes were attempted
@@ -235,7 +235,7 @@ async def test_fan_in_first_merge_does_not_unlock_phase() -> None:
 
 
 async def test_fan_in_both_merged_unlocks_phase() -> None:
-    """When all raids in a phase are merged, the phase gate check succeeds."""
+    """When all runs in a phase are merged, the phase gate check succeeds."""
     async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE]) as h:
         # Wire up phase and saga for phase gate testing
         from datetime import UTC, datetime
@@ -279,14 +279,14 @@ async def test_fan_in_both_merged_unlocks_phase() -> None:
         h.tracker._phases = [phase1, phase2]
         h.tracker._all_merged = True
 
-        # Merge both raids
-        raid1 = _make_running_raid(tracker_id="raid-001", session_id="sess-001")
-        await h.dispatch_raid(raid1)
-        await h.assert_raid_state("raid-001", RaidStatus.MERGED)
+        # Merge both runs
+        run1 = _make_running_run(tracker_id="run-001", session_id="sess-001")
+        await h.dispatch_run(run1)
+        await h.assert_run_state("run-001", RunStatus.MERGED)
 
-        raid2 = _make_running_raid(tracker_id="raid-002", session_id="sess-002")
-        await h.dispatch_raid(raid2)
-        await h.assert_raid_state("raid-002", RaidStatus.MERGED)
+        run2 = _make_running_run(tracker_id="run-002", session_id="sess-002")
+        await h.dispatch_run(run2)
+        await h.assert_run_state("run-002", RunStatus.MERGED)
 
 
 # ---------------------------------------------------------------------------
@@ -294,22 +294,22 @@ async def test_fan_in_both_merged_unlocks_phase() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_mixed_outcomes_across_raids() -> None:
-    """Different raids can have different outcomes in the same harness."""
+async def test_mixed_outcomes_across_runs() -> None:
+    """Different runs can have different outcomes in the same harness."""
     async with FlockTestHarness(
         cli_responses=[OUTCOME_APPROVE, OUTCOME_ESCALATE, OUTCOME_RETRY],
     ) as h:
-        raid1 = _make_running_raid(tracker_id="raid-a", session_id="sess-a")
-        await h.dispatch_raid(raid1)
-        await h.assert_raid_state("raid-a", RaidStatus.MERGED)
+        run1 = _make_running_run(tracker_id="run-a", session_id="sess-a")
+        await h.dispatch_run(run1)
+        await h.assert_run_state("run-a", RunStatus.MERGED)
 
-        raid2 = _make_running_raid(tracker_id="raid-b", session_id="sess-b")
-        await h.dispatch_raid(raid2)
-        await h.assert_raid_state("raid-b", RaidStatus.ESCALATED)
+        run2 = _make_running_run(tracker_id="run-b", session_id="sess-b")
+        await h.dispatch_run(run2)
+        await h.assert_run_state("run-b", RunStatus.ESCALATED)
 
-        raid3 = _make_running_raid(tracker_id="raid-c", session_id="sess-c")
-        await h.dispatch_raid(raid3)
-        await h.assert_raid_state("raid-c", RaidStatus.PENDING)
+        run3 = _make_running_run(tracker_id="run-c", session_id="sess-c")
+        await h.dispatch_run(run3)
+        await h.assert_run_state("run-c", RunStatus.PENDING)
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +322,12 @@ OUTCOME_NO_BLOCK = "I completed the task successfully but forgot the outcome blo
 async def test_no_outcome_block_handles_gracefully() -> None:
     """Response without ---outcome--- block still processes (empty payload)."""
     async with FlockTestHarness(cli_responses=[OUTCOME_NO_BLOCK]) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
+        run = _make_running_run()
+        await h.dispatch_run(run)
         # With empty payload: verdict defaults to "escalate" in RavnOutcomeHandler._extract_outcome
-        # which means the raid should be ESCALATED
-        current = await h.get_raid(raid.tracker_id)
-        assert current.status in (RaidStatus.ESCALATED, RaidStatus.RUNNING), (
+        # which means the run should be ESCALATED
+        current = await h.get_run(run.tracker_id)
+        assert current.status in (RunStatus.ESCALATED, RunStatus.RUNNING), (
             f"Expected ESCALATED or RUNNING for empty outcome; got {current.status}"
         )
 
@@ -338,7 +338,7 @@ async def test_no_outcome_block_handles_gracefully() -> None:
 
 
 async def test_multiple_confidence_signals_accumulate() -> None:
-    """CI_PASS and scope_breach signals both apply to the same raid."""
+    """CI_PASS and scope_breach signals both apply to the same run."""
     outcome_mixed = """\
 ---outcome---
 verdict: approve
@@ -350,9 +350,9 @@ summary: Tests pass but scope is breached
         cli_responses=[outcome_mixed],
         scope_adherence_threshold=0.7,
     ) as h:
-        raid = _make_running_raid()
-        await h.dispatch_raid(raid)
-        events = await h.tracker.get_confidence_events(raid.tracker_id)
+        run = _make_running_run()
+        await h.dispatch_run(run)
+        events = await h.tracker.get_confidence_events(run.tracker_id)
         event_types = {e.event_type.value for e in events}
         assert "ci_pass" in event_types, "Expected CI_PASS signal"
         assert "scope_breach" in event_types, "Expected SCOPE_BREACH signal"

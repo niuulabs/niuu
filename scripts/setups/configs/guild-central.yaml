@@ -1,0 +1,57 @@
+auth:
+  allow_anonymous_dev: true
+
+identity:
+  adapter: "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"
+
+telegram_ingress:
+  enabled: false
+
+volundr:
+  use_connection_factory_in_dev: true
+
+git:
+  github:
+    instances:
+      - name: GitHub
+        base_url: https://api.github.com
+        orgs:
+          - niuulabs
+
+niuu:
+  catalog:
+    - kind: volundr
+      label: Volundr
+      rune: "ᚲ"
+      summary: session forge
+      detail: spawns remote dev pods
+    - kind: mimir
+      label: Mimir
+      rune: "ᛗ"
+      summary: knowledge index
+      detail: chronicles, embeddings, graph
+    - kind: bifrost
+      label: Bifrost
+      rune: "ᚨ"
+      summary: LLM gateway
+      detail: routes inference
+    - kind: ting
+      label: Tyr
+      rune: "✦"
+      summary: saga coordinator
+      detail: dispatch ravens
+  instances:
+    - kind: volundr
+      slug: guild-alpha
+      name: Guild Alpha
+      base_url: http://127.0.0.1:8181
+      visibility: system
+      enabled: true
+      is_default: true
+    - kind: volundr
+      slug: guild-beta
+      name: Guild Beta
+      base_url: http://127.0.0.1:8282
+      visibility: system
+      enabled: true
+      is_default: false

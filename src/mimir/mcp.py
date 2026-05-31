@@ -1,6 +1,6 @@
 """Mímir MCP (Model Context Protocol) server.
 
-Exposes six tools over the MCP JSON-RPC 2.0 protocol, allowing Claude Code,
+Exposes seven tools over the MCP JSON-RPC 2.0 protocol, allowing Claude Code,
 Codex, Cursor, and other MCP-capable agents to query and update the Mímir
 knowledge base.
 
@@ -25,6 +25,7 @@ Tools
 - ``mimir_read``    — read a page with its full content
 - ``mimir_write``   — create or update a page
 - ``mimir_ingest``  — ingest a raw document
+- ``mimir_read_source`` — read an immutable raw source by source_id
 - ``mimir_lint``    — run the knowledge-base linter
 - ``mimir_stats``   — page count, categories, health status
 """
@@ -173,6 +174,25 @@ _TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["content"],
+        },
+    },
+    {
+        "name": "mimir_read_source",
+        "description": (
+            "Read a raw ingested source by source_id. "
+            "Returns the immutable source content, metadata, and provenance details. "
+            "Use this when a workflow wants to transform freshly ingested material "
+            "into compiled wiki pages."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_id": {
+                    "type": "string",
+                    "description": "Immutable Mimir source identifier, e.g. 'src_abc123...'",
+                },
+            },
+            "required": ["source_id"],
         },
     },
     {
@@ -384,6 +404,8 @@ class MimirMcpServer:
                 return await self._tool_write(arguments)
             case "mimir_ingest":
                 return await self._tool_ingest(arguments)
+            case "mimir_read_source":
+                return await self._tool_read_source(arguments)
             case "mimir_lint":
                 return await self._tool_lint(arguments)
             case "mimir_stats":
@@ -473,7 +495,29 @@ class MimirMcpServer:
             ingested_at=datetime.now(UTC),
         )
         page_paths = await self._adapter.ingest(source)
-        result = {"source_id": source_id, "pages_updated": page_paths}
+        result = {
+            "source_id": source_id,
+            "title": title,
+            "source_type": source_type,
+            "origin_url": origin_url,
+            "pages_updated": page_paths,
+        }
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _tool_read_source(self, args: dict[str, Any]) -> list[dict[str, Any]]:
+        source_id: str = args["source_id"]
+        source = await self._adapter.read_source(source_id)
+        if source is None:
+            return [{"type": "text", "text": f"Source not found: {source_id}"}]
+        result = {
+            "source_id": source.source_id,
+            "title": source.title,
+            "source_type": source.source_type,
+            "origin_url": source.origin_url,
+            "content_hash": source.content_hash,
+            "ingested_at": source.ingested_at.isoformat(),
+            "content": source.content,
+        }
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
     async def _tool_lint(self, args: dict[str, Any]) -> list[dict[str, Any]]:

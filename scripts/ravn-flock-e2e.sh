@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# End-to-end test for M6 Raiding Parties — full stack.
+# End-to-end test for M6 Runing Parties — full stack.
 #
-# Spins up the complete Niuu platform (Volundr + Tyr + embedded PostgreSQL),
+# Spins up the complete Niuu platform (Volundr + Ting + embedded PostgreSQL),
 # imports a saga from Linear, dispatches it as a ravn_flock workload, and
 # verifies the outcome loop.
 #
 # Flow tested:
 #   niuu platform up
-#     → Tyr has raids in dispatch queue
-#     → POST /api/v1/tyr/dispatch/approve (workload_type=ravn_flock)
+#     → Ting has runs in dispatch queue
+#     → POST /api/v1/ting/dispatch/approve (workload_type=ravn_flock)
 #     → Volundr spawns local flock session (Skuld + Ravn sidecars)
 #     → Coordinator executes → outcome block → ravn.task.completed
-#     → Tyr ReviewEngine: auto-approve / retry / escalate
+#     → Ting ReviewEngine: auto-approve / retry / escalate
 #
 # Usage:
 #   scripts/ravn-flock-e2e.sh              — start platform, verify APIs, leave running
@@ -82,9 +82,9 @@ wait_for_health() {
         if [[ $elapsed -gt $timeout ]]; then
             return 1
         fi
-        # Check both Volundr and Tyr endpoints to confirm full stack is up
-        if curl -sf "${url}/api/v1/volundr/sessions" > /dev/null 2>&1 && \
-           curl -sf "${url}/api/v1/tyr/dispatcher" > /dev/null 2>&1; then
+        # Check both Forge and Ting endpoints to confirm the full stack is up
+        if curl -sf "${url}/api/v1/forge/sessions" > /dev/null 2>&1 && \
+           curl -sf "${url}/api/v1/ting/dispatcher" > /dev/null 2>&1; then
             return 0
         fi
         sleep 3
@@ -97,7 +97,7 @@ wait_for_health() {
 
 echo ""
 log_info "========================================="
-log_info "  M6 Raiding Party — Full Stack E2E"
+log_info "  M6 Runing Party — Full Stack E2E"
 log_info "========================================="
 echo ""
 
@@ -141,24 +141,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 1: Ensure flock dispatch is enabled in Tyr config
+# Step 1: Ensure flock dispatch is enabled in Ting config
 # ---------------------------------------------------------------------------
 
-log_step "1. Checking Tyr flock dispatch config..."
+log_step "1. Checking Ting flock dispatch config..."
 steps_total=$((steps_total + 1))
 
-# The dispatch.flock config is in tyr.yaml or can be set via the unified config.
-# For mini mode, we create a tyr.yaml in CWD that enables flock.
-TYR_CONFIG="${REPO_ROOT}/tyr.yaml"
-if [[ ! -f "${TYR_CONFIG}" ]]; then
-    log_info "  Creating tyr.yaml with flock dispatch enabled..."
-    cat > "${TYR_CONFIG}" <<YAML
-# Tyr config for M6 flock e2e testing
+# The dispatch.flock config is in ting.yaml or can be set via the unified config.
+# For mini mode, we create a ting.yaml in CWD that enables flock.
+TING_CONFIG="${REPO_ROOT}/ting.yaml"
+if [[ ! -f "${TING_CONFIG}" ]]; then
+    log_info "  Creating ting.yaml with flock dispatch enabled..."
+    cat > "${TING_CONFIG}" <<YAML
+# Ting config for M6 flock e2e testing
 dispatch:
   flock:
     enabled: true
     default_personas:
       - coordinator
+      - coder
       - reviewer
     sleipnir_publish_urls: []
 
@@ -180,9 +181,9 @@ sleipnir:
 auth:
   allow_anonymous_dev: true
 YAML
-    log_info "  Created ${TYR_CONFIG}"
+    log_info "  Created ${TING_CONFIG}"
 else
-    log_info "  tyr.yaml already exists"
+    log_info "  ting.yaml already exists"
 fi
 steps_passed=$((steps_passed + 1))
 
@@ -195,7 +196,7 @@ steps_total=$((steps_total + 1))
 
 if $SKIP_START; then
     log_info "  --skip-start: assuming platform is already running"
-    if ! curl -sf "${PLATFORM_URL}/api/v1/volundr/sessions" > /dev/null 2>&1; then
+    if ! curl -sf "${PLATFORM_URL}/api/v1/forge/sessions" > /dev/null 2>&1; then
         log_error "  Platform not reachable at ${PLATFORM_URL}"
         exit 1
     fi
@@ -233,13 +234,13 @@ if $QUICK_MODE; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3: Verify Tyr dispatch queue API works
+# Step 3: Verify Ting dispatch queue API works
 # ---------------------------------------------------------------------------
 
-log_step "3. Verifying Tyr dispatch queue API..."
+log_step "3. Verifying Ting dispatch queue API..."
 steps_total=$((steps_total + 1))
 
-queue_response=$(curl -sf "${PLATFORM_URL}/api/v1/tyr/dispatch/queue" 2>/dev/null || echo "FAIL")
+queue_response=$(curl -sf "${PLATFORM_URL}/api/v1/ting/dispatch/queue" 2>/dev/null || echo "FAIL")
 if [[ "${queue_response}" != "FAIL" ]]; then
     steps_passed=$((steps_passed + 1))
     queue_count=$(echo "${queue_response}" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "?")
@@ -256,12 +257,12 @@ fi
 log_step "4. Checking dispatcher state..."
 steps_total=$((steps_total + 1))
 
-dispatcher_response=$(curl -sf "${PLATFORM_URL}/api/v1/tyr/dispatcher" 2>/dev/null || echo "FAIL")
+dispatcher_response=$(curl -sf "${PLATFORM_URL}/api/v1/ting/dispatcher" 2>/dev/null || echo "FAIL")
 if [[ "${dispatcher_response}" != "FAIL" ]]; then
     steps_passed=$((steps_passed + 1))
     running=$(echo "${dispatcher_response}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('running', False))" 2>/dev/null || echo "?")
     auto_continue=$(echo "${dispatcher_response}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('auto_continue', False))" 2>/dev/null || echo "?")
-    max_concurrent=$(echo "${dispatcher_response}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('max_concurrent_raids', '?'))" 2>/dev/null || echo "?")
+    max_concurrent=$(echo "${dispatcher_response}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('max_concurrent_runs', '?'))" 2>/dev/null || echo "?")
     log_info "  Dispatcher: running=${running}, auto_continue=${auto_continue}, max_concurrent=${max_concurrent}"
     echo "${dispatcher_response}" | python3 -m json.tool > "${SAVE_DIR}/dispatcher.json" 2>/dev/null || true
 else
@@ -275,16 +276,16 @@ fi
 log_step "5. Listing existing sagas..."
 steps_total=$((steps_total + 1))
 
-sagas_response=$(curl -sf "${PLATFORM_URL}/api/v1/tyr/sagas" 2>/dev/null || echo "FAIL")
+sagas_response=$(curl -sf "${PLATFORM_URL}/api/v1/ting/sagas" 2>/dev/null || echo "FAIL")
 if [[ "${sagas_response}" != "FAIL" ]]; then
     steps_passed=$((steps_passed + 1))
     saga_count=$(echo "${sagas_response}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d, list) else len(d.get('sagas', [])))" 2>/dev/null || echo "?")
     log_info "  Found ${saga_count} saga(s)"
     echo "${sagas_response}" | python3 -m json.tool > "${SAVE_DIR}/sagas.json" 2>/dev/null || true
 
-    # Show sagas with ready raids
+    # Show sagas with ready runs
     if [[ "${queue_count:-0}" != "0" ]] && [[ "${queue_count}" != "?" ]]; then
-        log_info "  Ready raids in dispatch queue:"
+        log_info "  Ready runs in dispatch queue:"
         echo "${queue_response}" | python3 -c "
 import sys, json
 items = json.load(sys.stdin)
@@ -297,17 +298,17 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 6: Dispatch a flock raid (if queue has items)
+# Step 6: Dispatch a flock run (if queue has items)
 # ---------------------------------------------------------------------------
 
-log_step "6. Dispatching a flock raid..."
+log_step "6. Dispatching a flock run..."
 steps_total=$((steps_total + 1))
 
 if [[ "${queue_count:-0}" == "0" ]] || [[ "${queue_count}" == "?" ]]; then
-    log_warn "  No raids in dispatch queue — skipping dispatch"
-    log_info "  To add raids: import a saga from Linear via the web UI or CLI"
+    log_warn "  No runs in dispatch queue — skipping dispatch"
+    log_info "  To add runs: import a saga from Linear via the web UI or CLI"
     log_info "    niuu sagas create --from-linear <project-url>"
-    log_info "    niuu raids approve <saga-id> <issue-id>"
+    log_info "    niuu runs approve <saga-id> <issue-id>"
     steps_passed=$((steps_passed + 1))  # Not a failure, just nothing to dispatch
 else
     # Pick the first item from the queue
@@ -326,8 +327,8 @@ if items:
 " 2>/dev/null)
 
     if [[ -n "${first_item}" ]]; then
-        log_info "  Dispatching first ready raid..."
-        dispatch_result=$(curl -sf -X POST "${PLATFORM_URL}/api/v1/tyr/dispatch/approve" \
+        log_info "  Dispatching first ready run..."
+        dispatch_result=$(curl -sf -X POST "${PLATFORM_URL}/api/v1/ting/dispatch/approve" \
             -H "Content-Type: application/json" \
             -d "${first_item}" 2>/dev/null || echo "FAIL")
 
@@ -341,7 +342,7 @@ if items:
             log_info "  Monitoring session for 30s..."
             for i in $(seq 1 6); do
                 sleep 5
-                session_json="$(curl -sf "${PLATFORM_URL}/api/v1/volundr/sessions/${session_id}" 2>/dev/null || true)"
+                session_json="$(curl -sf "${PLATFORM_URL}/api/v1/forge/sessions/${session_id}" 2>/dev/null || true)"
                 session_status="$(printf '%s' "${session_json}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo '?')"
                 log_info "    [${i}/6] Session status: ${session_status}"
                 if [[ "${session_status}" == "completed" ]] || [[ "${session_status}" == "stopped" ]]; then
@@ -358,13 +359,13 @@ if items:
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7: Verify Volundr sessions
+# Step 7: Verify Forge sessions
 # ---------------------------------------------------------------------------
 
-log_step "7. Verifying Volundr sessions..."
+log_step "7. Verifying Forge sessions..."
 steps_total=$((steps_total + 1))
 
-sessions_response=$(curl -sf "${PLATFORM_URL}/api/v1/volundr/sessions" 2>/dev/null || echo "FAIL")
+sessions_response=$(curl -sf "${PLATFORM_URL}/api/v1/forge/sessions" 2>/dev/null || echo "FAIL")
 if [[ "${sessions_response}" != "FAIL" ]]; then
     steps_passed=$((steps_passed + 1))
     session_count=$(echo "${sessions_response}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d, list) else len(d.get('sessions', [])))" 2>/dev/null || echo "?")
@@ -398,13 +399,13 @@ echo ""
 echo "  1. Open the web UI: ${PLATFORM_URL}"
 echo "  2. Import a saga from Linear (or create one via CLI):"
 echo "       niuu sagas create --from-linear <linear-project-url>"
-echo "  3. Go to the dispatch queue in the Tyr tab"
-echo "  4. Select raids and click Dispatch"
+echo "  3. Go to the dispatch queue in the Ting tab"
+echo "  4. Select runs and click Dispatch"
 echo "  5. Watch the session in the Sessions tab"
-echo "  6. Check raid outcomes in the Raids tab"
+echo "  6. Check run outcomes in the Runs tab"
 echo ""
 echo "  Simulate outcomes manually:"
-echo "       uv run scripts/test-flock-outcome.py --tyr-url ${PLATFORM_URL} --session-id <session-id> --verdict approve"
+echo "       uv run scripts/test-flock-outcome.py --ting-url ${PLATFORM_URL} --session-id <session-id> --verdict approve"
 echo ""
 
 [[ $steps_passed -eq $steps_total ]] && exit 0 || exit 1

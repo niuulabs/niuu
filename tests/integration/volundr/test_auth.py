@@ -9,7 +9,7 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-API = "/api/v1/volundr"
+API = "/api/v1/forge"
 
 
 async def test_health_no_auth(volundr_client):

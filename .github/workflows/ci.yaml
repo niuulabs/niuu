@@ -14,18 +14,18 @@ jobs:
   # Change detection + pipeline tier
   #
   # Self-rolled path filter: we diff the PR head against its base and derive
-  # per-area flags. No third-party action — we avoid the supply-chain surface
-  # of marketplace filters and the logic is auditable in this file.
+  # per-area flags. Full-tier PRs (anything targeting dev/main rather than
+  # feat/*, codex/*, or claude/*) deliberately run the full surface regardless
+  # of the fine-grained diff so that heavyweight validation cannot be skipped
+  # by a bad classifier.
   #
-  # Container list is derived from the same diff: a container is rebuilt only
-  # when its Dockerfile or a source path it bakes in has changed.
+  # Light-tier PRs still use the diff to keep inner-loop checks fast.
   # ---------------------------------------------------------------------------
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
     outputs:
       python: ${{ steps.filter.outputs.python }}
-      web: ${{ steps.filter.outputs.web }}
       web_next: ${{ steps.filter.outputs.web_next }}
       helm: ${{ steps.filter.outputs.helm }}
       container-names: ${{ steps.filter.outputs.names }}
@@ -33,7 +33,7 @@ jobs:
       tier: ${{ steps.tier.outputs.level }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -46,54 +46,75 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
 
-          CHANGED=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
-          echo "Changed files:"
-          echo "${CHANGED}" | sed 's/^/  /'
+          base_sha = os.environ["BASE_SHA"]
+          head_sha = os.environ["HEAD_SHA"]
+          base_ref = os.environ.get("BASE_REF", "")
+          light_prefixes = ("feat/", "codex/", "claude/")
+          full_tier = not base_ref.startswith(light_prefixes)
 
-          match() { echo "${CHANGED}" | grep -qE "$1"; }
-          flag()  { if match "$2"; then echo "$1=true"; else echo "$1=false"; fi; }
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only", base_sha, head_sha],
+              text=True,
+          ).splitlines()
 
-          # Areas
-          flag python   '^(src|tests)/|^pyproject\.toml$|^uv\.lock$' >> "$GITHUB_OUTPUT"
-          flag web      '^web/'                                      >> "$GITHUB_OUTPUT"
-          flag web_next '^web-next/'                                 >> "$GITHUB_OUTPUT"
-          flag helm     '^charts/'                                   >> "$GITHUB_OUTPUT"
+          print("Changed files:")
+          for path in changed:
+              print(f"  {path}")
 
-          # Per-container triggers: dockerfile in containers/<name>/ OR the
-          # source tree the image bakes in. Python containers depend on src/
-          # and the lockfiles; the frontend images depend on their app trees.
-          PY_SRC='^(src/|pyproject\.toml$|uv\.lock$)'
-          declare -A TRIGGER=(
-            [volundr]="^containers/volundr/|${PY_SRC}"
-            [skuld]="^containers/skuld/|${PY_SRC}"
-            [tyr]="^containers/tyr/|${PY_SRC}"
-            [niuu]="^containers/niuu/|${PY_SRC}"
-            [bifrost]="^containers/bifrost/|${PY_SRC}"
-            [mimir]="^containers/mimir/|${PY_SRC}"
-            [volundr-web]='^containers/volundr-web/|^web/'
-            [niuu-web]='^containers/niuu-web/|^web-next/'
-            [devrunner]='^containers/devrunner/'
-          )
+          def matches(pattern: str) -> bool:
+              regex = re.compile(pattern)
+              return any(regex.search(path) for path in changed)
 
-          NAMES=()
-          for NAME in volundr skuld devrunner volundr-web niuu-web tyr niuu mimir bifrost; do
-            if match "${TRIGGER[$NAME]}"; then
-              NAMES+=("\"${NAME}\"")
-            fi
-          done
+          all_containers = ["skuld", "devrunner", "volundr-web", "niuu-web", "niuu"]
 
-          if [ ${#NAMES[@]} -eq 0 ]; then
-            echo "names=[]" >> "$GITHUB_OUTPUT"
-            echo "any=false" >> "$GITHUB_OUTPUT"
-          else
-            # Join with commas
-            IFS=,
-            echo "names=[${NAMES[*]}]" >> "$GITHUB_OUTPUT"
-            echo "any=true" >> "$GITHUB_OUTPUT"
-          fi
+          if full_tier:
+              outputs = {
+                  "python": "true",
+                  "web_next": "true",
+                  "helm": "true",
+                  "names": json.dumps(all_containers),
+                  "any": "true",
+              }
+              print("Full-tier PR detected; enabling Python, web-next, Helm, and container jobs.")
+          else:
+              python_changed = matches(r"^(src|tests)/|^pyproject\.toml$|^uv\.lock$")
+              web_changed = matches(r"^web-next/")
+              helm_changed = matches(r"^charts/")
+              container_triggers = {
+                  "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
+                  "devrunner": r"^containers/devrunner/",
+                  "volundr-web": r"^containers/volundr-web/|^web-next/",
+                  "niuu-web": r"^containers/niuu-web/|^web-next/",
+                  "niuu": r"^containers/niuu/|^(src/|pyproject\.toml$|uv\.lock$)",
+              }
+              container_names = [
+                  name for name, pattern in container_triggers.items() if matches(pattern)
+              ]
+              outputs = {
+                  "python": "true" if python_changed else "false",
+                  "web_next": "true" if web_changed else "false",
+                  "helm": "true" if helm_changed else "false",
+                  "names": json.dumps(container_names),
+                  "any": "true" if container_names else "false",
+              }
+
+          print("Computed outputs:")
+          for key, value in outputs.items():
+              print(f"  {key}={value}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              for key, value in outputs.items():
+                  fh.write(f"{key}={value}\n")
+          PY
 
       - name: Determine pipeline tier
         id: tier
@@ -101,7 +122,7 @@ jobs:
           # PRs targeting feat/* branches run a light pipeline (lint + unit tests).
           # PRs targeting dev or main run the full pipeline.
           BASE="${{ github.base_ref }}"
-          if [[ "$BASE" == feat/* ]]; then
+          if [[ "$BASE" == feat/* || "$BASE" == codex/* || "$BASE" == claude/* ]]; then
             echo "level=light" >> $GITHUB_OUTPUT
             echo "Pipeline tier: light (PR targets ${BASE})"
           else
@@ -145,7 +166,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -165,8 +186,8 @@ jobs:
           uv run pytest tests/integration/volundr/ -v --tb=short -m integration \
             --override-ini="addopts="
 
-  python-integration-test-tyr:
-    name: "Python: Integration Test Tyr"
+  python-integration-test-ting:
+    name: "Python: Integration Test Ting"
     needs: changes
     if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
@@ -185,7 +206,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -202,7 +223,7 @@ jobs:
           TEST_DATABASE_PASSWORD: volundr_test
           TEST_DATABASE_NAME: volundr_test
         run: |
-          uv run pytest tests/integration/tyr/ -v --tb=short -m integration \
+          uv run pytest tests/integration/ting/ -v --tb=short -m integration \
             --override-ini="addopts="
 
   python-integration-test-sleipnir:
@@ -229,7 +250,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -264,9 +285,9 @@ jobs:
   e2e-test:
     name: "E2E: Playwright"
     needs: changes
-    if: needs.changes.outputs.tier == 'full' && (needs.changes.outputs.python == 'true' || needs.changes.outputs.web == 'true')
+    if: needs.changes.outputs.tier == 'full' && (needs.changes.outputs.python == 'true' || needs.changes.outputs.web_next == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -282,7 +303,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -291,20 +312,29 @@ jobs:
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: 9
+
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-next/pnpm-lock.yaml
 
       - name: Install web dependencies
-        run: npm ci
-        working-directory: web
+        run: pnpm install --frozen-lockfile
+        working-directory: web-next
+
+      - name: Build workspace packages for dev-mode resolution
+        run: pnpm -r --filter='./packages/*' build
+        working-directory: web-next
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: web-next
 
       - name: Start backend
         env:
@@ -316,46 +346,26 @@ jobs:
         run: |
           uv run uvicorn volundr.main:app --port 8080 &
 
-      - name: Start frontend
-        run: |
-          npm run dev -- --port 5174 &
-        working-directory: web
-
-      - name: Wait for servers
+      - name: Wait for backend
         run: |
           timeout 30 bash -c '
             until curl -sf http://localhost:8080/health > /dev/null 2>&1; do
               sleep 1
             done
           '
-          timeout 30 bash -c '
-            until curl -sf http://localhost:5174 > /dev/null 2>&1; do
-              sleep 1
-            done
-          '
-          echo "Both servers are ready"
+          echo "Backend is ready"
 
       - name: Run Playwright tests
-        run: npx playwright test
-        working-directory: web
+        run: pnpm test:e2e
+        working-directory: web-next
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
         with:
-          name: playwright-report
-          path: web/playwright-report/
+          name: web-next-playwright-report
+          path: web-next/playwright-report/
           retention-days: 7
-
-  # ---------------------------------------------------------------------------
-  # Web — lint + unit tests (all tiers). Delegated to reusable workflow.
-  # ---------------------------------------------------------------------------
-  web:
-    name: Web
-    needs: changes
-    if: needs.changes.outputs.web == 'true'
-    uses: ./.github/workflows/reusable-web-lint-test.yaml
-    secrets: inherit
 
   # ---------------------------------------------------------------------------
   # web-next — composable plugin UI. Delegated to reusable workflow.
@@ -380,19 +390,19 @@ jobs:
         working-directory: web-next
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: 9
 
       - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 22
           cache: pnpm
@@ -421,19 +431,19 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: 9
 
       - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 22
           cache: pnpm
@@ -459,21 +469,56 @@ jobs:
           echo "Packed tarballs:"
           ls -1 "$PACK_DIR"
 
+      - name: Copy consumer app into isolated temp directory
+        run: |
+          rm -rf "$RUNNER_TEMP/consumer-app"
+          cp -R "$GITHUB_WORKSPACE/web-next/consumer-app" "$RUNNER_TEMP/consumer-app"
+
       - name: Install consumer app from local tarballs
-        # Install ALL niuulabs tarballs in one pnpm add so inter-package deps
-        # (plugin-tyr → plugin-sdk, etc.) resolve from the local tarballs rather
-        # than the registry (where 0.0.1 does not yet exist).
-        working-directory: web-next/consumer-app
+        # Rewrite the consumer app's @niuulabs/* dependencies to explicit file:
+        # tarballs before installation so pnpm never tries to resolve the
+        # GitHub Packages publishConfig registry during the external-consumer
+        # proof.
+        working-directory: ${{ runner.temp }}/consumer-app
         run: |
           PACK_DIR="$GITHUB_WORKSPACE/web-next/.packed"
-          pnpm add $(ls "$PACK_DIR"/*.tgz | tr '\n' ' ')
+          PACK_DIR="$PACK_DIR" node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const packDir = process.env.PACK_DIR;
+          const packageJsonPath = path.join(process.cwd(), "package.json");
+          const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+          const packagesDir = path.join(process.env.GITHUB_WORKSPACE, "web-next", "packages");
+          pkg.pnpm ??= {};
+          pkg.pnpm.overrides ??= {};
+
+          for (const packageDir of fs.readdirSync(packagesDir)) {
+            const sourcePackageJson = path.join(packagesDir, packageDir, "package.json");
+            const sourcePkg = JSON.parse(fs.readFileSync(sourcePackageJson, "utf8"));
+            const tarball = fs
+              .readdirSync(packDir)
+              .find((file) => file.startsWith(`niuulabs-${packageDir}-`) && file.endsWith(".tgz"));
+            if (!tarball) {
+              throw new Error(`Missing packed tarball for ${sourcePkg.name}`);
+            }
+            const tarballPath = path.join(packDir, tarball).split(path.sep).join(path.posix.sep);
+            pkg.pnpm.overrides[sourcePkg.name] = `file:${tarballPath}`;
+            if (pkg.dependencies?.[sourcePkg.name]) {
+              pkg.dependencies[sourcePkg.name] = `file:${tarballPath}`;
+            }
+          }
+
+          fs.writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`);
+          NODE
+          pnpm install --no-frozen-lockfile
 
       - name: Install Playwright browsers
-        working-directory: web-next/consumer-app
+        working-directory: ${{ runner.temp }}/consumer-app
         run: npx playwright install --with-deps chromium
 
       - name: Run consumer Playwright tests
-        working-directory: web-next/consumer-app
+        working-directory: ${{ runner.temp }}/consumer-app
         run: npx playwright test
 
       - name: Upload consumer Playwright report
@@ -481,7 +526,7 @@ jobs:
         if: failure()
         with:
           name: consumer-playwright-report
-          path: web-next/consumer-app/playwright-report/
+          path: ${{ runner.temp }}/consumer-app/playwright-report/
           retention-days: 7
 
   # ---------------------------------------------------------------------------
@@ -507,7 +552,7 @@ jobs:
       packages: read
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -530,43 +575,46 @@ jobs:
       - name: Install Postgres in cluster
         run: |
           helm repo add bitnami https://charts.bitnami.com/bitnami
-          helm install pg bitnami/postgresql \
-            --set auth.postgresPassword=test \
-            --set auth.database=volundr \
-            --set primary.persistence.enabled=false \
-            --set primary.initdb.scripts."init\.sql"="CREATE DATABASE tyr;" \
-            --wait --timeout 120s
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Load PR container images into kind
-        run: |
-          PR_TAG="pr-${{ github.event.number }}"
-          for CONTAINER in volundr tyr skuld; do
-            IMAGE="ghcr.io/${{ github.repository_owner }}/${CONTAINER}:${PR_TAG}"
-            if docker pull "${IMAGE}"; then
-              kind load docker-image "${IMAGE}" --name ci-test
-            else
-              echo "::warning::Could not pull ${IMAGE} — chart will use image pull from registry"
+          helm repo update
+          for attempt in 1 2 3; do
+            if helm install pg bitnami/postgresql \
+              --set auth.postgresPassword=test \
+              --set auth.database=volundr \
+              --set primary.persistence.enabled=false \
+              --set primary.initdb.scripts."init\.sql"="CREATE DATABASE ting;" \
+              --wait --timeout 120s; then
+              exit 0
             fi
+            helm uninstall pg --ignore-not-found || true
+            if [ "$attempt" -eq 3 ]; then
+              echo "Postgres bootstrap failed after ${attempt} attempts."
+              exit 1
+            fi
+            echo "Retrying Postgres bootstrap after transient Helm/chart fetch failure..."
+            sleep 10
           done
+
+      - name: Create registry pull secret in kind
+        run: |
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --docker-server=ghcr.io \
+            --docker-username='${{ github.actor }}' \
+            --docker-password='${{ secrets.GITHUB_TOKEN }}' \
+            --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Install Volundr chart
         run: |
           helm install volundr charts/volundr/ \
             -f charts/volundr/ci-values.yaml \
+            --set global.imagePullSecrets[0]=ghcr-pull-secret \
             --set image.tag="pr-${{ github.event.number }}" \
             --wait --timeout 120s
 
-      - name: Install Tyr chart
+      - name: Install Ting chart
         run: |
-          helm install tyr charts/tyr/ \
-            -f charts/tyr/ci-values.yaml \
+          helm install ting charts/ting/ \
+            -f charts/ting/ci-values.yaml \
+            --set global.imagePullSecrets[0]=ghcr-pull-secret \
             --set image.tag="pr-${{ github.event.number }}" \
             --wait --timeout 120s
 
@@ -574,14 +622,15 @@ jobs:
         run: |
           helm install skuld charts/skuld/ \
             -f charts/skuld/ci-values.yaml \
+            --set global.imagePullSecrets[0]=ghcr-pull-secret \
             --set image.tag="pr-${{ github.event.number }}" \
             --wait --timeout 120s
 
       - name: Verify Volundr pods are ready
         run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=volundr --timeout=60s
 
-      - name: Verify Tyr pods are ready
-        run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=tyr --timeout=60s
+      - name: Verify Ting pods are ready
+        run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=ting --timeout=60s
 
       - name: Verify Skuld pods are ready
         run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=skuld --timeout=60s
@@ -594,9 +643,9 @@ jobs:
           curl -sf http://localhost:8080/health
           kill $PF_PID || true
 
-      - name: Health check Tyr
+      - name: Health check Ting
         run: |
-          kubectl port-forward svc/tyr 8081:80 &
+          kubectl port-forward svc/ting 8081:80 &
           PF_PID=$!
           sleep 3
           curl -sf http://localhost:8081/health
@@ -620,8 +669,8 @@ jobs:
         run: |
           echo "=== Volundr logs ==="
           kubectl logs -l app.kubernetes.io/name=volundr --tail=50 || true
-          echo "=== Tyr logs ==="
-          kubectl logs -l app.kubernetes.io/name=tyr --tail=50 || true
+          echo "=== Ting logs ==="
+          kubectl logs -l app.kubernetes.io/name=ting --tail=50 || true
           echo "=== Skuld logs ==="
           kubectl logs -l app.kubernetes.io/name=skuld --all-containers --tail=50 || true
           echo "=== Events ==="
@@ -661,7 +710,7 @@ jobs:
       packages: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -680,32 +729,25 @@ jobs:
         run: |
           VERSION="0.0.0-pr.${{ github.event.number }}"
 
-          sed -i "s/^version:.*/version: $VERSION/" charts/skuld/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/skuld/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/volundr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/volundr/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/tyr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/tyr/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu-shared/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu-shared/Chart.yaml
-
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu/Chart.yaml
+          for CHART in bifrost ravn skuld volundr ting niuu-shared niuu; do
+            sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
+            sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
+          done
 
       - name: Package Helm charts
         run: |
+          helm package charts/bifrost -d .helm-packages/
+          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
-          helm package charts/tyr -d .helm-packages/
+          helm package charts/ting -d .helm-packages/
           helm package charts/niuu-shared -d .helm-packages/
-          helm dependency build charts/niuu
+          rm -f charts/niuu/Chart.lock
+          helm dependency update charts/niuu
           helm package charts/niuu -d .helm-packages/
 
       - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -713,11 +755,13 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/bifrost-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          helm push .helm-packages/ravn-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/skuld-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/volundr-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
-          helm push .helm-packages/tyr-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          helm push .helm-packages/ting-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/niuu-shared-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
-          helm push .helm-packages/niuu-0*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          helm push .helm-packages/niuu-[0-9]*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
 
   # ---------------------------------------------------------------------------
   # Security — container vulnerability scanning — full tier only.
@@ -744,14 +788,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Dependency review
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
         with:
           # npm 11.13.0 is the current pinned bootstrap version and still bundles
           # this advisory through its internal socks -> ip-address dependency chain.

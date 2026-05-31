@@ -146,6 +146,27 @@ def test_write_routing_multi_mount_default() -> None:
     assert routing.resolve("technical/x.md") == ["local", "shared"]
 
 
+def test_ingest_targets_prefers_explicit_or_default_write_routing() -> None:
+    local = _make_mount("local")
+    shared = _make_mount("shared")
+    adapter = CompositeMimirAdapter(
+        mounts=[local, shared],
+        write_routing=WriteRouting(default=["shared", "missing"]),
+    )
+
+    assert adapter.ingest_targets("local") == ["local"]
+    assert adapter.ingest_targets("missing") == []
+    assert adapter.ingest_targets() == ["shared"]
+
+
+def test_ingest_targets_falls_back_to_all_mounts_when_no_default_is_configured() -> None:
+    local = _make_mount("local")
+    shared = _make_mount("shared")
+    adapter = CompositeMimirAdapter(mounts=[local, shared], write_routing=WriteRouting(default=[]))
+
+    assert adapter.ingest_targets() == ["local", "shared"]
+
+
 # ---------------------------------------------------------------------------
 # CompositeMimirAdapter — read priority ordering
 # ---------------------------------------------------------------------------
@@ -225,6 +246,45 @@ async def test_read_page_raises_if_all_mounts_miss() -> None:
         await adapter.read_page("missing.md")
 
 
+@pytest.mark.asyncio
+async def test_ingest_to_targets_only_named_mount() -> None:
+    source = MimirSource(
+        source_id="src-1",
+        title="Test source",
+        content="hello",
+        source_type="research",
+        ingested_at=datetime.now(UTC),
+        content_hash=compute_content_hash("hello"),
+    )
+    local = _make_mount("local")
+    shared = _make_mount("shared")
+    local.port.ingest = AsyncMock(return_value=["local/page.md"])
+    shared.port.ingest = AsyncMock(return_value=["shared/page.md"])
+
+    adapter = CompositeMimirAdapter(mounts=[local, shared])
+    result = await adapter.ingest_to(source, "shared")
+
+    assert result == ["shared/page.md"]
+    shared.port.ingest.assert_awaited_once_with(source)
+    local.port.ingest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ingest_to_rejects_unknown_mount() -> None:
+    source = MimirSource(
+        source_id="src-1",
+        title="Test source",
+        content="hello",
+        source_type="research",
+        ingested_at=datetime.now(UTC),
+        content_hash=compute_content_hash("hello"),
+    )
+    adapter = CompositeMimirAdapter(mounts=[_make_mount("local")])
+
+    with pytest.raises(ValueError, match="Unknown Mimir mount: missing"):
+        await adapter.ingest_to(source, "missing")
+
+
 # ---------------------------------------------------------------------------
 # CompositeMimirAdapter — get_page fallthrough
 # ---------------------------------------------------------------------------
@@ -248,6 +308,36 @@ async def test_get_page_raises_if_all_mounts_miss() -> None:
     adapter = CompositeMimirAdapter(mounts=[local, shared])
     with pytest.raises(FileNotFoundError, match="not found in any mount"):
         await adapter.get_page("missing.md")
+
+
+@pytest.mark.asyncio
+async def test_read_source_from_mount_returns_only_from_named_mount() -> None:
+    source = MimirSource(
+        source_id="src-1",
+        title="Test source",
+        content="hello",
+        source_type="research",
+        ingested_at=datetime.now(UTC),
+        content_hash=compute_content_hash("hello"),
+    )
+    local = _make_mount("local")
+    shared = _make_mount("shared")
+    local.port.read_source = AsyncMock(return_value=None)
+    shared.port.read_source = AsyncMock(return_value=source)
+
+    adapter = CompositeMimirAdapter(mounts=[local, shared])
+
+    assert await adapter.read_source_from_mount("src-1", "shared") == source
+    assert await adapter.read_source_from_mount("src-1", "missing") is None
+
+
+@pytest.mark.asyncio
+async def test_read_source_from_mount_handles_port_errors() -> None:
+    local = _make_mount("local")
+    local.port.read_source = AsyncMock(side_effect=RuntimeError("boom"))
+    adapter = CompositeMimirAdapter(mounts=[local])
+
+    assert await adapter.read_source_from_mount("src-1", "local") is None
 
 
 # ---------------------------------------------------------------------------

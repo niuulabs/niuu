@@ -1,33 +1,39 @@
+import { buildBifrostHttpAdapter, createMockBifrostService } from '@niuulabs/plugin-bifrost';
+import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import {
   createMockPersonaStore,
   createMockRavenStream,
   createMockSessionStream,
   createMockTriggerStore,
   createMockBudgetStream,
+  createMockWardenStore,
   buildRavnPersonaAdapter,
   buildRavnRavenAdapter,
   buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
   buildRavnBudgetAdapter,
+  buildRavnWardenAdapter,
 } from '@niuulabs/plugin-ravn';
 import {
-  createMockTyrService,
+  createMockTingService,
   createMockDispatcherService,
-  createMockTyrSessionService,
+  createMockTingSessionService,
   createMockTrackerService,
   createMockWorkflowService,
+  createMockResearchService,
   createMockDispatchBus,
-  createMockTyrSettingsService,
+  createMockTingSettingsService,
   createMockAuditLogService,
-  buildTyrHttpAdapter,
+  buildTingHttpAdapter,
   buildDispatcherHttpAdapter,
-  buildTyrSessionHttpAdapter,
+  buildTingSessionHttpAdapter,
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
+  buildResearchHttpAdapter,
   buildDispatchBusHttpAdapter,
-  buildTyrSettingsHttpAdapter,
-  buildTyrAuditLogHttpAdapter,
-} from '@niuulabs/plugin-tyr';
+  buildTingSettingsHttpAdapter,
+  buildTingAuditLogHttpAdapter,
+} from '@niuulabs/plugin-ting';
 import { createMimirMockAdapter, buildMimirHttpAdapter } from '@niuulabs/plugin-mimir';
 import {
   createMockRegistryRepository,
@@ -95,13 +101,20 @@ function hasWsBackend(svc: ServiceConfig | undefined): svc is ServiceConfig & { 
   return svc?.mode === 'ws' && typeof svc.wsUrl === 'string';
 }
 
+function resolveBrowserRelativeWsUrl(url: string): string {
+  if (!url.startsWith('/')) return url;
+  if (typeof window === 'undefined') return url;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}${url}`;
+}
+
 function resolveDirectServiceWsUrl(
   config: Pick<NiuuConfig, 'services'>,
   ...serviceKeys: string[]
 ): string | null {
   for (const serviceKey of serviceKeys) {
     const svc = config.services[serviceKey];
-    if (hasWsBackend(svc)) return svc.wsUrl;
+    if (hasWsBackend(svc)) return resolveBrowserRelativeWsUrl(svc.wsUrl);
   }
   return null;
 }
@@ -136,7 +149,7 @@ function resolveDirectServiceStatus(
       return {
         mode: 'live',
         transport,
-        target: svc.wsUrl,
+        target: resolveBrowserRelativeWsUrl(svc.wsUrl),
         source: serviceKey,
       };
     }
@@ -150,11 +163,11 @@ function resolveDirectServiceStatus(
 }
 
 export function toSharedApiBase(baseUrl: string): string {
-  return baseUrl.replace(/\/(?:tyr|forge|volundr)\/?$/, '');
+  return baseUrl.replace(/\/(?:ting|forge)\/?$/, '');
 }
 
 export function toHostBase(baseUrl: string): string {
-  return baseUrl.replace(/\/api\/v1\/(?:forge|volundr)\/?$/, '');
+  return baseUrl.replace(/\/api\/v1\/forge\/?$/, '');
 }
 
 export function toHostPtyWsUrl(baseUrl: string): string {
@@ -165,8 +178,8 @@ export function toHostPtyWsUrl(baseUrl: string): string {
 }
 
 export function resolveSharedApiBase(config: Pick<NiuuConfig, 'services'>): string | null {
-  const tyrSvc = config.services['tyr'];
-  if (hasHttpBackend(tyrSvc)) return toSharedApiBase(tyrSvc.baseUrl);
+  const tingSvc = config.services['ting'];
+  if (hasHttpBackend(tingSvc)) return toSharedApiBase(tingSvc.baseUrl);
 
   const forgeSvc = config.services['forge'];
   if (hasHttpBackend(forgeSvc)) return toSharedApiBase(forgeSvc.baseUrl);
@@ -175,6 +188,14 @@ export function resolveSharedApiBase(config: Pick<NiuuConfig, 'services'>): stri
   if (hasHttpBackend(volundrSvc)) return toSharedApiBase(volundrSvc.baseUrl);
 
   return null;
+}
+
+export function resolveNiuuRegistryBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveDirectServiceBase(config, 'niuu');
+  if (explicitBase) return explicitBase.replace(/\/$/, '');
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/niuu` : null;
 }
 
 export function resolveCanonicalServiceBase(
@@ -226,6 +247,30 @@ function resolveVolundrServiceBase(config: Pick<NiuuConfig, 'services'>): string
   return resolveDirectServiceBase(config, 'volundr', 'forge');
 }
 
+function resolveBifrostServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveDirectServiceBase(config, 'bifrost');
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/bifrost` : null;
+}
+
+function resolveCredentialsServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveDirectServiceBase(config, 'credentials');
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/credentials` : null;
+}
+
+function resolveIntegrationsServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveDirectServiceBase(config, 'integrations');
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/integrations` : null;
+}
+
 function resolveForgeStreamWsUrl(config: Pick<NiuuConfig, 'services'>): string | null {
   const explicitWsUrl = resolveDirectServiceWsUrl(config, 'forge.pty', 'volundr.pty');
   if (explicitWsUrl) return explicitWsUrl;
@@ -246,30 +291,33 @@ function resolveFilesystemBase(config: Pick<NiuuConfig, 'services'>): string | n
   return forgeBase ? toHostBase(forgeBase) : null;
 }
 
-function resolveTyrServiceBase(
+function resolveTingServiceBase(
   config: Pick<NiuuConfig, 'services'>,
   serviceKey:
-    | 'tyr'
-    | 'tyr.dispatcher'
-    | 'tyr.sessions'
-    | 'tyr.dispatch'
-    | 'tyr.settings'
-    | 'tyr.workflows',
+    | 'ting'
+    | 'ting.dispatcher'
+    | 'ting.sessions'
+    | 'ting.dispatch'
+    | 'ting.settings'
+    | 'ting.workflows'
+    | 'ting.research',
 ): string | null {
   const explicitBase = resolveDirectServiceBase(config, serviceKey);
-  if (!explicitBase) return resolveDirectServiceBase(config, 'tyr');
+  if (!explicitBase) return resolveDirectServiceBase(config, 'ting');
 
   switch (serviceKey) {
-    case 'tyr.dispatcher':
+    case 'ting.dispatcher':
       return explicitBase.replace(/\/dispatcher\/?$/, '');
-    case 'tyr.sessions':
+    case 'ting.sessions':
       return explicitBase.replace(/\/sessions\/?$/, '');
-    case 'tyr.dispatch':
+    case 'ting.dispatch':
       return explicitBase.replace(/\/dispatch\/?$/, '');
-    case 'tyr.settings':
+    case 'ting.settings':
       return explicitBase.replace(/\/settings\/?$/, '');
-    case 'tyr.workflows':
+    case 'ting.workflows':
       return explicitBase.replace(/\/workflows\/?$/, '');
+    case 'ting.research':
+      return explicitBase;
     default:
       return explicitBase;
   }
@@ -297,13 +345,29 @@ function resolveObservatoryServiceBase(
 
 export function resolveSettingsServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  providerId: 'identity' | 'tyr' | 'volundr' | 'mimir' | 'ravn' | 'observatory',
+  providerId:
+    | 'identity'
+    | 'credentials'
+    | 'integrations'
+    | 'ting'
+    | 'volundr'
+    | 'mimir'
+    | 'ravn'
+    | 'observatory'
+    | 'bifrost',
 ): string | null {
   switch (providerId) {
-    case 'identity':
-      return resolveCanonicalServiceBase(config, 'identity');
-    case 'tyr':
-      return resolveTyrServiceBase(config, 'tyr.settings');
+    case 'identity': {
+      const base = resolveCanonicalServiceBase(config, 'identity');
+      if (!base) return null;
+      return /\/identity\/?$/.test(base) ? base : `${base.replace(/\/$/, '')}/identity`;
+    }
+    case 'credentials':
+      return resolveCredentialsServiceBase(config);
+    case 'integrations':
+      return resolveIntegrationsServiceBase(config);
+    case 'ting':
+      return resolveTingServiceBase(config, 'ting.settings');
     case 'volundr':
       return resolveVolundrServiceBase(config);
     case 'mimir':
@@ -312,6 +376,8 @@ export function resolveSettingsServiceBase(
       return resolveDirectServiceBase(config, 'ravn');
     case 'observatory':
       return resolveDirectServiceBase(config, 'observatory');
+    case 'bifrost':
+      return resolveBifrostServiceBase(config);
     default:
       return null;
   }
@@ -319,7 +385,13 @@ export function resolveSettingsServiceBase(
 
 function resolveRavnServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'ravn.personas' | 'ravn.ravens' | 'ravn.sessions' | 'ravn.triggers' | 'ravn.budget',
+  serviceKey:
+    | 'ravn.personas'
+    | 'ravn.ravens'
+    | 'ravn.sessions'
+    | 'ravn.triggers'
+    | 'ravn.budget'
+    | 'ravn.wardens',
 ): string | null {
   const explicitBase =
     serviceKey === 'ravn.personas'
@@ -342,6 +414,8 @@ function resolveRavnServiceBase(
       return explicitBase.replace(/\/triggers\/?$/, '');
     case 'ravn.budget':
       return explicitBase.replace(/\/budget\/?$/, '');
+    case 'ravn.wardens':
+      return explicitBase.replace(/\/wardens\/?$/, '');
     default:
       return explicitBase;
   }
@@ -349,7 +423,13 @@ function resolveRavnServiceBase(
 
 function resolveRavnServiceStatus(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'ravn.personas' | 'ravn.ravens' | 'ravn.sessions' | 'ravn.triggers' | 'ravn.budget',
+  serviceKey:
+    | 'ravn.personas'
+    | 'ravn.ravens'
+    | 'ravn.sessions'
+    | 'ravn.triggers'
+    | 'ravn.budget'
+    | 'ravn.wardens',
 ): ServiceBackendStatus {
   const explicit =
     serviceKey === 'ravn.personas'
@@ -364,6 +444,8 @@ function resolveRavnServiceStatus(
       return { ...explicit, target: explicit.target.replace(/\/sessions\/?$/, '') };
     if (serviceKey === 'ravn.triggers')
       return { ...explicit, target: explicit.target.replace(/\/triggers\/?$/, '') };
+    if (serviceKey === 'ravn.wardens')
+      return { ...explicit, target: explicit.target.replace(/\/wardens\/?$/, '') };
     return { ...explicit, target: explicit.target.replace(/\/budget\/?$/, '') };
   }
 
@@ -460,6 +542,7 @@ export function buildServiceBackendStatus(
     'ravn.sessions': resolveRavnServiceStatus(config, 'ravn.sessions'),
     'ravn.triggers': resolveRavnServiceStatus(config, 'ravn.triggers'),
     'ravn.budget': resolveRavnServiceStatus(config, 'ravn.budget'),
+    'ravn.wardens': resolveRavnServiceStatus(config, 'ravn.wardens'),
     'niuu.repos': resolveRepoCatalogStatus(config),
     forge: resolveDirectServiceStatus(config, 'http', 'forge', 'volundr'),
     'forge.pty':
@@ -474,14 +557,15 @@ export function buildServiceBackendStatus(
             }
           : forgePtyStatus,
     'forge.metrics': resolveDirectServiceStatus(config, 'http', 'forge.metrics', 'volundr.metrics'),
-    tyr: resolveDirectServiceStatus(config, 'http', 'tyr'),
-    'tyr.dispatcher': resolveDirectServiceStatus(config, 'http', 'tyr.dispatcher', 'tyr'),
-    'tyr.sessions': resolveDirectServiceStatus(config, 'http', 'tyr.sessions', 'tyr'),
-    'tyr.dispatch': resolveDirectServiceStatus(config, 'http', 'tyr.dispatch', 'tyr'),
-    'tyr.settings': resolveDirectServiceStatus(config, 'http', 'tyr.settings', 'tyr'),
-    'tyr.tracker': resolveCanonicalServiceStatus(config, 'tracker'),
-    'tyr.audit': resolveCanonicalServiceStatus(config, 'audit'),
-    'tyr.workflows': resolveDirectServiceStatus(config, 'http', 'tyr.workflows', 'tyr'),
+    ting: resolveDirectServiceStatus(config, 'http', 'ting'),
+    'ting.dispatcher': resolveDirectServiceStatus(config, 'http', 'ting.dispatcher', 'ting'),
+    'ting.sessions': resolveDirectServiceStatus(config, 'http', 'ting.sessions', 'ting'),
+    'ting.dispatch': resolveDirectServiceStatus(config, 'http', 'ting.dispatch', 'ting'),
+    'ting.settings': resolveDirectServiceStatus(config, 'http', 'ting.settings', 'ting'),
+    'ting.tracker': resolveCanonicalServiceStatus(config, 'tracker'),
+    'ting.audit': resolveCanonicalServiceStatus(config, 'audit'),
+    'ting.workflows': resolveDirectServiceStatus(config, 'http', 'ting.workflows', 'ting'),
+    'ting.research': resolveDirectServiceStatus(config, 'http', 'ting.research', 'ting'),
     filesystem: (() => {
       const explicit = resolveDirectServiceStatus(config, 'http', 'filesystem');
       if (explicit.mode === 'live') return explicit;
@@ -532,8 +616,9 @@ function toSessionState(session: VolundrSession): Session['state'] {
     case 'stopping':
       return 'terminating';
     case 'stopped':
-    case 'archived':
       return 'terminated';
+    case 'archived':
+      return 'archived';
     case 'failed':
     case 'error':
       return 'failed';
@@ -552,7 +637,14 @@ function toSessionTemplateId(session: VolundrSession): string {
 }
 
 function toSessionClusterId(session: VolundrSession): string {
-  return session.podName ?? session.hostname ?? session.tenantId ?? 'shared';
+  return (
+    session.instanceId ??
+    session.instanceName ??
+    session.podName ??
+    session.hostname ??
+    session.tenantId ??
+    'shared'
+  );
 }
 
 function toSessionRavnId(session: VolundrSession): string {
@@ -571,18 +663,27 @@ function toDomainSession(session: VolundrSession): Session {
   const lastActivityAt = toIsoFromEpochMs(session.lastActive);
   const state = toSessionState(session);
   const readyAt =
-    state === 'running' || state === 'idle' || state === 'terminating' || state === 'terminated'
+    state === 'running' ||
+    state === 'idle' ||
+    state === 'terminating' ||
+    state === 'terminated' ||
+    state === 'archived'
       ? startedAt
       : undefined;
   const terminatedAt =
-    state === 'terminated' || state === 'failed' ? session.archivedAt?.toISOString() : undefined;
+    state === 'terminated' || state === 'archived' || state === 'failed'
+      ? session.archivedAt?.toISOString()
+      : undefined;
 
   return {
     id: session.id,
     ravnId: toSessionRavnId(session),
+    name: session.name,
+    title: session.trackerIssue?.title ?? session.name,
     personaName: session.name,
     templateId: toSessionTemplateId(session),
     clusterId: toSessionClusterId(session),
+    clusterName: session.instanceName ?? session.instanceId ?? undefined,
     state,
     startedAt,
     readyAt,
@@ -597,6 +698,134 @@ function toDomainSession(session: VolundrSession): Session {
     tokensIn: session.tokensUsed,
     tokensOut: 0,
     preview: toSessionPreview(session),
+    trackerIssue: session.trackerIssue,
+  };
+}
+
+function mergeVolundrSessions(
+  primarySessions: VolundrSession[],
+  aggregateSessions: VolundrSession[],
+): VolundrSession[] {
+  const byId = new Map<string, VolundrSession>();
+  for (const session of [...primarySessions, ...aggregateSessions]) {
+    byId.set(session.id, session);
+  }
+  return Array.from(byId.values());
+}
+
+async function safeVolundrSessionList(
+  loader: () => Promise<VolundrSession[]>,
+): Promise<VolundrSession[]> {
+  try {
+    return await loader();
+  } catch {
+    return [];
+  }
+}
+
+async function safeVolundrSessionDetail(
+  loader: () => Promise<VolundrSession | null>,
+): Promise<VolundrSession | null> {
+  try {
+    return await loader();
+  } catch {
+    return null;
+  }
+}
+
+async function serviceOwnsSession(service: IVolundrService, sessionId: string): Promise<boolean> {
+  const [active, archived] = await Promise.all([
+    safeVolundrSessionList(() => service.getSessions()),
+    safeVolundrSessionList(() => service.listArchivedSessions()),
+  ]);
+  return [...active, ...archived].some((session) => session.id === sessionId);
+}
+
+function buildMultiVolundrService(
+  primary: IVolundrService,
+  aggregate: IVolundrService,
+): IVolundrService {
+  const subscribeMerged = (callback: (sessions: VolundrSession[]) => void) => {
+    let latestPrimary: VolundrSession[] = [];
+    let latestAggregate: VolundrSession[] = [];
+    const publish = () => {
+      callback(mergeVolundrSessions(latestPrimary, latestAggregate));
+    };
+    const unsubscribePrimary = primary.subscribe((sessions) => {
+      latestPrimary = sessions;
+      publish();
+    });
+    const unsubscribeAggregate = aggregate.subscribe((sessions) => {
+      latestAggregate = sessions;
+      publish();
+    });
+    return () => {
+      unsubscribePrimary();
+      unsubscribeAggregate();
+    };
+  };
+
+  const resolveSessionMutationTarget = async (sessionId: string): Promise<IVolundrService> => {
+    if (await serviceOwnsSession(aggregate, sessionId)) return aggregate;
+    if (await serviceOwnsSession(primary, sessionId)) return primary;
+    return aggregate;
+  };
+
+  const resolveSessionReadTarget = async (sessionId: string): Promise<IVolundrService> => {
+    if (await serviceOwnsSession(aggregate, sessionId)) return aggregate;
+    if (await serviceOwnsSession(primary, sessionId)) return primary;
+    return aggregate;
+  };
+
+  return {
+    ...primary,
+    getTargets: () => aggregate.getTargets(),
+    getSessions: async () =>
+      mergeVolundrSessions(
+        await safeVolundrSessionList(() => primary.getSessions()),
+        await safeVolundrSessionList(() => aggregate.getSessions()),
+      ),
+    getSession: async (id) =>
+      safeVolundrSessionDetail(() =>
+        resolveSessionReadTarget(id).then((svc) => svc.getSession(id)),
+      ),
+    getActiveSessions: async () =>
+      mergeVolundrSessions(
+        await safeVolundrSessionList(() => primary.getActiveSessions()),
+        await safeVolundrSessionList(() => aggregate.getActiveSessions()),
+      ),
+    getStats: () => aggregate.getStats(),
+    startSession: (config) => aggregate.startSession(config),
+    subscribe: subscribeMerged,
+    subscribeStats: (callback) => aggregate.subscribeStats(callback),
+    stopSession: async (sessionId) =>
+      (await resolveSessionMutationTarget(sessionId)).stopSession(sessionId),
+    deleteSession: async (sessionId, cleanup) =>
+      (await resolveSessionMutationTarget(sessionId)).deleteSession(sessionId, cleanup),
+    archiveSession: async (sessionId) =>
+      (await resolveSessionMutationTarget(sessionId)).archiveSession(sessionId),
+    restoreSession: async (sessionId) =>
+      (await resolveSessionMutationTarget(sessionId)).restoreSession(sessionId),
+    listArchivedSessions: async () =>
+      mergeVolundrSessions(
+        await safeVolundrSessionList(() => primary.listArchivedSessions()),
+        await safeVolundrSessionList(() => aggregate.listArchivedSessions()),
+      ),
+    getMessages: async (sessionId) =>
+      (await resolveSessionReadTarget(sessionId)).getMessages(sessionId),
+    sendMessage: async (sessionId, content) =>
+      (await resolveSessionReadTarget(sessionId)).sendMessage(sessionId, content),
+    subscribeMessages: (sessionId, callback) => aggregate.subscribeMessages(sessionId, callback),
+    getLogs: async (sessionId, limit) =>
+      (await resolveSessionReadTarget(sessionId)).getLogs(sessionId, limit),
+    subscribeLogs: (sessionId, callback) => aggregate.subscribeLogs(sessionId, callback),
+    getAggregatedLogs: async (sessionId, options) =>
+      (await resolveSessionReadTarget(sessionId)).getAggregatedLogs(sessionId, options),
+    subscribeAggregatedLogs: (sessionId, options, callback) =>
+      aggregate.subscribeAggregatedLogs(sessionId, options, callback),
+    getChronicle: async (sessionId) =>
+      (await resolveSessionReadTarget(sessionId)).getChronicle(sessionId),
+    subscribeChronicle: (sessionId, callback) => aggregate.subscribeChronicle(sessionId, callback),
   };
 }
 
@@ -1034,6 +1263,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const ravnSessionBase = resolveRavnServiceBase(config, 'ravn.sessions');
   const ravnTriggerBase = resolveRavnServiceBase(config, 'ravn.triggers');
   const ravnBudgetBase = resolveRavnServiceBase(config, 'ravn.budget');
+  const ravnWardenBase = resolveRavnServiceBase(config, 'ravn.wardens');
   const ravnPersonas = ravnPersonaBase
     ? buildRavnPersonaAdapter(createApiClient(ravnPersonaBase))
     : createMockPersonaStore();
@@ -1049,18 +1279,38 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const ravnBudget = ravnBudgetBase
     ? buildRavnBudgetAdapter(createApiClient(ravnBudgetBase))
     : createMockBudgetStream();
+  const ravnWardens = ravnWardenBase
+    ? buildRavnWardenAdapter(createApiClient(ravnWardenBase))
+    : createMockWardenStore();
 
   // ── Mímir ──
   const mimir = hasHttpBackend(mimirSvc)
     ? buildMimirHttpAdapter(createApiClient(mimirSvc.baseUrl))
     : createMimirMockAdapter();
+  const bifrostBase = resolveBifrostServiceBase(config);
+  const bifrost: IBifrostService = bifrostBase
+    ? buildBifrostHttpAdapter(createApiClient(bifrostBase))
+    : createMockBifrostService();
 
   // ── Völundr request/response ──
   const forgeBase = resolveForgeServiceBase(config);
   const volundrBase = resolveVolundrServiceBase(config);
-  const volundr = volundrBase
-    ? buildVolundrHttpAdapter(createApiClient(volundrBase))
+  const primaryVolundr = volundrBase
+    ? buildVolundrHttpAdapter(createApiClient(volundrBase), undefined, {
+        niuuBasePath: resolveNiuuRegistryBase(config),
+      })
     : createMockVolundrService();
+  const niuuRegistryBase = resolveNiuuRegistryBase(config);
+  const aggregateVolundr =
+    niuuRegistryBase != null
+      ? buildVolundrHttpAdapter(createApiClient(`${niuuRegistryBase}/volundr`), undefined, {
+          niuuBasePath: niuuRegistryBase,
+        })
+      : null;
+  const volundr =
+    aggregateVolundr != null
+      ? buildMultiVolundrService(primaryVolundr, aggregateVolundr)
+      : primaryVolundr;
   const repoCatalogBase = resolveRepoCatalogBase(config);
   const repoCatalogService = repoCatalogBase
     ? buildRepoCatalogHttpAdapter(createApiClient(repoCatalogBase))
@@ -1102,61 +1352,69 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const featureCatalogService = buildSharedFeatureCatalogService(config);
   const identityService = buildSharedIdentityService(config);
 
-  // ── Tyr ──
-  const tyrBase = resolveTyrServiceBase(config, 'tyr');
-  const tyrClient = tyrBase ? createApiClient(tyrBase) : null;
-  const dispatcherBase = resolveTyrServiceBase(config, 'tyr.dispatcher');
+  // ── Ting ──
+  const tingBase = resolveTingServiceBase(config, 'ting');
+  const tingClient = tingBase ? createApiClient(tingBase) : null;
+  const dispatcherBase = resolveTingServiceBase(config, 'ting.dispatcher');
   const dispatcherClient = dispatcherBase ? createApiClient(dispatcherBase) : null;
-  const tyrSessionsBase = resolveTyrServiceBase(config, 'tyr.sessions');
-  const tyrSessionsClient = tyrSessionsBase ? createApiClient(tyrSessionsBase) : null;
-  const dispatchBase = resolveTyrServiceBase(config, 'tyr.dispatch');
+  const tingSessionsBase = resolveTingServiceBase(config, 'ting.sessions');
+  const tingSessionsClient = tingSessionsBase ? createApiClient(tingSessionsBase) : null;
+  const dispatchBase = resolveTingServiceBase(config, 'ting.dispatch');
   const dispatchClient = dispatchBase ? createApiClient(dispatchBase) : null;
-  const tyrSettingsBase = resolveTyrServiceBase(config, 'tyr.settings');
-  const tyrSettingsClient = tyrSettingsBase ? createApiClient(tyrSettingsBase) : null;
+  const tingSettingsBase = resolveTingServiceBase(config, 'ting.settings');
+  const tingSettingsClient = tingSettingsBase ? createApiClient(tingSettingsBase) : null;
   const trackerBase = resolveCanonicalServiceBase(config, 'tracker');
   const trackerClient = trackerBase ? createApiClient(trackerBase) : null;
   const auditBase = resolveCanonicalServiceBase(config, 'audit');
   const auditClient = auditBase ? createApiClient(auditBase) : null;
-  const workflowBase = resolveTyrServiceBase(config, 'tyr.workflows');
+  const workflowBase = resolveTingServiceBase(config, 'ting.workflows');
   const workflowClient = workflowBase ? createApiClient(workflowBase) : null;
-  const tyrService = tyrClient ? buildTyrHttpAdapter(tyrClient) : createMockTyrService();
+  const researchBase = resolveTingServiceBase(config, 'ting.research');
+  const researchClient = researchBase ? createApiClient(researchBase) : null;
+  const tingService = tingClient ? buildTingHttpAdapter(tingClient) : createMockTingService();
   const dispatcherService = dispatcherClient
     ? buildDispatcherHttpAdapter(dispatcherClient)
     : createMockDispatcherService();
-  const tyrSessionService = tyrSessionsClient
-    ? buildTyrSessionHttpAdapter(tyrSessionsClient)
-    : createMockTyrSessionService();
+  const tingSessionService = tingSessionsClient
+    ? buildTingSessionHttpAdapter(tingSessionsClient)
+    : createMockTingSessionService();
   const trackerService = trackerClient
     ? buildTrackerHttpAdapter(trackerClient)
     : createMockTrackerService();
   const workflowService = workflowClient
     ? buildWorkflowHttpAdapter(workflowClient)
     : createMockWorkflowService();
+  const researchService = researchClient
+    ? buildResearchHttpAdapter(researchClient)
+    : createMockResearchService();
   const dispatchBus = dispatchClient
     ? buildDispatchBusHttpAdapter(dispatchClient)
     : createMockDispatchBus();
-  const tyrSettingsService = tyrSettingsClient
-    ? buildTyrSettingsHttpAdapter(tyrSettingsClient)
-    : createMockTyrSettingsService();
-  const tyrAuditLogService = auditClient
-    ? buildTyrAuditLogHttpAdapter(auditClient)
+  const tingSettingsService = tingSettingsClient
+    ? buildTingSettingsHttpAdapter(tingSettingsClient)
+    : createMockTingSettingsService();
+  const tingAuditLogService = auditClient
+    ? buildTingAuditLogHttpAdapter(auditClient)
     : createMockAuditLogService();
 
   return {
-    tyr: tyrService,
-    'tyr.dispatcher': dispatcherService,
-    'tyr.sessions': tyrSessionService,
-    'tyr.tracker': trackerService,
-    'tyr.workflows': workflowService,
-    'tyr.dispatch': dispatchBus,
-    'tyr.settings': tyrSettingsService,
-    'tyr.audit': tyrAuditLogService,
+    ting: tingService,
+    'ting.dispatcher': dispatcherService,
+    'ting.sessions': tingSessionService,
+    'ting.tracker': trackerService,
+    'ting.workflows': workflowService,
+    'ting.research': researchService,
+    'ting.dispatch': dispatchBus,
+    'ting.settings': tingSettingsService,
+    'ting.audit': tingAuditLogService,
     'ravn.personas': ravnPersonas,
     'ravn.ravens': ravnRavens,
     'ravn.sessions': ravnSessions,
     'ravn.triggers': ravnTriggers,
     'ravn.budget': ravnBudget,
+    'ravn.wardens': ravnWardens,
     mimir,
+    bifrost,
     volundr,
     'niuu.repos': repoCatalogService,
     ptyStream,

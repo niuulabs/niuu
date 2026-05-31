@@ -107,4 +107,43 @@ Checksum annotations — force pod restarts when config changes
 */}}
 {{- define "bifrost.checksumAnnotations" -}}
 checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.migrations.enabled }}
+checksum/migrations: {{ include (print $.Template.BasePath "/migrations-configmap.yaml") . | sha256sum }}
+{{- end }}
+{{- if .Values.envoy.enabled }}
+checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
+{{- end }}
+{{- end }}
+
+{{/*
+Return the database secret name.
+*/}}
+{{- define "bifrost.databaseSecretName" -}}
+{{- if .Values.database.existingSecret }}
+{{- .Values.database.existingSecret }}
+{{- else }}
+{{- printf "%s-bifrost-db" .Release.Name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Return the database host.
+*/}}
+{{- define "bifrost.databaseHost" -}}
+{{- if .Values.database.external.enabled }}
+{{- .Values.database.external.host }}
+{{- else }}
+{{- printf "%s-postgresql" .Release.Name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Return the database port.
+*/}}
+{{- define "bifrost.databasePort" -}}
+{{- if .Values.database.external.enabled }}
+{{- .Values.database.external.port | default 5432 }}
+{{- else }}
+{{- 5432 }}
+{{- end }}
 {{- end }}

@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
+import * as chatHooks from './hooks/useSkuldChat';
 import {
   createMockVolundrService,
   createMockSessionStore,
@@ -17,6 +19,12 @@ import type { VolundrSession } from '../models/volundr.model';
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
+
+const navigate = vi.fn();
+
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => navigate,
+}));
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: vi.fn().mockImplementation(() => ({
@@ -56,11 +64,12 @@ const RUNNING_SESSION: VolundrSession = {
   name: 'test-session',
   source: { type: 'git', repo: 'niuulabs/volundr', branch: 'main' },
   status: 'running',
-  model: 'claude-sonnet',
+  model: 'claude-sonnet-4-6',
   lastActive: Date.now() - 60_000,
   messageCount: 10,
   tokensUsed: 5000,
   hostname: 'skuld-test.local',
+  instanceName: 'Guild Alpha',
   chatEndpoint: 'wss://skuld-test.local/session',
 };
 
@@ -76,11 +85,288 @@ const STARTING_SESSION: VolundrSession = {
   status: 'starting',
 };
 
-const ERROR_SESSION: VolundrSession = {
-  ...RUNNING_SESSION,
-  status: 'error',
-  error: 'OOMKilled',
+const TELEMETRY_TRACE = {
+  traceId: 'trace-1',
+  sessionId: RUNNING_SESSION.id,
+  startedAt: '2026-05-23T09:25:01Z',
+  endedAt: '2026-05-23T09:40:07Z',
+  durationMs: 906_000,
+  spans: [
+    {
+      id: 'root',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: null,
+      kind: 'session.lifecycle',
+      name: RUNNING_SESSION.name,
+      status: 'completed',
+      startedAt: '2026-05-23T09:25:01Z',
+      endedAt: '2026-05-23T09:40:07Z',
+      durationMs: 906_000,
+      actorType: 'system',
+      actorId: RUNNING_SESSION.id,
+      actorLabel: RUNNING_SESSION.name,
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'workflow',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'root',
+      kind: 'session.workflow',
+      name: 'execution',
+      status: 'completed',
+      startedAt: '2026-05-23T09:29:12Z',
+      endedAt: '2026-05-23T09:37:52Z',
+      durationMs: 520_000,
+      actorType: 'workflow',
+      actorId: 'coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'tool',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'workflow',
+      kind: 'tool.call',
+      name: 'Write',
+      status: 'completed',
+      startedAt: '2026-05-23T09:31:00Z',
+      endedAt: '2026-05-23T09:31:21Z',
+      durationMs: 21_000,
+      actorType: 'assistant',
+      actorId: 'coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-1',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'workflow',
+      kind: 'turn.assistant',
+      name: 'draft response',
+      status: 'completed',
+      startedAt: '2026-05-23T09:29:12Z',
+      endedAt: '2026-05-23T09:29:51Z',
+      durationMs: 39_000,
+      actorType: 'assistant',
+      actorId: 'coordinator',
+      actorLabel: 'planner',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-1-tool',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-1',
+      kind: 'tool.call',
+      name: 'Search',
+      status: 'completed',
+      startedAt: '2026-05-23T09:29:18Z',
+      endedAt: '2026-05-23T09:29:26Z',
+      durationMs: 8_000,
+      actorType: 'assistant',
+      actorId: 'coordinator',
+      actorLabel: 'planner',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-1-idle',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-1',
+      kind: 'wait.idle',
+      name: 'Operator away',
+      status: 'completed',
+      startedAt: '2026-05-23T09:29:26Z',
+      endedAt: '2026-05-23T09:29:38Z',
+      durationMs: 12_000,
+      actorType: 'assistant',
+      actorId: 'coordinator',
+      actorLabel: 'planner',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-2',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'workflow',
+      kind: 'turn.peer',
+      name: 'execute patch',
+      status: 'completed',
+      startedAt: '2026-05-23T09:31:30Z',
+      endedAt: '2026-05-23T09:33:50Z',
+      durationMs: 140_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-2-tool',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-2',
+      kind: 'terminal.command',
+      name: 'npm test',
+      status: 'completed',
+      startedAt: '2026-05-23T09:32:10Z',
+      endedAt: '2026-05-23T09:32:48Z',
+      durationMs: 38_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'turn-2-wait',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-2',
+      kind: 'wait.permission',
+      name: 'Await approval',
+      status: 'completed',
+      startedAt: '2026-05-23T09:33:00Z',
+      endedAt: '2026-05-23T09:33:12Z',
+      durationMs: 12_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+  ],
+  lanes: [
+    { key: 'system', label: 'system', kind: 'system' },
+    { key: 'assistant', label: 'coordinator', kind: 'assistant' },
+  ],
 };
+
+const TELEMETRY_SUMMARY = {
+  totalDurationMs: 906_000,
+  provisioningDurationMs: 0,
+  setupDurationMs: 0,
+  workflowDurationMs: 660_000,
+  publishDurationMs: 21_000,
+  cleanupDurationMs: 0,
+  activeExecutionDurationMs: 556_000,
+  waitingDurationMs: 349_000,
+  turnCount: 2,
+  toolCallCount: 1,
+  longestSpan: TELEMETRY_TRACE.spans[0],
+};
+
+const BLOCKED_TELEMETRY_TRACE = {
+  ...TELEMETRY_TRACE,
+  spans: [
+    TELEMETRY_TRACE.spans[0],
+    TELEMETRY_TRACE.spans[1],
+    {
+      id: 'peer-blocked',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'root',
+      kind: 'turn.peer',
+      name: 'Handle mesh outcome',
+      status: 'completed',
+      startedAt: '2026-05-23T09:30:00Z',
+      endedAt: '2026-05-23T09:38:00Z',
+      durationMs: 480_000,
+      actorType: 'peer',
+      actorId: 'flock-coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'peer-wait',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'peer-blocked',
+      kind: 'wait.permission',
+      name: 'Await approval',
+      status: 'completed',
+      startedAt: '2026-05-23T09:35:00Z',
+      endedAt: '2026-05-23T09:35:06Z',
+      durationMs: 6_000,
+      actorType: 'peer',
+      actorId: 'flock-coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+    {
+      id: 'peer-block',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'peer-blocked',
+      kind: 'tool.call',
+      name: 'Write',
+      status: 'cancelled',
+      startedAt: '2026-05-23T09:37:20Z',
+      endedAt: '2026-05-23T09:37:24Z',
+      durationMs: 4_000,
+      actorType: 'peer',
+      actorId: 'flock-coordinator',
+      actorLabel: 'coordinator',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+  ],
+};
+
+const TOOL_OVERVIEW_TRACE = {
+  ...TELEMETRY_TRACE,
+  spans: [
+    ...TELEMETRY_TRACE.spans,
+    {
+      id: 'mcp-blocked',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-2',
+      kind: 'tool.call',
+      name: 'linear.search blocker',
+      status: 'cancelled',
+      startedAt: '2026-05-23T09:33:20Z',
+      endedAt: '2026-05-23T09:33:28Z',
+      durationMs: 8_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: { reason: 'blocked by permissions' },
+    },
+    {
+      id: 'write-followup',
+      sessionId: RUNNING_SESSION.id,
+      traceId: 'trace-1',
+      parentSpanId: 'turn-2',
+      kind: 'tool.call',
+      name: 'Draft handoff note',
+      status: 'completed',
+      startedAt: '2026-05-23T09:33:28Z',
+      endedAt: '2026-05-23T09:33:38Z',
+      durationMs: 10_000,
+      actorType: 'peer',
+      actorId: 'worker',
+      actorLabel: 'execution',
+      sourceService: 'skuld',
+      attributes: {},
+    },
+  ],
+};
+
+const originalFetch = global.fetch;
 
 // ---------------------------------------------------------------------------
 // Wrapper
@@ -143,6 +429,16 @@ const SESSION_FEATURES = [
     order: 50,
   },
   {
+    key: 'telemetry',
+    label: 'Telemetry',
+    icon: '',
+    scope: 'session' as const,
+    enabled: true,
+    defaultEnabled: true,
+    adminOnly: false,
+    order: 55,
+  },
+  {
     key: 'logs',
     label: 'Logs',
     icon: '',
@@ -158,19 +454,26 @@ function buildVolundrService(session: VolundrSession | null = RUNNING_SESSION): 
   const base = createMockVolundrService();
   return {
     ...base,
+    getSessions: vi.fn().mockResolvedValue(
+      session
+        ? [
+            session,
+            {
+              ...session,
+              id: 'recent-trace-peer',
+              name: `${session.name}-recent`,
+              status: 'stopped',
+              lastActive: Date.now() - 120_000,
+            },
+          ]
+        : [],
+    ),
     getSession: vi.fn().mockResolvedValue(session),
-    getModels: vi.fn().mockResolvedValue({
-      'claude-sonnet': {
-        name: 'Claude Sonnet',
-        provider: 'cloud',
-        tier: 'balanced',
-        color: '#f59e0b',
-        cost: '$3/MTok',
-      },
-    }),
     getFeatureModules: vi.fn().mockResolvedValue(SESSION_FEATURES),
     getUserFeaturePreferences: vi.fn().mockResolvedValue([]),
     getChronicle: vi.fn().mockResolvedValue(null),
+    getSessionTrace: vi.fn().mockResolvedValue(TELEMETRY_TRACE),
+    getSessionTraceSummary: vi.fn().mockResolvedValue(TELEMETRY_SUMMARY),
     getLogs: vi.fn().mockResolvedValue([]),
     getAggregatedLogs: vi.fn().mockResolvedValue({
       lines: [],
@@ -188,10 +491,28 @@ function buildSessionStore(session: VolundrSession | null = RUNNING_SESSION): IS
       session
         ? {
             id: session.id,
+            ravnId: 's-4912',
             name: session.name,
-            state: session.status === 'running' ? 'active' : 'stopped',
+            personaName: session.name,
+            templateId: 'git-default',
+            state: session.status === 'running' ? 'running' : 'terminated',
             clusterId: 'local',
-            events: [],
+            startedAt: new Date(Date.now() - 9_240_000).toISOString(),
+            resources: {
+              cpuRequest: 2,
+              cpuLimit: 4,
+              cpuUsed: 1.5,
+              memRequestMi: 4096,
+              memLimitMi: 8192,
+              memUsedMi: 2048,
+              gpuCount: 0,
+            },
+            env: {},
+            files: { added: 1, modified: 2, deleted: 1 },
+            events: [
+              { ts: new Date().toISOString(), kind: 'message', body: 'started' },
+              { ts: new Date().toISOString(), kind: 'file', body: 'updated files' },
+            ],
           }
         : null,
     ),
@@ -200,15 +521,21 @@ function buildSessionStore(session: VolundrSession | null = RUNNING_SESSION): IS
 
 function wrap(
   sessionId: string,
-  opts: { readOnly?: boolean; session?: VolundrSession | null } = {},
+  opts: {
+    readOnly?: boolean;
+    session?: VolundrSession | null;
+    volundr?: Partial<IVolundrService>;
+  } = {},
 ) {
   const session = opts.session === undefined ? RUNNING_SESSION : opts.session;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const volundr = { ...buildVolundrService(session), ...opts.volundr } as IVolundrService;
   return render(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
-          volundr: buildVolundrService(session),
+          bifrost: createMockBifrostService(),
+          volundr,
           ptyStream: buildPtyStream(),
           filesystem: buildFilesystem(),
           sessionStore: buildSessionStore(session),
@@ -228,6 +555,186 @@ function wrap(
 describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    navigate.mockReset();
+    global.fetch = vi.fn(async (input: string | URL | Request) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+      if (url.includes('/api/diff/files')) {
+        return new Response(JSON.stringify({ files: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url.includes('/api/diff?')) {
+        return new Response(JSON.stringify({ filePath: 'README.md', hunks: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    global.fetch = originalFetch;
+  });
+
+  it('surfaces native workflow gates and resolves them through Volundr', async () => {
+    const resolveWorkflowGate = vi.fn().mockResolvedValue({
+      id: 'gate-1',
+      node_id: 'spec-prd-gate',
+      activation_id: 'activation-1',
+      label: 'PRD approval gate',
+      condition: 'Review the PRD and decide whether it is strong enough to unlock SRD drafting.',
+      status: 'approved',
+      pending_behavior: 'help_needed',
+      approvers: ['human'],
+      auto_forward_after: '30m',
+      requested_at: '2026-05-20T12:00:00Z',
+      updated_at: '2026-05-20T12:02:00Z',
+      triggered_by_event_type: 'spec.prd.ready_for_gate',
+      approval_event_type: 'spec.prd.approved',
+      changes_requested_event_type: 'spec.prd.changes_requested',
+      attempt: 1,
+      decision: 'APPROVE',
+      notes: 'The scope is right; proceed.',
+      source: 'human',
+      summary: 'PRD approved by human reviewer.',
+    });
+    vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+      messages: [],
+      streamingContent: undefined,
+      streamingParts: undefined,
+      streamingModel: undefined,
+      connected: true,
+      historyLoaded: true,
+      participants: new Map(),
+      meshEvents: [],
+      agentEvents: new Map(),
+      pendingPermissions: [],
+      capabilities: {},
+      sendMessage: vi.fn(),
+      sendDirectedMessages: vi.fn(),
+      respondToPermission: vi.fn(),
+      sendInterrupt: vi.fn(),
+      sendSetModel: vi.fn(),
+      sendSetThinkingTokens: vi.fn(),
+      sendRewindFiles: vi.fn(),
+      sendSetInternalVisibility: vi.fn(),
+      clearMessages: vi.fn(),
+    });
+
+    wrap('test-session-id-1234', {
+      volundr: {
+        getWorkflowGates: vi.fn().mockResolvedValue([
+          {
+            id: 'gate-1',
+            node_id: 'spec-prd-gate',
+            activation_id: 'activation-1',
+            label: 'PRD approval gate',
+            condition:
+              'Review the PRD and decide whether it is strong enough to unlock SRD drafting.',
+            status: 'pending',
+            pending_behavior: 'help_needed',
+            approvers: ['human'],
+            auto_forward_after: '30m',
+            requested_at: '2026-05-20T12:00:00Z',
+            updated_at: '2026-05-20T12:00:00Z',
+            triggered_by_event_type: 'spec.prd.ready_for_gate',
+            approval_event_type: 'spec.prd.approved',
+            changes_requested_event_type: 'spec.prd.changes_requested',
+            attempt: 1,
+            notes: '',
+            source: 'workflow',
+            summary: 'Please approve or request changes on the PRD.',
+          },
+        ]),
+        resolveWorkflowGate,
+      },
+    });
+
+    await screen.findByTestId('live-session-detail-page');
+    await screen.findByText('Human Gate Requested');
+    expect(screen.getByText(/Please approve or request changes on the PRD/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Reply Notes'), {
+      target: { value: 'The scope is right; proceed.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    await waitFor(() => {
+      expect(resolveWorkflowGate).toHaveBeenCalledWith('test-session-id-1234', 'gate-1', {
+        decision: 'APPROVE',
+        notes: 'The scope is right; proceed.',
+        source: 'human',
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
+    });
+  });
+
+  it('hides the gate card once the latest gate verdict is already resolved', async () => {
+    vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+      messages: [],
+      streamingContent: undefined,
+      streamingParts: undefined,
+      streamingModel: undefined,
+      connected: true,
+      historyLoaded: true,
+      participants: new Map(),
+      meshEvents: [],
+      agentEvents: new Map(),
+      pendingPermissions: [],
+      capabilities: {},
+      sendMessage: vi.fn(),
+      sendDirectedMessages: vi.fn(),
+      respondToPermission: vi.fn(),
+      sendInterrupt: vi.fn(),
+      sendSetModel: vi.fn(),
+      sendSetThinkingTokens: vi.fn(),
+      sendRewindFiles: vi.fn(),
+      sendSetInternalVisibility: vi.fn(),
+      clearMessages: vi.fn(),
+    });
+
+    wrap('test-session-id-1234', {
+      volundr: {
+        getWorkflowGates: vi.fn().mockResolvedValue([
+          {
+            id: 'gate-1',
+            node_id: 'spec-prd-gate',
+            activation_id: 'activation-1',
+            label: 'PRD approval gate',
+            condition: 'Review the PRD',
+            status: 'approved',
+            pending_behavior: 'help_needed',
+            approvers: ['human'],
+            auto_forward_after: '30m',
+            requested_at: '2026-05-20T12:00:00Z',
+            updated_at: '2026-05-20T12:01:00Z',
+            triggered_by_event_type: 'spec.prd.ready_for_gate',
+            approval_event_type: 'spec.prd.approved',
+            changes_requested_event_type: 'spec.prd.changes_requested',
+            attempt: 1,
+            decision: 'APPROVE',
+            notes: '',
+            source: 'human',
+            summary: 'PRD approved by human reviewer.',
+          },
+        ]),
+      },
+    });
+
+    await screen.findByTestId('live-session-detail-page');
+    expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
   });
 
   describe('loading and error states', () => {
@@ -255,10 +762,10 @@ describe('LiveSessionDetailPage', () => {
       expect(chip).toBeInTheDocument();
     });
 
-    it('shows model label', async () => {
+    it('does not show the model label in the compact header', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Claude Sonnet')).toBeInTheDocument();
+      expect(screen.queryByText('Claude Sonnet 4.6')).not.toBeInTheDocument();
     });
 
     it('shows repo and branch for git source', async () => {
@@ -282,36 +789,42 @@ describe('LiveSessionDetailPage', () => {
   });
 
   describe('status rendering', () => {
-    it('renders running session with status dot', async () => {
+    it('renders a disconnected status dot by default', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      // Status dot should have the brand class for running
       const page = screen.getByTestId('live-session-detail-page');
-      const dot = page.querySelector('.niuu-bg-brand');
+      const dot = page.querySelector('.niuu-live-session__status-dot--disconnected');
       expect(dot).toBeInTheDocument();
     });
 
-    it('renders stopped session with faint dot', async () => {
-      wrap('test-session-id-1234', { session: STOPPED_SESSION });
-      await screen.findByTestId('live-session-detail-page');
-      const page = screen.getByTestId('live-session-detail-page');
-      const dot = page.querySelector('.niuu-bg-text-faint');
-      expect(dot).toBeInTheDocument();
-    });
+    it('renders a connected status dot when chat is live', async () => {
+      vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+        messages: [],
+        streamingContent: undefined,
+        streamingParts: undefined,
+        streamingModel: undefined,
+        connected: true,
+        historyLoaded: true,
+        participants: new Map(),
+        meshEvents: [],
+        agentEvents: new Map(),
+        pendingPermissions: [],
+        capabilities: {},
+        sendMessage: vi.fn(),
+        sendDirectedMessages: vi.fn(),
+        respondToPermission: vi.fn(),
+        sendInterrupt: vi.fn(),
+        sendSetModel: vi.fn(),
+        sendSetThinkingTokens: vi.fn(),
+        sendRewindFiles: vi.fn(),
+        sendSetInternalVisibility: vi.fn(),
+        clearMessages: vi.fn(),
+      });
 
-    it('renders starting session with sky dot', async () => {
-      wrap('test-session-id-1234', { session: STARTING_SESSION });
+      wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       const page = screen.getByTestId('live-session-detail-page');
-      const dot = page.querySelector('.niuu-bg-sky-400');
-      expect(dot).toBeInTheDocument();
-    });
-
-    it('renders error session with rose dot', async () => {
-      wrap('test-session-id-1234', { session: ERROR_SESSION });
-      await screen.findByTestId('live-session-detail-page');
-      const page = screen.getByTestId('live-session-detail-page');
-      const dot = page.querySelector('.niuu-bg-rose-400');
+      const dot = page.querySelector('.niuu-live-session__status-dot--connected');
       expect(dot).toBeInTheDocument();
     });
   });
@@ -325,7 +838,131 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByRole('tab', { name: /Diffs/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Files/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Chronicle/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /Telemetry/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Logs/i })).toBeInTheDocument();
+    });
+
+    it('switches to telemetry tab on click', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId('live-telemetry-tab')).toBeInTheDocument();
+      });
+    });
+
+    it('renders wired telemetry summary metrics', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Session Duration')).toBeInTheDocument();
+      });
+      expect(screen.getAllByText('15m 06s').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('9m 16s')).toBeInTheDocument();
+      expect(screen.getByText('5m 49s')).toBeInTheDocument();
+      expect(screen.getAllByText('21s').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('execution').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('median 15m 06s • n=1')).toBeInTheDocument();
+      expect(screen.getByText('Timeline')).toBeInTheDocument();
+      expect(screen.getAllByText('workflow').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByTestId('telemetry-breakdown')).toBeInTheDocument();
+    });
+
+    it('shows a hover card with span details for a trace row', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      const workflowTrace = await screen.findByRole('button', {
+        name: /execution trace details/i,
+      });
+      fireEvent.mouseEnter(workflowTrace);
+
+      const tooltip = await screen.findByTestId('telemetry-tooltip-workflow');
+      expect(tooltip).toHaveTextContent('child spans');
+      expect(tooltip).toHaveTextContent('active 8m 40s');
+      expect(tooltip).toHaveTextContent('wait 0s');
+      expect(tooltip).toHaveTextContent('blocked 0s');
+      expect(tooltip).toHaveTextContent('1');
+    });
+
+    it('clicking a timeline row selects and expands the matching stage breakdown section', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: /execution trace details/i,
+        }),
+      );
+
+      expect(await screen.findByText(/tool · write/i)).toBeInTheDocument();
+    });
+
+    it('renders the turn-by-turn timing shell with all-turns list by default', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      expect(await screen.findByTestId('telemetry-turn-shell')).toBeInTheDocument();
+      expect(screen.getByText('Turn-by-turn timing')).toBeInTheDocument();
+      expect(screen.getByTestId('telemetry-turn-list')).toBeInTheDocument();
+      expect(screen.getByText(/2 turns/i)).toBeInTheDocument();
+    });
+
+    it('shows selected turn details when a turn bar is clicked', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      fireEvent.click(await screen.findByTestId('telemetry-turn-bar-2'));
+
+      const detail = await screen.findByTestId('telemetry-turn-detail');
+      expect(detail).toHaveTextContent('turn #2');
+      expect(detail).toHaveTextContent('tool time');
+      expect(detail).toHaveTextContent('operator idle');
+      expect(detail).toHaveTextContent('npm test');
+    });
+
+    it('surfaces blocked child-state timing for a row with blocked work', async () => {
+      wrap('test-session-id-1234', {
+        volundr: {
+          getSessionTrace: vi.fn().mockResolvedValue(BLOCKED_TELEMETRY_TRACE),
+        },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      const blockedTrace = await screen.findByRole('button', {
+        name: /coordinator trace details/i,
+      });
+      fireEvent.mouseEnter(blockedTrace);
+
+      const tooltip = await screen.findByTestId('telemetry-tooltip-peer-blocked');
+      expect(tooltip).toHaveTextContent('active 7m 50s');
+      expect(tooltip).toHaveTextContent('wait 6s');
+      expect(tooltip).toHaveTextContent('blocked 4s');
+    });
+
+    it('renders tool overview rows with specific MCP detail and blocked note', async () => {
+      wrap('test-session-id-1234', {
+        volundr: {
+          getSessionTrace: vi.fn().mockResolvedValue(TOOL_OVERVIEW_TRACE),
+        },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      const toolOverview = await screen.findByTestId('telemetry-tools-overview');
+      expect(toolOverview).toHaveTextContent('Tool calls');
+      expect(toolOverview).toHaveTextContent('linear.search');
+      expect(toolOverview).toHaveTextContent('blocked 1×');
+
+      fireEvent.click(screen.getByRole('button', { name: /mcp/i }));
+      expect(toolOverview).toHaveTextContent('linear.search');
     });
 
     it('switches to logs tab on click', async () => {
@@ -344,6 +981,278 @@ describe('LiveSessionDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByTestId('diffs-tab')).toBeInTheDocument();
       });
+    });
+
+    it('shows a starting message in the terminal tab while a session boots', async () => {
+      wrap('test-session-id-1234', { session: STARTING_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
+      await waitFor(() => {
+        expect(screen.getByText('Session is starting…')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a stopped message in the terminal tab when no live terminal is available', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
+      await waitFor(() => {
+        expect(screen.getByText('Start the session to access terminal.')).toBeInTheDocument();
+      });
+    });
+
+    it('renders diff file metadata and an empty diff state', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/diff/files')) {
+          return new Response(
+            JSON.stringify({
+              files: [{ path: 'README.md', status: 'mod', ins: 2, del: 1 }],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        if (url.includes('/api/diff?')) {
+          return new Response(JSON.stringify({ filePath: 'README.md', hunks: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      const fileButton = await screen.findByText('README.md');
+      expect(screen.getByText('+2')).toBeInTheDocument();
+      expect(screen.getByText('-1')).toBeInTheDocument();
+
+      fireEvent.click(fileButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('No changes in this file')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a diff error when loading a selected file fails', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/diff/files')) {
+          return new Response(
+            JSON.stringify({
+              files: [{ path: 'README.md', status: 'new', ins: 1, del: 0 }],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        if (url.includes('/api/diff?')) {
+          return new Response(null, { status: 500 });
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      fireEvent.click(await screen.findByText('README.md'));
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Failed to load diff: Failed to fetch diff: 500'),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('renders diff hunks and resets selection when switching diff base', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/diff/files')) {
+          const params = new URL(url).searchParams;
+          const base = params.get('base');
+          const files =
+            base === 'default-branch'
+              ? [{ path: 'src/app.ts', status: 'remove', ins: 0, del: 4 }]
+              : [{ path: 'src/app.ts', status: 'mod', ins: 3, del: 1 }];
+          return new Response(JSON.stringify({ files }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (url.includes('/api/diff?')) {
+          return new Response(
+            JSON.stringify({
+              filePath: 'src/app.ts',
+              hunks: [
+                {
+                  oldStart: 1,
+                  oldCount: 2,
+                  newStart: 1,
+                  newCount: 3,
+                  lines: [
+                    { type: 'context', content: 'const ready = true;', oldLine: 1, newLine: 1 },
+                    { type: 'remove', content: 'console.log("old");', oldLine: 2 },
+                    { type: 'add', content: 'console.log("new");', newLine: 2 },
+                    { type: 'add', content: '', newLine: 3 },
+                  ],
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      fireEvent.click(await screen.findByText('src/app.ts'));
+
+      await waitFor(() => {
+        expect(screen.getByText('@@ -1,2 +1,3 @@')).toBeInTheDocument();
+      });
+      expect(screen.getByText('console.log("old");')).toBeInTheDocument();
+      expect(screen.getByText('console.log("new");')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /default branch/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
+      });
+      expect(screen.getByText('-4')).toBeInTheDocument();
+    });
+
+    it('shows the empty diff state when a session has no live endpoint', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
+      });
+      expect(screen.getAllByText('changed files').length).toBeGreaterThanOrEqual(1);
+      expect(screen.queryByText('Loading files...')).not.toBeInTheDocument();
+    });
+
+    it('renders a saved transcript for stopped sessions', async () => {
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn().mockResolvedValue({
+            turns: [
+              {
+                id: 'turn-user-1',
+                role: 'user',
+                content: 'Can you summarize the last run?',
+                created_at: '2026-05-15T18:00:00Z',
+              },
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                content: 'It finished cleanly and archived the workspace.',
+                created_at: '2026-05-15T18:00:05Z',
+                participant_meta: {
+                  peer_id: 'flock-coder',
+                  persona: 'coder',
+                  display_name: 'Coder',
+                  participant_type: 'ravn',
+                  color: 'brand',
+                },
+              },
+            ],
+          }),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByText('Can you summarize the last run?')).toBeInTheDocument();
+      expect(
+        screen.getByText('It finished cleanly and archived the workspace.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Start the session to chat.')).not.toBeInTheDocument();
+    });
+
+    it('rebuilds the outcome sidebar from a stopped session transcript', async () => {
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn().mockResolvedValue({
+            turns: [
+              {
+                id: 'turn-outcome-1',
+                role: 'assistant',
+                content: [
+                  '```outcome',
+                  'verdict: needs_changes',
+                  'summary: Review found missing telemetry coverage.',
+                  'details: |',
+                  '  ## Findings',
+                  '  - Add spans around tenant notification delivery.',
+                  '```',
+                ].join('\n'),
+                created_at: '2026-05-15T18:00:05Z',
+                participant_meta: {
+                  peer_id: 'workflow-reviewer',
+                  persona: 'reviewer',
+                  display_name: 'Reviewer',
+                  participant_type: 'ravn',
+                  color: 'red',
+                },
+              },
+            ],
+          }),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(await screen.findByTestId('mesh-cascade-panel')).toBeInTheDocument();
+      expect(
+        screen.getAllByText('Review found missing telemetry coverage.').length,
+      ).toBeGreaterThan(1);
+      expect(screen.getByText('Changes Requested')).toBeInTheDocument();
+    });
+
+    it('shows an archive-aware chronicle empty state for stopped sessions', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Chronicle/i }));
+      await waitFor(() => {
+        expect(screen.getByText('No saved chronicle yet.')).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByText('Start the session to view its chronicle.'),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -377,6 +1286,7 @@ describe('LiveSessionDetailPage', () => {
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
+              bifrost: createMockBifrostService(),
               volundr: service,
               ptyStream: buildPtyStream(),
               filesystem: buildFilesystem(),
@@ -439,6 +1349,7 @@ describe('LiveSessionDetailPage', () => {
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
+              bifrost: createMockBifrostService(),
               volundr: service,
               ptyStream: buildPtyStream(),
               filesystem: buildFilesystem(),
@@ -469,6 +1380,12 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByRole('button', { name: /Stop/i })).toBeInTheDocument();
     });
 
+    it('shows Archive button for running session', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByRole('button', { name: /Archive session/i })).toBeInTheDocument();
+    });
+
     it('shows Start button for stopped session', async () => {
       wrap('test-session-id-1234', { session: STOPPED_SESSION });
       await screen.findByTestId('live-session-detail-page');
@@ -481,6 +1398,15 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTitle(/Delete/i)).toBeInTheDocument();
     });
 
+    it('uses tooltip-only eye control without rendering res text', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(
+        screen.getByRole('button', { name: /Show tool calls and results/i }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/^res$/i)).not.toBeInTheDocument();
+    });
+
     it('opens a centered delete dialog with visible cleanup options and submits them', async () => {
       const service = buildVolundrService();
       service.deleteSession = vi.fn().mockResolvedValue(undefined);
@@ -489,6 +1415,7 @@ describe('LiveSessionDetailPage', () => {
         <QueryClientProvider client={client}>
           <ServicesProvider
             services={{
+              bifrost: createMockBifrostService(),
               volundr: service,
               ptyStream: buildPtyStream(),
               filesystem: buildFilesystem(),
@@ -523,6 +1450,9 @@ describe('LiveSessionDetailPage', () => {
           'chronicles',
         ]);
       });
+      await waitFor(() => {
+        expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions', replace: true });
+      });
     });
   });
 
@@ -539,10 +1469,10 @@ describe('LiveSessionDetailPage', () => {
   });
 
   describe('header metrics', () => {
-    it('shows Active metric', async () => {
+    it('shows Uptime metric', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Active')).toBeInTheDocument();
+      expect(screen.getByText('Uptime')).toBeInTheDocument();
     });
 
     it('shows Msgs metric', async () => {
@@ -551,10 +1481,63 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByText('Msgs')).toBeInTheDocument();
     });
 
+    it('uses the visible chat count for Msgs once chat history is loaded', async () => {
+      vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+        messages: [
+          {
+            id: 'msg-1',
+            role: 'user',
+            content: 'Hello',
+            createdAt: new Date(),
+            status: 'done',
+          },
+          {
+            id: 'msg-2',
+            role: 'assistant',
+            content: 'Hi there',
+            createdAt: new Date(),
+            status: 'done',
+          },
+        ],
+        streamingContent: undefined,
+        streamingParts: undefined,
+        streamingModel: undefined,
+        connected: true,
+        historyLoaded: true,
+        participants: new Map(),
+        meshEvents: [],
+        agentEvents: new Map(),
+        pendingPermissions: [],
+        capabilities: {},
+        sendMessage: vi.fn(),
+        sendDirectedMessages: vi.fn(),
+        respondToPermission: vi.fn(),
+        sendInterrupt: vi.fn(),
+        sendSetModel: vi.fn(),
+        sendSetThinkingTokens: vi.fn(),
+        sendRewindFiles: vi.fn(),
+        sendSetInternalVisibility: vi.fn(),
+        clearMessages: vi.fn(),
+      });
+
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      await waitFor(() => {
+        expect(screen.getByTestId('session-stats')).toHaveTextContent('Msgs2');
+      });
+    });
+
     it('shows Tokens metric', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('Tokens')).toBeInTheDocument();
+    });
+
+    it('shows the forge badge with the instance name', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByText('Guild Alpha')).toBeInTheDocument();
+      expect(screen.getByText('PRIMARY')).toBeInTheDocument();
     });
   });
 });

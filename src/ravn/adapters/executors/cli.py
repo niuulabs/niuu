@@ -28,6 +28,14 @@ class _TransportBinding:
     supports_system_prompt: bool
 
 
+def _delegates_permission_config_to_cli(cls: type[CLITransport]) -> bool:
+    """Return true for transports whose native CLI profile owns permissions."""
+    return (
+        cls.__module__ == "skuld.transports.codex_ws"
+        and cls.__name__ == "CodexWebSocketTransport"
+    )
+
+
 def _sum_model_usage(raw: dict | None) -> TokenUsage:
     """Convert transport ``modelUsage`` payloads into ``TokenUsage``."""
     if not isinstance(raw, dict):
@@ -125,6 +133,16 @@ class CliTransportAgent(ExecutionAgentPort):
     def task_id(self) -> str:
         return self._task_id
 
+    @property
+    def supports_steering(self) -> bool:
+        return self._transport is not None and self._transport.capabilities.steer
+
+    @property
+    def steering_mode(self) -> str:
+        if self._transport is None:
+            return "none"
+        return self._transport.capabilities.steering_mode
+
     def interrupt(self, reason: InterruptReason) -> None:
         if self._interrupt_reason is None:
             self._interrupt_reason = reason
@@ -133,6 +151,18 @@ class CliTransportAgent(ExecutionAgentPort):
             return
 
         asyncio.create_task(self._transport.send_control("interrupt"))
+
+    async def steer(self, content: str) -> bool:
+        transport = self._transport
+        if (
+            transport is None
+            or not transport.capabilities.steer
+            or not transport.is_turn_active
+            or not content.strip()
+        ):
+            return False
+        await transport.send_control("steer", content=content)
+        return True
 
     async def run_turn(self, user_input: str) -> TurnResult:
         if self._interrupt_reason is not None:
@@ -410,10 +440,11 @@ class CliTransportExecutor(ExecutorPort):
             "workspace_dir": workspace_dir,
             "model": str(kwargs.get("model", "")),
             "session_id": str(session.id),
-            "skip_permissions": permission_mode != "prompt",
             "system_prompt": str(kwargs.get("system_prompt", "")),
             "initial_prompt": "",
         }
+        if not _delegates_permission_config_to_cli(self._binding.cls):
+            transport_kwargs["skip_permissions"] = permission_mode != "prompt"
         if "mcp_servers" in kwargs:
             transport_kwargs["mcp_servers"] = kwargs["mcp_servers"]
         transport_kwargs.update(self._transport_kwargs)

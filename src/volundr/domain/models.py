@@ -188,10 +188,12 @@ class Model:
     name: str
     description: str
     provider: ModelProvider
+    vendor: str
     tier: ModelTier
     color: str
     cost_per_million_tokens: float | None = None
     vram_required: str | None = None
+    session_definition: str | None = None
 
 
 @dataclass(frozen=True)
@@ -726,6 +728,7 @@ class SessionEventType(StrEnum):
 
     MESSAGE_USER = "message_user"
     MESSAGE_ASSISTANT = "message_assistant"
+    OUTCOME = "outcome"
     FILE_CREATED = "file_created"
     FILE_MODIFIED = "file_modified"
     FILE_DELETED = "file_deleted"
@@ -741,6 +744,15 @@ class SessionEventType(StrEnum):
     SESSION_STOP = "session_stop"
 
 
+class SessionSpanStatus(StrEnum):
+    """Lifecycle status for a trace span."""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 @dataclass(frozen=True)
 class SessionEvent:
     """A raw event from a session, dispatched through the event pipeline.
@@ -749,6 +761,7 @@ class SessionEvent:
 
     message_user:      {"content_length": int, "content_preview": str}
     message_assistant:  {"content_length": int, "content_preview": str, "finish_reason": str}
+    outcome:           {"persona": str, "event_type": str, "fields": dict, "valid": bool}
     file_created:       {"path": str, "size_bytes": int}
     file_modified:      {"path": str, "insertions": int, "deletions": int}
     file_deleted:       {"path": str}
@@ -775,6 +788,27 @@ class SessionEvent:
     cost: Decimal | None = None
     duration_ms: int | None = None
     model: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionSpan:
+    """A hierarchical timing span recorded for a Volundr session."""
+
+    id: UUID
+    session_id: UUID
+    trace_id: UUID
+    kind: str
+    name: str
+    started_at: datetime
+    source_service: str
+    parent_span_id: UUID | None = None
+    status: SessionSpanStatus = SessionSpanStatus.RUNNING
+    ended_at: datetime | None = None
+    duration_ms: int | None = None
+    actor_type: str | None = None
+    actor_id: str | None = None
+    actor_label: str | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
 
 
 class PromptScope(StrEnum):

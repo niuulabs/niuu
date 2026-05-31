@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +27,7 @@ from cli.server import (
     parse_enabled_mounts,
     resolve_enabled_mounts,
 )
+from niuu.app import _backend_prefix_for_mount, _create_plugin_api_app, _plugin_api_base_url
 from niuu.ports.embedded_database import ConnectionInfo
 from niuu.ports.plugin import APIRouteDomain
 from tests.test_cli.conftest import FakePlugin
@@ -69,6 +71,35 @@ class TestSkuldPortRegistry:
         assert reg.get_port("sess-1") == 9100
 
 
+class TestPluginApiAppCreation:
+    def test_plugin_api_base_url_uses_configured_host(self) -> None:
+        assert _plugin_api_base_url("192.168.1.106", 8080) == "http://192.168.1.106:8080"
+        assert _plugin_api_base_url("0.0.0.0", 18080) == "http://127.0.0.1:18080"
+
+    def test_create_plugin_api_app_passes_base_url_to_opt_in_plugins(self) -> None:
+        captured: dict[str, str] = {}
+
+        class PluginWithBaseUrl:
+            def create_api_app(self, *, base_url: str):
+                captured["base_url"] = base_url
+                return object()
+
+        _create_plugin_api_app(PluginWithBaseUrl(), base_url="http://platform.test:8080")
+        assert captured["base_url"] == "http://platform.test:8080"
+
+    def test_create_plugin_api_app_leaves_legacy_plugins_untouched(self) -> None:
+        called = False
+
+        class LegacyPlugin:
+            def create_api_app(self):
+                nonlocal called
+                called = True
+                return object()
+
+        _create_plugin_api_app(LegacyPlugin(), base_url="http://platform.test:8080")
+        assert called is True
+
+
 class TestGetSkuldRegistry:
     """Tests for the module-level get_skuld_registry function."""
 
@@ -90,15 +121,15 @@ class TestPrefixRestoreApp:
         async def fake_app(scope, receive, send):
             received_scope.update(scope)
 
-        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/volundr")
+        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/forge")
         scope = {
             "type": "http",
             "path": "/sessions",
             "raw_path": b"/sessions",
         }
         await wrapper(scope, AsyncMock(), AsyncMock())
-        assert received_scope["path"] == "/api/v1/volundr/sessions"
-        assert received_scope["raw_path"] == b"/api/v1/volundr/sessions"
+        assert received_scope["path"] == "/api/v1/forge/sessions"
+        assert received_scope["raw_path"] == b"/api/v1/forge/sessions"
 
     @pytest.mark.asyncio
     async def test_restores_websocket_path_prefix(self) -> None:
@@ -107,14 +138,14 @@ class TestPrefixRestoreApp:
         async def fake_app(scope, receive, send):
             received_scope.update(scope)
 
-        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/tyr")
+        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/ting")
         scope = {
             "type": "websocket",
             "path": "/ws",
             "raw_path": b"/ws",
         }
         await wrapper(scope, AsyncMock(), AsyncMock())
-        assert received_scope["path"] == "/api/v1/tyr/ws"
+        assert received_scope["path"] == "/api/v1/ting/ws"
 
     @pytest.mark.asyncio
     async def test_passes_lifespan_unchanged(self) -> None:
@@ -123,7 +154,7 @@ class TestPrefixRestoreApp:
         async def fake_app(scope, receive, send):
             received_scope.update(scope)
 
-        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/volundr")
+        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/forge")
         scope = {"type": "lifespan", "path": "/something"}
         await wrapper(scope, AsyncMock(), AsyncMock())
         # lifespan should not be modified
@@ -136,10 +167,10 @@ class TestPrefixRestoreApp:
         async def fake_app(scope, receive, send):
             received_scope.update(scope)
 
-        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/volundr")
+        wrapper = _PrefixRestoreApp(fake_app, "/api/v1/forge")
         scope = {"type": "http", "path": "/sessions"}
         await wrapper(scope, AsyncMock(), AsyncMock())
-        assert received_scope["path"] == "/api/v1/volundr/sessions"
+        assert received_scope["path"] == "/api/v1/forge/sessions"
         assert "raw_path" not in received_scope or received_scope.get("raw_path") is None
 
 
@@ -175,28 +206,34 @@ class TestRootServerInit:
 
 
 class TestRouteDomainSelection:
+    def test_backend_prefix_for_bifrost_root_catalog_mount(self) -> None:
+        assert _backend_prefix_for_mount("bifrost", "/api/v1/bifrost") == ""
+
+    def test_backend_prefix_for_nested_bifrost_mount(self) -> None:
+        assert _backend_prefix_for_mount("bifrost", "/api/v1/bifrost/v1") == "/v1"
+
+    def test_backend_prefix_for_non_bifrost_mount_is_unchanged(self) -> None:
+        assert _backend_prefix_for_mount("bifrost", "/v1") == "/v1"
+
     def test_available_route_domains_lists_known_domains(self) -> None:
         assert available_route_domains() == {
             "admin-api",
             "audit-api",
             "bifrost-api",
             "bifrost-observability-api",
-            "catalog-legacy-api",
             "credentials-api",
-            "credentials-legacy-api",
             "features-api",
-            "features-legacy-api",
             "forge-api",
-            "forge-legacy-api",
             "git-api",
-            "git-legacy-api",
+            "guild-instances-api",
+            "guild-volundr-api",
             "identity-api",
-            "identity-legacy-api",
             "integrations-api",
-            "integrations-legacy-api",
             "llm-api",
             "mimir-api",
             "niuu-api",
+            "niuu-repos-api",
+            "niuu-shared-api",
             "observatory-api",
             "observatory-events-api",
             "observatory-registry-api",
@@ -212,18 +249,16 @@ class TestRouteDomainSelection:
             "event-api",
             "review-api",
             "session-api",
-            "session-legacy-api",
             "saga-api",
             "settings-api",
             "tenancy-api",
             "tracker-api",
+            "tracker-intake-api",
             "tokens-api",
-            "tokens-legacy-api",
-            "volundr-api",
+            "ting-channel-api",
             "workflow-api",
             "workspace-api",
-            "workspace-legacy-api",
-            "tyr-api",
+            "ting-api",
             "skuld-proxy",
             "runtime-config",
             "web-ui",
@@ -232,12 +267,10 @@ class TestRouteDomainSelection:
     def test_host_profiles_cover_full_and_api(self) -> None:
         assert "full" in HOST_PROFILES
         assert "api" in HOST_PROFILES
-        assert "full-compat" in HOST_PROFILES
-        assert "api-compat" in HOST_PROFILES
         assert "web-ui" in HOST_PROFILES["full"]
         assert "web-ui" not in HOST_PROFILES["api"]
-        assert "volundr-api" not in HOST_PROFILES["full"]
-        assert "volundr-api" in HOST_PROFILES["full-compat"]
+        assert "forge-api" in HOST_PROFILES["full"]
+        assert "forge-api" in HOST_PROFILES["api"]
 
     def test_parse_enabled_mounts_empty_returns_none(self) -> None:
         assert parse_enabled_mounts("") is None
@@ -303,7 +336,7 @@ class TestRouteDomainSelection:
                     ),
                 )
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
@@ -314,14 +347,14 @@ class TestRouteDomainSelection:
 
         registry = PluginRegistry()
         registry.register(VolundrPlugin(name="volundr"))
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
         inventory = collect_route_inventory(registry=registry, enabled_mounts={"tracker-api"})
         assert inventory == (
             MountedRouteDomain(
                 name="tracker-api",
                 prefixes=("/api/v1/tracker/projects", "/api/v1/tracker/issues"),
                 source="plugin",
-                plugin_name="tyr,volundr",
+                plugin_name="ting,volundr",
             ),
         )
 
@@ -498,7 +531,8 @@ class TestRootServerBuildApp:
         (assets / "main.js").write_text("// js")
         (dist / "index.html").write_text("<html>SPA</html>")
         (dist / "config.live.json").write_text(
-            '{"services":{"forge":{"mode":"http","baseUrl":"http://localhost:8080/api/v1/forge"}}}'
+            '{"services":{"forge":{"mode":"http","baseUrl":"http://localhost:8080/api/v1/forge"},'
+            '"forge.pty":{"mode":"ws","wsUrl":"ws://localhost:8080/s/{sessionId}/session"}}}'
         )
         favicon = dist / "favicon.svg"
         favicon.write_text("<svg/>")
@@ -520,11 +554,21 @@ class TestRootServerBuildApp:
         assert resp.status_code == 200
         assert b"SPA" in resp.content
 
+        api_resp = client.get("/api/v1/not-a-real-service/ping")
+        assert api_resp.status_code == 404
+        assert api_resp.json() == {"detail": "Not found"}
+
         config_resp = client.get("/config.live.json")
         assert config_resp.status_code == 200
         assert config_resp.headers["content-type"].startswith("application/json")
         assert config_resp.json()["services"]["forge"]["mode"] == "http"
-        assert config_resp.json()["services"]["forge"]["baseUrl"] == "http://testserver/api/v1/forge"
+        assert (
+            config_resp.json()["services"]["forge"]["baseUrl"] == "http://testserver/api/v1/forge"
+        )
+        assert (
+            config_resp.json()["services"]["forge.pty"]["wsUrl"]
+            == "ws://testserver/s/{sessionId}/session"
+        )
 
         default_config_resp = client.get("/config.json")
         assert default_config_resp.status_code == 200
@@ -533,6 +577,10 @@ class TestRootServerBuildApp:
         assert (
             default_config_resp.json()["services"]["forge"]["baseUrl"]
             == "http://testserver/api/v1/forge"
+        )
+        assert (
+            default_config_resp.json()["services"]["forge.pty"]["wsUrl"]
+            == "ws://testserver/s/{sessionId}/session"
         )
 
     def test_web_ui_filenotfound_gracefully_handled(self) -> None:
@@ -553,7 +601,7 @@ class TestRootServerBuildApp:
         """Plugin sub-apps are mounted at their API prefixes."""
         sub_app = FastAPI()
 
-        @sub_app.get("/api/v1/volundr/ping")
+        @sub_app.get("/api/v1/forge/ping")
         async def ping():
             return {"pong": True}
 
@@ -561,17 +609,95 @@ class TestRootServerBuildApp:
             def create_api_app(self):
                 return sub_app
 
+            def api_route_domains(self):
+                return (
+                    APIRouteDomain(
+                        name="forge-api",
+                        prefixes=("/api/v1/forge",),
+                    ),
+                )
+
         registry = PluginRegistry()
         registry.register(VolundrPlugin(name="volundr"))
 
-        server = RootServer(registry=registry, enabled_mounts={"volundr-api"})
+        server = RootServer(registry=registry, enabled_mounts={"forge-api"})
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
 
         client = TestClient(app)
-        resp = client.get("/api/v1/volundr/ping")
+        resp = client.get("/api/v1/forge/ping")
         assert resp.status_code == 200
         assert resp.json() == {"pong": True}
+
+    def test_reuses_shared_api_app_across_plugins(self) -> None:
+        """Plugins with the same shared_api_app_key reuse one hosted app instance."""
+        build_calls = 0
+        started = 0
+        stopped = 0
+
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            nonlocal started, stopped
+            started += 1
+            yield
+            stopped += 1
+
+        sub_app = FastAPI(lifespan=lifespan)
+
+        @sub_app.get("/api/v1/forge/ping")
+        async def forge_ping():
+            return {"pong": "forge"}
+
+        @sub_app.get("/api/v1/features/ping")
+        async def features_ping():
+            return {"pong": "features"}
+
+        class SharedVolundrPlugin(FakePlugin):
+            def create_api_app(self):
+                nonlocal build_calls
+                build_calls += 1
+                return sub_app
+
+            def shared_api_app_key(self):
+                return "volundr"
+
+        class VolundrPlugin(SharedVolundrPlugin):
+            def api_route_domains(self):
+                return (
+                    APIRouteDomain(
+                        name="forge-api",
+                        prefixes=("/api/v1/forge",),
+                    ),
+                )
+
+        class FeaturesPlugin(SharedVolundrPlugin):
+            def api_route_domains(self):
+                return (
+                    APIRouteDomain(
+                        name="features-api",
+                        prefixes=("/api/v1/features",),
+                    ),
+                )
+
+        registry = PluginRegistry()
+        registry.register(VolundrPlugin(name="volundr"))
+        registry.register(FeaturesPlugin(name="features"))
+
+        app = build_root_app(
+            registry=registry,
+            host="127.0.0.1",
+            port=8080,
+            enabled_mounts={"forge-api", "features-api"},
+        )
+
+        assert build_calls == 1
+
+        with TestClient(app) as client:
+            assert client.get("/api/v1/forge/ping").status_code == 200
+            assert client.get("/api/v1/features/ping").status_code == 200
+
+        assert started == 1
+        assert stopped == 1
 
     def test_build_root_app_with_explicit_mounts_only_exposes_selected_routes(self) -> None:
         niuu_app = FastAPI()
@@ -582,7 +708,7 @@ class TestRootServerBuildApp:
 
         volundr_app = FastAPI()
 
-        @volundr_app.get("/api/v1/volundr/ping")
+        @volundr_app.get("/api/v1/forge/ping")
         async def volundr_ping():
             return {"pong": "volundr"}
 
@@ -621,9 +747,9 @@ class TestRootServerBuildApp:
             ),
         )
         assert client.get("/api/v1/niuu/ping").status_code == 200
-        assert client.get("/api/v1/volundr/ping").status_code == 404
+        assert client.get("/api/v1/forge/ping").status_code == 404
 
-    def test_build_root_app_exposes_legacy_route_usage_when_niuu_api_is_mounted(self) -> None:
+    def test_build_root_app_hides_legacy_route_usage_even_when_niuu_api_is_mounted(self) -> None:
         registry = PluginRegistry()
         app = build_root_app(
             registry=registry,
@@ -632,33 +758,15 @@ class TestRootServerBuildApp:
             enabled_mounts={"niuu-api"},
         )
         app.state.legacy_route_hits = {
-            ("/api/v1/volundr/me", "/api/v1/identity/me", "GET"): 3,
-            ("/api/v1/volundr/users", "/api/v1/volundr/admin/users", "GET"): 1,
+            ("/api/v1/legacy/me", "/api/v1/identity/me", "GET"): 3,
+            ("/api/v1/legacy/users", "/api/v1/identity/users", "GET"): 1,
         }
 
         client = TestClient(app)
         response = client.get("/api/v1/niuu/compat/legacy-routes")
+        assert response.status_code == 404
 
-        assert response.status_code == 200
-        assert response.json() == {
-            "items": [
-                {
-                    "legacyPath": "/api/v1/volundr/me",
-                    "canonicalPath": "/api/v1/identity/me",
-                    "method": "GET",
-                    "hits": 3,
-                },
-                {
-                    "legacyPath": "/api/v1/volundr/users",
-                    "canonicalPath": "/api/v1/volundr/admin/users",
-                    "method": "GET",
-                    "hits": 1,
-                },
-            ],
-            "totalHits": 4,
-        }
-
-    def test_build_root_app_can_clear_legacy_route_usage_when_niuu_api_is_mounted(self) -> None:
+    def test_build_root_app_cannot_clear_legacy_route_usage_when_niuu_api_is_mounted(self) -> None:
         registry = PluginRegistry()
         app = build_root_app(
             registry=registry,
@@ -667,26 +775,16 @@ class TestRootServerBuildApp:
             enabled_mounts={"niuu-api"},
         )
         app.state.legacy_route_hits = {
-            ("/api/v1/volundr/me", "/api/v1/identity/me", "GET"): 2,
+            ("/api/v1/legacy/me", "/api/v1/identity/me", "GET"): 2,
         }
 
         client = TestClient(app)
         response = client.delete("/api/v1/niuu/compat/legacy-routes")
 
-        assert response.status_code == 200
-        assert response.json() == {
-            "items": [
-                {
-                    "legacyPath": "/api/v1/volundr/me",
-                    "canonicalPath": "/api/v1/identity/me",
-                    "method": "GET",
-                    "hits": 2,
-                }
-            ],
-            "totalHits": 2,
-            "cleared": True,
+        assert response.status_code == 404
+        assert app.state.legacy_route_hits == {
+            ("/api/v1/legacy/me", "/api/v1/identity/me", "GET"): 2,
         }
-        assert app.state.legacy_route_hits == {}
 
     def test_build_root_app_hides_legacy_route_usage_when_niuu_api_not_mounted(self) -> None:
         registry = PluginRegistry()
@@ -709,19 +807,19 @@ class TestRootServerBuildApp:
         async def tracker_issues():
             return [{"id": "issue-1"}]
 
-        @volundr_app.get("/api/v1/volundr/ping")
+        @volundr_app.get("/api/v1/forge/ping")
         async def volundr_ping():
             return {"pong": "volundr"}
 
-        tyr_app = FastAPI()
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tracker/projects")
+        @ting_app.get("/api/v1/tracker/projects")
         async def tracker_projects():
             return [{"id": "proj-1"}]
 
-        @tyr_app.get("/api/v1/tyr/ping")
-        async def tyr_ping():
-            return {"pong": "tyr"}
+        @ting_app.get("/api/v1/ting/ping")
+        async def ting_ping():
+            return {"pong": "ting"}
 
         class VolundrPlugin(FakePlugin):
             def create_api_app(self):
@@ -735,9 +833,9 @@ class TestRootServerBuildApp:
                     ),
                 )
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
@@ -749,7 +847,7 @@ class TestRootServerBuildApp:
 
         registry = PluginRegistry()
         registry.register(VolundrPlugin(name="volundr"))
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -761,8 +859,8 @@ class TestRootServerBuildApp:
         client = TestClient(app)
         assert client.get("/api/v1/tracker/issues").status_code == 200
         assert client.get("/api/v1/tracker/projects").status_code == 200
-        assert client.get("/api/v1/volundr/ping").status_code == 404
-        assert client.get("/api/v1/tyr/ping").status_code == 404
+        assert client.get("/api/v1/forge/ping").status_code == 404
+        assert client.get("/api/v1/ting/ping").status_code == 404
         assert client.get("/config.json").status_code == 404
         assert client.get("/s/example/health").status_code == 404
 
@@ -777,14 +875,14 @@ class TestRootServerBuildApp:
         async def legacy_audit():
             return [{"id": "volundr-legacy"}]
 
-        tyr_app = FastAPI()
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tyr/audit")
-        async def tyr_audit():
-            return [{"id": "tyr-audit"}]
+        @ting_app.get("/api/v1/ting/audit")
+        async def ting_audit():
+            return [{"id": "ting-audit"}]
 
-        @tyr_app.get("/api/v1/tyr/sagas")
-        async def tyr_sagas():
+        @ting_app.get("/api/v1/ting/sagas")
+        async def ting_sagas():
             return [{"id": "saga-1"}]
 
         class VolundrPlugin(FakePlugin):
@@ -799,21 +897,21 @@ class TestRootServerBuildApp:
                     ),
                 )
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
                         name="saga-api",
-                        prefixes=("/api/v1/tyr/sagas",),
+                        prefixes=("/api/v1/ting/sagas",),
                     ),
                 )
 
         registry = PluginRegistry()
         registry.register(VolundrPlugin(name="volundr"))
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -825,17 +923,17 @@ class TestRootServerBuildApp:
         client = TestClient(app)
         assert client.get("/api/v1/audit").status_code == 200
         assert client.get("/audit").status_code == 200
-        assert client.get("/api/v1/tyr/audit").status_code == 404
-        assert client.get("/api/v1/tyr/sagas").status_code == 404
+        assert client.get("/api/v1/ting/audit").status_code == 404
+        assert client.get("/api/v1/ting/sagas").status_code == 404
 
     def test_build_root_app_can_mount_admin_slice_without_tenancy(self) -> None:
         volundr_app = FastAPI()
 
-        @volundr_app.get("/api/v1/volundr/admin/ping")
+        @volundr_app.get("/api/v1/forge/admin/ping")
         async def admin_ping():
             return {"pong": "admin"}
 
-        @volundr_app.get("/api/v1/volundr/tenants/ping")
+        @volundr_app.get("/api/v1/identity/tenants/ping")
         async def tenant_ping():
             return {"pong": "tenant"}
 
@@ -847,11 +945,11 @@ class TestRootServerBuildApp:
                 return (
                     APIRouteDomain(
                         name="admin-api",
-                        prefixes=("/api/v1/volundr/admin",),
+                        prefixes=("/api/v1/forge/admin",),
                     ),
                     APIRouteDomain(
                         name="tenancy-api",
-                        prefixes=("/api/v1/volundr/tenants",),
+                        prefixes=("/api/v1/identity/tenants",),
                     ),
                 )
 
@@ -866,25 +964,25 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/volundr/admin/ping").status_code == 200
-        assert client.get("/api/v1/volundr/tenants/ping").status_code == 404
+        assert client.get("/api/v1/forge/admin/ping").status_code == 200
+        assert client.get("/api/v1/identity/tenants/ping").status_code == 404
 
     def test_build_root_app_can_mount_session_slice_without_workspace_slice(self) -> None:
         volundr_app = FastAPI()
 
-        @volundr_app.get("/api/v1/volundr/sessions/ping")
+        @volundr_app.get("/api/v1/forge/sessions/ping")
         async def session_ping():
             return {"pong": "session"}
 
-        @volundr_app.get("/api/v1/volundr/chronicles/ping")
+        @volundr_app.get("/api/v1/forge/chronicles/ping")
         async def chronicle_ping():
             return {"pong": "chronicle"}
 
-        @volundr_app.get("/api/v1/volundr/events/ping")
+        @volundr_app.get("/api/v1/forge/events/ping")
         async def events_ping():
             return {"pong": "events"}
 
-        @volundr_app.get("/api/v1/volundr/workspaces/ping")
+        @volundr_app.get("/api/v1/forge/workspaces/ping")
         async def workspace_ping():
             return {"pong": "workspace"}
 
@@ -900,14 +998,11 @@ class TestRootServerBuildApp:
                             "/api/v1/forge/sessions",
                             "/api/v1/forge/chronicles",
                             "/api/v1/forge/events",
-                            "/api/v1/volundr/sessions",
-                            "/api/v1/volundr/chronicles",
-                            "/api/v1/volundr/events",
                         ),
                     ),
                     APIRouteDomain(
                         name="workspace-api",
-                        prefixes=("/api/v1/forge/workspaces", "/api/v1/volundr/workspaces"),
+                        prefixes=("/api/v1/forge/workspaces",),
                     ),
                 )
 
@@ -922,27 +1017,23 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/volundr/sessions/ping").status_code == 200
         assert client.get("/api/v1/forge/sessions/ping").status_code == 200
-        assert client.get("/api/v1/volundr/chronicles/ping").status_code == 200
         assert client.get("/api/v1/forge/chronicles/ping").status_code == 200
-        assert client.get("/api/v1/volundr/events/ping").status_code == 200
         assert client.get("/api/v1/forge/events/ping").status_code == 200
-        assert client.get("/api/v1/volundr/workspaces/ping").status_code == 404
         assert client.get("/api/v1/forge/workspaces/ping").status_code == 404
 
     def test_build_root_app_can_mount_forge_slice_with_canonical_aliases(self) -> None:
         volundr_app = FastAPI()
 
-        @volundr_app.get("/api/v1/volundr/templates/ping")
+        @volundr_app.get("/api/v1/forge/templates/ping")
         async def template_ping():
             return {"pong": "template"}
 
-        @volundr_app.get("/api/v1/volundr/stats")
+        @volundr_app.get("/api/v1/forge/stats")
         async def stats():
             return {"sessions": 3}
 
-        @volundr_app.get("/api/v1/volundr/models")
+        @volundr_app.get("/api/v1/forge/models")
         async def models():
             return {"claude-sonnet-4-6": {"name": "Claude Sonnet 4.6"}}
 
@@ -958,9 +1049,6 @@ class TestRootServerBuildApp:
                             "/api/v1/forge/templates",
                             "/api/v1/forge/stats",
                             "/api/v1/forge/models",
-                            "/api/v1/volundr/templates",
-                            "/api/v1/volundr/stats",
-                            "/api/v1/volundr/models",
                         ),
                     ),
                 )
@@ -979,37 +1067,37 @@ class TestRootServerBuildApp:
         assert client.get("/api/v1/forge/templates/ping").status_code == 200
         assert client.get("/api/v1/forge/stats").json() == {"sessions": 3}
         assert client.get("/api/v1/forge/models").status_code == 200
-        assert client.get("/api/v1/volundr/templates/ping").status_code == 200
+        assert client.get("/api/v1/forge/sessions/ping").status_code == 404
 
     def test_build_root_app_can_mount_saga_slice_without_dispatch_slice(self) -> None:
-        tyr_app = FastAPI()
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tyr/sagas/ping")
+        @ting_app.get("/api/v1/ting/sagas/ping")
         async def saga_ping():
             return {"pong": "saga"}
 
-        @tyr_app.get("/api/v1/tyr/dispatch/ping")
+        @ting_app.get("/api/v1/ting/dispatch/ping")
         async def dispatch_ping():
             return {"pong": "dispatch"}
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
                         name="saga-api",
-                        prefixes=("/api/v1/tyr/sagas",),
+                        prefixes=("/api/v1/ting/sagas",),
                     ),
                     APIRouteDomain(
                         name="dispatch-api",
-                        prefixes=("/api/v1/tyr/dispatch",),
+                        prefixes=("/api/v1/ting/dispatch",),
                     ),
                 )
 
         registry = PluginRegistry()
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -1019,38 +1107,38 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/tyr/sagas/ping").status_code == 200
-        assert client.get("/api/v1/tyr/dispatch/ping").status_code == 404
+        assert client.get("/api/v1/ting/sagas/ping").status_code == 200
+        assert client.get("/api/v1/ting/dispatch/ping").status_code == 404
 
     def test_build_root_app_can_mount_review_slice_without_saga_slice(self) -> None:
-        tyr_app = FastAPI()
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tyr/raids/ping")
-        async def raid_ping():
+        @ting_app.get("/api/v1/ting/runs/ping")
+        async def run_ping():
             return {"pong": "review"}
 
-        @tyr_app.get("/api/v1/tyr/sagas/ping")
+        @ting_app.get("/api/v1/ting/sagas/ping")
         async def saga_ping():
             return {"pong": "saga"}
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
                         name="review-api",
-                        prefixes=("/api/v1/tyr/raids",),
+                        prefixes=("/api/v1/ting/runs",),
                     ),
                     APIRouteDomain(
                         name="saga-api",
-                        prefixes=("/api/v1/tyr/sagas",),
+                        prefixes=("/api/v1/ting/sagas",),
                     ),
                 )
 
         registry = PluginRegistry()
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -1060,33 +1148,29 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/tyr/raids/ping").status_code == 200
-        assert client.get("/api/v1/tyr/sagas/ping").status_code == 404
+        assert client.get("/api/v1/ting/runs/ping").status_code == 200
+        assert client.get("/api/v1/ting/sagas/ping").status_code == 404
 
-    def test_build_root_app_can_mount_credentials_slice_with_legacy_shims(self) -> None:
+    def test_build_root_app_can_mount_credentials_slice(self) -> None:
         volundr_app = FastAPI()
 
         @volundr_app.get("/api/v1/credentials/user")
         async def canonical_credentials():
             return {"route": "canonical-credentials"}
 
-        @volundr_app.get("/api/v1/volundr/credentials")
-        async def legacy_credentials():
-            return {"route": "legacy-credentials"}
+        @volundr_app.get("/api/v1/credentials/secrets")
+        async def secrets():
+            return {"route": "secrets"}
 
-        @volundr_app.get("/api/v1/volundr/secrets")
-        async def legacy_secrets():
-            return {"route": "legacy-secrets"}
-
-        @volundr_app.get("/api/v1/volundr/secrets/store")
+        @volundr_app.get("/api/v1/credentials/secrets/store")
         async def legacy_secret_store():
             return {"route": "legacy-secret-store"}
 
-        @volundr_app.get("/api/v1/volundr/secrets/types")
+        @volundr_app.get("/api/v1/credentials/secrets/types")
         async def legacy_secret_types():
             return {"route": "legacy-secret-types"}
 
-        @volundr_app.get("/api/v1/volundr/sessions")
+        @volundr_app.get("/api/v1/forge/sessions")
         async def unrelated_sessions():
             return {"route": "sessions"}
 
@@ -1098,15 +1182,11 @@ class TestRootServerBuildApp:
                 return (
                     APIRouteDomain(
                         name="credentials-api",
-                        prefixes=(
-                            "/api/v1/credentials",
-                            "/api/v1/volundr/credentials",
-                            "/api/v1/volundr/secrets",
-                        ),
+                        prefixes=("/api/v1/credentials",),
                     ),
                     APIRouteDomain(
                         name="session-api",
-                        prefixes=("/api/v1/volundr/sessions",),
+                        prefixes=("/api/v1/forge/sessions",),
                     ),
                 )
 
@@ -1122,28 +1202,23 @@ class TestRootServerBuildApp:
 
         client = TestClient(app)
         assert client.get("/api/v1/credentials/user").status_code == 200
-        assert client.get("/api/v1/volundr/credentials").status_code == 200
-        assert client.get("/api/v1/volundr/secrets").status_code == 200
-        assert client.get("/api/v1/volundr/secrets/store").status_code == 200
-        assert client.get("/api/v1/volundr/secrets/types").status_code == 200
-        assert client.get("/api/v1/volundr/sessions").status_code == 404
+        assert client.get("/api/v1/credentials/secrets").status_code == 200
+        assert client.get("/api/v1/credentials/secrets/store").status_code == 200
+        assert client.get("/api/v1/credentials/secrets/types").status_code == 200
+        assert client.get("/api/v1/forge/sessions").status_code == 404
 
-    def test_build_root_app_can_mount_integrations_slice_with_legacy_shims(self) -> None:
+    def test_build_root_app_can_mount_integrations_slice(self) -> None:
         volundr_app = FastAPI()
 
         @volundr_app.get("/api/v1/integrations")
         async def canonical_integrations():
             return {"route": "canonical-integrations"}
 
-        @volundr_app.get("/api/v1/volundr/integrations")
-        async def legacy_integrations():
-            return {"route": "legacy-integrations"}
-
-        @volundr_app.get("/api/v1/volundr/integrations/oauth/linear/start")
+        @volundr_app.get("/api/v1/integrations/oauth/linear/start")
         async def legacy_oauth_start():
             return {"route": "legacy-oauth-start"}
 
-        @volundr_app.get("/api/v1/volundr/repos")
+        @volundr_app.get("/api/v1/forge/repos")
         async def unrelated_repos():
             return {"route": "repos"}
 
@@ -1155,10 +1230,7 @@ class TestRootServerBuildApp:
                 return (
                     APIRouteDomain(
                         name="integrations-api",
-                        prefixes=(
-                            "/api/v1/integrations",
-                            "/api/v1/volundr/integrations",
-                        ),
+                        prefixes=("/api/v1/integrations",),
                     ),
                 )
 
@@ -1174,43 +1246,41 @@ class TestRootServerBuildApp:
 
         client = TestClient(app)
         assert client.get("/api/v1/integrations").status_code == 200
-        assert client.get("/api/v1/volundr/integrations").status_code == 200
-        assert client.get("/api/v1/volundr/integrations/oauth/linear/start").status_code == 200
-        assert client.get("/api/v1/volundr/repos").status_code == 404
+        assert client.get("/api/v1/integrations/oauth/linear/start").status_code == 200
+        assert client.get("/api/v1/forge/repos").status_code == 404
 
-    def test_build_root_app_can_mount_tyr_settings_without_workflow_routes(self) -> None:
-        tyr_app = FastAPI()
+    def test_build_root_app_can_mount_ting_settings_without_workflow_routes(self) -> None:
+        ting_app = FastAPI()
 
-        @tyr_app.get("/api/v1/tyr/settings/flock")
+        @ting_app.get("/api/v1/ting/settings/flock")
         async def flock_settings():
             return {"route": "settings"}
 
-        @tyr_app.get("/api/v1/tyr/flock")
+        @ting_app.get("/api/v1/ting/flock")
         async def flock_workflow():
             return {"route": "workflow"}
 
-        class TyrPlugin(FakePlugin):
+        class TingPlugin(FakePlugin):
             def create_api_app(self):
-                return tyr_app
+                return ting_app
 
             def api_route_domains(self):
                 return (
                     APIRouteDomain(
                         name="settings-api",
-                        prefixes=("/api/v1/tyr/settings",),
+                        prefixes=("/api/v1/ting/settings",),
                     ),
                     APIRouteDomain(
                         name="workflow-api",
                         prefixes=(
-                            "/api/v1/tyr/flock",
-                            "/api/v1/tyr/flock_flows",
-                            "/api/v1/tyr/pipelines",
+                            "/api/v1/ting/flock",
+                            "/api/v1/ting/flock_flows",
                         ),
                     ),
                 )
 
         registry = PluginRegistry()
-        registry.register(TyrPlugin(name="tyr"))
+        registry.register(TingPlugin(name="ting"))
 
         app = build_root_app(
             registry=registry,
@@ -1220,8 +1290,8 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/tyr/settings/flock").status_code == 200
-        assert client.get("/api/v1/tyr/flock").status_code == 404
+        assert client.get("/api/v1/ting/settings/flock").status_code == 200
+        assert client.get("/api/v1/ting/flock").status_code == 404
 
     def test_build_root_app_mounts_canonical_mimir_prefixes_via_backend_translation(self) -> None:
         mimir_app = FastAPI()
@@ -1229,6 +1299,10 @@ class TestRootServerBuildApp:
         @mimir_app.get("/mimir/stats")
         async def mimir_stats():
             return {"pages": 12}
+
+        @mimir_app.get("/mimir/settings")
+        async def mimir_settings():
+            return {"title": "Mimir"}
 
         @mimir_app.get("/mcp/health")
         async def mimir_mcp_health():
@@ -1263,12 +1337,21 @@ class TestRootServerBuildApp:
 
         client = TestClient(app)
         assert client.get("/api/v1/mimir/stats").json() == {"pages": 12}
+        assert client.get("/api/v1/mimir/settings").json() == {"title": "Mimir"}
         assert client.get("/api/v1/mimir/mcp/health").json() == {"status": "ok"}
         assert client.get("/mimir/stats").json() == {"pages": 12}
         assert client.get("/mcp/health").json() == {"status": "ok"}
 
     def test_build_root_app_mounts_canonical_bifrost_prefixes_via_backend_translation(self) -> None:
         bifrost_app = FastAPI()
+
+        @bifrost_app.get("/models")
+        async def internal_models():
+            return [{"id": "gpt-5.5"}]
+
+        @bifrost_app.get("/settings")
+        async def settings():
+            return {"title": "Bifrost"}
 
         @bifrost_app.get("/v1/models")
         async def list_models():
@@ -1305,6 +1388,10 @@ class TestRootServerBuildApp:
                             "/api/v1/bifrost/readyz",
                         ),
                     ),
+                    APIRouteDomain(
+                        name="bifrost-api",
+                        prefixes=("/api/v1/bifrost",),
+                    ),
                 )
 
         registry = PluginRegistry()
@@ -1314,10 +1401,12 @@ class TestRootServerBuildApp:
             registry=registry,
             host="127.0.0.1",
             port=8080,
-            enabled_mounts={"llm-api", "bifrost-observability-api"},
+            enabled_mounts={"llm-api", "bifrost-api", "bifrost-observability-api"},
         )
 
         client = TestClient(app)
+        assert client.get("/api/v1/bifrost/models").json() == [{"id": "gpt-5.5"}]
+        assert client.get("/api/v1/bifrost/settings").json() == {"title": "Bifrost"}
         assert client.get("/api/v1/bifrost/v1/models").json() == {"data": []}
         assert client.get("/api/v1/bifrost/metrics").json() == {"metrics": "ok"}
         assert client.get("/api/v1/bifrost/healthz").json() == {"status": "ok"}
@@ -1327,7 +1416,7 @@ class TestRootServerBuildApp:
     def test_build_root_app_merges_mounted_plugin_routes_into_openapi(self) -> None:
         volundr_app = FastAPI()
 
-        @volundr_app.get("/api/v1/volundr/sessions")
+        @volundr_app.get("/api/v1/forge/sessions")
         async def list_sessions():
             return [{"id": "sess-1"}]
 
@@ -1346,10 +1435,6 @@ class TestRootServerBuildApp:
                     APIRouteDomain(
                         name="forge-api",
                         prefixes=("/api/v1/forge/sessions",),
-                    ),
-                    APIRouteDomain(
-                        name="forge-legacy-api",
-                        prefixes=("/api/v1/volundr/sessions",),
                     ),
                 )
 
@@ -1383,7 +1468,6 @@ class TestRootServerBuildApp:
         paths = response.json()["paths"]
         assert "/health" in paths
         assert "/api/v1/forge/sessions" in paths
-        assert "/api/v1/volundr/sessions" not in paths
         assert "/api/v1/mimir/stats" in paths
 
     def test_plugin_create_api_app_returns_none(self) -> None:
@@ -1436,6 +1520,7 @@ class TestRootServerStartStop:
         ):
             await server.start()
             assert os.environ["NIUU_SERVER_HOST"] == "127.0.0.1"
+            assert os.environ["NIUU_SERVER_PUBLIC_HOST"] == "127.0.0.1"
             assert os.environ["NIUU_SERVER_PORT"] == "8080"
             assert os.environ["VOLUNDR__URL"] == "http://127.0.0.1:8080"
 
@@ -1461,8 +1546,34 @@ class TestRootServerStartStop:
         ):
             await server.start()
             assert os.environ["NIUU_SERVER_HOST"] == "0.0.0.0"
+            assert os.environ["NIUU_SERVER_PUBLIC_HOST"] == "0.0.0.0"
             assert os.environ["NIUU_SERVER_PORT"] == "18080"
             assert os.environ["VOLUNDR__URL"] == "http://127.0.0.1:18080"
+
+    @pytest.mark.asyncio
+    async def test_start_uses_explicit_public_host_for_browser_urls(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(
+            registry=registry,
+            host="0.0.0.0",
+            public_host="100.66.123.128",
+            port=18080,
+        )
+
+        server._start_embedded_db = AsyncMock()
+        server._run_migrations = AsyncMock()
+
+        mock_uvicorn_server = MagicMock()
+        mock_uvicorn_server.serve = AsyncMock()
+
+        with (
+            patch.dict(os.environ, {"NIUU_NO_WEB": "true"}, clear=False),
+            patch("uvicorn.Server", return_value=mock_uvicorn_server),
+            patch("uvicorn.Config"),
+        ):
+            await server.start()
+            assert os.environ["NIUU_SERVER_HOST"] == "0.0.0.0"
+            assert os.environ["NIUU_SERVER_PUBLIC_HOST"] == "100.66.123.128"
 
     @pytest.mark.asyncio
     async def test_stop_shuts_down_server_and_db(self) -> None:
@@ -1550,15 +1661,18 @@ class TestRootServerRunMigrations:
         vol_dir.mkdir()
         (vol_dir / "000001_init.up.sql").write_text("CREATE TABLE IF NOT EXISTS t1 (id INT);")
 
-        tyr_dir = tmp_path / "tyr"
-        tyr_dir.mkdir()
-        (tyr_dir / "000001_init.up.sql").write_text("CREATE TABLE IF NOT EXISTS t2 (id INT);")
+        ting_dir = tmp_path / "ting"
+        ting_dir.mkdir()
+        (ting_dir / "000001_init.up.sql").write_text("CREATE TABLE IF NOT EXISTS t2 (id INT);")
+        (ting_dir / "000025_legacy_schema_compat.up.sql").write_text(
+            "CREATE TABLE IF NOT EXISTS t0 (id INT);"
+        )
 
         def mock_migration_dir(variant):
             if variant == "volundr":
                 return vol_dir
-            if variant == "tyr":
-                return tyr_dir
+            if variant == "ting":
+                return ting_dir
             raise FileNotFoundError
 
         mock_conn = AsyncMock()
@@ -1566,10 +1680,17 @@ class TestRootServerRunMigrations:
         with (
             patch("asyncpg.connect", new_callable=AsyncMock, return_value=mock_conn),
             patch("cli.resources.migration_dir", side_effect=mock_migration_dir),
+            patch("niuu.app.bootstrap_sql_for_service", return_value=()),
         ):
             await server._run_migrations()
 
-        assert mock_conn.execute.await_count == 2
+        assert mock_conn.execute.await_count == 3
+        executed_sql = [call.args[0] for call in mock_conn.execute.await_args_list]
+        assert executed_sql == [
+            "CREATE TABLE IF NOT EXISTS t1 (id INT);",
+            "CREATE TABLE IF NOT EXISTS t0 (id INT);",
+            "CREATE TABLE IF NOT EXISTS t2 (id INT);",
+        ]
         mock_conn.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1593,6 +1714,7 @@ class TestRootServerRunMigrations:
         with (
             patch("asyncpg.connect", new_callable=AsyncMock, return_value=mock_conn),
             patch("cli.resources.migration_dir", side_effect=[vol_dir, FileNotFoundError]),
+            patch("niuu.app.bootstrap_sql_for_service", return_value=()),
         ):
             # Should not raise
             await server._run_migrations()
@@ -1638,7 +1760,73 @@ class TestRootServerStartEmbeddedDb:
         assert os.environ["DATABASE__HOST"] == "localhost"
         assert os.environ["DATABASE__PORT"] == "5433"
         assert os.environ["DATABASE__USER"] == "testuser"
-        assert os.environ["DATABASE__NAME"] == "testdb"
+        assert os.environ["DATABASE__NAME"] == "volundr"
+        assert os.environ["NIUU_DATABASE_NAME_VOLUNDR"] == "volundr"
+        assert os.environ["NIUU_DATABASE_NAME_NIUU_SHARED"] == "niuu_shared"
+        assert os.environ["NIUU_DATABASE_NAME_GUILD"] == "guild"
+        assert os.environ["NIUU_DATABASE_NAME_OBSERVATORY"] == "observatory"
+        mock_db.ensure_databases.assert_awaited_once_with(
+            ("volundr", "niuu_shared", "guild", "observatory", "ting", "bifrost", "ravn", "mimir")
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_when_database_mode_is_external(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+
+        with (
+            patch.dict(os.environ, {"NIUU_DATABASE_MODE": "external"}, clear=False),
+            patch("niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase") as mock_cls,
+        ):
+            await server._start_embedded_db()
+
+        mock_cls.assert_not_called()
+        assert server._embedded_db is None
+
+    @pytest.mark.asyncio
+    async def test_skips_when_database_host_already_set(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+
+        with (
+            patch.dict(os.environ, {"DATABASE__HOST": "db.internal"}, clear=False),
+            patch("niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase") as mock_cls,
+        ):
+            await server._start_embedded_db()
+
+        mock_cls.assert_not_called()
+        assert server._embedded_db is None
+
+    @pytest.mark.asyncio
+    async def test_respects_pgdata_env_override(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+
+        mock_db = AsyncMock()
+        mock_db.start = AsyncMock(
+            return_value=ConnectionInfo(
+                host="localhost", port=5433, dbname="testdb", user="testuser"
+            )
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "NIUU_PGDATA_DIR": "/tmp/niuu-observatory-pg",
+                    "DATABASE__HOST": "",
+                    "NIUU_DATABASE_MODE": "",
+                },
+                clear=False,
+            ),
+            patch(
+                "niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase",
+                return_value=mock_db,
+            ),
+        ):
+            await server._start_embedded_db()
+
+        mock_db.start.assert_awaited_once_with("/tmp/niuu-observatory-pg")
 
 
 class TestRootServerLifespan:
@@ -1659,7 +1847,7 @@ class TestRootServerLifespan:
 
         sub_app = FastAPI(lifespan=sub_lifespan)
 
-        @sub_app.get("/api/v1/volundr/ping")
+        @sub_app.get("/api/v1/forge/ping")
         async def ping():
             return {"pong": True}
 
@@ -1667,10 +1855,18 @@ class TestRootServerLifespan:
             def create_api_app(self):
                 return sub_app
 
+            def api_route_domains(self):
+                return (
+                    APIRouteDomain(
+                        name="forge-api",
+                        prefixes=("/api/v1/forge",),
+                    ),
+                )
+
         registry = PluginRegistry()
         registry.register(VolundrPlugin(name="volundr"))
 
-        server = RootServer(registry=registry, enabled_mounts={"volundr-api"})
+        server = RootServer(registry=registry, enabled_mounts={"forge-api"})
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
 
@@ -1693,7 +1889,7 @@ class TestRootServerLifespan:
 
         sub_app = FastAPI(lifespan=broken_lifespan)
 
-        @sub_app.get("/api/v1/volundr/ping")
+        @sub_app.get("/api/v1/forge/ping")
         async def ping():
             return {"pong": True}
 
@@ -1734,7 +1930,7 @@ class TestPluginApiPrefixes:
 
     def test_has_expected_plugins(self) -> None:
         assert "volundr" in _PLUGIN_API_PREFIXES
-        assert "tyr" in _PLUGIN_API_PREFIXES
+        assert "ting" in _PLUGIN_API_PREFIXES
         assert "niuu" in _PLUGIN_API_PREFIXES
 
     def test_prefixes_start_with_api(self) -> None:

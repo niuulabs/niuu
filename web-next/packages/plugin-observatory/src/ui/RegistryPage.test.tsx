@@ -31,14 +31,14 @@ describe('RegistryPage', () => {
     await waitFor(() => expect(screen.getAllByText('Realm').length).toBeGreaterThan(0));
     expect(screen.getAllByText('Cluster').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Host').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Raid').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Run').length).toBeGreaterThan(0);
   });
 
   it('shows version and type count in the metadata line', async () => {
     wrap(<RegistryPage />);
     await waitFor(() => expect(screen.getByText(/rev/)).toBeInTheDocument());
     expect(screen.getByText('7')).toBeInTheDocument();
-    expect(screen.getByText(/18 types/)).toBeInTheDocument();
+    expect(screen.getByText(/17 types/)).toBeInTheDocument();
   });
 
   it('renders the Types tab by default', async () => {
@@ -50,6 +50,9 @@ describe('RegistryPage', () => {
   it('renders error state when the repository throws', async () => {
     const failingRepo = {
       getRegistry: async () => {
+        throw new Error('registry unavailable');
+      },
+      saveRegistry: async () => {
         throw new Error('registry unavailable');
       },
     };

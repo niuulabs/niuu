@@ -7,25 +7,28 @@ license = {text = "Apache-2.0"}
 keywords = ["development-platform", "remote-coding", "ai", "kubernetes", "self-hosted"]
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic>=2.0",
+    "pydantic>=2.13.4",
     "pydantic-settings>=2.0",
     "pyyaml>=6.0",
-    "claude-agent-sdk==0.1.74",
+    "claude-agent-sdk==0.1.81",
     "asyncpg>=0.31.0",
     "httpx>=0.28.1",
-    "fastapi>=0.109",
+    "idna>=3.15",
+    "fastapi>=0.136.3",
+    "starlette>=1.1.0",
     "python-multipart>=0.0.27",
     "PyJWT>=2.8",
-    "uvicorn>=0.44.0",
+    "urllib3>=2.7.0",
+    "uvicorn>=0.46.0",
     "websockets>=16.0",
     "python-on-whales>=0.81.0",
     "gitpython>=3.1.50",
     "msgpack>=1.1.2",
     "typer>=0.25.1",
-    "respx>=0.21",
+    "respx>=0.23.1",
     "pynng>=0.9.0",
-    "zeroconf>=0.148.0",
-    "python-telegram-bot>=21.0",
+    "zeroconf>=0.149.7",
+    "python-telegram-bot>=22.7",
 ]
 
 [project.optional-dependencies]
@@ -36,10 +39,10 @@ test = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
-    "respx>=0.22.0",
+    "respx>=0.23.1",
 ]
 rabbitmq = [
-    "aio-pika>=9.0",
+    "aio-pika>=9.6.2",
 ]
 redis = [
     "redis[hiredis]>=5.0",
@@ -48,9 +51,9 @@ k8s = [
     "kubernetes-asyncio>=30.0",
 ]
 otel = [
-    "opentelemetry-api>=1.25",
-    "opentelemetry-sdk>=1.41.1",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.25",
+    "opentelemetry-api>=1.42.1",
+    "opentelemetry-sdk>=1.42.1",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.41.1",
 ]
 encryption = [
     "cryptography>=48.0.0",
@@ -64,7 +67,7 @@ infra = [
 cli = [
     "typer>=0.25.1",
     "textual>=0.79",
-    "nuitka>=2.1",
+    "nuitka>=4.0.8",
     "ordered-set>=4.1",
     "patchelf>=0.14; sys_platform == 'linux'",
 ]
@@ -75,8 +78,8 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.12,<0.16",
-    "respx>=0.22.0",
+    "ruff>=0.15.14,<0.16",
+    "respx>=0.23.1",
     "cryptography>=48.0.0",
     "textual>=0.79",
     "typer>=0.25.1",
@@ -85,11 +88,20 @@ dev = [
 
 [project.scripts]
 niuu = "niuu.__main__:main"
+guild = "guild.main:main"
 volundr = "volundr.main:main"
+audit = "audit.main:main"
+identity = "identity.main:main"
+features = "features.main:main"
+credentials = "credentials.main:main"
+integrations = "integrations.main:main"
+tracker = "tracker.main:main"
 skuld = "skuld.broker:main"
 bifrost = "bifrost.__main__:main"
-tyr = "tyr.main:main"
+ting = "ting.main:main"
+observatory = "observatory.main:main"
 ravn = "ravn.cli.commands:app"
+ravn-api = "ravn.main:main"
 ravn-approvals = "ravn.cli.commands:approvals_main"
 ravn-gateway = "ravn.cli.commands:gateway_main"
 ravn-evolve = "ravn.cli.commands:evolve_main"
@@ -97,8 +109,15 @@ ravn-mimir = "ravn.cli.commands:mimir_main"
 
 [project.entry-points."niuu.plugins"]
 niuu = "niuu.plugin:NiuuPlugin"
+guild = "guild.plugin:GuildPlugin"
 volundr = "volundr.plugin:VolundrPlugin"
-tyr = "tyr.plugin:TyrPlugin"
+audit = "audit.plugin:AuditPlugin"
+identity = "identity.plugin:IdentityPlugin"
+features = "features.plugin:FeaturesPlugin"
+credentials = "credentials.plugin:CredentialsPlugin"
+integrations = "integrations.plugin:IntegrationsPlugin"
+tracker = "tracker.plugin:TrackerPlugin"
+ting = "ting.plugin:TingPlugin"
 mimir = "mimir.plugin:MimirPlugin"
 ravn = "ravn.plugin:RavnPlugin"
 bifrost = "bifrost.plugin:BifrostPlugin"
@@ -116,7 +135,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cli", "src/niuu", "src/volundr", "src/tyr", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas"]
+packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/niuu", "src/volundr", "src/ting", "src/tracker", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -141,20 +160,20 @@ line-length = 100
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.coverage.run]
-source = ["src/volundr", "src/cli", "src/tyr", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir"]
+source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/ting", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory"]
 branch = true
 # Textual TUI widgets require a running terminal and cannot be exercised with
 # plain pytest. They are excluded from coverage measurement until Textual
-# Pilot-based widget tests are added. The same applies to tyr/tui/ and
-# tyr/plugin.py (CLI plugin registration with TUI imports).
+# Pilot-based widget tests are added. The same applies to ting/tui/ and
+# ting/plugin.py (CLI plugin registration with TUI imports).
 # Sleipnir transport adapters require live broker services (NATS, NNG, RabbitMQ)
 # and cannot be tested in CI without those services running.
 # Ravn infrastructure adapters that require live Kubernetes, PostgreSQL, mDNS,
 # or HTTP services are also excluded from coverage measurement.
 omit = [
     "src/ravn/tui/*",
-    "src/tyr/tui/*",
-    "src/tyr/plugin.py",
+    "src/ting/tui/*",
+    "src/ting/plugin.py",
     "src/sleipnir/adapters/nats_transport.py",
     "src/sleipnir/adapters/nng_transport.py",
     "src/sleipnir/adapters/rabbitmq.py",
@@ -178,5 +197,5 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.12,<0.16",
+    "ruff>=0.15.14,<0.16",
 ]

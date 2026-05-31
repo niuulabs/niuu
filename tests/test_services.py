@@ -420,6 +420,44 @@ class TestSessionProvisioningState:
         updated = await repository.get(session.id)
         assert updated.status == SessionStatus.RUNNING
 
+    @pytest.mark.asyncio
+    async def test_reconcile_active_sessions_marks_stale_running_session_stopped(
+        self, repository, pod_manager, broadcaster
+    ):
+        """Running sessions are downgraded when the runtime is gone after restart."""
+        service = SessionService(
+            repository=repository,
+            pod_manager=pod_manager,
+            broadcaster=broadcaster,
+        )
+
+        session = Session(
+            name="Stale",
+            model="test",
+            source=GitSource(repo="test", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/stale/session",
+            code_endpoint="file:///tmp/stale",
+        )
+        created = await repository.create(session)
+        broadcaster._session_updated_events.clear()
+
+        async def stale_status(_session):
+            return SessionStatus.STOPPED
+
+        pod_manager.status = stale_status  # type: ignore[method-assign]
+
+        await service.reconcile_active_sessions()
+
+        updated = await repository.get(created.id)
+        assert updated is not None
+        assert updated.status == SessionStatus.STOPPED
+        assert updated.chat_endpoint is None
+        assert updated.code_endpoint is None
+        assert [event.status for event in broadcaster.session_updated_events] == [
+            SessionStatus.STOPPED
+        ]
+
 
 class TestFluxWaitForReady:
     """Tests for Flux adapter wait_for_ready with mocked watch."""

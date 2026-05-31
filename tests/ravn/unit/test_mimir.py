@@ -6,7 +6,7 @@ Tests cover:
 - Staleness detection (content_hash comparison)
 - Log and index maintenance
 - MIMIR.md seeding on first run
-- Six mimir_* tool wrappers: execute() paths, error handling
+- Seven mimir_* tool wrappers: execute() paths, error handling
 - MimirConfig defaults
 - Auto-distillation trigger criteria (post-session drive loop)
 - Integration: session → ingest → wiki page created with log entry
@@ -18,7 +18,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -30,7 +30,9 @@ from ravn.adapters.mimir.markdown import (
 from ravn.adapters.tools.mimir_tools import (
     MimirIngestTool,
     MimirLintTool,
+    MimirPublishFilesTool,
     MimirQueryTool,
+    MimirReadSourceTool,
     MimirReadTool,
     MimirSearchTool,
     MimirWriteTool,
@@ -231,6 +233,32 @@ async def test_upsert_page_updates_existing(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_page_derives_title_from_path_when_heading_missing(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    await adapter.upsert_page("runs/NIU-911-postmortem.md", "## Compiled Truth\n\nBody text.")
+
+    page = await adapter.get_page("runs/NIU-911-postmortem.md")
+
+    assert page.meta.title == "NIU-911 Postmortem"
+
+
+@pytest.mark.asyncio
+async def test_get_page_works_when_adapter_root_is_symlink(tmp_path: Path) -> None:
+    real_root = tmp_path / "real-mimir"
+    alias_root = tmp_path / "alias-mimir"
+    real_root.mkdir(parents=True, exist_ok=True)
+    alias_root.symlink_to(real_root, target_is_directory=True)
+
+    adapter = MarkdownMimirAdapter(root=alias_root)
+    await adapter.upsert_page("runs/NIU-912-postmortem.md", "## Compiled Truth\n\nBody text.")
+
+    page = await adapter.get_page("runs/NIU-912-postmortem.md")
+
+    assert page.meta.path == "runs/NIU-912-postmortem.md"
+    assert page.meta.title == "NIU-912 Postmortem"
+
+
+@pytest.mark.asyncio
 async def test_read_page_returns_content(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     content = "# Test\n\nBody text."
@@ -304,6 +332,16 @@ async def test_search_returns_empty_for_no_match(tmp_path: Path) -> None:
     await adapter.upsert_page("technical/ravn/tools.md", "# Tools\n\nBash tools.")
     results = await adapter.search("kubernetes longhorn ceph")
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_search_matches_path_title_when_body_omits_query(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    await adapter.upsert_page("runs/NIU-911-postmortem.md", "## Compiled Truth\n\nBody text.")
+
+    results = await adapter.search("postmortem")
+
+    assert [p.meta.path for p in results] == ["runs/NIU-911-postmortem.md"]
 
 
 @pytest.mark.asyncio
@@ -498,6 +536,27 @@ async def test_mimir_ingest_tool_success(tmp_path: Path) -> None:
     )
     assert not result.is_error
     assert "Ingested source" in result.content
+    assert "source_id: src_" in result.content
+    assert "source_type: document" in result.content
+
+
+@pytest.mark.asyncio
+async def test_mimir_ingest_tool_emits_source_ingested_event(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    event_emitter = AsyncMock()
+    tool = MimirIngestTool(adapter, event_emitter=event_emitter)
+
+    result = await tool.execute(
+        {"content": "Some content.", "title": "My Source", "source_type": "tool_output"}
+    )
+
+    assert not result.is_error
+    event_emitter.assert_awaited_once()
+    event_type, fields = event_emitter.await_args.args
+    assert event_type == "mimir.source.ingested"
+    assert fields["source_id"].startswith("src_")
+    assert fields["source_title"] == "My Source"
+    assert fields["source_type"] == "tool_output"
 
 
 @pytest.mark.asyncio
@@ -567,6 +626,21 @@ async def test_mimir_read_tool_missing_path() -> None:
     tool = MimirReadTool(adapter)
     result = await tool.execute({})
     assert result.is_error
+
+
+@pytest.mark.asyncio
+async def test_mimir_read_source_tool_success(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    source = _make_source(title="Source Title", content="Source content.")
+    await adapter.ingest(source)
+
+    tool = MimirReadSourceTool(adapter)
+    result = await tool.execute({"source_id": source.source_id})
+
+    assert not result.is_error
+    assert "Source ID:" in result.content
+    assert "Source Title" in result.content
+    assert "Source content." in result.content
 
 
 @pytest.mark.asyncio
@@ -686,6 +760,71 @@ async def test_mimir_write_tool_missing_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mimir_publish_files_tool_publishes_workspace_markdown(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    research_dir = workspace / "research" / "campaigns" / "demo"
+    research_dir.mkdir(parents=True)
+    source = _make_source(
+        title="Reference",
+        content="Original source material.",
+        source_type="research",
+    )
+    await adapter.ingest(source)
+    content = (
+        "---\n"
+        "type: research\n"
+        "confidence: medium\n"
+        f"source_ids: [{source.source_id}]\n"
+        "---\n\n"
+        "# Demo\n\n"
+        "## Compiled Truth\n\n"
+        "Body."
+    )
+    (research_dir / "final.md").write_text(content, encoding="utf-8")
+
+    tool = MimirPublishFilesTool(adapter, workspace)
+    result = await tool.execute({"paths": ["research/campaigns/demo/final.md"]})
+
+    assert not result.is_error
+    assert "research/campaigns/demo/final.md" in result.content
+    page_path = tmp_path / "mimir" / "wiki" / "research" / "campaigns" / "demo" / "final.md"
+    assert page_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_mimir_publish_files_tool_rejects_missing_workspace_file(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = MimirPublishFilesTool(adapter, workspace)
+    result = await tool.execute({"paths": ["research/campaigns/demo/final.md"]})
+    assert result.is_error
+    assert "Workspace file not found" in result.content
+
+
+@pytest.mark.asyncio
+async def test_mimir_publish_files_tool_publishes_repo_relative_markdown(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    workspace = tmp_path / "workspace"
+    repo = workspace / "repo"
+    repo.mkdir(parents=True)
+    delivery_dir = repo / "deliveries" / "demo"
+    delivery_dir.mkdir(parents=True)
+    content = "# Delivery\n\nPublished from repo-relative path."
+    (delivery_dir / "40-manifest.md").write_text(content, encoding="utf-8")
+
+    tool = MimirPublishFilesTool(adapter, workspace)
+    result = await tool.execute({"paths": ["deliveries/demo/40-manifest.md"]})
+
+    assert not result.is_error
+    assert "deliveries/demo/40-manifest.md" in result.content
+    page_path = tmp_path / "mimir" / "wiki" / "deliveries" / "demo" / "40-manifest.md"
+    assert page_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_mimir_search_tool_success(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     await adapter.upsert_page("technical/ravn/memory.md", "# Memory\n\nEpisodic storage.")
@@ -738,16 +877,18 @@ async def test_mimir_lint_tool_reports_issues(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_mimir_tools_returns_six(tmp_path: Path) -> None:
+def test_build_mimir_tools_returns_seven(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
-    tools = build_mimir_tools(adapter)
-    assert len(tools) == 6
+    tools = build_mimir_tools(adapter, workspace=tmp_path)
+    assert len(tools) == 8
     names = {t.name for t in tools}
     assert names == {
         "mimir_ingest",
         "mimir_query",
         "mimir_read",
+        "mimir_read_source",
         "mimir_write",
+        "mimir_publish_files",
         "mimir_search",
         "mimir_lint",
     }

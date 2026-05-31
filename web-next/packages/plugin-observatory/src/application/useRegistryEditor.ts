@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Registry, EntityType } from '../domain';
 import type { EntityShape, EntityCategory } from '@niuulabs/domain';
 import { isDescendant, reparent } from '../domain/containment';
@@ -17,11 +17,21 @@ export interface RegistryEditorState {
   updateType: (id: string, patch: Partial<EntityType>) => void;
   /** Create a new entity type and select it. */
   createType: () => void;
+  /** Delete an entity type and remove containment references to it. */
+  deleteType: (id: string) => void;
 }
 
 export function useRegistryEditor(initial: Registry): RegistryEditorState {
   const [registry, setRegistry] = useState<Registry>(initial);
   const [selectedId, setSelectedId] = useState<string | null>(initial.types[0]?.id ?? null);
+
+  useEffect(() => {
+    setRegistry(initial);
+    setSelectedId((current) => {
+      if (current && initial.types.some((item) => item.id === current)) return current;
+      return initial.types[0]?.id ?? null;
+    });
+  }, [initial]);
 
   const byId = useMemo(() => new Map(registry.types.map((t) => [t.id, t])), [registry.types]);
 
@@ -67,6 +77,22 @@ export function useRegistryEditor(initial: Registry): RegistryEditorState {
     setSelectedId(newId);
   };
 
+  const deleteType = (id: string) => {
+    setRegistry((r) => ({
+      ...r,
+      version: r.version + 1,
+      updatedAt: new Date().toISOString(),
+      types: r.types
+        .filter((t) => t.id !== id)
+        .map((t) => ({
+          ...t,
+          parentTypes: t.parentTypes.filter((parentId) => parentId !== id),
+          canContain: t.canContain.filter((childId) => childId !== id),
+        })),
+    }));
+    setSelectedId((current) => (current === id ? null : current));
+  };
+
   return {
     registry,
     selectedId,
@@ -74,5 +100,6 @@ export function useRegistryEditor(initial: Registry): RegistryEditorState {
     tryReparent,
     updateType,
     createType,
+    deleteType,
   };
 }

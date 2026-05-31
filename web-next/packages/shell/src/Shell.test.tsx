@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { createMemoryHistory } from '@tanstack/react-router';
 import { ConfigProvider, FeatureCatalogProvider, definePlugin } from '@niuulabs/plugin-sdk';
 import { Shell } from './Shell';
@@ -35,6 +36,19 @@ const pluginWithTabs = definePlugin({
   render: () => <div data-testid="tabbed-content">tabbed-rendered</div>,
   subnav: () => <div data-testid="tabbed-subnav">subnav-content</div>,
   footer: () => <span data-testid="tabbed-footer-chip">api ● connected</span>,
+});
+
+const pluginWithCollapsibleSubnav = definePlugin({
+  id: 'collapsible',
+  rune: 'ᚲ',
+  title: 'Collapsible',
+  subtitle: 'subnav test',
+  render: () => <div data-testid="collapsible-content">collapsible-rendered</div>,
+  subnav: (ctx) => (
+    <button type="button" onClick={() => ctx.setTweak('collapsible.subnavCollapsed', true)}>
+      collapse subnav
+    </button>
+  ),
 });
 
 // Plugin without subnav — tests collapse
@@ -103,6 +117,22 @@ describe('Shell', () => {
       expect(screen.getByTestId('beta-content')).toBeInTheDocument();
     });
     expect(localStorage.getItem('niuu.active')).toBe('beta');
+  });
+
+  it('shows a tooltip for rail items with plugin name and subtitle', async () => {
+    const user = userEvent.setup({ delay: null });
+    wrap(<Shell plugins={[pluginA, pluginB]} _testHistory={memHistory('/')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
+    });
+
+    await user.hover(screen.getByRole('button', { name: 'Beta' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('tooltip')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Beta');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('second');
   });
 
   it('hides plugins disabled via config', async () => {
@@ -194,5 +224,20 @@ describe('Shell', () => {
     expect(subnav).toBeInTheDocument();
     // Empty subnav — collapsed via :empty CSS rule
     expect(subnav?.childElementCount).toBe(0);
+  });
+
+  it('applies the collapsed subnav class when a plugin toggles it', async () => {
+    wrap(
+      <Shell plugins={[pluginWithCollapsibleSubnav]} _testHistory={memHistory('/collapsible')} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('collapsible-content')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /collapse subnav/i }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.niuu-shell__subnav--collapsed')).toBeInTheDocument();
+    });
   });
 });

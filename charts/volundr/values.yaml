@@ -41,58 +41,22 @@ replicaCount: 1
 # -- Number of old ReplicaSets to retain
 revisionHistoryLimit: 10
 
-# Available AI models — used by the wizard, profiles, and pricing
-# Override via global.models from the niuu umbrella chart
-aiModels:
-  # Anthropic Claude
-  - id: "claude-opus-4-7"
-    name: "Claude Opus 4.7"
-    provider: "anthropic"
-    costPerMillionTokens: 15.00
-  - id: "claude-opus-4-6"
-    name: "Claude Opus 4.6"
-    provider: "anthropic"
-    costPerMillionTokens: 15.00
-  - id: "claude-opus-4-5-20251101"
-    name: "Claude Opus 4.5"
-    provider: "anthropic"
-    costPerMillionTokens: 15.00
-  - id: "claude-sonnet-4-6"
-    name: "Claude Sonnet 4.6"
-    provider: "anthropic"
-    costPerMillionTokens: 3.00
-  - id: "claude-haiku-4-5-20251001"
-    name: "Claude Haiku 4.5"
-    provider: "anthropic"
-    costPerMillionTokens: 1.00
-  # OpenAI GPT
-  - id: "gpt-5.5"
-    name: "GPT-5.5"
-    provider: "openai"
-    costPerMillionTokens: 10.00
-  - id: "gpt-5.4"
-    name: "GPT-5.4"
-    provider: "openai"
-    costPerMillionTokens: 5.00
-  - id: "o4-mini"
-    name: "o4-mini"
-    provider: "openai"
-    costPerMillionTokens: 1.10
-  - id: "o3"
-    name: "o3"
-    provider: "openai"
-    costPerMillionTokens: 10.00
-
 # Image configuration
 image:
   # -- Container registry
   registry: ghcr.io
   # -- Image repository
-  repository: niuulabs/volundr
+  repository: niuulabs/niuu
   # -- Image tag (defaults to Chart.appVersion)
   tag: ""
   # -- Image pull policy
   pullPolicy: Always
+
+# -- Override container command. Defaults to the unified niuu image running the Volundr API.
+command:
+  - volundr
+# -- Additional container args.
+args: []
 
 # Service Account
 serviceAccount:
@@ -164,12 +128,12 @@ ingress:
   #   haproxy.org/timeout-server: "3600s"
   annotations: {}
   # -- Ingress hosts
-  # Note: The API is served at /api/v1/volundr/* for path-based routing
+  # Note: The API is served at /api/v1/* for path-based routing
   # with multiple services on the same domain
   hosts:
     - host: api.example.com
       paths:
-        - path: /api/v1/volundr
+        - path: /api/v1
           pathType: Prefix
         - path: /api/v1/users
           pathType: Prefix
@@ -277,6 +241,19 @@ provisioning:
   timeoutSeconds: 300.0
   # -- Initial delay before starting readiness polls in seconds
   initialDelaySeconds: 5.0
+
+bifrost:
+  # -- Base URL for the co-hosted Bifrost API Volundr reads models from
+  url: "http://127.0.0.1:8080"
+  # -- HTTP timeout for catalog fetches
+  timeoutSeconds: 10.0
+  auth:
+    # -- Fully-qualified outbound auth adapter class
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+    # -- Kwargs forwarded to the auth adapter constructor
+    kwargs: {}
+    # -- Secret-backed kwargs forwarded through env indirection
+    secretKwargs: []
 
 podManager:
   # -- Fully-qualified class path for the PodManager adapter
@@ -511,7 +488,7 @@ envoy:
     # -- Path prefixes that bypass JWT validation (no auth required)
     # Rules are evaluated in order; matching prefixes skip the JWT check.
     bypassPrefixes:
-      - /api/v1/volundr/auth/config
+      - /api/v1/identity/auth/config
       - /health
   # -- Extra HTTP filters (inserted before the router filter)
   extraHttpFilters: []
@@ -612,11 +589,12 @@ authorization:
 #
 # ── Vault/OpenBao ──────────────────────────────────────────────
 #   credentialStore:
-#     adapter: "volundr.adapters.outbound.vault_credential_store.VaultCredentialStore"
+#     adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
 #     kwargs:
-#       url: "http://vault:8200"
-#       auth_method: "kubernetes"
-#       mount_path: "secret"
+#       url: "http://openbao:8200"
+#       mount_path: "volundr"
+#       auth_method: "token"
+#       token: ""
 #
 # ── Infisical ──────────────────────────────────────────────────
 #   credentialStore:
@@ -639,13 +617,25 @@ credentialStore:
 # Controls how secrets (e.g. Infisical CSI volumes) are injected
 # into session pods. The in-memory adapter is a no-op for development.
 #
-# ── Infisical CSI ────────────────────────────────────────────
+# ── Infisical Agent Injector ─────────────────────────────────
 #   secretInjection:
 #     adapter: >-
 #       volundr.adapters.outbound.infisical_secret_injection
-#       .InfisicalCSISecretInjectionAdapter
+#       .InfisicalAgentInjectionAdapter
 #     kwargs:
 #       infisical_url: "https://infisical.example.com"
+#
+# ── OpenBao Agent Injector ───────────────────────────────────
+#   secretInjection:
+#     adapter: >-
+#       volundr.adapters.outbound.openbao_secret_injection
+#       .OpenBaoAgentInjectionAdapter
+#     kwargs:
+#       openbao_url: "https://openbao.ymir.niuu.world"
+#       namespace: "skuld"
+#       mount_path: "volundr"
+#       auth_path: "jwt-valhalla"
+#       audience: "https://kubernetes.default.svc.cluster.local"
 #
 secretInjection:
   # -- Fully-qualified class path for the SecretInjectionPort adapter
@@ -865,16 +855,12 @@ sessionDefinitions:
       broker:
         # -- AI CLI backend: "claude" (Claude Code)
         cliType: claude
-        # -- CLI transport mode for Claude Code sessions.
-        # "persistent_subprocess" keeps one Claude process across all
-        # turns (multi-turn over a held-open stdin pipe) — no per-turn
-        # spawn cost, no --resume reload between turns. The legacy
-        # "subprocess" mode (spawn-per-turn) still works as a fallback.
-        transport: persistent_subprocess
+        # -- Claude Agent SDK transport (preferred default).
+        transport: sdk
         # -- Fully-qualified transport adapter class path
-        transportAdapter: "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+        transportAdapter: "skuld.transports.sdk.SDKTransport"
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
-        skipPermissions: true
+        skipPermissions: false
         # -- Enable Claude Code experimental Agent Teams
         agentTeams: false
 
@@ -1001,7 +987,7 @@ sessionDefinitions:
         # -- Fully-qualified transport adapter class path
         transportAdapter: "skuld.transports.codex_ws.CodexWebSocketTransport"
         # -- Skip tool permission prompts (--full-auto for Codex)
-        skipPermissions: true
+        skipPermissions: false
         agentTeams: false
 
       image:
@@ -1103,7 +1089,7 @@ sessionDefinitions:
         # -- Fully-qualified transport adapter class path
         transportAdapter: "skuld.transports.opencode.OpenCodeHttpTransport"
         # -- Skip tool permission prompts
-        skipPermissions: true
+        skipPermissions: false
         agentTeams: false
 
       image:
@@ -1292,21 +1278,38 @@ webNext:
       login:
         enabled: true
         order: 0
-      volundr:
+      credentials:
         enabled: true
         order: 1
-      tyr:
+      integrations:
         enabled: true
         order: 2
-      mimir:
+      bifrost:
         enabled: true
         order: 3
-      settings:
+      volundr:
         enabled: true
         order: 4
+      ting:
+        enabled: true
+        order: 5
+      mimir:
+        enabled: true
+        order: 6
+      ravn:
+        enabled: true
+        order: 7
+      observatory:
+        enabled: true
+        order: 8
+      settings:
+        enabled: true
+        order: 9
     auth:
       issuer: ""
       clientId: ""
+    # -- Optional service URL overrides keyed by plugin-sdk service id
+    services: {}
 
   resources:
     requests:

@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]  # stable semver only, skip prerelease (v*-dev.*)
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"] # stable semver only, skip prerelease (v*-dev.*)
 
 permissions: read-all
 
@@ -19,7 +19,7 @@ jobs:
       version: ${{ steps.extract.outputs.version }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -43,20 +43,20 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [volundr, skuld, devrunner, volundr-web, niuu-web, tyr, niuu, mimir, bifrost]
+        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -71,7 +71,7 @@ jobs:
           echo "description=${DESC}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           file: ./containers/${{ matrix.container }}/Dockerfile
@@ -102,10 +102,10 @@ jobs:
       id-token: write
     strategy:
       matrix:
-        container: [volundr, skuld, devrunner, volundr-web, niuu-web, tyr, niuu, mimir, bifrost]
+        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -123,10 +123,10 @@ jobs:
           echo "description=${DESC}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -183,17 +183,17 @@ jobs:
       packages: read
     strategy:
       matrix:
-        container: [volundr, skuld, devrunner, volundr-web, niuu-web, tyr, niuu, mimir, bifrost]
+        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -230,18 +230,65 @@ jobs:
             -o sarif > "grype-${{ matrix.container }}.sarif"
 
       - name: Upload Grype results
-        uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7 # v4
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
         if: always()
         with:
           sarif_file: grype-${{ matrix.container }}.sarif
           category: grype-${{ matrix.container }}
 
   # ---------------------------------------------------------------------------
+  # Shared CLI assets — build once, reuse in packaging jobs
+  # ---------------------------------------------------------------------------
+  build-cli-web-assets:
+    name: Build CLI Web Assets
+    needs: [version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-next/pnpm-lock.yaml
+
+      - name: Build web assets for embedded CLI
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
+        run: |
+          cd web-next
+          pnpm install --frozen-lockfile
+          pnpm build
+          cd ..
+          rm -rf src/cli/web/dist
+          mkdir -p src/cli/web
+          cp -r web-next/apps/niuu/dist src/cli/web/dist
+
+      - name: Upload CLI web assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cli-web-dist
+          path: src/cli/web/dist
+
+  # ---------------------------------------------------------------------------
   # CLI binaries
   # ---------------------------------------------------------------------------
   build-cli:
     name: "Build CLI (${{ matrix.os }}/${{ matrix.arch }})"
-    needs: [version]
+    needs: [version, build-cli-web-assets]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -262,17 +309,43 @@ jobs:
     steps:
       - name: Harden runner
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Cache PostgreSQL build
+      - name: Download CLI web assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: cli-web-dist
+          path: src/cli/web
+
+      - name: Restore PostgreSQL bundle cache
+        id: pg-cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v4
         with:
           path: build/pginstall
-          key: pginstall-${{ runner.os }}-${{ runner.arch }}-pg17.9-vec0.8.2
+          key: pginstall-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('src/niuu/pg_versions.py', 'scripts/build_postgres.sh') }}
+
+      - name: Load PostgreSQL versions
+        id: pg-versions
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          namespace = {}
+          exec(open("src/niuu/pg_versions.py", encoding="utf-8").read(), namespace)
+          print(f"postgres_version={namespace['POSTGRES_VERSION']}")
+          print(f"pgvector_version={namespace['PGVECTOR_VERSION']}")
+          PY
+
+      - name: Build embedded PostgreSQL bundle
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        env:
+          POSTGRES_VERSION: ${{ steps.pg-versions.outputs.postgres_version }}
+          PGVECTOR_VERSION: ${{ steps.pg-versions.outputs.pgvector_version }}
+          INSTALL_PREFIX: build/pginstall
+        run: scripts/build_postgres.sh
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v6
@@ -282,20 +355,23 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: 9
+
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-next/pnpm-lock.yaml
 
       - name: Install dependencies
         run: uv sync --python 3.12 --extra cli --extra dev
 
       - name: Build
-        run: make build
-        env:
-          NODE_OPTIONS: "--max-old-space-size=4096"
+        run: make copy-migrations build-cli
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -329,7 +405,7 @@ jobs:
     steps:
       - name: Harden runner
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -367,7 +443,7 @@ jobs:
       packages: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -386,45 +462,29 @@ jobs:
         run: |
           VERSION="${{ needs.version.outputs.version }}"
 
-          # Update skuld chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/skuld/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/skuld/Chart.yaml
-
-          # Update volundr chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/volundr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/volundr/Chart.yaml
-
-          # Update tyr chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/tyr/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/tyr/Chart.yaml
-
-          # Update skuld-planner chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/skuld-planner/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/skuld-planner/Chart.yaml
-
-          # Update niuu-shared chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu-shared/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu-shared/Chart.yaml
-
-          # Update niuu umbrella chart
-          sed -i "s/^version:.*/version: $VERSION/" charts/niuu/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/niuu/Chart.yaml
+          for CHART in bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu; do
+            sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
+            sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
+          done
 
           # Update pyproject.toml
           sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
 
       - name: Package Helm charts
         run: |
+          helm package charts/bifrost -d .helm-packages/
+          helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
-          helm package charts/tyr -d .helm-packages/
+          helm package charts/ting -d .helm-packages/
           helm package charts/niuu-shared -d .helm-packages/
-          helm dependency build charts/niuu
+          rm -f charts/niuu/Chart.lock
+          helm dependency update charts/niuu
           helm package charts/niuu -d .helm-packages/
 
       - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -432,64 +492,29 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
-          helm push .helm-packages/skuld-0*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/skuld-[0-9]*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-planner-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/volundr-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/tyr-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
-          helm push .helm-packages/niuu-0*.tgz ${{ env.CHART_REPO }}
-
-  # ---------------------------------------------------------------------------
-  # npm package
-  # ---------------------------------------------------------------------------
-  publish-web-package:
-    name: Publish Web Package
-    needs: [version]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with:
-          node-version: 24
-          registry-url: https://npm.pkg.github.com
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Update package version
-        run: npm version ${{ needs.version.outputs.version }} --no-git-tag-version
-
-      - name: Build library
-        run: npm run build:lib
-        env:
-          NODE_OPTIONS: --max-old-space-size=6144
-
-      - name: Publish to GitHub Packages
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          helm push .helm-packages/niuu-[0-9]*.tgz ${{ env.CHART_REPO }}
 
   # ---------------------------------------------------------------------------
   # GitHub Release
   # ---------------------------------------------------------------------------
   release:
     name: Create Release
-    needs: [version, merge-container-manifests, scan-containers, build-charts, build-cli, build-ravn, publish-web-package]
+    needs:
+      [
+        version,
+        merge-container-manifests,
+        scan-containers,
+        build-charts,
+        build-cli,
+        build-ravn,
+      ]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -497,13 +522,13 @@ jobs:
       attestations: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}

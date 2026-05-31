@@ -50,7 +50,7 @@ def _dispatch_payload(**kwargs) -> bytes:
         "task": "Review all open PRs and summarise status",
         "context": {"org": "niuulabs"},
         "deadline": None,
-        "dispatched_by": "tyr",
+        "dispatched_by": "ting",
     }
     base.update(kwargs)
     return json.dumps(base).encode("utf-8")

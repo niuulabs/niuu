@@ -278,15 +278,13 @@ def create_oauth_router(
     credential_store: CredentialStorePort,
     integration_repo: IntegrationRepository,
 ) -> APIRouter:
-    """Create the legacy Volundr OAuth router."""
+    """Create the canonical shared OAuth router."""
     return _build_oauth_router(
         oauth_config,
         integration_registry,
         credential_store,
         integration_repo,
-        prefix="/api/v1/volundr/integrations/oauth",
-        deprecated=True,
-        canonical_prefix="/api/v1/integrations/oauth",
+        prefix="/api/v1/integrations/oauth",
     )
 
 
@@ -296,11 +294,10 @@ def create_canonical_oauth_router(
     credential_store: CredentialStorePort,
     integration_repo: IntegrationRepository,
 ) -> APIRouter:
-    """Create the canonical shared OAuth router."""
-    return _build_oauth_router(
+    """Backward-compatible alias for the canonical shared OAuth router."""
+    return create_oauth_router(
         oauth_config,
         integration_registry,
         credential_store,
         integration_repo,
-        prefix="/api/v1/integrations/oauth",
     )

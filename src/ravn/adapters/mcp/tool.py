@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from ravn.domain.models import ToolResult
@@ -35,12 +36,16 @@ class MCPTool(ToolPort):
         prefixed_name: str,
         description: str,
         input_schema: dict[str, Any],
+        post_execute_hook: (
+            Callable[[str, str, dict[str, Any], ToolResult], Awaitable[None]] | None
+        ) = None,
     ) -> None:
         self._server_client = server_client
         self._original_name = original_name
         self._prefixed_name = prefixed_name
         self._description = description
         self._input_schema = input_schema
+        self._post_execute_hook = post_execute_hook
 
     @property
     def name(self) -> str:
@@ -59,4 +64,20 @@ class MCPTool(ToolPort):
         return "mcp:call"
 
     async def execute(self, input: dict) -> ToolResult:
-        return await self._server_client.call_tool(self._original_name, input)
+        result = await self._server_client.call_tool(self._original_name, input)
+        if self._post_execute_hook is not None:
+            try:
+                await self._post_execute_hook(
+                    self._server_client.name,
+                    self._original_name,
+                    input,
+                    result,
+                )
+            except Exception:
+                logger.warning(
+                    "MCP post-execute hook failed for server=%s tool=%s",
+                    self._server_client.name,
+                    self._original_name,
+                    exc_info=True,
+                )
+        return result

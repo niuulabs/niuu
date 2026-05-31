@@ -5,7 +5,7 @@
  * ShapeSvg / rune glyph map:
  *   entity     → ᚢ (Uruz — the aurochs, primal force)
  *   topic      → ᚦ (Thurisaz — the thorn, directed force)
- *   directive  → ᚱ (Raidho — the ride, forward movement)
+ *   directive  → ᚱ (Runho — the ride, forward movement)
  *   preference → ᚷ (Gebo — gift, mutual exchange)
  *   decision   → ᛜ (Ingwaz — the seed, crystallised outcome)
  */

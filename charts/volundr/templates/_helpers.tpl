@@ -76,12 +76,12 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
-Return the proper image name (global overrides local)
+Return the proper image name (explicit local tag overrides global)
 */}}
 {{- define "volundr.image" -}}
 {{- $registryName := .Values.image.registry -}}
 {{- $repositoryName := .Values.image.repository -}}
-{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- $tag := .Values.image.tag -}}
 {{- if and .Values.global .Values.global.image -}}
   {{- if .Values.global.image.registry -}}
     {{- $registryName = .Values.global.image.registry -}}
@@ -89,9 +89,12 @@ Return the proper image name (global overrides local)
   {{- if .Values.global.image.repository -}}
     {{- $repositoryName = .Values.global.image.repository -}}
   {{- end -}}
-  {{- if .Values.global.image.tag -}}
+  {{- if and (not $tag) .Values.global.image.tag -}}
     {{- $tag = .Values.global.image.tag -}}
   {{- end -}}
+{{- end -}}
+{{- if not $tag -}}
+  {{- $tag = .Chart.AppVersion -}}
 {{- end -}}
 {{- if $registryName }}
 {{- printf "%s/%s:%s" $registryName $repositoryName $tag -}}
@@ -189,19 +192,22 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Web component image (global overrides local)
+Web component image (explicit local tag overrides global)
 */}}
 {{- define "volundr.web.image" -}}
 {{- $registryName := .Values.web.image.registry -}}
 {{- $repositoryName := .Values.web.image.repository -}}
-{{- $tag := .Values.web.image.tag | default .Chart.AppVersion -}}
+{{- $tag := .Values.web.image.tag -}}
 {{- if and .Values.global .Values.global.image -}}
   {{- if .Values.global.image.registry -}}
     {{- $registryName = .Values.global.image.registry -}}
   {{- end -}}
-  {{- if .Values.global.image.tag -}}
+  {{- if and (not $tag) .Values.global.image.tag -}}
     {{- $tag = .Values.global.image.tag -}}
   {{- end -}}
+{{- end -}}
+{{- if not $tag -}}
+  {{- $tag = .Chart.AppVersion -}}
 {{- end -}}
 {{- if $registryName }}
 {{- printf "%s/%s:%s" $registryName $repositoryName $tag -}}
@@ -240,19 +246,22 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Web Next component image (global overrides local)
+Web Next component image (explicit local tag overrides global)
 */}}
 {{- define "volundr.webNext.image" -}}
 {{- $registryName := .Values.webNext.image.registry -}}
 {{- $repositoryName := .Values.webNext.image.repository -}}
-{{- $tag := .Values.webNext.image.tag | default .Chart.AppVersion -}}
+{{- $tag := .Values.webNext.image.tag -}}
 {{- if and .Values.global .Values.global.image -}}
   {{- if .Values.global.image.registry -}}
     {{- $registryName = .Values.global.image.registry -}}
   {{- end -}}
-  {{- if .Values.global.image.tag -}}
+  {{- if and (not $tag) .Values.global.image.tag -}}
     {{- $tag = .Values.global.image.tag -}}
   {{- end -}}
+{{- end -}}
+{{- if not $tag -}}
+  {{- $tag = .Chart.AppVersion -}}
 {{- end -}}
 {{- if $registryName }}
 {{- printf "%s/%s:%s" $registryName $repositoryName $tag -}}

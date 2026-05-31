@@ -34,7 +34,7 @@ export type MountStatus = z.infer<typeof mountStatusSchema>;
  * - `plugin-ravn` — persona form shows `mimirWriteRouting` dropdown
  *   derived from available mounts; MountChip renders mount name + role.
  * - `plugin-observatory` — topology canvas shows Mímir node + mount count.
- * - `plugin-tyr` — dispatch feasibility check reads mount health.
+ * - `plugin-ting` — dispatch feasibility check reads mount health.
  */
 export const mountSchema = z.object({
   /** Unique short name used in write-routing rules and RavnBindings. */

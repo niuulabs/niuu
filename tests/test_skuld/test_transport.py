@@ -33,6 +33,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is False
         assert caps.session_resume is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -49,6 +51,8 @@ class TestTransportCapabilities:
         assert caps.session_resume is True
         assert caps.cli_websocket is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -69,6 +73,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is True
         assert caps.session_resume is True
         assert caps.interrupt is True
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is True
         assert caps.set_thinking_tokens is True
         assert caps.set_permission_mode is True
@@ -85,6 +91,8 @@ class TestTransportCapabilities:
         assert caps.cli_websocket is False
         assert caps.session_resume is False
         assert caps.interrupt is False
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.set_model is False
         assert caps.set_thinking_tokens is False
         assert caps.set_permission_mode is False
@@ -105,6 +113,8 @@ class TestTransportCapabilities:
         caps = TransportCapabilities(interrupt=True, set_model=True)
         assert caps.interrupt is True
         assert caps.set_model is True
+        assert caps.steer is False
+        assert caps.steering_mode == "none"
         assert caps.cli_websocket is False
         assert caps.session_resume is False
 
@@ -188,7 +198,7 @@ class TestSubprocessTransport:
     def test_init(self, transport, tmp_path):
         assert transport.workspace_dir == str(tmp_path)
         assert transport._model == ""
-        assert transport._skip_permissions is True
+        assert transport._skip_permissions is False
         assert transport._agent_teams is False
         assert transport._system_prompt == ""
         assert transport._initial_prompt == ""
@@ -301,8 +311,8 @@ class TestSubprocessTransport:
             assert "--output-format" in call_args
             assert "stream-json" in call_args
             assert "--input-format" in call_args
-            assert "--permission-mode" in call_args
-            assert "bypassPermissions" in call_args
+            assert "--permission-mode" not in call_args
+            assert "bypassPermissions" not in call_args
 
             stdin_payload = b"".join(
                 call.args[0] for call in mock_subprocess.stdin.write.call_args_list
@@ -513,6 +523,36 @@ class TestSubprocessTransport:
             assert "--append-system-prompt" in call_args
             assert "Be careful." in call_args
             assert call_kwargs["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_send_message_injects_tracker_shim_env(self, tmp_path):
+        transport = SubprocessTransport(str(tmp_path))
+        mock_subprocess = self._mock_process(
+            stdout_lines=[b'{"type": "result", "result": "Done"}\n']
+        )
+        shim_env = {
+            "PATH": f"{tmp_path}/.skuld-tools/bin:/usr/bin",
+            "RAVN_WORKSPACE_DIR": str(tmp_path),
+        }
+
+        transport.on_event(AsyncMock())
+
+        with (
+            patch(
+                "skuld.transports.subprocess.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.subprocess.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", shim_env),
+            ),
+        ):
+            mock_exec.return_value = mock_subprocess
+            await transport.send_message("test")
+
+            call_kwargs = mock_exec.call_args.kwargs
+            assert call_kwargs["env"]["PATH"] == shim_env["PATH"]
+            assert call_kwargs["env"]["RAVN_WORKSPACE_DIR"] == str(tmp_path)
 
     @pytest.mark.asyncio
     async def test_send_message_omits_system_prompt_when_resuming(self, tmp_path):
@@ -729,8 +769,8 @@ class TestSdkWebSocketTransport:
             assert "--output-format" in call_args
             assert "stream-json" in call_args
             assert "--input-format" in call_args
-            assert "--permission-mode" in call_args
-            assert "bypassPermissions" in call_args
+            assert "--permission-mode" not in call_args
+            assert "bypassPermissions" not in call_args
 
     @pytest.mark.asyncio
     async def test_start_with_resume(self, transport):
@@ -991,7 +1031,7 @@ class TestSdkWebSocketTransport:
             sdk_port=8081,
             session_id="s1",
         )
-        assert t._skip_permissions is True
+        assert t._skip_permissions is False
 
     def test_init_skip_permissions_false(self, tmp_path):
         t = SdkWebSocketTransport(
@@ -1149,6 +1189,13 @@ class TestSdkWebSocketTransport:
         # Should not raise
         await t.send_control("interrupt")
 
+    def test_base_transport_reports_turn_inactive(self):
+        """Base CLITransport.is_turn_active defaults to False."""
+        from skuld.transports import SubprocessTransport
+
+        t = SubprocessTransport("/tmp")
+        assert t.is_turn_active is False
+
     # --- Phase 4: Agent Teams ---
 
     def test_init_agent_teams_default(self, tmp_path):
@@ -1190,6 +1237,38 @@ class TestSdkWebSocketTransport:
             call_kwargs = mock_exec.call_args[1]
             env = call_kwargs["env"]
             assert env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_spawn_injects_tracker_shim_env(self, tmp_path):
+        t = SdkWebSocketTransport(
+            workspace_dir=str(tmp_path),
+            sdk_port=8081,
+            session_id="s1",
+        )
+        shim_env = {
+            "PATH": f"{tmp_path}/.skuld-tools/bin:/usr/bin",
+            "RAVN_WORKSPACE_DIR": str(tmp_path),
+        }
+        with (
+            patch(
+                "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.sdk_websocket.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", shim_env),
+            ),
+        ):
+            mock_process = MagicMock()
+            mock_process.stdout = None
+            mock_process.stderr = None
+            mock_exec.return_value = mock_process
+
+            await t.start()
+
+            env = mock_exec.call_args[1]["env"]
+            assert env["PATH"] == shim_env["PATH"]
+            assert env["RAVN_WORKSPACE_DIR"] == str(tmp_path)
 
     @pytest.mark.asyncio
     async def test_spawn_without_agent_teams_no_env(self, tmp_path):
@@ -1482,7 +1561,7 @@ class TestCodexSubprocessTransport:
     async def test_send_message_spawns_codex(self, transport):
         """send_message spawns codex with correct arguments."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1507,10 +1586,11 @@ class TestCodexSubprocessTransport:
             assert call_args[1] == "exec"
             assert "--model" in call_args
             assert "o4-mini" in call_args
-            assert "--full-auto" in call_args
+            assert "--sandbox" not in call_args
             assert "--json" in call_args
             assert "--quiet" not in call_args
             assert "refactor the auth module" in call_args
+            assert mock_exec.call_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
 
     @pytest.mark.asyncio
     async def test_send_message_spawns_codex_with_mcp_overrides(self, tmp_path):
@@ -1525,7 +1605,7 @@ class TestCodexSubprocessTransport:
             ],
         )
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1562,7 +1642,7 @@ class TestCodexSubprocessTransport:
         )
 
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[response_line, b""])
+        mock_stdout.read = AsyncMock(side_effect=[response_line, b""])
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1592,7 +1672,7 @@ class TestCodexSubprocessTransport:
     async def test_send_message_emits_plain_text_as_delta(self, transport):
         """Plain text lines (non-JSON) are emitted as content_block_delta."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[b"Refactoring complete.\n", b""])
+        mock_stdout.read = AsyncMock(side_effect=[b"Refactoring complete.\n", b""])
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1614,6 +1694,47 @@ class TestCodexSubprocessTransport:
         assert "content_block_delta" in types
 
     @pytest.mark.asyncio
+    async def test_send_message_handles_large_single_line_json_output(self, transport):
+        """Large JSON lines are buffered across chunks instead of using readline()."""
+        large_text = "A" * 70000
+        response_line = (
+            json.dumps(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": large_text,
+                }
+            ).encode()
+            + b"\n"
+        )
+
+        midpoint = len(response_line) // 2
+        mock_stdout = AsyncMock()
+        mock_stdout.read = AsyncMock(
+            side_effect=[response_line[:midpoint], response_line[midpoint:], b""]
+        )
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        callback = AsyncMock()
+        transport.on_event(callback)
+
+        with patch(
+            "skuld.transports.codex.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_process
+            await transport.send_message("hello")
+
+        delta_call = next(
+            c for c in callback.call_args_list if c[0][0]["type"] == "content_block_delta"
+        )
+        assert delta_call[0][0]["delta"]["text"] == large_text
+
+    @pytest.mark.asyncio
     async def test_send_message_normalizes_tool_call(self, transport):
         """Tool call events are normalized to assistant/tool_use format."""
         tool_event = (
@@ -1630,7 +1751,7 @@ class TestCodexSubprocessTransport:
         )
 
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[tool_event, b""])
+        mock_stdout.read = AsyncMock(side_effect=[tool_event, b""])
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1670,7 +1791,7 @@ class TestCodexSubprocessTransport:
         )
 
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(side_effect=[done_event, b""])
+        mock_stdout.read = AsyncMock(side_effect=[done_event, b""])
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1696,10 +1817,63 @@ class TestCodexSubprocessTransport:
         assert usage["outputTokens"] == 120
 
     @pytest.mark.asyncio
+    async def test_send_message_normalizes_item_completed_agent_message(self, transport):
+        """Current Codex CLI agent_message items are normalized to assistant text."""
+        events = [
+            (
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"id": "item_0", "type": "agent_message", "text": "READY"},
+                    }
+                ).encode()
+                + b"\n"
+            ),
+            (
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 12, "output_tokens": 2},
+                    }
+                ).encode()
+                + b"\n"
+            ),
+            b"",
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.read = AsyncMock(side_effect=events)
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        callback = AsyncMock()
+        transport.on_event(callback)
+
+        with patch(
+            "skuld.transports.codex.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_process
+            await transport.send_message("task")
+
+        assistant_calls = [c for c in callback.call_args_list if c[0][0].get("type") == "assistant"]
+        assert len(assistant_calls) == 1
+        assert assistant_calls[0][0][0]["message"]["content"] == "READY"
+        assert transport.last_result is not None
+        assert transport.last_result["type"] == "result"
+        usage = transport.last_result["modelUsage"]["o4-mini"]
+        assert usage["inputTokens"] == 12
+        assert usage["outputTokens"] == 2
+
+    @pytest.mark.asyncio
     async def test_send_message_synthesizes_result_on_clean_exit(self, transport):
         """A synthetic result is emitted when Codex exits without a done event."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1725,7 +1899,7 @@ class TestCodexSubprocessTransport:
     async def test_send_message_synthesizes_error_result_on_nonzero_exit(self, transport):
         """Nonzero exit code sets stop_reason to error in synthetic result."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout
@@ -1749,7 +1923,7 @@ class TestCodexSubprocessTransport:
     async def test_send_message_cleans_up_process(self, transport):
         """Process reference is cleared after send_message completes."""
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
+        mock_stdout.read = AsyncMock(return_value=b"")
 
         mock_process = MagicMock()
         mock_process.stdout = mock_stdout

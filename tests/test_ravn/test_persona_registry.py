@@ -633,7 +633,7 @@ class TestBackwardCompat:
     def test_default_constructor_list_names_has_builtins(self) -> None:
         loader = FilesystemPersonaAdapter()
         names = loader.list_names()
-        assert "coding-agent" in names
+        assert "coder" in names
         assert "reviewer" in names
 
     def test_default_constructor_adds_project_local_to_resolution(self, tmp_path: Path) -> None:

@@ -76,7 +76,7 @@ def _provisioning_session() -> Session:
     sid = uuid4()
     return Session(
         id=sid,
-        name="raid",
+        name="run",
         model="model",
         source=GitSource(),
         status=SessionStatus.PROVISIONING,

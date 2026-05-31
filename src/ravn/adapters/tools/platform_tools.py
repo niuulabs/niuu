@@ -1,7 +1,7 @@
 """Platform tools — Ravn tools for interacting with the Niuu platform.
 
 These tools let the Ravn agent create/manage Forge sessions, perform git
-operations, decompose work into Tyr sagas, and track issues via the shared
+operations, decompose work into Ting sagas, and track issues via the shared
 tracker routes.
 
 All tools use the mounted platform APIs rather than direct imports,
@@ -27,6 +27,7 @@ _FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 _FORGE_REPOS_PATH = "/api/v1/forge/repos"
 _NIUU_REPOS_PATH = "/api/v1/niuu/repos"
 _TRACKER_ISSUES_PATH = "/api/v1/tracker/issues"
+_TING_WORKFLOWS_PATH = "/api/v1/ting/workflows"
 
 
 def _client(base_url: str, timeout: float, pat_token: str = "") -> httpx.AsyncClient:
@@ -432,21 +433,21 @@ class VolundrGitTool(ToolPort):
 
 
 # ---------------------------------------------------------------------------
-# tyr_saga
+# ting_saga
 # ---------------------------------------------------------------------------
 
 
-class TyrSagaTool(ToolPort):
-    """Decompose specs and manage Tyr sagas.
+class TingSagaTool(ToolPort):
+    """Decompose specs and manage Ting sagas.
 
     Actions:
     - ``list``     — list active sagas.
     - ``get``      — get saga details (requires ``saga_id``).
     - ``commit``   — commit a fully structured saga (requires ``name``, ``slug``,
                      ``repos``, ``base_branch``, ``phases``).
-    - ``dispatch`` — dispatch saga raids for execution (requires ``items`` array).
+    - ``dispatch`` — dispatch saga runs for execution (requires ``items`` array).
     - ``delete``   — delete a saga (requires ``saga_id``).
-    - ``raids``    — list active raids across all sagas.
+    - ``runs``    — list active runs across all sagas.
     """
 
     def __init__(
@@ -461,15 +462,15 @@ class TyrSagaTool(ToolPort):
 
     @property
     def name(self) -> str:
-        return "tyr_saga"
+        return "ting_saga"
 
     @property
     def description(self) -> str:
         return (
-            "Manage Tyr sagas and raids: list, get (saga_id), "
+            "Manage Ting sagas and runs: list, get (saga_id), "
             "commit (name + slug + repos + base_branch + phases), "
             "dispatch (items array with saga_id + issue_id + repo), "
-            "delete (saga_id), raids (list active raids)."
+            "delete (saga_id), runs (list active runs)."
         )
 
     @property
@@ -479,7 +480,7 @@ class TyrSagaTool(ToolPort):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "get", "commit", "dispatch", "delete", "raids"],
+                    "enum": ["list", "get", "commit", "dispatch", "delete", "runs"],
                     "description": "Operation to perform.",
                 },
                 "saga_id": {
@@ -513,7 +514,7 @@ class TyrSagaTool(ToolPort):
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
-                            "raids": {
+                            "runs": {
                                 "type": "array",
                                 "items": {
                                     "type": "object",
@@ -533,9 +534,9 @@ class TyrSagaTool(ToolPort):
                                 },
                             },
                         },
-                        "required": ["name", "raids"],
+                        "required": ["name", "runs"],
                     },
-                    "description": "Phase/raid structure (required for commit).",
+                    "description": "Phase/run structure (required for commit).",
                 },
                 "items": {
                     "type": "array",
@@ -576,14 +577,14 @@ class TyrSagaTool(ToolPort):
                     return await self._dispatch(client, input)
                 case "delete":
                     return await self._delete(client, input.get("saga_id", ""))
-                case "raids":
-                    return await self._raids(client)
+                case "runs":
+                    return await self._runs(client)
                 case _:
                     return _err(f"Unknown action: {action!r}")
 
     async def _list(self, client: httpx.AsyncClient) -> ToolResult:
         try:
-            resp = await client.get("/api/v1/tyr/sagas")
+            resp = await client.get("/api/v1/ting/sagas")
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
@@ -593,7 +594,7 @@ class TyrSagaTool(ToolPort):
         if not saga_id:
             return _err("saga_id is required for get action")
         try:
-            resp = await client.get(f"/api/v1/tyr/sagas/{saga_id}")
+            resp = await client.get(f"/api/v1/ting/sagas/{saga_id}")
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
@@ -617,7 +618,7 @@ class TyrSagaTool(ToolPort):
         if desc := input.get("description"):
             body["description"] = desc
         try:
-            resp = await client.post("/api/v1/tyr/sagas/commit", json=body)
+            resp = await client.post("/api/v1/ting/sagas/commit", json=body)
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
@@ -631,7 +632,7 @@ class TyrSagaTool(ToolPort):
         if model := input.get("model"):
             body["model"] = model
         try:
-            resp = await client.post("/api/v1/tyr/dispatch/approve", json=body)
+            resp = await client.post("/api/v1/ting/dispatch/approve", json=body)
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
@@ -641,19 +642,213 @@ class TyrSagaTool(ToolPort):
         if not saga_id:
             return _err("saga_id is required for delete action")
         try:
-            resp = await client.delete(f"/api/v1/tyr/sagas/{saga_id}")
+            resp = await client.delete(f"/api/v1/ting/sagas/{saga_id}")
             resp.raise_for_status()
             return _ok({"saga_id": saga_id, "status": "deleted"})
         except Exception as exc:
             return _err(f"Failed to delete saga {saga_id}: {exc}")
 
-    async def _raids(self, client: httpx.AsyncClient) -> ToolResult:
+    async def _runs(self, client: httpx.AsyncClient) -> ToolResult:
         try:
-            resp = await client.get("/api/v1/tyr/raids/active")
+            resp = await client.get("/api/v1/ting/runs/active")
             resp.raise_for_status()
             return _ok(resp.json())
         except Exception as exc:
-            return _err(f"Failed to list active raids: {exc}")
+            return _err(f"Failed to list active runs: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# ting_workflow
+# ---------------------------------------------------------------------------
+
+
+class TingWorkflowTool(ToolPort):
+    """List, inspect, and launch Ting workflows.
+
+    Actions:
+    - ``list``   — list workflows visible to the current token.
+    - ``get``    — get workflow details (requires ``workflow_id``).
+    - ``launch`` — start a workflow-backed Volundr flock session.
+    """
+
+    def __init__(
+        self,
+        base_url: str = _DEFAULT_BASE_URL,
+        timeout: float = _DEFAULT_TIMEOUT,
+        pat_token: str = "",
+    ) -> None:
+        self._base_url = base_url
+        self._timeout = timeout
+        self._pat_token = pat_token
+
+    @property
+    def name(self) -> str:
+        return "ting_workflow"
+
+    @property
+    def description(self) -> str:
+        return (
+            "List, inspect, and launch Ting workflows. "
+            "Use list to discover available workflows, get to inspect one in detail, "
+            "and launch to start a workflow-backed Volundr flock session without "
+            "creating a saga first."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "get", "launch"],
+                    "description": "Operation to perform.",
+                },
+                "workflow_id": {
+                    "type": "string",
+                    "description": "Workflow UUID (required for get and launch).",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "system", "user"],
+                    "description": "Optional workflow scope filter for list (default: all).",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Launch prompt describing the work to do (required for launch).",
+                },
+                "slug": {
+                    "type": "string",
+                    "description": "Optional slug for the launched workflow run.",
+                },
+                "session_name": {
+                    "type": "string",
+                    "description": "Optional explicit Volundr session name for launch.",
+                },
+                "context": {
+                    "type": "object",
+                    "description": (
+                        "Optional structured workflow launch context. "
+                        "Use this for workflow-specific inputs without "
+                        "changing the generic launch API."
+                    ),
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "Optional repo URL or org/repo to mount in the session.",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Optional repo branch for the session (default: main).",
+                },
+                "base_branch": {
+                    "type": "string",
+                    "description": "Optional base branch override for the session.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model override.",
+                },
+                "definition": {
+                    "type": "string",
+                    "description": "Optional Volundr session definition override.",
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name override for the launched session.",
+                },
+                "integration_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional integration IDs to attach to the session.",
+                },
+                "connection_id": {
+                    "type": "string",
+                    "description": "Optional explicit Volundr connection target.",
+                },
+                "mimir_path": {
+                    "type": "string",
+                    "description": "Optional Mimir path override for workflow artifacts.",
+                },
+            },
+            "required": ["action"],
+        }
+
+    @property
+    def required_permission(self) -> str:
+        return _PERMISSION_PLATFORM
+
+    async def execute(self, input: dict) -> ToolResult:
+        action = input.get("action", "")
+        async with _client(self._base_url, self._timeout, self._pat_token) as client:
+            match action:
+                case "list":
+                    return await self._list(client, input)
+                case "get":
+                    return await self._get(client, input.get("workflow_id", ""))
+                case "launch":
+                    return await self._launch(client, input)
+                case _:
+                    return _err(f"Unknown action: {action!r}")
+
+    async def _list(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        params: dict[str, str] = {}
+        if scope := str(input.get("scope", "") or "").strip():
+            params["scope"] = scope
+        try:
+            resp = await client.get(_TING_WORKFLOWS_PATH, params=params or None)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to list workflows: {exc}")
+
+    async def _get(self, client: httpx.AsyncClient, workflow_id: str) -> ToolResult:
+        if not workflow_id:
+            return _err("workflow_id is required for get action")
+        try:
+            resp = await client.get(f"{_TING_WORKFLOWS_PATH}/{workflow_id}")
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to get workflow {workflow_id}: {exc}")
+
+    async def _launch(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        workflow_id = str(input.get("workflow_id", "") or "").strip()
+        prompt = str(input.get("prompt", "") or "").strip()
+        if not workflow_id:
+            return _err("workflow_id is required for launch action")
+        if not prompt:
+            return _err("prompt is required for launch action")
+
+        body: dict[str, object] = {"prompt": prompt}
+        scalar_keys = (
+            "slug",
+            "session_name",
+            "repo",
+            "branch",
+            "base_branch",
+            "model",
+            "definition",
+            "profile_name",
+            "connection_id",
+            "mimir_path",
+        )
+        for key in scalar_keys:
+            value = input.get(key)
+            if value not in (None, ""):
+                body[key] = value
+
+        if integration_ids := input.get("integration_ids"):
+            body["integration_ids"] = integration_ids
+        if context := input.get("context"):
+            body["context"] = context
+
+        try:
+            resp = await client.post(f"{_TING_WORKFLOWS_PATH}/{workflow_id}/launch", json=body)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to launch workflow {workflow_id}: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +958,7 @@ class TrackerIssueTool(ToolPort):
         if not issue_id or not status:
             return _err("issue_id and status are required for update_status")
         try:
-            resp = await client.post(
+            resp = await client.patch(
                 f"{_TRACKER_ISSUES_PATH}/{issue_id}",
                 json={"status": status},
             )

@@ -18,6 +18,7 @@ from niuu.adapters.cli.runtime import (
 )
 from niuu.ports.cli import CLITransport
 from skuld.transports.mcp_config import build_codex_mcp_overrides
+from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
@@ -42,6 +43,18 @@ _CODEX_TOOL_MAP: dict[str, str] = {
     "list_directory": "LS",
     "search_files": "Grep",
 }
+
+_CODEX_STDOUT_CHUNK_BYTES = 65536
+
+
+def _ensure_codex_home(env: dict[str, str]) -> None:
+    if env.get("CODEX_HOME"):
+        return
+    home = env.get("HOME")
+    if home:
+        env["CODEX_HOME"] = str(Path(home).expanduser() / ".codex")
+        return
+    env["CODEX_HOME"] = str(Path.home() / ".codex")
 
 
 def _map_codex_tool(codex_name: str) -> str:
@@ -101,11 +114,20 @@ class CodexSubprocessTransport(CLITransport):
         self.workspace_dir = workspace_dir
         self._model = model
         self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
+        self._mcp_servers = list(mcp_servers or [])
         self._process: asyncio.subprocess.Process | None = None
         self._last_result: dict | None = None
         self._pending_text: list[str] = []
+        self._env = dict(os.environ)
+        _ensure_codex_home(self._env)
 
     async def start(self) -> None:
+        _, shim_env = ensure_codex_tool_shims(
+            self.workspace_dir,
+            mcp_servers=self._mcp_servers,
+        )
+        if shim_env:
+            self._env.update(shim_env)
         logger.info(
             "CodexSubprocessTransport configured for %s (model: %s)",
             self.workspace_dir,
@@ -122,15 +144,17 @@ class CodexSubprocessTransport(CLITransport):
         self._last_result = None
         self._pending_text = []
         codex_cli = resolve_codex_cli()
+        sandbox_mode = os.environ.get("SKULD_CODEX_SANDBOX", "").strip()
 
         cmd = [
             codex_cli,
             "exec",
             "--model",
             self._model,
-            "--full-auto",  # skip all human confirmations
             "--json",
         ]
+        if sandbox_mode:
+            cmd.extend(["--sandbox", sandbox_mode])
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
         cmd.append(content)
@@ -141,6 +165,8 @@ class CodexSubprocessTransport(CLITransport):
         process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=self.workspace_dir,
+            env=self._env,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -152,12 +178,7 @@ class CodexSubprocessTransport(CLITransport):
             if process.stdout is None:
                 raise RuntimeError("Codex CLI stdout not available")
 
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
-
-                raw = line.decode().strip()
+            async for raw in self._iter_stdout_records(process.stdout):
                 if not raw:
                     continue
 
@@ -189,10 +210,42 @@ class CodexSubprocessTransport(CLITransport):
                 stderr_task.cancel()
             self._process = None
 
+    async def _iter_stdout_records(self, stdout: asyncio.StreamReader):
+        """Yield newline-delimited Codex stdout records without line-length limits."""
+        buffer = b""
+        while True:
+            chunk = await stdout.read(_CODEX_STDOUT_CHUNK_BYTES)
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                yield line.decode().strip()
+
+        if buffer:
+            yield buffer.decode().strip()
+
     async def _handle_codex_event(self, data: dict) -> None:
         """Normalize a Codex CLI JSON event to the broker's common format."""
         event_type = data.get("type", "")
         logger.debug("Codex event: type=%s", event_type)
+
+        # --- Current Codex CLI agent message item ---
+        if event_type == "item.completed":
+            item = data.get("item", {})
+            if not isinstance(item, dict):
+                return
+            if item.get("type") == "agent_message":
+                text = item.get("text", "")
+                if isinstance(text, str) and text:
+                    await self._emit(
+                        {
+                            "type": "assistant",
+                            "message": {"content": text},
+                            "content": text,
+                        }
+                    )
+                return
 
         # --- Streaming text output ---
         if event_type in ("response.output_text.delta", "text_delta"):
@@ -232,7 +285,7 @@ class CodexSubprocessTransport(CLITransport):
             return
 
         # --- Turn complete ---
-        if event_type in ("response.completed", "response.done", "done"):
+        if event_type in ("response.completed", "response.done", "turn.completed", "done"):
             usage = data.get("usage", {})
             model_id = data.get("model", self._model)
             self._last_result = {

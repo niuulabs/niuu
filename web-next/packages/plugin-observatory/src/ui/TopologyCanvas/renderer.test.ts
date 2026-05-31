@@ -23,7 +23,7 @@ const NODES: TopologyNode[] = [
     parentId: 'realm-asgard',
     status: 'healthy',
   },
-  { id: 'tyr-0', typeId: 'tyr', label: 'tyr-0', parentId: 'cluster-vk', status: 'healthy' },
+  { id: 'ting-0', typeId: 'ting', label: 'ting-0', parentId: 'cluster-vk', status: 'healthy' },
   {
     id: 'bifrost-0',
     typeId: 'bifrost',
@@ -39,7 +39,7 @@ const NODES: TopologyNode[] = [
     status: 'healthy',
   },
   { id: 'ravn-huginn', typeId: 'ravn_long', label: 'huginn', parentId: null, status: 'healthy' },
-  { id: 'ravn-coord', typeId: 'ravn_raid', label: 'coord', parentId: null, status: 'healthy' },
+  { id: 'ravn-coord', typeId: 'ravn_run', label: 'coord', parentId: null, status: 'healthy' },
   { id: 'skuld-0', typeId: 'skuld', label: 'skuld', parentId: null, status: 'healthy' },
   { id: 'valk-0', typeId: 'valkyrie', label: 'brynhildr', parentId: null, status: 'healthy' },
   { id: 'printer-0', typeId: 'printer', label: 'gungnir', parentId: null, status: 'healthy' },
@@ -47,25 +47,18 @@ const NODES: TopologyNode[] = [
   { id: 'beacon-0', typeId: 'beacon', label: 'espresense', parentId: null, status: 'healthy' },
   { id: 'svc-0', typeId: 'service', label: 'grafana', parentId: null, status: 'healthy' },
   { id: 'model-0', typeId: 'model', label: 'claude', parentId: null, status: 'healthy' },
-  { id: 'raid-0', typeId: 'raid', label: 'raid-0', parentId: null, status: 'observing' },
-  {
-    id: 'mimir-sub-0',
-    typeId: 'mimir_sub',
-    label: 'mímir/code',
-    parentId: 'mimir-0',
-    status: 'healthy',
-  },
+  { id: 'run-0', typeId: 'run', label: 'run-0', parentId: null, status: 'observing' },
 ];
 
 const TOPOLOGY: Topology = {
   timestamp: '2026-04-19T00:00:00Z',
   nodes: NODES,
   edges: [
-    { id: 'e-solid', sourceId: 'tyr-0', targetId: 'volundr-0', kind: 'solid' },
-    { id: 'e-dashed-anim', sourceId: 'tyr-0', targetId: 'raid-0', kind: 'dashed-anim' },
+    { id: 'e-solid', sourceId: 'ting-0', targetId: 'volundr-0', kind: 'solid' },
+    { id: 'e-dashed-anim', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-anim' },
     { id: 'e-dashed-long', sourceId: 'ravn-huginn', targetId: 'mimir-0', kind: 'dashed-long' },
     { id: 'e-soft', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'soft' },
-    { id: 'e-raid', sourceId: 'raid-0', targetId: 'ravn-coord', kind: 'raid' },
+    { id: 'e-run', sourceId: 'run-0', targetId: 'ravn-coord', kind: 'run' },
   ],
 };
 
@@ -148,13 +141,14 @@ describe('drawEdges', () => {
     drawEdges(ctx, TOPOLOGY, POSITIONS, 0);
     // At least one beginPath per edge
     expect((ctx.beginPath as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    expect((ctx.bezierCurveTo as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
   });
 
   it('handles edges with missing source position gracefully', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const topo: Topology = {
       ...TOPOLOGY,
-      edges: [{ id: 'e-missing', sourceId: 'does-not-exist', targetId: 'tyr-0', kind: 'solid' }],
+      edges: [{ id: 'e-missing', sourceId: 'does-not-exist', targetId: 'ting-0', kind: 'solid' }],
     };
     expect(() => drawEdges(ctx, topo, POSITIONS, 0)).not.toThrow();
   });
@@ -163,7 +157,7 @@ describe('drawEdges', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const topo: Topology = {
       ...TOPOLOGY,
-      edges: [{ id: 'e-missing', sourceId: 'tyr-0', targetId: 'does-not-exist', kind: 'solid' }],
+      edges: [{ id: 'e-missing', sourceId: 'ting-0', targetId: 'does-not-exist', kind: 'solid' }],
     };
     expect(() => drawEdges(ctx, topo, POSITIONS, 0)).not.toThrow();
   });
@@ -172,7 +166,7 @@ describe('drawEdges', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const topo: Topology = {
       ...TOPOLOGY,
-      edges: [{ id: 'e-da', sourceId: 'tyr-0', targetId: 'raid-0', kind: 'dashed-anim' }],
+      edges: [{ id: 'e-da', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-anim' }],
     };
     drawEdges(ctx, topo, POSITIONS, 1000);
     expect(
@@ -182,11 +176,34 @@ describe('drawEdges', () => {
     ).toBe(true);
   });
 
+  it('accepts legacy dashed-short edges without throwing', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      ...TOPOLOGY,
+      edges: [{ id: 'e-ds', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-short' as never }],
+    };
+    expect(() => drawEdges(ctx, topo, POSITIONS, 1000)).not.toThrow();
+    expect(
+      (ctx.setLineDash as ReturnType<typeof vi.fn>).mock.calls.some(
+        (call: unknown[]) => Array.isArray(call[0]) && (call[0] as number[]).length > 0,
+      ),
+    ).toBe(true);
+  });
+
+  it('falls back safely for unknown edge kinds', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      ...TOPOLOGY,
+      edges: [{ id: 'e-unknown', sourceId: 'ting-0', targetId: 'run-0', kind: 'mystery' as never }],
+    };
+    expect(() => drawEdges(ctx, topo, POSITIONS, 0)).not.toThrow();
+  });
+
   it('uses setLineDash([]) for solid edges (no dash)', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const topo: Topology = {
       ...TOPOLOGY,
-      edges: [{ id: 'e-s', sourceId: 'tyr-0', targetId: 'volundr-0', kind: 'solid' }],
+      edges: [{ id: 'e-s', sourceId: 'ting-0', targetId: 'volundr-0', kind: 'solid' }],
     };
     drawEdges(ctx, topo, POSITIONS, 0);
     // Called at least with empty array to reset dashes
@@ -205,11 +222,11 @@ describe('drawNode', () => {
 
   // Each typeId should render without throwing
   const TYPES = [
-    'tyr',
+    'ting',
     'bifrost',
     'volundr',
     'ravn_long',
-    'ravn_raid',
+    'ravn_run',
     'skuld',
     'valkyrie',
     'printer',
@@ -217,8 +234,7 @@ describe('drawNode', () => {
     'beacon',
     'service',
     'model',
-    'raid',
-    'mimir_sub',
+    'run',
     'unknown-type',
   ];
 
@@ -263,7 +279,7 @@ describe('drawNode', () => {
     expect((ctx.fillRect as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
-  it('draws host as a rounded rect (uses quadraticCurveTo)', () => {
+  it('draws host as a circular container', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const host: TopologyNode = {
       id: 'h',
@@ -273,15 +289,18 @@ describe('drawNode', () => {
       status: 'healthy',
     };
     drawNode(ctx, host, pos, false);
-    expect((ctx.quadraticCurveTo as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    expect((ctx.arc as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+    expect(calls.some(([text]) => text === 'tanngrisnir')).toBe(true);
+    expect((ctx.strokeRect as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
   it('draws hover ring for hovered non-mimir non-host node', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const node: TopologyNode = {
-      id: 'tyr-0',
-      typeId: 'tyr',
-      label: 'tyr',
+      id: 'ting-0',
+      typeId: 'ting',
+      label: 'ting',
       parentId: null,
       status: 'healthy',
     };
@@ -291,21 +310,21 @@ describe('drawNode', () => {
     expect(ctx.stroke).toHaveBeenCalled();
   });
 
-  it('draws identity rune as fillText for tyr', () => {
+  it('draws the canonical sidebar rune for ting', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const node: TopologyNode = {
-      id: 'tyr-0',
-      typeId: 'tyr',
-      label: 'tyr',
+      id: 'ting-0',
+      typeId: 'ting',
+      label: 'ting',
       parentId: null,
       status: 'healthy',
     };
     drawNode(ctx, node, pos, false);
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
-    expect(calls.some(([text]) => text === 'ᛃ')).toBe(true);
+    expect(calls.some(([text]) => text === 'ᚦ')).toBe(true);
   });
 
-  it('draws identity rune as fillText for bifrost', () => {
+  it('draws the canonical sidebar rune for bifrost', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const node: TopologyNode = {
       id: 'bf-0',

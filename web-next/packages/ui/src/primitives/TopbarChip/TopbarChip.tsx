@@ -1,7 +1,7 @@
 /**
  * TopbarChip — shared stat chip for the shell topbar-right area.
  *
- * Used by plugin topbar components (TyrTopbar, RavnTopbar, etc.) to
+ * Used by plugin topbar components (TingTopbar, RavnTopbar, etc.) to
  * render consistent KPI indicators with an icon and label.
  */
 

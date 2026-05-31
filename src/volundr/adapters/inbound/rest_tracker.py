@@ -155,18 +155,6 @@ class ErrorResponse(BaseModel):
 
 
 def create_tracker_router(tracker_service: TrackerService) -> APIRouter:
-    """Create FastAPI router for issue tracker endpoints."""
-    return _build_tracker_router(
-        tracker_service,
-        prefix="/api/v1/volundr/tracker",
-        deprecated=True,
-        canonical_prefix="/api/v1/tracker",
-        mappings_path="/mappings",
-        include_issue_endpoints=True,
-    )
-
-
-def create_canonical_tracker_router(tracker_service: TrackerService) -> APIRouter:
     """Create canonical tracker metadata and mapping endpoints."""
     return _build_tracker_router(
         tracker_service,
@@ -176,6 +164,11 @@ def create_canonical_tracker_router(tracker_service: TrackerService) -> APIRoute
         mappings_path="/repo-mappings",
         include_issue_endpoints=False,
     )
+
+
+def create_canonical_tracker_router(tracker_service: TrackerService) -> APIRouter:
+    """Backward-compatible alias for canonical tracker metadata routes."""
+    return create_tracker_router(tracker_service)
 
 
 def _build_tracker_router(

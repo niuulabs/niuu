@@ -4,6 +4,7 @@ export {
   type PluginCtx,
   type PluginTab,
 } from './PluginDescriptor';
+export { PluginCtxProvider, usePluginCtx } from './PluginCtxContext';
 export { ServicesProvider, useService, type ServicesMap } from './ServicesProvider';
 export { ConfigProvider, useConfig } from './ConfigProvider';
 export { FeatureCatalogProvider, useFeatureCatalog, type FeatureCatalog } from './FeatureCatalog';

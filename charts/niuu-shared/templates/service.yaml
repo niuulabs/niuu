@@ -13,7 +13,7 @@ spec:
   ports:
     - name: http
       port: {{ .Values.service.port | default 80 }}
-      targetPort: http
+      targetPort: {{ if .Values.envoy.enabled }}envoy{{ else }}http{{ end }}
       protocol: TCP
   selector:
     {{- include "niuu-shared.selectorLabels" . | nindent 4 }}

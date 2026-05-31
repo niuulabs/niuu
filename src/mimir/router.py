@@ -31,13 +31,15 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from posixpath import normpath
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
+from mimir.compiled_truth import CompiledTruthPage
+from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from niuu.domain.mimir import (
     MimirLintReport,
@@ -95,6 +97,43 @@ class PageResponse(BaseModel):
     updated_by: str = "mimir"
     size: int = 0
     related: list[str] = []
+    zones: list[
+        KeyFactsZoneResponse
+        | RelationshipsZoneResponse
+        | AssessmentZoneResponse
+        | TimelineZoneResponse
+    ] | None = None
+
+
+class KeyFactsZoneResponse(BaseModel):
+    kind: Literal["key-facts"] = "key-facts"
+    items: list[str]
+
+
+class RelationshipZoneItemResponse(BaseModel):
+    slug: str
+    note: str
+
+
+class RelationshipsZoneResponse(BaseModel):
+    kind: Literal["relationships"] = "relationships"
+    items: list[RelationshipZoneItemResponse]
+
+
+class AssessmentZoneResponse(BaseModel):
+    kind: Literal["assessment"] = "assessment"
+    text: str
+
+
+class TimelineZoneItemResponse(BaseModel):
+    date: str
+    note: str
+    source: str
+
+
+class TimelineZoneResponse(BaseModel):
+    kind: Literal["timeline"] = "timeline"
+    items: list[TimelineZoneItemResponse]
 
 
 class SearchResult(BaseModel):
@@ -380,6 +419,8 @@ def _require_write_auth(authorization: Annotated[str | None, Header()] = None) -
 
 _LOG_HEADER_RE = re.compile(r"^## \[(?P<date>[^\]]+)\] (?P<prefix>[^|]+)\| (?P<subject>.+)$")
 _KV_TOKEN_RE = re.compile(r"(?P<key>[a-z_]+)=(?P<value>[^\s]+)")
+_COMPILED_SUBHEADING_RE = re.compile(r"^### (?P<heading>[^\n]+)\s*$", re.MULTILINE)
+_RELATIONSHIP_LINE_RE = re.compile(r"^- \[\[(?P<slug>[^\]]+)\]\]\s*(?:—|-)\s*(?P<note>.+)$")
 
 
 def _stable_id(*parts: str) -> str:
@@ -517,9 +558,10 @@ async def _page_mount_map(
     *,
     default_name: str,
     default_role: str,
+    mounts: list[dict[str, Any]] | None = None,
 ) -> dict[str, list[str]]:
     mount_map: dict[str, list[str]] = {}
-    mounts = _extract_mount_definitions(
+    mounts = mounts or _extract_mount_definitions(
         adapter,
         default_name=default_name,
         default_role=default_role,
@@ -679,13 +721,17 @@ async def _merged_mount_responses(
     default_name: str,
     default_role: str,
     registry_store: MimirRegistryStore | None,
+    mounts: list[dict[str, Any]] | None = None,
 ) -> list[MountResponse]:
     live_summaries = [
         await _summarize_mount(mount)
-        for mount in _extract_mount_definitions(
-            adapter,
-            default_name=default_name,
-            default_role=default_role,
+        for mount in (
+            mounts
+            or _extract_mount_definitions(
+                adapter,
+                default_name=default_name,
+                default_role=default_role,
+            )
         )
     ]
     live_by_name = {mount.name: mount for mount in live_summaries}
@@ -741,12 +787,108 @@ def _decorate_page_meta(meta: MimirPageMeta, mounts: list[str] | None = None) ->
     )
 
 
+def _extract_compiled_subsection(compiled_truth: str, heading: str) -> str:
+    pattern = re.compile(
+        rf"^### {re.escape(heading)}\s*\n(.*?)(?=^### |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(compiled_truth)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def _extract_assessment(compiled_truth: str) -> str:
+    assessment = _extract_compiled_subsection(compiled_truth, "Assessment")
+    if assessment:
+        return assessment
+    return ""
+
+
+def _extract_key_facts(compiled_truth: str) -> list[str]:
+    key_facts = _extract_compiled_subsection(compiled_truth, "Key Facts")
+    if not key_facts:
+        return []
+    return [
+        line[2:].strip()
+        for line in key_facts.splitlines()
+        if line.strip().startswith("- ") and line[2:].strip()
+    ]
+
+
+def _extract_relationships(compiled_truth: str) -> list[RelationshipZoneItemResponse]:
+    relationships = _extract_compiled_subsection(compiled_truth, "Relationships")
+    if not relationships:
+        return []
+
+    items: list[RelationshipZoneItemResponse] = []
+    for line in relationships.splitlines():
+        match = _RELATIONSHIP_LINE_RE.match(line.strip())
+        if match is None:
+            continue
+        items.append(
+            RelationshipZoneItemResponse(
+                slug=match.group("slug").strip(),
+                note=match.group("note").strip(),
+            )
+        )
+    return items
+
+
+def _decorate_page_zones(
+    parsed: CompiledTruthPage,
+) -> list[
+    KeyFactsZoneResponse
+    | RelationshipsZoneResponse
+    | AssessmentZoneResponse
+    | TimelineZoneResponse
+] | None:
+    zones: list[
+        KeyFactsZoneResponse
+        | RelationshipsZoneResponse
+        | AssessmentZoneResponse
+        | TimelineZoneResponse
+    ] = []
+
+    key_facts = _extract_key_facts(parsed.compiled_truth)
+    if key_facts:
+        zones.append(KeyFactsZoneResponse(items=key_facts))
+
+    relationships = _extract_relationships(parsed.compiled_truth)
+    if relationships:
+        zones.append(RelationshipsZoneResponse(items=relationships))
+
+    assessment = _extract_assessment(parsed.compiled_truth)
+    if assessment:
+        zones.append(AssessmentZoneResponse(text=assessment))
+    elif parsed.compiled_truth.strip() and not key_facts and not relationships:
+        zones.append(AssessmentZoneResponse(text=parsed.compiled_truth.strip()))
+
+    if parsed.timeline_entries:
+        zones.append(
+            TimelineZoneResponse(
+                items=[
+                    TimelineZoneItemResponse(
+                        date=entry.date,
+                        note=entry.description,
+                        source=entry.source,
+                    )
+                    for entry in parsed.timeline_entries
+                ]
+            )
+        )
+
+    return zones or None
+
+
 def _decorate_page(page: MimirPage, mounts: list[str] | None = None) -> PageResponse:
     meta = _decorate_page_meta(page.meta, mounts=mounts)
+    parsed = parse_compiled_truth_page(page.content)
     return PageResponse(
         **meta.model_dump(),
         content=page.content,
-        related=[],
+        related=parsed.related_entities,
+        zones=_decorate_page_zones(parsed),
     )
 
 
@@ -798,8 +940,101 @@ class MimirRouter:
         self._name = name
         self._role = role
         self._registry_store = registry_store
+        self._registry_local_ports: dict[str, tuple[str, MimirPort]] = {}
         self.router = APIRouter()
         self._register_routes()
+
+    def _registry_entry_by_name(self, mount_name: str) -> MimirRegistryEntry | None:
+        if self._registry_store is None:
+            return None
+        for entry in self._registry_store.list_entries():
+            if entry.name == mount_name:
+                return entry
+        return None
+
+    def _local_registry_port(self, mount_name: str) -> MimirPort | None:
+        entry = self._registry_entry_by_name(mount_name)
+        if entry is None or not entry.enabled or entry.kind != "local" or not entry.path:
+            return None
+
+        cached = self._registry_local_ports.get(mount_name)
+        if cached is not None and cached[0] == entry.path:
+            return cached[1]
+
+        from mimir.adapters.markdown import MarkdownMimirAdapter
+
+        port: MimirPort = MarkdownMimirAdapter(root=entry.path)
+        self._registry_local_ports[mount_name] = (entry.path, port)
+        return port
+
+    def _mount_definitions(self) -> list[dict[str, Any]]:
+        mounts = _extract_mount_definitions(
+            self._adapter,
+            default_name=self._name,
+            default_role=self._role,
+        )
+        seen = {mount["name"] for mount in mounts}
+        if self._registry_store is None:
+            return mounts
+
+        for entry in self._registry_store.list_entries():
+            if entry.name in seen:
+                continue
+            port = self._local_registry_port(entry.name)
+            if port is None:
+                continue
+            mounts.append(
+                {
+                    "name": entry.name,
+                    "role": entry.role,
+                    "categories": entry.categories,
+                    "priority": entry.default_read_priority,
+                    "port": port,
+                }
+            )
+            seen.add(entry.name)
+        return mounts
+
+    def _read_adapter(self) -> MimirPort:
+        mounts = self._mount_definitions()
+        single_base_mount = (
+            len(mounts) == 1
+            and mounts[0]["port"] is self._adapter
+            and mounts[0]["name"] == self._name
+        )
+        if single_base_mount:
+            return self._adapter
+
+        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+        from ravn.domain.mimir import MimirMount
+
+        return CompositeMimirAdapter(
+            mounts=[
+                MimirMount(
+                    name=mount["name"],
+                    port=mount["port"],
+                    role=mount["role"],
+                    read_priority=mount["priority"],
+                    categories=mount["categories"],
+                )
+                for mount in mounts
+            ],
+            write_routing=getattr(self._adapter, "_write_routing", None),
+        )
+
+    def _resolve_port(self, mount_name: str | None) -> tuple[MimirPort, str]:
+        if mount_name is None:
+            return self._read_adapter(), self._name
+
+        try:
+            return _resolve_mount_port(self._adapter, mount_name, default_name=self._name)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            port = self._local_registry_port(mount_name)
+            if port is None:
+                raise
+            return port, mount_name
 
     def _register_routes(self) -> None:
         router = self.router
@@ -807,7 +1042,7 @@ class MimirRouter:
 
         @router.get("/stats", response_model=StatsResponse)
         async def stats(mount: str | None = Query(default=None)) -> StatsResponse:
-            port, _ = _resolve_mount_port(adapter, mount, default_name=self._name)
+            port, _ = self._resolve_port(mount)
             pages = await port.list_pages()
             categories = sorted({p.category for p in pages})
             return StatsResponse(
@@ -818,11 +1053,13 @@ class MimirRouter:
 
         @router.get("/mounts", response_model=list[MountResponse])
         async def list_mounts() -> list[MountResponse]:
+            mounts = self._mount_definitions()
             return await _merged_mount_responses(
                 adapter,
                 default_name=self._name,
                 default_role=self._role,
                 registry_store=self._registry_store,
+                mounts=mounts,
             )
 
         @router.get("/registry/mounts", response_model=list[RegistryMountResponse])
@@ -866,6 +1103,7 @@ class MimirRouter:
 
             entry = MimirRegistryEntry(**request.model_dump())
             self._registry_store.save_entry(entry)
+            self._registry_local_ports.clear()
             return _registry_to_response(entry)
 
         @router.put("/registry/mounts/{entry_id}", response_model=RegistryMountResponse)
@@ -886,6 +1124,7 @@ class MimirRouter:
 
             entry = existing.model_copy(update=request.model_dump())
             self._registry_store.save_entry(entry)
+            self._registry_local_ports.clear()
             return _registry_to_response(entry)
 
         @router.delete("/registry/mounts/{entry_id}", status_code=204)
@@ -900,6 +1139,7 @@ class MimirRouter:
                 )
 
             self._registry_store.delete_entry(entry_id)
+            self._registry_local_ports.clear()
 
         @router.get("/routing/rules", response_model=list[RoutingRuleResponse])
         async def list_routing_rules() -> list[RoutingRuleResponse]:
@@ -940,11 +1180,7 @@ class MimirRouter:
             limit: int = Query(default=20, ge=1, le=200),
         ) -> list[RecentWriteResponse]:
             events: list[RecentWriteResponse] = []
-            for mount in _extract_mount_definitions(
-                adapter,
-                default_name=self._name,
-                default_role=self._role,
-            ):
+            for mount in self._mount_definitions():
                 port: MimirPort = mount["port"]
                 for page in await port.list_pages():
                     events.append(
@@ -998,14 +1234,17 @@ class MimirRouter:
         @router.get("/pages", response_model=list[PageMetaResponse])
         async def list_pages(
             category: str | None = Query(default=None),
+            prefix: str | None = Query(default=None),
             mount: str | None = Query(default=None),
         ) -> list[PageMetaResponse]:
-            port, resolved_mount = _resolve_mount_port(adapter, mount, default_name=self._name)
-            pages = await port.list_pages(category=category)
+            mounts = self._mount_definitions()
+            port, resolved_mount = self._resolve_port(mount)
+            pages = await port.list_pages(category=category, prefix=prefix)
             mount_map = await _page_mount_map(
                 adapter,
                 default_name=self._name,
                 default_role=self._role,
+                mounts=mounts,
             )
             if mount is not None:
                 return [_decorate_page_meta(page, mounts=[resolved_mount]) for page in pages]
@@ -1019,7 +1258,8 @@ class MimirRouter:
             path: str = Query(),
             mount: str | None = Query(default=None),
         ) -> PageResponse:
-            port, resolved_mount = _resolve_mount_port(adapter, mount, default_name=self._name)
+            mounts = self._mount_definitions()
+            port, resolved_mount = self._resolve_port(mount)
             try:
                 page = await port.get_page(path)
             except FileNotFoundError:
@@ -1030,6 +1270,7 @@ class MimirRouter:
                 adapter,
                 default_name=self._name,
                 default_role=self._role,
+                mounts=mounts,
             )
             return _decorate_page(page, mounts=mount_map.get(page.meta.path, [self._name]))
 
@@ -1038,7 +1279,7 @@ class MimirRouter:
             q: str = Query(),
             mount: str | None = Query(default=None),
         ) -> list[SearchResult]:
-            port, _ = _resolve_mount_port(adapter, mount, default_name=self._name)
+            port, _ = self._resolve_port(mount)
             pages = await port.search(q)
             return [
                 SearchResult(
@@ -1056,7 +1297,7 @@ class MimirRouter:
             mount: str | None = Query(default=None),
         ) -> dict:
             """Return last *n* log entries as raw text (delegated to filesystem adapter)."""
-            port, _ = _resolve_mount_port(adapter, mount, default_name=self._name)
+            port, _ = self._resolve_port(mount)
             try:
                 content = await port.read_page("log.md")
             except FileNotFoundError:
@@ -1068,12 +1309,14 @@ class MimirRouter:
 
         @router.get("/lint", response_model=LintResponse)
         async def lint(mount: str | None = Query(default=None)) -> LintResponse:
-            port, resolved_mount = _resolve_mount_port(adapter, mount, default_name=self._name)
+            mounts = self._mount_definitions()
+            port, resolved_mount = self._resolve_port(mount)
             report = await port.lint()
             mount_map = await _page_mount_map(
                 adapter,
                 default_name=self._name,
                 default_role=self._role,
+                mounts=mounts,
             )
             assignments = _get_lint_assignment_store(adapter)
             return _lint_to_response(
@@ -1090,12 +1333,14 @@ class MimirRouter:
             mount: str | None = Query(default=None),
         ) -> LintResponse:
             del request
-            port, resolved_mount = _resolve_mount_port(adapter, mount, default_name=self._name)
+            mounts = self._mount_definitions()
+            port, resolved_mount = self._resolve_port(mount)
             report = await port.lint(fix=True)
             mount_map = await _page_mount_map(
                 adapter,
                 default_name=self._name,
                 default_role=self._role,
+                mounts=mounts,
             )
             assignments = _get_lint_assignment_store(adapter)
             return _lint_to_response(
@@ -1109,7 +1354,8 @@ class MimirRouter:
         @router.post("/lint/reassign", response_model=LintResponse)
         async def lint_reassign(request: LintReassignRequest) -> LintResponse:
             assignments = _get_lint_assignment_store(adapter)
-            report = await adapter.lint()
+            mounts = self._mount_definitions()
+            report = await self._read_adapter().lint()
             for issue in report.issues:
                 if issue.id in request.issue_ids:
                     assignments[_lint_issue_key(issue.id, issue.page_path)] = request.assignee
@@ -1117,6 +1363,7 @@ class MimirRouter:
                 adapter,
                 default_name=self._name,
                 default_role=self._role,
+                mounts=mounts,
             )
             return _lint_to_response(
                 report,
@@ -1129,11 +1376,7 @@ class MimirRouter:
             limit: int = Query(default=20, ge=1, le=200),
         ) -> list[DreamCycleResponse]:
             cycles: list[DreamCycleResponse] = []
-            for mount in _extract_mount_definitions(
-                adapter,
-                default_name=self._name,
-                default_role=self._role,
-            ):
+            for mount in self._mount_definitions():
                 for entry in await _parse_log_entries(mount["port"]):
                     detail_text = " ".join(entry["detail"])
                     lower_text = f"{entry['prefix']} {entry['subject']} {detail_text}".lower()
@@ -1175,11 +1418,7 @@ class MimirRouter:
             limit: int = Query(default=50, ge=1, le=200),
         ) -> list[ActivityEventResponse]:
             events: list[ActivityEventResponse] = []
-            for mount in _extract_mount_definitions(
-                adapter,
-                default_name=self._name,
-                default_role=self._role,
-            ):
+            for mount in self._mount_definitions():
                 port: MimirPort = mount["port"]
                 for page in await port.list_pages():
                     events.append(
@@ -1221,7 +1460,7 @@ class MimirRouter:
 
         @router.get("/graph", response_model=GraphResponse)
         async def graph(mount: str | None = Query(default=None)) -> GraphResponse:
-            port, _ = _resolve_mount_port(adapter, mount, default_name=self._name)
+            port, _ = self._resolve_port(mount)
             pages = await port.list_pages()
             nodes = [GraphNode(id=p.path, title=p.title, category=p.category) for p in pages]
             # Build edges from source_ids overlap (pages sharing a source are related)
@@ -1244,7 +1483,7 @@ class MimirRouter:
 
         @router.get("/entities", response_model=list[EntityMetaResponse])
         async def list_entities(kind: str | None = Query(default=None)) -> list[EntityMetaResponse]:
-            pages = await adapter.list_pages()
+            pages = await self._read_adapter().list_pages()
             entities = [
                 EntityMetaResponse(
                     path=page.path,
@@ -1270,7 +1509,7 @@ class MimirRouter:
             top_k: int = Query(default=10, ge=1, le=100),
             mount: str | None = Query(default=None),
         ) -> list[EmbeddingSearchResponse]:
-            port, resolved_mount = _resolve_mount_port(adapter, mount, default_name=self._name)
+            port, resolved_mount = self._resolve_port(mount)
             results = await port.search(q)
             return [
                 EmbeddingSearchResponse(
@@ -1288,7 +1527,7 @@ class MimirRouter:
             source_id: str = Query(),
             mount: str | None = Query(default=None),
         ) -> SourceResponse:
-            port, resolved_mount = _resolve_mount_port(adapter, mount, default_name=self._name)
+            port, resolved_mount = self._resolve_port(mount)
             source = await port.read_source(source_id)
             if source is None:
                 raise HTTPException(status_code=404, detail=f"Source not found: {source_id}")
@@ -1301,7 +1540,7 @@ class MimirRouter:
             origin_type: str | None = Query(default=None),
             mount: str | None = Query(default=None),
         ) -> list[SourceMetaResponse]:
-            port, resolved_mount = _resolve_mount_port(adapter, mount, default_name=self._name)
+            port, resolved_mount = self._resolve_port(mount)
             source_pages = await _source_page_map(port)
             full_sources = await _read_full_sources(port)
             results: list[SourceMetaResponse] = []
@@ -1334,7 +1573,7 @@ class MimirRouter:
             path: str = Query(),
             mount: str | None = Query(default=None),
         ) -> list[SourceMetaResponse]:
-            port, resolved_mount = _resolve_mount_port(adapter, mount, default_name=self._name)
+            port, resolved_mount = self._resolve_port(mount)
             try:
                 page = await port.get_page(path)
             except FileNotFoundError:
@@ -1375,7 +1614,7 @@ class MimirRouter:
             request: IngestRequest,
             _auth: None = Depends(_require_write_auth),
         ) -> IngestResponse:
-            port, _ = _resolve_mount_port(adapter, request.mount, default_name=self._name)
+            port, _ = self._resolve_port(request.mount)
             content_hash = compute_content_hash(request.content)
             source_id = "src_" + content_hash[:16]
             source = MimirSource(
@@ -1395,11 +1634,7 @@ class MimirRouter:
             request: UrlIngestRequest,
             _auth: None = Depends(_require_write_auth),
         ) -> SourceResponse:
-            port, resolved_mount = _resolve_mount_port(
-                adapter,
-                request.mount,
-                default_name=self._name,
-            )
+            port, resolved_mount = self._resolve_port(request.mount)
             safe_url = _validated_ingest_url(request.url)
             try:
                 async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
@@ -1439,7 +1674,7 @@ class MimirRouter:
             mount: str | None = Form(default=None),
             _auth: None = Depends(_require_write_auth),
         ) -> SourceResponse:
-            port, resolved_mount = _resolve_mount_port(adapter, mount, default_name=self._name)
+            port, resolved_mount = self._resolve_port(mount)
             raw_bytes = await file.read()
             content = raw_bytes.decode("utf-8", errors="replace")
             source = MimirSource(

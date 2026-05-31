@@ -119,7 +119,13 @@ function FileTreeItem({ node, depth, onOpenFile, activePath }: FileTreeItemProps
         }
       >
         {/* Icon */}
-        <span className="niuu-shrink-0 niuu-text-xs" aria-hidden>
+        <span
+          className={cn(
+            'niuu-shrink-0 niuu-text-xs',
+            isActive ? 'niuu-text-text-primary' : 'niuu-text-text-muted',
+          )}
+          aria-hidden
+        >
           {isDirectory ? (expanded ? '▾' : '▸') : node.isSecret ? '🔒' : '·'}
         </span>
 

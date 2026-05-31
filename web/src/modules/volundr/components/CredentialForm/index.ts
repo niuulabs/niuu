@@ -1,1 +1,0 @@
-export { CredentialForm } from './CredentialForm';

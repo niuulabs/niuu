@@ -98,7 +98,14 @@ describe('countByState', () => {
 });
 
 describe('SESSION_STATES', () => {
-  it('contains the five subnav states in display order', () => {
-    expect(SESSION_STATES).toEqual(['running', 'idle', 'provisioning', 'failed', 'terminated']);
+  it('contains the subnav states in display order', () => {
+    expect(SESSION_STATES).toEqual([
+      'running',
+      'idle',
+      'provisioning',
+      'failed',
+      'terminated',
+      'archived',
+    ]);
   });
 });

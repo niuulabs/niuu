@@ -3,7 +3,7 @@
   "plugins": {
     "login": { "enabled": true, "order": 0 },
     "volundr": { "enabled": true, "order": 1 },
-    "tyr": { "enabled": true, "order": 2 },
+    "ting": { "enabled": true, "order": 2 },
     "mimir": { "enabled": true, "order": 3 },
     "ravn": { "enabled": true, "order": 4 },
     "observatory": { "enabled": true, "order": 5 },
@@ -29,10 +29,10 @@
     "forge.pty": { "mode": "mock" },
     "forge.metrics": { "mode": "mock" },
     "volundr": { "mode": "mock" },
-    "tyr.dispatcher": { "mode": "mock" },
-    "tyr.sessions": { "mode": "mock" },
-    "tyr.dispatch": { "mode": "mock" },
-    "tyr.settings": { "mode": "mock" },
-    "tyr": { "mode": "mock" }
+    "ting.dispatcher": { "mode": "mock" },
+    "ting.sessions": { "mode": "mock" },
+    "ting.dispatch": { "mode": "mock" },
+    "ting.settings": { "mode": "mock" },
+    "ting": { "mode": "mock" }
   }
 }

@@ -114,8 +114,17 @@ class FakeResumableTransport(CLITransport):
         return True
 
     @property
+    def is_turn_active(self) -> bool:
+        return True
+
+    @property
     def capabilities(self) -> TransportCapabilities:
-        return TransportCapabilities(session_resume=True, interrupt=True)
+        return TransportCapabilities(
+            session_resume=True,
+            interrupt=True,
+            steer=True,
+            steering_mode="interrupt_resume",
+        )
 
 
 class FakeStatelessTransport(CLITransport):
@@ -258,7 +267,35 @@ async def test_cli_executor_interrupts_active_transport_when_supported() -> None
     transport = agent._transport
     assert transport is not None
     assert transport.control_calls == [("interrupt", {})]
-    assert agent._interrupt_reason == InterruptReason.SIGINT
+
+
+@pytest.mark.asyncio
+async def test_cli_executor_steers_active_transport_when_supported() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a reviewer.",
+        session=Session(),
+        model="fake-model",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-4",
+        persona="reviewer",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[],
+    )
+
+    await agent._ensure_transport()
+    steered = await agent.steer("Switch to a safer plan")
+
+    transport = agent._transport
+    assert steered is True
+    assert transport is not None
+    assert transport.control_calls == [("steer", {"content": "Switch to a safer plan"})]
 
 
 def _make_agent(
@@ -457,3 +494,48 @@ def test_cli_executor_passes_mcp_servers_to_codex_transport() -> None:
         ("mcp_servers.mimir-local.command", '"python3"'),
         ("mcp_servers.mimir-local.args", '["-m", "mimir"]'),
     ]
+
+
+def test_cli_executor_delegates_codex_ws_permissions_to_codex_config() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex_ws.CodexWebSocketTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a researcher.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-codex-ws-permissions",
+        persona="researcher",
+        workspace_dir="/tmp/workspace",
+        permission_mode="workspace_write",
+        tools=[],
+    )
+
+    assert "skip_permissions" not in agent._transport_kwargs
+
+
+def test_cli_executor_allows_explicit_codex_ws_permission_override() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex_ws.CodexWebSocketTransport",
+        transport_kwargs={"skip_permissions": True},
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a researcher.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-codex-ws-explicit-permissions",
+        persona="researcher",
+        workspace_dir="/tmp/workspace",
+        permission_mode="workspace_write",
+        tools=[],
+    )
+
+    assert agent._transport_kwargs["skip_permissions"] is True

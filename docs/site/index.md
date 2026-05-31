@@ -4,165 +4,177 @@ hide:
   - toc
 ---
 
-<div class="volundr-hero" markdown>
+<div class="niuu-hero" markdown>
 
-# Volundr
+![Niuu knot](images/logo-knot.svg){ .hero-logo width="84" }
 
-<p class="tagline">Self-hosted remote development platform on Kubernetes</p>
+# Niuu
+
+<p class="tagline">The self-hosted platform for AI workspaces, custom AI teams, always-on assistants, shared knowledge, and local or cloud AI.</p>
+
+<div class="hero-pills">
+  <span>AI workspaces</span>
+  <span>Custom AI teams</span>
+  <span>Always-on assistants</span>
+  <span>Shared knowledge</span>
+  <span>Local &amp; cloud AI</span>
+  <span>Laptop to Kubernetes</span>
+</div>
 
 <div class="hero-buttons">
-  <a href="getting-started/installation/" class="primary">Get started</a>
-  <a href="architecture/overview/" class="secondary">Architecture</a>
-  <a href="api/openapi/" class="secondary">API reference</a>
+  <a href="#what-niuu-is" class="primary">Start here</a>
+  <a href="#platform-map" class="secondary">Platform map</a>
+  <a href="https://github.com/niuulabs/volundr" class="secondary">Repository</a>
 </div>
 
 </div>
 
-<div class="screenshot-full" markdown>
+## What Niuu Is
 
-![Session dashboard](images/dashboard.png)
+Niuu brings four operating modes into one platform you can run on your own machine, on Kubernetes, or inside your own infrastructure:
 
-</div>
+- **AI workspaces** for hands-on work with one assistant or several assistants working together in a live coding environment
+- **Custom AI teams** you can design, launch, and steer for coding, research, operations, and your own multi-step flows
+- **Always-on assistants** that monitor sources, revisit knowledge, refresh documents, and stay available for live operator guidance
+- **Local and cloud AI** managed in one place, including what models are available, where they run, and when they are used
 
-A platform for running managed, isolated AI coding agent sessions on your own Kubernetes cluster. Volundr manages the full lifecycle — spinning up isolated workspaces in Kubernetes pods where developers interact with AI coding agents (like Claude Code) through a browser.
+The result is a self-hosted system where you can move smoothly between direct operator work, autonomous execution, durable memory, and local or third-party models without handing control to an external vendor platform.
 
-## Features
+## In the UI
+
+<p align="center">
+  <img src="images/ui-ting-workflows.png" alt="Ting workflow builder in Niuu" width="100%">
+</p>
+
+<p align="center">
+  <img src="images/ui-guild-instances.png" alt="Guild instance registry" width="49%">
+  <img src="images/ui-niuu-home.png" alt="Volundr forge dashboard" width="49%">
+</p>
+
+## Why It Exists
 
 <div class="feature-grid" markdown>
 
 <div class="feature" markdown>
 
-### :material-kubernetes: Isolated sessions
+### One platform, not disconnected tools
 
-Create, start, stop, and archive coding sessions with model selection. Each session gets its own Kubernetes pod with a dedicated workspace PVC and storage quotas.
-
-</div>
-
-<div class="feature" markdown>
-
-### :material-source-branch: Git workflows
-
-Branch creation, PR management, CI status checks, and merge confidence scoring across GitHub and GitLab.
+Workspaces, AI teams, assistants, and model routing all live in one system with shared auth, shared memory, shared events, and one operator experience.
 
 </div>
 
 <div class="feature" markdown>
 
-### :material-timeline-text: Chronicles
+### Operators stay in control
 
-Session history with timelines, file diffs, and commit summaries. See exactly what changed and when.
-
-</div>
-
-<div class="feature" markdown>
-
-### :material-shield-lock: Secret injection
-
-Mount secrets into sessions via Infisical, OpenBao/Vault, or in-memory backends. Volundr never sees secret values.
+Humans can inspect, interrupt, redirect, approve, and steer the platform at every layer instead of treating agents like opaque background jobs.
 
 </div>
 
 <div class="feature" markdown>
 
-### :material-account-group: Multi-tenancy & auth
+### Memory is first-class
 
-Hierarchical tenants with roles and quota enforcement. IDP-agnostic OIDC authentication via Envoy, authorization via Cerbos.
+Shared knowledge is not an afterthought. It is where research, debate, durable documentation, and long-lived assistant curation all accumulate.
 
 </div>
 
 <div class="feature" markdown>
 
-### :material-puzzle: Integrations & events
+### Local and cloud AI from one place
 
-Issue trackers (Linear, Jira), MCP servers, SSE streaming, and event pipelines to PostgreSQL, RabbitMQ, and OpenTelemetry.
-
-</div>
-
-</div>
-
-## Components
-
-| Component | Role |
-|-----------|------|
-| <span class="component-name">Volundr API</span> | FastAPI/Python backend — session CRUD, workspace provisioning, git integration, secret management, multi-tenant access control |
-| <span class="component-name">Skuld</span> | WebSocket broker — connects the browser UI to AI coding agents running inside session pods |
-| <span class="component-name">Web UI</span> | React web UI — session management, chronicles, diffs, terminal access, and admin |
-
-## Tech stack
-
-FastAPI · asyncpg (raw SQL, no ORM) · React/Vite/CSS Modules · Kubernetes/Helm · OIDC/Cerbos · OpenTelemetry
-
-## See it in action
-
-<div class="screenshot-showcase" markdown>
-
-<div class="showcase-item" markdown>
-
-### Sign in
-
-Volundr uses standard OIDC for authentication and is fully IDP-agnostic — connect Keycloak, Entra ID, Okta, or any compliant provider. Users sign in through your existing identity infrastructure with no vendor lock-in.
-
-![Login](images/login.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Launch a session
-
-The launch wizard walks you through session creation in two steps: pick a workspace template, then configure resources, credentials, and integrations. Templates are fully customisable, letting teams standardise their environments while keeping things flexible.
-
-![Launch wizard](images/launch-wizard.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Chat with the agent
-
-The session dashboard is where you interact with your AI coding agent. Chat back and forth, watch work happen in real time, and switch between tabs for the terminal, code, diffs, and logs — all from the browser.
-
-![Session chat](images/dashboard.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Review changes
-
-The built-in diff viewer gives you a clear view of every file the agent has touched. Review changes inline before committing, catch issues early, and keep full control over what lands in your codebase.
-
-![Session diffs](images/session-diffs.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Browse the timeline
-
-Chronicles capture the full history of a session — every commit, file change, and agent action laid out on a timeline. Scroll back to see exactly what happened and when, making it easy to audit work or pick up where you left off.
-
-![Chronicle timeline](images/chronicle-timeline.png)
-
-</div>
-
-<div class="showcase-item" markdown>
-
-### Full workspace access
-
-Each session provides a complete workspace with an integrated terminal and a full VS Code instance running remotely inside the Kubernetes pod. Edit code, install extensions, debug, and run commands — all from the browser, just like you would locally.
-
-![Session workspace](images/session-workspace.png)
+Choose which models are available, whether work stays local or uses third-party providers, and how the rest of the platform can use them without every tool inventing its own rules.
 
 </div>
 
 </div>
 
-## Quick links
+## How Niuu Operates
 
-- [Quick start](getting-started/quick-start.md) — get running in 5 minutes
-- [Installation guide](installation/overview.md) — deployment options and setup
-- [User guide](user-guide/sessions.md) — sessions, templates, chronicles, CLI
-- [Configuration](configuration/overview.md) — adapters, identity, secrets, storage
-- [API reference](api/openapi.md) — interactive OpenAPI documentation
-- [Contributing](contributing/development.md) — development workflow
+![Niuu architecture](images/niuu-architecture.svg){ .niuu-architecture-diagram }
+
+<div class="arch-caption" markdown>
+
+- **Volundr** is where humans work directly.
+- **Ting** coordinates specialist teams and review loops.
+- **Ravn** is the harness for one assistant or a connected team of assistants.
+- **Mimir** keeps shared memory alive.
+- **Bifrost** decides what models are available and where they run.
+
+</div>
+
+## What Niuu Lets You Build
+
+<div class="feature-grid" markdown>
+
+<div class="feature" markdown>
+
+### Live AI workspaces
+
+Launch and manage coding workspaces with repos, terminals, diffs, and live conversation with one assistant or several assistants working together.
+
+</div>
+
+<div class="feature" markdown>
+
+### Build and run AI teams
+
+Compose your own specialist teams for, for example, coding, review, security, research, approvals, retries, and whatever stage logic your process needs.
+
+</div>
+
+<div class="feature" markdown>
+
+### Ravn is the harness
+
+Use one runtime layer for personas, tools, triggers, human escalation, live comms, and long-lived assistants, while connecting to models through CLI transports or provider APIs.
+
+</div>
+
+<div class="feature" markdown>
+
+### Shared knowledge
+
+Store raw ingest, scratch discussion, curated memory, research outputs, postmortems, and Warden-maintained knowledge.
+
+</div>
+
+<div class="feature" markdown>
+
+### Manage local and cloud AI
+
+Decide which models are available, which providers back them, whether work stays local or goes to third parties, and how the rest of the platform chooses between them.
+
+</div>
+
+<div class="feature" markdown>
+
+### Run assistants that stay alive
+
+Run assistants that keep working after the interactive session ends: watching sources, refreshing stale documents, curating knowledge, running scheduled reflection, and staying reachable through a live operator console.
+
+</div>
+
+<div class="feature" markdown>
+
+### Human guidance stays in the loop
+
+Let assistants and teams raise help-needed events, send directed messages, pause for operator input, and resume without losing context.
+
+</div>
+
+</div>
+
+## Operator Journeys
+
+### 1. Pair directly with AI
+
+Use a live workspace when you want a terminal, diffs, and a direct room with one assistant or several assistants working together while keeping everything on your own infrastructure.
+
+### 2. Launch coordinated work
+
+Use an AI team when the work should move across multiple specialists, approvals, reviews, or custom stages you define for your own process.
+
+### 3. Keep knowledge alive
+
+Use always-on assistants and shared knowledge when the work should keep happening after the workspace closes: source monitoring, document refresh, ongoing curation, scheduled reflection, and long-lived assistants you can still steer directly.

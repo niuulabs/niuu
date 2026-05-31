@@ -52,17 +52,17 @@ const MOCK_TOPOLOGY: Topology = {
       status: 'healthy',
     },
     {
-      id: 'tyr-0',
-      typeId: 'tyr',
-      label: 'tyr-0',
+      id: 'ting-0',
+      typeId: 'ting',
+      label: 'ting-0',
       parentId: 'cluster-valaskjalf',
       status: 'healthy',
     },
     { id: 'ravn-huginn', typeId: 'ravn_long', label: 'huginn', parentId: null, status: 'healthy' },
     {
-      id: 'raid-1',
-      typeId: 'raid',
-      label: 'raid-omega',
+      id: 'run-1',
+      typeId: 'run',
+      label: 'run-omega',
       parentId: 'cluster-valaskjalf',
       status: 'observing',
       state: 'working',
@@ -95,7 +95,7 @@ describe('ObservatorySubnav', () => {
     render(<ObservatorySubnav />);
     expect(screen.getByTestId('filter-all')).toBeInTheDocument();
     expect(screen.getByTestId('filter-agents')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-raids')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-runs')).toBeInTheDocument();
     expect(screen.getByTestId('filter-services')).toBeInTheDocument();
     expect(screen.getByTestId('filter-devices')).toBeInTheDocument();
   });
@@ -114,10 +114,10 @@ describe('ObservatorySubnav', () => {
     expect(agentsBtn).toHaveTextContent('1');
   });
 
-  it('renders raids filter with correct count', () => {
+  it('renders runs filter with correct count', () => {
     render(<ObservatorySubnav />);
-    const raidsBtn = screen.getByTestId('filter-raids');
-    expect(raidsBtn).toHaveTextContent('1');
+    const runsBtn = screen.getByTestId('filter-runs');
+    expect(runsBtn).toHaveTextContent('1');
   });
 
   it('renders both realms in the realms section', () => {
@@ -136,9 +136,9 @@ describe('ObservatorySubnav', () => {
     expect(screen.getByTestId('cluster-cluster-valaskjalf')).toBeInTheDocument();
   });
 
-  it('renders active raid in raids section', () => {
+  it('renders active run in runs section', () => {
     render(<ObservatorySubnav />);
-    expect(screen.getByTestId('raid-raid-1')).toBeInTheDocument();
+    expect(screen.getByTestId('run-run-1')).toBeInTheDocument();
     expect(screen.getByText('refactor rule engine')).toBeInTheDocument();
   });
 

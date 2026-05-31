@@ -358,6 +358,110 @@ class TestTaskCreateTool:
         assert data["location"] == "local"
         mesh.send.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_persona_preference_selects_matching_idle_peer(self):
+        """task_create prefers an idle peer whose persona matches the request."""
+        dl = _make_drive_loop()
+        reviewer = _FakePeer("peer-reviewer", status="idle", capabilities=["git"])
+        reviewer.persona = "reviewer"
+        coder = _FakePeer("peer-coder", status="idle", capabilities=["terminal"])
+        coder.persona = "coder"
+        discovery = _FakeDiscovery({"peer-reviewer": reviewer, "peer-coder": coder})
+        mesh = AsyncMock()
+        mesh.send = AsyncMock(return_value={"status": "accepted", "task_id": "t3"})
+
+        tool = TaskCreateTool(drive_loop=dl, mesh=mesh, discovery=discovery)
+        result = await tool.execute(
+            {
+                "prompt": "implement the change",
+                "title": "coding task",
+                "persona": "coder",
+            }
+        )
+        data = json.loads(result.content)
+        assert data["location"] == "peer-coder"
+        mesh.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rejects_persona_outside_allowed_workflow_targets(self):
+        dl = _make_drive_loop()
+        tool = TaskCreateTool(drive_loop=dl, allowed_target_personas={"coder"})
+
+        result = await tool.execute(
+            {
+                "prompt": "review the change",
+                "title": "review task",
+                "persona": "reviewer",
+            }
+        )
+
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["error"] == "persona_not_allowed"
+        assert data["allowed_personas"] == ["coder"]
+
+    @pytest.mark.asyncio
+    async def test_inherits_parent_session_and_root_correlation_for_local_tasks(self):
+        dl = _make_drive_loop()
+        parent = _make_agent_task("parent-task")
+        parent.session_id = "sess-123"
+        parent.root_correlation_id = "root-123"
+        parent.workflow_node_id = "run-coordinator-start"
+        token = dl._current_task_var.set(parent)
+        try:
+            tool = TaskCreateTool(drive_loop=dl, allowed_target_personas={"coder"})
+            result = await tool.execute(
+                {"prompt": "implement", "title": "coding task", "persona": "coder"}
+            )
+        finally:
+            dl._current_task_var.reset(token)
+
+        assert not result.is_error
+        queued = list(dl._queue._queue)  # type: ignore[attr-defined]
+        created_task = queued[0][2]
+        assert created_task.session_id == "sess-123"
+        assert created_task.root_correlation_id == "root-123"
+
+    @pytest.mark.asyncio
+    async def test_rejects_duplicate_dispatch_to_same_persona_within_node(self):
+        dl = _make_drive_loop()
+        parent = _make_agent_task("parent-task")
+        parent.session_id = "sess-123"
+        parent.root_correlation_id = "root-123"
+        parent.workflow_node_id = "run-coordinator-start"
+        token = dl._current_task_var.set(parent)
+        try:
+            tool = TaskCreateTool(drive_loop=dl, allowed_target_personas={"coder"})
+            first = await tool.execute(
+                {"prompt": "implement", "title": "coding task", "persona": "coder"}
+            )
+            second = await tool.execute(
+                {"prompt": "review it too", "title": "second coding task", "persona": "coder"}
+            )
+        finally:
+            dl._current_task_var.reset(token)
+
+        assert not first.is_error
+        assert second.is_error
+        data = json.loads(second.content)
+        assert data["error"] == "duplicate_stage_dispatch"
+
+    @pytest.mark.asyncio
+    async def test_requires_explicit_persona_within_workflow_node(self):
+        dl = _make_drive_loop()
+        parent = _make_agent_task("parent-task")
+        parent.workflow_node_id = "run-coordinator-start"
+        token = dl._current_task_var.set(parent)
+        try:
+            tool = TaskCreateTool(drive_loop=dl, allowed_target_personas={"coder"})
+            result = await tool.execute({"prompt": "do something", "title": "implicit target"})
+        finally:
+            dl._current_task_var.reset(token)
+
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["error"] == "persona_required"
+
 
 # ---------------------------------------------------------------------------
 # task_status tests

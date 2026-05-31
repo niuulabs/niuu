@@ -802,7 +802,10 @@ function MeshCascade({
 // ---------------------------------------------------------------------------
 
 function ChatTab({ session }: { session: Session }) {
-  const room = useMemo(() => (import.meta.env.DEV ? buildMockRoom(session) : null), [session]);
+  const room = useMemo(() => {
+    const isDev = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
+    return isDev ? buildMockRoom(session) : null;
+  }, [session]);
   const turns = useMemo(() => (room ? buildMockTurns(session, room) : []), [session, room]);
   const grouped = useMemo(() => groupTurns(turns), [turns]);
   const [focusPeer, setFocusPeer] = useState<string | null>(null);
@@ -1667,27 +1670,6 @@ export function SessionDetailPage({
             data-testid="resources-toggle"
           >
             res
-          </button>
-          <button
-            type="button"
-            aria-label="stop session"
-            className="niuu-rounded-md niuu-border niuu-border-transparent niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[12px] niuu-text-text-muted hover:niuu-border-border-subtle hover:niuu-bg-bg-elevated/60"
-          >
-            stop
-          </button>
-          <button
-            type="button"
-            aria-label="archive session"
-            className="niuu-rounded-md niuu-border niuu-border-transparent niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[12px] niuu-text-text-muted hover:niuu-border-border-subtle hover:niuu-bg-bg-elevated/60"
-          >
-            arc
-          </button>
-          <button
-            type="button"
-            aria-label="delete session"
-            className="niuu-rounded-md niuu-border niuu-border-transparent niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[12px] niuu-text-text-muted hover:niuu-border-critical hover:niuu-bg-critical-bg"
-          >
-            del
           </button>
         </div>
       </div>

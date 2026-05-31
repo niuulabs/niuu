@@ -376,4 +376,34 @@ describe('AuthProvider', () => {
 
     expect(setTokenProvider).toHaveBeenLastCalledWith(null);
   });
+
+  it('clears the user when the manager emits a userUnloaded event', async () => {
+    vi.mocked(getOidcConfig).mockReturnValue(oidcConfig);
+    let userUnloadedCallback: (() => void) | undefined;
+    const mockMgr = createMockManager({
+      getUser: vi.fn().mockResolvedValue({ expired: false, access_token: 'active-token' }),
+      events: {
+        addUserLoaded: vi.fn(),
+        addUserUnloaded: vi.fn((cb: () => void) => {
+          userUnloadedCallback = cb;
+        }),
+        addAccessTokenExpired: vi.fn(),
+        removeUserLoaded: vi.fn(),
+        removeUserUnloaded: vi.fn(),
+        removeAccessTokenExpired: vi.fn(),
+      },
+    });
+    vi.mocked(getUserManager).mockReturnValue(mockMgr as never);
+
+    renderWithConfig();
+
+    await screen.findByTestId('token');
+    expect(screen.getByTestId('token')).toHaveTextContent('active-token');
+
+    await act(async () => {
+      userUnloadedCallback?.();
+    });
+
+    expect(screen.getByTestId('token')).toHaveTextContent('none');
+  });
 });

@@ -26,6 +26,12 @@ describe('SourcesView', () => {
     await waitFor(() => expect(screen.getByText('7 sources')).toBeInTheDocument());
   });
 
+  it('scopes sources to the active mount', async () => {
+    wrap(<SourcesView />, undefined, { tweaks: { activeMount: 'platform' } });
+    await waitFor(() => expect(screen.getByText(/mount: platform/)).toBeInTheDocument());
+    expect(screen.getByText('2 sources · mount: platform')).toBeInTheDocument();
+  });
+
   it('filters sources by origin when a tab is clicked', async () => {
     wrap(<SourcesView />);
     await waitFor(() => expect(screen.getByText('7 sources')).toBeInTheDocument());

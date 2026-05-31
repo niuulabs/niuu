@@ -167,6 +167,8 @@ class TestDriveLoopEmitter:
         assert _published_event_type(pub) == registry.RAVN_TASK_COMPLETED
         evt = pub.publish.call_args[0][0]
         assert evt.payload["outcome"] == "success"
+        assert evt.payload["session_id"] == task.session_id
+        assert evt.correlation_id == task.session_id
 
     async def test_emit_task_completed_failure(self) -> None:
         pub = _mock_publisher()
@@ -175,6 +177,23 @@ class TestDriveLoopEmitter:
         await loop._emit_sleipnir_task_completed(task, "failure")
         evt = pub.publish.call_args[0][0]
         assert evt.payload["outcome"] == "failure"
+
+    async def test_emit_task_completed_includes_structured_outcome_when_available(self) -> None:
+        pub = _mock_publisher()
+        loop = self._make_drive_loop(pub)
+        task = self._make_task()
+        response_text = """\
+---outcome---
+verdict: approve
+tests_passing: true
+scope_adherence: 0.95
+summary: Ready to merge
+---end---"""
+        await loop._emit_sleipnir_task_completed(task, "success", response_text=response_text)
+        evt = pub.publish.call_args[0][0]
+        assert evt.payload["structured_outcome"]["verdict"] == "approve"
+        assert evt.payload["verdict"] == "approve"
+        assert evt.payload["summary"] == "Ready to merge"
 
     async def test_emit_task_completed_noop_when_no_publisher(self) -> None:
         loop = self._make_drive_loop(None)
@@ -267,17 +286,17 @@ class TestVolundrSessionServiceEmitters:
 
 
 # ---------------------------------------------------------------------------
-# SessionActivitySubscriber — _handle_completion emits tyr.raid.needs_approval
+# SessionActivitySubscriber — _handle_completion emits ting.run.needs_approval
 # ---------------------------------------------------------------------------
 
 
 class TestActivitySubscriberEmitter:
-    """Tests that _handle_completion emits tyr.raid.needs_approval."""
+    """Tests that _handle_completion emits ting.run.needs_approval."""
 
     def _make_subscriber(self, publisher: object) -> object:
-        from tyr.adapters.memory_event_bus import InMemoryEventBus
-        from tyr.config import WatcherConfig
-        from tyr.domain.services.activity_subscriber import SessionActivitySubscriber
+        from ting.adapters.memory_event_bus import InMemoryEventBus
+        from ting.config import WatcherConfig
+        from ting.domain.services.activity_subscriber import SessionActivitySubscriber
 
         return SessionActivitySubscriber(
             volundr_factory=MagicMock(),
@@ -288,13 +307,13 @@ class TestActivitySubscriberEmitter:
             sleipnir_publisher=publisher,
         )
 
-    def _make_raid(self) -> object:
+    def _make_run(self) -> object:
         from datetime import UTC, datetime
         from uuid import uuid4
 
-        from tyr.domain.models import Raid, RaidStatus
+        from ting.domain.models import Run, RunStatus
 
-        return Raid(
+        return Run(
             id=uuid4(),
             phase_id=uuid4(),
             tracker_id="LIN-42",
@@ -303,7 +322,7 @@ class TestActivitySubscriberEmitter:
             acceptance_criteria=[],
             declared_files=[],
             estimate_hours=None,
-            status=RaidStatus.RUNNING,
+            status=RunStatus.RUNNING,
             confidence=0.8,
             session_id="sess-abc",
             branch="fix/auth",
@@ -315,14 +334,14 @@ class TestActivitySubscriberEmitter:
             updated_at=datetime.now(UTC),
         )
 
-    async def test_handle_completion_emits_raid_needs_approval(self) -> None:
+    async def test_handle_completion_emits_run_needs_approval(self) -> None:
         pub = _mock_publisher()
         sub = self._make_subscriber(pub)
-        raid = self._make_raid()
+        run = self._make_run()
 
         tracker = MagicMock()
-        tracker.update_raid_progress = AsyncMock(return_value=raid)
-        tracker.update_raid_state = AsyncMock()
+        tracker.update_run_progress = AsyncMock(return_value=run)
+        tracker.update_run_state = AsyncMock()
 
         volundr = MagicMock()
         volundr.get_chronicle_summary = AsyncMock(return_value="")
@@ -333,60 +352,60 @@ class TestActivitySubscriberEmitter:
 
         sub._event_bus.emit = AsyncMock()
 
-        await sub._handle_completion(raid, tracker, volundr, "owner-1", evaluation)
+        await sub._handle_completion(run, tracker, volundr, "owner-1", evaluation)
 
         assert pub.publish.called
-        assert _published_event_type(pub) == registry.TYR_RAID_NEEDS_APPROVAL
+        assert _published_event_type(pub) == registry.TING_RUN_NEEDS_APPROVAL
         evt = pub.publish.call_args[0][0]
-        assert evt.payload["raid_id"] == "LIN-42"
+        assert evt.payload["run_id"] == "LIN-42"
 
     async def test_handle_completion_saga_id_is_phase_id(self) -> None:
-        """saga_id in the event should be raid.phase_id (not empty string)."""
+        """saga_id in the event should be run.phase_id (not empty string)."""
         pub = _mock_publisher()
         sub = self._make_subscriber(pub)
-        raid = self._make_raid()
+        run = self._make_run()
 
         tracker = MagicMock()
-        tracker.update_raid_progress = AsyncMock(return_value=raid)
-        tracker.update_raid_state = AsyncMock()
+        tracker.update_run_progress = AsyncMock(return_value=run)
+        tracker.update_run_state = AsyncMock()
 
         volundr = MagicMock()
         volundr.get_chronicle_summary = AsyncMock(return_value="")
 
         sub._event_bus.emit = AsyncMock()
 
-        await sub._handle_completion(raid, tracker, volundr, "owner-1")
+        await sub._handle_completion(run, tracker, volundr, "owner-1")
 
         evt = pub.publish.call_args[0][0]
-        assert evt.payload["saga_id"] == str(raid.phase_id)
+        assert evt.payload["saga_id"] == str(run.phase_id)
         assert evt.payload["saga_id"] != ""
 
     async def test_handle_completion_noop_when_no_publisher(self) -> None:
         sub = self._make_subscriber(None)
-        raid = self._make_raid()
+        run = self._make_run()
 
         tracker = MagicMock()
-        tracker.update_raid_progress = AsyncMock(return_value=raid)
-        tracker.update_raid_state = AsyncMock()
+        tracker.update_run_progress = AsyncMock(return_value=run)
+        tracker.update_run_state = AsyncMock()
 
         volundr = MagicMock()
         volundr.get_chronicle_summary = AsyncMock(return_value="")
 
         sub._event_bus.emit = AsyncMock()
 
-        await sub._handle_completion(raid, tracker, volundr, "owner-1")  # must not raise
+        await sub._handle_completion(run, tracker, volundr, "owner-1")  # must not raise
 
 
 # ---------------------------------------------------------------------------
-# DispatchService.find_ready_issues — emits tyr.saga.completed
+# DispatchService.find_ready_issues — emits ting.saga.completed
 # ---------------------------------------------------------------------------
 
 
 class TestDispatchServiceEmitter:
-    """Tests that find_ready_issues emits tyr.saga.completed on auto-archive."""
+    """Tests that find_ready_issues emits ting.saga.completed on auto-archive."""
 
     def _make_service(self, publisher: object) -> object:
-        from tyr.domain.services.dispatch_service import DispatchConfig, DispatchService
+        from ting.domain.services.dispatch_service import DispatchConfig, DispatchService
 
         return DispatchService(
             tracker_factory=MagicMock(),
@@ -398,7 +417,7 @@ class TestDispatchServiceEmitter:
         )
 
     def _make_completed_saga(self) -> object:
-        from tyr.domain.models import Saga, SagaStatus
+        from ting.domain.models import Saga, SagaStatus
 
         return Saga(
             id=uuid4(),
@@ -430,6 +449,7 @@ class TestDispatchServiceEmitter:
         saga = self._make_completed_saga()
 
         svc._saga_repo.list_sagas = AsyncMock(return_value=[saga])
+        svc._saga_repo.get_phases_by_saga = AsyncMock(return_value=[])
         svc._saga_repo.update_saga_status = AsyncMock()
 
         mock_volundr = MagicMock()
@@ -442,7 +462,7 @@ class TestDispatchServiceEmitter:
         await svc.find_ready_issues("owner-1")
 
         assert pub.publish.called
-        assert _published_event_type(pub) == registry.TYR_SAGA_COMPLETED
+        assert _published_event_type(pub) == registry.TING_SAGA_COMPLETED
         evt = pub.publish.call_args[0][0]
         assert evt.payload["outcome"] == "auto_archived"
 
@@ -451,6 +471,7 @@ class TestDispatchServiceEmitter:
         saga = self._make_completed_saga()
 
         svc._saga_repo.list_sagas = AsyncMock(return_value=[saga])
+        svc._saga_repo.get_phases_by_saga = AsyncMock(return_value=[])
         svc._saga_repo.update_saga_status = AsyncMock()
 
         mock_volundr = MagicMock()
