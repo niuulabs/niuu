@@ -378,20 +378,20 @@ function sessionRowsFor(cluster: DisplayCluster, sessions: Session[]): ClusterSe
 
 function MetricCard({ card }: { card: ClusterMetricCard }) {
   return (
-    <section className="niuu-rounded-xl niuu-border niuu-p-4" style={PANEL_SURFACE_STYLE}>
-      <div className="niuu-flex niuu-items-baseline niuu-justify-between">
-        <span className="niuu-font-mono niuu-text-xs niuu-uppercase niuu-tracking-[0.22em] niuu-text-text-faint">
+    <section className="niuu:rounded-xl niuu:border niuu:p-4" style={PANEL_SURFACE_STYLE}>
+      <div className="niuu:flex niuu:items-baseline niuu:justify-between">
+        <span className="niuu:font-mono niuu:text-xs niuu:uppercase niuu:tracking-[0.22em] niuu:text-text-faint">
           {card.label}
         </span>
-        <span className="niuu-font-mono niuu-text-[11px] niuu-text-text-faint">
+        <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
           {card.unitLabel}
         </span>
       </div>
-      <div className="niuu-mt-2 niuu-font-sans niuu-text-[18px] niuu-font-semibold niuu-tracking-tight niuu-text-text-primary">
+      <div className="niuu:mt-2 niuu:font-sans niuu:text-[18px] niuu:font-semibold niuu:tracking-tight niuu:text-text-primary">
         {card.used}/{card.limit}
       </div>
-      <Meter className="niuu-mt-3" used={card.used} limit={card.limit} />
-      <div className="niuu-mt-2 niuu-font-mono niuu-text-[11px] niuu-text-text-faint">
+      <Meter className="niuu:mt-3" used={card.used} limit={card.limit} />
+      <div className="niuu:mt-2 niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
         {card.footer}
       </div>
     </section>
@@ -400,27 +400,27 @@ function MetricCard({ card }: { card: ClusterMetricCard }) {
 
 function PodsPanel({ pods, isLoading }: { pods: ClusterSessionView[]; isLoading: boolean }) {
   return (
-    <section className="niuu-rounded-xl niuu-border" style={PANEL_SURFACE_STYLE}>
-      <header className="niuu-flex niuu-items-baseline niuu-gap-3 niuu-border-b niuu-border-border niuu-px-4 niuu-py-3">
-        <h3 className="niuu-text-base niuu-font-semibold niuu-text-text-primary">
+    <section className="niuu:rounded-xl niuu:border" style={PANEL_SURFACE_STYLE}>
+      <header className="niuu:flex niuu:items-baseline niuu:gap-3 niuu:border-b niuu:border-border niuu:px-4 niuu:py-3">
+        <h3 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
           Pods on this forge
         </h3>
-        <span className="niuu-font-mono niuu-text-base niuu-text-text-faint">{pods.length}</span>
+        <span className="niuu:font-mono niuu:text-base niuu:text-text-faint">{pods.length}</span>
       </header>
       {isLoading ? (
-        <div className="niuu-p-4">
+        <div className="niuu:p-4">
           <LoadingState label="Loading sessions…" />
         </div>
       ) : pods.length === 0 ? (
-        <div className="niuu-p-4 niuu-font-mono niuu-text-xs niuu-text-text-faint">
+        <div className="niuu:p-4 niuu:font-mono niuu:text-xs niuu:text-text-faint">
           no niuu sessions active on this forge
         </div>
       ) : (
-        <ul className="niuu-divide-y niuu-divide-border">
+        <ul className="niuu:divide-y niuu:divide-border">
           {pods.map((pod) => (
             <li
               key={pod.id}
-              className="niuu-grid niuu-items-center niuu-gap-3 niuu-px-4 niuu-py-3"
+              className="niuu:grid niuu:items-center niuu:gap-3 niuu:px-4 niuu:py-3"
               style={{ gridTemplateColumns: 'auto minmax(0, 1fr) auto auto' }}
             >
               <StateDot
@@ -428,17 +428,17 @@ function PodsPanel({ pods, isLoading }: { pods: ClusterSessionView[]; isLoading:
                 pulse={pod.status === 'running'}
                 size={10}
               />
-              <span className="niuu-font-mono niuu-text-[14px] niuu-font-medium niuu-text-text-primary">
+              <span className="niuu:font-mono niuu:text-[14px] niuu:font-medium niuu:text-text-primary">
                 {pod.id}
               </span>
-              <span className="niuu-font-mono niuu-text-[12px] niuu-text-text-faint">
+              <span className="niuu:font-mono niuu:text-[12px] niuu:text-text-faint">
                 {pod.cpuLabel} • {pod.memoryLabel}
               </span>
-              <span className="niuu-inline-flex niuu-items-center niuu-justify-end">
+              <span className="niuu:inline-flex niuu:items-center niuu:justify-end">
                 {pod.connectionType ? (
                   <ConnectionTypeBadge connectionType={pod.connectionType} />
                 ) : (
-                  <span className="niuu-font-mono niuu-text-[11px] niuu-text-text-faint">—</span>
+                  <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">—</span>
                 )}
               </span>
             </li>
@@ -459,27 +459,27 @@ function NodesPanel({
   totalNodes: number;
 }) {
   return (
-    <section className="niuu-rounded-xl niuu-border" style={PANEL_SURFACE_STYLE}>
-      <header className="niuu-flex niuu-items-baseline niuu-gap-3 niuu-border-b niuu-border-border niuu-px-4 niuu-py-3">
-        <h3 className="niuu-text-base niuu-font-semibold niuu-text-text-primary">Nodes</h3>
-        <span className="niuu-font-mono niuu-text-base niuu-text-text-faint">
+    <section className="niuu:rounded-xl niuu:border" style={PANEL_SURFACE_STYLE}>
+      <header className="niuu:flex niuu:items-baseline niuu:gap-3 niuu:border-b niuu:border-border niuu:px-4 niuu:py-3">
+        <h3 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">Nodes</h3>
+        <span className="niuu:font-mono niuu:text-base niuu:text-text-faint">
           {readyNodes}/{totalNodes}
         </span>
       </header>
-      <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-p-4">
+      <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3 niuu:p-4">
         {nodes.map((node) => (
           <article
             key={node.id}
-            className="niuu-rounded-lg niuu-border niuu-p-3"
+            className="niuu:rounded-lg niuu:border niuu:p-3"
             style={NODE_SURFACE_STYLE}
           >
-            <div className="niuu-flex niuu-items-center niuu-gap-3">
+            <div className="niuu:flex niuu:items-center niuu:gap-3">
               <StateDot state={statusToDotState(node.status)} size={9} />
-              <span className="niuu-font-mono niuu-text-[13px] niuu-font-medium niuu-text-text-primary">
+              <span className="niuu:font-mono niuu:text-[13px] niuu:font-medium niuu:text-text-primary">
                 {node.id}
               </span>
             </div>
-            <div className="niuu-mt-3 niuu-space-y-2">
+            <div className="niuu:mt-3 niuu:space-y-2">
               <MiniBar label="cpu" value={node.cpuPct} />
               <MiniBar label="mem" value={node.memPct} />
             </div>
@@ -547,7 +547,7 @@ export function ClustersPage() {
   if (isLoading) {
     return (
       <div
-        className="niuu-flex niuu-min-h-0 niuu-flex-1 niuu-items-center niuu-justify-center"
+        className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:items-center niuu:justify-center"
         data-testid="clusters-page"
       >
         <LoadingState label="Loading clusters…" />
@@ -558,7 +558,7 @@ export function ClustersPage() {
   if (isError) {
     return (
       <div
-        className="niuu-flex niuu-min-h-0 niuu-flex-1 niuu-items-center niuu-justify-center"
+        className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:items-center niuu:justify-center"
         data-testid="clusters-page"
       >
         <ErrorState
@@ -572,7 +572,7 @@ export function ClustersPage() {
   if (!selectedCluster) {
     return (
       <div
-        className="niuu-flex niuu-min-h-0 niuu-flex-1 niuu-items-center niuu-justify-center"
+        className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:items-center niuu:justify-center"
         data-testid="clusters-page"
       >
         <EmptyState
@@ -585,43 +585,43 @@ export function ClustersPage() {
 
   return (
     <div
-      className="niuu-flex niuu-min-h-0 niuu-flex-1 niuu-bg-bg-primary"
+      className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:bg-bg-primary"
       data-testid="clusters-page"
     >
-      <div className="niuu-relative niuu-flex niuu-min-h-0 niuu-flex-1">
+      <div className="niuu:relative niuu:flex niuu:min-h-0 niuu:flex-1">
         <aside
           className={cn(
-            'niuu-flex niuu-min-h-0 niuu-shrink-0 niuu-flex-col niuu-overflow-hidden niuu-border-r niuu-border-border-subtle niuu-bg-[#0b0c10] niuu-transition-[width] niuu-duration-200',
-            sidebarCollapsed ? 'niuu-w-[54px]' : 'niuu-w-[350px]',
+            'niuu:flex niuu:min-h-0 niuu:shrink-0 niuu:flex-col niuu:overflow-hidden niuu:border-r niuu:border-border-subtle niuu:bg-[#0b0c10] niuu:transition-[width] niuu:duration-200',
+            sidebarCollapsed ? 'niuu:w-[54px]' : 'niuu:w-[350px]',
           )}
           aria-label="Clusters by realm"
           data-testid="clusters-sidebar"
         >
           {sidebarCollapsed ? (
-            <div className="niuu-flex niuu-h-full niuu-flex-col niuu-overflow-hidden">
-              <div className="niuu-flex niuu-items-center niuu-justify-center niuu-border-b niuu-border-border-subtle niuu-py-3">
+            <div className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-hidden">
+              <div className="niuu:flex niuu:items-center niuu:justify-center niuu:border-b niuu:border-border-subtle niuu:py-3">
                 <button
                   type="button"
                   onClick={() => setSidebarCollapsed(false)}
-                  className="niuu-font-mono niuu-text-sm niuu-text-text-muted"
+                  className="niuu:font-mono niuu:text-sm niuu:text-text-muted"
                   aria-label="Expand clusters sidebar"
                 >
                   ›
                 </button>
               </div>
-              <div className="niuu-flex-1 niuu-overflow-y-auto">
+              <div className="niuu:flex-1 niuu:overflow-y-auto">
                 {grouped.map(([realm, items]) => (
-                  <div key={realm} className="niuu-mb-5 niuu-flex niuu-flex-col niuu-gap-2">
+                  <div key={realm} className="niuu:mb-5 niuu:flex niuu:flex-col niuu:gap-2">
                     {items.map((cluster) => (
                       <button
                         key={cluster.id}
                         type="button"
                         onClick={() => setSelectedId(cluster.id)}
                         className={cn(
-                          'niuu-flex niuu-w-full niuu-items-center niuu-justify-center niuu-border-l-2 niuu-py-2',
+                          'niuu:flex niuu:w-full niuu:items-center niuu:justify-center niuu:border-l-2 niuu:py-2',
                           selectedCluster.id === cluster.id
-                            ? 'niuu-border-brand niuu-bg-[#12212b]'
-                            : 'niuu-border-transparent hover:niuu-bg-bg-tertiary',
+                            ? 'niuu:border-brand niuu:bg-[#12212b]'
+                            : 'niuu:border-transparent niuu:hover:bg-bg-tertiary',
                         )}
                         aria-label={cluster.displayName}
                       >
@@ -633,61 +633,61 @@ export function ClustersPage() {
               </div>
             </div>
           ) : (
-            <div className="niuu-flex niuu-h-full niuu-flex-col niuu-overflow-hidden">
-              <div className="niuu-flex niuu-items-start niuu-justify-between niuu-border-b niuu-border-border-subtle niuu-px-5 niuu-py-4">
-                <div className="niuu-flex niuu-items-baseline niuu-gap-2">
+            <div className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-hidden">
+              <div className="niuu:flex niuu:items-start niuu:justify-between niuu:border-b niuu:border-border-subtle niuu:px-5 niuu:py-4">
+                <div className="niuu:flex niuu:items-baseline niuu:gap-2">
                   <div>
-                    <h1 className="niuu-text-[15px] niuu-font-semibold niuu-text-text-primary">
+                    <h1 className="niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
                       Clusters
                     </h1>
-                    <p className="niuu-mt-1 niuu-font-sans niuu-text-[11px] niuu-text-text-secondary">
+                    <p className="niuu:mt-1 niuu:font-sans niuu:text-[11px] niuu:text-text-secondary">
                       by realm
                     </p>
                   </div>
-                  <span className="niuu-font-mono niuu-text-[12px] niuu-text-text-faint">
+                  <span className="niuu:font-mono niuu:text-[12px] niuu:text-text-faint">
                     {clusters.length}
                   </span>
                 </div>
                 <button
                   type="button"
                   onClick={() => setSidebarCollapsed(true)}
-                  className="niuu-font-mono niuu-text-lg niuu-text-text-muted"
+                  className="niuu:font-mono niuu:text-lg niuu:text-text-muted"
                   aria-label="Collapse clusters sidebar"
                 >
                   ‹
                 </button>
               </div>
 
-              <div className="niuu-flex-1 niuu-overflow-y-auto niuu-pb-6">
+              <div className="niuu:flex-1 niuu:overflow-y-auto niuu:pb-6">
                 {grouped.map(([realm, items]) => (
-                  <section key={realm} className="niuu-mt-6">
-                    <header className="niuu-mb-2 niuu-flex niuu-items-center niuu-justify-between niuu-px-5">
-                      <h2 className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.24em] niuu-text-text-faint">
+                  <section key={realm} className="niuu:mt-6">
+                    <header className="niuu:mb-2 niuu:flex niuu:items-center niuu:justify-between niuu:px-5">
+                      <h2 className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.24em] niuu:text-text-faint">
                         {realmLabel(realm)}
                       </h2>
-                      <span className="niuu-font-mono niuu-text-[12px] niuu-text-text-faint">
+                      <span className="niuu:font-mono niuu:text-[12px] niuu:text-text-faint">
                         {items.length}
                       </span>
                     </header>
-                    <ul className="niuu-space-y-0.5">
+                    <ul className="niuu:space-y-0.5">
                       {items.map((cluster) => (
                         <li key={cluster.id}>
                           <button
                             className={cn(
-                              'niuu-grid niuu-w-full niuu-items-center niuu-gap-3 niuu-px-5 niuu-py-2.5 niuu-text-left niuu-transition-colors',
+                              'niuu:grid niuu:w-full niuu:items-center niuu:gap-3 niuu:px-5 niuu:py-2.5 niuu:text-left niuu:transition-colors',
                               selectedCluster.id === cluster.id
-                                ? 'niuu-bg-[#12212b] niuu-text-text-primary'
-                                : 'niuu-text-text-secondary hover:niuu-bg-bg-panel',
+                                ? 'niuu:bg-[#12212b] niuu:text-text-primary'
+                                : 'niuu:text-text-secondary niuu:hover:bg-bg-panel',
                             )}
                             onClick={() => setSelectedId(cluster.id)}
                             type="button"
                             style={{ gridTemplateColumns: 'auto minmax(0, 1fr) auto' }}
                           >
                             <StateDot state={statusToDotState(cluster.status)} size={8} />
-                            <span className="niuu-font-mono niuu-text-[13px] niuu-font-medium">
+                            <span className="niuu:font-mono niuu:text-[13px] niuu:font-medium">
                               {cluster.displayName}
                             </span>
-                            <span className="niuu-font-mono niuu-text-[12px] niuu-text-text-faint">
+                            <span className="niuu:font-mono niuu:text-[12px] niuu:text-text-faint">
                               {cluster.listCount}
                             </span>
                           </button>
@@ -701,67 +701,67 @@ export function ClustersPage() {
           )}
         </aside>
 
-        <section className="niuu-flex niuu-min-h-0 niuu-flex-1 niuu-flex-col niuu-px-8 niuu-py-5">
-          <header className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-6 niuu-border-b niuu-border-border-subtle niuu-pb-5">
-            <div className="niuu-flex niuu-flex-col niuu-gap-2">
-              <div className="niuu-flex niuu-items-center niuu-gap-4">
+        <section className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col niuu:px-8 niuu:py-5">
+          <header className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-6 niuu:border-b niuu:border-border-subtle niuu:pb-5">
+            <div className="niuu:flex niuu:flex-col niuu:gap-2">
+              <div className="niuu:flex niuu:items-center niuu:gap-4">
                 <span
-                  className="niuu-inline-flex niuu-rounded-md niuu-px-3 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.18em]"
+                  className="niuu:inline-flex niuu:rounded-md niuu:px-3 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.18em]"
                   style={PRIMARY_BADGE_STYLE}
                 >
                   {selectedCluster.kind === 'primary' ? 'PRIMARY' : selectedCluster.kind}
                 </span>
-                <h2 className="niuu-text-[17px] niuu-font-semibold niuu-leading-none niuu-tracking-tight niuu-text-text-primary">
+                <h2 className="niuu:text-[17px] niuu:font-semibold niuu:leading-none niuu:tracking-tight niuu:text-text-primary">
                   {selectedCluster.displayName}
                 </h2>
-                <span className="niuu-font-mono niuu-text-[13px] niuu-text-text-faint">
+                <span className="niuu:font-mono niuu:text-[13px] niuu:text-text-faint">
                   · {selectedCluster.displayRealm}
                 </span>
                 <span
-                  className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-full niuu-px-3 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary"
+                  className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-full niuu:px-3 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary"
                   style={STATUS_PILL_STYLE}
                 >
                   <StateDot state={statusToDotState(selectedCluster.status)} size={9} />
                   {clusterStatusLabel(selectedCluster.status)}
                 </span>
               </div>
-              <div className="niuu-font-mono niuu-text-[13px] niuu-text-text-faint">
+              <div className="niuu:font-mono niuu:text-[13px] niuu:text-text-faint">
                 {selectedCluster.displayRegion} · {selectedCluster.readyNodes}/
                 {selectedCluster.totalNodes} nodes ready
               </div>
             </div>
-            <div className="niuu-flex niuu-items-center niuu-gap-8 niuu-pt-1">
+            <div className="niuu:flex niuu:items-center niuu:gap-8 niuu:pt-1">
               <button
-                className="niuu-font-mono niuu-text-[13px] niuu-text-text-secondary hover:niuu-text-text-primary"
+                className="niuu:font-mono niuu:text-[13px] niuu:text-text-secondary niuu:hover:text-text-primary"
                 type="button"
               >
                 cordon
               </button>
               <button
-                className="niuu-font-mono niuu-text-[13px] niuu-text-text-secondary hover:niuu-text-text-primary"
+                className="niuu:font-mono niuu:text-[13px] niuu:text-text-secondary niuu:hover:text-text-primary"
                 type="button"
               >
                 drain
               </button>
               <button
-                className="niuu-inline-flex niuu-items-center niuu-gap-3 niuu-rounded-xl niuu-border niuu-px-5 niuu-py-2.5 niuu-font-mono niuu-text-[13px] niuu-text-text-primary"
+                className="niuu:inline-flex niuu:items-center niuu:gap-3 niuu:rounded-xl niuu:border niuu:px-5 niuu:py-2.5 niuu:font-mono niuu:text-[13px] niuu:text-text-primary"
                 style={FORGE_BUTTON_STYLE}
                 type="button"
               >
-                <span className="niuu-text-lg">+</span>
+                <span className="niuu:text-lg">+</span>
                 forge here
               </button>
             </div>
           </header>
 
-          <div className="niuu-mt-6 niuu-grid niuu-grid-cols-4 niuu-gap-4">
+          <div className="niuu:mt-6 niuu:grid niuu:grid-cols-4 niuu:gap-4">
             {selectedCluster.metrics.map((card) => (
               <MetricCard key={card.label} card={card} />
             ))}
           </div>
 
           <div
-            className="niuu-mt-5 niuu-grid niuu-min-h-0 niuu-flex-1 niuu-gap-5"
+            className="niuu:mt-5 niuu:grid niuu:min-h-0 niuu:flex-1 niuu:gap-5"
             style={{ gridTemplateColumns: 'minmax(0, 1.45fr) minmax(0, 1fr)' }}
           >
             <PodsPanel pods={clusterSessions} isLoading={sessionsQuery.isLoading} />

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult
@@ -370,14 +371,12 @@ class DispatchPage(Widget):
 
         dispatched: list[str] = []
         for run_id in list(self._selected_ids):
-            try:
+            with suppress(Exception):
                 resp = self._client.post(
                     f"/api/v1/ting/runs/{run_id}/dispatch",
                 )
                 resp.raise_for_status()
                 dispatched.append(run_id)
-            except Exception:
-                pass
 
         self._selected_ids -= set(dispatched)
         return dispatched

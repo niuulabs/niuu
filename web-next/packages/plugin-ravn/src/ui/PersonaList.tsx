@@ -84,7 +84,7 @@ export function PersonaList({
     return (
       <div
         data-testid="persona-list-loading"
-        className="niuu-flex niuu-flex-col niuu-gap-1 niuu-p-3 niuu-text-sm niuu-text-text-muted"
+        className="niuu:flex niuu:flex-col niuu:gap-1 niuu:p-3 niuu:text-sm niuu:text-text-muted"
       >
         <span>Loading personas…</span>
       </div>
@@ -93,14 +93,14 @@ export function PersonaList({
 
   if (isError) {
     return (
-      <div data-testid="persona-list-error" className="niuu-p-3 niuu-text-sm niuu-text-critical">
+      <div data-testid="persona-list-error" className="niuu:p-3 niuu:text-sm niuu:text-critical">
         {errorMessage}
       </div>
     );
   }
 
   if (!data || data.length === 0) {
-    return <div className="niuu-p-3 niuu-text-sm niuu-text-text-muted">No personas found.</div>;
+    return <div className="niuu:p-3 niuu:text-sm niuu:text-text-muted">No personas found.</div>;
   }
 
   // Group by role, following PERSONA_ROLE_ORDER
@@ -122,7 +122,7 @@ export function PersonaList({
     <nav
       aria-label="Personas"
       className={cn(
-        'niuu-flex niuu-flex-col niuu-overflow-y-auto niuu-h-full niuu-py-2',
+        'niuu:flex niuu:flex-col niuu:overflow-y-auto niuu:h-full niuu:py-2',
         className,
       )}
       data-testid={dataTestId}
@@ -132,7 +132,7 @@ export function PersonaList({
         if (personas.length === 0) return null;
 
         return (
-          <div key={role} className="niuu-mb-3">
+          <div key={role} className="niuu:mb-3">
             <div
               className="rv-persona-role-header"
               data-role={role}
@@ -181,12 +181,12 @@ export function PersonaList({
       })}
 
       {showFooterAction && (
-        <div className="niuu-px-3 niuu-mt-auto niuu-pt-3 niuu-pb-2">
+        <div className="niuu:px-3 niuu:mt-auto niuu:pt-3 niuu:pb-2">
           <button
             type="button"
             onClick={onNew}
             data-testid="persona-new-button"
-            className="niuu-w-full niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-muted niuu-border niuu-border-dashed niuu-border-border niuu-rounded-md niuu-bg-transparent niuu-cursor-pointer hover:niuu-border-brand hover:niuu-text-text-primary niuu-transition-colors"
+            className="niuu:w-full niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-muted niuu:border niuu:border-dashed niuu:border-border niuu:rounded-md niuu:bg-transparent niuu:cursor-pointer niuu:hover:border-brand niuu:hover:text-text-primary niuu:transition-colors"
           >
             + New persona
           </button>

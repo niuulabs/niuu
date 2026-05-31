@@ -1,0 +1,7 @@
+{
+  "name": "vscode-reh-build-tools",
+  "private": true,
+  "dependencies": {
+    "@codingame/monaco-vscode-api": "28.4.1"
+  }
+}

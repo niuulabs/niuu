@@ -1,2 +1,2 @@
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss' prefix(niuu);
+@config "../tailwind.config.ts";

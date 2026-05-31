@@ -253,14 +253,10 @@ class TestSessionsPage:
     async def test_sessions_action_messages(self) -> None:
         sessions = _sample_sessions()
         app = PageTestApp(SessionsPage, sessions=sessions)
-        messages: list[SessionsPage.SessionAction] = []
         async with app.run_test() as pilot:
             await pilot.pause()
             page = app.query_one(SessionsPage)
             page.on_mount()
-
-            def capture(msg: SessionsPage.SessionAction) -> None:
-                messages.append(msg)
 
             # Verify selected session returns correctly
             selected = page._selected_session()

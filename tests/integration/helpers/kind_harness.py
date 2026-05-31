@@ -51,6 +51,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -159,10 +160,8 @@ class KindCluster:
             logger.warning("Failed to delete kind cluster %r: %s", self.name, exc.stderr)
         finally:
             if self._tmp_kubeconfig is not None:
-                try:
+                with suppress(OSError):
                     Path(self._tmp_kubeconfig.name).unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     # ------------------------------------------------------------------
     # kubectl wrappers

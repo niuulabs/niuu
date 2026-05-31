@@ -19,6 +19,7 @@ import hmac
 import json
 import logging
 import os
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -93,10 +94,8 @@ class WhatsAppGateway(GatewayHttpMixin, GatewayChannelPort):
         """Start and run until cancelled (convenience for :func:`asyncio.create_task`)."""
         await self.start()
         if self._server_task is not None:
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._server_task
-            except asyncio.CancelledError:
-                pass
 
     async def send_text(self, chat_id: str, text: str) -> None:
         """Send a text message to *chat_id* via the Meta Cloud API."""

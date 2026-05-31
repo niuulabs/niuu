@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { useWorkflowBuilder } from './useWorkflowBuilder';
+import { hasMatchingEdge, useWorkflowBuilder } from './useWorkflowBuilder';
 import type { Workflow } from '../../domain/workflow';
 import type { PersonaEntry } from './LibraryPanel';
+import type { WorkflowStageModelOption } from './useWorkflowBuilder';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -56,6 +57,11 @@ const PERSONAS: PersonaEntry[] = [
     consumes: ['code.changed'],
     produces: ['review.completed'],
   },
+];
+
+const WORKFLOW_MODELS: WorkflowStageModelOption[] = [
+  { id: 'gpt-5.5', label: 'GPT 5.5', vendor: 'openai' },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', vendor: 'anthropic' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -118,6 +124,92 @@ describe('useWorkflowBuilder — initial state', () => {
       expect(node.personaIds).toEqual(['coder']);
     }
   });
+
+  it('fills stage member defaults from personaIds and model options on load', () => {
+    const wf: Workflow = {
+      ...makeWorkflow(),
+      nodes: [
+        {
+          id: 'stage-1',
+          kind: 'stage',
+          label: 'Stage 1',
+          runId: null,
+          personaIds: ['coder'],
+          position: { x: 100, y: 100 },
+        },
+        {
+          id: 'gate-1',
+          kind: 'gate',
+          label: 'Gate',
+          condition: 'ok',
+          position: { x: 300, y: 100 },
+        },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(wf, PERSONAS, WORKFLOW_MODELS));
+    const node = result.current.workflow.nodes.find((candidate) => candidate.id === 'stage-1');
+    expect(node?.kind).toBe('stage');
+    if (node?.kind === 'stage') {
+      expect(node.stageMembers).toEqual([
+        {
+          personaId: 'coder',
+          model: 'gpt-5.5',
+          budget: 40,
+          consumesEventTypes: [],
+          eventFilters: {},
+        },
+      ]);
+      expect(node.executionMode).toBe('parallel');
+      expect(node.maxConcurrent).toBe(3);
+      expect(node.joinMode).toBe('all');
+    }
+  });
+});
+
+describe('useWorkflowBuilder — helper coverage', () => {
+  it('matches edges by source, target, and normalized label text', () => {
+    expect(
+      hasMatchingEdge(
+        [
+          {
+            id: 'edge-1',
+            source: 'trigger-1',
+            target: 'stage-1',
+            cp1: { x: 80, y: 0 },
+            cp2: { x: -80, y: 0 },
+          },
+          {
+            id: 'edge-2',
+            source: 'trigger-1',
+            target: 'stage-1',
+            label: 'code.requested -> code.requested',
+            cp1: { x: 80, y: 0 },
+            cp2: { x: -80, y: 0 },
+          },
+        ],
+        'trigger-1',
+        'stage-1',
+        'code.requested',
+      ),
+    ).toBe(true);
+
+    expect(
+      hasMatchingEdge(
+        [
+          {
+            id: 'edge-3',
+            source: 'trigger-1',
+            target: 'stage-1',
+            cp1: { x: 80, y: 0 },
+            cp2: { x: -80, y: 0 },
+          },
+        ],
+        'trigger-1',
+        'stage-1',
+        'review.completed',
+      ),
+    ).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -161,6 +253,16 @@ describe('useWorkflowBuilder — selectNode', () => {
     act(() => result.current.selectNode('stage-1'));
     act(() => result.current.selectNode(null));
     expect(result.current.selectedNodeId).toBeNull();
+  });
+});
+
+describe('useWorkflowBuilder — inspectNode', () => {
+  it('opens and closes the inspector', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.inspectNode('stage-1'));
+    expect(result.current.inspectorNodeId).toBe('stage-1');
+    act(() => result.current.inspectNode(null));
+    expect(result.current.inspectorNodeId).toBeNull();
   });
 });
 
@@ -218,6 +320,24 @@ describe('useWorkflowBuilder — addNode', () => {
     const added = result.current.workflow.nodes[2]!;
     if (added.kind === 'trigger') {
       expect(added.dispatchEvent).toBe('code.requested');
+    }
+  });
+
+  it('adds an end node', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('end'));
+    expect(result.current.workflow.nodes[2]!.kind).toBe('end');
+  });
+
+  it('adds a resource node with registry defaults', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('resource'));
+    const added = result.current.workflow.nodes[2]!;
+    expect(added.kind).toBe('resource');
+    if (added.kind === 'resource') {
+      expect(added.bindingMode).toBe('registry');
+      expect(added.registryEntryId).toBeNull();
+      expect(added.defaultReadPriority).toBe(10);
     }
   });
 
@@ -314,6 +434,63 @@ describe('useWorkflowBuilder — deleteNode', () => {
     act(() => result.current.deleteNode('stage-1'));
     expect(result.current.workflow.nodes.find((n) => n.id === 'gate-1')).toBeDefined();
   });
+
+  it('clears connect state and inspector when deleting the active node', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.inspectNode('stage-1'));
+    act(() => result.current.startConnect('stage-1', 'qa.report'));
+    act(() => result.current.deleteNode('stage-1'));
+    expect(result.current.connectingFromId).toBeNull();
+    expect(result.current.inspectorNodeId).toBeNull();
+  });
+
+  it('removes resource bindings that reference the deleted node', () => {
+    const wf: Workflow = {
+      ...makeWorkflow(),
+      nodes: [
+        ...makeWorkflow().nodes,
+        {
+          id: 'resource-1',
+          kind: 'resource',
+          label: 'Docs',
+          resourceType: 'mimir',
+          bindingMode: 'registry',
+          registryEntryId: 'docs',
+          seedFromRegistryId: null,
+          categories: [],
+          path: '/docs',
+          url: null,
+          role: null,
+          authRef: null,
+          defaultReadPriority: 10,
+          position: { x: 500, y: 100 },
+        },
+      ],
+      resourceBindings: [
+        {
+          id: 'binding-resource',
+          resourceNodeId: 'resource-1',
+          targetType: 'workflow',
+          targetId: '00000000-0000-0000-0000-000000000001',
+          access: 'read',
+          writePrefixes: [],
+          readPriority: 10,
+        },
+        {
+          id: 'binding-target',
+          resourceNodeId: 'stage-1',
+          targetType: 'node',
+          targetId: 'resource-1',
+          access: 'write',
+          writePrefixes: ['/tmp'],
+          readPriority: 5,
+        },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(wf));
+    act(() => result.current.deleteNode('resource-1'));
+    expect(result.current.workflow.resourceBindings).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -330,6 +507,28 @@ describe('useWorkflowBuilder — moveNode', () => {
   });
 });
 
+describe('useWorkflowBuilder — deleteEdge', () => {
+  it('removes only the requested edge', () => {
+    const wf: Workflow = {
+      ...makeWorkflow(),
+      edges: [
+        ...makeWorkflow().edges,
+        {
+          id: 'e2',
+          source: 'gate-1',
+          target: 'stage-1',
+          label: 'review.completed -> review.completed',
+          cp1: { x: 80, y: 0 },
+          cp2: { x: -80, y: 0 },
+        },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(wf));
+    act(() => result.current.deleteEdge('e1'));
+    expect(result.current.workflow.edges.map((edge) => edge.id)).toEqual(['e2']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // connect
 // ---------------------------------------------------------------------------
@@ -339,6 +538,13 @@ describe('useWorkflowBuilder — startConnect / cancelConnect / completeConnect'
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
     act(() => result.current.startConnect('stage-1', 'qa.report'));
     expect(result.current.connectingFromId).toBe('stage-1');
+  });
+
+  it('ignores startConnect calls without a label', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.startConnect('stage-1'));
+    expect(result.current.connectingFromId).toBeNull();
+    expect(result.current.selectedNodeId).toBeNull();
   });
 
   it('cancelConnect clears connectingFromId', () => {
@@ -410,6 +616,44 @@ describe('useWorkflowBuilder — startConnect / cancelConnect / completeConnect'
     expect(result.current.workflow.edges).toHaveLength(edgesBefore);
   });
 
+  it('completeConnect does nothing when not currently connecting', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    const before = result.current.workflow.edges;
+    act(() => result.current.completeConnect('gate-1', 'review.verdict'));
+    expect(result.current.workflow.edges).toEqual(before);
+  });
+
+  it('completeConnect ignores missing target nodes', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    const before = result.current.workflow.edges;
+    act(() => result.current.startConnect('stage-1', 'qa.report'));
+    act(() => result.current.completeConnect('missing-node', 'review.verdict'));
+    expect(result.current.workflow.edges).toEqual(before);
+  });
+
+  it('completeConnect derives the default condition input for condition nodes', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('cond', { x: 520, y: 100 }));
+    const condNodeId = result.current.workflow.nodes[2]!.id;
+    act(() => result.current.startConnect('stage-1', 'qa.report'));
+    act(() => result.current.completeConnect(condNodeId));
+    expect(
+      result.current.workflow.edges.find(
+        (edge) => edge.source === 'stage-1' && edge.target === condNodeId,
+      )?.label,
+    ).toBe('qa.report -> condition.input');
+  });
+
+  it('completeConnect does not connect to targets without a default input label', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('resource', { x: 520, y: 100 }));
+    const resourceNodeId = result.current.workflow.nodes[2]!.id;
+    const before = result.current.workflow.edges.length;
+    act(() => result.current.startConnect('stage-1', 'qa.report'));
+    act(() => result.current.completeConnect(resourceNodeId));
+    expect(result.current.workflow.edges).toHaveLength(before);
+  });
+
   it('connecting a trigger to a stage aligns the trigger event to the target input', () => {
     const triggerWorkflow: Workflow = {
       id: '00000000-0000-0000-0000-000000000002',
@@ -447,6 +691,49 @@ describe('useWorkflowBuilder — startConnect / cancelConnect / completeConnect'
       expect(trigger.dispatchEvent).toBe('code.changed');
     }
     expect(result.current.workflow.edges[0]?.label).toBe('code.changed -> code.changed');
+  });
+
+  it('connecting a trigger rewrites malformed edge labels when the dispatch event changes', () => {
+    const triggerWorkflow: Workflow = {
+      id: '00000000-0000-0000-0000-000000000006',
+      name: 'Trigger Rewrite',
+      nodes: [
+        {
+          id: 'trigger-1',
+          kind: 'trigger',
+          label: 'Start',
+          source: 'manual dispatch',
+          dispatchEvent: 'code.requested',
+          position: { x: 20, y: 20 },
+        },
+        {
+          id: 'gate-1',
+          kind: 'gate',
+          label: 'Gate',
+          condition: '',
+          mode: 'human_approval',
+          pendingBehavior: 'help_needed',
+          approvalEvent: '',
+          changesRequestedEvent: '',
+          instructions: '',
+          autoForwardAfter: '30m',
+          position: { x: 220, y: 20 },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge-1',
+          source: 'trigger-1',
+          target: 'gate-1',
+          label: 'bad label',
+          cp1: { x: 80, y: 0 },
+          cp2: { x: -80, y: 0 },
+        },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(triggerWorkflow));
+    act(() => result.current.updateNode('trigger-1', { dispatchEvent: 'review.requested' }));
+    expect(result.current.workflow.edges[0]?.label).toBe('review.requested -> review.requested');
   });
 });
 
@@ -540,6 +827,168 @@ describe('useWorkflowBuilder — persona management', () => {
     expect(result.current.workflow.edges).toHaveLength(1);
     expect(result.current.workflow.edges[0]?.label).toBe('code.requested -> code.requested');
   });
+
+  it('addStageWithPersona is a no-op for auto-wiring when no personas are provided', () => {
+    const existing: Workflow = {
+      id: '00000000-0000-0000-0000-000000000007',
+      name: 'No Personas',
+      nodes: [
+        {
+          id: 'trigger-1',
+          kind: 'trigger',
+          label: 'Start',
+          source: 'manual dispatch',
+          dispatchEvent: 'code.requested',
+          position: { x: 20, y: 20 },
+        },
+      ],
+      edges: [],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(existing, []));
+    act(() => result.current.addStageWithPersona('coder', undefined, { x: 220, y: 20 }));
+    expect(result.current.workflow.nodes).toHaveLength(2);
+    expect(result.current.workflow.edges).toEqual([]);
+  });
+
+  it('addStageWithPersona wires backward into an existing stage that consumes its output', () => {
+    const existing: Workflow = {
+      id: '00000000-0000-0000-0000-000000000008',
+      name: 'Backward Wire',
+      nodes: [
+        {
+          id: 'stage-review',
+          kind: 'stage',
+          label: 'Review',
+          runId: null,
+          personaIds: ['reviewer'],
+          stageMembers: [{ personaId: 'reviewer', model: '', budget: 40 }],
+          executionMode: 'parallel',
+          maxConcurrent: 3,
+          joinMode: 'all',
+          position: { x: 320, y: 100 },
+        },
+      ],
+      edges: [],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(existing, PERSONAS));
+    act(() => result.current.addStageWithPersona('coder', undefined, { x: 100, y: 100 }));
+    expect(result.current.workflow.edges).toHaveLength(1);
+    expect(result.current.workflow.edges[0]?.label).toBe('code.changed -> code.changed');
+    expect(result.current.workflow.edges[0]?.source).toBe(result.current.workflow.nodes[1]?.id);
+    expect(result.current.workflow.edges[0]?.target).toBe('stage-review');
+  });
+
+  it('addStageWithPersona prefers forward wiring when stages share events in both directions', () => {
+    const cyclePersonas: PersonaEntry[] = [
+      {
+        id: 'producer-a',
+        label: 'Producer A',
+        role: 'a',
+        consumes: ['event.b'],
+        produces: ['event.a'],
+      },
+      {
+        id: 'producer-b',
+        label: 'Producer B',
+        role: 'b',
+        consumes: ['event.a'],
+        produces: ['event.b'],
+      },
+    ];
+    const existing: Workflow = {
+      id: '00000000-0000-0000-0000-000000000009',
+      name: 'Bidirectional Wire',
+      nodes: [
+        {
+          id: 'stage-a',
+          kind: 'stage',
+          label: 'A',
+          runId: null,
+          personaIds: ['producer-a'],
+          stageMembers: [{ personaId: 'producer-a', model: '', budget: 40 }],
+          executionMode: 'parallel',
+          maxConcurrent: 3,
+          joinMode: 'all',
+          position: { x: 100, y: 100 },
+        },
+      ],
+      edges: [],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(existing, cyclePersonas));
+    act(() => result.current.addStageWithPersona('producer-b', undefined, { x: 320, y: 100 }));
+    expect(result.current.workflow.edges).toHaveLength(1);
+    expect(result.current.workflow.edges[0]?.source).toBe('stage-a');
+    expect(result.current.workflow.edges[0]?.label).toBe('event.a -> event.a');
+  });
+
+  it('addStageWithPersona wires backward when bidirectional stages are placed to the left', () => {
+    const cyclePersonas: PersonaEntry[] = [
+      {
+        id: 'producer-a',
+        label: 'Producer A',
+        role: 'a',
+        consumes: ['event.b'],
+        produces: ['event.a'],
+      },
+      {
+        id: 'producer-b',
+        label: 'Producer B',
+        role: 'b',
+        consumes: ['event.a'],
+        produces: ['event.b'],
+      },
+    ];
+    const existing: Workflow = {
+      id: '00000000-0000-0000-0000-000000000009b',
+      name: 'Bidirectional Reverse Wire',
+      nodes: [
+        {
+          id: 'stage-a',
+          kind: 'stage',
+          label: 'A',
+          runId: null,
+          personaIds: ['producer-a'],
+          stageMembers: [{ personaId: 'producer-a', model: '', budget: 40 }],
+          executionMode: 'parallel',
+          maxConcurrent: 3,
+          joinMode: 'all',
+          position: { x: 320, y: 100 },
+        },
+      ],
+      edges: [],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(existing, cyclePersonas));
+    act(() => result.current.addStageWithPersona('producer-b', undefined, { x: 100, y: 100 }));
+    expect(result.current.workflow.edges).toHaveLength(1);
+    expect(result.current.workflow.edges[0]?.source).toBe(result.current.workflow.nodes[1]?.id);
+    expect(result.current.workflow.edges[0]?.target).toBe('stage-a');
+    expect(result.current.workflow.edges[0]?.label).toBe('event.b -> event.b');
+  });
+
+  it('addStageWithPersona leaves stages disconnected when their events do not overlap', () => {
+    const existing: Workflow = {
+      id: '00000000-0000-0000-0000-000000000010',
+      name: 'No Shared Events',
+      nodes: [
+        {
+          id: 'stage-1',
+          kind: 'stage',
+          label: 'Code',
+          runId: null,
+          personaIds: ['coder'],
+          stageMembers: [{ personaId: 'coder', model: '', budget: 40 }],
+          executionMode: 'parallel',
+          maxConcurrent: 3,
+          joinMode: 'all',
+          position: { x: 100, y: 100 },
+        },
+      ],
+      edges: [],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(existing, PERSONAS));
+    act(() => result.current.addStageWithPersona('coder', undefined, { x: 320, y: 100 }));
+    expect(result.current.workflow.edges).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -594,5 +1043,323 @@ describe('useWorkflowBuilder — updateNodeLabel', () => {
     const { result } = renderHook(() => useWorkflowBuilder(triggerWorkflow));
     act(() => result.current.updateNode('trigger-1', { dispatchEvent: 'review.requested' }));
     expect(result.current.workflow.edges[0]?.label).toBe('review.requested -> review.requested');
+  });
+});
+
+describe('useWorkflowBuilder — stage member updates', () => {
+  it('adds personas using the workflow default model when no model is provided', () => {
+    const { result } = renderHook(() =>
+      useWorkflowBuilder(makeWorkflow(), PERSONAS, WORKFLOW_MODELS),
+    );
+    act(() => result.current.addPersonaToStage('stage-1', 'coder'));
+    const node = result.current.workflow.nodes.find((candidate) => candidate.id === 'stage-1');
+    expect(node?.kind).toBe('stage');
+    if (node?.kind === 'stage') {
+      expect(node.stageMembers?.[0]).toMatchObject({
+        personaId: 'coder',
+        model: 'gpt-5.5',
+        budget: 40,
+      });
+    }
+  });
+
+  it('replaces personas while preserving the previous model by default', () => {
+    const existing: Workflow = {
+      ...makeWorkflow(),
+      nodes: [
+        {
+          id: 'stage-1',
+          kind: 'stage',
+          label: 'Stage 1',
+          runId: null,
+          personaIds: ['coder'],
+          stageMembers: [{ personaId: 'coder', model: 'claude-sonnet-4-6', budget: 50 }],
+          executionMode: 'parallel',
+          maxConcurrent: 3,
+          joinMode: 'all',
+          position: { x: 100, y: 100 },
+        },
+        makeWorkflow().nodes[1]!,
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(existing, PERSONAS, WORKFLOW_MODELS));
+    act(() => result.current.replacePersonaInStage('stage-1', 'coder', 'reviewer'));
+    const node = result.current.workflow.nodes.find((candidate) => candidate.id === 'stage-1');
+    expect(node?.kind).toBe('stage');
+    if (node?.kind === 'stage') {
+      expect(node.stageMembers).toEqual([
+        {
+          personaId: 'reviewer',
+          model: 'claude-sonnet-4-6',
+          budget: 50,
+          consumesEventTypes: [],
+          eventFilters: {},
+        },
+      ]);
+      expect(node.personaIds).toEqual(['reviewer']);
+    }
+  });
+
+  it('replaces personas with an explicit model override', () => {
+    const existing: Workflow = {
+      ...makeWorkflow(),
+      nodes: [
+        {
+          id: 'stage-1',
+          kind: 'stage',
+          label: 'Stage 1',
+          runId: null,
+          personaIds: ['coder'],
+          stageMembers: [{ personaId: 'coder', model: '', budget: 40 }],
+          executionMode: 'parallel',
+          maxConcurrent: 3,
+          joinMode: 'all',
+          position: { x: 100, y: 100 },
+        },
+        makeWorkflow().nodes[1]!,
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(existing, PERSONAS, WORKFLOW_MODELS));
+    act(() =>
+      result.current.replacePersonaInStage('stage-1', 'coder', 'reviewer', 'claude-sonnet-4-6'),
+    );
+    const node = result.current.workflow.nodes.find((candidate) => candidate.id === 'stage-1');
+    expect(node?.kind).toBe('stage');
+    if (node?.kind === 'stage') {
+      expect(node.stageMembers?.[0]?.model).toBe('claude-sonnet-4-6');
+    }
+  });
+
+  it('updates persona models and budgets', () => {
+    const existing: Workflow = {
+      ...makeWorkflow(),
+      nodes: [
+        {
+          id: 'stage-1',
+          kind: 'stage',
+          label: 'Stage 1',
+          runId: null,
+          personaIds: ['coder'],
+          stageMembers: [{ personaId: 'coder', model: 'gpt-5.5', budget: 40 }],
+          executionMode: 'parallel',
+          maxConcurrent: 3,
+          joinMode: 'all',
+          position: { x: 100, y: 100 },
+        },
+        makeWorkflow().nodes[1]!,
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(existing, PERSONAS, WORKFLOW_MODELS));
+    act(() => result.current.updatePersonaModel('stage-1', 'coder', 'claude-sonnet-4-6'));
+    act(() => result.current.updatePersonaBudget('stage-1', 'coder', 75));
+    const node = result.current.workflow.nodes.find((candidate) => candidate.id === 'stage-1');
+    expect(node?.kind).toBe('stage');
+    if (node?.kind === 'stage') {
+      expect(node.stageMembers?.[0]).toMatchObject({
+        model: 'claude-sonnet-4-6',
+        budget: 75,
+      });
+    }
+  });
+
+  it('setWorkflow normalizes stage defaults with the active model list', () => {
+    const { result } = renderHook(() =>
+      useWorkflowBuilder(makeWorkflow(), PERSONAS, WORKFLOW_MODELS),
+    );
+    act(() =>
+      result.current.setWorkflow({
+        id: '00000000-0000-0000-0000-000000000099',
+        name: 'Replacement',
+        nodes: [
+          {
+            id: 'stage-9',
+            kind: 'stage',
+            label: 'Replacement Stage',
+            runId: null,
+            personaIds: ['reviewer'],
+            position: { x: 10, y: 20 },
+          },
+        ],
+        edges: [],
+      }),
+    );
+    const node = result.current.workflow.nodes[0];
+    expect(result.current.workflow.id).toBe('00000000-0000-0000-0000-000000000099');
+    expect(node?.kind).toBe('stage');
+    if (node?.kind === 'stage') {
+      expect(node.stageMembers?.[0]?.model).toBe('gpt-5.5');
+      expect(node.personaIds).toEqual(['reviewer']);
+    }
+  });
+
+  it('updateNode normalizes patched stage members', () => {
+    const { result } = renderHook(() =>
+      useWorkflowBuilder(makeWorkflow(), PERSONAS, WORKFLOW_MODELS),
+    );
+    act(() =>
+      result.current.updateNode('stage-1', {
+        stageMembers: [{ personaId: 'coder', model: undefined, budget: undefined }] as never,
+      }),
+    );
+    const node = result.current.workflow.nodes.find((candidate) => candidate.id === 'stage-1');
+    expect(node?.kind).toBe('stage');
+    if (node?.kind === 'stage') {
+      expect(node.stageMembers).toEqual([
+        {
+          personaId: 'coder',
+          model: 'gpt-5.5',
+          budget: 40,
+          consumesEventTypes: [],
+          eventFilters: {},
+        },
+      ]);
+    }
+  });
+
+  it('updateNode does not rewrite trigger edges for empty dispatch events', () => {
+    const triggerWorkflow: Workflow = {
+      id: '00000000-0000-0000-0000-000000000011',
+      name: 'Trigger Empty Patch',
+      nodes: [
+        {
+          id: 'trigger-1',
+          kind: 'trigger',
+          label: 'Start',
+          source: 'manual dispatch',
+          dispatchEvent: 'code.requested',
+          position: { x: 20, y: 20 },
+        },
+        {
+          id: 'stage-1',
+          kind: 'stage',
+          label: 'Code',
+          runId: null,
+          personaIds: ['coder'],
+          stageMembers: [{ personaId: 'coder', model: '', budget: 40 }],
+          executionMode: 'parallel',
+          maxConcurrent: 3,
+          joinMode: 'all',
+          position: { x: 220, y: 20 },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge-1',
+          source: 'trigger-1',
+          target: 'stage-1',
+          label: 'code.requested -> code.requested',
+          cp1: { x: 80, y: 0 },
+          cp2: { x: -80, y: 0 },
+        },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(triggerWorkflow));
+    act(() => result.current.updateNode('trigger-1', { dispatchEvent: '' }));
+    expect(result.current.workflow.edges[0]?.label).toBe('code.requested -> code.requested');
+  });
+});
+
+describe('useWorkflowBuilder — resource bindings and workflow metadata', () => {
+  it('adds resource bindings with defaults and overrides', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() =>
+      result.current.addResourceBinding('resource-1', {
+        targetType: 'node',
+        targetId: 'stage-1',
+        access: 'write',
+        writePrefixes: ['/workspace'],
+        readPriority: 2,
+      }),
+    );
+    expect(result.current.workflow.resourceBindings).toHaveLength(1);
+    expect(result.current.workflow.resourceBindings?.[0]).toMatchObject({
+      resourceNodeId: 'resource-1',
+      targetType: 'node',
+      targetId: 'stage-1',
+      access: 'write',
+      writePrefixes: ['/workspace'],
+      readPriority: 2,
+    });
+  });
+
+  it('updates resource bindings while preserving their ids', () => {
+    const wf: Workflow = {
+      ...makeWorkflow(),
+      resourceBindings: [
+        {
+          id: 'binding-1',
+          resourceNodeId: 'resource-1',
+          targetType: 'workflow',
+          targetId: '00000000-0000-0000-0000-000000000001',
+          access: 'read',
+          writePrefixes: [],
+          readPriority: 10,
+        },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(wf));
+    act(() =>
+      result.current.updateResourceBinding('binding-1', {
+        id: 'binding-overwrite',
+        access: 'write',
+        readPriority: 3,
+      } as never),
+    );
+    expect(result.current.workflow.resourceBindings?.[0]).toMatchObject({
+      id: 'binding-1',
+      access: 'write',
+      readPriority: 3,
+    });
+  });
+
+  it('removes resource bindings and leaves unrelated ones intact', () => {
+    const wf: Workflow = {
+      ...makeWorkflow(),
+      resourceBindings: [
+        {
+          id: 'binding-1',
+          resourceNodeId: 'resource-1',
+          targetType: 'workflow',
+          targetId: '00000000-0000-0000-0000-000000000001',
+          access: 'read',
+          writePrefixes: [],
+          readPriority: 10,
+        },
+        {
+          id: 'binding-2',
+          resourceNodeId: 'resource-2',
+          targetType: 'workflow',
+          targetId: '00000000-0000-0000-0000-000000000001',
+          access: 'read',
+          writePrefixes: [],
+          readPriority: 5,
+        },
+      ],
+    };
+    const { result } = renderHook(() => useWorkflowBuilder(wf));
+    act(() => result.current.removeResourceBinding('binding-1'));
+    expect(result.current.workflow.resourceBindings).toEqual([
+      expect.objectContaining({ id: 'binding-2' }),
+    ]);
+  });
+
+  it('updates workflow metadata', () => {
+    const { result } = renderHook(() =>
+      useWorkflowBuilder(makeWorkflow(), PERSONAS, WORKFLOW_MODELS),
+    );
+    act(() =>
+      result.current.updateWorkflowMeta({
+        name: 'Updated workflow',
+        description: 'Runs the council review path',
+        version: '2',
+        tags: ['review', 'automation'],
+      }),
+    );
+    expect(result.current.workflow).toMatchObject({
+      name: 'Updated workflow',
+      description: 'Runs the council review path',
+      version: '2',
+      tags: ['review', 'automation'],
+    });
   });
 });

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import suppress
 
 from ting.domain.models import PhaseSpec, RunSpec, SagaStructure
 
@@ -144,12 +145,10 @@ def try_extract_structure(text: str) -> SagaStructure | None:
 
     if not candidates:
         # Try parsing the whole text as JSON (no fences)
-        try:
+        with suppress(json.JSONDecodeError, ValueError):
             data = json.loads(text.strip())
             if isinstance(data, dict) and "phases" in data:
                 candidates.append(text.strip())
-        except (json.JSONDecodeError, ValueError):
-            pass
 
     for candidate in candidates:
         try:

@@ -116,8 +116,6 @@ DEFAULT_MAX_RECONNECT_ATTEMPTS = 60
 #: Maximum number of event IDs held in the deduplication cache.
 DEFAULT_DEDUP_CACHE_SIZE = 10_000
 
-_NANOS_PER_SECOND = 1_000_000_000
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -183,6 +181,7 @@ def _parse_retention(retention_str: str) -> Any:
                 f"Unknown retention policy: {retention_str!r}. "
                 "Use 'limits', 'interest', or 'workqueue'."
             )
+    raise AssertionError("Unreachable _parse_retention fallthrough")
 
 
 def _decode_nats_message(data: bytes) -> SleipnirEvent | None:

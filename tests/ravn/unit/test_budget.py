@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +23,7 @@ def _make_drive_loop_with_mock_settings(
     budget: DailyBudgetTracker | None = None,
 ) -> tuple[DriveLoop, MagicMock, list[RavnEvent]]:
     """Build DriveLoop with MagicMock settings (no BudgetConfig) to test fallback paths."""
+
     journal = tmp_path / "queue.json"
     config = InitiativeConfig(
         enabled=True,
@@ -439,10 +441,8 @@ async def test_drive_loop_heartbeat_includes_budget(tmp_path: Path) -> None:
     )
 
     # Run heartbeat for one iteration then cancel
-    try:
+    with suppress(TimeoutError):
         await asyncio.wait_for(loop._heartbeat(), timeout=0.2)
-    except TimeoutError:
-        pass
 
     heartbeat_events = [e for e in published if e.payload.get("heartbeat")]
     assert len(heartbeat_events) >= 1

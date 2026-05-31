@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,6 +25,7 @@ SETTINGS_TABS = ("Connection", "Profile", "Integrations", "Appearance")
 
 def _mask_token(token: str) -> str:
     """Partially mask a token for display."""
+
     if not token:
         return "(not set)"
     if len(token) <= 8:
@@ -306,6 +308,7 @@ class SettingsPage(Widget):
                 return 3  # Appearance: 4 rows
             case _:
                 return 0
+        raise AssertionError("Unreachable _max_cursor fallthrough")
 
     def action_cursor_down(self) -> None:
         if self.cursor < self._max_cursor():
@@ -350,10 +353,8 @@ class SettingsPage(Widget):
         )
 
     def _update_help(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#settings-help", Static).update(self._help_text())
-        except Exception:
-            pass
 
     def watch_editing(self) -> None:
         self._update_help()

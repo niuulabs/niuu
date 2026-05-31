@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -282,10 +283,8 @@ def _build_up_callback(
             )
 
             # Wait forever until cancelled by KeyboardInterrupt
-            try:
+            with suppress(asyncio.CancelledError):
                 await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                pass
 
             await _shutdown(manager)
 

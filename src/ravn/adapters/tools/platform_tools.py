@@ -25,7 +25,6 @@ _DEFAULT_BASE_URL = "http://localhost:8080"
 _DEFAULT_TIMEOUT = 30.0
 _FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 _FORGE_REPOS_PATH = "/api/v1/forge/repos"
-_NIUU_REPOS_PATH = "/api/v1/niuu/repos"
 _TRACKER_ISSUES_PATH = "/api/v1/tracker/issues"
 _TING_WORKFLOWS_PATH = "/api/v1/ting/workflows"
 
@@ -152,6 +151,7 @@ class VolundrSessionTool(ToolPort):
                     return await self._delete(client, input.get("session_id", ""))
                 case _:
                     return _err(f"Unknown action: {action!r}")
+        raise AssertionError("Unreachable execute fallthrough")
 
     async def _list(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
         try:
@@ -339,6 +339,7 @@ class VolundrGitTool(ToolPort):
                     return await self._ci_status(client, input)
                 case _:
                     return _err(f"Unknown action: {action!r}")
+        raise AssertionError("Unreachable execute fallthrough")
 
     async def _list_branches(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
         repo_url = input.get("repo_url", "")
@@ -581,6 +582,7 @@ class TingSagaTool(ToolPort):
                     return await self._runs(client)
                 case _:
                     return _err(f"Unknown action: {action!r}")
+        raise AssertionError("Unreachable execute fallthrough")
 
     async def _list(self, client: httpx.AsyncClient) -> ToolResult:
         try:
@@ -790,6 +792,7 @@ class TingWorkflowTool(ToolPort):
                     return await self._launch(client, input)
                 case _:
                     return _err(f"Unknown action: {action!r}")
+        raise AssertionError("Unreachable execute fallthrough")
 
     async def _list(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
         params: dict[str, str] = {}
@@ -931,6 +934,7 @@ class TrackerIssueTool(ToolPort):
                     )
                 case _:
                     return _err(f"Unknown action: {action!r}")
+        raise AssertionError("Unreachable execute fallthrough")
 
     async def _search(self, client: httpx.AsyncClient, query: str) -> ToolResult:
         if not query:

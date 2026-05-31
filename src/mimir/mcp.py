@@ -393,6 +393,7 @@ class MimirMcpServer:
                 return {}
             case _:
                 raise _MethodNotFoundError(f"Method not found: {method}")
+        raise AssertionError("Unreachable _dispatch fallthrough")
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         match name:
@@ -412,6 +413,7 @@ class MimirMcpServer:
                 return await self._tool_stats(arguments)
             case _:
                 raise ValueError(f"Unknown tool: {name}")
+        raise AssertionError("Unreachable _call_tool fallthrough")
 
     # ------------------------------------------------------------------
     # Tool implementations

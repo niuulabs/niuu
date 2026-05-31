@@ -103,18 +103,18 @@ export function DispatchDefaultsSection() {
 
   if (isLoading) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2" role="status">
+      <div className="niuu:flex niuu:items-center niuu:gap-2" role="status">
         <StateDot state="processing" pulse />
-        <span className="niuu-text-sm niuu-text-text-secondary">loading dispatch defaults…</span>
+        <span className="niuu:text-sm niuu:text-text-secondary">loading dispatch defaults…</span>
       </div>
     );
   }
 
   if (isError) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2" role="alert">
+      <div className="niuu:flex niuu:items-center niuu:gap-2" role="alert">
         <StateDot state="failed" />
-        <span className="niuu-text-sm niuu-text-critical">
+        <span className="niuu:text-sm niuu:text-critical">
           {error instanceof Error ? error.message : 'failed to load'}
         </span>
       </div>
@@ -123,17 +123,17 @@ export function DispatchDefaultsSection() {
 
   return (
     <section aria-label="Dispatch rules">
-      <h3 className="niuu-text-base niuu-font-semibold niuu-text-text-primary niuu-mb-1">
+      <h3 className="niuu:text-base niuu:font-semibold niuu:text-text-primary niuu:mb-1">
         Dispatch rules
       </h3>
-      <p className="niuu-text-sm niuu-text-text-secondary niuu-mb-4">
+      <p className="niuu:text-sm niuu:text-text-secondary niuu:mb-4">
         How the dispatcher promotes queued runs into running ones.
       </p>
 
       <form
         onSubmit={(e) => void handleSubmit(e)}
         noValidate
-        className="niuu-flex niuu-flex-col niuu-gap-4 niuu-max-w-lg"
+        className="niuu:flex niuu:flex-col niuu:gap-4 niuu:max-w-lg"
         aria-label="Dispatch rules form"
       >
         {errors.length > 0 && <ValidationSummary errors={errors} />}
@@ -182,18 +182,18 @@ export function DispatchDefaultsSection() {
           />
         </Field>
 
-        <div className="niuu-flex niuu-items-center niuu-gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
           <input
             type="checkbox"
             id="dispatch-auto-continue"
             name="autoContinue"
             value="true"
             defaultChecked={defaults?.autoContinue}
-            className="niuu-accent-brand"
+            className="niuu:accent-brand"
           />
           <label
             htmlFor="dispatch-auto-continue"
-            className="niuu-text-sm niuu-text-text-primary niuu-select-none"
+            className="niuu:text-sm niuu:text-text-primary niuu:select-none"
           >
             Auto-continue after each run completes
           </label>
@@ -225,12 +225,12 @@ export function DispatchDefaultsSection() {
           />
         </Field>
 
-        <div className="niuu-border-t niuu-border-border niuu-pt-4">
-          <h4 className="niuu-text-sm niuu-font-semibold niuu-text-text-primary niuu-mb-3">
+        <div className="niuu:border-t niuu:border-border niuu:pt-4">
+          <h4 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary niuu:mb-3">
             Retry Policy
           </h4>
 
-          <div className="niuu-flex niuu-flex-col niuu-gap-3">
+          <div className="niuu:flex niuu:flex-col niuu:gap-3">
             <Field id="dispatch-retries" label="Max retries per run" required>
               <Input
                 name="maxRetries"
@@ -249,18 +249,18 @@ export function DispatchDefaultsSection() {
               />
             </Field>
 
-            <div className="niuu-flex niuu-items-center niuu-gap-2">
+            <div className="niuu:flex niuu:items-center niuu:gap-2">
               <input
                 type="checkbox"
                 id="dispatch-escalate"
                 name="escalateOnExhaustion"
                 value="true"
                 defaultChecked={defaults?.retryPolicy.escalateOnExhaustion}
-                className="niuu-accent-brand"
+                className="niuu:accent-brand"
               />
               <label
                 htmlFor="dispatch-escalate"
-                className="niuu-text-sm niuu-text-text-primary niuu-select-none"
+                className="niuu:text-sm niuu:text-text-primary niuu:select-none"
               >
                 Escalate to human review after retries exhausted
               </label>
@@ -268,16 +268,16 @@ export function DispatchDefaultsSection() {
           </div>
         </div>
 
-        <div className="niuu-flex niuu-items-center niuu-gap-3">
+        <div className="niuu:flex niuu:items-center niuu:gap-3">
           <button
             type="submit"
             disabled={isSaving}
-            className="niuu-px-4 niuu-py-2 niuu-bg-brand niuu-text-white niuu-rounded-md niuu-text-sm niuu-font-medium niuu-transition-opacity disabled:niuu-opacity-50"
+            className="niuu:px-4 niuu:py-2 niuu:bg-brand niuu:text-white niuu:rounded-md niuu:text-sm niuu:font-medium niuu:transition-opacity niuu:disabled:opacity-50"
           >
             {isSaving ? 'Saving…' : 'Save'}
           </button>
           {saved && (
-            <span className="niuu-text-sm niuu-text-accent-emerald" aria-live="polite">
+            <span className="niuu:text-sm niuu:text-accent-emerald" aria-live="polite">
               Saved
             </span>
           )}

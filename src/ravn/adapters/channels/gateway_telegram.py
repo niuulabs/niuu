@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -158,13 +159,11 @@ class TelegramGateway:
 
     async def _send_typing(self, client: httpx.AsyncClient, chat_id: int) -> None:
         """Send a typing indicator — best effort, errors are silenced."""
-        try:
+        with suppress(Exception):
             await client.post(
                 self._api_url("sendChatAction"),
                 json={"chat_id": chat_id, "action": "typing"},
             )
-        except Exception:
-            pass
 
     async def _send_message(self, client: httpx.AsyncClient, chat_id: int, text: str) -> None:
         """Send *text* to *chat_id*, truncating if it exceeds the API limit."""

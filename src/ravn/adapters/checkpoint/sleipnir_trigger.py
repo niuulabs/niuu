@@ -33,6 +33,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 
 logger = logging.getLogger(__name__)
 
@@ -97,13 +98,11 @@ class SleipnirCheckpointListener:
                     exc,
                     self._reconnect_delay,
                 )
-                try:
+                with suppress(TimeoutError):
                     await asyncio.wait_for(
                         self._stop_event.wait(),
                         timeout=self._reconnect_delay,
                     )
-                except TimeoutError:
-                    pass
 
     async def _run_consumer(self) -> None:
         """Connect to RabbitMQ and consume checkpoint request events."""

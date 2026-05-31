@@ -423,6 +423,7 @@ class PersonaCommand(SlashCommandPort):
                     f"Unknown subcommand: {subcommand!r}.\n"
                     "Usage: /persona [list | show <name> | delete <name> | create]"
                 )
+        raise AssertionError("Unreachable handle fallthrough")
 
     def _list(self) -> str:
         from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
@@ -568,6 +569,7 @@ class CheckpointCommand(SlashCommandPort):
                 return self._delete(ctx, ckpt_id)
             case _:
                 return self._save(ctx, label=args.strip())
+        raise AssertionError("Unreachable handle fallthrough")
 
     def _save(self, ctx: SlashCommandContext, label: str = "") -> str:
         from datetime import UTC, datetime

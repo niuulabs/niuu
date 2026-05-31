@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from sleipnir.adapters._subscriber_support import (
     DEFAULT_RING_BUFFER_DEPTH,
@@ -39,10 +40,8 @@ class InProcessBus(SleipnirPublisher, SleipnirSubscriber):
         self._subscriptions: list[_BaseSubscription] = []
 
     def _remove_subscription(self, sub: _BaseSubscription) -> None:
-        try:
+        with suppress(ValueError):
             self._subscriptions.remove(sub)
-        except ValueError:
-            pass
 
     async def publish(self, event: SleipnirEvent) -> None:
         """Place *event* on every matching subscriber queue.

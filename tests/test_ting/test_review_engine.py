@@ -544,28 +544,32 @@ async def test_sync_phase_projection_marks_imported_saga_complete_without_persis
     assert updated is not None
     assert updated.status == SagaStatus.COMPLETE
 
-    def test_below_threshold(self) -> None:
-        declared = ["src/a.py", "src/b.py", "src/c.py"]
-        changed = ["src/a.py", "src/b.py", "src/c.py", "src/d.py"]
-        # 1/4 = 0.25 which is < 0.30
-        assert detect_scope_breach(declared, changed, 0.30) is False
 
-    def test_above_threshold(self) -> None:
-        declared = ["src/a.py"]
-        changed = ["src/a.py", "src/b.py", "src/c.py", "src/d.py"]
-        # 3/4 = 0.75 which is > 0.30
-        assert detect_scope_breach(declared, changed, 0.30) is True
+def test_below_threshold() -> None:
+    declared = ["src/a.py", "src/b.py", "src/c.py"]
+    changed = ["src/a.py", "src/b.py", "src/c.py", "src/d.py"]
+    # 1/4 = 0.25 which is < 0.30
+    assert detect_scope_breach(declared, changed, 0.30) is False
 
-    def test_exactly_at_threshold(self) -> None:
-        declared = ["src/a.py", "src/b.py"]
-        changed = ["src/a.py", "src/b.py", "src/c.py"]
-        # 1/3 = 0.333... which is > 0.30
-        assert detect_scope_breach(declared, changed, 0.30) is True
 
-    def test_empty_declared_files(self) -> None:
-        changed = ["src/a.py"]
-        # 1/1 = 1.0 which is > 0.30
-        assert detect_scope_breach([], changed, 0.30) is True
+def test_above_threshold() -> None:
+    declared = ["src/a.py"]
+    changed = ["src/a.py", "src/b.py", "src/c.py", "src/d.py"]
+    # 3/4 = 0.75 which is > 0.30
+    assert detect_scope_breach(declared, changed, 0.30) is True
+
+
+def test_exactly_at_threshold() -> None:
+    declared = ["src/a.py", "src/b.py"]
+    changed = ["src/a.py", "src/b.py", "src/c.py"]
+    # 1/3 = 0.333... which is > 0.30
+    assert detect_scope_breach(declared, changed, 0.30) is True
+
+
+def test_empty_declared_files() -> None:
+    changed = ["src/a.py"]
+    # 1/1 = 1.0 which is > 0.30
+    assert detect_scope_breach([], changed, 0.30) is True
 
 
 # ---------------------------------------------------------------------------

@@ -2,8 +2,6 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from volundr.config import DatabaseConfig
 from volundr.infrastructure.database import (
     CHRONICLE_EVENTS_INDEX_SQL,
@@ -177,8 +175,13 @@ class TestDatabasePool:
 
         config = DatabaseConfig()
 
-        with pytest.raises(RuntimeError):
+        caught = False
+        try:
             async with database_pool(config):
                 raise RuntimeError("Test error")
+        except RuntimeError as exc:
+            caught = True
+            assert str(exc) == "Test error"
+        assert caught
 
         mock_pool.close.assert_called_once()

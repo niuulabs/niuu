@@ -12,6 +12,7 @@ import os
 import shutil
 import socket
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -97,7 +98,7 @@ def check_api_key(config: PreflightConfig) -> PreflightResult:
 
 def check_port_available(port: int) -> PreflightResult:
     """Check a single port is not already bound."""
-    try:
+    with suppress(OSError):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(1)
             result = sock.connect_ex(("127.0.0.1", port))
@@ -108,8 +109,6 @@ def check_port_available(port: int) -> PreflightResult:
                     message=f"Port {port} is already in use. "
                     "Stop the conflicting process or change the port in config.",
                 )
-    except OSError:
-        pass
     return PreflightResult(
         name=f"port {port}",
         passed=True,

@@ -8,31 +8,33 @@ import {
   createMockSessionStore,
   createMockMetricsStream,
 } from '../adapters/mock';
+import * as mockChatData from '../testing/mockChatData';
 import type { IPtyStream } from '../ports/IPtyStream';
 import type { IFileSystemPort } from '../ports/IFileSystemPort';
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { IMetricsStream } from '../ports/IMetricsStream';
+import type { Session } from '../domain/session';
 
 // ---------------------------------------------------------------------------
 // Mock xterm (no Canvas in jsdom)
 // ---------------------------------------------------------------------------
 
 vi.mock('@xterm/xterm', () => ({
-  Terminal: vi.fn().mockImplementation(() => ({
-    open: vi.fn(),
-    write: vi.fn(),
-    dispose: vi.fn(),
-    loadAddon: vi.fn(),
-    onData: vi.fn().mockReturnValue({ dispose: vi.fn() }),
-    options: {},
-  })),
+  Terminal: class MockXtermTerminal {
+    open = vi.fn();
+    write = vi.fn();
+    dispose = vi.fn();
+    loadAddon = vi.fn();
+    onData = vi.fn().mockReturnValue({ dispose: vi.fn() });
+    options = {};
+  },
 }));
 
 vi.mock('@xterm/addon-fit', () => ({
-  FitAddon: vi.fn().mockImplementation(() => ({
-    fit: vi.fn(),
-    dispose: vi.fn(),
-  })),
+  FitAddon: class MockFitAddon {
+    fit = vi.fn();
+    dispose = vi.fn();
+  },
 }));
 
 vi.mock('shiki', () => ({
@@ -88,8 +90,53 @@ function wrap(
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
+
+function makeSession(overrides: Partial<Session> = {}): Session {
+  return {
+    id: 'ds-1',
+    ravnId: 'r1',
+    personaName: 'skald',
+    templateId: 'tpl-default',
+    clusterId: 'cl-eitri',
+    state: 'running',
+    startedAt: '2026-05-31T10:00:00.000Z',
+    readyAt: '2026-05-31T10:01:00.000Z',
+    lastActivityAt: '2026-05-31T10:59:00.000Z',
+    connectionType: 'cli',
+    tokensIn: 4200,
+    tokensOut: 1800,
+    costCents: 8,
+    preview: 'Refactoring auth middleware',
+    resources: {
+      cpuRequest: 1,
+      cpuLimit: 2,
+      cpuUsed: 0.4,
+      memRequestMi: 512,
+      memLimitMi: 1024,
+      memUsedMi: 320,
+      gpuCount: 0,
+      diskUsedMi: 2048,
+      diskLimitMi: 10240,
+    },
+    files: { added: 3, modified: 7, deleted: 1 },
+    env: {},
+    events: [
+      { ts: '2026-05-31T10:00:00.000Z', kind: 'requested', body: 'session requested' },
+      { ts: '2026-05-31T10:01:00.000Z', kind: 'ready', body: 'pod ready' },
+    ],
+    ...overrides,
+  };
+}
+
+function buildSessionStoreWithSession(session: Session | null): ISessionStore {
+  return {
+    ...createMockSessionStore(),
+    getSession: vi.fn().mockResolvedValue(session),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -177,6 +224,44 @@ describe('SessionDetailPage', () => {
       expect(screen.getByTestId('files-added')).toBeInTheDocument();
       expect(screen.getByTestId('files-modified')).toBeInTheDocument();
       expect(screen.getByTestId('files-deleted')).toBeInTheDocument();
+    });
+
+    it('renders saga link and omits file summary when a session has no file stats', async () => {
+      wrap(<SessionDetailPage sessionId="ds-1" />, {
+        sessionStore: buildSessionStoreWithSession(
+          makeSession({
+            sagaId: 'SAGA-42',
+            files: undefined,
+          }),
+        ),
+      });
+      await waitFor(() => expect(screen.getByTestId('session-header')).toBeInTheDocument());
+      expect(screen.getByTestId('session-issue-link')).toHaveTextContent('SAGA-42');
+      expect(screen.queryByTestId('file-change-summary')).not.toBeInTheDocument();
+    });
+
+    it('renders gpu usage and omits disk meter when disk metrics are unavailable', async () => {
+      wrap(<SessionDetailPage sessionId="ds-1" />, {
+        sessionStore: buildSessionStoreWithSession(
+          makeSession({
+            resources: {
+              cpuRequest: 2,
+              cpuLimit: 4,
+              cpuUsed: 1,
+              memRequestMi: 2048,
+              memLimitMi: 4096,
+              memUsedMi: 1024,
+              gpuCount: 2,
+            },
+          }),
+        ),
+      });
+      await waitFor(() => expect(screen.getByTestId('resources-toggle')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('resources-toggle'));
+      expect(screen.getByText('gpu: 2')).toBeInTheDocument();
+      const resourcesRow = screen.getByTestId('resources-row');
+      const meters = within(resourcesRow).getAllByTestId('meter');
+      expect(meters).toHaveLength(2);
     });
   });
 
@@ -345,6 +430,114 @@ describe('SessionDetailPage', () => {
       const notifications = screen.getAllByTestId('cascade-event');
       expect(notifications.length).toBe(1);
     });
+
+    it('collapses and expands both chat side rails', async () => {
+      wrap(<SessionDetailPage sessionId="ds-1" />);
+      await waitFor(() => expect(screen.getByTestId('mesh-sidebar')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByText('‹'));
+      const collapsedSidebar = screen.getByTestId('mesh-sidebar');
+      expect(collapsedSidebar).toBeInTheDocument();
+      expect(within(collapsedSidebar).queryByTestId(/^peer-card-/)).not.toBeInTheDocument();
+
+      fireEvent.click(within(collapsedSidebar).getByText('›'));
+      expect(await screen.findByTestId('peer-card-ravn-r1')).toBeInTheDocument();
+
+      const cascade = screen.getByTestId('mesh-cascade');
+      fireEvent.click(within(cascade).getByText('›'));
+      expect(
+        within(screen.getByTestId('mesh-cascade')).queryByTestId('cascade-filter-all'),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(within(screen.getByTestId('mesh-cascade')).getByText('‹'));
+      expect(await screen.findByTestId('cascade-filter-all')).toBeInTheDocument();
+    });
+
+    it('expands thinking and tool-run blocks to show details', async () => {
+      wrap(<SessionDetailPage sessionId="ds-1" />);
+      await waitFor(() => expect(screen.getByTestId('chat-stream')).toBeInTheDocument());
+
+      fireEvent.click(screen.getAllByTestId('thinking-block')[0]!.querySelector('button')!);
+      expect(screen.getByText(/I need to create a JWT validation handler/)).toBeInTheDocument();
+
+      const toolRun = screen.getAllByTestId('tool-run')[0]!;
+      fireEvent.click(toolRun.querySelector('button')!);
+      expect(within(toolRun).getAllByText('write_file').length).toBeGreaterThan(0);
+      expect(within(toolRun).getByText('45ms')).toBeInTheDocument();
+    });
+
+    it('shows an empty filtered chat stream when the focused peer has no grouped turns', async () => {
+      const session = makeSession();
+      const room = mockChatData.buildMockRoom(session);
+      const turns = [
+        {
+          id: 'user-only',
+          role: 'user' as const,
+          peerId: 'human',
+          content: 'Broadcast only',
+          ts: Date.now(),
+        },
+      ];
+      vi.spyOn(mockChatData, 'buildMockRoom').mockReturnValue(room);
+      vi.spyOn(mockChatData, 'buildMockTurns').mockReturnValue(turns);
+
+      wrap(<SessionDetailPage sessionId="ds-1" />, {
+        sessionStore: buildSessionStoreWithSession(session),
+      });
+      await waitFor(() => expect(screen.getByTestId('mesh-sidebar')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('peer-card-ravn-r1'));
+      expect(screen.getByText('no messages yet')).toBeInTheDocument();
+    });
+
+    it('renders empty cascade state and fallback chat connection copy from mocked room branches', async () => {
+      const session = makeSession();
+      const room = { ...mockChatData.buildMockRoom(session), meshEvents: [] };
+      vi.spyOn(mockChatData, 'buildMockRoom').mockReturnValue(room);
+      vi.spyOn(mockChatData, 'buildMockTurns').mockReturnValue([]);
+
+      wrap(<SessionDetailPage sessionId="ds-1" />, {
+        sessionStore: buildSessionStoreWithSession(session),
+      });
+      await waitFor(() => expect(screen.getByTestId('mesh-cascade')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('cascade-filter-notification'));
+      expect(screen.getByText('no events')).toBeInTheDocument();
+      expect(screen.getByText('no messages yet')).toBeInTheDocument();
+
+      vi.spyOn(mockChatData, 'buildMockRoom').mockReturnValue(null as never);
+      wrap(<SessionDetailPage sessionId="ds-1" />, {
+        sessionStore: buildSessionStoreWithSession(session),
+      });
+      expect(await screen.findByText('Chat — requires live connection')).toBeInTheDocument();
+    });
+
+    it('renders alternative outcome verdict styling branches', async () => {
+      const session = makeSession();
+      const room = mockChatData.buildMockRoom(session);
+      vi.spyOn(mockChatData, 'buildMockRoom').mockReturnValue(room);
+      vi.spyOn(mockChatData, 'buildMockTurns').mockReturnValue([
+        {
+          id: 'assistant-blocked',
+          role: 'assistant',
+          peerId: room.participants[1]!.peerId,
+          content: 'Blocked on follow-up review.',
+          ts: Date.now(),
+          outcome: {
+            verdict: 'blocked',
+            eventType: 'review',
+            summary: 'Needs follow-up',
+          },
+        },
+      ]);
+
+      wrap(<SessionDetailPage sessionId="ds-1" />, {
+        sessionStore: buildSessionStoreWithSession(session),
+      });
+      await waitFor(() => expect(screen.getByTestId('outcome-card')).toBeInTheDocument());
+      expect(screen.getByText('blocked')).toBeInTheDocument();
+      expect(screen.getByText('Needs follow-up')).toBeInTheDocument();
+    });
   });
 
   // ─── Terminal tab ───────────────────────────────────────
@@ -363,6 +556,13 @@ describe('SessionDetailPage', () => {
       expect(screen.getByTestId('terminal-tab-view-io')).toBeInTheDocument();
       fireEvent.click(screen.getByTestId('terminal-tab-add'));
       expect(screen.getByTestId('terminal-tab-term-4')).toBeInTheDocument();
+    });
+
+    it('switches terminal tabs and shows the active terminal identity', async () => {
+      wrap(<SessionDetailPage sessionId="ds-1" initialTab="terminal" />);
+      fireEvent.click(screen.getByTestId('terminal-tab-view-io'));
+      expect(screen.getByTestId('terminal-panel-view-io')).toBeInTheDocument();
+      expect(screen.getByText('io@ds-1')).toBeInTheDocument();
     });
   });
 
@@ -394,6 +594,14 @@ describe('SessionDetailPage', () => {
         fireEvent.click(fileButtons[1]!);
         expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
       }
+    });
+
+    it('renders deleted-file diff hunks', () => {
+      wrap(<SessionDetailPage sessionId="ds-1" />);
+      fireEvent.click(screen.getByTestId('tab-diffs'));
+      fireEvent.click(screen.getAllByTestId('diff-file-del')[0]!);
+      expect(screen.getByText('export class LegacyAuth {')).toBeInTheDocument();
+      expect(screen.getByText(/deprecated/)).toBeInTheDocument();
     });
   });
 
@@ -432,6 +640,14 @@ describe('SessionDetailPage', () => {
       const gitEvents = screen.getAllByTestId('chronicle-event-git');
       expect(gitEvents.length).toBeGreaterThan(0);
     });
+
+    it('renders chronicle badges and tail running state', () => {
+      wrap(<SessionDetailPage sessionId="ds-1" />);
+      fireEvent.click(screen.getByTestId('tab-chronicle'));
+      expect(screen.getAllByText('exit 0').length).toBeGreaterThan(0);
+      expect(screen.getByText('running…')).toBeInTheDocument();
+      expect(screen.getByText('TAIL')).toBeInTheDocument();
+    });
   });
 
   // ─── Logs tab ──────────────────────────────────────────
@@ -459,6 +675,13 @@ describe('SessionDetailPage', () => {
       const warnLines = screen.getAllByTestId('log-line-warn');
       expect(warnLines.length).toBeGreaterThan(0);
       expect(screen.queryByTestId('log-line-debug')).not.toBeInTheDocument();
+    });
+
+    it('shows the empty log state when filtering to a missing level', () => {
+      wrap(<SessionDetailPage sessionId="ds-1" />);
+      fireEvent.click(screen.getByTestId('tab-logs'));
+      fireEvent.click(screen.getByTestId('log-filter-error'));
+      expect(screen.getByText('no log entries')).toBeInTheDocument();
     });
   });
 
@@ -498,6 +721,11 @@ describe('SessionDetailPage', () => {
       wrap(<SessionDetailPage sessionId="unknown-session" />);
       expect(screen.getByTestId('session-detail-page')).toBeInTheDocument();
       expect(screen.getByTestId('tab-chat')).toBeInTheDocument();
+    });
+
+    it('shows the archived placeholder badge when the session is absent in read-only mode', () => {
+      wrap(<SessionDetailPage sessionId="unknown-session" readOnly />);
+      expect(screen.getByTestId('session-archived-badge')).toBeInTheDocument();
     });
 
     it('all tabs use proper ARIA attributes', () => {

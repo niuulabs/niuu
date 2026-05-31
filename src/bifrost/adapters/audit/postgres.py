@@ -59,16 +59,6 @@ CREATE INDEX IF NOT EXISTS idx_bifrost_audit_outcome    ON bifrost_audit(outcome
 CREATE INDEX IF NOT EXISTS idx_bifrost_audit_request_id ON bifrost_audit(request_id);
 """
 
-# Migrate existing tables: add columns added in NIU-462 if absent.
-_MIGRATE_COLUMNS = """
-ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS tokens_input     INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS tokens_output    INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS cost_usd         REAL    NOT NULL DEFAULT 0;
-ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS cache_hit        BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS prompt_content   TEXT    NOT NULL DEFAULT '';
-ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS response_content TEXT    NOT NULL DEFAULT '';
-"""
-
 _INSERT = """
 INSERT INTO bifrost_audit
     (request_id, agent_id, tenant_id, session_id, saga_id,

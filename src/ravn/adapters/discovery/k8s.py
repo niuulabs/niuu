@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -111,10 +112,8 @@ class K8sDiscoveryAdapter:
         """Cancel background poll task."""
         if self._poll_task is not None:
             self._poll_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._poll_task
-            except asyncio.CancelledError:
-                pass
             self._poll_task = None
 
     async def announce(self) -> None:
@@ -176,10 +175,8 @@ class K8sDiscoveryAdapter:
             )
             self._peers[peer_id] = peer
             for cb in self._on_join:
-                try:
+                with suppress(Exception):
                     cb(peer)
-                except Exception:
-                    pass
 
         # Evict peers no longer visible
         to_remove = [pid for pid in self._peers if pid not in seen_ids]
@@ -187,10 +184,8 @@ class K8sDiscoveryAdapter:
             peer = self._peers.pop(pid, None)
             if peer is not None:
                 for cb in self._on_leave:
-                    try:
+                    with suppress(Exception):
                         cb(peer)
-                    except Exception:
-                        pass
 
     def _list_candidates(self) -> list[RavnCandidate]:
         if k8s_client is None:

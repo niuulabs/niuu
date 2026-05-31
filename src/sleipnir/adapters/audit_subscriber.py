@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 from sleipnir.domain.events import SleipnirEvent
@@ -94,10 +95,8 @@ class AuditSubscriber:
             self._subscription = None
         if self._ttl_task is not None:
             self._ttl_task.cancel()
-            try:
-                await self._ttl_task
-            except asyncio.CancelledError:
-                pass
+            with suppress(asyncio.CancelledError):
+                _ = await self._ttl_task
             self._ttl_task = None
         logger.info("Audit subscriber stopped")
 

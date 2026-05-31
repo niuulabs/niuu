@@ -29,7 +29,7 @@ export function SegmentedFilter<T extends string = string>({
   return (
     <div
       className={cn(
-        'niuu-flex niuu-gap-1 niuu-p-1 niuu-rounded-md niuu-bg-bg-tertiary niuu-w-fit',
+        'niuu:flex niuu:gap-1 niuu:p-1 niuu:rounded-md niuu:bg-bg-tertiary niuu:w-fit',
         className,
       )}
       role="group"
@@ -42,14 +42,14 @@ export function SegmentedFilter<T extends string = string>({
           onClick={() => onChange(opt.value)}
           aria-pressed={value === opt.value}
           className={cn(
-            'niuu-rounded niuu-font-medium niuu-transition-colors niuu-px-3.5 niuu-py-1.5 niuu-text-xs',
+            'niuu:rounded niuu:font-medium niuu:transition-colors niuu:px-3.5 niuu:py-1.5 niuu:text-xs',
             value === opt.value
-              ? 'niuu-bg-bg-elevated niuu-text-text-primary'
-              : 'niuu-text-text-muted hover:niuu-text-text-secondary',
+              ? 'niuu:bg-bg-elevated niuu:text-text-primary'
+              : 'niuu:text-text-muted niuu:hover:text-text-secondary',
           )}
         >
           {opt.label}
-          {opt.count != null && <span className="niuu-ml-1.5 niuu-opacity-60">{opt.count}</span>}
+          {opt.count != null && <span className="niuu:ml-1.5 niuu:opacity-60">{opt.count}</span>}
         </button>
       ))}
     </div>

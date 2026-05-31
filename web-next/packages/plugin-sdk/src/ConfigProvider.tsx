@@ -38,25 +38,52 @@ export function ConfigProvider({
   errorFallback = (err) => <div role="alert">Config error: {err.message}</div>,
   children,
 }: ConfigProviderProps) {
+  if (value) {
+    return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
+  }
+
+  return (
+    <FetchedConfigProvider
+      key={endpoint}
+      endpoint={endpoint}
+      fallback={fallback}
+      errorFallback={errorFallback}
+    >
+      {children}
+    </FetchedConfigProvider>
+  );
+}
+
+export function useConfig(): NiuuConfig {
+  const ctx = useContext(ConfigContext);
+  if (!ctx) throw new Error('useConfig must be used within <ConfigProvider>');
+  return ctx;
+}
+
+function FetchedConfigProvider({
+  endpoint,
+  fallback,
+  errorFallback,
+  children,
+}: Required<Pick<ConfigProviderProps, 'children' | 'fallback' | 'errorFallback'>> & {
+  endpoint: string;
+}) {
   const [state, setState] = useState<
     | { status: 'loading' }
     | { status: 'ready'; config: NiuuConfig }
     | { status: 'error'; error: Error }
-  >(() => (value ? { status: 'ready', config: value } : { status: 'loading' }));
-
-  useEffect(() => {
-    if (value) {
-      setState({ status: 'ready', config: value });
-      return;
-    }
-
+  >({ status: 'loading' });
+  const endpointError = (() => {
     try {
       resolveSafeConfigEndpoint(endpoint);
+      return null;
     } catch (error: unknown) {
-      setState({
-        status: 'error',
-        error: error instanceof Error ? error : new Error(String(error)),
-      });
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  })();
+
+  useEffect(() => {
+    if (endpointError) {
       return;
     }
 
@@ -81,16 +108,11 @@ export function ConfigProvider({
     return () => {
       cancelled = true;
     };
-  }, [endpoint, value]);
+  }, [endpoint, endpointError]);
 
+  if (endpointError) return <>{errorFallback(endpointError)}</>;
   if (state.status === 'loading') return <>{fallback}</>;
   if (state.status === 'error') return <>{errorFallback(state.error)}</>;
 
   return <ConfigContext.Provider value={state.config}>{children}</ConfigContext.Provider>;
-}
-
-export function useConfig(): NiuuConfig {
-  const ctx = useContext(ConfigContext);
-  if (!ctx) throw new Error('useConfig must be used within <ConfigProvider>');
-  return ctx;
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import ravn.adapters.memory.migrate as _migrate_memory_module
 from ravn.adapters.memory.migrate import migrate_sqlite_to_postgres
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ def _patch_asyncpg(pool: MagicMock):
     """Return a patch.object context manager replacing asyncpg in migrate_memory."""
     mock = MagicMock()
     mock.create_pool = AsyncMock(return_value=pool)
-    return patch.object(_migrate_memory_module, "asyncpg", mock)
+    return patch.object(sys.modules["ravn.adapters.memory.migrate"], "asyncpg", mock)
 
 
 # ---------------------------------------------------------------------------

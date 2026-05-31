@@ -54,7 +54,7 @@ describe('GraphPage', () => {
     const svg = screen.getByRole('img', { name: /knowledge graph/i });
     const lines = svg.querySelectorAll('line');
     expect(lines.length).toBeGreaterThan(0);
-    expect(lines[0]!.classList.toString()).toContain('niuu-opacity-15');
+    expect(lines[0]!.classList.toString()).toContain('niuu:opacity-15');
   });
 
   it('clicking a node toggles focus', async () => {

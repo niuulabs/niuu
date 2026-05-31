@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult
@@ -90,24 +91,18 @@ class PaneHeader(Widget):
 
     def set_active(self, active: bool) -> None:
         self._active = active
-        try:
+        with suppress(Exception):
             self.query_one("#ph-title", Static).update(self._title_markup(active=active))
-        except Exception:
-            pass
 
     def update_meta(self, meta: str) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#ph-meta", Static).update(f"[#52525b]{meta}[/]")
-        except Exception:
-            pass
 
     def update_view(self, view_type: str, target: str | None = None) -> None:
         self._view_type = view_type
         self._target = target
-        try:
+        with suppress(Exception):
             self.query_one("#ph-title", Static).update(self._title_markup(active=self._active))
-        except Exception:
-            pass
 
 
 class PaneWidget(Widget):
@@ -187,6 +182,7 @@ class PaneWidget(Widget):
                 return CapsView(flokk=self._flokk)
             case _:
                 return FlokkView(flokk=self._flokk)
+        raise AssertionError("Unreachable _build_view fallthrough")
 
     def assign_view(
         self,
@@ -201,10 +197,8 @@ class PaneWidget(Widget):
             self._flokk = flokk
 
         # Update header title
-        try:
+        with suppress(Exception):
             self.query_one(PaneHeader).update_view(view_type, target)
-        except Exception:
-            pass
 
         # Remove the old view but keep the header
         for child in list(self.children):
@@ -214,17 +208,13 @@ class PaneWidget(Widget):
 
     def on_pane_meta_update(self, msg: PaneMetaUpdate) -> None:
         """Route metadata from a hosted view up to the PaneHeader."""
-        try:
+        with suppress(Exception):
             self.query_one(PaneHeader).update_meta(msg.meta)
-        except Exception:
-            pass
 
     def watch_focused_pane(self, focused: bool) -> None:
         self.set_class(focused, "-focused")
-        try:
+        with suppress(Exception):
             self.query_one(PaneHeader).set_active(focused)
-        except Exception:
-            pass
 
     def on_focus(self) -> None:
         self.focused_pane = True

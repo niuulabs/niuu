@@ -25,6 +25,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 
 from sleipnir.adapters._subscriber_support import (
     _BaseSubscription,
@@ -126,10 +127,8 @@ class _RedisSubscription(_BaseSubscription):
         if not self._active:
             return
         self._reader_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await self._reader_task
-        except asyncio.CancelledError:
-            pass
         await super().unsubscribe()
 
 
@@ -298,10 +297,8 @@ class RedisStreamsTransport(SleipnirPublisher, SleipnirSubscriber):
     # ------------------------------------------------------------------
 
     def _remove_subscription(self, sub: _RedisSubscription) -> None:
-        try:
+        with suppress(ValueError):
             self._subscriptions.remove(sub)
-        except ValueError:
-            pass
 
     async def _ensure_group(self, stream: str, group_name: str) -> None:
         """Create *group_name* on *stream* if it does not already exist.

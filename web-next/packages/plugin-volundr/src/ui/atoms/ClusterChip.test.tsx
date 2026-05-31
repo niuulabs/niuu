@@ -14,6 +14,6 @@ describe('ClusterChip', () => {
 
     expect(screen.getByTestId('cluster-chip')).toHaveClass('extra-class');
     expect(screen.getByText('tor-1')).toBeInTheDocument();
-    expect(screen.getByText('gpu')).toHaveClass('niuu-text-state-warn');
+    expect(screen.getByText('gpu')).toHaveClass('niuu:text-state-warn');
   });
 });

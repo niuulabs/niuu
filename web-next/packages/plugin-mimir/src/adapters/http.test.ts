@@ -120,6 +120,119 @@ describe('buildMimirHttpAdapter', () => {
     });
   });
 
+  describe('mounts registry mutations', () => {
+    const registryMount = {
+      name: 'shared',
+      kind: 'remote' as const,
+      lifecycle: 'registered' as const,
+      role: 'shared',
+      url: 'https://mimir.internal',
+      path: '/shared',
+      categories: ['entity'],
+      authRef: 'mimir-secret',
+      defaultReadPriority: 5,
+      enabled: true,
+      healthStatus: 'healthy' as const,
+      healthMessage: 'ok',
+      desc: 'Shared mount',
+    };
+
+    it('creates registry mounts through POST /registry/mounts', async () => {
+      const client = makeClient({
+        post: vi.fn().mockResolvedValue({
+          id: 'registry-shared',
+          name: 'shared',
+          kind: 'remote',
+          lifecycle: 'registered',
+          role: 'shared',
+          url: 'https://mimir.internal',
+          path: '/shared',
+          categories: ['entity'],
+          auth_ref: 'mimir-secret',
+          default_read_priority: 5,
+          enabled: true,
+          health_status: 'healthy',
+          health_message: 'ok',
+          desc: 'Shared mount',
+        }),
+      });
+
+      const mount = await buildMimirHttpAdapter(client).mounts.createRegistryMount(registryMount);
+
+      expect(client.post).toHaveBeenCalledWith('/registry/mounts', {
+        name: 'shared',
+        kind: 'remote',
+        lifecycle: 'registered',
+        role: 'shared',
+        url: 'https://mimir.internal',
+        path: '/shared',
+        categories: ['entity'],
+        auth_ref: 'mimir-secret',
+        default_read_priority: 5,
+        enabled: true,
+        health_status: 'healthy',
+        health_message: 'ok',
+        desc: 'Shared mount',
+      });
+      expect(mount).toMatchObject({ id: 'registry-shared', authRef: 'mimir-secret' });
+    });
+
+    it('updates registry mounts through PUT /registry/mounts/{id}', async () => {
+      const client = makeClient({
+        put: vi.fn().mockResolvedValue({
+          id: 'registry-shared',
+          name: 'shared',
+          kind: 'remote',
+          lifecycle: 'registered',
+          role: 'shared',
+          url: 'https://mimir.internal',
+          path: '/shared',
+          categories: ['entity'],
+          auth_ref: null,
+          default_read_priority: 5,
+          enabled: false,
+          health_status: 'down',
+          health_message: 'offline',
+          desc: 'Shared mount',
+        }),
+      });
+
+      const mount = await buildMimirHttpAdapter(client).mounts.updateRegistryMount(
+        'registry-shared',
+        {
+          ...registryMount,
+          authRef: null,
+          enabled: false,
+          healthStatus: 'down',
+          healthMessage: 'offline',
+        },
+      );
+
+      expect(client.put).toHaveBeenCalledWith('/registry/mounts/registry-shared', {
+        name: 'shared',
+        kind: 'remote',
+        lifecycle: 'registered',
+        role: 'shared',
+        url: 'https://mimir.internal',
+        path: '/shared',
+        categories: ['entity'],
+        auth_ref: null,
+        default_read_priority: 5,
+        enabled: false,
+        health_status: 'down',
+        health_message: 'offline',
+        desc: 'Shared mount',
+      });
+      expect(mount).toMatchObject({ enabled: false, healthStatus: 'down' });
+    });
+
+    it('deletes registry mounts through DELETE /registry/mounts/{id}', async () => {
+      const client = makeClient();
+      await buildMimirHttpAdapter(client).mounts.deleteRegistryMount('registry-shared');
+      expect(client.delete).toHaveBeenCalledWith('/registry/mounts/registry-shared');
+    });
+  });
+
   describe('pages.getStats', () => {
     it('calls GET /stats', async () => {
       const client = makeClient({
@@ -1066,6 +1179,15 @@ describe('buildMimirHttpAdapter', () => {
   });
 
   describe('mounts.listRavnBindings', () => {
+    it('returns bindings from the backend when the route exists', async () => {
+      const client = makeClient({
+        get: vi.fn().mockResolvedValue([{ id: 'binding-1', ravnId: 'ravn-1', mountName: 'local' }]),
+      });
+      await expect(buildMimirHttpAdapter(client).mounts.listRavnBindings()).resolves.toEqual([
+        { id: 'binding-1', ravnId: 'ravn-1', mountName: 'local' },
+      ]);
+    });
+
     it('returns an empty list when ravn bindings are unavailable', async () => {
       const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
       await expect(buildMimirHttpAdapter(client).mounts.listRavnBindings()).resolves.toEqual([]);

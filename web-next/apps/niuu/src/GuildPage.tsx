@@ -201,20 +201,20 @@ function scopeBadge(instance: InstanceRecord): {
     return {
       label: 'tenant',
       icon: Building2,
-      tone: 'niuu-border-sky-500/35 niuu-bg-sky-500/10 niuu-text-sky-200',
+      tone: 'niuu:border-sky-500/35 niuu:bg-sky-500/10 niuu:text-sky-200',
     };
   }
   if (instance.visibility === 'user') {
     return {
       label: 'personal',
       icon: UserRound,
-      tone: 'niuu-border-violet-500/35 niuu-bg-violet-500/10 niuu-text-violet-200',
+      tone: 'niuu:border-violet-500/35 niuu:bg-violet-500/10 niuu:text-violet-200',
     };
   }
   return {
     label: 'system',
     icon: Shield,
-    tone: 'niuu-border-emerald-500/35 niuu-bg-emerald-500/10 niuu-text-emerald-200',
+    tone: 'niuu:border-emerald-500/35 niuu:bg-emerald-500/10 niuu:text-emerald-200',
   };
 }
 
@@ -327,21 +327,21 @@ function openPathFor(instance: InstanceRecord): string | null {
 function healthTone(snapshot: HealthSnapshot | null | undefined) {
   if (!snapshot) {
     return {
-      dot: 'niuu-bg-slate-500/60',
-      chip: 'niuu-border-border-subtle niuu-bg-bg-elevated niuu-text-text-muted',
+      dot: 'niuu:bg-slate-500/60',
+      chip: 'niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-text-muted',
       label: 'unchecked',
     };
   }
   if (snapshot.ok) {
     return {
-      dot: 'niuu-bg-emerald-400',
-      chip: 'niuu-border-emerald-500/35 niuu-bg-emerald-500/10 niuu-text-emerald-200',
+      dot: 'niuu:bg-emerald-400',
+      chip: 'niuu:border-emerald-500/35 niuu:bg-emerald-500/10 niuu:text-emerald-200',
       label: 'healthy',
     };
   }
   return {
-    dot: 'niuu-bg-rose-400',
-    chip: 'niuu-border-rose-500/35 niuu-bg-rose-500/10 niuu-text-rose-200',
+    dot: 'niuu:bg-rose-400',
+    chip: 'niuu:border-rose-500/35 niuu:bg-rose-500/10 niuu:text-rose-200',
     label: 'degraded',
   };
 }
@@ -353,7 +353,7 @@ function detailEvents(instance: InstanceRecord, snapshot: HealthSnapshot | null 
       title: 'instance registered',
       detail: `${kindMeta(instance.kind).label} • ${scopeSummary(instance)}`,
       when: formatAge(instance.createdAt),
-      tone: 'niuu-bg-sky-500/10 niuu-text-sky-200',
+      tone: 'niuu:bg-sky-500/10 niuu:text-sky-200',
     },
     {
       id: `updated-${instance.id}`,
@@ -362,7 +362,7 @@ function detailEvents(instance: InstanceRecord, snapshot: HealthSnapshot | null 
         ? 'used as the default target in this scope'
         : 'registry metadata changed',
       when: formatAge(instance.updatedAt),
-      tone: 'niuu-bg-violet-500/10 niuu-text-violet-200',
+      tone: 'niuu:bg-violet-500/10 niuu:text-violet-200',
     },
   ];
   if (snapshot) {
@@ -372,8 +372,8 @@ function detailEvents(instance: InstanceRecord, snapshot: HealthSnapshot | null 
       detail: snapshot.message,
       when: formatAge(new Date(snapshot.checkedAt).toISOString()),
       tone: snapshot.ok
-        ? 'niuu-bg-emerald-500/10 niuu-text-emerald-200'
-        : 'niuu-bg-rose-500/10 niuu-text-rose-200',
+        ? 'niuu:bg-emerald-500/10 niuu:text-emerald-200'
+        : 'niuu:bg-rose-500/10 niuu:text-rose-200',
     });
   }
   return events;
@@ -415,20 +415,20 @@ function HealthStrip({ history }: { history: HealthSnapshot[] }) {
     history.length > 0 ? Math.round((healthyCount / history.length) * 1000) / 10 : null;
 
   return (
-    <div className="niuu-space-y-2.5">
-      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-text-[10px] niuu-font-mono niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-faint">
+    <div className="niuu:space-y-2.5">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:text-[10px] niuu:font-mono niuu:uppercase niuu:tracking-[0.18em] niuu:text-text-faint">
         <span>Last 24h availability</span>
         <span>{percentage != null ? `${percentage}%` : 'warming up'}</span>
       </div>
-      <div className="niuu-grid niuu-grid-cols-12 niuu-gap-1">
+      <div className="niuu:grid niuu:grid-cols-12 niuu:gap-1">
         {cells.map((snapshot, index) => (
           <span
             key={`${snapshot?.checkedAt ?? 'empty'}-${index}`}
             className={cn(
-              'niuu-h-6 niuu-rounded-[5px] niuu-border',
-              !snapshot && 'niuu-border-border-subtle niuu-bg-bg-elevated/80',
-              snapshot?.ok && 'niuu-border-emerald-400/25 niuu-bg-emerald-300/85',
-              snapshot && !snapshot.ok && 'niuu-border-rose-400/35 niuu-bg-rose-400/75',
+              'niuu:h-6 niuu:rounded-[5px] niuu:border',
+              !snapshot && 'niuu:border-border-subtle niuu:bg-bg-elevated/80',
+              snapshot?.ok && 'niuu:border-emerald-400/25 niuu:bg-emerald-300/85',
+              snapshot && !snapshot.ok && 'niuu:border-rose-400/35 niuu:bg-rose-400/75',
             )}
             title={
               snapshot
@@ -440,7 +440,7 @@ function HealthStrip({ history }: { history: HealthSnapshot[] }) {
           />
         ))}
       </div>
-      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-text-[11px] niuu-text-text-muted">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:text-[11px] niuu:text-text-muted">
         <span>24 rolling samples</span>
         <span>
           {history.length > 0
@@ -454,17 +454,17 @@ function HealthStrip({ history }: { history: HealthSnapshot[] }) {
 
 function WizardProgress({ current }: { current: WizardStep }) {
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-2">
+    <div className="niuu:flex niuu:items-center niuu:gap-2">
       {[1, 2, 3].map((step, index) => (
-        <div key={step} className="niuu-flex niuu-items-center niuu-gap-2">
+        <div key={step} className="niuu:flex niuu:items-center niuu:gap-2">
           <span
             className={cn(
-              'niuu-flex niuu-h-7 niuu-w-7 niuu-items-center niuu-justify-center niuu-rounded-full niuu-border niuu-font-mono niuu-text-[12px]',
+              'niuu:flex niuu:h-7 niuu:w-7 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:font-mono niuu:text-[12px]',
               step === current
-                ? 'niuu-border-brand niuu-bg-brand niuu-text-bg-primary'
+                ? 'niuu:border-brand niuu:bg-brand niuu:text-bg-primary'
                 : step < current
-                  ? 'niuu-border-brand/60 niuu-bg-brand/10 niuu-text-brand'
-                  : 'niuu-border-border-subtle niuu-bg-bg-tertiary niuu-text-text-faint',
+                  ? 'niuu:border-brand/60 niuu:bg-brand/10 niuu:text-brand'
+                  : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-faint',
             )}
           >
             {step}
@@ -472,8 +472,8 @@ function WizardProgress({ current }: { current: WizardStep }) {
           {index < 2 ? (
             <span
               className={cn(
-                'niuu-h-px niuu-w-6 niuu-bg-border-subtle',
-                step < current && 'niuu-bg-brand/70',
+                'niuu:h-px niuu:w-6 niuu:bg-border-subtle',
+                step < current && 'niuu:bg-brand/70',
               )}
             />
           ) : null}
@@ -504,30 +504,30 @@ function InstanceCard({
       type="button"
       onClick={onClick}
       className={cn(
-        'niuu-group niuu-flex niuu-h-full niuu-flex-col niuu-rounded-[18px] niuu-border niuu-bg-bg-secondary niuu-p-4 niuu-text-left niuu-transition-colors',
+        'niuu-group niuu:flex niuu:h-full niuu:flex-col niuu:rounded-[18px] niuu:border niuu:bg-bg-secondary niuu:p-4 niuu:text-left niuu:transition-colors',
         selected
-          ? 'niuu-border-brand/45 niuu-bg-[#111b24] niuu-shadow-[0_0_0_1px_rgba(83,194,255,0.12)]'
-          : 'niuu-border-border-subtle hover:niuu-border-white/16',
+          ? 'niuu:border-brand/45 niuu:bg-[#111b24] niuu:shadow-[0_0_0_1px_rgba(83,194,255,0.12)]'
+          : 'niuu:border-border-subtle niuu:hover:border-white/16',
       )}
       data-testid={`guild-instance-card-${instance.slug}`}
     >
-      <div className="niuu-flex niuu-items-start niuu-gap-3">
-        <div className="niuu-flex niuu-h-10 niuu-w-10 niuu-flex-shrink-0 niuu-items-center niuu-justify-center niuu-rounded-[12px] niuu-border niuu-border-white/10 niuu-bg-bg-tertiary">
-          <Rune glyph={meta.rune} size={16} className="niuu-text-brand" />
+      <div className="niuu:flex niuu:items-start niuu:gap-3">
+        <div className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-[12px] niuu:border niuu:border-white/10 niuu:bg-bg-tertiary">
+          <Rune glyph={meta.rune} size={16} className="niuu:text-brand" />
         </div>
-        <div className="niuu-min-w-0 niuu-flex-1">
-          <div className="niuu-flex niuu-items-center niuu-gap-2">
-            <span className={cn('niuu-h-2 niuu-w-2 niuu-rounded-full', tone.dot)} />
-            <h3 className="niuu-truncate niuu-text-[15px] niuu-font-semibold niuu-text-text-primary">
+        <div className="niuu:min-w-0 niuu:flex-1">
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
+            <span className={cn('niuu:h-2 niuu:w-2 niuu:rounded-full', tone.dot)} />
+            <h3 className="niuu:truncate niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
               {instance.name}
             </h3>
             {instance.isDefault ? (
-              <span className="niuu-rounded-md niuu-bg-brand/12 niuu-px-1.5 niuu-py-0.5 niuu-font-mono niuu-text-[9px] niuu-uppercase niuu-tracking-[0.16em] niuu-text-brand">
+              <span className="niuu:rounded-md niuu:bg-brand/12 niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.16em] niuu:text-brand">
                 default
               </span>
             ) : null}
           </div>
-          <div className="niuu-mt-1 niuu-flex niuu-flex-wrap niuu-items-center niuu-gap-1.5 niuu-text-[11px] niuu-text-text-muted">
+          <div className="niuu:mt-1 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-1.5 niuu:text-[11px] niuu:text-text-muted">
             <span>{meta.label}</span>
             <span>•</span>
             <span>{formatAge(instance.updatedAt)}</span>
@@ -535,47 +535,47 @@ function InstanceCard({
         </div>
       </div>
 
-      <div className="niuu-mt-3 niuu-rounded-xl niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary">
+      <div className="niuu:mt-3 niuu:rounded-xl niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
         {instance.baseUrl}
       </div>
 
-      <div className="niuu-mt-3 niuu-flex niuu-flex-wrap niuu-items-center niuu-gap-2">
+      <div className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
         <span
           className={cn(
-            'niuu-inline-flex niuu-items-center niuu-gap-1.5 niuu-rounded-full niuu-border niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.14em]',
+            'niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:border niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em]',
             scope.tone,
           )}
         >
-          <ScopeIcon className="niuu-h-3 niuu-w-3" />
+          <ScopeIcon className="niuu:h-3 niuu:w-3" />
           {scope.label}
         </span>
-        <span className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+        <span className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
           {inferRegion(instance)}
         </span>
       </div>
 
-      <div className="niuu-mt-3 niuu-grid niuu-grid-cols-2 niuu-gap-x-3 niuu-gap-y-2 niuu-text-[11px]">
+      <div className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-x-3 niuu:gap-y-2 niuu:text-[11px]">
         <div>
-          <div className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+          <div className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
             scope
           </div>
-          <div className="niuu-mt-1 niuu-text-text-secondary">{scopeSummary(instance)}</div>
+          <div className="niuu:mt-1 niuu:text-text-secondary">{scopeSummary(instance)}</div>
         </div>
         <div>
-          <div className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+          <div className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
             auth
           </div>
-          <div className="niuu-mt-1 niuu-truncate niuu-text-text-secondary">
+          <div className="niuu:mt-1 niuu:truncate niuu:text-text-secondary">
             {inferAuth(instance)}
           </div>
         </div>
       </div>
 
-      <div className="niuu-mt-3 niuu-flex niuu-flex-wrap niuu-gap-1.5">
+      <div className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:gap-1.5">
         {inferCapabilities(instance).map((capability) => (
           <span
             key={`${instance.id}-${capability}`}
-            className="niuu-rounded-md niuu-bg-bg-elevated niuu-px-1.5 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-text-muted"
+            className="niuu:rounded-md niuu:bg-bg-elevated niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted"
           >
             {capability}
           </span>
@@ -608,20 +608,20 @@ function GuildDetailRail({
   const openPath = openPathFor(instance);
 
   return (
-    <aside className="niuu-sticky niuu-top-6 niuu-h-fit">
-      <div className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
-        <div className="niuu-flex niuu-items-start niuu-gap-3">
-          <div className="niuu-flex niuu-h-10 niuu-w-10 niuu-flex-shrink-0 niuu-items-center niuu-justify-center niuu-rounded-[12px] niuu-border niuu-border-white/10 niuu-bg-bg-tertiary">
-            <Rune glyph={meta.rune} size={16} className="niuu-text-brand" />
+    <aside className="niuu:sticky niuu:top-6 niuu:h-fit">
+      <div className="niuu:rounded-[22px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
+        <div className="niuu:flex niuu:items-start niuu:gap-3">
+          <div className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-[12px] niuu:border niuu:border-white/10 niuu:bg-bg-tertiary">
+            <Rune glyph={meta.rune} size={16} className="niuu:text-brand" />
           </div>
-          <div className="niuu-min-w-0 niuu-flex-1">
-            <div className="niuu-flex niuu-items-center niuu-gap-2">
-              <span className={cn('niuu-h-2 niuu-w-2 niuu-rounded-full', tone.dot)} />
-              <h2 className="niuu-truncate niuu-text-[18px] niuu-font-semibold niuu-text-text-primary">
+          <div className="niuu:min-w-0 niuu:flex-1">
+            <div className="niuu:flex niuu:items-center niuu:gap-2">
+              <span className={cn('niuu:h-2 niuu:w-2 niuu:rounded-full', tone.dot)} />
+              <h2 className="niuu:truncate niuu:text-[18px] niuu:font-semibold niuu:text-text-primary">
                 {instance.name}
               </h2>
             </div>
-            <div className="niuu-mt-1 niuu-flex niuu-flex-wrap niuu-items-center niuu-gap-2 niuu-text-[11px] niuu-text-text-muted">
+            <div className="niuu:mt-1 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2 niuu:text-[11px] niuu:text-text-muted">
               <span>{meta.label}</span>
               <span>•</span>
               <span>{instance.slug}</span>
@@ -630,72 +630,72 @@ function GuildDetailRail({
           <button
             type="button"
             onClick={onCollapse}
-            className="niuu-inline-flex niuu-h-8 niuu-w-8 niuu-items-center niuu-justify-center niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-text-text-muted hover:niuu-text-text-primary"
+            className="niuu:inline-flex niuu:h-8 niuu:w-8 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-muted niuu:hover:text-text-primary"
             aria-label="Collapse details"
           >
-            <ChevronRight className="niuu-h-4 niuu-w-4" />
+            <ChevronRight className="niuu:h-4 niuu:w-4" />
           </button>
         </div>
 
-        <div className="niuu-mt-5">
+        <div className="niuu:mt-5">
           <HealthStrip history={history} />
         </div>
 
-        <dl className="niuu-mt-5 niuu-grid niuu-grid-cols-[86px_minmax(0,1fr)] niuu-gap-x-4 niuu-gap-y-2.5 niuu-text-[13px]">
-          <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+        <dl className="niuu:mt-5 niuu:grid niuu:grid-cols-[86px_minmax(0,1fr)] niuu:gap-x-4 niuu:gap-y-2.5 niuu:text-[13px]">
+          <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
             endpoint
           </dt>
-          <dd className="niuu-font-mono niuu-break-all niuu-text-text-primary">
+          <dd className="niuu:font-mono niuu:break-all niuu:text-text-primary">
             {instance.baseUrl}
           </dd>
 
-          <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+          <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
             region
           </dt>
-          <dd className="niuu-text-text-primary">{inferRegion(instance)}</dd>
+          <dd className="niuu:text-text-primary">{inferRegion(instance)}</dd>
 
-          <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+          <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
             cluster
           </dt>
-          <dd className="niuu-text-text-primary">{inferCluster(instance)}</dd>
+          <dd className="niuu:text-text-primary">{inferCluster(instance)}</dd>
 
-          <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+          <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
             auth
           </dt>
-          <dd className="niuu-text-text-primary">{inferAuth(instance)}</dd>
+          <dd className="niuu:text-text-primary">{inferAuth(instance)}</dd>
 
-          <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+          <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
             scope
           </dt>
-          <dd className="niuu-text-text-primary">{scopeSummary(instance)}</dd>
+          <dd className="niuu:text-text-primary">{scopeSummary(instance)}</dd>
 
-          <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+          <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
             created
           </dt>
-          <dd className="niuu-text-text-primary">{formatAge(instance.createdAt)}</dd>
+          <dd className="niuu:text-text-primary">{formatAge(instance.createdAt)}</dd>
 
-          <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+          <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
             last seen
           </dt>
-          <dd className="niuu-text-text-primary">
+          <dd className="niuu:text-text-primary">
             {health ? formatAge(new Date(health.checkedAt).toISOString()) : 'not checked'}
           </dd>
         </dl>
 
-        <div className="niuu-mt-5">
-          <div className="niuu-mb-2 niuu-flex niuu-items-center niuu-justify-between">
-            <h3 className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-faint">
+        <div className="niuu:mt-5">
+          <div className="niuu:mb-2 niuu:flex niuu:items-center niuu:justify-between">
+            <h3 className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.18em] niuu:text-text-faint">
               capabilities
             </h3>
-            <span className="niuu-text-[10px] niuu-text-text-muted">
+            <span className="niuu:text-[10px] niuu:text-text-muted">
               {inferCapabilities(instance).length} tags
             </span>
           </div>
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-1.5">
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-1.5">
             {inferCapabilities(instance).map((capability) => (
               <span
                 key={`${instance.id}-${capability}`}
-                className="niuu-rounded-md niuu-bg-bg-elevated niuu-px-1.5 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-text-secondary"
+                className="niuu:rounded-md niuu:bg-bg-elevated niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary"
               >
                 {capability}
               </span>
@@ -703,33 +703,33 @@ function GuildDetailRail({
           </div>
         </div>
 
-        <div className="niuu-mt-5">
-          <div className="niuu-mb-2 niuu-flex niuu-items-center niuu-justify-between">
-            <h3 className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-faint">
+        <div className="niuu:mt-5">
+          <div className="niuu:mb-2 niuu:flex niuu:items-center niuu:justify-between">
+            <h3 className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.18em] niuu:text-text-faint">
               recent connectivity
             </h3>
-            <span className="niuu-text-[10px] niuu-text-text-muted">{events.length} events</span>
+            <span className="niuu:text-[10px] niuu:text-text-muted">{events.length} events</span>
           </div>
-          <div className="niuu-space-y-2">
+          <div className="niuu:space-y-2">
             {events.map((event) => (
               <div
                 key={event.id}
-                className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3 niuu-rounded-xl niuu-bg-bg-elevated niuu-p-2.5"
+                className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3 niuu:rounded-xl niuu:bg-bg-elevated niuu:p-2.5"
               >
-                <div className="niuu-min-w-0">
+                <div className="niuu:min-w-0">
                   <div
                     className={cn(
-                      'niuu-inline-flex niuu-rounded-full niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[9px] niuu-uppercase niuu-tracking-[0.14em]',
+                      'niuu:inline-flex niuu:rounded-full niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.14em]',
                       event.tone,
                     )}
                   >
                     {event.title}
                   </div>
-                  <p className="niuu-mt-1.5 niuu-text-[12px] niuu-leading-5 niuu-text-text-primary">
+                  <p className="niuu:mt-1.5 niuu:text-[12px] niuu:leading-5 niuu:text-text-primary">
                     {event.detail}
                   </p>
                 </div>
-                <span className="niuu-flex-shrink-0 niuu-text-[10px] niuu-text-text-muted">
+                <span className="niuu:flex-shrink-0 niuu:text-[10px] niuu:text-text-muted">
                   {event.when}
                 </span>
               </div>
@@ -737,27 +737,27 @@ function GuildDetailRail({
           </div>
         </div>
 
-        <div className="niuu-mt-5 niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
-          <div className="niuu-flex niuu-gap-2">
+        <div className="niuu:mt-5 niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
+          <div className="niuu:flex niuu:gap-2">
             <button
               type="button"
               onClick={onTest}
               disabled={isTesting}
-              className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-[12px] niuu-text-text-primary hover:niuu-bg-bg-tertiary disabled:niuu-opacity-50"
+              className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-[12px] niuu:text-text-primary niuu:hover:bg-bg-tertiary niuu:disabled:opacity-50"
             >
               {health?.ok ? (
-                <Wifi className="niuu-h-4 niuu-w-4" />
+                <Wifi className="niuu:h-4 niuu:w-4" />
               ) : (
-                <WifiOff className="niuu-h-4 niuu-w-4" />
+                <WifiOff className="niuu:h-4 niuu:w-4" />
               )}
               test endpoint
             </button>
             <button
               type="button"
               onClick={onRefresh}
-              className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-[12px] niuu-text-text-primary hover:niuu-bg-bg-tertiary"
+              className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-[12px] niuu:text-text-primary niuu:hover:bg-bg-tertiary"
             >
-              <RefreshCw className="niuu-h-4 niuu-w-4" />
+              <RefreshCw className="niuu:h-4 niuu:w-4" />
               refresh
             </button>
           </div>
@@ -770,10 +770,10 @@ function GuildDetailRail({
               rel={
                 instance.kind === 'volundr' || instance.kind === 'ting' ? undefined : 'noreferrer'
               }
-              className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-brand/35 niuu-bg-brand/12 niuu-px-3 niuu-py-2 niuu-text-[12px] niuu-text-brand hover:niuu-bg-brand/18"
+              className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-lg niuu:border niuu:border-brand/35 niuu:bg-brand/12 niuu:px-3 niuu:py-2 niuu:text-[12px] niuu:text-brand niuu:hover:bg-brand/18"
             >
               open in {meta.label}
-              <ExternalLink className="niuu-h-4 niuu-w-4" />
+              <ExternalLink className="niuu:h-4 niuu:w-4" />
             </a>
           ) : null}
         </div>
@@ -819,12 +819,6 @@ function RegisterWizard({
 }) {
   const [step, setStep] = useState<WizardStep>(1);
 
-  useEffect(() => {
-    if (open) {
-      setStep(1);
-    }
-  }, [open]);
-
   const slug = slugifyName(wizard.name);
   const selectedAuth = authMeta(wizard.authMethod);
   const availableCredentials =
@@ -854,17 +848,17 @@ function RegisterWizard({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title="Register a new instance" className="niuu-max-w-[660px]">
-        <div className="niuu-space-y-5">
-          <div className="niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.18em] niuu-text-text-faint">
+      <DialogContent title="Register a new instance" className="niuu:max-w-[660px]">
+        <div className="niuu:space-y-5">
+          <div className="niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.18em] niuu:text-text-faint">
             {step === 1 && 'Step 1 of 3 • Backend type'}
             {step === 2 && 'Step 2 of 3 • Endpoint & auth'}
             {step === 3 && 'Step 3 of 3 • Visibility & confirm'}
           </div>
 
           {step === 1 ? (
-            <div className="niuu-space-y-4">
-              <div className="niuu-grid niuu-gap-3 sm:niuu-grid-cols-2">
+            <div className="niuu:space-y-4">
+              <div className="niuu:grid niuu:gap-3 niuu:sm:grid-cols-2">
                 {registerOptions.map((option) => {
                   const selected = wizard.kind === option.value;
                   return (
@@ -873,27 +867,27 @@ function RegisterWizard({
                       type="button"
                       onClick={() => setWizard((current) => ({ ...current, kind: option.value }))}
                       className={cn(
-                        'niuu-flex niuu-items-center niuu-gap-4 niuu-rounded-[12px] niuu-border niuu-bg-bg-tertiary niuu-p-4 niuu-text-left niuu-transition-colors',
+                        'niuu:flex niuu:items-center niuu:gap-4 niuu:rounded-[12px] niuu:border niuu:bg-bg-tertiary niuu:p-4 niuu:text-left niuu:transition-colors',
                         selected
-                          ? 'niuu-border-brand niuu-bg-[#1d2832]'
-                          : 'niuu-border-transparent hover:niuu-border-white/10',
+                          ? 'niuu:border-brand niuu:bg-[#1d2832]'
+                          : 'niuu:border-transparent niuu:hover:border-white/10',
                       )}
                     >
-                      <div className="niuu-flex niuu-h-11 niuu-w-11 niuu-items-center niuu-justify-center niuu-rounded-[10px] niuu-border niuu-border-white/15 niuu-bg-[#22303b]">
-                        <Rune glyph={option.rune} size={18} className="niuu-text-brand" />
+                      <div className="niuu:flex niuu:h-11 niuu:w-11 niuu:items-center niuu:justify-center niuu:rounded-[10px] niuu:border niuu:border-white/15 niuu:bg-[#22303b]">
+                        <Rune glyph={option.rune} size={18} className="niuu:text-brand" />
                       </div>
-                      <div className="niuu-min-w-0">
-                        <div className="niuu-flex niuu-items-center niuu-gap-2">
-                          <div className="niuu-text-[15px] niuu-font-semibold niuu-text-text-primary">
+                      <div className="niuu:min-w-0">
+                        <div className="niuu:flex niuu:items-center niuu:gap-2">
+                          <div className="niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
                             {option.label}
                           </div>
                           {selected ? (
-                            <span className="niuu-rounded-full niuu-border niuu-border-brand/45 niuu-bg-brand/12 niuu-px-2 niuu-py-0.5 niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-brand">
+                            <span className="niuu:rounded-full niuu:border niuu:border-brand/45 niuu:bg-brand/12 niuu:px-2 niuu:py-0.5 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-brand">
                               selected
                             </span>
                           ) : null}
                         </div>
-                        <div className="niuu-font-mono niuu-text-[12px] niuu-text-text-muted">
+                        <div className="niuu:font-mono niuu:text-[12px] niuu:text-text-muted">
                           {option.summary} — {option.detail}
                         </div>
                       </div>
@@ -901,7 +895,7 @@ function RegisterWizard({
                   );
                 })}
               </div>
-              <p className="niuu-font-mono niuu-text-[12px] niuu-leading-5 niuu-text-text-faint">
+              <p className="niuu:font-mono niuu:text-[12px] niuu:leading-5 niuu:text-text-faint">
                 Future types plug in here. Guild is a generic Niuu runtime registry, not a
                 Volundr-only catalog.
               </p>
@@ -909,9 +903,9 @@ function RegisterWizard({
           ) : null}
 
           {step === 2 ? (
-            <div className="niuu-space-y-4">
-              <div className="niuu-space-y-1.5">
-                <label className="niuu-block niuu-text-[13px] niuu-font-medium niuu-text-text-secondary">
+            <div className="niuu:space-y-4">
+              <div className="niuu:space-y-1.5">
+                <label className="niuu:block niuu:text-[13px] niuu:font-medium niuu:text-text-secondary">
                   name
                 </label>
                 <input
@@ -920,15 +914,15 @@ function RegisterWizard({
                     setWizard((current) => ({ ...current, name: event.target.value }))
                   }
                   placeholder="volundr • prod"
-                  className="niuu-w-full niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-2.5 niuu-text-[14px] niuu-text-text-primary placeholder:niuu-text-text-muted focus:niuu-outline-none"
+                  className="niuu:w-full niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2.5 niuu:text-[14px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
                 />
-                <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-faint">
+                <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
                   short identifier → {slug || 'lowercase, words separated by -'}
                 </div>
               </div>
 
-              <div className="niuu-space-y-1.5">
-                <label className="niuu-block niuu-text-[13px] niuu-font-medium niuu-text-text-secondary">
+              <div className="niuu:space-y-1.5">
+                <label className="niuu:block niuu:text-[13px] niuu:font-medium niuu:text-text-secondary">
                   endpoint URL
                 </label>
                 <input
@@ -937,18 +931,18 @@ function RegisterWizard({
                     setWizard((current) => ({ ...current, baseUrl: event.target.value }))
                   }
                   placeholder="https://..."
-                  className="niuu-w-full niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-2.5 niuu-text-[14px] niuu-text-text-primary placeholder:niuu-text-text-muted focus:niuu-outline-none"
+                  className="niuu:w-full niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2.5 niuu:text-[14px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
                 />
-                <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-faint">
+                <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
                   Niuu probes this on register and then keeps checking it afterwards.
                 </div>
               </div>
 
-              <div className="niuu-space-y-2">
-                <div className="niuu-text-[13px] niuu-font-medium niuu-text-text-secondary">
+              <div className="niuu:space-y-2">
+                <div className="niuu:text-[13px] niuu:font-medium niuu:text-text-secondary">
                   auth method
                 </div>
-                <div className="niuu-grid niuu-gap-2 sm:niuu-grid-cols-5">
+                <div className="niuu:grid niuu:gap-2 niuu:sm:grid-cols-5">
                   {AUTH_OPTIONS.map((option) => (
                     <button
                       key={option.value}
@@ -960,40 +954,40 @@ function RegisterWizard({
                         }))
                       }
                       className={cn(
-                        'niuu-rounded-lg niuu-border niuu-px-3 niuu-py-2 niuu-text-[12px] niuu-transition-colors',
+                        'niuu:rounded-lg niuu:border niuu:px-3 niuu:py-2 niuu:text-[12px] niuu:transition-colors',
                         wizard.authMethod === option.value
-                          ? 'niuu-border-brand/50 niuu-bg-brand/12 niuu-text-brand'
-                          : 'niuu-border-border-subtle niuu-bg-bg-tertiary niuu-text-text-muted hover:niuu-text-text-primary',
+                          ? 'niuu:border-brand/50 niuu:bg-brand/12 niuu:text-brand'
+                          : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-muted niuu:hover:text-text-primary',
                       )}
                     >
                       {option.label}
                     </button>
                   ))}
                 </div>
-                <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-faint">
+                <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
                   {selectedAuth.helper}
                 </div>
               </div>
 
-              <div className="niuu-space-y-2 niuu-rounded-[14px] niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-p-4">
-                <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
+              <div className="niuu:space-y-2 niuu:rounded-[14px] niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-4">
+                <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
                   <div>
-                    <div className="niuu-text-[13px] niuu-font-medium niuu-text-text-primary">
+                    <div className="niuu:text-[13px] niuu:font-medium niuu:text-text-primary">
                       credential binding
                     </div>
-                    <div className="niuu-text-[12px] niuu-text-text-muted">
+                    <div className="niuu:text-[12px] niuu:text-text-muted">
                       Attach an existing secret from the integrations / auth system.
                     </div>
                   </div>
                   <a
                     href="/settings/credentials/user"
-                    className="niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-brand"
+                    className="niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-brand"
                   >
                     manage credentials
                   </a>
                 </div>
 
-                <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+                <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
                   {[
                     { value: 'none', label: 'none' },
                     { value: 'user', label: 'personal' },
@@ -1013,11 +1007,11 @@ function RegisterWizard({
                           }))
                         }
                         className={cn(
-                          'niuu-rounded-full niuu-border niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em]',
+                          'niuu:rounded-full niuu:border niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.14em]',
                           wizard.credentialScope === option.value
-                            ? 'niuu-border-brand/50 niuu-bg-brand/12 niuu-text-brand'
-                            : 'niuu-border-border-subtle niuu-bg-bg-secondary niuu-text-text-muted',
-                          disabled && 'niuu-cursor-not-allowed niuu-opacity-40',
+                            ? 'niuu:border-brand/50 niuu:bg-brand/12 niuu:text-brand'
+                            : 'niuu:border-border-subtle niuu:bg-bg-secondary niuu:text-text-muted',
+                          disabled && 'niuu:cursor-not-allowed niuu:opacity-40',
                         )}
                       >
                         {option.label}
@@ -1027,8 +1021,8 @@ function RegisterWizard({
                 </div>
 
                 {wizard.credentialScope !== 'none' ? (
-                  <div className="niuu-space-y-1.5">
-                    <label className="niuu-block niuu-text-[12px] niuu-font-medium niuu-text-text-secondary">
+                  <div className="niuu:space-y-1.5">
+                    <label className="niuu:block niuu:text-[12px] niuu:font-medium niuu:text-text-secondary">
                       {wizard.credentialScope === 'tenant'
                         ? 'tenant credential'
                         : 'personal credential'}
@@ -1041,7 +1035,7 @@ function RegisterWizard({
                           credentialName: event.target.value,
                         }))
                       }
-                      className="niuu-w-full niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-3 niuu-py-2.5 niuu-text-[13px] niuu-text-text-primary"
+                      className="niuu:w-full niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2.5 niuu:text-[13px] niuu:text-text-primary"
                     >
                       <option value="">Select a credential…</option>
                       {availableCredentials.map((credential) => (
@@ -1050,7 +1044,7 @@ function RegisterWizard({
                         </option>
                       ))}
                     </select>
-                    <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-faint">
+                    <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
                       {availableCredentials.length > 0
                         ? `${availableCredentials.length} reusable credential${availableCredentials.length === 1 ? '' : 's'} available`
                         : 'No saved credentials in this scope yet.'}
@@ -1062,12 +1056,12 @@ function RegisterWizard({
           ) : null}
 
           {step === 3 ? (
-            <div className="niuu-space-y-4">
-              <div className="niuu-space-y-2">
-                <div className="niuu-text-[13px] niuu-font-medium niuu-text-text-secondary">
+            <div className="niuu:space-y-4">
+              <div className="niuu:space-y-2">
+                <div className="niuu:text-[13px] niuu:font-medium niuu:text-text-secondary">
                   scope
                 </div>
-                <div className="niuu-grid niuu-gap-3 sm:niuu-grid-cols-3">
+                <div className="niuu:grid niuu:gap-3 niuu:sm:grid-cols-3">
                   {SCOPE_OPTIONS.map((option) => {
                     const disabled =
                       (option.value === 'tenant' && !canCreateTenantScope) ||
@@ -1084,17 +1078,17 @@ function RegisterWizard({
                           }))
                         }
                         className={cn(
-                          'niuu-rounded-[12px] niuu-border niuu-bg-bg-tertiary niuu-p-4 niuu-text-left niuu-transition-colors',
+                          'niuu:rounded-[12px] niuu:border niuu:bg-bg-tertiary niuu:p-4 niuu:text-left niuu:transition-colors',
                           wizard.visibility === option.value
-                            ? 'niuu-border-brand niuu-bg-[#1d2832]'
-                            : 'niuu-border-transparent hover:niuu-border-white/10',
-                          disabled && 'niuu-cursor-not-allowed niuu-opacity-40',
+                            ? 'niuu:border-brand niuu:bg-[#1d2832]'
+                            : 'niuu:border-transparent niuu:hover:border-white/10',
+                          disabled && 'niuu:cursor-not-allowed niuu:opacity-40',
                         )}
                       >
-                        <div className="niuu-inline-flex niuu-rounded-md niuu-border niuu-border-brand/35 niuu-bg-brand/10 niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-brand">
+                        <div className="niuu:inline-flex niuu:rounded-md niuu:border niuu:border-brand/35 niuu:bg-brand/10 niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-brand">
                           {option.label}
                         </div>
-                        <p className="niuu-mt-2 niuu-text-[12px] niuu-leading-5 niuu-text-text-secondary">
+                        <p className="niuu:mt-2 niuu:text-[12px] niuu:leading-5 niuu:text-text-secondary">
                           {option.helper}
                         </p>
                       </button>
@@ -1103,44 +1097,44 @@ function RegisterWizard({
                 </div>
               </div>
 
-              <div className="niuu-rounded-[14px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4">
-                <dl className="niuu-grid niuu-grid-cols-[92px_minmax(0,1fr)] niuu-gap-x-4 niuu-gap-y-2 niuu-text-[13px]">
-                  <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+              <div className="niuu:rounded-[14px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
+                <dl className="niuu:grid niuu:grid-cols-[92px_minmax(0,1fr)] niuu:gap-x-4 niuu:gap-y-2 niuu:text-[13px]">
+                  <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
                     type
                   </dt>
-                  <dd className="niuu-text-text-primary">{kindMeta(wizard.kind).label}</dd>
+                  <dd className="niuu:text-text-primary">{kindMeta(wizard.kind).label}</dd>
 
-                  <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+                  <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
                     name
                   </dt>
-                  <dd className="niuu-text-text-primary">{wizard.name || '—'}</dd>
+                  <dd className="niuu:text-text-primary">{wizard.name || '—'}</dd>
 
-                  <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+                  <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
                     endpoint
                   </dt>
-                  <dd className="niuu-break-all niuu-text-text-primary">{wizard.baseUrl || '—'}</dd>
+                  <dd className="niuu:break-all niuu:text-text-primary">{wizard.baseUrl || '—'}</dd>
 
-                  <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+                  <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
                     auth
                   </dt>
-                  <dd className="niuu-text-text-primary">
+                  <dd className="niuu:text-text-primary">
                     {selectedAuth.label}
                     {wizard.credentialName ? ` • ${wizard.credentialName}` : ''}
                   </dd>
 
-                  <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+                  <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
                     scope
                   </dt>
                   <dd>
-                    <span className="niuu-inline-flex niuu-rounded-md niuu-border niuu-border-brand/35 niuu-bg-brand/10 niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-brand">
+                    <span className="niuu:inline-flex niuu:rounded-md niuu:border niuu:border-brand/35 niuu:bg-brand/10 niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-brand">
                       {SCOPE_OPTIONS.find((option) => option.value === wizard.visibility)?.label}
                     </span>
                   </dd>
 
-                  <dt className="niuu-font-mono niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-faint">
+                  <dt className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
                     owner
                   </dt>
-                  <dd className="niuu-text-text-primary">
+                  <dd className="niuu:text-text-primary">
                     {wizard.visibility === 'tenant'
                       ? (currentIdentity?.tenantId ?? 'current tenant')
                       : wizard.visibility === 'system'
@@ -1150,7 +1144,7 @@ function RegisterWizard({
                 </dl>
               </div>
 
-              <p className="niuu-font-mono niuu-text-[11px] niuu-leading-5 niuu-text-text-faint">
+              <p className="niuu:font-mono niuu:text-[11px] niuu:leading-5 niuu:text-text-faint">
                 Niuu will probe the endpoint, persist this entry in the registry, and notify
                 dependent modules. No traffic flows until probe succeeds.
               </p>
@@ -1158,20 +1152,20 @@ function RegisterWizard({
           ) : null}
 
           {createError ? (
-            <p className="niuu-text-sm niuu-text-rose-400">
+            <p className="niuu:text-sm niuu:text-rose-400">
               {createError instanceof Error ? createError.message : 'Failed to register instance.'}
             </p>
           ) : null}
 
-          <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-border-t niuu-border-border-subtle niuu-pt-4">
+          <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:border-t niuu:border-border-subtle niuu:pt-4">
             <WizardProgress current={step} />
 
-            <div className="niuu-flex niuu-items-center niuu-gap-2">
+            <div className="niuu:flex niuu:items-center niuu:gap-2">
               {step > 1 ? (
                 <button
                   type="button"
                   onClick={() => setStep((current) => Math.max(1, current - 1) as WizardStep)}
-                  className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-[12px] niuu-font-medium niuu-text-text-primary"
+                  className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-[12px] niuu:font-medium niuu:text-text-primary"
                 >
                   back
                 </button>
@@ -1182,7 +1176,7 @@ function RegisterWizard({
                   type="button"
                   disabled={(step === 2 && !stepTwoValid) || createMutationPending}
                   onClick={() => setStep((current) => Math.min(3, current + 1) as WizardStep)}
-                  className="niuu-rounded-lg niuu-border niuu-border-brand/45 niuu-bg-brand/12 niuu-px-3 niuu-py-2 niuu-text-[12px] niuu-font-medium niuu-text-brand disabled:niuu-opacity-40"
+                  className="niuu:rounded-lg niuu:border niuu:border-brand/45 niuu:bg-brand/12 niuu:px-3 niuu:py-2 niuu:text-[12px] niuu:font-medium niuu:text-brand niuu:disabled:opacity-40"
                 >
                   next
                 </button>
@@ -1191,7 +1185,7 @@ function RegisterWizard({
                   type="button"
                   disabled={!stepTwoValid || !stepThreeValid || createMutationPending}
                   onClick={onSubmit}
-                  className="niuu-rounded-lg niuu-border niuu-border-brand niuu-bg-brand niuu-px-3 niuu-py-2 niuu-text-[12px] niuu-font-medium niuu-text-bg-primary disabled:niuu-opacity-40"
+                  className="niuu:rounded-lg niuu:border niuu:border-brand niuu:bg-brand niuu:px-3 niuu:py-2 niuu:text-[12px] niuu:font-medium niuu:text-bg-primary niuu:disabled:opacity-40"
                 >
                   {createMutationPending ? 'registering…' : 'register'}
                 </button>
@@ -1247,7 +1241,7 @@ export function GuildPage() {
   const [kindFilter, setKindFilter] = useState<'all' | InstanceKind>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(true);
-  const [registerOpen, setRegisterOpen] = useState(false);
+  const [manualRegisterOpen, setManualRegisterOpen] = useState(false);
   const [wizard, setWizard] = useState<WizardState>(makeDefaultWizard);
   const [healthById, setHealthById] = useState<Record<string, HealthSnapshot>>({});
   const [healthHistory, setHealthHistory] = useState<Record<string, HealthSnapshot[]>>({});
@@ -1259,6 +1253,7 @@ export function GuildPage() {
   const resetWizard = useCallback(() => {
     setWizard(makeDefaultWizard());
   }, [makeDefaultWizard]);
+  const registerOpen = manualRegisterOpen || registerRequested;
 
   const instancesQuery = useQuery({
     queryKey: ['guild-instances'],
@@ -1293,12 +1288,12 @@ export function GuildPage() {
   const createMutation = useMutation({
     mutationFn: () =>
       client!.post<InstanceRecord>('/instances', {
-        kind: wizard.kind,
+        kind: effectiveWizard.kind,
         slug: slugifyName(wizard.name),
         name: wizard.name.trim(),
         baseUrl: wizard.baseUrl.trim(),
-        visibility: wizard.visibility,
-        tenantId: wizard.visibility === 'tenant' ? currentIdentity?.tenantId : undefined,
+        visibility: effectiveWizard.visibility,
+        tenantId: effectiveWizard.visibility === 'tenant' ? currentIdentity?.tenantId : undefined,
         config: {
           source: 'guild',
           authMethod: authMeta(wizard.authMethod).label,
@@ -1310,11 +1305,11 @@ export function GuildPage() {
                   scope: wizard.credentialScope,
                   name: wizard.credentialName,
                 },
-          capabilities: DEFAULT_CAPABILITIES[wizard.kind],
+          capabilities: DEFAULT_CAPABILITIES[effectiveWizard.kind],
         },
       }),
     onSuccess: async (instance) => {
-      setRegisterOpen(false);
+      setManualRegisterOpen(false);
       resetWizard();
       setSelectedId(instance.id);
       setDetailOpen(true);
@@ -1364,33 +1359,21 @@ export function GuildPage() {
           })),
     [catalogEntries],
   );
-
-  useEffect(() => {
-    setWizard((current) =>
-      current.visibility === 'user' && canCreateTenantScope
-        ? { ...current, visibility: 'tenant' }
-        : current,
-    );
-  }, [canCreateTenantScope]);
-
-  useEffect(() => {
-    if (registerOptions.length === 0) return;
-    setWizard((current) => {
-      if (registerOptions.some((option) => option.kind === current.kind)) return current;
-      return { ...current, kind: registerOptions[0]!.kind };
-    });
-  }, [registerOptions]);
-
-  useEffect(() => {
-    setRegisterOpen(registerRequested);
-    if (!registerRequested) {
-      resetWizard();
-    }
-  }, [registerRequested, resetWizard]);
+  const fallbackRegisterKind = registerOptions[0]?.kind ?? 'volundr';
+  const effectiveWizard = (() => {
+    const visibility =
+      wizard.visibility === 'user' && canCreateTenantScope ? 'tenant' : wizard.visibility;
+    const kind = registerOptions.some((option) => option.kind === wizard.kind)
+      ? wizard.kind
+      : fallbackRegisterKind;
+    return visibility === wizard.visibility && kind === wizard.kind
+      ? wizard
+      : { ...wizard, visibility, kind };
+  })();
 
   useEffect(() => {
     const handleOpenRegister = () => {
-      setRegisterOpen(true);
+      setManualRegisterOpen(true);
       const params = new URLSearchParams(window.location.search);
       params.set('register', '1');
       const query = params.toString();
@@ -1437,16 +1420,6 @@ export function GuildPage() {
     });
   }, [instances, kindFilter, search]);
 
-  useEffect(() => {
-    if (filteredInstances.length === 0) {
-      setSelectedId(null);
-      return;
-    }
-    if (!selectedId || !filteredInstances.some((instance) => instance.id === selectedId)) {
-      setSelectedId(filteredInstances[0]?.id ?? null);
-    }
-  }, [filteredInstances, selectedId]);
-
   const selectedInstance =
     filteredInstances.find((instance) => instance.id === selectedId) ??
     filteredInstances[0] ??
@@ -1462,8 +1435,8 @@ export function GuildPage() {
 
   if (!client) {
     return (
-      <div className="niuu-p-6">
-        <p className="niuu-text-sm niuu-text-text-secondary">
+      <div className="niuu:p-6">
+        <p className="niuu:text-sm niuu:text-text-secondary">
           The shared Niuu API is not configured, so Guild targets are unavailable.
         </p>
       </div>
@@ -1479,24 +1452,24 @@ export function GuildPage() {
   const connectionGroups = countByAuth(instances);
 
   return (
-    <div className="niuu-min-h-full niuu-bg-bg-primary niuu-p-6" data-testid="guild-page">
-      <div className="niuu-space-y-6">
+    <div className="niuu:min-h-full niuu:bg-bg-primary niuu:p-6" data-testid="guild-page">
+      <div className="niuu:space-y-6">
         {section === 'instances' ? (
-          <div className="niuu-space-y-5">
-            <section className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4">
-              <div className="niuu-flex niuu-flex-wrap niuu-items-center niuu-gap-3">
-                <label className="niuu-flex niuu-min-w-[260px] niuu-flex-1 niuu-items-center niuu-gap-2 niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-2.5 focus-within:niuu-border-brand/40">
-                  <Search className="niuu-h-4 niuu-w-4 niuu-text-text-muted" />
+          <div className="niuu:space-y-5">
+            <section className="niuu:rounded-[22px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
+              <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-3">
+                <label className="niuu:flex niuu:min-w-[260px] niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2.5 niuu:focus-within:border-brand/40">
+                  <Search className="niuu:h-4 niuu:w-4 niuu:text-text-muted" />
                   <input
                     type="search"
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
                     placeholder="filter by name, endpoint, tag, or auth…"
-                    className="niuu-min-w-0 niuu-flex-1 niuu-bg-transparent niuu-text-[13px] niuu-text-text-primary placeholder:niuu-text-text-muted focus:niuu-outline-none"
+                    className="niuu:min-w-0 niuu:flex-1 niuu:bg-transparent niuu:text-[13px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
                   />
                 </label>
 
-                <div className="niuu-flex niuu-flex-wrap niuu-items-center niuu-gap-2">
+                <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
                   {[
                     { value: 'all', label: 'all', rune: 'ᚹ' } as const,
                     ...filterOptions.map((option) => ({
@@ -1513,15 +1486,15 @@ export function GuildPage() {
                         type="button"
                         onClick={() => setKindFilter(option.value)}
                         className={cn(
-                          'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-full niuu-border niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-transition-colors',
+                          'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-full niuu:border niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:transition-colors',
                           active
-                            ? 'niuu-border-brand/35 niuu-bg-brand/12 niuu-text-brand'
-                            : 'niuu-border-border-subtle niuu-bg-bg-tertiary niuu-text-text-muted hover:niuu-text-text-primary',
+                            ? 'niuu:border-brand/35 niuu:bg-brand/12 niuu:text-brand'
+                            : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-muted niuu:hover:text-text-primary',
                         )}
                       >
-                        <Rune glyph={option.rune} size={13} className="niuu-text-current" />
+                        <Rune glyph={option.rune} size={13} className="niuu:text-current" />
                         <span>{option.label}</span>
-                        <span className="niuu-text-[10px] niuu-text-text-faint">{count}</span>
+                        <span className="niuu:text-[10px] niuu:text-text-faint">{count}</span>
                       </button>
                     );
                   })}
@@ -1544,17 +1517,17 @@ export function GuildPage() {
             {!instancesQuery.isLoading && !instancesQuery.error ? (
               <section
                 className={cn(
-                  'niuu-grid niuu-gap-5',
-                  detailOpen ? 'xl:niuu-grid-cols-[minmax(0,1.55fr)_360px]' : 'niuu-grid-cols-1',
+                  'niuu:grid niuu:gap-5',
+                  detailOpen ? 'niuu:xl:grid-cols-[minmax(0,1.55fr)_360px]' : 'niuu:grid-cols-1',
                 )}
               >
-                <div className="niuu-space-y-4">
+                <div className="niuu:space-y-4">
                   {filteredInstances.length === 0 ? (
-                    <div className="niuu-rounded-[22px] niuu-border niuu-border-dashed niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-8 niuu-text-sm niuu-text-text-secondary">
+                    <div className="niuu:rounded-[22px] niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-8 niuu:text-sm niuu:text-text-secondary">
                       No instances match the current filters.
                     </div>
                   ) : (
-                    <div className="niuu-grid niuu-gap-4 lg:niuu-grid-cols-2 2xl:niuu-grid-cols-3">
+                    <div className="niuu:grid niuu:gap-4 niuu:lg:grid-cols-2 niuu:2xl:grid-cols-3">
                       {filteredInstances.map((instance) => (
                         <InstanceCard
                           key={instance.id}
@@ -1588,8 +1561,8 @@ export function GuildPage() {
         ) : null}
 
         {section === 'access' ? (
-          <section className="niuu-space-y-5">
-            <div className="niuu-grid niuu-gap-4 lg:niuu-grid-cols-3">
+          <section className="niuu:space-y-5">
+            <div className="niuu:grid niuu:gap-4 niuu:lg:grid-cols-3">
               {[
                 {
                   title: 'Personal',
@@ -1609,96 +1582,96 @@ export function GuildPage() {
               ].map((card) => (
                 <div
                   key={card.title}
-                  className="niuu-rounded-[16px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4"
+                  className="niuu:rounded-[16px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4"
                 >
-                  <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3">
+                  <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
                     <div>
-                      <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                      <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
                         visibility
                       </div>
-                      <h2 className="niuu-mt-2 niuu-text-[15px] niuu-font-semibold niuu-text-text-primary">
+                      <h2 className="niuu:mt-2 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
                         {card.title}
                       </h2>
                     </div>
-                    <span className="niuu-rounded-full niuu-bg-bg-elevated niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-text-secondary">
+                    <span className="niuu:rounded-full niuu:bg-bg-elevated niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary">
                       {card.count}
                     </span>
                   </div>
-                  <p className="niuu-mt-2 niuu-text-[12px] niuu-leading-5 niuu-text-text-secondary">
+                  <p className="niuu:mt-2 niuu:text-[12px] niuu:leading-5 niuu:text-text-secondary">
                     {card.body}
                   </p>
                 </div>
               ))}
             </div>
 
-            <div className="niuu-rounded-[18px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4">
-              <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-4">
+            <div className="niuu:rounded-[18px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
+              <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-4">
                 <div>
-                  <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                  <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
                     current visibility
                   </div>
-                  <h2 className="niuu-mt-2 niuu-text-[15px] niuu-font-semibold niuu-text-text-primary">
+                  <h2 className="niuu:mt-2 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
                     Visible registry entries
                   </h2>
-                  <p className="niuu-mt-1 niuu-text-[12px] niuu-leading-5 niuu-text-text-secondary">
+                  <p className="niuu:mt-1 niuu:text-[12px] niuu:leading-5 niuu:text-text-secondary">
                     What the current identity can actually discover right now.
                   </p>
                 </div>
-                <span className="niuu-rounded-full niuu-bg-bg-elevated niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-text-secondary">
+                <span className="niuu:rounded-full niuu:bg-bg-elevated niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary">
                   {instances.length}
                 </span>
               </div>
-              <div className="niuu-mt-4 niuu-grid niuu-gap-4 md:niuu-grid-cols-2 xl:niuu-grid-cols-3">
+              <div className="niuu:mt-4 niuu:grid niuu:gap-4 niuu:md:grid-cols-2 niuu:xl:grid-cols-3">
                 {instances.map((instance) => {
                   const badge = scopeBadge(instance);
                   const ScopeIcon = badge.icon;
                   return (
                     <div
                       key={`access-${instance.id}`}
-                      className="niuu-flex niuu-flex-col niuu-gap-3 niuu-rounded-[16px] niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-p-4"
+                      className="niuu:flex niuu:flex-col niuu:gap-3 niuu:rounded-[16px] niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-4"
                     >
-                      <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3">
-                        <div className="niuu-min-w-0">
-                          <div className="niuu-truncate niuu-text-[14px] niuu-font-semibold niuu-text-text-primary">
+                      <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
+                        <div className="niuu:min-w-0">
+                          <div className="niuu:truncate niuu:text-[14px] niuu:font-semibold niuu:text-text-primary">
                             {instance.name}
                           </div>
-                          <div className="niuu-mt-1 niuu-truncate niuu-font-mono niuu-text-[10px] niuu-text-text-muted">
+                          <div className="niuu:mt-1 niuu:truncate niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
                             {kindMeta(instance.kind).label} · {instance.slug}
                           </div>
                         </div>
                         <span
                           className={cn(
-                            'niuu-inline-flex niuu-items-center niuu-gap-1.5 niuu-rounded-full niuu-border niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[9px] niuu-uppercase niuu-tracking-[0.12em]',
+                            'niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:border niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.12em]',
                             badge.tone,
                           )}
                         >
-                          <ScopeIcon className="niuu-h-3 niuu-w-3" />
+                          <ScopeIcon className="niuu:h-3 niuu:w-3" />
                           {badge.label}
                         </span>
                       </div>
-                      <div className="niuu-space-y-2">
+                      <div className="niuu:space-y-2">
                         <div>
-                          <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                          <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
                             endpoint
                           </div>
-                          <div className="niuu-mt-1 niuu-truncate niuu-font-mono niuu-text-[11px] niuu-text-text-secondary">
+                          <div className="niuu:mt-1 niuu:truncate niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
                             {instance.baseUrl}
                           </div>
                         </div>
-                        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
+                        <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
                           <div>
-                            <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                            <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
                               boundary
                             </div>
-                            <div className="niuu-mt-1 niuu-text-[12px] niuu-text-text-secondary">
+                            <div className="niuu:mt-1 niuu:text-[12px] niuu:text-text-secondary">
                               {scopeSummary(instance)}
                             </div>
                           </div>
                           <div>
-                            <div className="niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-faint">
+                            <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
                               auth
                             </div>
-                            <div className="niuu-mt-1 niuu-text-[12px] niuu-text-text-secondary">
+                            <div className="niuu:mt-1 niuu:text-[12px] niuu:text-text-secondary">
                               {inferAuth(instance)}
                             </div>
                           </div>
@@ -1713,55 +1686,55 @@ export function GuildPage() {
         ) : null}
 
         {section === 'connections' ? (
-          <section className="niuu-space-y-5">
-            <div className="niuu-grid niuu-gap-4 lg:niuu-grid-cols-3">
-              <div className="niuu-rounded-[20px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
-                <h2 className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+          <section className="niuu:space-y-5">
+            <div className="niuu:grid niuu:gap-4 niuu:lg:grid-cols-3">
+              <div className="niuu:rounded-[20px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
+                <h2 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
                   Endpoint health
                 </h2>
-                <p className="niuu-mt-2 niuu-text-[13px] niuu-leading-6 niuu-text-text-secondary">
+                <p className="niuu:mt-2 niuu:text-[13px] niuu:leading-6 niuu:text-text-secondary">
                   Live probes hang off the instance record so Guild can validate remote backends
                   before Ting or Volundr targets them.
                 </p>
               </div>
-              <div className="niuu-rounded-[20px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
-                <h2 className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+              <div className="niuu:rounded-[20px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
+                <h2 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
                   Credential attachment
                 </h2>
-                <p className="niuu-mt-2 niuu-text-[13px] niuu-leading-6 niuu-text-text-secondary">
+                <p className="niuu:mt-2 niuu:text-[13px] niuu:leading-6 niuu:text-text-secondary">
                   Registration now binds endpoints to personal or tenant credentials without moving
                   secret values into the registry itself.
                 </p>
               </div>
-              <div className="niuu-rounded-[20px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
-                <h2 className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+              <div className="niuu:rounded-[20px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
+                <h2 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
                   Future connection policy
                 </h2>
-                <p className="niuu-mt-2 niuu-text-[13px] niuu-leading-6 niuu-text-text-secondary">
+                <p className="niuu:mt-2 niuu:text-[13px] niuu:leading-6 niuu:text-text-secondary">
                   This is where rotation state, policy checks, and transport defaults can grow next.
                 </p>
               </div>
             </div>
 
-            <div className="niuu-rounded-[22px] niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-5">
-              <div className="niuu-flex niuu-items-center niuu-justify-between">
+            <div className="niuu:rounded-[22px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
+              <div className="niuu:flex niuu:items-center niuu:justify-between">
                 <div>
-                  <h2 className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+                  <h2 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
                     Auth surface
                   </h2>
-                  <p className="niuu-text-[13px] niuu-text-text-secondary">
+                  <p className="niuu:text-[13px] niuu:text-text-secondary">
                     Top auth patterns currently used by visible instances.
                   </p>
                 </div>
               </div>
-              <div className="niuu-mt-4 niuu-grid niuu-gap-3 lg:niuu-grid-cols-2">
+              <div className="niuu:mt-4 niuu:grid niuu:gap-3 niuu:lg:grid-cols-2">
                 {connectionGroups.map((group) => (
                   <div
                     key={group.label}
-                    className="niuu-flex niuu-items-center niuu-justify-between niuu-rounded-xl niuu-bg-bg-elevated niuu-p-3"
+                    className="niuu:flex niuu:items-center niuu:justify-between niuu:rounded-xl niuu:bg-bg-elevated niuu:p-3"
                   >
-                    <span className="niuu-text-[13px] niuu-text-text-primary">{group.label}</span>
-                    <span className="niuu-rounded-full niuu-bg-bg-secondary niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary">
+                    <span className="niuu:text-[13px] niuu:text-text-primary">{group.label}</span>
+                    <span className="niuu:rounded-full niuu:bg-bg-secondary niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
                       {group.count}
                     </span>
                   </div>
@@ -1773,9 +1746,10 @@ export function GuildPage() {
       </div>
 
       <RegisterWizard
+        key={registerOpen ? 'register-open' : 'register-closed'}
         open={registerOpen}
         onOpenChange={(open) => {
-          setRegisterOpen(open);
+          setManualRegisterOpen(open);
           const params = new URLSearchParams(window.location.search);
           if (open) {
             params.set('register', '1');
@@ -1800,7 +1774,7 @@ export function GuildPage() {
         currentIdentity={currentIdentity}
         canCreateSystemScope={canCreateSystemScope}
         canCreateTenantScope={canCreateTenantScope}
-        wizard={wizard}
+        wizard={effectiveWizard}
         setWizard={setWizard}
         userCredentials={userCredentialsQuery.data ?? []}
         tenantCredentials={tenantCredentialsQuery.data ?? []}

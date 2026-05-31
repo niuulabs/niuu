@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
 from ravn.ports.discovery import PeerCallback
@@ -90,22 +91,18 @@ class CompositeDiscoveryAdapter:
     async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
         """Delegate handshake to the first backend that succeeds."""
         for backend in self._backends:
-            try:
+            with suppress(Exception):
                 peer = await backend.handshake(candidate)  # type: ignore[attr-defined]
                 if peer is not None:
                     return peer
-            except Exception:
-                pass
         return None
 
     def peers(self) -> dict[str, RavnPeer]:
         """Return the merged verified peer table from all backends."""
         merged: dict[str, RavnPeer] = {}
         for backend in self._backends:
-            try:
+            with suppress(Exception):
                 merged.update(backend.peers())  # type: ignore[attr-defined]
-            except Exception:
-                pass
         return merged
 
     async def own_identity(self) -> RavnIdentity:
@@ -128,10 +125,8 @@ class CompositeDiscoveryAdapter:
             if count == 0:
                 # First backend to see this peer — propagate
                 for cb in self._on_join:
-                    try:
+                    with suppress(Exception):
                         cb(peer)
-                    except Exception:
-                        pass
 
         return on_join
 
@@ -142,10 +137,8 @@ class CompositeDiscoveryAdapter:
                 self._peer_backend_count.pop(peer.peer_id, None)
                 # Last backend dropped this peer — propagate leave
                 for cb in self._on_leave:
-                    try:
+                    with suppress(Exception):
                         cb(peer)
-                    except Exception:
-                        pass
             else:
                 self._peer_backend_count[peer.peer_id] = count - 1
 

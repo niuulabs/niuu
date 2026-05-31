@@ -359,7 +359,7 @@ class TestListSagas:
         app = FastAPI()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
-        app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
         app.state.settings = _dev_settings()
         client = TestClient(app)
         resp = client.get("/api/v1/ting/sagas")
@@ -665,7 +665,7 @@ class TestAssignWorkflow:
         app = FastAPI()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
-        app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
         app.state.settings = _dev_settings()
         app.state.workflow_repo = InMemoryWorkflowRepository([workflow])
         client = TestClient(app)
@@ -782,7 +782,7 @@ class TestSpawnPlanSession:
         app = FastAPI()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
-        app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
         app.state.settings = _dev_settings()
         app.state.settings.planner.finalize_prompt = "Finish the structure"
         client = TestClient(app)
@@ -796,7 +796,7 @@ class TestSpawnPlanSession:
         app = FastAPI()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
-        app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
         mock_volundr = AsyncMock()
         mock_volundr.list_integration_ids.return_value = []
         mock_volundr.spawn_session.return_value = MagicMock(
@@ -859,7 +859,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
-        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         recorder = _DispatchRecorder()
         app.state.dispatch_service = recorder
@@ -902,7 +902,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
-        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         app.state.dispatch_service = _DispatchRecorder(should_fail=True)
         client = TestClient(app)
@@ -957,7 +957,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
-        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
 
@@ -978,8 +978,8 @@ class TestCommitSaga:
     def test_rejects_empty_phases_and_missing_tracker(self) -> None:
         app = FastAPI()
         app.include_router(create_sagas_router())
-        app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
-        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
         app.dependency_overrides[resolve_trackers] = lambda: [MockTracker()]
@@ -1019,8 +1019,8 @@ class TestCommitSaga:
         app = FastAPI()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingTracker()]
-        app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
-        app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
 

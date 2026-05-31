@@ -178,7 +178,7 @@ describe('SagasPage', () => {
     mockNavigate.mockClear();
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { name: /Auth Rewrite COMPLETE NIU-500/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Auth Rewrite.*COMPLETE.*NIU-500/i }));
     expect(mockNavigate).toHaveBeenCalled();
   });
 

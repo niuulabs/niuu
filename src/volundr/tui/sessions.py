@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -338,10 +339,8 @@ class SessionsPage(Widget):
             return
         if value:
             box.add_class("visible")
-            try:
+            with suppress(Exception):
                 self.query_one("#sessions-search-input", Input).focus()
-            except Exception:
-                pass
         else:
             box.remove_class("visible")
 

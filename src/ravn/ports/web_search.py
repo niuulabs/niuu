@@ -29,4 +29,4 @@ class WebSearchPort(ABC):
         Returns:
             Ordered list of search results (may be fewer than num_results).
         """
-        ...
+        raise NotImplementedError

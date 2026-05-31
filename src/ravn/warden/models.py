@@ -92,20 +92,6 @@ class WardenRuntime(BaseModel):
     last_dream: WardenDreamSummary | None = None
 
 
-class WardenSupervisor(BaseModel):
-    """Persisted deployment install metadata for a warden."""
-
-    installed: bool = False
-    service_label: str = ""
-    service_file: str = ""
-    config_file: str = ""
-    start_command: str = ""
-    stdout_log: str = ""
-    stderr_log: str = ""
-    last_install_at: datetime | None = None
-    observation: WardenObservation = Field(default_factory=lambda: WardenObservation())
-
-
 class WardenObservedField(BaseModel):
     """One backend-specific observed status field."""
 
@@ -121,6 +107,20 @@ class WardenObservation(BaseModel):
     source: str = ""
     checked_at: datetime | None = None
     fields: list[WardenObservedField] = Field(default_factory=list)
+
+
+class WardenSupervisor(BaseModel):
+    """Persisted deployment install metadata for a warden."""
+
+    installed: bool = False
+    service_label: str = ""
+    service_file: str = ""
+    config_file: str = ""
+    start_command: str = ""
+    stdout_log: str = ""
+    stderr_log: str = ""
+    last_install_at: datetime | None = None
+    observation: WardenObservation = Field(default_factory=WardenObservation)
 
 
 class WardenOperator(BaseModel):

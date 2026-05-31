@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +33,7 @@ ADMIN_TABS = ("Users", "Tenants", "Stats")
 
 def _render_bar(value: int, maximum: int, width: int = 25) -> str:
     """Render an ASCII progress bar."""
+
     if maximum <= 0:
         return f"[{TEXT_MUTED}]{'░' * width}[/]"
     filled = min(width, int(value / maximum * width))
@@ -288,10 +290,8 @@ class AdminPage(Widget):
             return
         if value:
             box.add_class("visible")
-            try:
+            with suppress(Exception):
                 self.query_one("#admin-search-input", Input).focus()
-            except Exception:
-                pass
         else:
             box.remove_class("visible")
 
@@ -313,6 +313,7 @@ class AdminPage(Widget):
                 return max(0, len(self._filtered_tenants()) - 1)
             case _:
                 return 0
+        raise AssertionError("Unreachable _max_cursor fallthrough")
 
     def action_cursor_down(self) -> None:
         if self.cursor < self._max_cursor():
@@ -338,3 +339,4 @@ def _user_status_style(status: str) -> tuple[str, str]:
             return ("◐", ACCENT_AMBER)
         case _:
             return ("○", TEXT_MUTED)
+    raise AssertionError("Unreachable _user_status_style fallthrough")

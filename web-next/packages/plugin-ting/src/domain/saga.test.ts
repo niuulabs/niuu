@@ -14,7 +14,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const validSaga = {
-  id: '00000000-0000-0000-0000-000000000001',
+  id: '00000000-0000-4000-8000-000000000001',
   trackerId: 'LIN-001',
   trackerType: 'linear',
   slug: 'auth-rewrite',
@@ -28,8 +28,8 @@ const validSaga = {
 };
 
 const validRun = {
-  id: '00000000-0000-0000-0000-000000000002',
-  phaseId: '00000000-0000-0000-0000-000000000010',
+  id: '00000000-0000-4000-8000-000000000002',
+  phaseId: '00000000-0000-4000-8000-000000000010',
   trackerId: 'LIN-002',
   name: 'Implement JWT refresh',
   description: 'Add silent token refresh to the auth flow.',
@@ -49,8 +49,8 @@ const validRun = {
 };
 
 const validPhase = {
-  id: '00000000-0000-0000-0000-000000000010',
-  sagaId: '00000000-0000-0000-0000-000000000001',
+  id: '00000000-0000-4000-8000-000000000010',
+  sagaId: '00000000-0000-4000-8000-000000000001',
   trackerId: 'LIN-M1',
   number: 1,
   name: 'Phase 1: Foundation',
@@ -185,8 +185,8 @@ describe('phaseSchema', () => {
 
 describe('confidenceEventSchema', () => {
   const validEvent = {
-    id: '00000000-0000-0000-0000-000000000099',
-    runId: '00000000-0000-0000-0000-000000000002',
+    id: '00000000-0000-4000-8000-000000000099',
+    runId: '00000000-0000-4000-8000-000000000002',
     eventType: 'ci_pass' as const,
     delta: 5,
     scoreAfter: 85,

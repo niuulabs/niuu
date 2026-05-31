@@ -309,6 +309,46 @@ describe('LaunchWizard step components', () => {
     expect(screen.getByText('searching…')).toBeInTheDocument();
   });
 
+  it('covers source fallback inputs and the blank workspace message', () => {
+    const update = vi.fn();
+    const { rerender } = render(
+      <SourceStep
+        form={makeForm()}
+        update={update}
+        repos={[]}
+        branchOptions={[]}
+        trackerResults={[]}
+        trackerLoading={false}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('github.com/niuulabs/volundr'), {
+      target: { value: 'github.com/niuulabs/custom' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('main'), {
+      target: { value: 'release/1.0.0' },
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      repo: 'github.com/niuulabs/custom',
+      workspaceId: '',
+    });
+    expect(update).toHaveBeenCalledWith({ branch: 'release/1.0.0' });
+
+    rerender(
+      <SourceStep
+        form={makeForm({ sourcetype: 'blank' })}
+        update={update}
+        repos={[]}
+        branchOptions={[]}
+        trackerResults={[]}
+        trackerLoading={false}
+      />,
+    );
+
+    expect(screen.getByText('Pod will boot with empty /workspace')).toBeInTheDocument();
+  });
+
   it('handles runtime preset saving, yaml mode, and custom MCP configuration', async () => {
     const update = vi.fn();
     const onApplyPreset = vi.fn();
@@ -458,6 +498,94 @@ describe('LaunchWizard step components', () => {
     expect(update).toHaveBeenCalledWith({ selectedIntegrations: [] });
   });
 
+  it('covers runtime error banners and add flows for unchecked access options', () => {
+    const update = vi.fn();
+
+    render(
+      <RuntimeStep
+        form={makeForm({ mem: '32Gi', gpu: '2' })}
+        update={update}
+        models={MODELS}
+        workspaces={WORKSPACES}
+        credentials={CREDENTIALS}
+        integrations={INTEGRATIONS}
+        clusterResources={CLUSTER_RESOURCES}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={DEFINITIONS}
+        targets={TARGETS}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    expect(screen.getByText(/Exceeds available capacity \(16Gi\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Exceeds available capacity \(1\)/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('GITHUB_TOKEN'));
+    fireEvent.click(screen.getByLabelText('Github App · prod-github'));
+
+    expect(update).toHaveBeenCalledWith({ selectedCredentials: ['GITHUB_TOKEN'] });
+    expect(update).toHaveBeenCalledWith({ selectedIntegrations: ['int-1'] });
+  });
+
+  it('keeps custom MCP env empty when the key is blank', () => {
+    const update = vi.fn();
+
+    render(
+      <RuntimeStep
+        form={makeForm()}
+        update={update}
+        models={MODELS}
+        workspaces={WORKSPACES}
+        credentials={[]}
+        integrations={[]}
+        clusterResources={CLUSTER_RESOURCES}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={DEFINITIONS}
+        targets={TARGETS}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('show advanced'));
+    fireEvent.click(screen.getByText('add custom server'));
+    fireEvent.change(screen.getByPlaceholderText('filesystem'), {
+      target: { value: 'blank-env-test' },
+    });
+    fireEvent.click(screen.getByText('add'));
+
+    expect(screen.queryByRole('button', { name: 'remove' })).not.toBeInTheDocument();
+  });
+
+  it('renders confirm fallbacks for blank sources, unknown integrations, and prompt-free sessions', () => {
+    render(
+      <ConfirmStep
+        form={makeForm({
+          sourcetype: 'blank',
+          gpu: '0',
+          trackerIssue: null,
+          selectedIntegrations: ['missing-integration'],
+        })}
+        templates={[]}
+        models={{}}
+        integrations={[]}
+        sessionDefinitions={[]}
+        targets={[]}
+      />,
+    );
+
+    expect(screen.getByText('blank')).toBeInTheDocument();
+    expect(screen.getByText('none')).toBeInTheDocument();
+    expect(screen.getByText('No credentials attached')).toBeInTheDocument();
+    expect(screen.getByText('missing-integration')).toBeInTheDocument();
+    expect(screen.queryByText('Prompt overrides')).not.toBeInTheDocument();
+  });
+
   it('parses yaml settings back into form patches when switching to form view', async () => {
     const update = vi.fn();
     render(
@@ -509,5 +637,81 @@ describe('LaunchWizard step components', () => {
         }),
       ),
     );
+  });
+
+  it('covers runtime fallback branches for empty presets, plain inputs, http MCP, and YAML errors', async () => {
+    const update = vi.fn();
+    const { rerender } = render(
+      <RuntimeStep
+        form={makeForm({
+          model: '',
+          yamlMode: true,
+          yamlContent: 'invalid: [',
+        })}
+        update={update}
+        models={{}}
+        workspaces={[]}
+        credentials={[]}
+        integrations={[]}
+        clusterResources={null}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={[
+          { key: 'skuld-custom', displayName: 'Custom', description: 'custom runtime', labels: [] },
+        ]}
+        targets={[]}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    expect(screen.queryByText('Preset')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('sonnet-primary')).toBeInTheDocument();
+    expect(screen.queryByTestId('workspace-select')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('forge-target-select')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('show advanced'));
+    fireEvent.click(screen.getByText('form view'));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/unexpected end of the stream within a flow collection/i),
+      ).toBeInTheDocument(),
+    );
+
+    rerender(
+      <RuntimeStep
+        form={makeForm({ model: '' })}
+        update={update}
+        models={{}}
+        workspaces={[]}
+        credentials={[]}
+        integrations={[]}
+        clusterResources={null}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={[
+          { key: 'skuld-custom', displayName: 'Custom', description: 'custom runtime', labels: [] },
+        ]}
+        targets={[]}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('add custom server'));
+    fireEvent.change(screen.getByDisplayValue('stdio'), { target: { value: 'http' } });
+    fireEvent.change(screen.getByPlaceholderText('filesystem'), {
+      target: { value: 'http-files' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('http://localhost:3000/sse'), {
+      target: { value: 'https://mcp.example.test/http' },
+    });
+    fireEvent.click(screen.getByText('add server'));
+
+    expect(update).toHaveBeenCalledWith({
+      mcpServers: [{ name: 'http-files', type: 'http', url: 'https://mcp.example.test/http' }],
+    });
   });
 });

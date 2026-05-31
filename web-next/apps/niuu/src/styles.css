@@ -1,3 +1,6 @@
+@import 'tailwindcss' prefix(niuu);
+@config "../tailwind.config.ts";
+
 /* Reset browser defaults */
 *,
 *::before,
@@ -28,6 +31,3 @@ select {
   color: inherit;
   line-height: inherit;
 }
-
-@tailwind components;
-@tailwind utilities;

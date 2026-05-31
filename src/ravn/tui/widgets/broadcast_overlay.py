@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import textual.screen as textual_screen
 from textual.app import ComposeResult
 from textual.containers import Container
-from textual.screen import ModalScreen
 from textual.widgets import Input, RichLog, Static
+
+ModalScreen = textual_screen.ModalScreen
 
 
 class BroadcastOverlay(ModalScreen[None]):

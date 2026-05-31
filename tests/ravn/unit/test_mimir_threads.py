@@ -27,6 +27,7 @@ Tests cover:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -661,10 +662,8 @@ async def test_assign_thread_owner_lock_file_removed_on_conflict(tmp_path: Path)
     adapter = _make_adapter(tmp_path)
     await adapter.create_thread(title="Conflict Lock Thread")
     await adapter.assign_thread_owner("threads/conflict-lock-thread", "agent-1")
-    try:
+    with suppress(ThreadOwnershipError):
         await adapter.assign_thread_owner("threads/conflict-lock-thread", "agent-2")
-    except ThreadOwnershipError:
-        pass
     lock_path = tmp_path / "mimir" / "threads" / "conflict-lock-thread.lock"
     assert not lock_path.exists()
 

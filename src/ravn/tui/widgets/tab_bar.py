@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+
 from textual.app import ComposeResult
 from textual.message import Message
 from textual.reactive import reactive
@@ -63,7 +65,7 @@ class TabBar(Widget):
             return
         self._active = tab_id
         for _, tid in _TABS:
-            try:
+            with suppress(Exception):
                 item = self.query_one(f"#_tbtab_{tid}", _TabItem)
                 if tid == tab_id:
                     item.add_class("_tab--active")
@@ -71,8 +73,6 @@ class TabBar(Widget):
                 else:
                     item.remove_class("_tab--active")
                     item.add_class("_tab")
-            except Exception:
-                pass
 
 
 class _TabItem(Static):

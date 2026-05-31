@@ -48,6 +48,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import suppress
 
 from sleipnir.adapters._subscriber_support import (
     DEFAULT_RING_BUFFER_DEPTH,
@@ -184,10 +185,8 @@ class CLICommandTransport(SleipnirSubscriber):
     # ------------------------------------------------------------------
 
     def _remove_subscription(self, sub: _BaseSubscription) -> None:
-        try:
+        with suppress(ValueError):
             self._subscriptions.remove(sub)
-        except ValueError:
-            pass
 
     def _build_argv(self, event_json: str) -> list[str]:
         """Return the argv list for the subprocess."""

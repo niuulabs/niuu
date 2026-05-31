@@ -14,6 +14,8 @@ from niuu.domain.models import CacheEntry as _CacheEntry  # noqa: F401 — re-ex
 from volundr.domain.models import TrackerConnectionStatus, TrackerIssue
 from volundr.domain.ports import IssueTrackerProvider
 
+__all__ = ["LinearAdapter", "_CacheEntry"]
+
 logger = logging.getLogger(__name__)
 
 # --- GraphQL queries ---
@@ -126,6 +128,8 @@ query IssueTeam($id: String!) {
 
 # Keep backward-compatible alias
 LinearAPIError = GraphQLError
+
+__all__ = ["LinearAdapter", "_CacheEntry", "LinearAPIError"]
 
 
 class LinearAdapter(IssueTrackerProvider):

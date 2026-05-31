@@ -51,7 +51,7 @@ class VolundrPlugin(ServicePlugin):
         return ServiceDefinition(
             name="volundr",
             description="AI-native development platform",
-            factory=lambda: _VolundrStub(),
+            factory=_VolundrStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8080,

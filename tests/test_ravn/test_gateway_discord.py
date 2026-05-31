@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -434,6 +435,7 @@ async def test_handle_dispatch_ready_logs(caplog):
 @pytest.mark.asyncio
 async def test_connect_and_listen_identifies_on_hello(monkeypatch):
     """The adapter should send IDENTIFY after receiving HELLO."""
+
     sent_messages: list[str] = []
 
     class FakeWS:
@@ -473,10 +475,8 @@ async def test_connect_and_listen_identifies_on_hello(monkeypatch):
     with patch("ravn.adapters.channels.gateway_discord.websockets") as mock_ws:
         mock_ws.connect.return_value = fake_ws
 
-        try:
+        with suppress(asyncio.CancelledError, TimeoutError):
             await asyncio.wait_for(adapter._connect_and_listen(), timeout=0.5)
-        except (asyncio.CancelledError, TimeoutError):
-            pass
 
     # At least one IDENTIFY message should have been sent
     identify_msgs = [m for m in sent_messages if json.loads(m).get("op") == _OP_IDENTIFY]

@@ -24,7 +24,7 @@ describe('ConnectionTypeBadge', () => {
   });
 
   it('applies custom className', () => {
-    render(<ConnectionTypeBadge connectionType="api" className="niuu-ml-2" />);
-    expect(screen.getByTestId('connection-type-badge').className).toContain('niuu-ml-2');
+    render(<ConnectionTypeBadge connectionType="api" className="niuu:ml-2" />);
+    expect(screen.getByTestId('connection-type-badge').className).toContain('niuu:ml-2');
   });
 });

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widget import Widget
@@ -67,13 +69,11 @@ class MetricCard(Widget):
 
     def set_value(self, value: str) -> None:
         self._value = value
-        try:
+        with suppress(Exception):
             icon_part = f"{self._icon} " if self._icon else ""
             self.query_one("#metric-icon-value", Static).update(
                 f"[bold {self._color}]{icon_part}{value}[/]"
             )
-        except Exception:
-            pass
 
 
 class MetricRow(Horizontal):

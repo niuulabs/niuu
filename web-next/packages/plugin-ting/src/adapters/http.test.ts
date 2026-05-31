@@ -9,6 +9,9 @@ import {
   buildTrackerHttpAdapter,
   buildDispatchBusHttpAdapter,
   buildWorkflowHttpAdapter,
+  buildResearchHttpAdapter,
+  buildTingSettingsHttpAdapter,
+  buildTingAuditLogHttpAdapter,
 } from './http';
 import type {
   ITingService,
@@ -16,6 +19,9 @@ import type {
   ITingSessionService,
   ITrackerBrowserService,
   IDispatchBus,
+  IResearchService,
+  ITingSettingsService,
+  IAuditLogService,
   CommitSagaRequest,
 } from '../ports';
 import type { Workflow } from '../domain/workflow';
@@ -222,6 +228,88 @@ const rawWorkflow = {
   ],
 };
 
+const rawResearchCampaign = {
+  id: 'campaign-1',
+  slug: 'research/council-human-v1',
+  name: 'Council Human Research',
+  owner_id: 'user-1',
+  workflow_id: rawWorkflow.id,
+  workflow_version: '1.0.0',
+  workflow_name: 'Knowledge Flow',
+  session_id: 'sess-200',
+  session_name: 'council-human',
+  status: 'running',
+  active_stage_id: 'stage-review',
+  stage_state: [
+    {
+      stage_id: 'stage-review',
+      label: 'Review',
+      status: 'active',
+      started_at: '2026-05-10T10:00:00Z',
+      completed_at: null,
+      reason: null,
+    },
+  ],
+  metadata: { topic: 'council' },
+  created_at: '2026-05-10T09:00:00Z',
+  updated_at: '2026-05-10T12:00:00Z',
+  last_activity_at: '2026-05-10T12:05:00Z',
+  completed_at: null,
+};
+
+const rawArtifact = {
+  path: 'reports/final.md',
+  title: 'Final Report',
+  updated_at: '2026-05-10T12:00:00Z',
+  kind: 'report',
+  publish_state: 'published',
+  source_ids: ['src-1'],
+  summary: 'A concise recommendation.',
+};
+
+const rawFlockConfig = {
+  flock_name: 'Valhalla',
+  default_base_branch: 'main',
+  default_tracker_type: 'linear',
+  default_repos: ['niuulabs/volundr'],
+  max_active_sagas: 12,
+  auto_create_milestones: true,
+  updated_at: '2026-05-10T12:00:00Z',
+};
+
+const rawDispatchDefaults = {
+  confidence_threshold: 72,
+  max_concurrent_runs: 4,
+  auto_continue: true,
+  batch_size: 6,
+  retry_policy: {
+    max_retries: 3,
+    retry_delay_seconds: 45,
+    escalate_on_exhaustion: true,
+  },
+  updated_at: '2026-05-10T12:00:00Z',
+};
+
+const rawNotificationSettings = {
+  channel: 'slack',
+  on_run_pending_approval: true,
+  on_run_merged: true,
+  on_run_failed: false,
+  on_saga_complete: true,
+  on_dispatcher_error: true,
+  webhook_url: 'https://hooks.example/slack',
+  updated_at: '2026-05-10T12:00:00Z',
+};
+
+const rawAuditEntry = {
+  id: 'audit-1',
+  kind: 'dispatch.approved',
+  summary: 'Approved queue items',
+  actor: 'alice',
+  payload: { issueCount: 2 },
+  created_at: '2026-05-10T12:00:00Z',
+};
+
 // ---------------------------------------------------------------------------
 // buildTingHttpAdapter
 // ---------------------------------------------------------------------------
@@ -420,6 +508,113 @@ describe('buildTingHttpAdapter', () => {
     });
   });
 
+  describe('other saga actions', () => {
+    it('defaults plain run messages to kind=message and helpRequest=null', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue([
+        {
+          id: 'msg-plain',
+          session_id: 'sess-plain',
+          content: 'A regular note',
+          sender: 'user',
+          created_at: '2026-05-11T12:10:00Z',
+        },
+      ]);
+
+      const [message] = await buildTingHttpAdapter(client).listRunMessages('run-plain');
+
+      expect(message).toMatchObject({
+        id: 'msg-plain',
+        kind: 'message',
+        helpRequest: null,
+      });
+    });
+
+    it('sends null target_peer_id when a reply is not directed', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({
+        message_id: 'msg-user-2',
+        run_id: 'run-2',
+        session_id: 'sess-plain',
+        content: 'Undirected note',
+        sender: 'user',
+        created_at: '2026-05-11T12:15:00Z',
+      });
+
+      await buildTingHttpAdapter(client).sendRunMessage('run-2', 'Undirected note');
+
+      expect(client.post).toHaveBeenCalledWith('/runs/run-2/message', {
+        content: 'Undirected note',
+        target_peer_id: null,
+      });
+    });
+
+    it('creates sagas and fills server fallbacks when optional fields are missing', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({
+        id: 'saga-min',
+        tracker_id: 'TRK-1',
+        name: 'My New Saga',
+        repos: ['niuulabs/volundr'],
+        feature_branch: 'feat/my-new-saga',
+        status: 'draft',
+        created_at: '2026-05-10T09:00:00Z',
+        run_count: 2,
+      });
+
+      const saga = await buildTingHttpAdapter(client).createSaga('spec', 'niuulabs/volundr');
+
+      expect(client.post).toHaveBeenCalledWith('/sagas', {
+        spec: 'spec',
+        repo: 'niuulabs/volundr',
+      });
+      expect(saga).toMatchObject({
+        trackerType: 'linear',
+        slug: 'my-new-saga',
+        baseBranch: 'main',
+        confidence: 0,
+        phaseSummary: { total: 2, completed: 0 },
+      });
+    });
+
+    it('decomposes specs into phases', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue([rawPhase]);
+
+      const phases = await buildTingHttpAdapter(client).decompose('spec', 'repo');
+
+      expect(client.post).toHaveBeenCalledWith('/sagas/decompose', { spec: 'spec', repo: 'repo' });
+      expect(phases[0]?.runs[0]?.name).toBe(rawRun.name);
+    });
+
+    it('assigns workflow ids including null to clear an assignment', async () => {
+      const client = makeClient();
+      client.put.mockResolvedValue(rawSaga);
+
+      await buildTingHttpAdapter(client).assignWorkflow('saga 1', null);
+
+      expect(client.put).toHaveBeenCalledWith('/sagas/saga%201/workflow', {
+        workflow_id: null,
+      });
+    });
+
+    it('assigns saga targets and maps the resulting saga', async () => {
+      const client = makeClient();
+      client.put.mockResolvedValue({
+        ...rawSaga,
+        instance_id: 'cluster-2',
+        instance_name: 'Cluster Two',
+      });
+
+      const saga = await buildTingHttpAdapter(client).assignTarget('saga-1', 'cluster-2');
+
+      expect(client.put).toHaveBeenCalledWith('/sagas/saga-1/target', {
+        instance_id: 'cluster-2',
+      });
+      expect(saga.instanceName).toBe('Cluster Two');
+    });
+  });
+
   describe('interface compliance', () => {
     it('satisfies ITingService', () => {
       const client = makeClient();
@@ -552,6 +747,189 @@ describe('buildWorkflowHttpAdapter', () => {
     );
     expect(result.sessionId).toBe('sess-123');
   });
+
+  it('returns null when a workflow lookup fails', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValue(new Error('404'));
+
+    const workflow = await buildWorkflowHttpAdapter(client).getWorkflow('missing workflow');
+
+    expect(client.get).toHaveBeenCalledWith('/workflows/missing%20workflow');
+    expect(workflow).toBeNull();
+  });
+
+  it('gets a workflow and preserves explicit edge control points', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawWorkflow,
+      edges: [
+        {
+          id: 'edge-explicit',
+          source: 'stage-1',
+          target: 'mimir-1',
+          cp1: { x: 10, y: 20 },
+          cp2: { x: -10, y: -20 },
+        },
+      ],
+    });
+
+    const workflow = await buildWorkflowHttpAdapter(client).getWorkflow(rawWorkflow.id);
+
+    expect(client.get).toHaveBeenCalledWith(`/workflows/${encodeURIComponent(rawWorkflow.id)}`);
+    expect(workflow?.edges[0]).toEqual({
+      id: 'edge-explicit',
+      source: 'stage-1',
+      target: 'mimir-1',
+      cp1: { x: 10, y: 20 },
+      cp2: { x: -10, y: -20 },
+    });
+  });
+
+  it('updates existing workflows with normalized defaults in the request body', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawWorkflow);
+    client.put.mockResolvedValue(rawWorkflow);
+
+    await buildWorkflowHttpAdapter(client).saveWorkflow({
+      id: rawWorkflow.id,
+      name: rawWorkflow.name,
+      description: undefined,
+      version: undefined,
+      scope: undefined,
+      ownerId: rawWorkflow.owner_id,
+      nodes: rawWorkflow.nodes,
+      edges: rawWorkflow.edges,
+      tags: undefined,
+      resourceBindings: undefined,
+    } as Workflow);
+
+    expect(client.put).toHaveBeenCalledWith(`/workflows/${encodeURIComponent(rawWorkflow.id)}`, {
+      name: rawWorkflow.name,
+      description: '',
+      version: 'draft',
+      scope: 'user',
+      tags: [],
+      nodes: rawWorkflow.nodes,
+      edges: rawWorkflow.edges,
+      resourceBindings: [],
+    });
+  });
+
+  it('creates workflows when the existence probe returns null instead of throwing', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(null);
+    client.post.mockResolvedValue(rawWorkflow);
+
+    await buildWorkflowHttpAdapter(client).saveWorkflow({
+      id: rawWorkflow.id,
+      name: rawWorkflow.name,
+      description: rawWorkflow.description,
+      version: rawWorkflow.version,
+      scope: rawWorkflow.scope,
+      ownerId: rawWorkflow.owner_id,
+      nodes: rawWorkflow.nodes,
+      edges: rawWorkflow.edges,
+      resourceBindings: rawWorkflow.resourceBindings,
+    } as Workflow);
+
+    expect(client.post).toHaveBeenCalledWith(
+      '/workflows',
+      expect.objectContaining({
+        name: rawWorkflow.name,
+      }),
+    );
+  });
+
+  it('maps snake_case resource bindings and vertical default bezier controls', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        ...rawWorkflow,
+        description: '',
+        version: '',
+        tags: undefined,
+        nodes: [
+          {
+            id: 'trigger-1',
+            kind: 'trigger',
+            label: 'Dispatch run',
+            source: 'ting dispatch',
+            position: { x: 100, y: 100 },
+          },
+          { id: 'stage-1', kind: 'stage', label: 'Run flock', position: { x: 100, y: 360 } },
+        ],
+        edges: [{ id: 'edge-1', source: 'trigger-1', target: 'stage-1' }],
+        resourceBindings: undefined,
+        resource_bindings: [
+          {
+            id: 'binding-snake',
+            resourceNodeId: 'mimir-1',
+            targetType: 'stage',
+            targetId: 'stage-1',
+            access: 'read',
+            readPriority: 2,
+          },
+        ],
+      },
+    ]);
+
+    const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
+
+    expect(workflow.description).toBeUndefined();
+    expect(workflow.version).toBeUndefined();
+    expect(workflow.tags).toEqual([]);
+    expect(workflow.resourceBindings).toEqual([
+      {
+        id: 'binding-snake',
+        resourceNodeId: 'mimir-1',
+        targetType: 'stage',
+        targetId: 'stage-1',
+        access: 'read',
+        readPriority: 2,
+      },
+    ]);
+    expect(workflow.edges[0]).toMatchObject({
+      cp1: { x: 0, y: 92 },
+      cp2: { x: 0, y: -92 },
+    });
+  });
+
+  it('deletes workflows by encoded id', async () => {
+    const client = makeClient();
+    client.delete.mockResolvedValue(undefined);
+
+    await buildWorkflowHttpAdapter(client).deleteWorkflow('workflow 1');
+
+    expect(client.delete).toHaveBeenCalledWith('/workflows/workflow%201');
+  });
+
+  it('maps snake_case workflow launch responses', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      workflow_id: rawWorkflow.id,
+      workflow_name: rawWorkflow.name,
+      slug: 'knowledge-flow',
+      session_id: 'sess-999',
+      session_name: 'knowledge-flow-2',
+      status: 'queued',
+      cluster_name: 'bifrost',
+    });
+
+    const result = await buildWorkflowHttpAdapter(client).launchWorkflow(rawWorkflow.id, {
+      prompt: 'Launch',
+      sessionName: 'knowledge-flow-2',
+      repo: 'https://github.com/niuulabs/volundr.git',
+      branch: 'feat/launch',
+    });
+
+    expect(result).toMatchObject({
+      workflowId: rawWorkflow.id,
+      workflowName: rawWorkflow.name,
+      sessionId: 'sess-999',
+      sessionName: 'knowledge-flow-2',
+      clusterName: 'bifrost',
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -612,6 +990,33 @@ describe('buildDispatcherHttpAdapter', () => {
     const log = await buildDispatcherHttpAdapter(client).getLog();
     expect(client.get).toHaveBeenCalledWith('/dispatcher/log');
     expect(log).toEqual(['log line 1', 'log line 2']);
+  });
+
+  it('lists dispatcher activity logs with the requested limit', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      events: [
+        {
+          id: 'evt-1',
+          event: 'dispatch.started',
+          data: { issueId: 'issue-1' },
+          owner_id: 'alice',
+          timestamp: '2026-05-10T12:00:00Z',
+        },
+      ],
+      total: 1,
+    });
+
+    const [event] = await buildDispatcherHttpAdapter(client).getActivityLog(25);
+
+    expect(client.get).toHaveBeenCalledWith('/dispatcher/log?limit=25');
+    expect(event).toEqual({
+      id: 'evt-1',
+      event: 'dispatch.started',
+      data: { issueId: 'issue-1' },
+      ownerId: 'alice',
+      timestamp: '2026-05-10T12:00:00Z',
+    });
   });
 
   it('satisfies IDispatcherService', () => {
@@ -696,6 +1101,15 @@ describe('buildTrackerHttpAdapter', () => {
     expect(project?.milestoneCount).toBe(3);
     expect(project?.issueCount).toBe(12);
     expect(project?.slug).toBe('my-project');
+  });
+
+  it('defaults project slug to an empty string when the API omits it', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([{ ...rawProject, slug: undefined }]);
+
+    const [project] = await buildTrackerHttpAdapter(client).listProjects();
+
+    expect(project?.slug).toBe('');
   });
 
   it('calls GET /tracker/projects/:id', async () => {
@@ -863,6 +1277,81 @@ describe('buildDispatchBusHttpAdapter', () => {
     expect(result?.clusterName).toBe(rawDispatchApprovalResult.cluster_name);
   });
 
+  it('uses instanceId fallbacks and omits optional approve fields when absent', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue([
+      {
+        ...rawDispatchApprovalResult,
+        cluster_name: 'Guild Beta',
+      },
+    ]);
+
+    await buildDispatchBusHttpAdapter(client).approve(
+      [
+        {
+          sagaId: 'saga-1',
+          issueId: 'issue-1',
+          repo: 'niuulabs/volundr',
+          instanceId: 'instance-9',
+          workflowId: 'workflow-1',
+        },
+      ],
+      { instanceId: 'instance-default' },
+    );
+
+    expect(client.post).toHaveBeenCalledWith('/dispatch/approve', {
+      items: [
+        {
+          saga_id: 'saga-1',
+          issue_id: 'issue-1',
+          repo: 'niuulabs/volundr',
+          connection_id: 'instance-9',
+          workflow_id: 'workflow-1',
+        },
+      ],
+      connection_id: 'instance-default',
+    });
+  });
+
+  it('omits optional approval fields when neither items nor options provide them', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue([rawDispatchApprovalResult]);
+
+    await buildDispatchBusHttpAdapter(client).approve([
+      {
+        sagaId: 'saga-1',
+        issueId: 'issue-1',
+        repo: 'niuulabs/volundr',
+      },
+    ]);
+
+    expect(client.post).toHaveBeenCalledWith('/dispatch/approve', {
+      items: [
+        {
+          saga_id: 'saga-1',
+          issue_id: 'issue-1',
+          repo: 'niuulabs/volundr',
+        },
+      ],
+    });
+  });
+
+  it('dispatches individual runs and dispatch batches', async () => {
+    const client = makeClient();
+    client.post
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ queued: 2, skipped: 1, failed: 0 });
+
+    await buildDispatchBusHttpAdapter(client).dispatch('run 1');
+    const result = await buildDispatchBusHttpAdapter(client).dispatchBatch(['run-1', 'run-2']);
+
+    expect(client.post).toHaveBeenNthCalledWith(1, '/dispatch/run%201', {});
+    expect(client.post).toHaveBeenNthCalledWith(2, '/dispatch/batch', {
+      run_ids: ['run-1', 'run-2'],
+    });
+    expect(result).toEqual({ queued: 2, skipped: 1, failed: 0 });
+  });
+
   it('satisfies IDispatchBus', () => {
     const client = makeClient();
     const svc: IDispatchBus = buildDispatchBusHttpAdapter(client);
@@ -871,5 +1360,368 @@ describe('buildDispatchBusHttpAdapter', () => {
     expect(typeof svc.approve).toBe('function');
     expect(typeof svc.dispatch).toBe('function');
     expect(typeof svc.dispatchBatch).toBe('function');
+  });
+});
+
+describe('buildResearchHttpAdapter', () => {
+  it('lists campaigns and maps snake_case campaign fields', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([rawResearchCampaign]);
+
+    const [campaign] = await buildResearchHttpAdapter(client).listCampaigns();
+
+    expect(client.get).toHaveBeenCalledWith('/campaigns');
+    expect(campaign).toMatchObject({
+      ownerId: 'user-1',
+      workflowId: rawWorkflow.id,
+      workflowVersion: '1.0.0',
+      workflowName: 'Knowledge Flow',
+      sessionId: 'sess-200',
+      sessionName: 'council-human',
+      activeStageId: 'stage-review',
+      createdAt: '2026-05-10T09:00:00Z',
+      updatedAt: '2026-05-10T12:00:00Z',
+    });
+    expect(campaign.stageState[0]).toEqual({
+      stageId: 'stage-review',
+      label: 'Review',
+      status: 'active',
+      startedAt: '2026-05-10T10:00:00Z',
+      completedAt: null,
+      reason: null,
+    });
+  });
+
+  it('gets campaign details and maps artifacts plus canonical_artifacts', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawResearchCampaign,
+      artifacts: [rawArtifact],
+      canonical_artifacts: { brief: 'reports/final.md' },
+    });
+
+    const detail = await buildResearchHttpAdapter(client).getCampaign('research/council-human-v1');
+
+    expect(client.get).toHaveBeenCalledWith('/campaigns/research%2Fcouncil-human-v1');
+    expect(detail?.artifacts[0]).toEqual({
+      path: 'reports/final.md',
+      title: 'Final Report',
+      updatedAt: '2026-05-10T12:00:00Z',
+      kind: 'report',
+      publishState: 'published',
+      sourceIds: ['src-1'],
+      summary: 'A concise recommendation.',
+    });
+    expect(detail?.canonicalArtifacts).toEqual({ brief: 'reports/final.md' });
+  });
+
+  it('returns null when a campaign lookup fails', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValue(new Error('404'));
+
+    const detail = await buildResearchHttpAdapter(client).getCampaign('missing');
+
+    expect(detail).toBeNull();
+  });
+
+  it('creates, updates, and deletes campaigns through the expected endpoints', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawResearchCampaign);
+    client.patch.mockResolvedValue({ ...rawResearchCampaign, status: 'complete' });
+    client.delete.mockResolvedValue(undefined);
+
+    const service = buildResearchHttpAdapter(client);
+    await service.createCampaign({
+      question: 'Which rollout should we pick?',
+      name: 'Council Human Research',
+      workflowId: rawWorkflow.id,
+      repo: 'https://github.com/niuulabs/volundr.git',
+      branch: 'feat/research',
+      mode: 'direct',
+      audience: 'Leads',
+      deliverable: 'Recommendation memo',
+      success: 'Clear decision',
+      constraints: 'One day',
+      monitoringCadence: 'daily',
+    });
+    const updated = await service.updateCampaign('research/council-human-v1', {
+      name: 'Updated Name',
+      status: 'complete',
+      metadata: { approved: true },
+    });
+    await service.deleteCampaign('research/council-human-v1');
+
+    expect(client.post).toHaveBeenCalledWith('/campaigns', {
+      question: 'Which rollout should we pick?',
+      name: 'Council Human Research',
+      workflowId: rawWorkflow.id,
+      repo: 'https://github.com/niuulabs/volundr.git',
+      branch: 'feat/research',
+      mode: 'direct',
+      audience: 'Leads',
+      deliverable: 'Recommendation memo',
+      success: 'Clear decision',
+      constraints: 'One day',
+      monitoringCadence: 'daily',
+    });
+    expect(client.patch).toHaveBeenCalledWith('/campaigns/research%2Fcouncil-human-v1', {
+      name: 'Updated Name',
+      status: 'complete',
+      metadata: { approved: true },
+    });
+    expect(client.delete).toHaveBeenCalledWith('/campaigns/research%2Fcouncil-human-v1');
+    expect(updated.status).toBe('complete');
+  });
+
+  it('lists artifacts and fills artifact defaults when optional fields are absent', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        path: 'notes/scratch.md',
+        title: 'Scratch Notes',
+        updatedAt: '2026-05-10T11:30:00Z',
+      },
+    ]);
+
+    const [artifact] = await buildResearchHttpAdapter(client).listArtifacts(
+      'research/council-human-v1',
+    );
+
+    expect(client.get).toHaveBeenCalledWith('/campaigns/research%2Fcouncil-human-v1/artifacts');
+    expect(artifact).toEqual({
+      path: 'notes/scratch.md',
+      title: 'Scratch Notes',
+      updatedAt: '2026-05-10T11:30:00Z',
+      kind: undefined,
+      publishState: 'unknown',
+      sourceIds: [],
+      summary: null,
+    });
+  });
+
+  it('gets artifact details and returns null when an artifact is missing', async () => {
+    const client = makeClient();
+    client.get
+      .mockResolvedValueOnce({
+        ...rawArtifact,
+        content: '# Final Report',
+      })
+      .mockRejectedValueOnce(new Error('404'));
+
+    const service = buildResearchHttpAdapter(client);
+    const found = await service.getArtifact('research/council-human-v1', 'reports/final.md');
+    const missing = await service.getArtifact('research/council-human-v1', 'missing.md');
+
+    expect(client.get).toHaveBeenNthCalledWith(
+      1,
+      '/campaigns/research%2Fcouncil-human-v1/artifact?path=reports%2Ffinal.md',
+    );
+    expect(found?.content).toBe('# Final Report');
+    expect(missing).toBeNull();
+  });
+
+  it('satisfies IResearchService', () => {
+    const client = makeClient();
+    const svc: IResearchService = buildResearchHttpAdapter(client);
+    expect(typeof svc.listCampaigns).toBe('function');
+    expect(typeof svc.getCampaign).toBe('function');
+    expect(typeof svc.createCampaign).toBe('function');
+    expect(typeof svc.updateCampaign).toBe('function');
+    expect(typeof svc.deleteCampaign).toBe('function');
+    expect(typeof svc.listArtifacts).toBe('function');
+    expect(typeof svc.getArtifact).toBe('function');
+  });
+});
+
+describe('buildTingSettingsHttpAdapter', () => {
+  it('gets and updates flock config with snake_case fields', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawFlockConfig);
+    client.patch.mockResolvedValue(rawFlockConfig);
+
+    const service = buildTingSettingsHttpAdapter(client);
+    const config = await service.getFlockConfig();
+    await service.updateFlockConfig({
+      flockName: 'Valhalla',
+      defaultBaseBranch: 'develop',
+      defaultTrackerType: 'jira',
+      defaultRepos: ['niuulabs/volundr', 'niuulabs/mimir'],
+      maxActiveSagas: 20,
+      autoCreateMilestones: false,
+    });
+
+    expect(client.get).toHaveBeenCalledWith('/settings/flock');
+    expect(config).toEqual({
+      flockName: 'Valhalla',
+      defaultBaseBranch: 'main',
+      defaultTrackerType: 'linear',
+      defaultRepos: ['niuulabs/volundr'],
+      maxActiveSagas: 12,
+      autoCreateMilestones: true,
+      updatedAt: '2026-05-10T12:00:00Z',
+    });
+    expect(client.patch).toHaveBeenCalledWith('/settings/flock', {
+      flock_name: 'Valhalla',
+      default_base_branch: 'develop',
+      default_tracker_type: 'jira',
+      default_repos: ['niuulabs/volundr', 'niuulabs/mimir'],
+      max_active_sagas: 20,
+      auto_create_milestones: false,
+    });
+  });
+
+  it('omits flock patch fields that are left undefined', async () => {
+    const client = makeClient();
+    client.patch.mockResolvedValue(rawFlockConfig);
+
+    await buildTingSettingsHttpAdapter(client).updateFlockConfig({});
+
+    expect(client.patch).toHaveBeenCalledWith('/settings/flock', {});
+  });
+
+  it('gets and updates dispatch defaults including retry policy fallbacks', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawDispatchDefaults);
+    client.patch.mockResolvedValue({
+      ...rawDispatchDefaults,
+      quiet_hours: '23:00-06:00 UTC',
+      escalate_after: '45m',
+    });
+
+    const service = buildTingSettingsHttpAdapter(client);
+    const defaults = await service.getDispatchDefaults();
+    const updated = await service.updateDispatchDefaults({
+      confidenceThreshold: 80,
+      maxConcurrentRuns: 6,
+      autoContinue: false,
+      batchSize: 10,
+      retryPolicy: {
+        maxRetries: 5,
+        retryDelaySeconds: 60,
+        escalateOnExhaustion: false,
+      },
+      quietHours: '23:00-06:00 UTC',
+      escalateAfter: '45m',
+    });
+
+    expect(defaults.quietHours).toBe('22:00–07:00 UTC');
+    expect(defaults.escalateAfter).toBe('30m');
+    expect(client.patch).toHaveBeenCalledWith('/settings/dispatch', {
+      confidence_threshold: 80,
+      max_concurrent_runs: 6,
+      auto_continue: false,
+      batch_size: 10,
+      retry_policy: {
+        max_retries: 5,
+        retry_delay_seconds: 60,
+        escalate_on_exhaustion: false,
+      },
+      quiet_hours: '23:00-06:00 UTC',
+      escalate_after: '45m',
+    });
+    expect(updated.quietHours).toBe('23:00-06:00 UTC');
+    expect(updated.escalateAfter).toBe('45m');
+  });
+
+  it('omits dispatch default patch fields that are left undefined', async () => {
+    const client = makeClient();
+    client.patch.mockResolvedValue(rawDispatchDefaults);
+
+    await buildTingSettingsHttpAdapter(client).updateDispatchDefaults({});
+
+    expect(client.patch).toHaveBeenCalledWith('/settings/dispatch', {});
+  });
+
+  it('gets and updates notification settings', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawNotificationSettings);
+    client.patch.mockResolvedValue({ ...rawNotificationSettings, webhook_url: null });
+
+    const service = buildTingSettingsHttpAdapter(client);
+    const settings = await service.getNotificationSettings();
+    const updated = await service.updateNotificationSettings({
+      channel: 'email',
+      onRunPendingApproval: false,
+      onRunMerged: false,
+      onRunFailed: true,
+      onSagaComplete: false,
+      onDispatcherError: false,
+      webhookUrl: null,
+    });
+
+    expect(settings.webhookUrl).toBe('https://hooks.example/slack');
+    expect(client.patch).toHaveBeenCalledWith('/settings/notifications', {
+      channel: 'email',
+      on_run_pending_approval: false,
+      on_run_merged: false,
+      on_run_failed: true,
+      on_saga_complete: false,
+      on_dispatcher_error: false,
+      webhook_url: null,
+    });
+    expect(updated.webhookUrl).toBeNull();
+  });
+
+  it('omits notification patch fields that are left undefined', async () => {
+    const client = makeClient();
+    client.patch.mockResolvedValue(rawNotificationSettings);
+
+    await buildTingSettingsHttpAdapter(client).updateNotificationSettings({});
+
+    expect(client.patch).toHaveBeenCalledWith('/settings/notifications', {});
+  });
+
+  it('satisfies ITingSettingsService', () => {
+    const client = makeClient();
+    const svc: ITingSettingsService = buildTingSettingsHttpAdapter(client);
+    expect(typeof svc.getFlockConfig).toBe('function');
+    expect(typeof svc.updateFlockConfig).toBe('function');
+    expect(typeof svc.getDispatchDefaults).toBe('function');
+    expect(typeof svc.updateDispatchDefaults).toBe('function');
+    expect(typeof svc.getNotificationSettings).toBe('function');
+    expect(typeof svc.updateNotificationSettings).toBe('function');
+  });
+});
+
+describe('buildTingAuditLogHttpAdapter', () => {
+  it('lists audit entries with encoded filters', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([rawAuditEntry]);
+
+    const [entry] = await buildTingAuditLogHttpAdapter(client).listAuditEntries({
+      kinds: ['dispatch.approved', 'run.failed'],
+      actor: 'alice',
+      since: '2026-05-01T00:00:00Z',
+      until: '2026-05-31T00:00:00Z',
+      limit: 20,
+    });
+
+    expect(client.get).toHaveBeenCalledWith(
+      '/audit?kinds=dispatch.approved%2Crun.failed&actor=alice&since=2026-05-01T00%3A00%3A00Z&until=2026-05-31T00%3A00%3A00Z&limit=20',
+    );
+    expect(entry).toEqual({
+      id: 'audit-1',
+      kind: 'dispatch.approved',
+      summary: 'Approved queue items',
+      actor: 'alice',
+      payload: { issueCount: 2 },
+      createdAt: '2026-05-10T12:00:00Z',
+    });
+  });
+
+  it('lists audit entries without filters when none are provided', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([]);
+
+    const entries = await buildTingAuditLogHttpAdapter(client).listAuditEntries();
+
+    expect(client.get).toHaveBeenCalledWith('/audit');
+    expect(entries).toEqual([]);
+  });
+
+  it('satisfies IAuditLogService', () => {
+    const client = makeClient();
+    const svc: IAuditLogService = buildTingAuditLogHttpAdapter(client);
+    expect(typeof svc.listAuditEntries).toBe('function');
   });
 });

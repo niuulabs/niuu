@@ -28,15 +28,17 @@ from pydantic_settings import (
 from bifrost.config import BifrostConfig
 from niuu.config import (
     CorsConfig,
-    GitHubConfig,  # noqa: F401
-    GitHubInstance,  # noqa: F401
-    GitLabConfig,  # noqa: F401
-    GitLabInstance,  # noqa: F401
+    GitHubConfig,
+    GitHubInstance,
+    GitLabConfig,
+    GitLabInstance,
     HttpAuthAdapterConfig,
     InstanceRegistryConfig,
 )
 from ravn.config import PersonaSourceConfig
 from volundr.domain.models import IntegrationType, SecretType
+
+__all__ = ["GitHubInstance", "GitLabInstance"]
 
 
 # Config file search paths (in order of priority).

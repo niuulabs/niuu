@@ -11,4 +11,4 @@ class NotificationSubscriptionRepository(ABC):
     @abstractmethod
     async def find_owner_by_telegram_chat_id(self, chat_id: str) -> str | None:
         """Return the owner_id for a telegram subscription matching *chat_id*, or None."""
-        ...
+        raise NotImplementedError

@@ -27,6 +27,7 @@ import re
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -305,10 +306,8 @@ class CronJobStore:
             os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, self._path)
         except Exception:
-            try:
+            with suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
             raise
 
 

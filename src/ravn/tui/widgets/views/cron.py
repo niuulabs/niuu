@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Any
 
 from textual.app import ComposeResult
@@ -58,15 +59,13 @@ class CronView(Widget):
         if not self._connection:
             self._render()
             return
-        try:
+        with suppress(Exception):
             import httpx
 
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(f"{self._connection.base_url}/cron")
                 if resp.status_code == 200:
                     self._jobs = resp.json()
-        except Exception:
-            pass
         self._render()
 
     def _render(self) -> None:

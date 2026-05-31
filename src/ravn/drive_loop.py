@@ -18,6 +18,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -54,9 +55,7 @@ try:
     from sleipnir.domain.catalog import (
         ravn_task_completed as _sleipnir_task_completed,
     )
-    from sleipnir.ports.events import SleipnirPublisher as _SleipnirPublisher
 except ImportError:
-    _SleipnirPublisher = None  # type: ignore[assignment,misc]
     _sleipnir_task_completed = None  # type: ignore[assignment]
     _sleipnir_mimir_dream_completed = None  # type: ignore[assignment]
 
@@ -1056,10 +1055,8 @@ class DriveLoop:
             self._load_journal()
         elif self._journal_path.exists():
             logger.info("drive_loop: discarding stale journal (use --resume to restore)")
-            try:
+            with suppress(OSError):
                 self._journal_path.unlink()
-            except OSError:
-                pass
 
         # Connect Skuld channel eagerly so the ravn appears in the browser
         # sidebar immediately.  set_persona_config() has already enriched the
@@ -1093,7 +1090,7 @@ class DriveLoop:
         try:
             await trigger.run(self.enqueue)
         except asyncio.CancelledError:
-            pass
+            return
         except Exception as exc:
             logger.error("drive_loop: trigger %r raised unexpected error: %s", trigger.name, exc)
 

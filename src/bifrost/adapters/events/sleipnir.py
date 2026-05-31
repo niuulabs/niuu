@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import suppress
 from dataclasses import asdict
 
 from bifrost.ports.events import (
@@ -54,10 +55,8 @@ class SleipnirEventEmitter(CostEventEmitter):
             return True
         # Close stale connection before reconnecting to avoid resource leaks.
         if self._connection is not None:
-            try:
+            with suppress(Exception):
                 await self._connection.close()
-            except Exception:
-                pass
             self._connection = None
             self._channel = None
             self._exchange = None

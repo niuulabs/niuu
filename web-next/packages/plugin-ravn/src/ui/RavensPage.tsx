@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { BudgetBar, PersonaAvatar, StateDot, cn, ErrorState, LoadingState } from '@niuulabs/ui';
 import type { BudgetState, PersonaRole } from '@niuulabs/domain';
 import type { Ravn } from '../domain/ravn';
@@ -170,6 +170,8 @@ export function RavensPage() {
 
   const ravnList = useMemo(() => ravens ?? [], [ravens]);
   const budgets = useRavnBudgets(ravnList.map((ravn) => ravn.id));
+  const resolvedSelectedRavnId =
+    ravnList.find((ravn) => ravn.id === selectedRavnId)?.id ?? pickDefaultRavn(ravnList);
 
   const sessionCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -178,17 +180,6 @@ export function RavensPage() {
     }
     return counts;
   }, [sessions]);
-
-  useEffect(() => {
-    if (ravnList.length === 0) {
-      setSelectedRavnId(null);
-      return;
-    }
-
-    if (!selectedRavnId || !ravnList.some((ravn) => ravn.id === selectedRavnId)) {
-      setSelectedRavnId(pickDefaultRavn(ravnList));
-    }
-  }, [ravnList, selectedRavnId]);
 
   const filteredRavens = useMemo(
     () => ravnList.filter((ravn) => matchesQuery(ravn, searchQuery)),
@@ -202,7 +193,10 @@ export function RavensPage() {
   }, [filteredRavens, groupBy]);
 
   const selectedRavn =
-    ravnList.find((ravn) => ravn.id === selectedRavnId) ?? filteredRavens[0] ?? ravnList[0] ?? null;
+    ravnList.find((ravn) => ravn.id === resolvedSelectedRavnId) ??
+    filteredRavens[0] ??
+    ravnList[0] ??
+    null;
 
   const activeCount = ravnList.filter((ravn) => ravn.status === 'active').length;
   const failedCount = ravnList.filter((ravn) => ravn.status === 'failed').length;

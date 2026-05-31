@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from typing import Any
 
 from ting.ports.channel_resolver import ChannelResolverPort
@@ -94,10 +95,8 @@ class NotificationService:
             self._queue = None
         if self._task is not None:
             self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+            with suppress(asyncio.CancelledError):
+                _ = await self._task
             self._task = None
         logger.info("Notification service stopped")
 
@@ -155,6 +154,7 @@ class NotificationService:
                 return self._map_run_feedback_requested(event.data)
             case _:
                 return None
+        return None
 
     def _map_run_state_changed(self, event: TingEvent) -> Notification | None:
         """Map a run.state_changed event to a notification."""

@@ -8,12 +8,12 @@ import {
 import type { RegistryMount } from '../domain/registry';
 
 const INPUT_CLS =
-  'niuu-w-full niuu-py-2 niuu-px-3 niuu-bg-bg-secondary niuu-border niuu-border-solid niuu-border-border ' +
-  'niuu-rounded-md niuu-text-text-primary niuu-font-sans niuu-text-sm niuu-outline-none niuu-box-border ' +
-  'focus:niuu-border-brand';
+  'niuu:w-full niuu:py-2 niuu:px-3 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border ' +
+  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:outline-none niuu-box-border ' +
+  'niuu:focus:border-brand';
 
 const LABEL_CLS =
-  'niuu-text-[10px] niuu-uppercase niuu-tracking-wider niuu-text-text-muted niuu-block niuu-mb-1';
+  'niuu:text-[10px] niuu:uppercase niuu:tracking-wider niuu:text-text-muted niuu:block niuu:mb-1';
 
 const EMPTY_REGISTRY_MOUNT: Omit<RegistryMount, 'id'> = {
   name: '',
@@ -62,14 +62,14 @@ function RegistryMountEditor({
   onReset,
 }: RegistryMountEditorProps) {
   return (
-    <section className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
-      <div className="niuu-flex niuu-items-baseline niuu-justify-between niuu-mb-4">
-        <h3 className="niuu-m-0 niuu-text-base niuu-text-text-primary">{heading}</h3>
-        <span className="niuu-text-xs niuu-font-mono niuu-text-text-muted">
+    <section className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg">
+      <div className="niuu:flex niuu:items-baseline niuu:justify-between niuu:mb-4">
+        <h3 className="niuu:m-0 niuu:text-base niuu:text-text-primary">{heading}</h3>
+        <span className="niuu:text-xs niuu:font-mono niuu:text-text-muted">
           registry-backed mount metadata
         </span>
       </div>
-      <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
+      <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
         <label>
           <span className={LABEL_CLS}>Name</span>
           <input
@@ -193,8 +193,8 @@ function RegistryMountEditor({
             <option value="down">down</option>
           </select>
         </label>
-        <label className="niuu-flex niuu-items-end">
-          <span className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
+        <label className="niuu:flex niuu:items-end">
+          <span className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary">
             <input
               type="checkbox"
               checked={mount.enabled}
@@ -204,26 +204,26 @@ function RegistryMountEditor({
           </span>
         </label>
       </div>
-      <label className="niuu-block niuu-mt-3">
+      <label className="niuu:block niuu:mt-3">
         <span className={LABEL_CLS}>Description</span>
         <textarea
-          className={`${INPUT_CLS} niuu-min-h-[5rem] niuu-resize-y`}
+          className={`${INPUT_CLS} niuu:min-h-[5rem] niuu:resize-y`}
           value={mount.desc}
           onChange={(event) => onChange({ ...mount, desc: event.currentTarget.value })}
         />
       </label>
-      <label className="niuu-block niuu-mt-3">
+      <label className="niuu:block niuu:mt-3">
         <span className={LABEL_CLS}>Health message</span>
         <textarea
-          className={`${INPUT_CLS} niuu-min-h-[3rem] niuu-resize-y`}
+          className={`${INPUT_CLS} niuu:min-h-[3rem] niuu:resize-y`}
           value={mount.healthMessage}
           onChange={(event) => onChange({ ...mount, healthMessage: event.currentTarget.value })}
         />
       </label>
-      <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-mt-4">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:mt-4">
         <button
           type="button"
-          className="niuu-py-1.5 niuu-px-3 niuu-bg-brand niuu-border niuu-border-solid niuu-border-brand niuu-rounded-md niuu-text-bg-primary niuu-font-sans niuu-text-xs niuu-font-medium niuu-cursor-pointer"
+          className="niuu:py-1.5 niuu:px-3 niuu:bg-brand niuu:border niuu:border-solid niuu:border-brand niuu:rounded-md niuu:text-bg-primary niuu:font-sans niuu:text-xs niuu:font-medium niuu:cursor-pointer"
           onClick={onSubmit}
           disabled={isPending}
         >
@@ -232,7 +232,7 @@ function RegistryMountEditor({
         {onReset && (
           <button
             type="button"
-            className="niuu-py-1.5 niuu-px-3 niuu-bg-bg-secondary niuu-border niuu-border-solid niuu-border-border niuu-rounded-md niuu-text-text-primary niuu-font-sans niuu-text-xs niuu-cursor-pointer"
+            className="niuu:py-1.5 niuu:px-3 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-xs niuu:cursor-pointer"
             onClick={onReset}
             disabled={isPending}
           >
@@ -259,13 +259,13 @@ export function RegistryPage() {
   );
 
   if (isLoading) {
-    return <div className="niuu-p-6 niuu-text-sm niuu-text-text-muted">loading registry…</div>;
+    return <div className="niuu:p-6 niuu:text-sm niuu:text-text-muted">loading registry…</div>;
   }
 
   if (error) {
     return (
-      <div className="niuu-p-6">
-        <div className="niuu-text-xs niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-4 niuu-py-2">
+      <div className="niuu:p-6">
+        <div className="niuu:text-xs niuu:text-critical niuu:bg-critical-bg niuu:border niuu:border-critical-bo niuu:rounded-sm niuu:px-4 niuu:py-2">
           {error instanceof Error ? error.message : String(error)}
         </div>
       </div>
@@ -273,49 +273,49 @@ export function RegistryPage() {
   }
 
   return (
-    <div className="niuu-p-6 niuu-overflow-y-auto niuu-h-full" data-testid="registry-page">
-      <div className="niuu-flex niuu-items-baseline niuu-justify-between niuu-mb-6">
+    <div className="niuu:p-6 niuu:overflow-y-auto niuu:h-full" data-testid="registry-page">
+      <div className="niuu:flex niuu:items-baseline niuu:justify-between niuu:mb-6">
         <div>
-          <h2 className="niuu-m-0 niuu-text-xl niuu-text-text-primary">Registry</h2>
-          <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-secondary">
+          <h2 className="niuu:m-0 niuu:text-xl niuu:text-text-primary">Registry</h2>
+          <p className="niuu:m-0 niuu:mt-1 niuu:text-sm niuu:text-text-secondary">
             Known Mimir backends, separate from the mounts currently attached to a live runtime.
           </p>
         </div>
-        <div className="niuu-font-mono niuu-text-xs niuu-text-text-muted">
+        <div className="niuu:font-mono niuu:text-xs niuu:text-text-muted">
           {registryMounts.length} registered · {activeCount} enabled
         </div>
       </div>
 
-      <div className="niuu-grid niuu-grid-cols-[1.3fr_1fr] niuu-gap-6">
-        <section className="niuu-flex niuu-flex-col niuu-gap-3">
+      <div className="niuu:grid niuu:grid-cols-[1.3fr_1fr] niuu:gap-6">
+        <section className="niuu:flex niuu:flex-col niuu:gap-3">
           {registryMounts.map((mount: RegistryMount) => {
             const isEditing = editingId === mount.id;
             return (
               <article
                 key={mount.id}
-                className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
+                className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg"
               >
-                <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-4">
+                <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-4">
                   <div>
-                    <div className="niuu-flex niuu-items-center niuu-gap-2">
-                      <span className="niuu-text-base niuu-text-text-primary niuu-font-semibold">
+                    <div className="niuu:flex niuu:items-center niuu:gap-2">
+                      <span className="niuu:text-base niuu:text-text-primary niuu:font-semibold">
                         {mount.name}
                       </span>
-                      <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-muted">
+                      <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
                         {mount.kind} · {mount.role}
                       </span>
                     </div>
-                    <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted niuu-mt-1">
+                    <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:mt-1">
                       {mount.url || mount.path || 'no endpoint configured'}
                     </div>
-                    <p className="niuu-m-0 niuu-mt-2 niuu-text-sm niuu-text-text-secondary">
+                    <p className="niuu:m-0 niuu:mt-2 niuu:text-sm niuu:text-text-secondary">
                       {mount.desc || 'No description provided.'}
                     </p>
                   </div>
-                  <div className="niuu-flex niuu-gap-2">
+                  <div className="niuu:flex niuu:gap-2">
                     <button
                       type="button"
-                      className="niuu-py-1.5 niuu-px-3 niuu-bg-bg-secondary niuu-border niuu-border-solid niuu-border-border niuu-rounded-md niuu-text-text-primary niuu-font-sans niuu-text-xs niuu-cursor-pointer"
+                      className="niuu:py-1.5 niuu:px-3 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-xs niuu:cursor-pointer"
                       onClick={() => {
                         setEditingId(mount.id);
                         setEditingDraft({
@@ -339,7 +339,7 @@ export function RegistryPage() {
                     </button>
                     <button
                       type="button"
-                      className="niuu-py-1.5 niuu-px-3 niuu-bg-transparent niuu-border niuu-border-solid niuu-border-border-subtle niuu-rounded-md niuu-text-critical niuu-font-sans niuu-text-xs niuu-cursor-pointer"
+                      className="niuu:py-1.5 niuu:px-3 niuu:bg-transparent niuu:border niuu:border-solid niuu:border-border-subtle niuu:rounded-md niuu:text-critical niuu:font-sans niuu:text-xs niuu:cursor-pointer"
                       onClick={() => deleteMount.mutate(mount.id)}
                       disabled={deleteMount.isPending}
                     >
@@ -347,7 +347,7 @@ export function RegistryPage() {
                     </button>
                   </div>
                 </div>
-                <div className="niuu-flex niuu-flex-wrap niuu-gap-2 niuu-mt-3 niuu-font-mono niuu-text-[10px] niuu-text-text-muted">
+                <div className="niuu:flex niuu:flex-wrap niuu:gap-2 niuu:mt-3 niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
                   <span>health: {mount.healthStatus}</span>
                   <span>priority: {mount.defaultReadPriority}</span>
                   <span>{mount.enabled ? 'enabled' : 'disabled'}</span>
@@ -357,7 +357,7 @@ export function RegistryPage() {
                 </div>
 
                 {isEditing && (
-                  <div className="niuu-mt-4">
+                  <div className="niuu:mt-4">
                     <RegistryMountEditor
                       heading={`Edit ${mount.name}`}
                       mount={editingDraft}
@@ -387,7 +387,7 @@ export function RegistryPage() {
           })}
 
           {registryMounts.length === 0 && (
-            <div className="niuu-p-6 niuu-border niuu-border-dashed niuu-border-border-subtle niuu-rounded-lg niuu-text-sm niuu-text-text-muted">
+            <div className="niuu:p-6 niuu:border niuu:border-dashed niuu:border-border-subtle niuu:rounded-lg niuu:text-sm niuu:text-text-muted">
               No registered Mimir instances yet.
             </div>
           )}

@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import tempfile
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -96,10 +97,8 @@ def _write_gz(path: Path, data: dict) -> None:
         os.chmod(tmp, _FILE_MODE)
         os.replace(tmp, path)
     except Exception:
-        try:
+        with suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
@@ -186,10 +185,8 @@ class DiskCheckpointAdapter(CheckpointPort):
                 json.dump(entries, fh)
             os.replace(tmp, path)
         except Exception:
-            try:
+            with suppress(OSError):
                 os.unlink(tmp)
-            except OSError:
-                pass
             raise
 
     def _next_seq(self, task_id: str) -> int:

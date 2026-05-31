@@ -253,7 +253,7 @@ def test_service_entry_is_frozen():
 
 # These tests require pynng; skip them individually when it is not installed.
 try:
-    import pynng as _pynng_module  # noqa: F401
+    __import__("pynng")
 
     _pynng_available = True
 except ImportError:

@@ -14,7 +14,7 @@ export interface FileTreeProps {
 export function FileTree({ nodes, onOpenFile, activePath }: FileTreeProps) {
   if (nodes.length === 0) {
     return (
-      <p className="niuu-p-4 niuu-text-sm niuu-text-text-muted" data-testid="filetree-empty">
+      <p className="niuu:p-4 niuu:text-sm niuu:text-text-muted" data-testid="filetree-empty">
         No files found in this session workspace.
       </p>
     );
@@ -22,7 +22,7 @@ export function FileTree({ nodes, onOpenFile, activePath }: FileTreeProps) {
 
   return (
     <ul
-      className="niuu-m-0 niuu-list-none niuu-p-2 niuu-font-mono niuu-text-[12px]"
+      className="niuu:m-0 niuu:list-none niuu:p-2 niuu:font-mono niuu:text-[12px]"
       role="tree"
       aria-label="session file tree"
       data-testid="filetree-root"
@@ -89,7 +89,7 @@ function FileTreeItem({ node, depth, onOpenFile, activePath }: FileTreeItemProps
     >
       {isMountBoundary && (
         <div
-          className="niuu-mt-2 niuu-flex niuu-items-center niuu-gap-2 niuu-border-t niuu-border-border-subtle niuu-px-2 niuu-py-1 niuu-text-[10px] niuu-uppercase niuu-tracking-[0.16em] niuu-text-text-muted"
+          className="niuu:mt-2 niuu:flex niuu:items-center niuu:gap-2 niuu:border-t niuu:border-border-subtle niuu:px-2 niuu:py-1 niuu:text-[10px] niuu:uppercase niuu:tracking-[0.16em] niuu:text-text-muted"
           data-testid={`filetree-mount-${node.mountName}`}
         >
           <span aria-hidden>⊕</span>
@@ -99,11 +99,11 @@ function FileTreeItem({ node, depth, onOpenFile, activePath }: FileTreeItemProps
 
       <div
         className={cn(
-          'niuu-flex niuu-cursor-pointer niuu-items-center niuu-gap-1.5 niuu-rounded-md niuu-border niuu-border-transparent niuu-px-2 niuu-py-1.5 niuu-transition-colors',
+          'niuu:flex niuu:cursor-pointer niuu:items-center niuu:gap-1.5 niuu:rounded-md niuu:border niuu:border-transparent niuu:px-2 niuu:py-1.5 niuu:transition-colors',
           isActive
-            ? 'niuu-border-brand/60 niuu-bg-brand/10 niuu-text-text-primary'
-            : 'niuu-text-text-secondary hover:niuu-border-border-subtle hover:niuu-bg-bg-tertiary hover:niuu-text-text-primary',
-          node.isSecret && 'niuu-opacity-60',
+            ? 'niuu:border-brand/60 niuu:bg-brand/10 niuu:text-text-primary'
+            : 'niuu:text-text-secondary niuu:hover:border-border-subtle niuu:hover:bg-bg-tertiary niuu:hover:text-text-primary',
+          node.isSecret && 'niuu:opacity-60',
         )}
         style={{ paddingLeft: `${indentPx + 8}px` }}
         onClick={handleClick}
@@ -121,8 +121,8 @@ function FileTreeItem({ node, depth, onOpenFile, activePath }: FileTreeItemProps
         {/* Icon */}
         <span
           className={cn(
-            'niuu-shrink-0 niuu-text-xs',
-            isActive ? 'niuu-text-text-primary' : 'niuu-text-text-muted',
+            'niuu:shrink-0 niuu:text-xs',
+            isActive ? 'niuu:text-text-primary' : 'niuu:text-text-muted',
           )}
           aria-hidden
         >
@@ -130,12 +130,12 @@ function FileTreeItem({ node, depth, onOpenFile, activePath }: FileTreeItemProps
         </span>
 
         {/* Name */}
-        <span className="niuu-truncate niuu-font-medium">{node.name}</span>
+        <span className="niuu:truncate niuu:font-medium">{node.name}</span>
 
         {/* Secret badge */}
         {node.isSecret && (
           <span
-            className="niuu-ml-auto niuu-shrink-0 niuu-rounded niuu-bg-bg-elevated niuu-px-1 niuu-text-xs niuu-text-text-muted"
+            className="niuu:ml-auto niuu:shrink-0 niuu:rounded niuu:bg-bg-elevated niuu:px-1 niuu:text-xs niuu:text-text-muted"
             data-testid={`filetree-secret-badge-${node.path}`}
           >
             secret
@@ -144,14 +144,14 @@ function FileTreeItem({ node, depth, onOpenFile, activePath }: FileTreeItemProps
 
         {/* File size */}
         {!isDirectory && !node.isSecret && node.size !== undefined && (
-          <span className="niuu-ml-auto niuu-shrink-0 niuu-text-[11px] niuu-text-text-muted">
+          <span className="niuu:ml-auto niuu:shrink-0 niuu:text-[11px] niuu:text-text-muted">
             {formatSize(node.size)}
           </span>
         )}
       </div>
 
       {isDirectory && expanded && node.children && node.children.length > 0 && (
-        <ul className="niuu-m-0 niuu-list-none niuu-p-0" role="group">
+        <ul className="niuu:m-0 niuu:list-none niuu:p-0" role="group">
           {node.children.map((child) => (
             <FileTreeItem
               key={child.path}
@@ -166,7 +166,7 @@ function FileTreeItem({ node, depth, onOpenFile, activePath }: FileTreeItemProps
 
       {isDirectory && expanded && (!node.children || node.children.length === 0) && (
         <div
-          className="niuu-py-0.5 niuu-text-xs niuu-text-text-muted"
+          className="niuu:py-0.5 niuu:text-xs niuu:text-text-muted"
           style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
           data-testid={`filetree-empty-dir-${node.path}`}
         >

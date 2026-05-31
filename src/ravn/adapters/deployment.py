@@ -6,6 +6,7 @@ import asyncio
 import os
 import subprocess
 import threading
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -486,7 +487,7 @@ def _run_coro_blocking(awaitable):
     def _runner() -> None:
         try:
             result["value"] = asyncio.run(awaitable)
-        except BaseException as exc:  # pragma: no cover - bubbled to caller
+        except Exception as exc:  # pragma: no cover - bubbled to caller
             error["value"] = exc
 
     thread = threading.Thread(target=_runner, daemon=True)
@@ -1102,10 +1103,8 @@ class KubernetesGitOpsWardenDeploymentAdapter(WardenDeploymentPort):
     def uninstall(self, spec: WardenSpec, *, warden_dir: Path) -> WardenDeploymentResult:
         repo_path = self._require_repo_path()
         manifest_path = self._manifest_path(spec)
-        try:
+        with suppress(FileNotFoundError):
             manifest_path.unlink()
-        except FileNotFoundError:
-            pass
         self._stage_and_publish(repo_path, manifest_path, spec, active=False, removed=True)
         self._remove_file(Path(spec.supervisor.config_file or runtime_config_path(warden_dir)))
         return WardenDeploymentResult(

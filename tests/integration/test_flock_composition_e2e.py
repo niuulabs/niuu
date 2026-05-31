@@ -72,11 +72,6 @@ _EXPECTED_EFFECTIVE_LLM: dict = {
     "thinking_enabled": True,  # from stage-level override
 }
 
-#: Expected concatenated system_prompt_extra.
-_EXPECTED_COMBINED_PROMPT_EXTRA = (
-    _FLOW_PROMPT_EXTRA.strip() + "\n\n" + _STAGE_OVERRIDE["system_prompt_extra"].strip()
-)
-
 # ---------------------------------------------------------------------------
 # Kind integration gate
 # ---------------------------------------------------------------------------

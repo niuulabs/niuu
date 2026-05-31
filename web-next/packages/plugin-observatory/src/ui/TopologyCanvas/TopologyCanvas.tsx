@@ -80,7 +80,10 @@ export function TopologyCanvas({
   // Stable reference to drawing data so the rAF loop always reads fresh values
   // without being re-subscribed on every state tick.
   const drawRef = useRef({ topology, positions, hoveredId: null as string | null });
-  drawRef.current = { topology, positions, hoveredId: hoveredIdRef.current };
+
+  useEffect(() => {
+    drawRef.current = { topology, positions, hoveredId: hoveredIdRef.current };
+  }, [positions, topology]);
 
   const cameraToZoomTransform = useCallback((cam: Camera) => {
     const { w, h } = sizeRef.current;
@@ -289,6 +292,7 @@ export function TopologyCanvas({
 
       const hitId = hitTest(sx, sy);
       hoveredIdRef.current = hitId;
+      drawRef.current = { ...drawRef.current, hoveredId: hitId };
       canvasRef.current!.style.cursor = hitId ? 'pointer' : 'grab';
     },
     [hitTest],
@@ -306,6 +310,7 @@ export function TopologyCanvas({
   const handleMouseLeave = useCallback(() => {
     isDraggingRef.current = false;
     hoveredIdRef.current = null;
+    drawRef.current = { ...drawRef.current, hoveredId: null };
     if (canvasRef.current) canvasRef.current.style.cursor = 'grab';
   }, []);
 

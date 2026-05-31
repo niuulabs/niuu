@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from contextlib import suppress
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -520,10 +521,8 @@ class TestDriveLoopIntegration:
             task = asyncio.create_task(trigger.run(enqueue_mock))
             await asyncio.sleep(0.05)
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            with suppress(asyncio.CancelledError):
+                _ = await task
 
         assert len(calls) >= 1
 
@@ -545,10 +544,8 @@ class TestDriveLoopIntegration:
             task = asyncio.create_task(trigger.run(enqueue_mock))
             await asyncio.sleep(0.05)
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            with suppress(asyncio.CancelledError):
+                _ = await task
 
         assert call_count >= 3
 

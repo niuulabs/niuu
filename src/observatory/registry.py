@@ -26,17 +26,23 @@ class RegistryNotFoundError(KeyError):
 class ObservatoryRegistryRepository(Protocol):
     """Persistence port for the Observatory registry document."""
 
-    async def ensure_seeded(self) -> None: ...
+    async def ensure_seeded(self) -> None:
+        raise NotImplementedError
 
-    async def get_registry(self) -> dict[str, Any]: ...
+    async def get_registry(self) -> dict[str, Any]:
+        raise NotImplementedError
 
-    async def save_registry(self, registry: dict[str, Any]) -> dict[str, Any]: ...
+    async def save_registry(self, registry: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
 
-    async def create_type(self, entity_type: dict[str, Any]) -> dict[str, Any]: ...
+    async def create_type(self, entity_type: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
 
-    async def update_type(self, type_id: str, patch: dict[str, Any]) -> dict[str, Any]: ...
+    async def update_type(self, type_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
 
-    async def delete_type(self, type_id: str) -> dict[str, Any]: ...
+    async def delete_type(self, type_id: str) -> dict[str, Any]:
+        raise NotImplementedError
 
 
 def _utc_now() -> datetime:

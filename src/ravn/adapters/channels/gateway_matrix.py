@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import uuid
+from contextlib import suppress
 from typing import Any
 from urllib.parse import quote
 
@@ -93,10 +94,8 @@ class MatrixGateway(GatewayHttpMixin, GatewayChannelPort):
         """Start and run until cancelled (convenience for :func:`asyncio.create_task`)."""
         await self.start()
         if self._task is not None:
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
 
     async def send_text(self, chat_id: str, text: str) -> None:
         """Send a plain-text message to Matrix room *chat_id*."""

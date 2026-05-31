@@ -82,7 +82,7 @@ export function FormShowcasePage() {
 
   if (submitted) {
     return (
-      <div className="niuu-p-8">
+      <div className="niuu:p-8">
         <h1>Form submitted successfully!</h1>
         <button
           type="button"
@@ -99,18 +99,18 @@ export function FormShowcasePage() {
   }
 
   return (
-    <div className="niuu-p-8 niuu-max-w-lg">
+    <div className="niuu:p-8 niuu:max-w-lg">
       <h1>Form Showcase</h1>
       <p>Submit the form with empty fields to see validation.</p>
 
       {errors.length > 0 && (
-        <div className="niuu-mb-6">
+        <div className="niuu:mb-6">
           <ValidationSummary errors={errors} />
         </div>
       )}
 
       <form onSubmit={handleSubmit} noValidate>
-        <div className="niuu-flex niuu-flex-col niuu-gap-4">
+        <div className="niuu:flex niuu:flex-col niuu:gap-4">
           <Field
             id="form-name"
             label="Full name"

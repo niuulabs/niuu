@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -119,6 +120,7 @@ def _role_color(role: str) -> str:
             return ACCENT_AMBER
         case _:
             return TEXT_MUTED
+    raise AssertionError("Unreachable _role_color fallthrough")
 
 
 def _role_icon(role: str) -> str:
@@ -131,6 +133,7 @@ def _role_icon(role: str) -> str:
             return "◉"
         case _:
             return "○"
+    raise AssertionError("Unreachable _role_icon fallthrough")
 
 
 class ChatPage(Widget):
@@ -254,10 +257,8 @@ class ChatPage(Widget):
         )
 
     def _update_metrics(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#chat-metrics", Static).update(self._metrics_text())
-        except Exception:
-            pass
 
     # ── Input handling ──────────────────────────────────────
 
@@ -273,10 +274,8 @@ class ChatPage(Widget):
 
     def action_focus_input(self) -> None:
         self.input_active = True
-        try:
+        with suppress(Exception):
             self.query_one("#chat-input", Input).focus()
-        except Exception:
-            pass
 
     def action_unfocus_input(self) -> None:
         self.input_active = False

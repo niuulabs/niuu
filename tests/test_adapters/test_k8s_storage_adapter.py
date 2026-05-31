@@ -48,7 +48,7 @@ def _install_k8s_mock():
 
 
 # Install mocks before importing the adapter
-_k8s_client = _install_k8s_mock()
+_install_k8s_mock()
 
 from volundr.adapters.outbound.k8s_storage_adapter import K8sStorageAdapter  # noqa: E402
 

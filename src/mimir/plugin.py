@@ -41,7 +41,7 @@ class MimirPlugin(ServicePlugin):
         return ServiceDefinition(
             name="mimir",
             description="Knowledge service",
-            factory=lambda: _MimirStub(),
+            factory=_MimirStub,
             default_enabled=True,
         )
 

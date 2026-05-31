@@ -146,6 +146,7 @@ class KeybindingLoader:
             case _:
                 logger.debug("keybindings: unknown source %r — skipping", source)
                 return 0
+        raise AssertionError("Unreachable _parse_editor fallthrough")
 
     def _load_vim(self, kb: KeybindingMap) -> int:
         """Try vim config, fall back to nvim, then give up."""

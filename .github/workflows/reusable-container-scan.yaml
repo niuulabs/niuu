@@ -48,8 +48,30 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Grype
+        env:
+          GRYPE_VERSION: ${{ inputs.grype-version }}
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/247f5d72abf2131aa37f3164a98495c121b29029/install.sh | sh -s -- -b /usr/local/bin "v${{ inputs.grype-version }}"
+          set -euo pipefail
+
+          install_grype() {
+            curl --retry 5 --retry-all-errors --retry-delay 2 -sSfL \
+              https://raw.githubusercontent.com/anchore/grype/247f5d72abf2131aa37f3164a98495c121b29029/install.sh \
+              | sh -s -- -b /usr/local/bin "v${GRYPE_VERSION}"
+          }
+
+          for attempt in 1 2 3; do
+            if install_grype; then
+              grype version
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+
+            sleep $((attempt * 5))
+          done
+
           grype version
 
       - name: Scan container with Grype
@@ -59,9 +81,19 @@ jobs:
             --fail-on critical \
             -o sarif > "grype-${{ matrix.container }}.sarif"
 
+      - name: Detect Grype results
+        id: sarif
+        if: always()
+        run: |
+          if [ -f "grype-${{ matrix.container }}.sarif" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload Grype results
         uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
-        if: always()
+        if: always() && steps.sarif.outputs.present == 'true'
         with:
           sarif_file: grype-${{ matrix.container }}.sarif
           category: grype-${{ matrix.container }}

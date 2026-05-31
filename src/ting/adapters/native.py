@@ -8,7 +8,6 @@ Stores sagas, phases, and runs entirely in Ting's PostgreSQL schema.
 from __future__ import annotations
 
 import json
-import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -30,8 +29,6 @@ from ting.domain.models import (
 )
 from ting.ports.tracker import TrackerPort
 
-logger = logging.getLogger(__name__)
-
 # ---------------------------------------------------------------------------
 # State mapping: RunStatus <-> DB status text
 # ---------------------------------------------------------------------------
@@ -47,6 +44,8 @@ _RUN_STATUS_DISPLAY: dict[RunStatus, str] = {
 }
 
 _DISPLAY_TO_RUN: dict[str, RunStatus] = {v: k for k, v in _RUN_STATUS_DISPLAY.items()}
+
+__all__ = ["_DISPLAY_TO_RUN"]
 
 
 class NativeTrackerAdapter(TrackerPort):

@@ -37,19 +37,19 @@ class DiscoveryPort(Protocol):
 
     async def start(self) -> None:
         """Start background tasks (announce, heartbeat, eviction)."""
-        ...
+        raise NotImplementedError
 
     async def stop(self) -> None:
         """Graceful shutdown — cancel background tasks, unregister services."""
-        ...
+        raise NotImplementedError
 
     async def announce(self) -> None:
         """(Re-)announce this Ravn's presence to the network."""
-        ...
+        raise NotImplementedError
 
     async def scan(self) -> list[RavnCandidate]:
         """Return unverified candidates visible on the network right now."""
-        ...
+        raise NotImplementedError
 
     async def watch(self, on_join: PeerCallback, on_leave: PeerCallback) -> None:
         """Register callbacks fired when verified peers join or leave the flock.
@@ -57,7 +57,7 @@ class DiscoveryPort(Protocol):
         Returns immediately — callbacks are fired from background tasks.
         Multiple callers may register multiple callbacks.
         """
-        ...
+        raise NotImplementedError
 
     async def handshake(self, candidate: RavnCandidate) -> RavnPeer | None:
         """Run the trust handshake with *candidate*.
@@ -65,7 +65,7 @@ class DiscoveryPort(Protocol):
         Returns a verified ``RavnPeer`` on success, ``None`` if the candidate
         is from a different realm (silently ignored — no error, DEBUG log only).
         """
-        ...
+        raise NotImplementedError
 
     def peers(self) -> dict[str, RavnPeer]:
         """Return the current verified peer table, keyed by ``peer_id``.
@@ -73,8 +73,8 @@ class DiscoveryPort(Protocol):
         Synchronous — returns the cached in-memory table.  Updated by
         background tasks as peers join, send heartbeats, and are evicted.
         """
-        ...
+        raise NotImplementedError
 
     async def own_identity(self) -> RavnIdentity:
         """Return this Ravn instance's own identity."""
-        ...
+        raise NotImplementedError

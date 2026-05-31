@@ -654,6 +654,7 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
                 return CIStatus.PENDING
             case _:
                 return CIStatus.UNKNOWN
+        raise AssertionError("Unreachable get_ci_status fallthrough")
 
     async def close(self) -> None:
         """Close the HTTP client."""

@@ -16,6 +16,7 @@ Environment variable override format:
 
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -130,11 +131,9 @@ class WorkflowRuntimeConfig(BaseModel):
             return value
         graph = value.get("graph")
         if isinstance(graph, str) and graph.strip():
-            try:
+            with suppress(Exception):
                 value = dict(value)
                 value["graph"] = json.loads(graph)
-            except Exception:
-                pass
         return value
 
 

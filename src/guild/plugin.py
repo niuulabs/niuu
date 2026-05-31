@@ -35,7 +35,7 @@ class GuildPlugin(ServicePlugin):
         return ServiceDefinition(
             name="guild",
             description="Shared instance registry and aggregate service",
-            factory=lambda: _GuildStub(),
+            factory=_GuildStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8084,

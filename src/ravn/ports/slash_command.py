@@ -48,7 +48,7 @@ class SlashCommandPort(ABC):
 
         Must be lower-case and unique within the registry.
         """
-        ...
+        raise NotImplementedError
 
     @property
     def aliases(self) -> list[str]:
@@ -72,4 +72,4 @@ class SlashCommandPort(ABC):
         Returns:
             A formatted string to be printed to the user.
         """
-        ...
+        raise NotImplementedError

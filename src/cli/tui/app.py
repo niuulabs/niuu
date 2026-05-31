@@ -5,6 +5,7 @@ Uses the zinc theme, 4-mode keybinding system, and widget library.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
@@ -96,14 +97,10 @@ class NiuuTUI(App[str]):
     # ── Mode management ──────────────────────────────────────
 
     def watch_mode(self, new_mode: InputMode) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#niuu-header", NiuuHeader).mode = new_mode
-        except Exception:
-            pass
-        try:
+        with suppress(Exception):
             self.query_one("#niuu-footer", NiuuFooter).mode = new_mode
-        except Exception:
-            pass
 
     def set_mode(self, new_mode: InputMode) -> None:
         self.mode = new_mode
@@ -145,10 +142,8 @@ class NiuuTUI(App[str]):
         self.set_mode(InputMode.NORMAL)
 
     def action_toggle_sidebar(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#niuu-sidebar", NiuuSidebar).toggle()
-        except Exception:
-            pass
 
     def action_enter_search(self) -> None:
         if self.mode == InputMode.SEARCH:
@@ -169,11 +164,9 @@ class NiuuTUI(App[str]):
         if result is None:
             return
         if result.item_type == PaletteItemType.PAGE:
-            try:
+            with suppress(ValueError, IndexError):
                 idx = int(result.action_id)
                 self._navigate_to_page(idx)
-            except (ValueError, IndexError):
-                pass
 
     def action_go_page(self, index_str: str) -> None:
         try:

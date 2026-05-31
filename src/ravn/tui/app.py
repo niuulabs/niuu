@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from textual.app import App, ComposeResult
+import textual.app as textual_app
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
 from textual.message import Message
@@ -25,10 +27,10 @@ from ravn.tui.widgets.status_bar import StatusBar
 from ravn.tui.widgets.tab_bar import TabBar
 
 logger = logging.getLogger(__name__)
+TextualApp = textual_app.App
 
 _APP_TITLE = "ᚠ Ravn"
 _RESIZE_STEP = 0.05
-_ZOOM_STEP = 0.05
 
 # Textual uses verbose names for some keys; normalise to the short form
 # the keybinding map uses.
@@ -56,7 +58,7 @@ def _normalise_key(key: str) -> str:
     return _KEY_ALIASES.get(key, key)
 
 
-class RavnTUI(App[None]):
+class RavnTUI(TextualApp[None]):
     """Ravn TUI — terminal operator interface for Flokk management.
 
     Supports vim/tmux-style arbitrary split layout, 8 view types,
@@ -238,16 +240,14 @@ class RavnTUI(App[None]):
 
         # Remove amber border from previous pane
         if self._focused_pane_id and self._focused_pane_id != pane_id:
-            try:
+            with suppress(Exception):
                 prev = self.query_one(
                     f"#pane-{self._focused_pane_id.replace('-', '_')}", PaneWidget
                 )
                 prev.focused_pane = False
-            except Exception:
-                pass
 
         self._focused_pane_id = pane_id
-        try:
+        with suppress(Exception):
             pane = self.query_one(f"#pane-{pane_id.replace('-', '_')}", PaneWidget)
             pane.focused_pane = True
             # Focus the view widget inside (first non-header child)
@@ -260,8 +260,6 @@ class RavnTUI(App[None]):
             # Update contextual bars
             self.query_one("#bottom-bar", BottomBar).set_context(pane._view_type)
             self.query_one("#status-bar", StatusBar).set_active_ravn(pane._target or "—")
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Keybinding sequence dispatch
@@ -271,7 +269,7 @@ class RavnTUI(App[None]):
         """Focus the Input in the current pane and enter INSERT mode."""
         if not self._focused_pane_id:
             return
-        try:
+        with suppress(Exception):
             from textual.widgets import Input as _Input
 
             pane = self.query_one(f"#pane-{self._focused_pane_id.replace('-', '_')}", PaneWidget)
@@ -281,16 +279,12 @@ class RavnTUI(App[None]):
             inp.focus()
             self._insert_mode = True
             self.query_one("#status-bar", StatusBar).set_mode("INSERT")
-        except Exception:
-            pass
 
     def _exit_insert_mode(self) -> None:
         """Return to NORMAL mode, restoring pane focus."""
         self._insert_mode = False
-        try:
+        with suppress(Exception):
             self.query_one("#status-bar", StatusBar).set_mode("NORMAL")
-        except Exception:
-            pass
         if self._focused_pane_id:
             self._focus_pane(self._focused_pane_id)
 
@@ -419,14 +413,12 @@ class RavnTUI(App[None]):
         """Send a scroll action to the currently focused pane's view."""
         if not self._focused_pane_id:
             return
-        try:
+        with suppress(Exception):
             pane = self.query_one(f"#pane-{self._focused_pane_id.replace('-', '_')}", PaneWidget)
             if direction == "top":
                 pane.scroll_home(animate=False)
             else:
                 pane.scroll_end(animate=False)
-        except Exception:
-            pass
 
     async def _split_current(self, direction: str) -> None:
         if not self._focused_pane_id:
@@ -571,10 +563,8 @@ class RavnTUI(App[None]):
         panes = self._tree.all_panes()
         if panes:
             self._focus_pane(panes[0].pane_id)
-        try:
+        with suppress(Exception):
             self.query_one(TabBar).set_active(name)
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Command mode
@@ -687,10 +677,8 @@ class RavnTUI(App[None]):
                 panes = self._tree.all_panes()
                 if panes:
                     self._focus_pane(panes[0].pane_id)
-                try:
+                with suppress(Exception):
                     self.query_one(TabBar).set_active(name)
-                except Exception:
-                    pass
                 self.notify(f"Layout loaded: {name}")
             case "list":
                 names = ", ".join(self.layout_mgr.list())
@@ -824,12 +812,10 @@ class RavnTUI(App[None]):
         if target_pane is None:
             return
 
-        try:
+        with suppress(Exception):
             widget = self.query_one(f"#pane-{target_pane.pane_id.replace('-', '_')}", PaneWidget)
             widget.assign_view("chat", conn.name, self.flokk)
             self._focus_pane(target_pane.pane_id)
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Ghost mode

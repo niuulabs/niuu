@@ -64,7 +64,7 @@ const workspaceAlias = [
   },
   {
     find: '@niuulabs/plugin-volundr/styles.css',
-    replacement: fromHere('../../packages/plugin-volundr/dist/index.css'),
+    replacement: fromHere('../../packages/plugin-volundr/dist/styles.css'),
   },
   {
     find: '@niuulabs/plugin-volundr/index.css',

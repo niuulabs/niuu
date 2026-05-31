@@ -97,13 +97,6 @@ def _body_to_domain(body: FlockFlowBody) -> FlockFlowConfig:
     )
 
 
-# ---------------------------------------------------------------------------
-# Dependencies
-# ---------------------------------------------------------------------------
-
-_persona_source = None
-
-
 async def resolve_flow_provider() -> FlockFlowProvider:
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

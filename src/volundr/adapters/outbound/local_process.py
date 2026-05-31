@@ -27,6 +27,7 @@ import signal
 import socket
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -613,6 +614,7 @@ class LocalProcessPodManager(PodManager):
                 return SessionStatus.STOPPED
             case ProcessState.FAILED:
                 return SessionStatus.FAILED
+        raise AssertionError("Unreachable status fallthrough")
 
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
         """Wait until the Claude process is running or fails."""
@@ -1530,11 +1532,9 @@ class LocalProcessPodManager(PodManager):
             except OSError:
                 return
 
-        try:
+        with suppress(OSError):
             os.kill(pid, signal.SIGKILL)
             logger.warning("Sent SIGKILL to pid=%d after timeout", pid)
-        except OSError:
-            pass
 
     # ------------------------------------------------------------------
     # State persistence
@@ -1592,13 +1592,11 @@ class LocalProcessPodManager(PodManager):
     def _process_command(pid: int) -> str:
         """Best-effort command line lookup for a running PID."""
         proc_cmdline = Path(f"/proc/{pid}/cmdline")
-        try:
+        with suppress(OSError):
             if proc_cmdline.exists():
                 raw = proc_cmdline.read_bytes()
                 if raw:
                     return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
-        except OSError:
-            pass
         try:
             result = subprocess.run(
                 ["ps", "-p", str(pid), "-o", "command="],

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from typing import Any
 
 from ravn.adapters.mcp.transport import MCPTransport, MCPTransportError
@@ -200,7 +201,7 @@ class SSETransport(MCPTransport):
 
                         event_type = "message"
         except asyncio.CancelledError:
-            pass
+            return
         except Exception as exc:
             if not endpoint_ready.done():
                 endpoint_ready.set_exception(MCPTransportError(f"SSE stream error: {exc}"))
@@ -235,10 +236,8 @@ class SSETransport(MCPTransport):
     async def close(self) -> None:
         if self._sse_task is not None:
             self._sse_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError, Exception):
                 await self._sse_task
-            except (asyncio.CancelledError, Exception):
-                pass
             self._sse_task = None
 
         if self._client is not None:

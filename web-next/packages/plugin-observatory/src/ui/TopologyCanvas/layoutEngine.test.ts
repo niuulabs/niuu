@@ -3,6 +3,9 @@ import {
   hashAngle,
   computeLayout,
   computeLayoutBounds,
+  placeArcChildren,
+  packGroupsForNode,
+  sortedNodes,
   zoneRadius,
   HOST_HALF_W,
   HOST_HALF_H,
@@ -105,6 +108,174 @@ describe('hashAngle', () => {
 
   it('handles empty string without throwing', () => {
     expect(() => hashAngle('')).not.toThrow();
+  });
+});
+
+describe('sortedNodes', () => {
+  it('prefers explicit layout order over type priority and label ordering', () => {
+    const nodes = sortedNodes([
+      {
+        id: 'service-z',
+        typeId: 'service',
+        label: 'Zulu',
+        parentId: null,
+        status: 'healthy',
+      },
+      {
+        id: 'realm-a',
+        typeId: 'realm',
+        label: 'Alpha',
+        parentId: null,
+        status: 'healthy',
+        layoutHints: { order: 1 },
+      },
+      {
+        id: 'cluster-a',
+        typeId: 'cluster',
+        label: 'Beta',
+        parentId: null,
+        status: 'healthy',
+        layoutHints: { order: 0 },
+      },
+    ]);
+
+    expect(nodes.map((node) => node.id)).toEqual(['cluster-a', 'realm-a', 'service-z']);
+  });
+
+  it('falls back to label and then id when type and order are tied', () => {
+    const nodes = sortedNodes([
+      { id: 'svc-b', typeId: 'service', label: 'Same', parentId: null, status: 'healthy' },
+      { id: 'svc-a', typeId: 'service', label: 'same', parentId: null, status: 'healthy' },
+      { id: 'svc-c', typeId: 'service', label: 'Alpha', parentId: null, status: 'healthy' },
+    ]);
+
+    expect(nodes.map((node) => node.id)).toEqual(['svc-c', 'svc-a', 'svc-b']);
+  });
+});
+
+describe('placeArcChildren', () => {
+  it('returns no placements for an empty child list', () => {
+    expect(
+      placeArcChildren([], undefined, {
+        baseRadius: 96,
+        radialStep: 24,
+        minSpacing: 48,
+      }),
+    ).toEqual(new Map());
+  });
+
+  it('uses default anchor, span, and center when options omit them', () => {
+    const placements = placeArcChildren(
+      [
+        { id: 'a', typeId: 'service', label: 'A', parentId: null, status: 'healthy' },
+        { id: 'b', typeId: 'service', label: 'B', parentId: null, status: 'healthy' },
+      ],
+      undefined,
+      {
+        baseRadius: 100,
+        radialStep: 20,
+        minSpacing: 60,
+      },
+    );
+
+    const a = placements.get('a')!;
+    const b = placements.get('b')!;
+    expect(Math.hypot(a.x, a.y)).toBeCloseTo(100, 6);
+    expect(Math.hypot(b.x, b.y)).toBeCloseTo(100, 6);
+    expect(a.x).toBeCloseTo(-100, 6);
+    expect(b.x).toBeCloseTo(-100, 6);
+    expect(a.y).toBeCloseTo(0, 6);
+    expect(b.y).toBeCloseTo(0, 6);
+  });
+
+  it('spreads large sibling sets across multiple radial bands', () => {
+    const children = Array.from({ length: 6 }, (_, index) => ({
+      id: `child-${index}`,
+      typeId: 'service' as const,
+      label: `Child ${index}`,
+      parentId: null,
+      status: 'healthy' as const,
+    }));
+
+    const placements = placeArcChildren(
+      children,
+      { x: 10, y: -5 },
+      {
+        baseRadius: 40,
+        radialStep: 30,
+        minSpacing: 50,
+        arcCenter: 0,
+        arcSpan: Math.PI / 2,
+      },
+    );
+
+    const radii = children.map((child) => {
+      const pos = placements.get(child.id)!;
+      return Math.round(Math.hypot(pos.x - 10, pos.y + 5));
+    });
+
+    expect(new Set(radii).size).toBeGreaterThan(1);
+  });
+});
+
+describe('packGroupsForNode', () => {
+  it('returns a single pack group for non-run nodes', () => {
+    const host = {
+      id: 'host-a',
+      typeId: 'host' as const,
+      label: 'Host',
+      parentId: null,
+      status: 'healthy' as const,
+    };
+    const groups = packGroupsForNode(host, [
+      {
+        id: 'service-a',
+        typeId: 'service',
+        label: 'Service A',
+        parentId: 'host-a',
+        status: 'healthy',
+      },
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.id).toBe('host-a');
+  });
+
+  it('groups run children by packGroup and sorts those groups by first explicit order', () => {
+    const run = {
+      id: 'run-a',
+      typeId: 'run' as const,
+      label: 'Run A',
+      parentId: null,
+      status: 'observing' as const,
+    };
+    const groups = packGroupsForNode(run, [
+      {
+        id: 'main-1',
+        typeId: 'stage',
+        label: 'Main 1',
+        parentId: 'run-a',
+        status: 'healthy',
+        layoutHints: { packGroup: 'main', order: 5 },
+      },
+      {
+        id: 'decision-1',
+        typeId: 'gate',
+        label: 'Decision',
+        parentId: 'run-a',
+        status: 'healthy',
+        layoutHints: { packGroup: 'decision', order: 2 },
+      },
+      {
+        id: 'fallback-1',
+        typeId: 'model',
+        label: 'Fallback',
+        parentId: 'run-a',
+        status: 'healthy',
+      },
+    ]);
+
+    expect(groups.map((group) => group?.id)).toEqual(['run-a:decision', 'run-a:run', 'run-a:main']);
   });
 });
 
@@ -610,6 +781,214 @@ describe('computeLayout', () => {
       }
     }
   });
+
+  it('assigns zone radii to root-level clusters with no parent realm', () => {
+    const topology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        {
+          id: 'cluster-root',
+          typeId: 'cluster',
+          label: 'cluster-root',
+          parentId: null,
+          status: 'healthy',
+        },
+        {
+          id: 'service-root',
+          typeId: 'service',
+          label: 'service-root',
+          parentId: 'cluster-root',
+          status: 'healthy',
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+    expect(positions.get('cluster-root')?.zoneRadius).toBeGreaterThanOrEqual(
+      LAYOUT.CLUSTER_INNER_RADIUS,
+    );
+    expect(positions.get('service-root')).toBeDefined();
+  });
+
+  it('scatters fallback children around already-positioned non-container parents', () => {
+    const topology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-local', typeId: 'realm', label: 'local', parentId: null, status: 'healthy' },
+        {
+          id: 'cluster-platform',
+          typeId: 'cluster',
+          label: 'platform',
+          parentId: 'realm-local',
+          status: 'healthy',
+        },
+        {
+          id: 'mimir-local',
+          typeId: 'mimir',
+          label: 'mimir',
+          parentId: 'cluster-platform',
+          status: 'healthy',
+        },
+        {
+          id: 'model-child',
+          typeId: 'model',
+          label: 'child',
+          parentId: 'mimir-local',
+          status: 'healthy',
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+    const mimir = positions.get('mimir-local')!;
+    const child = positions.get('model-child')!;
+
+    expect(Math.hypot(child.x - mimir.x, child.y - mimir.y)).toBeGreaterThan(0);
+  });
+
+  it('lays out run workflow groups in directional anchors and alternates dense main nodes', () => {
+    const topology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-local', typeId: 'realm', label: 'local', parentId: null, status: 'healthy' },
+        {
+          id: 'cluster-platform',
+          typeId: 'cluster',
+          label: 'platform',
+          parentId: 'realm-local',
+          status: 'healthy',
+        },
+        {
+          id: 'run-a',
+          typeId: 'run',
+          label: 'Run A',
+          parentId: 'cluster-platform',
+          status: 'observing',
+        },
+        {
+          id: 'trigger-a',
+          typeId: 'trigger',
+          label: 'Trigger',
+          parentId: 'run-a',
+          status: 'healthy',
+          layoutHints: { packGroup: 'entry', order: 1 },
+        },
+        {
+          id: 'resource-a',
+          typeId: 'resource',
+          label: 'Resource',
+          parentId: 'run-a',
+          status: 'healthy',
+          layoutHints: { packGroup: 'resource', order: 2 },
+        },
+        {
+          id: 'stage-a',
+          typeId: 'stage',
+          label: 'Stage A',
+          parentId: 'run-a',
+          status: 'healthy',
+          layoutHints: { packGroup: 'main', order: 3 },
+        },
+        {
+          id: 'stage-b',
+          typeId: 'stage',
+          label: 'Stage B',
+          parentId: 'run-a',
+          status: 'healthy',
+          layoutHints: { packGroup: 'main', order: 4 },
+        },
+        {
+          id: 'stage-c',
+          typeId: 'stage',
+          label: 'Stage C',
+          parentId: 'run-a',
+          status: 'healthy',
+          layoutHints: { packGroup: 'main', order: 5 },
+        },
+        {
+          id: 'gate-a',
+          typeId: 'gate',
+          label: 'Gate',
+          parentId: 'run-a',
+          status: 'healthy',
+          layoutHints: { packGroup: 'decision', order: 6 },
+        },
+        {
+          id: 'end-a',
+          typeId: 'end',
+          label: 'End',
+          parentId: 'run-a',
+          status: 'healthy',
+          layoutHints: { packGroup: 'exit', order: 7 },
+        },
+        {
+          id: 'aux-a',
+          typeId: 'model',
+          label: 'Aux',
+          parentId: 'run-a',
+          status: 'healthy',
+          layoutHints: { packGroup: 'aux', order: 8 },
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+    const run = positions.get('run-a')!;
+    const trigger = positions.get('trigger-a')!;
+    const resource = positions.get('resource-a')!;
+    const stageA = positions.get('stage-a')!;
+    const stageB = positions.get('stage-b')!;
+    const stageC = positions.get('stage-c')!;
+    const gate = positions.get('gate-a')!;
+    const end = positions.get('end-a')!;
+    const aux = positions.get('aux-a')!;
+
+    expect(trigger.y).toBeLessThan(run.y);
+    expect(resource.x).toBeLessThan(run.x);
+    expect(gate.x).toBeGreaterThan(run.x);
+    expect(end.y).toBeGreaterThan(run.y);
+    expect(aux.x).toBeCloseTo(run.x, 6);
+    expect(new Set([stageA.x, stageB.x, stageC.x]).size).toBeGreaterThan(1);
+  });
+
+  it('gives childless hosts a fallback hull size inside their containing cluster', () => {
+    const topology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-local', typeId: 'realm', label: 'local', parentId: null, status: 'healthy' },
+        {
+          id: 'cluster-platform',
+          typeId: 'cluster',
+          label: 'platform',
+          parentId: 'realm-local',
+          status: 'healthy',
+        },
+        {
+          id: 'host-empty',
+          typeId: 'host',
+          label: 'empty',
+          parentId: 'cluster-platform',
+          status: 'healthy',
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+    const cluster = positions.get('cluster-platform')!;
+    const host = positions.get('host-empty')!;
+    const clusterRadius = cluster.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
+
+    expect(host.containerWidth).toBeGreaterThan(HOST_HALF_W * 2);
+    expect(host.containerHeight).toBeGreaterThan(HOST_HALF_H * 2);
+    expect(
+      Math.hypot(host.x - cluster.x, host.y - cluster.y) +
+        Math.max((host.containerWidth ?? 0) / 2, (host.containerHeight ?? 0) / 2),
+    ).toBeLessThanOrEqual(clusterRadius + 8);
+  });
 });
 
 // ── zoneRadius ────────────────────────────────────────────────────────────────
@@ -625,5 +1004,20 @@ describe('zoneRadius', () => {
 
   it('realm radius is larger than cluster radius', () => {
     expect(zoneRadius('realm')).toBeGreaterThan(zoneRadius('cluster'));
+  });
+});
+
+describe('computeLayoutBounds', () => {
+  it('returns null when every topology node is missing from the positions map', () => {
+    const topology: Topology = {
+      timestamp: '2026-04-19T00:00:00Z',
+      nodes: [
+        { id: 'realm-a', typeId: 'realm', label: 'a', parentId: null, status: 'healthy' },
+        { id: 'host-a', typeId: 'host', label: 'host', parentId: 'realm-a', status: 'healthy' },
+      ],
+      edges: [],
+    };
+
+    expect(computeLayoutBounds(topology, new Map())).toBeNull();
   });
 });

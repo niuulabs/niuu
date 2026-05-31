@@ -403,11 +403,13 @@ class TestConfigProfileProvider:
             await config_provider.update("nope", profile)
 
     async def test_delete(self, config_provider: ConfigProfileProvider):
-        assert await config_provider.delete("heavy") is True
+        deleted = await config_provider.delete("heavy")
+        assert deleted is True
         assert config_provider.get("heavy") is None
 
     async def test_delete_missing(self, config_provider: ConfigProfileProvider):
-        assert await config_provider.delete("nope") is False
+        deleted = await config_provider.delete("nope")
+        assert deleted is False
 
     def test_list(self, config_provider: ConfigProfileProvider):
         profiles = config_provider.list()

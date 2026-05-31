@@ -233,7 +233,8 @@ class TestObservatoryApp:
                 ).status_code
                 == 422
             )
-            assert client.delete("/api/v1/observatory/registry/types/missing").status_code == 404
+            response = client.delete("/api/v1/observatory/registry/types/missing")
+            assert response.status_code == 404
 
     def test_create_app_uses_postgres_repo_in_lifespan(self, monkeypatch) -> None:
         class _FakePostgresRepository:

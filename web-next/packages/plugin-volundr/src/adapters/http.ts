@@ -956,6 +956,49 @@ async function ensureOk(response: Response): Promise<Response> {
   throw new Error(detail || `Request failed with ${response.status}`);
 }
 
+export const __testables = {
+  normalizeSessionDefinition,
+  normalizePermissionAutoApproval,
+  buildStartSessionBody,
+  toEpochMs,
+  toDate,
+  normalizeSession,
+  normalizeTarget,
+  normalizeStats,
+  normalizeMessageRole,
+  deriveCanonicalCredentialsBasePath,
+  deriveSharedApiBasePath,
+  deriveCanonicalForgeBasePath,
+  deriveNiuuBasePath,
+  normalizeStoredCredential,
+  normalizeSecretTypeInfo,
+  normalizeMessages,
+  normalizeConversationHistory,
+  normalizeWorkflowGate,
+  normalizeLogLevel,
+  normalizeLogs,
+  normalizeAggregateParticipants,
+  normalizeAggregatedLogs,
+  normalizeChronicle,
+  normalizeTraceSpan,
+  normalizeTraceLane,
+  normalizeTrace,
+  normalizeTraceSummary,
+  normalizeRepo,
+  normalizeRepoList,
+  rememberKnownKey,
+  buildAggregatedLogsQuery,
+  applyChronicleEvent,
+  inferEventType,
+  trimTrailingSlash,
+  trimTrailingSlashes,
+  trimLeadingSlashes,
+  splitSessionPath,
+  toSessionPath,
+  toTreeNode,
+  ensureOk,
+};
+
 export function buildVolundrFileSystemHttpAdapter(options: {
   baseUrl: string;
   fetchImpl?: typeof fetch;

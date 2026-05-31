@@ -17,22 +17,22 @@ export interface MeterProps {
 export function Meter({ used, limit, unit = '', label, critical = 0.85, className }: MeterProps) {
   if (used == null || limit == null || limit === 0) {
     return (
-      <div className={cn('niuu-flex niuu-flex-col niuu-gap-0.5', className)} data-testid="meter">
+      <div className={cn('niuu:flex niuu:flex-col niuu:gap-0.5', className)} data-testid="meter">
         {label && (
-          <div className="niuu-flex niuu-justify-between niuu-text-xs">
-            <span className="niuu-text-text-muted">{label}</span>
-            <span className="niuu-font-mono niuu-text-text-faint">—</span>
+          <div className="niuu:flex niuu:justify-between niuu:text-xs">
+            <span className="niuu:text-text-muted">{label}</span>
+            <span className="niuu:font-mono niuu:text-text-faint">—</span>
           </div>
         )}
         <div
-          className="niuu-h-1.5 niuu-rounded-full niuu-bg-bg-elevated"
+          className="niuu:h-1.5 niuu:rounded-full niuu:bg-bg-elevated"
           role="meter"
           aria-valuenow={0}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-label={label ?? 'meter'}
         >
-          <div className="niuu-h-full niuu-rounded-full" style={{ width: '0%' }} />
+          <div className="niuu:h-full niuu:rounded-full" style={{ width: '0%' }} />
         </div>
       </div>
     );
@@ -42,22 +42,22 @@ export function Meter({ used, limit, unit = '', label, critical = 0.85, classNam
   const level = pct >= critical ? 'hot' : pct >= 0.6 ? 'warm' : 'cool';
   const colorClass =
     level === 'hot'
-      ? 'niuu-bg-critical'
+      ? 'niuu:bg-critical'
       : level === 'warm'
-        ? 'niuu-bg-state-warn'
-        : 'niuu-bg-brand';
+        ? 'niuu:bg-state-warn'
+        : 'niuu:bg-brand';
   const pctNum = Math.round(pct * 100);
 
   return (
     <div
-      className={cn('niuu-flex niuu-flex-col niuu-gap-0.5', className)}
+      className={cn('niuu:flex niuu:flex-col niuu:gap-0.5', className)}
       data-testid="meter"
       data-level={level}
     >
       {label && (
-        <div className="niuu-flex niuu-justify-between niuu-text-xs">
-          <span className="niuu-text-text-muted">{label}</span>
-          <span className="niuu-font-mono niuu-text-text-faint">
+        <div className="niuu:flex niuu:justify-between niuu:text-xs">
+          <span className="niuu:text-text-muted">{label}</span>
+          <span className="niuu:font-mono niuu:text-text-faint">
             {used}
             {unit}/{limit}
             {unit}
@@ -65,7 +65,7 @@ export function Meter({ used, limit, unit = '', label, critical = 0.85, classNam
         </div>
       )}
       <div
-        className="niuu-h-1.5 niuu-rounded-full niuu-bg-bg-elevated"
+        className="niuu:h-1.5 niuu:rounded-full niuu:bg-bg-elevated"
         role="meter"
         aria-valuenow={pctNum}
         aria-valuemin={0}
@@ -73,7 +73,7 @@ export function Meter({ used, limit, unit = '', label, critical = 0.85, classNam
         aria-label={label ? `${label} ${pctNum}%` : `${pctNum}%`}
       >
         <div
-          className={cn('niuu-h-full niuu-rounded-full niuu-transition-all', colorClass)}
+          className={cn('niuu:h-full niuu:rounded-full niuu:transition-all', colorClass)}
           style={{ width: `${pct * 100}%` }}
         />
       </div>

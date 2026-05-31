@@ -160,6 +160,7 @@ def _summarise_event(event: RavnEvent) -> str:
             return f"error: {message}"
         case _:
             return f"{event.type}"
+    raise AssertionError("Unreachable _summarise_event fallthrough")
 
 
 class CaptureChannel(ChannelPort):

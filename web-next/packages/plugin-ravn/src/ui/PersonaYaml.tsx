@@ -50,13 +50,13 @@ function tokenizeLine(line: string): YamlToken[] {
 }
 
 const TOKEN_CLASSES: Record<TokenType, string> = {
-  key: 'niuu-text-status-cyan',
-  string: 'niuu-text-status-emerald',
-  number: 'niuu-text-status-amber',
-  boolean: 'niuu-text-status-purple',
-  comment: 'niuu-text-text-muted niuu-italic',
-  punctuation: 'niuu-text-text-muted',
-  plain: 'niuu-text-text-secondary',
+  key: 'niuu:text-status-cyan',
+  string: 'niuu:text-status-emerald',
+  number: 'niuu:text-status-amber',
+  boolean: 'niuu:text-status-purple',
+  comment: 'niuu:text-text-muted niuu:italic',
+  punctuation: 'niuu:text-text-muted',
+  plain: 'niuu:text-text-secondary',
 };
 
 // ── Component ──────────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ export function PersonaYaml({ name }: PersonaYamlProps) {
     return (
       <div
         data-testid="persona-yaml-loading"
-        className="niuu-p-6 niuu-text-sm niuu-text-text-muted"
+        className="niuu:p-6 niuu:text-sm niuu:text-text-muted"
       >
         Loading YAML…
       </div>
@@ -89,25 +89,25 @@ export function PersonaYaml({ name }: PersonaYamlProps) {
 
   if (isError) {
     return (
-      <div data-testid="persona-yaml-error" className="niuu-p-6 niuu-text-sm niuu-text-critical">
+      <div data-testid="persona-yaml-error" className="niuu:p-6 niuu:text-sm niuu:text-critical">
         {error instanceof Error ? error.message : 'Failed to load YAML'}
       </div>
     );
   }
 
   return (
-    <div className="niuu-overflow-auto niuu-h-full niuu-p-6" data-testid="persona-yaml">
-      <pre className="niuu-m-0 niuu-font-mono niuu-text-xs niuu-leading-relaxed">
+    <div className="niuu:overflow-auto niuu:h-full niuu:p-6" data-testid="persona-yaml">
+      <pre className="niuu:m-0 niuu:font-mono niuu:text-xs niuu:leading-relaxed">
         {tokenizedLines.map(({ lineNumber, tokens }) => (
-          <div key={lineNumber} className="niuu-flex">
+          <div key={lineNumber} className="niuu:flex">
             <span
-              className="niuu-select-none niuu-text-right niuu-shrink-0 niuu-mr-4 niuu-w-8 niuu-text-text-muted niuu-opacity-50"
+              className="niuu:select-none niuu:text-right niuu:shrink-0 niuu:mr-4 niuu:w-8 niuu:text-text-muted niuu:opacity-50"
               data-testid="yaml-line-number"
               aria-hidden="true"
             >
               {lineNumber}
             </span>
-            <span className="niuu-flex-1">
+            <span className="niuu:flex-1">
               {tokens.map((token, j) => (
                 <span key={j} className={TOKEN_CLASSES[token.type]}>
                   {token.text}

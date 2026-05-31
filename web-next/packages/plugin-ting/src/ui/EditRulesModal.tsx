@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Modal, cn } from '@niuulabs/ui';
 
 // ---------------------------------------------------------------------------
@@ -24,92 +24,94 @@ export interface EditRulesModalProps {
 // ---------------------------------------------------------------------------
 
 export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesModalProps) {
-  const [threshold, setThreshold] = useState(rules.threshold);
-  const [maxConcurrentRuns, setMaxConcurrentRuns] = useState(rules.maxConcurrentRuns);
-  const [autoContinue, setAutoContinue] = useState(rules.autoContinue);
-  const [retryCount, setRetryCount] = useState(rules.retryCount);
+  const rulesKey = `${rules.threshold}:${rules.maxConcurrentRuns}:${rules.autoContinue}:${rules.retryCount}`;
+  const [draft, setDraft] = useState<{ key: string; value: RulesFormState } | null>(null);
+  const current = draft?.key === rulesKey ? draft.value : rules;
 
-  useEffect(() => {
-    if (!open) return;
-    setThreshold(rules.threshold);
-    setMaxConcurrentRuns(rules.maxConcurrentRuns);
-    setAutoContinue(rules.autoContinue);
-    setRetryCount(rules.retryCount);
-  }, [open, rules.threshold, rules.maxConcurrentRuns, rules.autoContinue, rules.retryCount]);
+  function updateDraft(patch: Partial<RulesFormState>) {
+    setDraft((prev) => ({
+      key: rulesKey,
+      value: { ...(prev?.key === rulesKey ? prev.value : rules), ...patch },
+    }));
+  }
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen) {
+      setDraft(null);
+    }
+    onOpenChange(nextOpen);
+  }
 
   function handleSave() {
-    onSave({ threshold, maxConcurrentRuns, autoContinue, retryCount });
+    onSave(current);
+    setDraft(null);
     onOpenChange(false);
   }
 
   const inputClass =
-    'niuu-w-24 niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-2 niuu-py-1 niuu-text-right niuu-font-mono niuu-text-sm niuu-text-text-primary';
+    'niuu:w-24 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-right niuu:font-mono niuu:text-sm niuu:text-text-primary';
 
   return (
     <Modal
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title="Edit dispatch rules"
       actions={[
         { label: 'Cancel', variant: 'secondary' },
         { label: 'Save', variant: 'primary', onClick: handleSave, closes: false },
       ]}
     >
-      <div className="niuu-mt-2 niuu-flex niuu-flex-col niuu-gap-3">
-        {/* Confidence threshold */}
-        <div className="niuu-flex niuu-items-center niuu-justify-between">
-          <label className="niuu-text-sm niuu-text-text-secondary">Confidence threshold</label>
+      <div className="niuu:mt-2 niuu:flex niuu:flex-col niuu:gap-3">
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <label className="niuu:text-sm niuu:text-text-secondary">Confidence threshold</label>
           <input
             type="number"
             min="0"
             max="100"
-            value={threshold}
-            onChange={(e) => setThreshold(parseFloat(e.target.value) || 0)}
+            value={current.threshold}
+            onChange={(e) => updateDraft({ threshold: parseFloat(e.target.value) || 0 })}
             className={inputClass}
             aria-label="Confidence threshold"
           />
         </div>
 
-        {/* Max concurrent runs */}
-        <div className="niuu-flex niuu-items-center niuu-justify-between">
-          <label className="niuu-text-sm niuu-text-text-secondary">Max concurrent runs</label>
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <label className="niuu:text-sm niuu:text-text-secondary">Max concurrent runs</label>
           <input
             type="number"
             min="1"
-            value={maxConcurrentRuns}
-            onChange={(e) => setMaxConcurrentRuns(parseInt(e.target.value) || 1)}
+            value={current.maxConcurrentRuns}
+            onChange={(e) => updateDraft({ maxConcurrentRuns: parseInt(e.target.value) || 1 })}
             className={inputClass}
             aria-label="Max concurrent runs"
           />
         </div>
 
-        {/* Auto-continue */}
-        <div className="niuu-flex niuu-items-center niuu-justify-between">
-          <label className="niuu-text-sm niuu-text-text-secondary">Auto-continue</label>
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <label className="niuu:text-sm niuu:text-text-secondary">Auto-continue</label>
           <button
             type="button"
-            onClick={() => setAutoContinue(!autoContinue)}
-            aria-pressed={autoContinue}
+            onClick={() => updateDraft({ autoContinue: !current.autoContinue })}
+            aria-pressed={current.autoContinue}
             aria-label="Toggle auto-continue"
             className={cn(
-              'niuu-rounded-md niuu-px-3 niuu-py-1 niuu-text-sm niuu-font-medium niuu-transition-colors',
-              autoContinue
-                ? 'niuu-bg-brand niuu-text-bg-primary'
-                : 'niuu-border niuu-border-border niuu-bg-transparent niuu-text-text-muted',
+              'niuu:rounded-md niuu:px-3 niuu:py-1 niuu:text-sm niuu:font-medium niuu:transition-colors',
+              current.autoContinue
+                ? 'niuu:bg-brand niuu:text-bg-primary'
+                : 'niuu:border niuu:border-border niuu:bg-transparent niuu:text-text-muted',
             )}
           >
-            {autoContinue ? 'on' : 'off'}
+            {current.autoContinue ? 'on' : 'off'}
           </button>
         </div>
 
-        {/* Retry count */}
-        <div className="niuu-flex niuu-items-center niuu-justify-between">
-          <label className="niuu-text-sm niuu-text-text-secondary">Retry count</label>
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <label className="niuu:text-sm niuu:text-text-secondary">Retry count</label>
           <input
             type="number"
             min="0"
-            value={retryCount}
-            onChange={(e) => setRetryCount(parseInt(e.target.value) || 0)}
+            value={current.retryCount}
+            onChange={(e) => updateDraft({ retryCount: parseInt(e.target.value) || 0 })}
             className={inputClass}
             aria-label="Retry count"
           />

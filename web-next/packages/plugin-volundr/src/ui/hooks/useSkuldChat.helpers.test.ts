@@ -6,8 +6,10 @@ import {
   getString,
   getStringArray,
   makeSingleParticipant,
+  meshEventsFromTurns,
   parseEvent,
   parseParticipantMeta,
+  participantsFromTurns,
   pushOutcomeField,
   reviveAgentEvents,
   reviveMeshEvents,
@@ -36,6 +38,11 @@ describe('useSkuldChat helpers', () => {
     });
     expect(() => safeSessionStorageSet('ws://example', { messages: [] })).not.toThrow();
     setItem.mockRestore();
+  });
+
+  it('returns null when cached session storage contains invalid json', () => {
+    sessionStorage.setItem(getStorageKey('ws://broken'), '{not-json');
+    expect(safeSessionStorageGet('ws://broken')).toBeNull();
   });
 
   it('persists and revives messages, mesh events, and agent events', () => {
@@ -72,6 +79,11 @@ describe('useSkuldChat helpers', () => {
     ]);
     const revived = reviveAgentEvents(serializeAgentEvents(agentEvents as never));
     expect(revived.get('peer-1')?.[0]?.timestamp).toEqual(meshTimestamp);
+    expect(
+      reviveAgentEvents({
+        'peer-2': [{ id: 'evt-2', frameType: 'thought', data: 'pending' }],
+      } as never).get('peer-2')?.[0]?.timestamp,
+    ).toBeUndefined();
   });
 
   it('extracts participant metadata with multiple key shapes', () => {
@@ -127,9 +139,113 @@ describe('useSkuldChat helpers', () => {
     ]);
   });
 
+  it('derives participants from turns and synthesizes a single Skuld observer only for ravn rooms', () => {
+    const ravnParticipants = participantsFromTurns([
+      {
+        id: 'turn-1',
+        role: 'assistant',
+        content: 'Done',
+        created_at: '2026-05-01T10:18:36.889091+00:00',
+        participant_meta: { peer_id: 'peer-1', persona: 'reviewer', participant_type: 'ravn' },
+      },
+    ] as never);
+    expect(ravnParticipants.get('peer-1')?.persona).toBe('reviewer');
+    expect(ravnParticipants.get('skuld-primary')?.participantType).toBe('skuld');
+
+    const existingSkuld = participantsFromTurns([
+      {
+        id: 'turn-2',
+        role: 'assistant',
+        content: 'Done',
+        created_at: '2026-05-01T10:18:36.889091+00:00',
+        participant_meta: { peer_id: 'peer-2', persona: 'Skuld', participant_type: 'skuld' },
+      },
+    ] as never);
+    expect(existingSkuld.size).toBe(1);
+    expect(existingSkuld.get('skuld-primary')).toBeUndefined();
+
+    expect(
+      participantsFromTurns([
+        {
+          id: 'turn-3',
+          role: 'assistant',
+          content: 'Done',
+          created_at: '2026-05-01T10:18:36.889091+00:00',
+        },
+      ] as never).size,
+    ).toBe(0);
+  });
+
+  it('extracts mesh outcome events from history turns and skips non-outcome cases', () => {
+    const events = meshEventsFromTurns([
+      {
+        id: 'turn-user',
+        role: 'user',
+        content: 'ignore me',
+        created_at: '2026-05-01T10:18:36.889091+00:00',
+      },
+      {
+        id: 'turn-no-participant',
+        role: 'assistant',
+        content: '---outcome---\nsummary: Missing participant\n---end---',
+        created_at: '2026-05-01T10:18:36.889091+00:00',
+      },
+      {
+        id: 'turn-no-outcome',
+        role: 'assistant',
+        content: 'plain text',
+        created_at: '2026-05-01T10:18:36.889091+00:00',
+        participant_meta: { peer_id: 'peer-0', persona: 'reviewer', participant_type: 'ravn' },
+      },
+      {
+        id: 'turn-event-type',
+        role: 'assistant',
+        content: '---outcome---\nevent_type: review.completed\nsummary: Packet_ready\n---end---',
+        created_at: '2026-05-01T10:18:36.889091+00:00',
+        participant_meta: { peer_id: 'peer-1', persona: 'reviewer', participant_type: 'ravn' },
+      },
+      {
+        id: 'turn-eventType',
+        role: 'assistant',
+        content:
+          '---outcome---\neventType: research.completed\nverdict: approved\nsummary: Research_ready\n---end---',
+        created_at: '2026-05-01T10:18:36.889091+00:00',
+        participant_meta: { peer_id: 'peer-2', persona: 'researcher', participant_type: 'ravn' },
+      },
+      {
+        id: 'turn-default',
+        role: 'assistant',
+        content: '---outcome---\nsummary: No explicit event type\n---end---',
+        created_at: '2026-05-01T10:18:36.889091+00:00',
+        participant_meta: { peer_id: 'peer-3', persona: 'analyst', participant_type: 'ravn' },
+      },
+    ] as never);
+
+    expect(events).toHaveLength(3);
+    expect(events[0]).toMatchObject({
+      participantId: 'peer-1',
+      eventType: 'review.completed',
+      summary: 'Packet_ready',
+    });
+    expect(events[1]).toMatchObject({
+      participantId: 'peer-2',
+      eventType: 'research.completed',
+      verdict: 'approved',
+      summary: 'Research_ready',
+    });
+    expect(events[2]).toMatchObject({
+      participantId: 'peer-3',
+      eventType: 'outcome',
+      summary: 'No explicit event type',
+    });
+  });
+
   it('formats outcome payloads for strings, JSON values, and multiline content', () => {
     expect(stringifyOutcomeValue({ files: ['a.ts'] })).toBe('{"files":["a.ts"]}');
     expect(stringifyOutcomeValue(undefined)).toBe('');
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(stringifyOutcomeValue(circular)).toBe('[object Object]');
 
     const lines: string[] = [];
     pushOutcomeField(lines, 'summary', 'Looks good');

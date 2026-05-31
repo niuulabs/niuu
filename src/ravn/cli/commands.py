@@ -11,6 +11,7 @@ import signal
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,7 @@ def approvals_main() -> None:
 
 def _import_class(dotted_path: str) -> type:
     """Dynamically import a class from a fully-qualified dotted path."""
+
     module_path, class_name = dotted_path.rsplit(".", 1)
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
@@ -1664,7 +1666,7 @@ async def _run_with_signals(
             show_usage=show_usage,
         )
     except KeyboardInterrupt:
-        pass
+        return
     finally:
         # Emit resume hint when an interrupt was received.
         if agent._interrupt_reason is not None:
@@ -1674,10 +1676,8 @@ async def _run_with_signals(
             )
         # NIU-598: flush pending events then tear down the reflection service.
         if in_process_bus is not None:
-            try:
+            with suppress(Exception):
                 await in_process_bus.flush()
-            except Exception:
-                pass
         if reflection_svc is not None:
             await reflection_svc.stop()
 
@@ -2233,9 +2233,9 @@ async def _run_gateway(
     try:
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
-        pass
+        return
     except KeyboardInterrupt:
-        pass
+        return
     finally:
         for task in tasks:
             task.cancel()
@@ -2722,10 +2722,8 @@ async def _run_daemon(
     if not tasks:
         typer.echo("No channels or triggers enabled — daemon has nothing to do.", err=True)
         if daemon_bus is not None:
-            try:
+            with suppress(Exception):
                 await daemon_bus.flush()
-            except Exception:
-                pass
         if daemon_reflection_svc is not None:
             await daemon_reflection_svc.stop()
         if sleipnir_catalog_publisher is not None:
@@ -2735,9 +2733,9 @@ async def _run_daemon(
     try:
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
-        pass
+        return
     except KeyboardInterrupt:
-        pass
+        return
     finally:
         for task in tasks:
             task.cancel()
@@ -2748,10 +2746,8 @@ async def _run_daemon(
         await _shutdown_mcp(mcp_manager)
         # NIU-598: flush pending events before tearing down daemon reflection service.
         if daemon_bus is not None:
-            try:
+            with suppress(Exception):
                 await daemon_bus.flush()
-            except Exception:
-                pass
         if daemon_reflection_svc is not None:
             await daemon_reflection_svc.stop()
         if sleipnir_catalog_publisher is not None:
@@ -3839,8 +3835,6 @@ def peers(
 
 async def _run_peers(settings: Settings, *, verbose: bool, force_scan: bool) -> None:
     """Build a discovery adapter, optionally scan, and print the peer table."""
-    import importlib
-
     from ravn.adapters.discovery._identity import (
         load_or_create_peer_id,
         load_or_create_realm_key,
@@ -3978,15 +3972,13 @@ def tui(
 
     # Extract mimir HTTP instance URLs from the loaded config
     mimir_urls: list[tuple[str, str]] = []
-    try:
+    with suppress(Exception):
         from ravn.config import Settings
 
         settings = Settings()
         for inst in sorted(settings.mimir.instances, key=lambda i: i.read_priority):
             if inst.url:
                 mimir_urls.append((inst.name, inst.url))
-    except Exception:
-        pass
 
     ravn_tui = RavnTUI(
         connections=parsed_connections,

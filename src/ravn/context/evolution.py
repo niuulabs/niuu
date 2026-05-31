@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -225,10 +226,8 @@ class EvolutionState:
         last_run_at: datetime | None = None
         raw_ts = data.get("last_run_at")
         if raw_ts:
-            try:
+            with suppress(ValueError, TypeError):
                 last_run_at = datetime.fromisoformat(raw_ts)
-            except (ValueError, TypeError):
-                pass
         return cls(
             last_run_at=last_run_at,
             outcome_count_at_last_run=int(data.get("outcome_count_at_last_run", 0)),

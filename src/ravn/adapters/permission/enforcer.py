@@ -32,6 +32,7 @@ import re
 import shlex
 import time
 from collections import deque
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -398,12 +399,10 @@ class PermissionEnforcer(PermissionEnforcerPort, PermissionPort):
         # Binary detection for existing files
         p = Path(resolved)
         if p.exists() and p.is_file():
-            try:
+            with suppress(OSError):
                 sample = p.read_bytes()[: self._config_binary_check_bytes()]
                 if is_binary(sample):
                     return Deny(f"refusing to write binary file: {resolved}")
-            except OSError:
-                pass
 
         return Allow()
 

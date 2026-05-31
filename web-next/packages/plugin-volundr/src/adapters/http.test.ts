@@ -41,7 +41,7 @@ vi.mock('@niuulabs/query', async () => {
   };
 });
 
-import { buildVolundrFileSystemHttpAdapter, buildVolundrHttpAdapter } from './http';
+import { __testables, buildVolundrFileSystemHttpAdapter, buildVolundrHttpAdapter } from './http';
 import type { IVolundrService } from '../ports/IVolundrService';
 
 function makeClient() {
@@ -72,6 +72,512 @@ afterEach(() => {
   queryMocks.createApiClient.mockClear();
   queryMocks.getAccessToken.mockClear();
   queryMocks.getAuthHeaders.mockClear();
+});
+
+const {
+  normalizeSessionDefinition,
+  normalizePermissionAutoApproval,
+  buildStartSessionBody,
+  toEpochMs,
+  toDate,
+  normalizeSession,
+  normalizeTarget,
+  normalizeStats,
+  normalizeMessageRole,
+  deriveCanonicalCredentialsBasePath,
+  deriveSharedApiBasePath,
+  deriveCanonicalForgeBasePath,
+  deriveNiuuBasePath,
+  normalizeStoredCredential,
+  normalizeSecretTypeInfo,
+  normalizeMessages,
+  normalizeConversationHistory,
+  normalizeWorkflowGate,
+  normalizeLogLevel,
+  normalizeLogs,
+  normalizeAggregateParticipants,
+  normalizeAggregatedLogs,
+  normalizeChronicle,
+  normalizeTraceSpan,
+  normalizeTraceLane,
+  normalizeTrace,
+  normalizeTraceSummary,
+  normalizeRepo,
+  normalizeRepoList,
+  rememberKnownKey,
+  buildAggregatedLogsQuery,
+  applyChronicleEvent,
+  inferEventType,
+  trimTrailingSlash,
+  trimTrailingSlashes,
+  trimLeadingSlashes,
+  splitSessionPath,
+  toSessionPath,
+  toTreeNode,
+  ensureOk,
+} = __testables;
+
+describe('__testables', () => {
+  it('normalizes session definitions, permission approval payloads, and start bodies with fallbacks', () => {
+    expect(
+      normalizeSessionDefinition({
+        key: 'default',
+        description: 'desc',
+        labels: [],
+      }),
+    ).toEqual({
+      key: 'default',
+      displayName: 'default',
+      description: 'desc',
+      labels: [],
+      defaultModel: '',
+      compatibleProviders: [],
+    });
+
+    expect(normalizePermissionAutoApproval({})).toEqual({
+      canAutoApprove: false,
+      reason: 'endpoint_error',
+      command: null,
+      delaySeconds: 5,
+      matchedPattern: null,
+    });
+
+    expect(
+      buildStartSessionBody({
+        name: 'alpha',
+        source: { type: 'git', repo: 'r', branch: 'main' },
+        model: 'sonnet',
+        terminalRestricted: true,
+        trackerIssue: {
+          id: 'NIU-1',
+          identifier: 'NIU-1',
+          title: 'Issue',
+          status: 'todo',
+          url: 'https://tracker/NIU-1',
+        },
+      }),
+    ).toEqual({
+      name: 'alpha',
+      source: { type: 'git', repo: 'r', branch: 'main' },
+      model: 'sonnet',
+      terminal_restricted: true,
+      instance_id: null,
+      workload_config: {},
+      issue_id: 'NIU-1',
+      issue_url: 'https://tracker/NIU-1',
+    });
+  });
+
+  it('normalizes dates, sessions, targets, stats, and message roles across fallback forms', () => {
+    expect(toEpochMs(42)).toBe(42);
+    expect(toEpochMs('invalid')).toBe(0);
+    expect(toEpochMs(undefined)).toBe(0);
+
+    const now = new Date('2026-05-31T12:00:00Z');
+    expect(toDate(now)).toBe(now);
+    expect(toDate('not-a-date')).toBeUndefined();
+    expect(toDate(null)).toBeUndefined();
+
+    const session = normalizeSession({
+      id: 'sess-1',
+      name: 'alpha',
+      source: { type: 'git', repo: 'r', branch: 'main' },
+      status: 'running',
+      model: 'sonnet',
+      last_active: '2026-05-31T12:00:00Z',
+      message_count: 4,
+      tokens_used: 9,
+      pod_name: null,
+      archived_at: 'invalid-date',
+      tracker_issue_id: null,
+      issue_tracker_url: 'https://tracker',
+      activity_state: 'idle',
+      owner_id: 'owner-1',
+      tenant_id: 'tenant-1',
+      instance_id: 'instance-1',
+      instance_name: 'Alpha',
+    });
+    expect(session).toMatchObject({
+      messageCount: 4,
+      tokensUsed: 9,
+      activityState: 'idle',
+      ownerId: 'owner-1',
+      tenantId: 'tenant-1',
+      instanceId: 'instance-1',
+      instanceName: 'Alpha',
+    });
+    expect(session.archivedAt).toBeUndefined();
+    expect(session.trackerIssue).toBeUndefined();
+
+    expect(
+      normalizeTarget({
+        id: 'target-1',
+        slug: 'alpha',
+        name: 'Alpha',
+        enabled: true,
+        visibility: 'tenant',
+      } as any),
+    ).toMatchObject({ baseUrl: '', isDefault: false });
+
+    expect(normalizeStats({ sparklines: { sessions: [1] } as any })).toMatchObject({
+      activeSessions: 0,
+      totalSessions: 0,
+      tokensToday: 0,
+      localTokens: 0,
+      cloudTokens: 0,
+      costToday: 0,
+    });
+    expect(normalizeMessageRole('user')).toBe('user');
+    expect(normalizeMessageRole('system')).toBe('assistant');
+  });
+
+  it('derives canonical base paths from forge, shared, niuu, and credentials variants', () => {
+    expect(deriveCanonicalCredentialsBasePath()).toBeNull();
+    expect(deriveCanonicalCredentialsBasePath('http://host/api/v1/credentials/')).toBe(
+      'http://host/api/v1/credentials',
+    );
+    expect(deriveCanonicalCredentialsBasePath('http://host/api/v1')).toBe(
+      'http://host/api/v1/credentials',
+    );
+    expect(deriveCanonicalCredentialsBasePath('http://host/api/v1/forge')).toBe(
+      'http://host/api/v1/credentials',
+    );
+
+    expect(deriveSharedApiBasePath()).toBeNull();
+    expect(deriveSharedApiBasePath('http://host/api/v1')).toBe('http://host/api/v1');
+    expect(deriveSharedApiBasePath('http://host/api/v1/niuu')).toBe('http://host/api/v1');
+    expect(deriveSharedApiBasePath('http://host/api/v1/niuu/volundr')).toBe('http://host/api/v1');
+    expect(deriveSharedApiBasePath('http://host/api/v1/forge')).toBe('http://host/api/v1');
+
+    expect(deriveCanonicalForgeBasePath()).toBeNull();
+    expect(deriveCanonicalForgeBasePath('http://host/api/v1/forge/')).toBe(
+      'http://host/api/v1/forge',
+    );
+    expect(deriveCanonicalForgeBasePath('http://host/api/v1')).toBe('http://host/api/v1/forge');
+    expect(deriveCanonicalForgeBasePath('http://host/api/v1/niuu/volundr')).toBe(
+      'http://host/api/v1/forge',
+    );
+
+    expect(deriveNiuuBasePath()).toBeNull();
+    expect(deriveNiuuBasePath('http://host/api/v1/niuu')).toBe('http://host/api/v1/niuu');
+    expect(deriveNiuuBasePath('http://host/api/v1/niuu/volundr')).toBe('http://host/api/v1/niuu');
+    expect(deriveNiuuBasePath('http://host/api/v1/forge')).toBe('http://host/api/v1/niuu');
+  });
+
+  it('normalizes credentials, secret types, conversation history, workflow gates, and logs', () => {
+    expect(
+      normalizeStoredCredential({
+        id: 'cred-1',
+        name: 'cred',
+        keys: ['token'],
+      } as any),
+    ).toMatchObject({
+      secretType: 'generic',
+      metadata: {},
+      createdAt: '',
+      updatedAt: '',
+    });
+
+    expect(
+      normalizeSecretTypeInfo({
+        type: 'custom',
+        label: 'Custom',
+        description: 'desc',
+        fields: [
+          { name: 'api_key' },
+          { key: 'region', label: 'Region', type: 'select', required: true },
+        ],
+        default_mount_type: 'env_file',
+      } as any),
+    ).toEqual({
+      type: 'custom',
+      label: 'Custom',
+      description: 'desc',
+      fields: [
+        { key: 'api_key', label: 'api_key', type: 'text', required: false },
+        { key: 'region', label: 'Region', type: 'select', required: true },
+      ],
+      defaultMountType: 'env',
+    });
+
+    expect(
+      normalizeMessages('sess-1', {
+        turns: [{ id: 'm1', role: 'assistant', content: 'hi', created_at: undefined }],
+      }),
+    ).toEqual([expect.objectContaining({ id: 'm1', timestamp: 0, role: 'assistant' })]);
+
+    expect(
+      normalizeConversationHistory({
+        turns: [{ id: 't1', role: 'assistant', content: 'hi' }],
+      }),
+    ).toEqual({
+      turns: [
+        expect.objectContaining({
+          id: 't1',
+          created_at: new Date(0).toISOString(),
+        }),
+      ],
+    });
+
+    expect(normalizeWorkflowGate({ id: 'gate-1' })).toMatchObject({
+      node_id: '',
+      activation_id: '',
+      label: 'gate-1',
+      condition: '',
+      status: 'pending',
+      pending_behavior: 'help_needed',
+      approvers: [],
+      auto_forward_after: '30m',
+      attempt: 1,
+      source: 'human',
+      summary: '',
+    });
+
+    expect(normalizeLogLevel(undefined)).toBe('info');
+    expect(normalizeLogLevel('WARNING')).toBe('warn');
+    expect(normalizeLogLevel('TRACE')).toBe('error');
+
+    expect(
+      normalizeLogs('sess-1', {
+        lines: [
+          { time: '2026-05-31T12:00:00Z', message: 'booted' },
+          { time: '2026-05-31T12:00:00Z', message: 'booted' },
+        ],
+      }),
+    ).toEqual([
+      expect.objectContaining({ source: 'broker', id: expect.stringContaining(':1') }),
+      expect.objectContaining({ source: 'broker', id: expect.stringContaining(':2') }),
+    ]);
+  });
+
+  it('normalizes aggregated logs, chronicles, traces, repos, and grouped repo lists', () => {
+    expect(normalizeAggregateParticipants({ lines: [] })).toEqual([]);
+    expect(
+      normalizeAggregateParticipants({
+        available_participants: [{ id: 'coder' }],
+        lines: [],
+      }),
+    ).toEqual([{ id: 'coder', label: 'coder', kind: 'ravn' }]);
+
+    const aggregate = normalizeAggregatedLogs('sess-1', {
+      lines: [{ timestamp: undefined, level: 'INFO', message: undefined }],
+    });
+    expect(aggregate.lines[0]).toMatchObject({
+      participant: 'session',
+      participantLabel: 'session',
+      participantKind: 'ravn',
+      source: 'session',
+      message: '',
+      stream: 'workspace',
+    });
+
+    expect(normalizeChronicle({ events: [], files: [], commits: [], tokenBurn: [1] })).toEqual({
+      events: [],
+      files: [],
+      commits: [],
+      tokenBurn: [1],
+    });
+
+    expect(
+      normalizeTraceSpan({
+        id: 'span-1',
+      }),
+    ).toMatchObject({
+      sessionId: '',
+      traceId: '',
+      parentSpanId: null,
+      kind: 'unknown',
+      name: 'span',
+      status: 'completed',
+      startedAt: new Date(0).toISOString(),
+      endedAt: null,
+      durationMs: null,
+      actorType: null,
+      actorId: null,
+      actorLabel: null,
+      sourceService: null,
+      attributes: {},
+    });
+    expect(normalizeTraceLane({ key: 'lane-1' })).toEqual({
+      key: 'lane-1',
+      label: 'lane-1',
+      kind: 'system',
+    });
+    expect(normalizeTrace({} as any)).toEqual({
+      traceId: '',
+      sessionId: '',
+      startedAt: null,
+      endedAt: null,
+      durationMs: 0,
+      spans: [],
+      lanes: [],
+    });
+    expect(normalizeTraceSummary({} as any)).toEqual({
+      totalDurationMs: 0,
+      provisioningDurationMs: 0,
+      setupDurationMs: 0,
+      workflowDurationMs: 0,
+      publishDurationMs: 0,
+      cleanupDurationMs: 0,
+      activeExecutionDurationMs: 0,
+      waitingDurationMs: 0,
+      turnCount: 0,
+      toolCallCount: 0,
+      longestSpan: null,
+    });
+
+    expect(
+      normalizeRepo({
+        provider: 'github',
+        org: 'niuu',
+        name: 'volundr',
+        url: 'https://github.com/niuu/volundr',
+      } as any),
+    ).toMatchObject({
+      cloneUrl: 'https://github.com/niuu/volundr.git',
+      defaultBranch: 'main',
+      branches: [],
+    });
+
+    expect(
+      normalizeRepoList([
+        {
+          provider: 'github',
+          org: 'niuu',
+          name: 'volundr',
+          url: 'https://github.com/niuu/volundr',
+        },
+      ] as any),
+    ).toHaveLength(1);
+    expect(
+      normalizeRepoList([
+        {
+          provider: 'github',
+          org: 'niuu',
+          name: 'volundr',
+          url: 'https://github.com/niuu/volundr',
+          cloneUrl: 'https://github.com/niuu/volundr.git',
+          defaultBranch: 'main',
+          branches: [],
+        },
+      ] as any)[0]?.cloneUrl,
+    ).toBe('https://github.com/niuu/volundr.git');
+    expect(
+      normalizeRepoList({
+        GitHub: [
+          {
+            provider: 'github',
+            org: 'niuu',
+            name: 'volundr',
+            url: 'https://github.com/niuu/volundr',
+          },
+        ],
+      } as any),
+    ).toHaveLength(1);
+  });
+
+  it('handles polling keys, log queries, chronicle dedupe, event inference, and path helpers', async () => {
+    const connection = {
+      subscribers: new Set(),
+      knownKeys: ['a', 'b'],
+      knownKeySet: new Set(['a', 'b']),
+      timer: null,
+      loading: false,
+      hydrated: false,
+    };
+    rememberKnownKey(connection, 'b', 2);
+    rememberKnownKey(connection, 'c', 2);
+    expect(connection.knownKeys).toEqual(['b', 'c']);
+    expect(connection.knownKeySet.has('a')).toBe(false);
+
+    expect(buildAggregatedLogsQuery()).toBe('');
+    expect(
+      buildAggregatedLogsQuery({
+        limit: 50,
+        level: 'ERROR',
+        participants: ['coder', 'reviewer'],
+        query: 'timeout',
+      }),
+    ).toBe('?lines=50&level=ERROR&participants=coder%2Creviewer&query=timeout');
+
+    const existing = {
+      events: [{ t: 1, type: 'message', label: 'hello' }],
+      files: [],
+      commits: [],
+      tokenBurn: [1],
+    };
+    expect(
+      applyChronicleEvent(
+        existing as any,
+        {
+          session_id: 'sess-1',
+          event: { t: 1, type: 'message', label: 'hello' },
+          files: [],
+          commits: [],
+        } as any,
+      ),
+    ).toEqual({ ...existing, tokenBurn: [] });
+    expect(
+      applyChronicleEvent(undefined, {
+        session_id: 'sess-1',
+        event: { t: 2, type: 'tool', label: 'ran' },
+        files: [],
+        commits: [],
+        token_burn: [2],
+      } as any),
+    ).toEqual({
+      events: [{ t: 2, type: 'tool', label: 'ran' }],
+      files: [],
+      commits: [],
+      tokenBurn: [2],
+    });
+
+    expect(inferEventType(null)).toBeNull();
+    expect(inferEventType({ active_sessions: 1 })).toBe('stats_updated');
+    expect(inferEventType({ id: 'sess-1', status: 'running' })).toBe('session_updated');
+    expect(inferEventType({ id: 'sess-1' })).toBe('session_deleted');
+
+    expect(trimTrailingSlash('alpha/')).toBe('alpha');
+    expect(trimTrailingSlash('alpha')).toBe('alpha');
+    expect(trimTrailingSlashes('///workspace///')).toBe('///workspace');
+    expect(trimLeadingSlashes('///workspace')).toBe('workspace');
+    expect(splitSessionPath('/workspace')).toEqual({ root: 'workspace', relativePath: '' });
+    expect(splitSessionPath('/home')).toEqual({ root: 'home', relativePath: '' });
+    expect(splitSessionPath('/workspace/src/index.ts')).toEqual({
+      root: 'workspace',
+      relativePath: 'src/index.ts',
+    });
+    expect(splitSessionPath('/home/.config')).toEqual({ root: 'home', relativePath: '.config' });
+    expect(splitSessionPath('relative/path')).toEqual({
+      root: 'workspace',
+      relativePath: 'relative/path',
+    });
+    expect(toSessionPath('workspace', '')).toBe('/workspace');
+    expect(toSessionPath('home', 'docs/readme.md')).toBe('/home/docs/readme.md');
+    expect(toTreeNode({ name: 'docs', path: 'docs', type: 'directory' }, 'workspace', [])).toEqual({
+      name: 'docs',
+      path: '/workspace/docs',
+      kind: 'directory',
+      size: undefined,
+      children: [],
+    });
+    expect(
+      toTreeNode({ name: 'readme', path: 'readme.md', type: 'file', size: 12 }, 'home'),
+    ).toEqual({
+      name: 'readme',
+      path: '/home/readme.md',
+      kind: 'file',
+      size: 12,
+      children: undefined,
+    });
+
+    const ok = new Response('ok', { status: 200 });
+    await expect(ensureOk(ok)).resolves.toBe(ok);
+    await expect(ensureOk(new Response('boom', { status: 500 }))).rejects.toThrow('boom');
+    await expect(ensureOk(new Response('', { status: 503 }))).rejects.toThrow(
+      'Request failed with 503',
+    );
+  });
 });
 
 describe('buildVolundrFileSystemHttpAdapter', () => {
@@ -129,6 +635,47 @@ describe('buildVolundrFileSystemHttpAdapter', () => {
       const headers = options?.headers as Headers | undefined;
       expect(headers?.get('Authorization')).toBe('Bearer token-123');
     }
+  });
+
+  it('lists home-root files and writes top-level files without creating parent directories', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            entries: [{ name: '.config', path: '.config', type: 'directory' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    const fs = buildVolundrFileSystemHttpAdapter({
+      baseUrl: 'https://sessions.example.com/',
+      fetchImpl,
+    });
+
+    const homeNodes = await fs.expandDirectory('sess-1', '/home');
+    await fs.writeFile('sess-1', '/workspace/README.md', '# hello');
+
+    expect(homeNodes).toEqual([
+      expect.objectContaining({ path: '/home/.config', kind: 'directory' }),
+    ]);
+    expect(fetchImpl.mock.calls[1]?.[0]).toContain('/files/upload?root=workspace');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws when mkdir fails with a non-conflict status', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('nope', { status: 500 }));
+
+    const fs = buildVolundrFileSystemHttpAdapter({
+      baseUrl: 'https://sessions.example.com',
+      fetchImpl,
+    });
+
+    await expect(fs.writeFile('sess-1', '/workspace/docs/readme.md', 'hello')).rejects.toThrow(
+      'nope',
+    );
   });
 });
 
@@ -278,6 +825,35 @@ describe('buildVolundrHttpAdapter', () => {
     expect(headers.get('x-niuu-workflow-gate-intent')).toBe('resolve');
     expect(gate.status).toBe('approved');
     expect(gate.decision).toBe('APPROVE');
+  });
+
+  it('resolveWorkflowGate surfaces API detail errors and unknown fallbacks', async () => {
+    const client = makeClient();
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 400,
+          json: async () => ({ detail: 'not allowed' }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: async () => ({ nope: true }),
+        }),
+    );
+
+    const svc = buildVolundrHttpAdapter(client);
+
+    await expect(
+      svc.resolveWorkflowGate('sess-1', 'gate-1', { decision: 'APPROVE' } as any),
+    ).rejects.toThrow('API request failed: 400 not allowed');
+    await expect(
+      svc.resolveWorkflowGate('sess-1', 'gate-1', { decision: 'APPROVE' } as any),
+    ).rejects.toThrow('API request failed: 500 Unknown error');
   });
 
   it('getSession calls GET /sessions/:id', async () => {
@@ -1204,6 +1780,33 @@ describe('buildVolundrHttpAdapter', () => {
     unsub();
   });
 
+  it('replays cached chronicle snapshots immediately to new chronicle subscribers', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({
+      events: [{ t: 0, type: 'session', label: 'started' }],
+      files: [],
+      commits: [],
+      token_burn: [1],
+    });
+    const openStream = vi.fn(() => ({ close: vi.fn() }));
+    const svc = buildVolundrHttpAdapter(client, openStream as never);
+
+    await svc.getChronicle('sess-1');
+    const seen: any[] = [];
+    const unsub = svc.subscribeChronicle('sess-1', (chronicle) => seen.push(chronicle));
+
+    expect(seen).toEqual([
+      {
+        events: [{ t: 0, type: 'session', label: 'started' }],
+        files: [],
+        commits: [],
+        tokenBurn: [1],
+      },
+    ]);
+
+    unsub();
+  });
+
   it('polls conversation history and emits only new messages', async () => {
     vi.useFakeTimers();
     const client = makeClient();
@@ -1274,6 +1877,54 @@ describe('buildVolundrHttpAdapter', () => {
     ]);
 
     unsub();
+  });
+
+  it('suppresses duplicate aggregated log payloads while polling and stops after unsubscribe', async () => {
+    vi.useFakeTimers();
+    const client = makeClient();
+    client.get.mockImplementation(async (endpoint: string) => {
+      if (!endpoint.startsWith('/sessions/sess-1/logs/aggregate')) return [];
+      if (client.get.mock.calls.length <= 1) {
+        return {
+          available_participants: [{ id: 'coder' }],
+          lines: [{ id: 'agg-1', timestamp: 1000, level: 'INFO', message: 'hello' }],
+        };
+      }
+      return {
+        available_participants: [{ id: 'coder' }],
+        lines: [{ id: 'agg-1', timestamp: 1000, level: 'INFO', message: 'hello' }],
+      };
+    });
+
+    const seen: any[] = [];
+    const unsub = buildVolundrHttpAdapter(client).subscribeAggregatedLogs(
+      'sess-1',
+      { limit: 25 },
+      (payload) => seen.push(payload),
+    );
+
+    await vi.runOnlyPendingTimersAsync();
+    expect(seen).toHaveLength(1);
+
+    unsub();
+    await vi.runOnlyPendingTimersAsync();
+    expect(seen).toHaveLength(1);
+  });
+
+  it('returns null for missing trace endpoints and rethrows non-404 errors', async () => {
+    const client = makeClient();
+    client.get
+      .mockRejectedValueOnce(new Error('404 trace missing'))
+      .mockRejectedValueOnce(new Error('404 trace summary missing'))
+      .mockRejectedValueOnce(new Error('500 trace exploded'))
+      .mockRejectedValueOnce(new Error('500 summary exploded'));
+
+    const svc = buildVolundrHttpAdapter(client);
+
+    await expect(svc.getSessionTrace('sess-1')).resolves.toBeNull();
+    await expect(svc.getSessionTraceSummary('sess-1')).resolves.toBeNull();
+    await expect(svc.getSessionTrace('sess-2')).rejects.toThrow('500 trace exploded');
+    await expect(svc.getSessionTraceSummary('sess-2')).rejects.toThrow('500 summary exploded');
   });
 
   it('preserves repeated identical log lines as distinct live events', async () => {

@@ -22,42 +22,42 @@ class SagaRepository(ABC):
     @abstractmethod
     async def save_saga(self, saga: Saga, *, conn: Any | None = None) -> None:
         """Persist a saga reference. Uses *conn* when inside a transaction."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def save_phase(self, phase: Phase, *, conn: Any | None = None) -> None:
         """Persist a phase (insert-or-update). Uses *conn* when inside a transaction."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def save_run(self, run: Run, *, conn: Any | None = None) -> None:
         """Persist a run. Uses *conn* when inside a transaction."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def list_sagas(self, *, owner_id: str | None = None) -> list[Saga]:
         """List all saga references, optionally filtered by owner."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def get_saga(self, saga_id: UUID, *, owner_id: str | None = None) -> Saga | None:
         """Get a saga by ID, optionally scoped to an owner."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def get_saga_by_slug(self, slug: str) -> Saga | None:
         """Get a saga by its slug. Returns None if no saga with that slug exists."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def delete_saga(self, saga_id: UUID, *, owner_id: str | None = None) -> bool:
         """Delete a saga, optionally scoped to an owner. Returns True if deleted."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def update_saga_status(self, saga_id: UUID, status: SagaStatus) -> None:
         """Update the status of a saga."""
-        ...
+        raise NotImplementedError
 
     async def update_saga_workflow(
         self,
@@ -88,7 +88,7 @@ class SagaRepository(ABC):
         All RunStatus values are always present in the result, with zero counts
         for statuses that have no runs.
         """
-        ...
+        raise NotImplementedError
 
     async def get_phase(self, phase_id: UUID) -> Phase | None:
         """Get a single phase by ID. Returns None if not found.

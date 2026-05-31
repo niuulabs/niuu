@@ -6,3 +6,4 @@ playwright-report
 test-results
 pnpm-lock.yaml
 *.tsbuildinfo
+packages/*/CHANGELOG.md

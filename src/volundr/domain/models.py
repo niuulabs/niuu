@@ -11,19 +11,19 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
-from niuu.domain.models import (  # noqa: F401
-    CIStatus,
-    GitProviderType,
-    IntegrationConnection,
-    IntegrationType,
-    Principal,
-    PullRequest,
-    PullRequestStatus,
-    RepoInfo,
-    ReviewStatus,
-    SecretType,
-    StoredCredential,
-)
+from niuu.domain import models as shared_models
+
+CIStatus = shared_models.CIStatus
+GitProviderType = shared_models.GitProviderType
+IntegrationConnection = shared_models.IntegrationConnection
+IntegrationType = shared_models.IntegrationType
+Principal = shared_models.Principal
+PullRequest = shared_models.PullRequest
+PullRequestStatus = shared_models.PullRequestStatus
+RepoInfo = shared_models.RepoInfo
+ReviewStatus = shared_models.ReviewStatus
+SecretType = shared_models.SecretType
+StoredCredential = shared_models.StoredCredential
 
 
 def _utc_now() -> datetime:
@@ -1532,7 +1532,7 @@ class SessionSpec:
 
 
 # PersonalAccessToken — re-exported from shared niuu module
-from niuu.domain.models import PersonalAccessToken  # noqa: F401, E402
+PersonalAccessToken = shared_models.PersonalAccessToken
 
 
 def _deep_merge(base: dict, override: dict) -> None:

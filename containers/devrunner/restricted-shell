@@ -1,3 +1,5 @@
+
+from contextlib import suppress
 #!/usr/bin/env python3
 """Restricted shell - only allows whitelisted commands."""
 
@@ -61,10 +63,8 @@ def main() -> None:
     cwd = workspace
 
     # Try to change to workspace dir
-    try:
+    with suppress(FileNotFoundError, PermissionError):
         os.chdir(cwd)
-    except (FileNotFoundError, PermissionError):
-        pass
 
     hostname = os.environ.get("SESSION_NAME", os.environ.get("SESSION_ID", "devrunner"))
     print(f"Restricted shell - {len(allowed)} commands available")

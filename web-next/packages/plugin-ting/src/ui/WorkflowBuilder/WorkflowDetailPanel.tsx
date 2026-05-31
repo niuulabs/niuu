@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { cn, SegmentedFilter } from '@niuulabs/ui';
 import type {
   Workflow,
@@ -37,29 +37,29 @@ export interface WorkflowDetailPanelProps {
 }
 
 const SECTION_LABEL =
-  'niuu-text-[9px] niuu-font-semibold niuu-uppercase niuu-tracking-[0.22em] niuu-text-text-faint niuu-font-mono';
+  'niuu:text-[9px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.22em] niuu:text-text-faint niuu:font-mono';
 const INPUT =
-  'niuu-w-full niuu-py-2.5 niuu-px-3.5 niuu-bg-bg-tertiary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-text-text-primary niuu-font-sans niuu-text-[12px]';
+  'niuu:w-full niuu:py-2.5 niuu:px-3.5 niuu:bg-bg-tertiary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:text-text-primary niuu:font-sans niuu:text-[12px]';
 const CHIP_BTN =
-  'niuu-rounded-md niuu-border niuu-px-2 niuu-py-1 niuu-text-[11px] niuu-font-mono niuu-transition-colors';
+  'niuu:rounded-md niuu:border niuu:px-2 niuu:py-1 niuu:text-[11px] niuu:font-mono niuu:transition-colors';
 const TAG =
-  'niuu-inline-flex niuu-items-center niuu-rounded-md niuu-border niuu-px-2 niuu-py-0.5 niuu-text-[10px] niuu-font-mono';
+  'niuu:inline-flex niuu:items-center niuu:rounded-md niuu:border niuu:px-2 niuu:py-0.5 niuu:text-[10px] niuu:font-mono';
 const TAB_BTN =
-  'niuu-px-0 niuu-py-2 niuu-bg-transparent niuu-border-none niuu-border-b-2 niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.18em]';
+  'niuu:px-0 niuu:py-2 niuu:bg-transparent niuu:border-none niuu:border-b-2 niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.18em]';
 const DELETE_BTN =
-  'niuu-inline-flex niuu-items-center niuu-rounded-lg niuu-border niuu-border-critical/60 niuu-bg-critical-bg/25 niuu-px-2.5 niuu-py-1.5 niuu-text-[12px] niuu-font-semibold niuu-text-[#ffb0b0]';
+  'niuu:inline-flex niuu:items-center niuu:rounded-lg niuu:border niuu:border-critical/60 niuu:bg-critical-bg/25 niuu:px-2.5 niuu:py-1.5 niuu:text-[12px] niuu:font-semibold niuu:text-[#ffb0b0]';
 
-function issueTone(severity: WorkflowIssue['severity']) {
+export function issueTone(severity: WorkflowIssue['severity']) {
   return severity === 'error'
-    ? 'niuu-border-critical/40 niuu-bg-critical-bg/30 niuu-text-critical'
-    : 'niuu-border-status-amber/40 niuu-bg-status-amber/10 niuu-text-status-amber';
+    ? 'niuu:border-critical/40 niuu:bg-critical-bg/30 niuu:text-critical'
+    : 'niuu:border-status-amber/40 niuu:bg-status-amber/10 niuu:text-status-amber';
 }
 
 function personaById(personas: PersonaEntry[], id: string) {
   return personas.find((persona) => persona.id === id);
 }
 
-function personaGlyph(role?: string) {
+export function personaGlyph(role?: string) {
   switch (role) {
     case 'plan':
       return 'D';
@@ -74,7 +74,7 @@ function personaGlyph(role?: string) {
   }
 }
 
-function memberIssuesForPersona(issues: WorkflowIssue[], persona: PersonaEntry | undefined) {
+export function memberIssuesForPersona(issues: WorkflowIssue[], persona: PersonaEntry | undefined) {
   if (!persona) return [];
   const keys = [persona.label, ...(persona.produces ?? []), ...(persona.consumes ?? [])].map((v) =>
     v.toLowerCase(),
@@ -82,7 +82,7 @@ function memberIssuesForPersona(issues: WorkflowIssue[], persona: PersonaEntry |
   return issues.filter((issue) => keys.some((key) => issue.message.toLowerCase().includes(key)));
 }
 
-function triggerEventOptions(personas: PersonaEntry[], current: string): string[] {
+export function triggerEventOptions(personas: PersonaEntry[], current: string): string[] {
   return [
     ...new Set(
       [
@@ -93,7 +93,7 @@ function triggerEventOptions(personas: PersonaEntry[], current: string): string[
   ].sort();
 }
 
-function uniquePersonaIds(workflow: Workflow): string[] {
+export function uniquePersonaIds(workflow: Workflow): string[] {
   return [
     ...new Set(
       workflow.nodes.flatMap((node) => {
@@ -104,7 +104,7 @@ function uniquePersonaIds(workflow: Workflow): string[] {
   ];
 }
 
-function defaultTargetIdForType(
+export function defaultTargetIdForType(
   workflow: Workflow,
   targetType: WorkflowResourceBinding['targetType'],
 ): string {
@@ -133,7 +133,7 @@ function WorkflowSummary({
   const endCount = workflow.nodes.filter((n) => n.kind === 'end').length;
 
   return (
-    <div className="niuu-px-4 niuu-py-3 niuu-flex niuu-flex-col niuu-gap-4">
+    <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
       <div>
         <label className={SECTION_LABEL}>Name</label>
         <input
@@ -146,24 +146,24 @@ function WorkflowSummary({
       <div>
         <label className={SECTION_LABEL}>Description</label>
         <textarea
-          className={cn(INPUT, 'niuu-min-h-[84px] niuu-leading-relaxed')}
+          className={cn(INPUT, 'niuu:min-h-[84px] niuu:leading-relaxed')}
           value={workflow.description ?? ''}
           onChange={(e) => onUpdateWorkflowMeta({ description: e.target.value })}
         />
       </div>
 
-      <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
-        <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3">
+      <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
+        <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3">
           <div className={SECTION_LABEL}>Version</div>
           <input
-            className={cn(INPUT, 'niuu-mt-1')}
+            className={cn(INPUT, 'niuu:mt-1')}
             value={workflow.version ?? '0.1.0'}
             onChange={(e) => onUpdateWorkflowMeta({ version: e.target.value })}
           />
         </div>
-        <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3">
+        <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3">
           <div className={SECTION_LABEL}>Summary</div>
-          <div className="niuu-mt-2 niuu-text-xs niuu-text-text-secondary niuu-leading-relaxed">
+          <div className="niuu:mt-2 niuu:text-xs niuu:text-text-secondary niuu:leading-relaxed">
             {triggerCount} triggers · {stageCount} stages · {gateCount} gates · {condCount}{' '}
             conditions · {endCount} end nodes · {workflow.edges.length} edges
           </div>
@@ -187,13 +187,13 @@ function WorkflowSummary({
         />
       </div>
 
-      <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-flex niuu-gap-2">
+      <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:flex niuu:gap-2">
         <span
           className={cn(
             CHIP_BTN,
             errorCount
-              ? 'niuu-border-critical niuu-text-critical'
-              : 'niuu-border-border niuu-text-text-faint',
+              ? 'niuu:border-critical niuu:text-critical'
+              : 'niuu:border-border niuu:text-text-faint',
           )}
         >
           ERR {errorCount}
@@ -202,8 +202,8 @@ function WorkflowSummary({
           className={cn(
             CHIP_BTN,
             warnCount
-              ? 'niuu-border-status-amber niuu-text-status-amber'
-              : 'niuu-border-border niuu-text-text-faint',
+              ? 'niuu:border-status-amber niuu:text-status-amber'
+              : 'niuu:border-border niuu:text-text-faint',
           )}
         >
           WARN {warnCount}
@@ -251,6 +251,7 @@ function StageInspector({
   const stageMembers = normalizedStageMembers(node);
   const availableModels = models;
   const defaultModelId = availableModels[0]?.id ?? '';
+  const effectiveNewModelId = newModelId || defaultModelId;
   const executionOptions = [
     { value: 'parallel' as const, label: 'parallel' },
     { value: 'sequential' as const, label: 'sequential' },
@@ -259,24 +260,18 @@ function StageInspector({
     (persona) => !stageMembers.some((member) => member.personaId === persona.id),
   );
 
-  useEffect(() => {
-    if (!newModelId && defaultModelId) {
-      setNewModelId(defaultModelId);
-    }
-  }, [defaultModelId, newModelId]);
-
   return (
-    <div className="niuu-px-4 niuu-py-0 niuu-flex niuu-flex-col niuu-gap-4">
-      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-py-4 niuu-border-b niuu-border-border niuu-mx-[-16px] niuu-px-4">
-        <div className="niuu-flex niuu-items-center niuu-gap-2.5">
-          <span className="niuu-text-[18px] niuu-text-text-primary">◆</span>
-          <span className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+    <div className="niuu:px-4 niuu:py-0 niuu:flex niuu:flex-col niuu:gap-4">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:py-4 niuu:border-b niuu:border-border niuu:mx-[-16px] niuu:px-4">
+        <div className="niuu:flex niuu:items-center niuu:gap-2.5">
+          <span className="niuu:text-[18px] niuu:text-text-primary">◆</span>
+          <span className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
             {node.kind === 'stage' ? 'Stage' : node.label}
           </span>
         </div>
-        <span className="niuu-text-[11px] niuu-font-mono niuu-text-text-faint">{node.id}</span>
+        <span className="niuu:text-[11px] niuu:font-mono niuu:text-text-faint">{node.id}</span>
       </div>
-      <div className="niuu-flex niuu-gap-5 niuu-pb-1 niuu-mb-1 niuu-border-b niuu-border-border niuu-mx-[-16px] niuu-px-4">
+      <div className="niuu:flex niuu:gap-5 niuu:pb-1 niuu:mb-1 niuu:border-b niuu:border-border niuu:mx-[-16px] niuu:px-4">
         {(['config', 'flock', 'validate'] as const).map((name) => (
           <button
             key={name}
@@ -285,8 +280,8 @@ function StageInspector({
             className={cn(
               TAB_BTN,
               tab === name
-                ? 'niuu-border-text-primary niuu-text-text-primary'
-                : 'niuu-border-transparent niuu-text-text-faint',
+                ? 'niuu:border-text-primary niuu:text-text-primary'
+                : 'niuu:border-transparent niuu:text-text-faint',
             )}
           >
             {name}
@@ -312,11 +307,11 @@ function StageInspector({
               value={node.executionMode ?? 'parallel'}
               onChange={(mode) => onUpdateNode(node.id, { executionMode: mode })}
               aria-label="Execution mode"
-              className="niuu-mt-1 niuu-rounded-xl niuu-border niuu-border-border-subtle"
+              className="niuu:mt-1 niuu:rounded-xl niuu:border niuu:border-border-subtle"
             />
           </div>
 
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+          <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
             <div>
               <label className={SECTION_LABEL}>Max concurrent</label>
               <input
@@ -333,9 +328,9 @@ function StageInspector({
           </div>
 
           {(inbound.length > 0 || outbound.length > 0) && (
-            <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-flex niuu-flex-col niuu-gap-2">
+            <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:flex niuu:flex-col niuu:gap-2">
               <div className={SECTION_LABEL}>Fan-in / fan-out</div>
-              <div className="niuu-text-xs niuu-text-text-secondary">
+              <div className="niuu:text-xs niuu:text-text-secondary">
                 {inbound.length} incoming · {outbound.length} outgoing
               </div>
               <SegmentedFilter
@@ -347,12 +342,12 @@ function StageInspector({
                 value={node.joinMode ?? 'all'}
                 onChange={(mode) => onUpdateNode(node.id, { joinMode: mode })}
                 aria-label="Fan in mode"
-                className="niuu-rounded-xl niuu-border niuu-border-border-subtle"
+                className="niuu:rounded-xl niuu:border niuu:border-border-subtle"
               />
             </div>
           )}
 
-          <div className="niuu-border-t niuu-border-border niuu-pt-4">
+          <div className="niuu:border-t niuu:border-border niuu:pt-4">
             <button type="button" className={DELETE_BTN} onClick={() => onDeleteNode(node.id)}>
               Delete node
             </button>
@@ -363,9 +358,9 @@ function StageInspector({
       {tab === 'flock' && (
         <>
           <div className={SECTION_LABEL}>Personas in this stage</div>
-          <div className="niuu-flex niuu-flex-col niuu-gap-1.5">
+          <div className="niuu:flex niuu:flex-col niuu:gap-1.5">
             {stageMembers.length === 0 && (
-              <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-text-xs niuu-text-text-muted">
+              <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:text-xs niuu:text-text-muted">
                 No ravns assigned yet.
               </div>
             )}
@@ -375,35 +370,35 @@ function StageInspector({
               return (
                 <div
                   key={member.personaId}
-                  className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3.5 niuu-flex niuu-flex-col niuu-gap-2.5"
+                  className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3.5 niuu:flex niuu:flex-col niuu:gap-2.5"
                 >
-                  <div className="niuu-flex niuu-items-start niuu-gap-2">
-                    <div className="niuu-flex niuu-h-8 niuu-w-8 niuu-items-center niuu-justify-center niuu-rounded-full niuu-border niuu-border-[#aeddff] niuu-text-[#d6efff] niuu-font-mono niuu-text-[18px]">
+                  <div className="niuu:flex niuu:items-start niuu:gap-2">
+                    <div className="niuu:flex niuu:h-8 niuu:w-8 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-[#aeddff] niuu:text-[#d6efff] niuu:font-mono niuu:text-[18px]">
                       {personaGlyph(persona?.role)}
                     </div>
-                    <div className="niuu-flex-1 niuu-min-w-0">
-                      <div className="niuu-text-[13px] niuu-font-semibold niuu-text-text-primary">
+                    <div className="niuu:flex-1 niuu:min-w-0">
+                      <div className="niuu:text-[13px] niuu:font-semibold niuu:text-text-primary">
                         {persona?.label ?? member.personaId}
                       </div>
-                      <div className="niuu-text-[9px] niuu-font-mono niuu-text-text-faint niuu-flex niuu-flex-wrap niuu-gap-2">
+                      <div className="niuu:text-[9px] niuu:font-mono niuu:text-text-faint niuu:flex niuu:flex-wrap niuu:gap-2">
                         <span>{persona?.role ?? 'unknown'}</span>
                         <span>{member.model || 'no model'}</span>
                       </div>
                     </div>
                     <button
                       type="button"
-                      className="niuu-bg-transparent niuu-border-none niuu-text-text-faint niuu-text-xl niuu-leading-none"
+                      className="niuu:bg-transparent niuu:border-none niuu:text-text-faint niuu:text-xl niuu:leading-none"
                       onClick={() => onRemovePersona(node.id, member.personaId)}
                     >
                       ×
                     </button>
                   </div>
 
-                  <div className="niuu-flex niuu-items-center niuu-gap-2.5">
-                    <span className="niuu-text-[10px] niuu-text-text-muted">budget</span>
+                  <div className="niuu:flex niuu:items-center niuu:gap-2.5">
+                    <span className="niuu:text-[10px] niuu:text-text-muted">budget</span>
                     <input
                       type="number"
-                      className="niuu-w-14 niuu-bg-transparent niuu-border-none niuu-p-0 niuu-text-[14px] niuu-font-semibold niuu-text-text-primary"
+                      className="niuu:w-14 niuu:bg-transparent niuu:border-none niuu:p-0 niuu:text-[14px] niuu:font-semibold niuu:text-text-primary"
                       value={member.budget}
                       min={0}
                       onChange={(e) =>
@@ -419,7 +414,7 @@ function StageInspector({
                   <div>
                     <div className={SECTION_LABEL}>Model</div>
                     <select
-                      className={cn(INPUT, 'niuu-mt-0.5')}
+                      className={cn(INPUT, 'niuu:mt-0.5')}
                       value={member.model ?? ''}
                       onChange={(e) =>
                         onUpdatePersonaModel(node.id, member.personaId, e.target.value)
@@ -434,16 +429,16 @@ function StageInspector({
                     </select>
                   </div>
 
-                  <div className="niuu-grid niuu-grid-cols-1 niuu-gap-2">
+                  <div className="niuu:grid niuu:grid-cols-1 niuu:gap-2">
                     <div>
                       <div className={SECTION_LABEL}>Consumes</div>
-                      <div className="niuu-flex niuu-flex-wrap niuu-gap-1 niuu-mt-0.5">
+                      <div className="niuu:flex niuu:flex-wrap niuu:gap-1 niuu:mt-0.5">
                         {(persona?.consumes ?? []).map((event) => (
                           <span
                             key={event}
                             className={cn(
                               TAG,
-                              'niuu-border-transparent niuu-bg-[#4f6474] niuu-text-[#d6efff]',
+                              'niuu:border-transparent niuu:bg-[#4f6474] niuu:text-[#d6efff]',
                             )}
                           >
                             {event}
@@ -453,15 +448,15 @@ function StageInspector({
                     </div>
                     <div>
                       <div className={SECTION_LABEL}>Produces</div>
-                      <div className="niuu-flex niuu-flex-wrap niuu-gap-1 niuu-mt-0.5">
+                      <div className="niuu:flex niuu:flex-wrap niuu:gap-1 niuu:mt-0.5">
                         {(persona?.produces ?? []).map((event) => (
                           <span
                             key={event}
                             className={cn(
                               TAG,
                               memberIssues.length > 0
-                                ? 'niuu-border-[#b75159] niuu-border-dashed niuu-bg-[#4b3136] niuu-text-[#ffb0b0]'
-                                : 'niuu-border-transparent niuu-bg-bg-primary niuu-text-text-primary',
+                                ? 'niuu:border-[#b75159] niuu:border-dashed niuu:bg-[#4b3136] niuu:text-[#ffb0b0]'
+                                : 'niuu:border-transparent niuu:bg-bg-primary niuu:text-text-primary',
                             )}
                           >
                             {event}
@@ -472,8 +467,8 @@ function StageInspector({
                   </div>
 
                   {memberIssues.length > 0 && (
-                    <div className="niuu-rounded-lg niuu-border niuu-border-[#b75159] niuu-bg-[#4b3136] niuu-p-3 niuu-text-[#ffb0b0]">
-                      <div className="niuu-text-[12px] niuu-font-semibold niuu-leading-snug">
+                    <div className="niuu:rounded-lg niuu:border niuu:border-[#b75159] niuu:bg-[#4b3136] niuu:p-3 niuu:text-[#ffb0b0]">
+                      <div className="niuu:text-[12px] niuu:font-semibold niuu:leading-snug">
                         {memberIssues[0]?.message}
                       </div>
                     </div>
@@ -482,7 +477,7 @@ function StageInspector({
                   <div>
                     <div className={SECTION_LABEL}>Ravn</div>
                     <select
-                      className={cn(INPUT, 'niuu-mt-0.5')}
+                      className={cn(INPUT, 'niuu:mt-0.5')}
                       value={member.personaId}
                       onChange={(e) =>
                         onReplacePersona(node.id, member.personaId, e.target.value, member.model)
@@ -500,9 +495,9 @@ function StageInspector({
             })}
           </div>
 
-          <div className="niuu-border-t niuu-border-border niuu-pt-6">
+          <div className="niuu:border-t niuu:border-border niuu:pt-6">
             <label className={SECTION_LABEL}>Add persona</label>
-            <div className="niuu-grid niuu-grid-cols-1 niuu-gap-2 niuu-mt-0.5">
+            <div className="niuu:grid niuu:grid-cols-1 niuu:gap-2 niuu:mt-0.5">
               <select
                 className={INPUT}
                 value={newPersonaId}
@@ -517,7 +512,7 @@ function StageInspector({
               </select>
               <select
                 className={INPUT}
-                value={newModelId}
+                value={effectiveNewModelId}
                 onChange={(e) => setNewModelId(e.target.value)}
               >
                 <option value="">Select a model…</option>
@@ -530,10 +525,10 @@ function StageInspector({
               <button
                 type="button"
                 className={CHIP_BTN}
-                disabled={!newPersonaId || !newModelId}
+                disabled={!newPersonaId || !effectiveNewModelId}
                 onClick={() => {
-                  if (!newPersonaId || !newModelId) return;
-                  onAddPersona(node.id, newPersonaId, newModelId, 40);
+                  if (!newPersonaId || !effectiveNewModelId) return;
+                  onAddPersona(node.id, newPersonaId, effectiveNewModelId, 40);
                   setNewPersonaId('');
                   setNewModelId(defaultModelId);
                 }}
@@ -543,7 +538,7 @@ function StageInspector({
             </div>
           </div>
 
-          <div className="niuu-border-t niuu-border-border niuu-pt-4">
+          <div className="niuu:border-t niuu:border-border niuu:pt-4">
             <button type="button" className={DELETE_BTN} onClick={() => onDeleteNode(node.id)}>
               Delete node
             </button>
@@ -552,9 +547,9 @@ function StageInspector({
       )}
 
       {tab === 'validate' && (
-        <div className="niuu-flex niuu-flex-col niuu-gap-2">
+        <div className="niuu:flex niuu:flex-col niuu:gap-2">
           {nodeIssues.length === 0 ? (
-            <div className="niuu-rounded-md niuu-border niuu-border-status-emerald/40 niuu-bg-status-emerald/10 niuu-p-3 niuu-text-xs niuu-text-status-emerald">
+            <div className="niuu:rounded-md niuu:border niuu:border-status-emerald/40 niuu:bg-status-emerald/10 niuu:p-3 niuu:text-xs niuu:text-status-emerald">
               No validation issues on this node.
             </div>
           ) : (
@@ -562,11 +557,11 @@ function StageInspector({
               <div
                 key={`${issue.kind}-${index}`}
                 className={cn(
-                  'niuu-rounded-xl niuu-border niuu-p-4 niuu-text-sm niuu-leading-relaxed',
+                  'niuu:rounded-xl niuu:border niuu:p-4 niuu:text-sm niuu:leading-relaxed',
                   issueTone(issue.severity),
                 )}
               >
-                <div className="niuu-font-semibold niuu-mb-1">{issue.kind}</div>
+                <div className="niuu:font-semibold niuu:mb-1">{issue.kind}</div>
                 <div>{issue.message}</div>
               </div>
             ))
@@ -626,7 +621,7 @@ function ResourceInspector({
   }
 
   return (
-    <div className="niuu-px-4 niuu-py-3 niuu-flex niuu-flex-col niuu-gap-4">
+    <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
       <div>
         <label className={SECTION_LABEL}>Resource name</label>
         <input
@@ -663,19 +658,19 @@ function ResourceInspector({
             })
           }
           aria-label="Resource binding mode"
-          className="niuu-mt-1 niuu-rounded-xl niuu-border niuu-border-border-subtle"
+          className="niuu:mt-1 niuu:rounded-xl niuu:border niuu:border-border-subtle"
         />
       </div>
 
       {node.bindingMode === 'ephemeral_local' ? (
-        <div className="niuu-flex niuu-flex-col niuu-gap-3">
-          <div className="niuu-rounded-md niuu-border niuu-border-status-emerald/40 niuu-bg-status-emerald/10 niuu-p-3 niuu-flex niuu-flex-col niuu-gap-1.5">
+        <div className="niuu:flex niuu:flex-col niuu:gap-3">
+          <div className="niuu:rounded-md niuu:border niuu:border-status-emerald/40 niuu:bg-status-emerald/10 niuu:p-3 niuu:flex niuu:flex-col niuu:gap-1.5">
             <div className={SECTION_LABEL}>Ephemeral local Mimir</div>
-            <div className="niuu-text-xs niuu-text-text-secondary niuu-leading-relaxed">
+            <div className="niuu:text-xs niuu:text-text-secondary niuu:leading-relaxed">
               This Mimir is created inside the session workspace at runtime. Its local path is fixed
               by the runtime and cannot be changed here.
             </div>
-            <div className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
+            <div className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
               Path: workspace-local (.flock/mimir/local/...)
             </div>
           </div>
@@ -683,7 +678,7 @@ function ResourceInspector({
           <div>
             <label className={SECTION_LABEL}>Seed from registry mount</label>
             <select
-              className={cn(INPUT, 'niuu-mt-0.5')}
+              className={cn(INPUT, 'niuu:mt-0.5')}
               value={node.seedFromRegistryId ?? ''}
               onChange={(e) =>
                 onUpdateNode(node.id, { seedFromRegistryId: e.target.value || null })
@@ -699,11 +694,11 @@ function ResourceInspector({
           </div>
         </div>
       ) : (
-        <div className="niuu-flex niuu-flex-col niuu-gap-3">
+        <div className="niuu:flex niuu:flex-col niuu:gap-3">
           <div>
             <label className={SECTION_LABEL}>Registry mount</label>
             <select
-              className={cn(INPUT, 'niuu-mt-0.5')}
+              className={cn(INPUT, 'niuu:mt-0.5')}
               value={node.registryEntryId ?? ''}
               onChange={(e) => applyRegistryMount(e.target.value)}
             >
@@ -717,16 +712,16 @@ function ResourceInspector({
           </div>
 
           {selectedMount && (
-            <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-flex niuu-flex-col niuu-gap-1.5">
+            <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:flex niuu:flex-col niuu:gap-1.5">
               <div className={SECTION_LABEL}>Resolved mount</div>
-              <div className="niuu-text-xs niuu-text-text-secondary niuu-leading-relaxed">
+              <div className="niuu:text-xs niuu:text-text-secondary niuu:leading-relaxed">
                 {selectedMount.desc || 'Registry-backed Mimir instance'}
               </div>
-              <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+              <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
                 <span
                   className={cn(
                     TAG,
-                    'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-primary',
+                    'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-primary',
                   )}
                 >
                   {selectedMount.role}
@@ -734,7 +729,7 @@ function ResourceInspector({
                 <span
                   className={cn(
                     TAG,
-                    'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-primary',
+                    'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-primary',
                   )}
                 >
                   {selectedMount.kind}
@@ -742,19 +737,19 @@ function ResourceInspector({
                 <span
                   className={cn(
                     TAG,
-                    'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-primary',
+                    'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-primary',
                   )}
                 >
                   priority {selectedMount.defaultReadPriority}
                 </span>
               </div>
               {(selectedMount.categories ?? []).length > 0 && (
-                <div className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
+                <div className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
                   {(selectedMount.categories ?? []).join(', ')}
                 </div>
               )}
               {(selectedMount.path || selectedMount.url) && (
-                <div className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
+                <div className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
                   {selectedMount.path || selectedMount.url}
                 </div>
               )}
@@ -779,8 +774,8 @@ function ResourceInspector({
         />
       </div>
 
-      <div className="niuu-flex niuu-flex-col niuu-gap-2">
-        <div className="niuu-flex niuu-items-center niuu-justify-between">
+      <div className="niuu:flex niuu:flex-col niuu:gap-2">
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
           <label className={SECTION_LABEL}>Bindings</label>
           <button
             type="button"
@@ -799,7 +794,7 @@ function ResourceInspector({
         </div>
 
         {bindings.length === 0 ? (
-          <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-text-xs niuu-text-text-muted">
+          <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:text-xs niuu:text-text-muted">
             No workflow bindings yet. The resource exists in the graph, but nothing is attached to
             it.
           </div>
@@ -807,26 +802,26 @@ function ResourceInspector({
           bindings.map((binding) => (
             <div
               key={binding.id}
-              className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3.5 niuu-flex niuu-flex-col niuu-gap-3"
+              className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3.5 niuu:flex niuu:flex-col niuu:gap-3"
             >
-              <div className="niuu-flex niuu-items-center niuu-justify-between">
-                <span className="niuu-text-[11px] niuu-font-semibold niuu-text-text-primary">
+              <div className="niuu:flex niuu:items-center niuu:justify-between">
+                <span className="niuu:text-[11px] niuu:font-semibold niuu:text-text-primary">
                   {binding.targetType} binding
                 </span>
                 <button
                   type="button"
-                  className="niuu-bg-transparent niuu-border-none niuu-text-text-faint niuu-cursor-pointer"
+                  className="niuu:bg-transparent niuu:border-none niuu:text-text-faint niuu:cursor-pointer"
                   onClick={() => onRemoveResourceBinding(binding.id)}
                 >
                   ×
                 </button>
               </div>
 
-              <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+              <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
                 <div>
                   <label className={SECTION_LABEL}>Target type</label>
                   <select
-                    className={cn(INPUT, 'niuu-mt-0.5')}
+                    className={cn(INPUT, 'niuu:mt-0.5')}
                     value={binding.targetType}
                     onChange={(e) => {
                       const targetType = e.target.value as WorkflowResourceBinding['targetType'];
@@ -844,7 +839,7 @@ function ResourceInspector({
                 <div>
                   <label className={SECTION_LABEL}>Access</label>
                   <select
-                    className={cn(INPUT, 'niuu-mt-0.5')}
+                    className={cn(INPUT, 'niuu:mt-0.5')}
                     value={binding.access}
                     onChange={(e) =>
                       onUpdateResourceBinding(binding.id, {
@@ -865,7 +860,7 @@ function ResourceInspector({
                   <input className={INPUT} value={workflow.name} readOnly />
                 ) : binding.targetType === 'stage' ? (
                   <select
-                    className={cn(INPUT, 'niuu-mt-0.5')}
+                    className={cn(INPUT, 'niuu:mt-0.5')}
                     value={binding.targetId}
                     onChange={(e) =>
                       onUpdateResourceBinding(binding.id, { targetId: e.target.value })
@@ -879,7 +874,7 @@ function ResourceInspector({
                   </select>
                 ) : (
                   <select
-                    className={cn(INPUT, 'niuu-mt-0.5')}
+                    className={cn(INPUT, 'niuu:mt-0.5')}
                     value={binding.targetId}
                     onChange={(e) =>
                       onUpdateResourceBinding(binding.id, { targetId: e.target.value })
@@ -894,7 +889,7 @@ function ResourceInspector({
                 )}
               </div>
 
-              <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+              <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
                 <div>
                   <label className={SECTION_LABEL}>Read priority</label>
                   <input
@@ -930,7 +925,7 @@ function ResourceInspector({
         )}
       </div>
 
-      <div className="niuu-border-t niuu-border-border niuu-pt-4">
+      <div className="niuu:border-t niuu:border-border niuu:pt-4">
         <button type="button" className={DELETE_BTN} onClick={() => onDeleteNode(node.id)}>
           Delete node
         </button>
@@ -969,14 +964,14 @@ export function WorkflowDetailPanel({
   return (
     <div
       data-testid="workflow-detail-panel"
-      className="niuu-w-[300px] niuu-shrink-0 niuu-border-l niuu-border-border niuu-bg-bg-secondary niuu-flex niuu-flex-col niuu-overflow-y-auto"
+      className="niuu:w-[300px] niuu:shrink-0 niuu:border-l niuu:border-border niuu:bg-bg-secondary niuu:flex niuu:flex-col niuu:overflow-y-auto"
     >
-      <div className="niuu-px-4 niuu-pt-3 niuu-pb-2 niuu-border-b niuu-border-border">
-        <div className="niuu-flex niuu-flex-col niuu-gap-0.5">
-          <span className="niuu-text-[13px] niuu-font-semibold niuu-text-text-primary niuu-font-sans">
+      <div className="niuu:px-4 niuu:pt-3 niuu:pb-2 niuu:border-b niuu:border-border">
+        <div className="niuu:flex niuu:flex-col niuu:gap-0.5">
+          <span className="niuu:text-[13px] niuu:font-semibold niuu:text-text-primary niuu:font-sans">
             {title}
           </span>
-          <span className="niuu-text-[9px] niuu-font-mono niuu-text-text-faint">{subtitle}</span>
+          <span className="niuu:text-[9px] niuu:font-mono niuu:text-text-faint">{subtitle}</span>
         </div>
       </div>
 
@@ -997,7 +992,7 @@ export function WorkflowDetailPanel({
           onRemovePersona={onRemovePersona}
         />
       ) : selectedNode?.kind === 'gate' ? (
-        <div className="niuu-px-4 niuu-py-3 niuu-flex niuu-flex-col niuu-gap-4">
+        <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
           <div>
             <label className={SECTION_LABEL}>Gate name</label>
             <input
@@ -1009,7 +1004,7 @@ export function WorkflowDetailPanel({
           <div>
             <label className={SECTION_LABEL}>Condition</label>
             <textarea
-              className={cn(INPUT, 'niuu-min-h-[84px]')}
+              className={cn(INPUT, 'niuu:min-h-[84px]')}
               value={selectedNode.condition}
               onChange={(e) => onUpdateNode(selectedNode.id, { condition: e.target.value })}
             />
@@ -1017,7 +1012,7 @@ export function WorkflowDetailPanel({
           <div>
             <label className={SECTION_LABEL}>Gate mode</label>
             <select
-              className={cn(INPUT, 'niuu-mt-0.5')}
+              className={cn(INPUT, 'niuu:mt-0.5')}
               aria-label="Gate mode"
               value={selectedNode.mode ?? 'human_approval'}
               onChange={(e) =>
@@ -1034,7 +1029,7 @@ export function WorkflowDetailPanel({
           <div>
             <label className={SECTION_LABEL}>Pending behavior</label>
             <select
-              className={cn(INPUT, 'niuu-mt-0.5')}
+              className={cn(INPUT, 'niuu:mt-0.5')}
               aria-label="Pending behavior"
               value={selectedNode.pendingBehavior ?? 'help_needed'}
               onChange={(e) =>
@@ -1073,7 +1068,7 @@ export function WorkflowDetailPanel({
           <div>
             <label className={SECTION_LABEL}>Instructions</label>
             <textarea
-              className={cn(INPUT, 'niuu-min-h-[72px]')}
+              className={cn(INPUT, 'niuu:min-h-[72px]')}
               value={selectedNode.instructions ?? ''}
               onChange={(e) => onUpdateNode(selectedNode.id, { instructions: e.target.value })}
             />
@@ -1088,7 +1083,7 @@ export function WorkflowDetailPanel({
           </div>
         </div>
       ) : selectedNode?.kind === 'cond' ? (
-        <div className="niuu-px-4 niuu-py-3 niuu-flex niuu-flex-col niuu-gap-4">
+        <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
           <div>
             <label className={SECTION_LABEL}>Condition name</label>
             <input
@@ -1100,14 +1095,14 @@ export function WorkflowDetailPanel({
           <div>
             <label className={SECTION_LABEL}>Expression</label>
             <textarea
-              className={cn(INPUT, 'niuu-min-h-[120px] niuu-font-mono')}
+              className={cn(INPUT, 'niuu:min-h-[120px] niuu:font-mono')}
               value={selectedNode.predicate}
               onChange={(e) => onUpdateNode(selectedNode.id, { predicate: e.target.value })}
             />
           </div>
         </div>
       ) : selectedNode?.kind === 'trigger' ? (
-        <div className="niuu-px-4 niuu-py-3 niuu-flex niuu-flex-col niuu-gap-4">
+        <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
           <div>
             <label className={SECTION_LABEL}>Trigger label</label>
             <input
@@ -1119,7 +1114,7 @@ export function WorkflowDetailPanel({
           <div>
             <label className={SECTION_LABEL}>Dispatch event</label>
             <select
-              className={cn(INPUT, 'niuu-font-mono')}
+              className={cn(INPUT, 'niuu:font-mono')}
               value={selectedNode.dispatchEvent ?? 'code.requested'}
               onChange={(e) => onUpdateNode(selectedNode.id, { dispatchEvent: e.target.value })}
             >
@@ -1135,14 +1130,14 @@ export function WorkflowDetailPanel({
           <div>
             <label className={SECTION_LABEL}>Trigger source</label>
             <input
-              className={cn(INPUT, 'niuu-font-mono')}
+              className={cn(INPUT, 'niuu:font-mono')}
               value={selectedNode.source ?? 'manual dispatch'}
               onChange={(e) => onUpdateNode(selectedNode.id, { source: e.target.value })}
             />
           </div>
         </div>
       ) : selectedNode?.kind === 'end' ? (
-        <div className="niuu-px-4 niuu-py-3 niuu-flex niuu-flex-col niuu-gap-4">
+        <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
           <div>
             <label className={SECTION_LABEL}>End label</label>
             <input
@@ -1151,7 +1146,7 @@ export function WorkflowDetailPanel({
               onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
             />
           </div>
-          <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-p-3 niuu-text-xs niuu-text-text-secondary">
+          <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:text-xs niuu:text-text-secondary">
             Terminal node. Use this to make completion paths explicit in the graph and pipeline
             views.
           </div>

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from contextlib import suppress
 
 import pytest
 
@@ -12,6 +13,7 @@ from bifrost.translation.streaming import openai_stream_to_anthropic
 
 def _sse(data: dict) -> str:
     """Build an OpenAI-style SSE line from a dict."""
+
     return f"data: {json.dumps(data)}"
 
 
@@ -62,13 +64,11 @@ def _parse_events(chunks: list[str]) -> list[dict]:
                 if data_str == "[DONE]":
                     events.append({"type": "__done__"})
                 else:
-                    try:
+                    with suppress(json.JSONDecodeError):
                         d = json.loads(data_str)
                         if current_event_type:
                             d["_event"] = current_event_type
                         events.append(d)
-                    except json.JSONDecodeError:
-                        pass
                 current_event_type = None
     return events
 

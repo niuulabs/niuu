@@ -217,20 +217,20 @@ export function Terminal({
   return (
     <div
       className={cn(
-        'niuu-relative niuu-h-full niuu-w-full niuu-overflow-hidden niuu-bg-bg-primary',
+        'niuu:relative niuu:h-full niuu:w-full niuu:overflow-hidden niuu:bg-bg-primary',
         className,
       )}
     >
       {connectionState !== 'connected' && (
         <div
-          className="niuu-absolute niuu-right-3 niuu-top-3 niuu-z-10 niuu-flex niuu-items-center niuu-gap-1.5 niuu-rounded-md niuu-bg-bg-elevated niuu-px-2 niuu-py-1 niuu-text-xs niuu-text-text-muted"
+          className="niuu:absolute niuu:right-3 niuu:top-3 niuu:z-10 niuu:flex niuu:items-center niuu:gap-1.5 niuu:rounded-md niuu:bg-bg-elevated niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted"
           role="status"
           data-testid="terminal-connection-status"
         >
           <span
             className={cn(
-              'niuu-inline-block niuu-h-1.5 niuu-w-1.5 niuu-rounded-full niuu-animate-pulse',
-              connectionState === 'reconnecting' ? 'niuu-bg-brand' : 'niuu-bg-text-muted',
+              'niuu:inline-block niuu:h-1.5 niuu:w-1.5 niuu:rounded-full niuu:animate-pulse',
+              connectionState === 'reconnecting' ? 'niuu:bg-brand' : 'niuu:bg-text-muted',
             )}
           />
           {connectionState === 'reconnecting' ? 'reconnecting…' : 'connecting…'}
@@ -238,7 +238,7 @@ export function Terminal({
       )}
       {readOnly && (
         <div
-          className="niuu-absolute niuu-left-3 niuu-top-3 niuu-z-10 niuu-rounded-md niuu-bg-bg-elevated niuu-px-2 niuu-py-1 niuu-text-xs niuu-text-text-muted"
+          className="niuu:absolute niuu:left-3 niuu:top-3 niuu:z-10 niuu:rounded-md niuu:bg-bg-elevated niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted"
           aria-label="read-only terminal"
           data-testid="terminal-readonly-badge"
         >
@@ -247,14 +247,14 @@ export function Terminal({
       )}
       <div
         ref={containerRef}
-        className="niuu-volundr-terminal-root niuu-h-full niuu-w-full"
+        className="niuu-volundr-terminal-root niuu:h-full niuu:w-full"
         data-testid="terminal-container"
         aria-label={readOnly ? 'read-only terminal output' : 'interactive terminal'}
         role="region"
       />
       {!readOnly && (
         <button
-          className="niuu-absolute niuu-bottom-3 niuu-right-3 niuu-z-10 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-2.5 niuu-py-1 niuu-text-xs niuu-text-text-muted niuu-opacity-70 hover:niuu-opacity-100"
+          className="niuu:absolute niuu:bottom-3 niuu:right-3 niuu:z-10 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-muted niuu:opacity-70 niuu:hover:opacity-100"
           onClick={reconnect}
           aria-label="reconnect terminal"
           data-testid="terminal-reconnect-button"

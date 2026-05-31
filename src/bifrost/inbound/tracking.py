@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 _HEADER_QUOTA_WARNING = "X-Quota-Warning"
 _HEADER_QUOTA_REMAINING = "X-Quota-Remaining"
 
+__all__ = ["_HEADER_QUOTA_WARNING", "_HEADER_QUOTA_REMAINING"]
+
 
 def _extract_usage_from_sse_line(line: str, usage: TokenUsage) -> None:
     """Parse one SSE data line and update *usage* in-place."""

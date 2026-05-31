@@ -31,8 +31,6 @@ logger = logging.getLogger(__name__)
 
 _PERMISSION_BASH = "bash:execute"
 
-_DEFAULT_TIMEOUT_SECONDS = 120.0
-_DEFAULT_MAX_OUTPUT_BYTES = 100 * 1024  # 100 KiB
 _TRUNCATION_NOTICE = "\n[... output truncated ...]"
 
 

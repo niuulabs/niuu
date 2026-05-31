@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 
@@ -34,6 +35,7 @@ _SOURCE_COLORS = ["#f59e0b", "#06b6d4", "#10b981", "#a855f7", "#f97316", "#6366f
 
 def _source_color(name: str) -> str:
     """Assign a stable accent color to a source name via hash."""
+
     return _SOURCE_COLORS[abs(hash(name)) % len(_SOURCE_COLORS)]
 
 
@@ -98,10 +100,8 @@ class EventStreamView(Widget):
         self._row_count += 1
         if self._row_count > _MAX_ROWS:
             # Clear and restart to avoid unbounded growth
-            try:
+            with suppress(Exception):
                 self.query_one("#ev-log", RichLog).clear()
-            except Exception:
-                pass
             self._row_count = 0
         self.call_after_refresh(self._append_line, conn, event)
 
@@ -144,17 +144,13 @@ class EventStreamView(Widget):
 
     def action_scroll_bottom(self) -> None:
         self._locked = False
-        try:
+        with suppress(Exception):
             self.query_one("#ev-log", RichLog).scroll_end(animate=False)
-        except Exception:
-            pass
         self._push_meta()
 
     def action_scroll_top(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#ev-log", RichLog).scroll_home(animate=False)
-        except Exception:
-            pass
 
     def action_lock_scroll(self) -> None:
         self._locked = not self._locked

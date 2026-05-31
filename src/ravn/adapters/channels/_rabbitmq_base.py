@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -123,10 +124,8 @@ class RabbitMQPublishMixin:
         self._exchange = None
         self._channel = None
         if self._connection is not None:
-            try:
+            with suppress(Exception):
                 await self._connection.close()  # type: ignore[union-attr]
-            except Exception:
-                pass
         self._connection = None
 
     async def _publish_to_exchange(self, routing_key: str, body: bytes) -> None:

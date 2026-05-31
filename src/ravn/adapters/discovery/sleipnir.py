@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -142,19 +143,15 @@ class SleipnirDiscoveryAdapter:
         for task in (self._heartbeat_task, self._consumer_task):
             if task is not None:
                 task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+                with suppress(asyncio.CancelledError):
+                    _ = await task
 
         self._heartbeat_task = None
         self._consumer_task = None
 
         if self._connection is not None:
-            try:
+            with suppress(Exception):
                 await self._connection.close()  # type: ignore[union-attr]
-            except Exception:
-                pass
             self._connection = None
 
         logger.info("sleipnir_discovery: stopped peer=%s", self._identity.peer_id)
@@ -260,7 +257,7 @@ class SleipnirDiscoveryAdapter:
             # Keep alive until cancelled
             await asyncio.Future()
         except asyncio.CancelledError:
-            pass
+            return
         except Exception as exc:
             logger.debug("sleipnir_discovery: consume_loop error: %s", exc)
 
@@ -316,10 +313,8 @@ class SleipnirDiscoveryAdapter:
         )
         self._peers[peer_id] = peer
         for cb in self._on_join:
-            try:
+            with suppress(Exception):
                 cb(peer)
-            except Exception:
-                pass
 
     def _validate_spiffe(self, raw: dict, peer_id: str) -> bool:
         """Validate SPIFFE JWT-SVID on the announce message.
@@ -355,10 +350,8 @@ class SleipnirDiscoveryAdapter:
         peer = self._peers.pop(peer_id, None)
         if peer is not None:
             for cb in self._on_leave:
-                try:
+                with suppress(Exception):
                     cb(peer)
-                except Exception:
-                    pass
 
     def _identity_dict(self) -> dict:
         return {
@@ -398,7 +391,5 @@ class SleipnirDiscoveryAdapter:
             if peer is not None:
                 logger.debug("sleipnir_discovery: evicted stale peer %s", pid)
                 for cb in self._on_leave:
-                    try:
+                    with suppress(Exception):
                         cb(peer)
-                    except Exception:
-                        pass

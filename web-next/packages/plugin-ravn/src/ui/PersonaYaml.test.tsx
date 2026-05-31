@@ -92,7 +92,7 @@ describe('PersonaYaml', () => {
     await waitFor(() => expect(screen.getByTestId('persona-yaml')).toBeInTheDocument());
     const container = screen.getByTestId('persona-yaml');
     // Keys should have cyan token class
-    const spans = container.querySelectorAll('span.niuu-text-status-cyan');
+    const spans = container.querySelectorAll('span.niuu\\:text-status-cyan');
     expect(spans.length).toBeGreaterThan(0);
   });
 
@@ -106,7 +106,7 @@ describe('PersonaYaml', () => {
     });
     await waitFor(() => expect(screen.getByTestId('persona-yaml')).toBeInTheDocument());
     const container = screen.getByTestId('persona-yaml');
-    const comments = container.querySelectorAll('span.niuu-text-text-muted.niuu-italic');
+    const comments = container.querySelectorAll('span.niuu\\:text-text-muted.niuu\\:italic');
     expect(comments.length).toBeGreaterThan(0);
   });
 
@@ -120,7 +120,7 @@ describe('PersonaYaml', () => {
     });
     await waitFor(() => expect(screen.getByTestId('persona-yaml')).toBeInTheDocument());
     const container = screen.getByTestId('persona-yaml');
-    const booleans = container.querySelectorAll('span.niuu-text-status-purple');
+    const booleans = container.querySelectorAll('span.niuu\\:text-status-purple');
     expect(booleans.length).toBeGreaterThan(0);
   });
 
@@ -134,7 +134,7 @@ describe('PersonaYaml', () => {
     });
     await waitFor(() => expect(screen.getByTestId('persona-yaml')).toBeInTheDocument());
     const container = screen.getByTestId('persona-yaml');
-    const numbers = container.querySelectorAll('span.niuu-text-status-amber');
+    const numbers = container.querySelectorAll('span.niuu\\:text-status-amber');
     expect(numbers.length).toBeGreaterThan(0);
   });
 });

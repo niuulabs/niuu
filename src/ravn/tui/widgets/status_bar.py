@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 
@@ -87,10 +88,8 @@ class StatusBar(Widget):
 
     def _tick(self) -> None:
         now = datetime.now().strftime("%H:%M:%S")
-        try:
+        with suppress(Exception):
             self.query_one("#sb-clock", Label).update(now)
-        except Exception:
-            pass
         self._update_flokk_tag()
 
     def _on_event(self, conn: Any, event: dict[str, Any]) -> None:
@@ -112,10 +111,8 @@ class StatusBar(Widget):
         self.set_timer(5.0, self._clear_notification)
 
     def _clear_notification(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#sb-notification", Static).update("")
-        except Exception:
-            pass
 
     def _update_flokk_tag(self) -> None:
         if not self._flokk:
@@ -131,17 +128,13 @@ class StatusBar(Widget):
         # Count ravens with an active task
         running = sum(1 for c in conns if c.ravn_info and c.ravn_info.get("state") == "running")
         tag = f"flokk:{self._flokk_name} · {count} ravens · {running} tasks"
-        try:
+        with suppress(Exception):
             self.query_one("#sb-flokk-tag", Label).update(f"[#f59e0b]{tag}[/]")
-        except Exception:
-            pass
 
     def set_active_ravn(self, name: str) -> None:
         self._active_ravn = name
-        try:
+        with suppress(Exception):
             self.query_one("#sb-active", Label).update(f"[#52525b]→ {name}[/]")
-        except Exception:
-            pass
 
     def set_task_count(self, count: int) -> None:
         # task count is now derived live in _update_flokk_tag; kept for compat
@@ -153,7 +146,5 @@ class StatusBar(Widget):
             markup = "[bold #f59e0b] INSERT [/]"
         else:
             markup = "[#3f3f46] NORMAL [/]"
-        try:
+        with suppress(Exception):
             self.query_one("#sb-mode", Static).update(markup)
-        except Exception:
-            pass

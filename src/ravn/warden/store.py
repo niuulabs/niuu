@@ -6,6 +6,7 @@ import os
 import re
 import zlib
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -81,10 +82,8 @@ class WardenStore:
         if not path.exists():
             return False
         path.unlink()
-        try:
+        with suppress(OSError):
             self.warden_dir(warden_id).rmdir()
-        except OSError:
-            pass
         return True
 
     def create(self, spec: WardenSpec) -> WardenSpec:

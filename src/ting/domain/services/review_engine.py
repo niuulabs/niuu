@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -418,10 +419,8 @@ class ReviewEngine:
         """Cancel the event listener task."""
         if self._task is not None:
             self._task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
 
     async def _listen(self) -> None:
@@ -690,6 +689,7 @@ class ReviewEngine:
                     tracker_id,
                 )
                 return await self._handle_escalation(tracker, tracker_id, owner_id, run, score)
+        raise AssertionError("Unreachable handle_ravn_outcome fallthrough")
 
     # -- Signal fetchers --
 
@@ -938,6 +938,7 @@ class ReviewEngine:
                     tracker_id,
                 )
                 return None
+        return None
 
     # -- Reviewer session --
 

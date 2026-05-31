@@ -78,7 +78,7 @@ def _make_client(llm: MockLLM) -> TestClient:
     app.include_router(create_saga_previews_router())
     app.include_router(create_sagas_router())
     app.dependency_overrides[resolve_trackers] = lambda: [MockTracker()]
-    app.dependency_overrides[resolve_saga_repo] = lambda: MockSagaRepo()
+    app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
     app.dependency_overrides[resolve_llm] = lambda: llm
     app.state.settings = _dev_settings()
     return TestClient(app)

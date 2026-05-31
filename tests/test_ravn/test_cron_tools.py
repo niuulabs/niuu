@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import stat
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -296,6 +297,7 @@ class TestCronTriggerIsDue:
 @pytest.mark.asyncio
 async def test_cron_trigger_fires_store_job(tmp_path):
     """A store-defined job is enqueued when due."""
+
     store = _make_store(tmp_path)
     state_path = tmp_path / "state.json"
     lock_path = tmp_path / "cron.lock"
@@ -735,10 +737,8 @@ async def test_cron_trigger_run_fires_and_exits(tmp_path):
     # Sleep raises CancelledError immediately → loop exits after one tick
     sleep_mock = AsyncMock(side_effect=asyncio.CancelledError)
     with patch("ravn.adapters.triggers.cron.asyncio.sleep", new=sleep_mock):
-        try:
+        with suppress(asyncio.CancelledError):
             await trigger.run(fake_enqueue)
-        except asyncio.CancelledError:
-            pass
 
     # Job was due (first time, no state) → should have fired
     assert len(enqueued) == 1
@@ -775,10 +775,8 @@ async def test_cron_trigger_run_config_job(tmp_path):
 
     sleep_mock = AsyncMock(side_effect=asyncio.CancelledError)
     with patch("ravn.adapters.triggers.cron.asyncio.sleep", new=sleep_mock):
-        try:
+        with suppress(asyncio.CancelledError):
             await trigger.run(fake_enqueue)
-        except asyncio.CancelledError:
-            pass
 
     assert len(enqueued) == 1
     assert enqueued[0].triggered_by == "cron:run-config"

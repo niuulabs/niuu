@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any
 
 import websockets
@@ -118,12 +119,9 @@ class SkuldChannel(ChannelPort):
             self._recv_task = None
         if self._ws is None:
             return
-        try:
+        with suppress(Exception):
             await self._ws.close()
-        except Exception:
-            pass
-        finally:
-            self._ws = None
+        self._ws = None
 
     async def flush_buffer(self) -> None:
         """Re-send any buffered events that could not be delivered earlier."""

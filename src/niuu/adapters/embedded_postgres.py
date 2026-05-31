@@ -20,6 +20,7 @@ import re
 import socket
 import subprocess
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from niuu.ports.embedded_database import ConnectionInfo, EmbeddedDatabasePort
@@ -95,11 +96,9 @@ def _socket_dir_candidates(data_dir: Path) -> tuple[Path, ...]:
 
     if path_str.startswith("/private/"):
         alias = Path(path_str.removeprefix("/private"))
-        try:
+        with suppress(OSError):
             if alias.exists() and alias.resolve() == data_dir.resolve():
                 candidates.append(alias)
-        except OSError:
-            pass
 
     return tuple(dict.fromkeys(candidates))
 
@@ -317,11 +316,9 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
             # Try to kill the process directly as fallback
             pid_file = self._data_dir / "postmaster.pid"
             if pid_file.exists():
-                try:
+                with suppress(ValueError, ProcessLookupError, OSError):
                     pid = int(pid_file.read_text().split("\n")[0])
                     os.kill(pid, 15)  # SIGTERM
-                except (ValueError, ProcessLookupError, OSError):
-                    pass
 
     # ------------------------------------------------------------------
     # Helpers

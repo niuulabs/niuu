@@ -20,6 +20,7 @@ import asyncio
 import logging
 import os
 import time
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -37,9 +38,6 @@ logger = logging.getLogger(__name__)
 _SLASH_PROMPTS: dict[str, str] = {
     f"/ravn-{cmd.lstrip('/')}": prompt for cmd, prompt in GATEWAY_SLASH_PROMPTS.items()
 }
-
-# Mention pattern prefix that triggers the agent (e.g. "<@UBOT123> hello")
-_MENTION_PREFIX = "<@"
 
 
 class SlackGateway(GatewayHttpMixin, GatewayChannelPort):
@@ -100,10 +98,8 @@ class SlackGateway(GatewayHttpMixin, GatewayChannelPort):
         """Start and run until cancelled (convenience for :func:`asyncio.create_task`)."""
         await self.start()
         if self._task is not None:
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
 
     async def send_text(self, chat_id: str, text: str) -> None:
         """Post *text* to the Slack channel *chat_id*."""

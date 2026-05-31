@@ -60,7 +60,7 @@ function AppInner() {
             <Shell
               plugins={plugins}
               brand={
-                <span className="niuu-inline-flex niuu-items-center niuu-justify-center niuu-text-sky-300">
+                <span className="niuu:inline-flex niuu:items-center niuu:justify-center niuu:text-sky-300">
                   <LogoKnot size={22} stroke={1.8} />
                 </span>
               }
@@ -156,7 +156,7 @@ export function App() {
 
 function BootScreen({ label }: { label: string }) {
   return (
-    <div className="niuu-h-screen niuu-flex niuu-items-center niuu-justify-center niuu-bg-bg-primary niuu-text-text-secondary niuu-font-mono niuu-text-xs">
+    <div className="niuu:h-screen niuu:flex niuu:items-center niuu:justify-center niuu:bg-bg-primary niuu:text-text-secondary niuu:font-mono niuu:text-xs">
       {label}
     </div>
   );

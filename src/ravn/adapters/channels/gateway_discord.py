@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -41,8 +42,7 @@ _OP_INVALID_SESSION = 9
 _OP_HELLO = 10
 _OP_HEARTBEAT_ACK = 11
 
-# Discord Gateway close codes that allow resuming
-_RESUMABLE_CLOSE_CODES = {4000, 4001, 4002, 4003, 4005, 4007, 4008, 4009}
+__all__ = ["_OP_HEARTBEAT_ACK"]
 
 # Slash commands recognised by the gateway; translated to agent prompts.
 _SLASH_PROMPTS: dict[str, str] = GATEWAY_SLASH_PROMPTS
@@ -116,10 +116,8 @@ class DiscordGateway(GatewayHttpMixin, GatewayChannelPort):
         """Start and run until cancelled (convenience for :func:`asyncio.create_task`)."""
         await self.start()
         if self._task is not None:
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
 
     async def send_text(self, chat_id: str, text: str) -> None:
         """Send *text* to the Discord channel identified by *chat_id*."""

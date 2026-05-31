@@ -20,7 +20,7 @@ class EventPublisherPort(ABC):
     @abstractmethod
     async def publish(self, event: RavnEvent) -> None:
         """Publish an event. Never raises — implementations must absorb errors."""
-        ...
+        raise NotImplementedError
 
     async def close(self) -> None:
         """Optional cleanup. Called on daemon shutdown."""

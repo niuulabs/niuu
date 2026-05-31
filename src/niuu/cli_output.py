@@ -69,6 +69,7 @@ def format_api_error(status_code: int, detail: str) -> str:
             return f"Not found: {detail}"
         case _:
             return f"API error {status_code}: {detail}"
+    raise AssertionError("Unreachable format_api_error fallthrough")
 
 
 def handle_api_error(exc: httpx.HTTPStatusError) -> None:
