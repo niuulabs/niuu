@@ -1,4 +1,4 @@
-FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b AS builder
+FROM ubuntu:24.10@sha256:cdf755952ed117f6126ff4e65810bf93767d4c38f5c7185b50ec1f1078b464cc AS builder
 
 ARG TARGETARCH
 
@@ -38,7 +38,7 @@ RUN uv sync --frozen --no-dev --no-editable
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
 # ---------------------------------------------------------------------------
-FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+FROM ubuntu:24.10@sha256:cdf755952ed117f6126ff4e65810bf93767d4c38f5c7185b50ec1f1078b464cc
 
 
 LABEL org.opencontainers.image.title="skuld"
