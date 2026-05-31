@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { IResearchService, ResearchCampaignDetail } from '../ports';
+import type { IResearchService, ResearchCampaign, ResearchCampaignDetail } from '../ports';
 import { createMockDispatcherService } from '../adapters/mock';
 import { ResearchCenterPage } from './ResearchCenterPage';
 
@@ -240,6 +240,40 @@ const researchService: IResearchService = {
   },
 };
 
+function createResearchService(
+  campaigns: ResearchCampaignDetail[],
+  options: {
+    missingSlugs?: string[];
+    listError?: unknown;
+  } = {},
+): IResearchService {
+  const { missingSlugs = [], listError } = options;
+  const missing = new Set(missingSlugs);
+  return {
+    async listCampaigns() {
+      if (listError) throw listError;
+      return campaigns.map((campaign) => ({ ...campaign }));
+    },
+    async getCampaign(slug) {
+      if (missing.has(slug)) return null;
+      return campaigns.find((campaign) => campaign.slug === slug) ?? null;
+    },
+    async createCampaign() {
+      return campaigns[0]!;
+    },
+    async updateCampaign() {
+      return campaigns[0]!;
+    },
+    async deleteCampaign() {},
+    async listArtifacts(slug) {
+      return campaigns.find((campaign) => campaign.slug === slug)?.artifacts ?? [];
+    },
+    async getArtifact() {
+      return null;
+    },
+  };
+}
+
 function wrap(services: Record<string, unknown>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return function Wrapper({ children }: { children: React.ReactNode }) {
@@ -351,6 +385,282 @@ describe('ResearchCenterPage', () => {
     });
 
     await waitFor(() => expect(screen.getByText(/research index offline/i)).toBeInTheDocument());
+  });
+
+  it('covers derived branch states and helper fallbacks through rendered campaign cards', async () => {
+    const branchCampaigns: ResearchCampaignDetail[] = [
+      {
+        id: 'camp-blocked',
+        slug: 'blocked-branch-campaign',
+        name: 'Blocked branch campaign',
+        ownerId: 'dev-user',
+        workflowId: 'wf-research',
+        workflowVersion: '1.0.0',
+        workflowName: 'Research Campaign',
+        sessionId: 'abcdefghijk',
+        sessionName: 'Blocked branch campaign',
+        status: 'blocked',
+        activeStageId: 'review',
+        stageState: [
+          {
+            stageId: 'review',
+            label: 'Review',
+            status: 'gated',
+            startedAt: '2026-05-23T09:00:00.000Z',
+            completedAt: null,
+          },
+        ],
+        metadata: {
+          question: '   ',
+          mode: '',
+        },
+        createdAt: '2026-05-23T09:00:00.000Z',
+        updatedAt: '2026-05-25T12:00:00.000Z',
+        lastActivityAt: '2026-05-25T12:00:00.000Z',
+        completedAt: null,
+        artifacts: [
+          {
+            path: 'research/campaigns/blocked-branch-campaign/sources.md',
+            title: 'Sources',
+            updatedAt: now,
+            kind: null,
+            publishState: 'unknown',
+            sourceIds: ['src-a', 'src-b'],
+            summary: 'Sources',
+          },
+          {
+            path: 'research/campaigns/blocked-branch-campaign/challenge.md',
+            title: 'Challenge',
+            updatedAt: now,
+            kind: null,
+            publishState: 'unknown',
+            sourceIds: ['src-b'],
+            summary: 'Challenge',
+          },
+          {
+            path: 'learnings/blocked-branch-campaign.md',
+            title: 'Learn',
+            updatedAt: now,
+            kind: null,
+            publishState: 'unknown',
+            sourceIds: [],
+            summary: 'Learn',
+          },
+          {
+            path: 'followups/blocked-branch-campaign.md',
+            title: 'Followup',
+            updatedAt: now,
+            kind: null,
+            publishState: 'unknown',
+            sourceIds: [],
+            summary: 'Followup',
+          },
+        ],
+        canonicalArtifacts: {},
+      },
+      {
+        id: 'camp-review-ready',
+        slug: 'review-ready-branch',
+        name: 'Review ready branch',
+        ownerId: 'dev-user',
+        workflowId: 'wf-research',
+        workflowVersion: '1.0.0',
+        workflowName: 'Research Campaign',
+        sessionId: 'reviewready123',
+        sessionName: 'Review ready branch',
+        status: 'completed',
+        activeStageId: 'publish',
+        stageState: [
+          {
+            stageId: 'frame',
+            label: 'Frame',
+            status: 'complete',
+            startedAt: '2026-05-25T10:30:00.000Z',
+            completedAt: '2026-05-25T11:00:00.000Z',
+          },
+          {
+            stageId: 'publish',
+            label: 'Publish',
+            status: 'gated',
+            startedAt: '2026-05-25T11:00:00.000Z',
+            completedAt: null,
+          },
+        ],
+        metadata: {
+          question: 'Is the draft ready for publication?',
+          mode: 'deep_monitoring',
+        } as ResearchCampaign['metadata'],
+        createdAt: '2026-05-25T10:30:00.000Z',
+        updatedAt: '2026-05-25T12:00:00.000Z',
+        lastActivityAt: '2026-05-25T12:00:00.000Z',
+        completedAt: '2026-05-25T12:00:00.000Z',
+        artifacts: [
+          {
+            path: 'research/campaigns/review-ready-branch/final.md',
+            title: 'Final',
+            updatedAt: now,
+            kind: 'final',
+            publishState: 'review-ready',
+            sourceIds: ['src-c'],
+            summary: 'Draft answer',
+          },
+        ],
+        canonicalArtifacts: {
+          final: 'research/campaigns/review-ready-branch/final.md',
+        },
+      },
+      {
+        id: 'camp-published-learning',
+        slug: 'published-via-learning',
+        name: 'Published via learning',
+        ownerId: 'dev-user',
+        workflowId: 'wf-research',
+        workflowVersion: '1.0.0',
+        workflowName: 'Research Campaign',
+        sessionId: 'published888',
+        sessionName: 'Published via learning',
+        status: 'completed',
+        activeStageId: 'publish',
+        stageState: [
+          {
+            stageId: 'publish',
+            label: 'Publish',
+            status: 'complete',
+            startedAt: '2026-05-25T11:59:30.000Z',
+            completedAt: '2026-05-25T12:00:00.000Z',
+          },
+        ],
+        metadata: {
+          question: 'What should we remember from this run?',
+          mode: 'evaluative',
+        },
+        createdAt: '2026-05-25T11:59:30.000Z',
+        updatedAt: '2026-05-25T12:00:00.000Z',
+        lastActivityAt: '2026-05-25T12:00:00.000Z',
+        completedAt: '2026-05-25T12:00:00.000Z',
+        artifacts: [
+          {
+            path: 'learnings/published-via-learning.md',
+            title: 'Learning',
+            updatedAt: now,
+            kind: null,
+            publishState: 'published',
+            sourceIds: ['src-d'],
+            summary: 'Published learning',
+          },
+        ],
+        canonicalArtifacts: {},
+      },
+      {
+        id: 'camp-running-live',
+        slug: 'running-without-detail',
+        name: 'Running without detail',
+        ownerId: 'dev-user',
+        workflowId: 'wf-research',
+        workflowVersion: '1.0.0',
+        workflowName: 'Research Campaign',
+        sessionId: 'live999999',
+        sessionName: 'Running without detail',
+        status: 'running',
+        activeStageId: 'launch',
+        stageState: [],
+        metadata: {
+          question: 'Waiting on artifacts?',
+          mode: 'monitoring',
+        },
+        createdAt: '2026-05-25T11:00:00.000Z',
+        updatedAt: '2026-05-25T12:00:00.000Z',
+        lastActivityAt: '2026-05-25T12:00:00.000Z',
+        completedAt: null,
+        artifacts: [],
+        canonicalArtifacts: {},
+      },
+      {
+        id: 'camp-draft-branch',
+        slug: 'draft-created-latest',
+        name: 'Draft created latest',
+        ownerId: 'dev-user',
+        workflowId: 'wf-research',
+        workflowVersion: '1.0.0',
+        workflowName: 'Research Campaign',
+        sessionId: 'draft123456',
+        sessionName: 'Draft created latest',
+        status: 'pending',
+        activeStageId: 'frame',
+        stageState: [],
+        metadata: {
+          question: 'Newest draft first?',
+          mode: 'investigative',
+        },
+        createdAt: '2026-05-25T11:58:00.000Z',
+        updatedAt: '2026-05-25T11:58:00.000Z',
+        lastActivityAt: '2026-05-25T11:58:00.000Z',
+        completedAt: null,
+        artifacts: [],
+        canonicalArtifacts: {},
+      },
+    ];
+
+    const branchResearchService = createResearchService(branchCampaigns, {
+      missingSlugs: ['running-without-detail'],
+    });
+    const pausedDispatcherService = {
+      async getState() {
+        return { running: false };
+      },
+    };
+
+    const view = render(<ResearchCenterPage />, {
+      wrapper: wrap({
+        'ting.research': branchResearchService,
+        'ting.dispatcher': pausedDispatcherService,
+      }),
+    });
+
+    await waitFor(() => expect(screen.getByText(/Blocked branch campaign/i)).toBeInTheDocument());
+    expect(
+      screen.getByText((_, element) => element?.textContent === 'dispatcher paused'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('BLOCKED')).toBeInTheDocument();
+    expect(screen.getAllByText('REVIEW-READY').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('PUBLISHED').length).toBeGreaterThan(0);
+    expect(screen.getByText('EXPLORATORY')).toBeInTheDocument();
+    expect(screen.getByText('DEEP MONITORING')).toBeInTheDocument();
+    expect(
+      screen.getByText('Review campaign artifacts and published memory in Mimir.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('campaign needs human review before it can continue'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('awaiting artifact updates from live workflow'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('2d 3h')).toBeInTheDocument();
+    expect(screen.getByText('1h 0m')).toBeInTheDocument();
+    expect(screen.getByText('30s')).toBeInTheDocument();
+    expect(screen.getByText('2 src')).toBeInTheDocument();
+    expect(screen.getByText('1 crit')).toBeInTheDocument();
+    expect(screen.getAllByText('1 learn').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('1 f/u').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /Drafts/i }));
+    await waitFor(() => expect(screen.getByText(/Draft created latest/i)).toBeInTheDocument());
+    expect(screen.queryByText(/Blocked branch campaign/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /All/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Created' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Table' }));
+
+    const orderedLinks = Array.from(view.container.querySelectorAll('.research-table__link')).map(
+      (element) => element.textContent,
+    );
+    expect(orderedLinks).toEqual([
+      'Published via learning',
+      'Draft created latest',
+      'Running without detail',
+      'Review ready branch',
+      'Blocked branch campaign',
+    ]);
   });
 
   it('invalidates the index on campaign events and supports opening grid cards directly', async () => {

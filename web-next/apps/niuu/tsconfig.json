@@ -3,6 +3,7 @@
   "compilerOptions": {
     "outDir": "./dist",
     "noEmit": true,
+    "rootDir": "../..",
     "types": ["vite/client"]
   },
   "include": ["src/**/*"]

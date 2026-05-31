@@ -63,9 +63,6 @@ function PermissionApprovalItem({
 
   useEffect(() => {
     let active = true;
-    setChecking(true);
-    setDecision(null);
-    setRemainingMs(0);
 
     void evaluateAutoApproval(permission)
       .then((nextDecision) => {
@@ -90,7 +87,6 @@ function PermissionApprovalItem({
     if (!decision?.canAutoApprove || respondedRef.current) return undefined;
 
     const delayMs = Math.max(0, decision.delaySeconds * 1000);
-    setRemainingMs(delayMs);
     const startedAt = Date.now();
     const timer = window.setTimeout(() => {
       void evaluateAutoApproval(permission)

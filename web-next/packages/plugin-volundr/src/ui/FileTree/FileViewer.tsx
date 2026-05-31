@@ -18,39 +18,7 @@ export interface FileViewerProps {
  * Shiki is loaded lazily so the main bundle stays small.
  */
 export function FileViewer({ path, content, onClose, isLoading, error }: FileViewerProps) {
-  const [html, setHtml] = useState<string | null>(null);
-  const [highlightError, setHighlightError] = useState<string | null>(null);
-
   const language = detectLanguage(path);
-
-  useEffect(() => {
-    setHtml(null);
-    setHighlightError(null);
-
-    if (isLoading || error || !content) return;
-
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const { codeToHtml } = await import('shiki');
-        const highlighted = await codeToHtml(content, {
-          lang: language,
-          theme: 'github-dark-dimmed',
-        });
-        if (!cancelled) setHtml(highlighted);
-      } catch {
-        if (!cancelled) {
-          setHighlightError('Syntax highlighting unavailable');
-          setHtml(null);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [content, language, isLoading, error]);
 
   const basename = path.split('/').at(-1) ?? path;
 
@@ -107,34 +75,72 @@ export function FileViewer({ path, content, onClose, isLoading, error }: FileVie
           </div>
         )}
 
-        {!isLoading && !error && html && (
-          <div
-            className="niuu-h-full niuu-overflow-auto niuu-p-0 niuu-text-xs [&_pre]:niuu-m-0 [&_pre]:niuu-h-full [&_pre]:niuu-overflow-auto [&_pre]:niuu-p-5"
-            // Shiki renders safe, server-escaped HTML.
-            dangerouslySetInnerHTML={{ __html: html }}
-            data-testid="file-viewer-highlighted"
-          />
-        )}
-
-        {!isLoading && !error && !html && content && (
-          <pre
-            className="niuu-m-0 niuu-overflow-auto niuu-p-5 niuu-font-mono niuu-text-xs niuu-text-text-secondary"
-            data-testid="file-viewer-plain"
-          >
-            {content}
-          </pre>
-        )}
-
-        {highlightError && (
-          <p
-            className="niuu-px-4 niuu-pt-0 niuu-text-xs niuu-text-text-muted"
-            data-testid="file-viewer-highlight-warning"
-          >
-            {highlightError} — showing plain text.
-          </p>
+        {!isLoading && !error && content && (
+          <HighlightedContent key={`${path}:${content}`} content={content} language={language} />
         )}
       </div>
     </div>
+  );
+}
+
+function HighlightedContent({ content, language }: { content: string; language: string }) {
+  const [state, setState] = useState<{ html: string | null; warning: string | null }>({
+    html: null,
+    warning: null,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const { codeToHtml } = await import('shiki');
+        const highlighted = await codeToHtml(content, {
+          lang: language,
+          theme: 'github-dark-dimmed',
+        });
+        if (!cancelled) {
+          setState({ html: highlighted, warning: null });
+        }
+      } catch {
+        if (!cancelled) {
+          setState({ html: null, warning: 'Syntax highlighting unavailable' });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [content, language]);
+
+  return (
+    <>
+      {state.html ? (
+        <div
+          className="niuu-h-full niuu-overflow-auto niuu-p-0 niuu-text-xs [&_pre]:niuu-m-0 [&_pre]:niuu-h-full [&_pre]:niuu-overflow-auto [&_pre]:niuu-p-5"
+          // Shiki renders safe, server-escaped HTML.
+          dangerouslySetInnerHTML={{ __html: state.html }}
+          data-testid="file-viewer-highlighted"
+        />
+      ) : (
+        <pre
+          className="niuu-m-0 niuu-overflow-auto niuu-p-5 niuu-font-mono niuu-text-xs niuu-text-text-secondary"
+          data-testid="file-viewer-plain"
+        >
+          {content}
+        </pre>
+      )}
+
+      {state.warning && (
+        <p
+          className="niuu-px-4 niuu-pt-0 niuu-text-xs niuu-text-text-muted"
+          data-testid="file-viewer-highlight-warning"
+        >
+          {state.warning} — showing plain text.
+        </p>
+      )}
+    </>
   );
 }
 

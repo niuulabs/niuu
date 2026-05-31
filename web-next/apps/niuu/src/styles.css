@@ -1,3 +1,5 @@
+@config "../tailwind.config.ts";
+
 /* Reset browser defaults */
 *,
 *::before,
@@ -29,5 +31,4 @@ select {
   line-height: inherit;
 }
 
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";

@@ -31,38 +31,19 @@ export function PagesView() {
   const ctx = usePluginCtx();
   const { activeMount, mountName } = useActiveMount();
   const { data: allPages = [] } = useMimirPages(mountName ? { mountName } : undefined);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selectedPathState, setSelectedPathState] = useState<string | null>(null);
   const [readerLayout, setReaderLayout] = useState<ReaderLayout>('structured');
   const sidebarCollapsed = Boolean(ctx.tweaks['mimir.pagesSidebarCollapsed']);
   const requestedPath =
     typeof ctx.tweaks['mimir.selectedPagePath'] === 'string'
       ? (ctx.tweaks['mimir.selectedPagePath'] as string)
       : null;
-
-  // Auto-select the first page once data loads.
-  useEffect(() => {
-    if (selectedPath === null && allPages.length > 0) {
-      setSelectedPath(allPages[0]?.path ?? null);
-    }
-  }, [allPages, selectedPath]);
-
-  useEffect(() => {
-    if (
-      requestedPath &&
-      requestedPath !== selectedPath &&
-      allPages.some((page) => page.path === requestedPath)
-    ) {
-      setSelectedPath(requestedPath);
-    }
-  }, [allPages, requestedPath, selectedPath]);
-
-  useEffect(() => {
-    if (selectedPath && !allPages.some((page) => page.path === selectedPath)) {
-      setSelectedPath(allPages[0]?.path ?? null);
-    }
-  }, [allPages, selectedPath]);
-
-  const activePagePath = selectedPath ?? allPages[0]?.path ?? null;
+  const activePagePath =
+    (requestedPath && allPages.some((page) => page.path === requestedPath)
+      ? requestedPath
+      : selectedPathState && allPages.some((page) => page.path === selectedPathState)
+        ? selectedPathState
+        : allPages[0]?.path) ?? null;
   const { data: page } = useMimirPage(activePagePath, mountName);
   const { data: pageSources = [] } = useMimirPageSources(activePagePath);
   const service = useService<IMimirService>('mimir');
@@ -91,7 +72,7 @@ export function PagesView() {
   }
 
   function handleSelectPath(path: string) {
-    setSelectedPath(path);
+    setSelectedPathState(path);
     ctx.setTweak('mimir.selectedPagePath', path);
   }
 

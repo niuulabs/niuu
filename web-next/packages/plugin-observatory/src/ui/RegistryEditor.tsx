@@ -700,6 +700,28 @@ export function RegistryEditor({
   isSaving = false,
   saveError = null,
 }: RegistryEditorProps) {
+  return (
+    <RegistryEditorInner
+      key={`${initialRegistry.version}:${initialRegistry.updatedAt}:${initialRegistry.types.length}`}
+      initialRegistry={initialRegistry}
+      onSave={onSave}
+      isSaving={isSaving}
+      saveError={saveError}
+    />
+  );
+}
+
+function RegistryEditorInner({
+  initialRegistry,
+  onSave,
+  isSaving,
+  saveError,
+}: {
+  initialRegistry: Registry;
+  onSave: RegistryEditorProps['onSave'];
+  isSaving: boolean;
+  saveError: string | null;
+}) {
   const [activeTab, setActiveTab] = useState<TabId>('types');
   const [search, setSearch] = useState('');
   const [saveMessage, setSaveMessage] = useState<string | null>(null);

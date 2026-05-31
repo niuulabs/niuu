@@ -22,21 +22,21 @@ const navigate = vi.fn();
 // ---------------------------------------------------------------------------
 
 vi.mock('@xterm/xterm', () => ({
-  Terminal: vi.fn().mockImplementation(() => ({
-    open: vi.fn(),
-    write: vi.fn(),
-    dispose: vi.fn(),
-    loadAddon: vi.fn(),
-    onData: vi.fn().mockReturnValue({ dispose: vi.fn() }),
-    options: {},
-  })),
+  Terminal: class MockXtermTerminal {
+    open = vi.fn();
+    write = vi.fn();
+    dispose = vi.fn();
+    loadAddon = vi.fn();
+    onData = vi.fn().mockReturnValue({ dispose: vi.fn() });
+    options = {};
+  },
 }));
 
 vi.mock('@xterm/addon-fit', () => ({
-  FitAddon: vi.fn().mockImplementation(() => ({
-    fit: vi.fn(),
-    dispose: vi.fn(),
-  })),
+  FitAddon: class MockFitAddon {
+    fit = vi.fn();
+    dispose = vi.fn();
+  },
 }));
 
 vi.mock('shiki', () => ({

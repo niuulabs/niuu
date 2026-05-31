@@ -1,25 +1,37 @@
-@tailwind components;
-@tailwind utilities;
+@config "../tailwind.config.ts";
+
+@import "tailwindcss";
 
 @layer components {
   /* Section headers in TypePreviewDrawer */
   .registry-section-head {
-    @apply niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-text-text-muted niuu-mb-2 niuu-font-medium;
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    margin-bottom: var(--space-2);
+    text-transform: uppercase;
     letter-spacing: 0.07em;
   }
 
   /* Tab bar buttons */
   .registry-tab-btn {
-    @apply niuu-text-text-muted niuu-cursor-pointer niuu-font-sans niuu-text-sm niuu-font-normal niuu-px-3 niuu-py-2;
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    font-weight: 400;
     margin-bottom: -1px;
+    padding: var(--space-2) var(--space-3);
   }
 
   .registry-tab-btn[aria-selected='true'] {
     border-bottom-color: var(--color-brand);
-    @apply niuu-text-text-primary niuu-font-semibold;
+    color: var(--color-text-primary);
+    font-weight: 600;
   }
 
   /* Type card grid */
@@ -127,7 +139,12 @@
 
   /* Containment tree nodes */
   .registry-tree-node {
-    @apply niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-sm niuu-border niuu-border-transparent niuu-cursor-grab;
+    align-items: center;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: grab;
+    display: flex;
+    gap: var(--space-2);
     padding: 4px 8px;
   }
 
@@ -136,7 +153,8 @@
   }
 
   .registry-tree-node[data-dragging='true'] {
-    @apply niuu-opacity-40 niuu-cursor-grabbing;
+    cursor: grabbing;
+    opacity: 0.4;
   }
 
   .registry-tree-node[data-drag-state='ok'] {

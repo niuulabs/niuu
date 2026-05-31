@@ -49,7 +49,7 @@ const VALID_NOTIFICATION_SETTINGS: NotificationSettings = {
 };
 
 const VALID_AUDIT_ENTRY: AuditEntry = {
-  id: '00000000-0000-0000-0000-000000000001',
+  id: '00000000-0000-4000-8000-000000000201',
   kind: 'settings.flock_config.updated',
   summary: 'Updated flock name to "Niuu Core"',
   actor: 'user-1',

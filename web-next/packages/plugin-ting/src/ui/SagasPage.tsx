@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -191,7 +191,7 @@ function SagasPageContent() {
   const [showNewSagaModal, setShowNewSagaModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [search, setSearch] = useState('');
-  const [selectedSagaId, setSelectedSagaId] = useState<string | null>(params.sagaId ?? null);
+  const [selectedSagaIdState, setSelectedSagaIdState] = useState<string | null>(params.sagaId ?? null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [repoCandidate, setRepoCandidate] = useState('');
@@ -199,13 +199,8 @@ function SagasPageContent() {
   const [selectedInstanceId, setSelectedInstanceId] = useState('');
   const [isImporting, setIsImporting] = useState(false);
 
-  useEffect(() => {
-    if (!selectedSagaId && sagas && sagas.length > 0) {
-      setSelectedSagaId(sagas[0]!.id);
-    }
-  }, [sagas, selectedSagaId]);
-
   const allSagas = useMemo(() => sagas ?? [], [sagas]);
+  const selectedSagaId = selectedSagaIdState ?? allSagas[0]?.id ?? null;
   const importedTrackerIds = useMemo(
     () =>
       new Set(allSagas.filter((saga) => saga.status !== 'complete').map((saga) => saga.trackerId)),
@@ -251,11 +246,6 @@ function SagasPageContent() {
     (project) => !isTerminalTrackerStatus(project.status),
   );
   const availableRepos = useMemo(() => repoCatalogQuery.data ?? [], [repoCatalogQuery.data]);
-  const selectedProject =
-    trackerProjects.find((project) => project.id === selectedProjectId) ?? null;
-  const selectedProjectHasSlugConflict =
-    selectedProject !== null && existingSagaSlugs.has(trackerProjectSlug(selectedProject));
-  const selectedProjectSlug = selectedProject ? trackerProjectSlug(selectedProject) : '';
   const commonBranches = useMemo(
     () =>
       availableRepos.length > 0
@@ -263,36 +253,30 @@ function SagasPageContent() {
         : (repoBranchesQuery.data ?? []),
     [availableRepos, repoBranchesQuery.data, selectedRepos],
   );
+  const effectiveBaseBranch =
+    showImportModal && commonBranches.length > 0 && !commonBranches.includes(baseBranch)
+      ? (commonBranches[0] ?? 'main')
+      : baseBranch;
+  const effectiveSelectedProjectId =
+    showImportModal && !selectedProjectId && trackerProjects.length > 0
+      ? (trackerProjects.find((project) => !importedTrackerIds.has(project.id)) ?? trackerProjects[0]!)
+          .id
+      : selectedProjectId;
+  const effectiveSelectedProject =
+    trackerProjects.find((project) => project.id === effectiveSelectedProjectId) ?? null;
+  const selectedProjectHasSlugConflict =
+    effectiveSelectedProject !== null &&
+    existingSagaSlugs.has(trackerProjectSlug(effectiveSelectedProject));
+  const selectedProjectSlug = effectiveSelectedProject
+    ? trackerProjectSlug(effectiveSelectedProject)
+    : '';
   const canImportSelectedProject =
-    selectedProject !== null &&
+    effectiveSelectedProject !== null &&
     selectedRepos.length > 0 &&
-    Boolean(baseBranch.trim()) &&
-    !importedTrackerIds.has(selectedProject.id) &&
+    Boolean(effectiveBaseBranch.trim()) &&
+    !importedTrackerIds.has(effectiveSelectedProject.id) &&
     !selectedProjectHasSlugConflict &&
     !isImporting;
-
-  useEffect(() => {
-    if (!showImportModal) {
-      setSelectedProjectId(null);
-      setSelectedRepos([]);
-      setRepoCandidate('');
-      setBaseBranch('');
-      setSelectedInstanceId('');
-      return;
-    }
-    setSelectedRepos([]);
-    setRepoCandidate('');
-    setBaseBranch('');
-    setSelectedInstanceId('');
-  }, [showImportModal]);
-
-  useEffect(() => {
-    if (!showImportModal) return;
-    if (commonBranches.length === 0) return;
-    if (!commonBranches.includes(baseBranch)) {
-      setBaseBranch(commonBranches[0] ?? 'main');
-    }
-  }, [baseBranch, commonBranches, showImportModal]);
 
   function addSelectedRepo(repoRef: string) {
     const value = repoRef.trim();
@@ -304,15 +288,6 @@ function SagasPageContent() {
     }
     setRepoCandidate('');
   }
-
-  useEffect(() => {
-    if (!showImportModal) return;
-    if (selectedProjectId) return;
-    if (trackerProjects.length === 0) return;
-    const firstProject =
-      trackerProjects.find((project) => !importedTrackerIds.has(project.id)) ?? trackerProjects[0]!;
-    setSelectedProjectId(firstProject.id);
-  }, [importedTrackerIds, selectedProjectId, showImportModal, trackerProjects]);
 
   const groups = useMemo(() => {
     return {
@@ -330,36 +305,53 @@ function SagasPageContent() {
     return <ErrorState message={error instanceof Error ? error.message : 'Failed to load sagas'} />;
 
   function handleSelectSaga(saga: Saga) {
-    setSelectedSagaId(saga.id);
+    setSelectedSagaIdState(saga.id);
     void navigate({ to: '/ting/sagas/$sagaId', params: { sagaId: saga.id } });
   }
 
+  function openImportModal() {
+    setShowImportModal(true);
+    setSelectedProjectId(null);
+    setSelectedRepos([]);
+    setRepoCandidate('');
+    setBaseBranch('');
+    setSelectedInstanceId('');
+  }
+
+  function closeImportModal() {
+    setShowImportModal(false);
+    setSelectedProjectId(null);
+    setIsImporting(false);
+    setSelectedRepos([]);
+    setRepoCandidate('');
+    setBaseBranch('');
+    setSelectedInstanceId('');
+  }
+
   function handleImportModalToggle(open: boolean) {
-    setShowImportModal(open);
-    if (!open) {
-      setSelectedProjectId(null);
-      setIsImporting(false);
-      setRepoCandidate('');
+    if (open) {
+      openImportModal();
+      return;
     }
+    closeImportModal();
   }
 
   async function handleImportProject() {
-    if (!selectedProject) return;
+    if (!effectiveSelectedProject) return;
     if (!canImportSelectedProject) return;
 
     setIsImporting(true);
     try {
       const importedSaga = await tracker.importProject(
-        selectedProject.id,
+        effectiveSelectedProject.id,
         selectedRepos,
-        baseBranch,
+        effectiveBaseBranch,
         selectedInstanceId || undefined,
       );
       await queryClient.invalidateQueries({ queryKey: ['ting', 'sagas'] });
-      setSelectedSagaId(importedSaga.id);
-      setShowImportModal(false);
-      setSelectedProjectId(null);
-      toast({ title: `Imported ${selectedProject.name}`, tone: 'success' });
+      setSelectedSagaIdState(importedSaga.id);
+      closeImportModal();
+      toast({ title: `Imported ${effectiveSelectedProject.name}`, tone: 'success' });
       void navigate({ to: '/ting/sagas/$sagaId', params: { sagaId: importedSaga.id } });
     } catch (importError) {
       toast({
@@ -446,7 +438,7 @@ function SagasPageContent() {
             <button
               type="button"
               className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-2.5 niuu-text-[14px] niuu-font-medium niuu-text-text-primary"
-              onClick={() => setShowImportModal(true)}
+              onClick={openImportModal}
               aria-label="Import saga from tracker"
             >
               Import
@@ -551,7 +543,7 @@ function SagasPageContent() {
                   trackerProjects.map((project: TrackerProject) => {
                     const imported = importedTrackerIds.has(project.id);
                     const slugConflict = existingSagaSlugs.has(trackerProjectSlug(project));
-                    const selected = selectedProjectId === project.id;
+                    const selected = effectiveSelectedProjectId === project.id;
                     return (
                       <button
                         key={project.id}
@@ -602,11 +594,11 @@ function SagasPageContent() {
               </div>
 
               <div className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4 niuu-space-y-4">
-                {selectedProject ? (
+                {effectiveSelectedProject ? (
                   <>
                     <div>
                       <h3 className="niuu-m-0 niuu-text-sm niuu-font-semibold niuu-text-text-primary">
-                        {selectedProject.name}
+                        {effectiveSelectedProject.name}
                       </h3>
                       <p className="niuu-m-0 niuu-mt-2 niuu-text-sm niuu-leading-5 niuu-text-text-secondary">
                         Import registers this tracker project as a saga. Ting will keep the saga
@@ -711,7 +703,7 @@ function SagasPageContent() {
                         <BranchSelect
                           repos={availableRepos}
                           selectedRepos={selectedRepos}
-                          value={baseBranch}
+                          value={effectiveBaseBranch}
                           onChange={setBaseBranch}
                           placeholder="Select branch"
                           testId="branch-select"
@@ -720,7 +712,7 @@ function SagasPageContent() {
                       ) : (
                         <input
                           type="text"
-                          value={baseBranch}
+                          value={effectiveBaseBranch}
                           onChange={(e) => setBaseBranch(e.target.value)}
                           placeholder="main"
                           className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary niuu-outline-none focus:niuu-border-brand"
@@ -753,7 +745,7 @@ function SagasPageContent() {
                     </label>
 
                     <div className="niuu-rounded-md niuu-bg-bg-tertiary niuu-p-3 niuu-text-xs niuu-leading-5 niuu-text-text-secondary">
-                      {importedTrackerIds.has(selectedProject.id)
+                      {importedTrackerIds.has(effectiveSelectedProject.id)
                         ? 'This tracker project is already imported into Ting.'
                         : selectedProjectHasSlugConflict
                           ? `A saga with slug "${selectedProjectSlug}" already exists in Ting.`

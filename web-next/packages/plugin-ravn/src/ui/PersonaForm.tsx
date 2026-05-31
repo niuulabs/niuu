@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import {
   cn,
   EventPicker,
@@ -202,19 +202,21 @@ export interface PersonaFormProps {
 }
 
 export function PersonaForm({ persona, onSave, isSaving = false }: PersonaFormProps) {
+  return (
+    <PersonaFormInner
+      key={persona.name}
+      persona={persona}
+      onSave={onSave}
+      isSaving={isSaving}
+    />
+  );
+}
+
+function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProps) {
   const [form, setForm] = useState<PersonaCreateRequest>(() => detailToRequest(persona));
   const [dirty, setDirty] = useState(false);
   const [showAllowPicker, setShowAllowPicker] = useState(false);
   const [showDenyPicker, setShowDenyPicker] = useState(false);
-
-  // Sync form when persona prop changes (navigating to another persona).
-  // Intentionally depend only on persona.name — not the full persona object —
-  // so saving (which triggers a re-fetch) doesn't reset the form mid-edit.
-  useEffect(() => {
-    setForm(detailToRequest(persona));
-    setDirty(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [persona.name]);
 
   const validationErrors = validatePersona(form, SEED_EVENT_CATALOG);
   const update = useCallback(

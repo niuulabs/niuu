@@ -13,7 +13,7 @@ import {
 } from '../application/useRavns';
 import type { IMimirService } from '../ports';
 
-function slugify(name: string): string {
+export function slugify(name: string): string {
   return name
     .trim()
     .toLowerCase()
@@ -21,7 +21,7 @@ function slugify(name: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function createStatefulWardenService(svc: IMimirService): IRavnWardenService {
+export function createStatefulWardenService(svc: IMimirService): IRavnWardenService {
   let pendingWardens: RavnWardenSummary[] | null = null;
   const listeners = new Map<string, Set<(warden: RavnWardenSummary) => void>>();
 

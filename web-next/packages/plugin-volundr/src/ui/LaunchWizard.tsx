@@ -2040,19 +2040,25 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   // Update template ID when templates load
   useEffect(() => {
     if (allTemplates.length > 0 && !form.templateId) {
-      setForm((f) => ({ ...f, templateId: allTemplates[0]!.id }));
+      queueMicrotask(() => {
+        setForm((f) => ({ ...f, templateId: allTemplates[0]!.id }));
+      });
     }
   }, [allTemplates, form.templateId]);
 
   useEffect(() => {
     if (!open || form.sourcetype !== 'git' || !form.repo.trim()) {
-      setManualBranches([]);
+      queueMicrotask(() => {
+        setManualBranches([]);
+      });
       return;
     }
 
     const matchingRepo = repos.find((repo) => repo.cloneUrl === form.repo);
     if (matchingRepo?.branches.length) {
-      setManualBranches([]);
+      queueMicrotask(() => {
+        setManualBranches([]);
+      });
       return;
     }
 
@@ -2072,50 +2078,56 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   }, [form.repo, form.sourcetype, open, repoCatalog, repos]);
 
   useEffect(() => {
-    setForm((current) => {
-      let changed = false;
-      const next = { ...current };
+    queueMicrotask(() => {
+      setForm((current) => {
+        let changed = false;
+        const next = { ...current };
 
-      if (repos.length > 0 && current.sourcetype === 'git') {
-        const matchingRepo = repos.find((repo) => repo.cloneUrl === current.repo);
-        if (!matchingRepo) {
-          next.repo = repos[0]!.cloneUrl;
-          next.branch = repos[0]!.defaultBranch;
-          next.workspaceId = '';
-          changed = true;
-        } else if (!current.branch.trim()) {
-          next.branch = matchingRepo.defaultBranch;
+        if (repos.length > 0 && current.sourcetype === 'git') {
+          const matchingRepo = repos.find((repo) => repo.cloneUrl === current.repo);
+          if (!matchingRepo) {
+            next.repo = repos[0]!.cloneUrl;
+            next.branch = repos[0]!.defaultBranch;
+            next.workspaceId = '';
+            changed = true;
+          } else if (!current.branch.trim()) {
+            next.branch = matchingRepo.defaultBranch;
+            changed = true;
+          }
+        }
+
+        if (Object.keys(models).length > 0 && !models[current.model]) {
+          next.model = pickDefaultModel(models);
           changed = true;
         }
-      }
 
-      if (Object.keys(models).length > 0 && !models[current.model]) {
-        next.model = pickDefaultModel(models);
-        changed = true;
-      }
-
-      if (targets.length > 0) {
-        const matchingTarget = targets.find((target) => target.id === current.instanceId);
-        if (!matchingTarget) {
-          next.instanceId = targets.find((target) => target.isDefault)?.id ?? targets[0]!.id;
-          changed = true;
+        if (targets.length > 0) {
+          const matchingTarget = targets.find((target) => target.id === current.instanceId);
+          if (!matchingTarget) {
+            next.instanceId = targets.find((target) => target.isDefault)?.id ?? targets[0]!.id;
+            changed = true;
+          }
         }
-      }
 
-      return changed ? next : current;
+        return changed ? next : current;
+      });
     });
   }, [repos, models, targets]);
 
   useEffect(() => {
     const query = form.trackerQuery.trim();
     if (!open || query.length < 2 || form.trackerIssue?.identifier === query) {
-      setTrackerResults([]);
-      setTrackerLoading(false);
+      queueMicrotask(() => {
+        setTrackerResults([]);
+        setTrackerLoading(false);
+      });
       return;
     }
 
     let cancelled = false;
-    setTrackerLoading(true);
+    queueMicrotask(() => {
+      if (!cancelled) setTrackerLoading(true);
+    });
     const timeout = window.setTimeout(() => {
       void volundr
         .searchTrackerIssues(query)
@@ -2343,12 +2355,14 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   // Reset on open
   useEffect(() => {
     if (open) {
-      setStep('template');
-      setBootStep(0);
-      setBootProgress(0);
-      setLaunchError(null);
-      setCreatedSessionId(null);
-      setLaunching(false);
+      queueMicrotask(() => {
+        setStep('template');
+        setBootStep(0);
+        setBootProgress(0);
+        setLaunchError(null);
+        setCreatedSessionId(null);
+        setLaunching(false);
+      });
     }
   }, [open]);
 

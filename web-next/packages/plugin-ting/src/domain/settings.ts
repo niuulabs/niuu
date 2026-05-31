@@ -119,7 +119,7 @@ export const auditEntrySchema = z.object({
   /** Actor who triggered the event (user id, 'system', or 'dispatcher'). */
   actor: z.string().min(1),
   /** Optional JSON blob of the changed values (before/after). */
-  payload: z.record(z.unknown()).nullable(),
+  payload: z.record(z.string(), z.unknown()).nullable(),
   /** ISO-8601 UTC timestamp of the event. */
   createdAt: z.string().datetime(),
 });

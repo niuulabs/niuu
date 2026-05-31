@@ -207,6 +207,10 @@ export function PersonasPage() {
   const { data: personas, isLoading, isError, error } = usePersonas();
 
   const personaList = useMemo(() => personas ?? [], [personas]);
+  const resolvedSelectedName = pickDefaultPersona(
+    personaList,
+    selectedName ?? loadStorage<string | null>(PERSONA_STORAGE_KEY, null),
+  );
 
   useEffect(() => {
     const handleSelect = (event: Event) => {
@@ -221,18 +225,8 @@ export function PersonasPage() {
   }, []);
 
   useEffect(() => {
-    if (personaList.length === 0) {
-      setSelectedName(null);
-      return;
-    }
-
-    const preferredName = selectedName ?? loadStorage<string | null>(PERSONA_STORAGE_KEY, null);
-    const nextName = pickDefaultPersona(personaList, preferredName);
-    if (nextName && nextName !== selectedName) {
-      saveStorage(PERSONA_STORAGE_KEY, nextName);
-      setSelectedName(nextName);
-    }
-  }, [personaList, selectedName]);
+    saveStorage(PERSONA_STORAGE_KEY, resolvedSelectedName);
+  }, [resolvedSelectedName]);
 
   const groupedPersonas = useMemo(() => groupPersonas(personaList), [personaList]);
 
@@ -242,7 +236,7 @@ export function PersonasPage() {
     setActiveTab('form');
   }, []);
 
-  const selectedPersona = personaList.find((persona) => persona.name === selectedName) ?? null;
+  const selectedPersona = personaList.find((persona) => persona.name === resolvedSelectedName) ?? null;
 
   if (isLoading) {
     return (
@@ -336,7 +330,7 @@ export function PersonasPage() {
               </div>
               <div className="rv-personas__body">
                 <PersonaList
-                  selectedName={selectedName}
+                  selectedName={resolvedSelectedName}
                   onSelect={handleSelectPersona}
                   personas={personaList}
                   isLoadingOverride={false}
@@ -352,9 +346,9 @@ export function PersonasPage() {
         </aside>
 
         <main className="rv-personas__detail" data-testid="personas-detail-pane">
-          {selectedName ? (
+          {resolvedSelectedName ? (
             <PersonaDetailPane
-              name={selectedName}
+              name={resolvedSelectedName}
               activeTab={activeTab}
               onTabChange={setActiveTab}
               onSelectPersona={handleSelectPersona}

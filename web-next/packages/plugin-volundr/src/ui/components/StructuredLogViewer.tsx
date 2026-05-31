@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { cn } from '@niuulabs/ui';
 import type { VolundrAggregatedLog, VolundrLogParticipant } from '../../models/volundr.model';
 
@@ -62,14 +62,9 @@ export function StructuredLogViewer({
   toolbarTestId = 'structured-log-toolbar',
 }: StructuredLogViewerProps) {
   const [selectedParticipant, setSelectedParticipant] = useState('all');
-  const [internalLevel, setInternalLevel] = useState(initialLevel);
+  const [internalLevelOverride, setInternalLevelOverride] = useState<LogLevel | null>(null);
   const [search, setSearch] = useState('');
-
-  useEffect(() => {
-    if (level === undefined) setInternalLevel(initialLevel);
-  }, [initialLevel, level]);
-
-  const selectedLevel = level ?? internalLevel;
+  const selectedLevel = level ?? internalLevelOverride ?? initialLevel;
 
   const resolvedParticipants = useMemo<VolundrLogParticipant[]>(() => {
     if (participants.length > 0) return participants;
@@ -85,11 +80,11 @@ export function StructuredLogViewer({
     return Array.from(seen.values());
   }, [logs, participants]);
 
-  useEffect(() => {
-    if (selectedParticipant === 'all') return;
-    if (resolvedParticipants.some((participant) => participant.id === selectedParticipant)) return;
-    setSelectedParticipant('all');
-  }, [resolvedParticipants, selectedParticipant]);
+  const resolvedSelectedParticipant =
+    selectedParticipant === 'all' ||
+    resolvedParticipants.some((participant) => participant.id === selectedParticipant)
+      ? selectedParticipant
+      : 'all';
 
   const levelFilteredLogs = useMemo(() => {
     const order = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3 } as const;
@@ -119,10 +114,10 @@ export function StructuredLogViewer({
 
   const filteredLogs = useMemo(
     () =>
-      selectedParticipant === 'all'
+      resolvedSelectedParticipant === 'all'
         ? searchFilteredLogs
-        : searchFilteredLogs.filter((line) => line.participant === selectedParticipant),
-    [searchFilteredLogs, selectedParticipant],
+        : searchFilteredLogs.filter((line) => line.participant === resolvedSelectedParticipant),
+    [resolvedSelectedParticipant, searchFilteredLogs],
   );
 
   const lineCounts = useMemo(() => {
@@ -149,7 +144,7 @@ export function StructuredLogViewer({
                   type="button"
                   className={cn(
                     'niuu-rounded-full niuu-border niuu-px-3 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em]',
-                    selectedParticipant === 'all'
+                    resolvedSelectedParticipant === 'all'
                       ? 'niuu-border-brand/60 niuu-bg-brand/10 niuu-text-brand'
                       : 'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-secondary',
                   )}
@@ -166,7 +161,7 @@ export function StructuredLogViewer({
                     type="button"
                     className={cn(
                       'niuu-rounded-full niuu-border niuu-px-3 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.16em]',
-                      selectedParticipant === participant.id
+                      resolvedSelectedParticipant === participant.id
                         ? 'niuu-border-brand/60 niuu-bg-brand/10 niuu-text-brand'
                         : 'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-secondary',
                     )}
@@ -198,7 +193,7 @@ export function StructuredLogViewer({
                 onChange={(event) => {
                   const next = event.target.value as 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
                   if (onLevelChange) onLevelChange(next);
-                  else setInternalLevel(next);
+                  else setInternalLevelOverride(next);
                 }}
               >
                 <option value="DEBUG">Debug</option>

@@ -325,7 +325,8 @@ function RunRow({
   workflowName?: string;
   isPendingDispatch?: boolean;
 }) {
-  const waitMin = Math.round((Date.now() - new Date(entry.run.updatedAt).getTime()) / 60_000);
+  const [renderedAt] = useState(() => Date.now());
+  const waitMin = Math.round((renderedAt - new Date(entry.run.updatedAt).getTime()) / 60_000);
   const waitLabel = waitMin <= 1 ? 'now' : `${waitMin}m wait`;
 
   return (

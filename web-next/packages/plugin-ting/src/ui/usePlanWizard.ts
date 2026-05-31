@@ -247,7 +247,10 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   const [state, dispatch] = useReducer(reducer, initialState);
   // Keep a stable ref to the latest state for effects
   const stateRef = useRef(state);
-  stateRef.current = state;
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   // Auto-decompose when entering the running step
   useEffect(() => {

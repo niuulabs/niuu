@@ -902,7 +902,7 @@ function ResourceNode({
   );
 }
 
-function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]) {
+export function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]) {
   const stageMembers = normalizedStageMembers(node);
   const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
   return {
@@ -919,13 +919,13 @@ function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]) {
   };
 }
 
-function renderedStageHeight(node: WorkflowStageNode, personas: PersonaEntry[]) {
+export function renderedStageHeight(node: WorkflowStageNode, personas: PersonaEntry[]) {
   const { knownInputs, knownOutputs } = stagePortLists(node, personas);
   const portRows = Math.max(knownInputs.length, knownOutputs.length, 0);
   return stageNodeHeight(node) + (portRows > 0 ? 22 + portRows * 14 : 0);
 }
 
-function splitEdgePorts(label?: string) {
+export function splitEdgePorts(label?: string) {
   if (!label) return { sourcePort: null, targetPort: null };
   const [rawSourcePort, rawTargetPort] = label.split(' -> ', 2);
   const sourcePort = rawSourcePort ?? null;
@@ -936,7 +936,30 @@ function splitEdgePorts(label?: string) {
   return { sourcePort: label, targetPort: label };
 }
 
-function edgeAnchor(
+export function buildIssueLevelMap(issues?: WorkflowIssue[] | null) {
+  const levels = new Map<string, 'error' | 'warning'>();
+  for (const issue of Array.isArray(issues) ? issues : []) {
+    if (!issue.nodeId) continue;
+    const existing = levels.get(issue.nodeId);
+    if (issue.severity === 'error' || !existing) {
+      levels.set(issue.nodeId, issue.severity);
+    }
+  }
+  return levels;
+}
+
+export function isGraphNodeKind(nodeKind: string): nodeKind is WorkflowNode['kind'] {
+  return (
+    nodeKind === 'trigger' ||
+    nodeKind === 'stage' ||
+    nodeKind === 'resource' ||
+    nodeKind === 'gate' ||
+    nodeKind === 'cond' ||
+    nodeKind === 'end'
+  );
+}
+
+export function edgeAnchor(
   node: WorkflowNode,
   direction: 'source' | 'target',
   portLabel: string | null,
@@ -1078,24 +1101,14 @@ export function GraphView({
   const svgRef = useRef<SVGSVGElement>(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
   const panRef = useRef<{ startX: number; startY: number; tx: number; ty: number } | null>(null);
 
   const nodeMap = useMemo(
     () => new Map<string, WorkflowNode>(nodes.map((n) => [n.id, n])),
     [nodes],
   );
-  const safeIssues = useMemo(() => (Array.isArray(issues) ? issues : []), [issues]);
-  const issueMap = useMemo(() => {
-    const levels = new Map<string, 'error' | 'warning'>();
-    for (const issue of safeIssues) {
-      if (!issue.nodeId) continue;
-      const existing = levels.get(issue.nodeId);
-      if (issue.severity === 'error' || !existing) {
-        levels.set(issue.nodeId, issue.severity);
-      }
-    }
-    return levels;
-  }, [safeIssues]);
+  const issueMap = useMemo(() => buildIssueLevelMap(issues), [issues]);
   const isConnectingMode = connectingFromId !== null;
 
   // Wheel zoom
@@ -1140,6 +1153,7 @@ export function GraphView({
     setSelectedEdgeId(null);
     onSelectNode(null);
     panRef.current = { startX: e.clientX, startY: e.clientY, tx: transform.x, ty: transform.y };
+    setIsPanning(true);
   }
 
   function handleSvgMouseMove(e: React.MouseEvent<SVGSVGElement>) {
@@ -1153,6 +1167,7 @@ export function GraphView({
 
   function handleSvgMouseUp() {
     panRef.current = null;
+    setIsPanning(false);
   }
 
   function eventToCanvasPosition(clientX: number, clientY: number) {
@@ -1200,14 +1215,7 @@ export function GraphView({
       return;
     }
 
-    if (
-      nodeKind === 'trigger' ||
-      nodeKind === 'stage' ||
-      nodeKind === 'resource' ||
-      nodeKind === 'gate' ||
-      nodeKind === 'cond' ||
-      nodeKind === 'end'
-    ) {
+    if (isGraphNodeKind(nodeKind)) {
       onAddNode(nodeKind, position);
     }
   }
@@ -1321,7 +1329,7 @@ export function GraphView({
         ref={svgRef}
         data-testid="graph-canvas"
         className="niuu-w-full niuu-h-full"
-        style={{ cursor: isConnectingMode ? 'crosshair' : panRef.current ? 'grabbing' : 'default' }}
+        style={{ cursor: isConnectingMode ? 'crosshair' : isPanning ? 'grabbing' : 'default' }}
         onMouseDown={handleSvgMouseDown}
         onMouseMove={handleSvgMouseMove}
         onMouseUp={handleSvgMouseUp}

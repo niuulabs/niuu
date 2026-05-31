@@ -18,24 +18,24 @@ const mockFitAddonDispose = vi.fn();
 let capturedOnData: ((data: string) => void) | null = null;
 
 vi.mock('@xterm/xterm', () => ({
-  Terminal: vi.fn().mockImplementation(() => ({
-    open: mockXtermOpen,
-    write: mockXtermWrite,
-    dispose: mockXtermDispose,
-    loadAddon: mockXtermLoadAddon,
-    onData: mockXtermOnData.mockImplementation((cb: (data: string) => void) => {
+  Terminal: class MockXtermTerminal {
+    open = mockXtermOpen;
+    write = mockXtermWrite;
+    dispose = mockXtermDispose;
+    loadAddon = mockXtermLoadAddon;
+    onData = mockXtermOnData.mockImplementation((cb: (data: string) => void) => {
       capturedOnData = cb;
       return { dispose: vi.fn() };
-    }),
-    options: {},
-  })),
+    });
+    options = {};
+  },
 }));
 
 vi.mock('@xterm/addon-fit', () => ({
-  FitAddon: vi.fn().mockImplementation(() => ({
-    fit: mockFitAddonFit,
-    dispose: mockFitAddonDispose,
-  })),
+  FitAddon: class MockFitAddon {
+    fit = mockFitAddonFit;
+    dispose = mockFitAddonDispose;
+  },
 }));
 
 // ---------------------------------------------------------------------------

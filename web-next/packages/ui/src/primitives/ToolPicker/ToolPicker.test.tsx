@@ -55,7 +55,7 @@ describe('ToolPicker', () => {
         onToggle={vi.fn()}
       />,
     );
-    const readBtn = screen.getByRole('option', { name: /^read\s/i });
+    const readBtn = screen.getByRole('option', { name: /^read/i });
     expect(readBtn).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -143,7 +143,7 @@ describe('ToolPicker', () => {
         onToggle={vi.fn()}
       />,
     );
-    const readItem = screen.getByRole('option', { name: /^read\s/i });
+    const readItem = screen.getByRole('option', { name: /^read/i });
     expect(readItem.textContent).toContain('✓');
   });
 });

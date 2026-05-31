@@ -31,11 +31,13 @@ Object.defineProperty(window, 'scrollTo', { value: () => {}, writable: true });
 
 // ResizeObserver is not available in jsdom — used by SessionChat scroll tracking
 // and Radix UI primitives (Tooltip/Popover arrow sizing).
-global.ResizeObserver = vi.fn().mockImplementation(() => ({
-  observe: vi.fn(),
-  unobserve: vi.fn(),
-  disconnect: vi.fn(),
-}));
+class MockResizeObserver {
+  observe = vi.fn();
+  unobserve = vi.fn();
+  disconnect = vi.fn();
+}
+
+global.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 
 // scrollIntoView is not implemented in jsdom — used by SlashCommandMenu,
 // SessionChat, and Radix UI focus-jump flows.

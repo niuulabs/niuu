@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -43,25 +43,19 @@ export function ResearchNewPage() {
     if (showAllWorkflows || taggedWorkflows.length === 0) return workflows;
     return taggedWorkflows;
   }, [showAllWorkflows, taggedWorkflows, workflows]);
+  const effectiveSelectedWorkflowId =
+    visibleWorkflows.find((workflow) => workflow.id === selectedWorkflowId)?.id ??
+    visibleWorkflows[0]?.id ??
+    '';
   const selectedWorkflow =
-    visibleWorkflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null;
+    visibleWorkflows.find((workflow) => workflow.id === effectiveSelectedWorkflowId) ?? null;
   const repos = reposQuery.data ?? [];
-
-  useEffect(() => {
-    if (visibleWorkflows.length === 0) {
-      setSelectedWorkflowId('');
-      return;
-    }
-    if (!visibleWorkflows.some((workflow) => workflow.id === selectedWorkflowId)) {
-      setSelectedWorkflowId(visibleWorkflows[0]?.id ?? '');
-    }
-  }, [selectedWorkflowId, visibleWorkflows]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const campaign = await createCampaign.mutateAsync({
       question,
-      workflowId: selectedWorkflowId || undefined,
+      workflowId: effectiveSelectedWorkflowId || undefined,
       mode,
       audience,
       deliverable,
@@ -143,7 +137,7 @@ export function ResearchNewPage() {
             <label className="niuu-flex niuu-flex-col niuu-gap-2">
               <select
                 aria-label="Workflow"
-                value={selectedWorkflowId}
+                value={effectiveSelectedWorkflowId}
                 onChange={(event) => setSelectedWorkflowId(event.target.value)}
                 className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-primary niuu-px-3 niuu-py-2.5 niuu-text-sm niuu-text-text-primary"
               >

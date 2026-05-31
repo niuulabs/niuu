@@ -319,7 +319,7 @@ function buildEdge(
   };
 }
 
-function hasMatchingEdge(
+export function hasMatchingEdge(
   edges: Workflow['edges'],
   sourceId: string,
   targetId: string,

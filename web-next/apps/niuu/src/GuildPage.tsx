@@ -819,12 +819,6 @@ function RegisterWizard({
 }) {
   const [step, setStep] = useState<WizardStep>(1);
 
-  useEffect(() => {
-    if (open) {
-      setStep(1);
-    }
-  }, [open]);
-
   const slug = slugifyName(wizard.name);
   const selectedAuth = authMeta(wizard.authMethod);
   const availableCredentials =
@@ -1247,7 +1241,7 @@ export function GuildPage() {
   const [kindFilter, setKindFilter] = useState<'all' | InstanceKind>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(true);
-  const [registerOpen, setRegisterOpen] = useState(false);
+  const [manualRegisterOpen, setManualRegisterOpen] = useState(false);
   const [wizard, setWizard] = useState<WizardState>(makeDefaultWizard);
   const [healthById, setHealthById] = useState<Record<string, HealthSnapshot>>({});
   const [healthHistory, setHealthHistory] = useState<Record<string, HealthSnapshot[]>>({});
@@ -1259,6 +1253,7 @@ export function GuildPage() {
   const resetWizard = useCallback(() => {
     setWizard(makeDefaultWizard());
   }, [makeDefaultWizard]);
+  const registerOpen = manualRegisterOpen || registerRequested;
 
   const instancesQuery = useQuery({
     queryKey: ['guild-instances'],
@@ -1293,12 +1288,13 @@ export function GuildPage() {
   const createMutation = useMutation({
     mutationFn: () =>
       client!.post<InstanceRecord>('/instances', {
-        kind: wizard.kind,
+        kind: effectiveWizard.kind,
         slug: slugifyName(wizard.name),
         name: wizard.name.trim(),
         baseUrl: wizard.baseUrl.trim(),
-        visibility: wizard.visibility,
-        tenantId: wizard.visibility === 'tenant' ? currentIdentity?.tenantId : undefined,
+        visibility: effectiveWizard.visibility,
+        tenantId:
+          effectiveWizard.visibility === 'tenant' ? currentIdentity?.tenantId : undefined,
         config: {
           source: 'guild',
           authMethod: authMeta(wizard.authMethod).label,
@@ -1310,11 +1306,11 @@ export function GuildPage() {
                   scope: wizard.credentialScope,
                   name: wizard.credentialName,
                 },
-          capabilities: DEFAULT_CAPABILITIES[wizard.kind],
+          capabilities: DEFAULT_CAPABILITIES[effectiveWizard.kind],
         },
       }),
     onSuccess: async (instance) => {
-      setRegisterOpen(false);
+      setManualRegisterOpen(false);
       resetWizard();
       setSelectedId(instance.id);
       setDetailOpen(true);
@@ -1364,33 +1360,21 @@ export function GuildPage() {
           })),
     [catalogEntries],
   );
-
-  useEffect(() => {
-    setWizard((current) =>
-      current.visibility === 'user' && canCreateTenantScope
-        ? { ...current, visibility: 'tenant' }
-        : current,
-    );
-  }, [canCreateTenantScope]);
-
-  useEffect(() => {
-    if (registerOptions.length === 0) return;
-    setWizard((current) => {
-      if (registerOptions.some((option) => option.kind === current.kind)) return current;
-      return { ...current, kind: registerOptions[0]!.kind };
-    });
-  }, [registerOptions]);
-
-  useEffect(() => {
-    setRegisterOpen(registerRequested);
-    if (!registerRequested) {
-      resetWizard();
-    }
-  }, [registerRequested, resetWizard]);
+  const fallbackRegisterKind = registerOptions[0]?.kind ?? 'volundr';
+  const effectiveWizard = (() => {
+    const visibility =
+      wizard.visibility === 'user' && canCreateTenantScope ? 'tenant' : wizard.visibility;
+    const kind = registerOptions.some((option) => option.kind === wizard.kind)
+      ? wizard.kind
+      : fallbackRegisterKind;
+    return visibility === wizard.visibility && kind === wizard.kind
+      ? wizard
+      : { ...wizard, visibility, kind };
+  })();
 
   useEffect(() => {
     const handleOpenRegister = () => {
-      setRegisterOpen(true);
+      setManualRegisterOpen(true);
       const params = new URLSearchParams(window.location.search);
       params.set('register', '1');
       const query = params.toString();
@@ -1436,16 +1420,6 @@ export function GuildPage() {
       return haystack.includes(query);
     });
   }, [instances, kindFilter, search]);
-
-  useEffect(() => {
-    if (filteredInstances.length === 0) {
-      setSelectedId(null);
-      return;
-    }
-    if (!selectedId || !filteredInstances.some((instance) => instance.id === selectedId)) {
-      setSelectedId(filteredInstances[0]?.id ?? null);
-    }
-  }, [filteredInstances, selectedId]);
 
   const selectedInstance =
     filteredInstances.find((instance) => instance.id === selectedId) ??
@@ -1773,9 +1747,10 @@ export function GuildPage() {
       </div>
 
       <RegisterWizard
+        key={registerOpen ? 'register-open' : 'register-closed'}
         open={registerOpen}
         onOpenChange={(open) => {
-          setRegisterOpen(open);
+          setManualRegisterOpen(open);
           const params = new URLSearchParams(window.location.search);
           if (open) {
             params.set('register', '1');
@@ -1800,7 +1775,7 @@ export function GuildPage() {
         currentIdentity={currentIdentity}
         canCreateSystemScope={canCreateSystemScope}
         canCreateTenantScope={canCreateTenantScope}
-        wizard={wizard}
+        wizard={effectiveWizard}
         setWizard={setWizard}
         userCredentials={userCredentialsQuery.data ?? []}
         tenantCredentials={tenantCredentialsQuery.data ?? []}

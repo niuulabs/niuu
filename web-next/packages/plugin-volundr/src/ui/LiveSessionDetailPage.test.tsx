@@ -27,21 +27,21 @@ vi.mock('@tanstack/react-router', () => ({
 }));
 
 vi.mock('@xterm/xterm', () => ({
-  Terminal: vi.fn().mockImplementation(() => ({
-    open: vi.fn(),
-    write: vi.fn(),
-    dispose: vi.fn(),
-    loadAddon: vi.fn(),
-    onData: vi.fn().mockReturnValue({ dispose: vi.fn() }),
-    options: {},
-  })),
+  Terminal: class MockXtermTerminal {
+    open = vi.fn();
+    write = vi.fn();
+    dispose = vi.fn();
+    loadAddon = vi.fn();
+    onData = vi.fn().mockReturnValue({ dispose: vi.fn() });
+    options = {};
+  },
 }));
 
 vi.mock('@xterm/addon-fit', () => ({
-  FitAddon: vi.fn().mockImplementation(() => ({
-    fit: vi.fn(),
-    dispose: vi.fn(),
-  })),
+  FitAddon: class MockFitAddon {
+    fit = vi.fn();
+    dispose = vi.fn();
+  },
 }));
 
 vi.mock('shiki', () => ({
@@ -78,6 +78,11 @@ const STOPPED_SESSION: VolundrSession = {
   status: 'stopped',
   hostname: undefined,
   chatEndpoint: undefined,
+};
+
+const ARCHIVED_SESSION: VolundrSession = {
+  ...STOPPED_SESSION,
+  status: 'archived',
 };
 
 const STARTING_SESSION: VolundrSession = {
@@ -525,11 +530,13 @@ function wrap(
     readOnly?: boolean;
     session?: VolundrSession | null;
     volundr?: Partial<IVolundrService>;
+    sessionStore?: Partial<ISessionStore>;
   } = {},
 ) {
   const session = opts.session === undefined ? RUNNING_SESSION : opts.session;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const volundr = { ...buildVolundrService(session), ...opts.volundr } as IVolundrService;
+  const sessionStore = { ...buildSessionStore(session), ...opts.sessionStore } as ISessionStore;
   return render(
     <QueryClientProvider client={client}>
       <ServicesProvider
@@ -538,7 +545,7 @@ function wrap(
           volundr,
           ptyStream: buildPtyStream(),
           filesystem: buildFilesystem(),
-          sessionStore: buildSessionStore(session),
+          sessionStore,
           metricsStream: createMockMetricsStream(),
         }}
       >
@@ -546,6 +553,32 @@ function wrap(
       </ServicesProvider>
     </QueryClientProvider>,
   );
+}
+
+function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldChat>> = {}) {
+  vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
+    messages: [],
+    streamingContent: undefined,
+    streamingParts: undefined,
+    streamingModel: undefined,
+    connected: true,
+    historyLoaded: true,
+    participants: new Map(),
+    meshEvents: [],
+    agentEvents: new Map(),
+    pendingPermissions: [],
+    capabilities: {},
+    sendMessage: vi.fn(),
+    sendDirectedMessages: vi.fn(),
+    respondToPermission: vi.fn(),
+    sendInterrupt: vi.fn(),
+    sendSetModel: vi.fn(),
+    sendSetThinkingTokens: vi.fn(),
+    sendRewindFiles: vi.fn(),
+    sendSetInternalVisibility: vi.fn(),
+    clearMessages: vi.fn(),
+    ...overrides,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -608,28 +641,7 @@ describe('LiveSessionDetailPage', () => {
       source: 'human',
       summary: 'PRD approved by human reviewer.',
     });
-    vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
-      messages: [],
-      streamingContent: undefined,
-      streamingParts: undefined,
-      streamingModel: undefined,
-      connected: true,
-      historyLoaded: true,
-      participants: new Map(),
-      meshEvents: [],
-      agentEvents: new Map(),
-      pendingPermissions: [],
-      capabilities: {},
-      sendMessage: vi.fn(),
-      sendDirectedMessages: vi.fn(),
-      respondToPermission: vi.fn(),
-      sendInterrupt: vi.fn(),
-      sendSetModel: vi.fn(),
-      sendSetThinkingTokens: vi.fn(),
-      sendRewindFiles: vi.fn(),
-      sendSetInternalVisibility: vi.fn(),
-      clearMessages: vi.fn(),
-    });
+    mockChatState();
 
     wrap('test-session-id-1234', {
       volundr: {
@@ -682,28 +694,7 @@ describe('LiveSessionDetailPage', () => {
   });
 
   it('hides the gate card once the latest gate verdict is already resolved', async () => {
-    vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
-      messages: [],
-      streamingContent: undefined,
-      streamingParts: undefined,
-      streamingModel: undefined,
-      connected: true,
-      historyLoaded: true,
-      participants: new Map(),
-      meshEvents: [],
-      agentEvents: new Map(),
-      pendingPermissions: [],
-      capabilities: {},
-      sendMessage: vi.fn(),
-      sendDirectedMessages: vi.fn(),
-      respondToPermission: vi.fn(),
-      sendInterrupt: vi.fn(),
-      sendSetModel: vi.fn(),
-      sendSetThinkingTokens: vi.fn(),
-      sendRewindFiles: vi.fn(),
-      sendSetInternalVisibility: vi.fn(),
-      clearMessages: vi.fn(),
-    });
+    mockChatState();
 
     wrap('test-session-id-1234', {
       volundr: {
@@ -735,6 +726,70 @@ describe('LiveSessionDetailPage', () => {
 
     await screen.findByTestId('live-session-detail-page');
     expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
+  });
+
+  it('surfaces mesh-driven workflow gates and sends change requests through chat', async () => {
+    const sendDirectedMessages = vi.fn();
+    mockChatState({
+      participants: new Map([
+        [
+          'workflow-reviewer',
+          {
+            peerId: 'workflow-reviewer',
+            displayName: '',
+            persona: 'reviewer',
+            participantType: 'ravn',
+          },
+        ],
+      ]),
+      meshEvents: [
+        {
+          id: 'mesh-gate-1',
+          participantId: 'workflow-reviewer',
+          participant: { color: '#a78bfa' },
+          type: 'notification',
+          notificationType: 'help_needed',
+          summary: 'Please tighten the telemetry review.',
+          reason: 'A human review is required.',
+          recommendation: 'Request changes until the blocked cases are covered.',
+          urgency: 2,
+          persona: 'reviewer',
+          timestamp: new Date('2026-05-23T09:35:00Z'),
+        } as never,
+      ],
+      sendDirectedMessages,
+    });
+
+    wrap('test-session-id-1234');
+
+    await screen.findByTestId('live-session-detail-page');
+    expect(await screen.findByText('Human Gate Requested')).toBeInTheDocument();
+    expect(screen.getAllByText('reviewer').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Please tighten the telemetry review.').length).toBeGreaterThan(0);
+    expect(screen.getByText('A human review is required.')).toBeInTheDocument();
+    expect(
+      screen.getAllByText('Request changes until the blocked cases are covered.').length,
+    ).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByLabelText('Reply Notes'), {
+      target: { value: 'Please cover the blocked timeline state before landing.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Request changes' }));
+
+    await waitFor(() => {
+      expect(sendDirectedMessages).toHaveBeenCalledWith(
+        [
+          {
+            peerId: 'workflow-reviewer',
+            displayName: '',
+            persona: 'reviewer',
+            participantType: 'ravn',
+          },
+        ],
+        'CHANGES_REQUESTED\n\nPlease cover the blocked timeline state before landing.',
+        [],
+      );
+    });
   });
 
   describe('loading and error states', () => {
@@ -785,6 +840,83 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.queryByText('Archived')).not.toBeInTheDocument();
+    });
+
+    it('shows a distinct session handle and linked tracker issue', async () => {
+      wrap('test-session-id-1234', {
+        session: {
+          ...RUNNING_SESSION,
+          trackerIssue: {
+            url: 'https://linear.app/niuu/issue/OPS-42',
+            identifier: 'OPS-42',
+            title: 'Telemetry branch gap',
+          },
+        },
+        sessionStore: {
+          getSession: vi.fn().mockResolvedValue({
+            id: RUNNING_SESSION.id,
+            ravnId: 'worker-17',
+            name: RUNNING_SESSION.name,
+            personaName: RUNNING_SESSION.name,
+            templateId: 'git-default',
+            state: 'running',
+            clusterId: 'local',
+            startedAt: new Date(Date.now() - 9_240_000).toISOString(),
+            resources: {
+              cpuRequest: 2,
+              cpuLimit: 4,
+              cpuUsed: 1.5,
+              memRequestMi: 4096,
+              memLimitMi: 8192,
+              memUsedMi: 2048,
+              gpuCount: 0,
+            },
+            env: {},
+            files: { added: 1, modified: 2, deleted: 1 },
+            events: [],
+          }),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByText('worker-17')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /ops-42/i })).toHaveAttribute(
+        'href',
+        'https://linear.app/niuu/issue/OPS-42',
+      );
+    });
+
+    it('suppresses the handle when the ravn id matches the session id', async () => {
+      wrap('test-session-id-1234', {
+        sessionStore: {
+          getSession: vi.fn().mockResolvedValue({
+            id: RUNNING_SESSION.id,
+            ravnId: 'test-session-id-1234',
+            name: RUNNING_SESSION.name,
+            personaName: RUNNING_SESSION.name,
+            templateId: 'git-default',
+            state: 'running',
+            clusterId: 'local',
+            startedAt: new Date(Date.now() - 9_240_000).toISOString(),
+            resources: {
+              cpuRequest: 2,
+              cpuLimit: 4,
+              cpuUsed: 1.5,
+              memRequestMi: 4096,
+              memLimitMi: 8192,
+              memUsedMi: 2048,
+              gpuCount: 0,
+            },
+            env: {},
+            files: { added: 1, modified: 2, deleted: 1 },
+            events: [],
+          }),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      const handle = screen.queryByText('test-session-id-1234');
+      expect(handle).not.toHaveClass('niuu-live-session__handle');
     });
   });
 
@@ -965,6 +1097,72 @@ describe('LiveSessionDetailPage', () => {
       expect(toolOverview).toHaveTextContent('linear.search');
     });
 
+    it('renders empty telemetry states when no baseline, turns, or tool spans exist', async () => {
+      wrap('test-session-id-1234', {
+        volundr: {
+          getSessions: vi.fn().mockResolvedValue([RUNNING_SESSION]),
+          getSessionTrace: vi.fn().mockResolvedValue({
+            traceId: 'trace-empty',
+            sessionId: RUNNING_SESSION.id,
+            startedAt: '2026-05-23T09:25:01Z',
+            endedAt: '2026-05-23T09:25:31Z',
+            durationMs: 30_000,
+            spans: [
+              {
+                id: 'root',
+                sessionId: RUNNING_SESSION.id,
+                traceId: 'trace-empty',
+                parentSpanId: null,
+                kind: 'session.lifecycle',
+                name: RUNNING_SESSION.name,
+                status: 'completed',
+                startedAt: '2026-05-23T09:25:01Z',
+                endedAt: '2026-05-23T09:25:31Z',
+                durationMs: 30_000,
+                actorType: 'system',
+                actorId: RUNNING_SESSION.id,
+                actorLabel: RUNNING_SESSION.name,
+                sourceService: 'skuld',
+                attributes: {},
+              },
+            ],
+            lanes: [],
+          }),
+          getSessionTraceSummary: vi.fn().mockResolvedValue({
+            totalDurationMs: 30_000,
+            provisioningDurationMs: 0,
+            setupDurationMs: 0,
+            workflowDurationMs: 0,
+            publishDurationMs: 0,
+            cleanupDurationMs: 0,
+            activeExecutionDurationMs: 0,
+            waitingDurationMs: 0,
+            turnCount: 0,
+            toolCallCount: 0,
+            longestSpan: null,
+          }),
+        },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      expect(await screen.findByText('no baseline')).toBeInTheDocument();
+      expect(screen.getByText('No tool spans recorded yet.')).toBeInTheDocument();
+      expect(screen.queryByTestId('telemetry-turn-shell')).not.toBeInTheDocument();
+    });
+
+    it('renders telemetry unavailable when trace loading fails', async () => {
+      wrap('test-session-id-1234', {
+        volundr: {
+          getSessionTrace: vi.fn().mockRejectedValue(new Error('trace failed')),
+        },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      expect(await screen.findByText('Telemetry unavailable')).toBeInTheDocument();
+    });
+
     it('switches to logs tab on click', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
@@ -999,6 +1197,114 @@ describe('LiveSessionDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Start the session to access terminal.')).toBeInTheDocument();
       });
+    });
+
+    it('shows a transcript error for stopped sessions when replay loading fails', async () => {
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn().mockRejectedValue(new Error('history failed')),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      await waitFor(() => {
+        expect(screen.getByText('Failed to load saved transcript.')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a transcript loading state for stopped sessions while replay is pending', async () => {
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn(() => new Promise(() => {})),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByText('Loading saved transcript…')).toBeInTheDocument();
+    });
+
+    it('shows an empty replay message for stopped sessions without saved history', async () => {
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn().mockResolvedValue({ turns: [] }),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      await waitFor(() => {
+        expect(screen.getByText('No saved transcript yet.')).toBeInTheDocument();
+      });
+    });
+
+    it('shows the start-chat empty state for running sessions without a live chat endpoint', async () => {
+      wrap('test-session-id-1234', {
+        session: {
+          ...RUNNING_SESSION,
+          chatEndpoint: undefined,
+          hostname: undefined,
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByText('Start the session to chat.')).toBeInTheDocument();
+    });
+
+    it('renders the files workspace tab', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Files/i }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('session-files-workspace')).toBeInTheDocument();
+      });
+    });
+
+    it('renders the live terminal when a session is ready', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /New terminal/i })).toBeInTheDocument();
+      });
+    });
+
+    it('falls back to the first available tab when chat is hidden', async () => {
+      wrap('test-session-id-1234', {
+        volundr: {
+          getFeatureModules: vi.fn().mockResolvedValue(
+            SESSION_FEATURES.filter((feature) => feature.key !== 'chat'),
+          ),
+        },
+      });
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.queryByRole('tab', { name: /Chat/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /New terminal/i })).toBeInTheDocument();
+    });
+
+    it('applies user tab visibility and sort preferences', async () => {
+      wrap('test-session-id-1234', {
+        volundr: {
+          getUserFeaturePreferences: vi.fn().mockResolvedValue([
+            { featureKey: 'terminal', visible: false, sortOrder: 99 },
+            { featureKey: 'logs', visible: false, sortOrder: 98 },
+            { featureKey: 'files', visible: true, sortOrder: 5 },
+          ]),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.queryByRole('tab', { name: /Terminal/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: /Logs/i })).not.toBeInTheDocument();
+
+      const tabLabels = screen
+        .getAllByRole('tab')
+        .map((tab) => tab.textContent?.replace(/\d+/g, '').trim());
+      expect(tabLabels.slice(0, 3)).toEqual(['Files', 'Chat', 'Diffs']);
     });
 
     it('renders diff file metadata and an empty diff state', async () => {
@@ -1196,9 +1502,9 @@ describe('LiveSessionDetailPage', () => {
       });
 
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Can you summarize the last run?')).toBeInTheDocument();
+      expect(await screen.findByText('Can you summarize the last run?')).toBeInTheDocument();
       expect(
-        screen.getByText('It finished cleanly and archived the workspace.'),
+        await screen.findByText('It finished cleanly and archived the workspace.'),
       ).toBeInTheDocument();
       expect(screen.queryByText('Start the session to chat.')).not.toBeInTheDocument();
     });
@@ -1371,6 +1677,107 @@ describe('LiveSessionDetailPage', () => {
         expect(screen.getByText('Coder line')).toBeInTheDocument();
       });
     });
+
+    it('reloads log content when the session id changes', async () => {
+      const service = buildVolundrService();
+      vi.mocked(service.getAggregatedLogs).mockImplementation(async (sessionId) => ({
+        participants: [{ id: 'skuld', label: 'Skuld', kind: 'broker' }],
+        lines: [
+          {
+            id: `log-${sessionId}`,
+            sessionId,
+            timestamp: Date.now(),
+            level: 'info',
+            participant: 'skuld',
+            participantLabel: 'Skuld',
+            participantKind: 'broker',
+            source: 'skuld.broker',
+            message: sessionId === 'session-b' ? 'Second session line' : 'First session line',
+            sequence: 1,
+            stream: '.skuld.log',
+          },
+        ],
+      }));
+
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const view = render(
+        <QueryClientProvider client={client}>
+          <ServicesProvider
+            services={{
+              bifrost: createMockBifrostService(),
+              volundr: service,
+              ptyStream: buildPtyStream(),
+              filesystem: buildFilesystem(),
+              sessionStore: buildSessionStore(),
+              metricsStream: createMockMetricsStream(),
+            }}
+          >
+            <LiveSessionDetailPage sessionId="session-a" />
+          </ServicesProvider>
+        </QueryClientProvider>,
+      );
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
+      await screen.findByText('First session line');
+
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <ServicesProvider
+            services={{
+              bifrost: createMockBifrostService(),
+              volundr: service,
+              ptyStream: buildPtyStream(),
+              filesystem: buildFilesystem(),
+              sessionStore: buildSessionStore(),
+              metricsStream: createMockMetricsStream(),
+            }}
+          >
+            <LiveSessionDetailPage sessionId="session-b" />
+          </ServicesProvider>
+        </QueryClientProvider>,
+      );
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
+      await waitFor(() => {
+        expect(screen.getByText('Second session line')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('First session line')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('chronicles tab', () => {
+    it('shows the running empty-state when no live chronicle is available yet', async () => {
+      wrap('test-session-id-1234', {
+        volundr: {
+          getChronicle: vi.fn().mockResolvedValue(null),
+          subscribeChronicle: vi.fn().mockReturnValue(() => {}),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Chronicle/i }));
+      await waitFor(() => {
+        expect(screen.getByText('No chronicle data yet.')).toBeInTheDocument();
+      });
+    });
+
+    it('shows the stopped empty-state when no saved chronicle exists', async () => {
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getChronicle: vi.fn().mockResolvedValue(null),
+          subscribeChronicle: vi.fn().mockReturnValue(() => {}),
+        },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Chronicle/i }));
+      await waitFor(() => {
+        expect(screen.getByText('No saved chronicle yet.')).toBeInTheDocument();
+      });
+    });
   });
 
   describe('action buttons', () => {
@@ -1392,10 +1799,103 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByRole('button', { name: /Start/i })).toBeInTheDocument();
     });
 
+    it('shows Start button for resumable non-archived sessions', async () => {
+      wrap('test-session-id-1234', {
+        session: {
+          ...STOPPED_SESSION,
+          status: 'failed',
+        },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByRole('button', { name: /^Start session$/i })).toBeInTheDocument();
+    });
+
+    it('resumes a failed session from the resumable fallback action', async () => {
+      const failedSession: VolundrSession = {
+        ...STOPPED_SESSION,
+        status: 'failed',
+      };
+      const service = buildVolundrService(failedSession);
+      service.resumeSession = vi.fn().mockResolvedValue(undefined);
+      service.getSession = vi.fn().mockResolvedValue(failedSession);
+      wrap('test-session-id-1234', { session: failedSession, volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByTitle(/^Start session$/i));
+
+      await waitFor(() => {
+        expect(service.resumeSession).toHaveBeenCalledWith('test-session-id-1234');
+      });
+    });
+
     it('shows delete button', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByTitle(/Delete/i)).toBeInTheDocument();
+    });
+
+    it('hides session action buttons in read-only mode', async () => {
+      wrap('test-session-id-1234', { readOnly: true });
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.queryByTitle(/Stop session/i)).not.toBeInTheDocument();
+      expect(screen.queryByTitle(/Archive session/i)).not.toBeInTheDocument();
+      expect(screen.queryByTitle(/Delete session/i)).not.toBeInTheDocument();
+    });
+
+    it('stops a running session when stop is clicked', async () => {
+      const service = buildVolundrService();
+      service.stopSession = vi.fn().mockResolvedValue(undefined);
+      service.getSession = vi.fn().mockResolvedValue(RUNNING_SESSION);
+      wrap('test-session-id-1234', { volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByTitle(/Stop session/i));
+
+      await waitFor(() => {
+        expect(service.stopSession).toHaveBeenCalledWith('test-session-id-1234');
+      });
+    });
+
+    it('resumes a stopped session when start is clicked', async () => {
+      const service = buildVolundrService(STOPPED_SESSION);
+      service.resumeSession = vi.fn().mockResolvedValue(undefined);
+      service.getSession = vi.fn().mockResolvedValue(STOPPED_SESSION);
+      wrap('test-session-id-1234', { session: STOPPED_SESSION, volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByTitle(/^Start session$/i));
+
+      await waitFor(() => {
+        expect(service.resumeSession).toHaveBeenCalledWith('test-session-id-1234');
+      });
+    });
+
+    it('archives a live session when archive is clicked', async () => {
+      const service = buildVolundrService();
+      service.archiveSession = vi.fn().mockResolvedValue(undefined);
+      service.getSession = vi.fn().mockResolvedValue(RUNNING_SESSION);
+      wrap('test-session-id-1234', { volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByTitle(/Archive session/i));
+
+      await waitFor(() => {
+        expect(service.archiveSession).toHaveBeenCalledWith('test-session-id-1234');
+      });
+    });
+
+    it('restores an archived session when restore is clicked', async () => {
+      const service = buildVolundrService(ARCHIVED_SESSION);
+      service.restoreSession = vi.fn().mockResolvedValue(undefined);
+      service.getSession = vi.fn().mockResolvedValue(ARCHIVED_SESSION);
+      wrap('test-session-id-1234', { session: ARCHIVED_SESSION, volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByTitle(/Restore archived session/i));
+
+      await waitFor(() => {
+        expect(service.restoreSession).toHaveBeenCalledWith('test-session-id-1234');
+      });
     });
 
     it('uses tooltip-only eye control without rendering res text', async () => {
@@ -1453,6 +1953,118 @@ describe('LiveSessionDetailPage', () => {
       await waitFor(() => {
         expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions', replace: true });
       });
+    });
+
+    it('closes the delete dialog without deleting when cancel is clicked', async () => {
+      const service = buildVolundrService();
+      service.deleteSession = vi.fn().mockResolvedValue(undefined);
+      wrap('test-session-id-1234', { volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByTitle(/Delete session/i));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      });
+      expect(service.deleteSession).not.toHaveBeenCalled();
+    });
+
+    it('resets cleanup checkboxes when a different session is rendered', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const service = buildVolundrService();
+      const view = render(
+        <QueryClientProvider client={client}>
+          <ServicesProvider
+            services={{
+              bifrost: createMockBifrostService(),
+              volundr: service,
+              ptyStream: buildPtyStream(),
+              filesystem: buildFilesystem(),
+              sessionStore: buildSessionStore(),
+              metricsStream: createMockMetricsStream(),
+            }}
+          >
+            <LiveSessionDetailPage sessionId="session-a" />
+          </ServicesProvider>
+        </QueryClientProvider>,
+      );
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByTitle(/Delete session/i));
+      fireEvent.click(screen.getByTestId('cleanup-workspace_storage'));
+      expect(screen.getByTestId('cleanup-workspace_storage')).toBeChecked();
+
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <ServicesProvider
+            services={{
+              bifrost: createMockBifrostService(),
+              volundr: service,
+              ptyStream: buildPtyStream(),
+              filesystem: buildFilesystem(),
+              sessionStore: buildSessionStore(),
+              metricsStream: createMockMetricsStream(),
+            }}
+          >
+            <LiveSessionDetailPage sessionId="session-b" />
+          </ServicesProvider>
+        </QueryClientProvider>,
+      );
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByTitle(/Delete session/i));
+      expect(screen.getByTestId('cleanup-workspace_storage')).not.toBeChecked();
+      expect(screen.getByTestId('cleanup-chronicles')).not.toBeChecked();
+    });
+
+    it('resets back to the chat tab when a different session id is rendered', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const service = buildVolundrService();
+      const view = render(
+        <QueryClientProvider client={client}>
+          <ServicesProvider
+            services={{
+              bifrost: createMockBifrostService(),
+              volundr: service,
+              ptyStream: buildPtyStream(),
+              filesystem: buildFilesystem(),
+              sessionStore: buildSessionStore(),
+              metricsStream: createMockMetricsStream(),
+            }}
+          >
+            <LiveSessionDetailPage sessionId="session-a" />
+          </ServicesProvider>
+        </QueryClientProvider>,
+      );
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
+      await screen.findByTestId('live-logs-tab');
+
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <ServicesProvider
+            services={{
+              bifrost: createMockBifrostService(),
+              volundr: service,
+              ptyStream: buildPtyStream(),
+              filesystem: buildFilesystem(),
+              sessionStore: buildSessionStore(),
+              metricsStream: createMockMetricsStream(),
+            }}
+          >
+            <LiveSessionDetailPage sessionId="session-b" />
+          </ServicesProvider>
+        </QueryClientProvider>,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
+      });
+      expect(screen.queryByTestId('live-logs-tab')).not.toBeInTheDocument();
     });
   });
 
@@ -1539,5 +2151,17 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByText('Guild Alpha')).toBeInTheDocument();
       expect(screen.getByText('PRIMARY')).toBeInTheDocument();
     });
+  });
+
+  it('renders the error state when session loading fails', async () => {
+    const service = buildVolundrService();
+    service.getSession = vi.fn().mockRejectedValue(new Error('Session load exploded'));
+
+    wrap('test-session-id-1234', { volundr: service });
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load session')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Session load exploded')).toBeInTheDocument();
   });
 });

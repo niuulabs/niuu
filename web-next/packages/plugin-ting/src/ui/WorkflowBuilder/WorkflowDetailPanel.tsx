@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { cn, SegmentedFilter } from '@niuulabs/ui';
 import type {
   Workflow,
@@ -49,7 +49,7 @@ const TAB_BTN =
 const DELETE_BTN =
   'niuu-inline-flex niuu-items-center niuu-rounded-lg niuu-border niuu-border-critical/60 niuu-bg-critical-bg/25 niuu-px-2.5 niuu-py-1.5 niuu-text-[12px] niuu-font-semibold niuu-text-[#ffb0b0]';
 
-function issueTone(severity: WorkflowIssue['severity']) {
+export function issueTone(severity: WorkflowIssue['severity']) {
   return severity === 'error'
     ? 'niuu-border-critical/40 niuu-bg-critical-bg/30 niuu-text-critical'
     : 'niuu-border-status-amber/40 niuu-bg-status-amber/10 niuu-text-status-amber';
@@ -59,7 +59,7 @@ function personaById(personas: PersonaEntry[], id: string) {
   return personas.find((persona) => persona.id === id);
 }
 
-function personaGlyph(role?: string) {
+export function personaGlyph(role?: string) {
   switch (role) {
     case 'plan':
       return 'D';
@@ -74,7 +74,10 @@ function personaGlyph(role?: string) {
   }
 }
 
-function memberIssuesForPersona(issues: WorkflowIssue[], persona: PersonaEntry | undefined) {
+export function memberIssuesForPersona(
+  issues: WorkflowIssue[],
+  persona: PersonaEntry | undefined,
+) {
   if (!persona) return [];
   const keys = [persona.label, ...(persona.produces ?? []), ...(persona.consumes ?? [])].map((v) =>
     v.toLowerCase(),
@@ -82,7 +85,7 @@ function memberIssuesForPersona(issues: WorkflowIssue[], persona: PersonaEntry |
   return issues.filter((issue) => keys.some((key) => issue.message.toLowerCase().includes(key)));
 }
 
-function triggerEventOptions(personas: PersonaEntry[], current: string): string[] {
+export function triggerEventOptions(personas: PersonaEntry[], current: string): string[] {
   return [
     ...new Set(
       [
@@ -93,7 +96,7 @@ function triggerEventOptions(personas: PersonaEntry[], current: string): string[
   ].sort();
 }
 
-function uniquePersonaIds(workflow: Workflow): string[] {
+export function uniquePersonaIds(workflow: Workflow): string[] {
   return [
     ...new Set(
       workflow.nodes.flatMap((node) => {
@@ -104,7 +107,7 @@ function uniquePersonaIds(workflow: Workflow): string[] {
   ];
 }
 
-function defaultTargetIdForType(
+export function defaultTargetIdForType(
   workflow: Workflow,
   targetType: WorkflowResourceBinding['targetType'],
 ): string {
@@ -251,6 +254,7 @@ function StageInspector({
   const stageMembers = normalizedStageMembers(node);
   const availableModels = models;
   const defaultModelId = availableModels[0]?.id ?? '';
+  const effectiveNewModelId = newModelId || defaultModelId;
   const executionOptions = [
     { value: 'parallel' as const, label: 'parallel' },
     { value: 'sequential' as const, label: 'sequential' },
@@ -258,12 +262,6 @@ function StageInspector({
   const availablePersonas = personas.filter(
     (persona) => !stageMembers.some((member) => member.personaId === persona.id),
   );
-
-  useEffect(() => {
-    if (!newModelId && defaultModelId) {
-      setNewModelId(defaultModelId);
-    }
-  }, [defaultModelId, newModelId]);
 
   return (
     <div className="niuu-px-4 niuu-py-0 niuu-flex niuu-flex-col niuu-gap-4">
@@ -517,7 +515,7 @@ function StageInspector({
               </select>
               <select
                 className={INPUT}
-                value={newModelId}
+                value={effectiveNewModelId}
                 onChange={(e) => setNewModelId(e.target.value)}
               >
                 <option value="">Select a model…</option>
@@ -530,10 +528,10 @@ function StageInspector({
               <button
                 type="button"
                 className={CHIP_BTN}
-                disabled={!newPersonaId || !newModelId}
+                disabled={!newPersonaId || !effectiveNewModelId}
                 onClick={() => {
-                  if (!newPersonaId || !newModelId) return;
-                  onAddPersona(node.id, newPersonaId, newModelId, 40);
+                  if (!newPersonaId || !effectiveNewModelId) return;
+                  onAddPersona(node.id, newPersonaId, effectiveNewModelId, 40);
                   setNewPersonaId('');
                   setNewModelId(defaultModelId);
                 }}

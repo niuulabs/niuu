@@ -11,14 +11,18 @@ vi.mock('../application/useTopology', () => ({
 // ── Mock useObservatoryStore ──────────────────────────────────────────────────
 // We use a fresh store factory per test to avoid cross-test state pollution.
 
-const mockSetFilter = vi.fn();
-const mockSetSelected = vi.fn();
-
-vi.mock('../application/useObservatoryStore', () => ({
-  useObservatoryStore: vi.fn(() => [
+const { mockSetFilter, mockSetSelected, mockUseObservatoryStore } = vi.hoisted(() => {
+  const mockSetFilter = vi.fn();
+  const mockSetSelected = vi.fn();
+  const mockUseObservatoryStore = vi.fn(() => [
     { selectedId: null, filter: 'all' },
     { setSelected: mockSetSelected, setFilter: mockSetFilter },
-  ]),
+  ]);
+  return { mockSetFilter, mockSetSelected, mockUseObservatoryStore };
+});
+
+vi.mock('../application/useObservatoryStore', () => ({
+  useObservatoryStore: mockUseObservatoryStore,
 }));
 
 import { useTopology } from '../application/useTopology';
@@ -82,6 +86,10 @@ const MOCK_TOPOLOGY: Topology = {
 describe('ObservatorySubnav', () => {
   beforeEach(() => {
     vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
+    mockUseObservatoryStore.mockReturnValue([
+      { selectedId: null, filter: 'all' },
+      { setSelected: mockSetSelected, setFilter: mockSetFilter },
+    ]);
     mockSetFilter.mockClear();
     mockSetSelected.mockClear();
   });
@@ -170,14 +178,12 @@ describe('ObservatorySubnav', () => {
   });
 
   it('marks active filter with aria-pressed', () => {
-    vi.mock('../application/useObservatoryStore', () => ({
-      useObservatoryStore: vi.fn(() => [
-        { selectedId: null, filter: 'agents' },
-        { setSelected: mockSetSelected, setFilter: mockSetFilter },
-      ]),
-    }));
-    // Fresh render with agents filter active
-    const { unmount } = render(<ObservatorySubnav />);
-    unmount();
+    mockUseObservatoryStore.mockReturnValue([
+      { selectedId: null, filter: 'agents' },
+      { setSelected: mockSetSelected, setFilter: mockSetFilter },
+    ]);
+    render(<ObservatorySubnav />);
+    expect(screen.getByTestId('filter-agents')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('filter-all')).toHaveAttribute('aria-pressed', 'false');
   });
 });

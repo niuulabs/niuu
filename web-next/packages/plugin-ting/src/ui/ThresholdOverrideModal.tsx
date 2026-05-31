@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Modal } from '@niuulabs/ui';
 
 // ---------------------------------------------------------------------------
@@ -30,21 +30,27 @@ export function ThresholdOverrideModal({
   currentThreshold,
   onApply,
 }: ThresholdOverrideModalProps) {
-  const [value, setValue] = useState(currentThreshold);
+  const thresholdKey = String(currentThreshold);
+  const [draft, setDraft] = useState<{ key: string; value: number } | null>(null);
+  const value = draft?.key === thresholdKey ? draft.value : currentThreshold;
 
-  useEffect(() => {
-    if (open) setValue(currentThreshold);
-  }, [open, currentThreshold]);
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen) {
+      setDraft(null);
+    }
+    onOpenChange(nextOpen);
+  }
 
   function handleApply() {
     onApply(value);
+    setDraft(null);
     onOpenChange(false);
   }
 
   return (
     <Modal
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title="Override dispatch threshold"
       description="Runs with confidence below this threshold stay queued. Lower it to dispatch more aggressively; raise it to be conservative."
       actions={[
@@ -59,7 +65,9 @@ export function ThresholdOverrideModal({
           max={THRESHOLD_MAX}
           step={THRESHOLD_STEP}
           value={value}
-          onChange={(e) => setValue(parseFloat(e.target.value))}
+          onChange={(e) =>
+            setDraft({ key: thresholdKey, value: parseFloat(e.target.value) })
+          }
           className="niuu-flex-1"
           aria-label="Threshold value"
         />

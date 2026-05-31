@@ -57,12 +57,12 @@ const CHECKBOX_STYLE = {
   accentColor: 'var(--color-brand)',
 } as const;
 
-function toggleSelection(values: string[], value: string, checked: boolean): string[] {
+export function toggleSelection(values: string[], value: string, checked: boolean): string[] {
   if (checked) return values.includes(value) ? values : [...values, value];
   return values.filter((entry) => entry !== value);
 }
 
-function formatModelOption(
+export function formatModelOption(
   id: string,
   model?: { name?: string; vendor?: string; provider?: string; tier?: string },
 ): string {
@@ -87,7 +87,7 @@ const OBSERVATION_PILL: Record<'running' | 'idle' | 'missing' | 'degraded' | 'un
   unknown: 'niuu-bg-bg-tertiary niuu-text-text-muted',
 };
 
-function normalizeDeployment(value: string): DeploymentKind | 'unknown' {
+export function normalizeDeployment(value: string): DeploymentKind | 'unknown' {
   if (
     value === 'launchd' ||
     value === 'systemd' ||
@@ -99,7 +99,7 @@ function normalizeDeployment(value: string): DeploymentKind | 'unknown' {
   return 'unknown';
 }
 
-function deploymentLabel(value: string): string {
+export function deploymentLabel(value: string): string {
   switch (normalizeDeployment(value)) {
     case 'launchd':
       return 'This Mac (launchd)';
@@ -114,7 +114,7 @@ function deploymentLabel(value: string): string {
   }
 }
 
-function lifecycleCopy(value: string): string {
+export function lifecycleCopy(value: string): string {
   switch (normalizeDeployment(value)) {
     case 'launchd':
       return 'Install writes the launch agent and registers it with launchctl. Start and stop control the service on this Mac.';
@@ -129,7 +129,7 @@ function lifecycleCopy(value: string): string {
   }
 }
 
-function installLabel(value: string, installed: boolean): string {
+export function installLabel(value: string, installed: boolean): string {
   switch (normalizeDeployment(value)) {
     case 'launchd':
       return installed ? 'Reinstall on this Mac' : 'Install on this Mac';
@@ -144,7 +144,7 @@ function installLabel(value: string, installed: boolean): string {
   }
 }
 
-function startLabel(value: string, active: boolean): string {
+export function startLabel(value: string, active: boolean): string {
   switch (normalizeDeployment(value)) {
     case 'launchd':
     case 'systemd':
@@ -158,7 +158,7 @@ function startLabel(value: string, active: boolean): string {
   }
 }
 
-function stopLabel(value: string): string {
+export function stopLabel(value: string): string {
   switch (normalizeDeployment(value)) {
     case 'launchd':
     case 'systemd':
@@ -172,7 +172,7 @@ function stopLabel(value: string): string {
   }
 }
 
-function uninstallLabel(value: string): string {
+export function uninstallLabel(value: string): string {
   switch (normalizeDeployment(value)) {
     case 'launchd':
     case 'systemd':
@@ -186,7 +186,7 @@ function uninstallLabel(value: string): string {
   }
 }
 
-function toTitleCase(value: string): string {
+export function toTitleCase(value: string): string {
   return value
     .replace(/([A-Z])/g, ' $1')
     .replace(/[-_]+/g, ' ')
@@ -195,13 +195,13 @@ function toTitleCase(value: string): string {
     .replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
-function formatDeploymentValue(value: unknown): string {
+export function formatDeploymentValue(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (typeof value === 'string' || typeof value === 'number') return String(value);
   return JSON.stringify(value);
 }
 
-function formatConsoleAddress(warden: RavnWardenSummary): string {
+export function formatConsoleAddress(warden: RavnWardenSummary): string {
   const configuredHost = warden.console.publicHost?.trim() || warden.console.host || '0.0.0.0';
   const host =
     configuredHost === '0.0.0.0'
@@ -212,13 +212,13 @@ function formatConsoleAddress(warden: RavnWardenSummary): string {
   return `${host}:${warden.console.port}`;
 }
 
-function consoleTransportProtocol(kind: 'http' | 'ws'): string {
+export function consoleTransportProtocol(kind: 'http' | 'ws'): string {
   const secure = typeof window !== 'undefined' && window.location.protocol === 'https:';
   if (kind === 'ws') return secure ? 'wss' : 'ws';
   return secure ? 'https' : 'http';
 }
 
-function consoleGatewayUrl(
+export function consoleGatewayUrl(
   warden: Pick<RavnWardenSummary, 'console'>,
   path: string,
   kind: 'http' | 'ws' = 'http',
@@ -229,7 +229,7 @@ function consoleGatewayUrl(
   )}${path}`;
 }
 
-function normalizeLogLevel(level?: string): VolundrAggregatedLog['level'] {
+export function normalizeLogLevel(level?: string): VolundrAggregatedLog['level'] {
   const normalized = (level ?? '').toLowerCase();
   if (normalized === 'error') return 'error';
   if (normalized === 'warn' || normalized === 'warning') return 'warn';
@@ -237,7 +237,7 @@ function normalizeLogLevel(level?: string): VolundrAggregatedLog['level'] {
   return 'info';
 }
 
-function toStructuredLogs(
+export function toStructuredLogs(
   sessionId: string,
   entries: WardenLogEntry[],
   participant: VolundrLogParticipant,
@@ -444,30 +444,20 @@ function CreateWardenForm({
     'mimir-warden';
   const selectedPersona = persona || preferredPersona;
   const selectedPersonaMeta = availablePersonas.find((option) => option.id === selectedPersona);
-
-  useEffect(() => {
-    if (!model && availableModels.length > 0) {
-      setModel(availableModels[0]!.id);
-    }
-  }, [availableModels, model]);
-
-  useEffect(() => {
-    if (!persona && preferredPersona) {
-      setPersona(preferredPersona);
-    }
-  }, [persona, preferredPersona]);
-
-  useEffect(() => {
-    const preferredMount =
-      availableMounts.find((mount) => mount.name === 'local') ?? availableMounts[0];
-    if (!preferredMount) return;
-    if (readMountNames.length === 0) {
-      setReadMountNames([preferredMount.name]);
-    }
-    if (writeMountNames.length === 0) {
-      setWriteMountNames([preferredMount.name]);
-    }
-  }, [availableMounts, readMountNames.length, writeMountNames.length]);
+  const preferredMount =
+    availableMounts.find((mount) => mount.name === 'local') ?? availableMounts[0] ?? null;
+  const effectiveReadMountNames =
+    readMountNames.length > 0
+      ? readMountNames
+      : preferredMount
+        ? [preferredMount.name]
+        : [];
+  const effectiveWriteMountNames =
+    writeMountNames.length > 0
+      ? writeMountNames
+      : preferredMount
+        ? [preferredMount.name]
+        : [];
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -488,7 +478,9 @@ function CreateWardenForm({
     }
 
     const selectedMounts = availableMounts.filter(
-      (mount) => readMountNames.includes(mount.name) || writeMountNames.includes(mount.name),
+      (mount) =>
+        effectiveReadMountNames.includes(mount.name) ||
+        effectiveWriteMountNames.includes(mount.name),
     );
     const categoryScope = Array.from(
       new Set(selectedMounts.flatMap((mount) => mount.categories ?? [])),
@@ -500,8 +492,8 @@ function CreateWardenForm({
       model: selectedModel,
       deployment,
       deploymentKwargs,
-      readMountNames,
-      writeMountNames,
+      readMountNames: effectiveReadMountNames,
+      writeMountNames: effectiveWriteMountNames,
       categoryScope,
       schedules: {
         dreamCycleCronExpression: dreamCycleCronExpression.trim() || '0 3 * * *',
@@ -733,10 +725,14 @@ function CreateWardenForm({
                   type="checkbox"
                   className={CHECKBOX_BASE}
                   style={CHECKBOX_STYLE}
-                  checked={readMountNames.includes(mount.name)}
+                  checked={effectiveReadMountNames.includes(mount.name)}
                   onChange={(event) =>
                     setReadMountNames(
-                      toggleSelection(readMountNames, mount.name, event.target.checked),
+                      toggleSelection(
+                        effectiveReadMountNames,
+                        mount.name,
+                        event.target.checked,
+                      ),
                     )
                   }
                   aria-label={`Read mount ${mount.name}`}
@@ -761,10 +757,14 @@ function CreateWardenForm({
                   type="checkbox"
                   className={CHECKBOX_BASE}
                   style={CHECKBOX_STYLE}
-                  checked={writeMountNames.includes(mount.name)}
+                  checked={effectiveWriteMountNames.includes(mount.name)}
                   onChange={(event) =>
                     setWriteMountNames(
-                      toggleSelection(writeMountNames, mount.name, event.target.checked),
+                      toggleSelection(
+                        effectiveWriteMountNames,
+                        mount.name,
+                        event.target.checked,
+                      ),
                     )
                   }
                   aria-label={`Write mount ${mount.name}`}
@@ -1611,11 +1611,16 @@ export function RavnsPage() {
     ctx.tweaks['mimir.selectedWardenId'].trim().length > 0
       ? (ctx.tweaks['mimir.selectedWardenId'] as string)
       : null;
-  const [selectedId, setSelectedIdState] = useState<string | null>(selectedIdFromCtx);
+  const [selectedIdState, setSelectedIdState] = useState<string | null>(selectedIdFromCtx);
+  const selectedIdBase = selectedIdFromCtx ?? selectedIdState;
   const setSelectedId = (nextId: string | null) => {
     setSelectedIdState(nextId);
     ctx.setTweak('mimir.selectedWardenId', nextId ?? '');
   };
+  const selectedId =
+    selectedIdBase && (wardens ?? []).some((warden) => warden.id === selectedIdBase)
+      ? selectedIdBase
+      : null;
   const observedWardenQuery = useObservedWarden(selectedId);
   const modelsQuery = useQuery({
     queryKey: ['bifrost', 'models', 'wardens'],
@@ -1666,15 +1671,10 @@ export function RavnsPage() {
   const selectedRavn = profileWarden ? toRavnBinding(profileWarden) : null;
 
   useEffect(() => {
-    setSelectedIdState(selectedIdFromCtx);
-  }, [selectedIdFromCtx]);
-
-  useEffect(() => {
-    if (!selectedId || !wardens) return;
-    if (wardens.some((warden) => warden.id === selectedId)) return;
-    setSelectedIdState(null);
+    if (!selectedIdBase || !wardens) return;
+    if (wardens.some((warden) => warden.id === selectedIdBase)) return;
     ctx.setTweak('mimir.selectedWardenId', '');
-  }, [ctx, selectedId, wardens]);
+  }, [ctx, selectedIdBase, wardens]);
 
   async function handleCreate(draft: {
     name: string;

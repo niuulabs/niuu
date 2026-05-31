@@ -81,18 +81,18 @@ const FIXED_TAB_ORDER: Partial<Record<SessionTab, number>> = {
   logs: 60,
 };
 
-function isSessionBooting(status: string | null | undefined): boolean {
+export function isSessionBooting(status: string | null | undefined): boolean {
   return status === 'starting' || status === 'provisioning';
 }
 
-function formatCount(value: number): string {
+export function formatCount(value: number): string {
   if (!Number.isFinite(value)) return '0';
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
   return `${value}`;
 }
 
-function formatElapsedSince(value?: string | null): string {
+export function formatElapsedSince(value?: string | null): string {
   if (!value) return '—';
   const startedAt = new Date(value).getTime();
   if (!Number.isFinite(startedAt)) return '—';
@@ -106,22 +106,22 @@ function formatElapsedSince(value?: string | null): string {
   return `${days}d ${hours % 24}h`;
 }
 
-function formatCurrencyCents(value?: number): string {
+export function formatCurrencyCents(value?: number): string {
   if (value == null || !Number.isFinite(value)) return '—';
   return `$${(value / 100).toFixed(2)}`;
 }
 
-function formatEventTime(value: number): string {
+export function formatEventTime(value: number): string {
   const minutes = Math.floor(value / 60);
   const seconds = value % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-function sessionForgeLabel(session: VolundrSession | null | undefined): string {
+export function sessionForgeLabel(session: VolundrSession | null | undefined): string {
   return session?.instanceName ?? session?.instanceId ?? session?.hostname ?? 'shared';
 }
 
-function fileChangeCount(
+export function fileChangeCount(
   files?: {
     added: number;
     modified: number;
@@ -234,7 +234,7 @@ function WorkflowHumanGateCard({
   );
 }
 
-function formatDurationMs(value?: number | null): string {
+export function formatDurationMs(value?: number | null): string {
   if (!value || value <= 0) return '0s';
   const totalSeconds = Math.round(value / 1000);
   const hours = Math.floor(totalSeconds / 3600);
@@ -245,31 +245,31 @@ function formatDurationMs(value?: number | null): string {
   return `${seconds}s`;
 }
 
-function formatCompactDurationMs(value?: number | null): string {
+export function formatCompactDurationMs(value?: number | null): string {
   if (!value || value <= 0) return '0s';
   if (value < 10_000) return `${(value / 1000).toFixed(1)}s`;
   return formatDurationMs(value);
 }
 
-function formatPercentOfTotal(value: number, total: number): string {
+export function formatPercentOfTotal(value: number, total: number): string {
   if (total <= 0) return '0% of total';
   return `${Math.round((value / total) * 100)}% of total`;
 }
 
-function formatTraceStamp(value?: string | null): string {
+export function formatTraceStamp(value?: string | null): string {
   if (!value) return '--:--:--Z';
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return '--:--:--Z';
   return `${date.toISOString().slice(11, 19)}Z`;
 }
 
-function formatSignedDuration(value: number): string {
+export function formatSignedDuration(value: number): string {
   if (!Number.isFinite(value) || value === 0) return '±0s';
   const sign = value > 0 ? '+' : '-';
   return `${sign}${formatDurationMs(Math.abs(value))}`;
 }
 
-function median(values: number[]): number | null {
+export function median(values: number[]): number | null {
   if (values.length === 0) return null;
   const ordered = [...values].sort((left, right) => left - right);
   const midpoint = Math.floor(ordered.length / 2);
@@ -279,19 +279,19 @@ function median(values: number[]): number | null {
   return Math.round((left + right) / 2);
 }
 
-function percentile(values: number[], quantile: number): number | null {
+export function percentile(values: number[], quantile: number): number | null {
   if (values.length === 0) return null;
   const ordered = [...values].sort((left, right) => left - right);
   const index = Math.min(ordered.length - 1, Math.max(0, Math.ceil(quantile * ordered.length) - 1));
   return ordered[index] ?? null;
 }
 
-function roundUpDurationMs(value: number, stepMs: number): number {
+export function roundUpDurationMs(value: number, stepMs: number): number {
   if (value <= 0) return stepMs;
   return Math.ceil(value / stepMs) * stepMs;
 }
 
-function deriveComparableSourceKey(session: VolundrSession | null | undefined): string {
+export function deriveComparableSourceKey(session: VolundrSession | null | undefined): string {
   if (!session?.source) return 'unknown';
   if (session.source.type === 'git') {
     return `git:${session.source.repo}:${session.source.branch ?? ''}`;
@@ -300,12 +300,12 @@ function deriveComparableSourceKey(session: VolundrSession | null | undefined): 
   return `local:${session.source.local_path ?? session.source.path ?? fallbackMountPath}`;
 }
 
-function looksLikeRunLabel(value: string | null | undefined): boolean {
+export function looksLikeRunLabel(value: string | null | undefined): boolean {
   if (!value) return false;
   return /^s[-#]/i.test(value) || /^run[-#]/i.test(value);
 }
 
-function pickLongestStage(
+export function pickLongestStage(
   trace: VolundrSessionTrace | null | undefined,
   summary: VolundrSessionTraceSummary | null | undefined,
 ): VolundrSessionTraceSpan | null {
@@ -315,7 +315,7 @@ function pickLongestStage(
   return candidates[0] ?? summary?.longestSpan ?? null;
 }
 
-function formatStageLabel(span: VolundrSessionTraceSpan | null): string {
+export function formatStageLabel(span: VolundrSessionTraceSpan | null): string {
   if (!span) return 'n/a';
   if (span.kind === 'session.workflow' || span.kind.startsWith('turn.'))
     return span.name.toLowerCase();
@@ -323,7 +323,7 @@ function formatStageLabel(span: VolundrSessionTraceSpan | null): string {
   return span.name || span.kind;
 }
 
-function formatTimelineTick(valueMs: number): string {
+export function formatTimelineTick(valueMs: number): string {
   if (valueMs <= 0) return '0ms';
   const totalSeconds = Math.round(valueMs / 1000);
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -333,14 +333,14 @@ function formatTimelineTick(valueMs: number): string {
   return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
 }
 
-function formatTimelineHeaderStamp(value?: string | null): string {
+export function formatTimelineHeaderStamp(value?: string | null): string {
   if (!value) return '--:--:--Z';
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return '--:--:--Z';
   return `${date.toISOString().slice(11, 19)}Z`;
 }
 
-function normalizeTimelineRowLabel(span: VolundrSessionTraceSpan): string {
+export function normalizeTimelineRowLabel(span: VolundrSessionTraceSpan): string {
   if (span.kind === 'session.workflow') return span.name.toLowerCase();
   if (span.kind === 'turn.peer' || span.kind === 'turn.assistant') {
     return (span.actorLabel ?? span.name).toLowerCase();
@@ -354,7 +354,7 @@ function normalizeTimelineRowLabel(span: VolundrSessionTraceSpan): string {
   return (span.name || span.kind).toLowerCase();
 }
 
-function timelineRowCategory(span: VolundrSessionTraceSpan): string {
+export function timelineRowCategory(span: VolundrSessionTraceSpan): string {
   if (span.kind.startsWith('wait.')) return 'wait';
   if (span.kind === 'turn.peer' || span.kind === 'turn.assistant') return 'work';
   if (span.kind === 'turn.user') return 'input';
@@ -362,7 +362,9 @@ function timelineRowCategory(span: VolundrSessionTraceSpan): string {
   return span.actorType ?? 'system';
 }
 
-function timelineRowTone(span: VolundrSessionTraceSpan): 'active' | 'wait' | 'blocked' | 'system' {
+export function timelineRowTone(
+  span: VolundrSessionTraceSpan,
+): 'active' | 'wait' | 'blocked' | 'system' {
   if (span.status === 'failed' || span.status === 'cancelled') return 'blocked';
   if (span.kind.startsWith('wait.')) return 'wait';
   if (
@@ -456,7 +458,7 @@ type TelemetryToolFilter = {
   tone: 'neutral' | 'read' | 'edit' | 'write' | 'shell' | 'mcp' | 'other';
 };
 
-function buildTelemetrySpanTree(trace: VolundrSessionTrace): {
+export function buildTelemetrySpanTree(trace: VolundrSessionTrace): {
   root: TelemetrySpanNode | null;
   nodeById: Map<string, TelemetrySpanNode>;
 } {
@@ -486,11 +488,11 @@ function buildTelemetrySpanTree(trace: VolundrSessionTrace): {
   return { root, nodeById };
 }
 
-function spanAttributes(span: VolundrSessionTraceSpan): Record<string, unknown> {
+export function spanAttributes(span: VolundrSessionTraceSpan): Record<string, unknown> {
   return span.attributes && typeof span.attributes === 'object' ? span.attributes : {};
 }
 
-function extractTelemetryToolDescriptor(span: VolundrSessionTraceSpan): {
+export function extractTelemetryToolDescriptor(span: VolundrSessionTraceSpan): {
   category: Exclude<TelemetryToolCategory, 'all'>;
   badge: string;
   title: string;
@@ -562,7 +564,7 @@ function extractTelemetryToolDescriptor(span: VolundrSessionTraceSpan): {
   };
 }
 
-function buildTelemetryToolOverview(trace: VolundrSessionTrace): {
+export function buildTelemetryToolOverview(trace: VolundrSessionTrace): {
   rows: TelemetryToolGroupRow[];
   primaryFilters: TelemetryToolFilter[];
   totalToolCalls: number;
@@ -654,18 +656,18 @@ function buildTelemetryToolOverview(trace: VolundrSessionTrace): {
   };
 }
 
-function countTelemetryDescendants(node: TelemetrySpanNode): number {
+export function countTelemetryDescendants(node: TelemetrySpanNode): number {
   return node.children.reduce((total, child) => total + 1 + countTelemetryDescendants(child), 0);
 }
 
-function collectTelemetryDetailSpans(node: TelemetrySpanNode): VolundrSessionTraceSpan[] {
+export function collectTelemetryDetailSpans(node: TelemetrySpanNode): VolundrSessionTraceSpan[] {
   return node.children.flatMap((child) => {
     if (child.span.kind.startsWith('turn.')) return [];
     return [child.span, ...collectTelemetryDetailSpans(child)];
   });
 }
 
-function nearestTurnAncestorLabel(
+export function nearestTurnAncestorLabel(
   node: TelemetrySpanNode,
   nodeById: Map<string, TelemetrySpanNode>,
 ): string | null {
@@ -681,7 +683,7 @@ function nearestTurnAncestorLabel(
   return null;
 }
 
-function formatTelemetryTaskLabel(span: VolundrSessionTraceSpan): string {
+export function formatTelemetryTaskLabel(span: VolundrSessionTraceSpan): string {
   if (span.kind === 'tool.call') return `tool · ${span.name.toLowerCase()}`;
   if (span.kind === 'terminal.command') return `terminal · ${span.name.toLowerCase()}`;
   if (span.kind.startsWith('wait.')) {
@@ -692,7 +694,7 @@ function formatTelemetryTaskLabel(span: VolundrSessionTraceSpan): string {
   return `${span.kind.replace('.', ' · ')} · ${normalizeTimelineRowLabel(span)}`;
 }
 
-function buildTelemetryTimelineRows(trace: VolundrSessionTrace): TelemetryTimelineRow[] {
+export function buildTelemetryTimelineRows(trace: VolundrSessionTrace): TelemetryTimelineRow[] {
   const rootSpan = trace.spans.find((span) => span.parentSpanId == null);
   if (!rootSpan) return [];
   const rootStart = new Date(rootSpan.startedAt).getTime();
@@ -780,7 +782,7 @@ function buildTelemetryTimelineRows(trace: VolundrSessionTrace): TelemetryTimeli
     });
 }
 
-function buildTelemetryTurnRows(trace: VolundrSessionTrace): TelemetryTurnRow[] {
+export function buildTelemetryTurnRows(trace: VolundrSessionTrace): TelemetryTurnRow[] {
   const { root, nodeById } = buildTelemetrySpanTree(trace);
   const turnNodes = [...nodeById.values()].filter((node) => node.span.kind.startsWith('turn.'));
   if (turnNodes.length === 0) return [];
@@ -845,7 +847,7 @@ function buildTelemetryTurnRows(trace: VolundrSessionTrace): TelemetryTurnRow[] 
     });
 }
 
-function formatTurnDurationTick(valueMs: number): string {
+export function formatTurnDurationTick(valueMs: number): string {
   if (valueMs <= 0) return '0ms';
   return formatDurationMs(valueMs);
 }
@@ -961,12 +963,9 @@ function TelemetryTurnInspector({
 
 function TelemetryTurnByTurn({ trace }: { trace: VolundrSessionTrace }) {
   const turns = useMemo(() => buildTelemetryTurnRows(trace), [trace]);
-  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const validIds = new Set(turns.map((turn) => turn.id));
-    setSelectedTurnId((current) => (current && validIds.has(current) ? current : null));
-  }, [turns]);
+  const [selectedTurnIdState, setSelectedTurnId] = useState<string | null>(null);
+  const selectedTurnId =
+    turns.find((turn) => turn.id === selectedTurnIdState)?.id ?? null;
 
   const medianMs = useMemo(() => median(turns.map((turn) => turn.durationMs)), [turns]);
   const p95Ms = useMemo(
@@ -1633,7 +1632,15 @@ function TelemetryStageBreakdown({
 function TelemetryToolCallsOverview({ trace }: { trace: VolundrSessionTrace }) {
   const overview = useMemo(() => buildTelemetryToolOverview(trace), [trace]);
   const [selectedCategory, setSelectedCategory] = useState<TelemetryToolCategory>('all');
-  const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
+  const [selectedGroupIdState, setSelectedGroupId] = useState<string>('all');
+  const selectedGroupId =
+    selectedCategory === 'all'
+      ? 'all'
+      : overview.rows.some(
+            (row) => row.category === selectedCategory && row.id === selectedGroupIdState,
+          )
+        ? selectedGroupIdState
+        : 'all';
 
   const visibleRows = useMemo(() => {
     const categoryRows =
@@ -1665,17 +1672,6 @@ function TelemetryToolCallsOverview({ trace }: { trace: VolundrSessionTrace }) {
         tone: row.category,
       })),
     ];
-  }, [overview.rows, selectedCategory]);
-
-  useEffect(() => {
-    if (selectedCategory === 'all') {
-      setSelectedGroupId('all');
-      return;
-    }
-    const validIds = new Set(
-      overview.rows.filter((row) => row.category === selectedCategory).map((row) => row.id),
-    );
-    setSelectedGroupId((current) => (current === 'all' || validIds.has(current) ? current : 'all'));
   }, [overview.rows, selectedCategory]);
 
   if (overview.totalToolCalls === 0) {
@@ -1928,8 +1924,8 @@ function TelemetryTab({
   const trace = traceQuery.data;
   const summary = summaryQuery.data;
   const timelineRows = useMemo(() => (trace ? buildTelemetryTimelineRows(trace) : []), [trace]);
-  const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
-  const [expandedStageIds, setExpandedStageIds] = useState<Set<string>>(new Set());
+  const [selectedStageIdState, setSelectedStageId] = useState<string | null>(null);
+  const [expandedStageIdsState, setExpandedStageIds] = useState<Set<string>>(new Set());
 
   const metricModel = useMemo(() => {
     if (!trace || !summary) return null;
@@ -1964,28 +1960,21 @@ function TelemetryTab({
     };
   }, [baselineQuery.data?.medianMs, baselineQuery.data?.sampleCount, summary, trace]);
 
-  useEffect(() => {
+  const fallbackStageId =
+    timelineRows.find((row) => row.id === metricModel?.longestStage?.id)?.id ??
+    timelineRows[0]?.id ??
+    null;
+  const selectedStageId =
+    timelineRows.find((row) => row.id === selectedStageIdState)?.id ?? fallbackStageId;
+  const expandedStageIds = useMemo(() => {
     const validStageIds = new Set(timelineRows.map((row) => row.id));
-    if (validStageIds.size === 0) {
-      setSelectedStageId(null);
-      setExpandedStageIds(new Set());
-      return;
+    if (validStageIds.size === 0) return new Set<string>();
+    const next = new Set([...expandedStageIdsState].filter((id) => validStageIds.has(id)));
+    if (fallbackStageId && next.size === 0) {
+      next.add(fallbackStageId);
     }
-    const fallbackStageId =
-      timelineRows.find((row) => row.id === metricModel?.longestStage?.id)?.id ??
-      timelineRows[0]?.id ??
-      null;
-    setSelectedStageId((current) =>
-      current && validStageIds.has(current) ? current : fallbackStageId,
-    );
-    setExpandedStageIds((current) => {
-      const next = new Set([...current].filter((id) => validStageIds.has(id)));
-      if (fallbackStageId && next.size === 0) {
-        next.add(fallbackStageId);
-      }
-      return next;
-    });
-  }, [metricModel?.longestStage?.id, timelineRows]);
+    return next;
+  }, [expandedStageIdsState, fallbackStageId, timelineRows]);
 
   const handleSelectStage = useCallback((rowId: string) => {
     setSelectedStageId(rowId);
@@ -2168,7 +2157,7 @@ function TelemetryTab({
   );
 }
 
-function eventTone(type: SessionChronicle['events'][number]['type']) {
+export function eventTone(type: SessionChronicle['events'][number]['type']) {
   switch (type) {
     case 'message':
       return {
@@ -2203,7 +2192,7 @@ function eventTone(type: SessionChronicle['events'][number]['type']) {
   }
 }
 
-function eventIcon(type: SessionChronicle['events'][number]['type']) {
+export function eventIcon(type: SessionChronicle['events'][number]['type']) {
   switch (type) {
     case 'message':
       return MessageSquareText;
@@ -2220,7 +2209,7 @@ function eventIcon(type: SessionChronicle['events'][number]['type']) {
   }
 }
 
-function eventLabel(type: SessionChronicle['events'][number]['type']): string {
+export function eventLabel(type: SessionChronicle['events'][number]['type']): string {
   switch (type) {
     case 'message':
       return 'Message';
@@ -2237,7 +2226,7 @@ function eventLabel(type: SessionChronicle['events'][number]['type']): string {
   }
 }
 
-function truncateLeadingPath(value: string, maxLength = 42): string {
+export function truncateLeadingPath(value: string, maxLength = 42): string {
   if (value.length <= maxLength) return value;
   const parts = value.split('/').filter(Boolean);
   if (parts.length <= 2) return `…${value.slice(-(maxLength - 1))}`;
@@ -2252,7 +2241,7 @@ function truncateLeadingPath(value: string, maxLength = 42): string {
   return `…/${suffix}`;
 }
 
-async function copyText(text: string): Promise<boolean> {
+export async function copyText(text: string): Promise<boolean> {
   if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return false;
   try {
     await navigator.clipboard.writeText(text);
@@ -2262,13 +2251,13 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-function normalizeRepoLink(source: VolundrSession['source'] | null | undefined) {
+export function normalizeRepoLink(source: VolundrSession['source'] | null | undefined) {
   if (!source || source.type !== 'git' || !source.repo) return null;
   if (source.repo.startsWith('http://') || source.repo.startsWith('https://')) return source.repo;
   return `https://github.com/${source.repo}`;
 }
 
-function formatRepoLabel(repo: string): string {
+export function formatRepoLabel(repo: string): string {
   const trimmed = repo.replace(/\.git$/, '');
   const sshMatch = trimmed.match(/^[^@]+@([^:]+):(.+)$/);
   if (sshMatch) return sshMatch[2] ?? trimmed;
@@ -2288,7 +2277,7 @@ function formatRepoLabel(repo: string): string {
   }
 }
 
-function truncateMiddle(value: string, maxLength = 30): string {
+export function truncateMiddle(value: string, maxLength = 30): string {
   if (value.length <= maxLength) return value;
   const start = Math.ceil((maxLength - 3) * 0.6);
   const end = Math.floor((maxLength - 3) * 0.4);
@@ -2531,11 +2520,11 @@ function DeleteSessionDialog({
   onConfirm: (cleanup: string[]) => void;
   busy: boolean;
 }) {
-  const [cleanup, setCleanup] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (!open) setCleanup(new Set());
-  }, [open]);
+  const cleanupKey = open && session ? session.id : 'closed';
+  const [cleanupState, setCleanupState] = useState<{ key: string; value: Set<string> } | null>(
+    null,
+  );
+  const cleanup = cleanupState?.key === cleanupKey ? cleanupState.value : new Set<string>();
 
   if (!open || !session) return null;
 
@@ -2543,11 +2532,11 @@ function DeleteSessionDialog({
   const isLocalStorage = session.source.type === 'local_mount';
 
   function toggleCleanup(key: string) {
-    setCleanup((prev) => {
-      const next = new Set(prev);
+    setCleanupState((prev) => {
+      const next = new Set(prev?.key === cleanupKey ? prev.value : cleanup);
       if (next.has(key)) next.delete(key);
       else next.add(key);
-      return next;
+      return { key: cleanupKey, value: next };
     });
   }
 
@@ -2653,28 +2642,40 @@ function DeleteSessionDialog({
 }
 
 function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolundrService }) {
-  const [logs, setLogs] = useState<{
-    lines: VolundrAggregatedLog[];
-    participants: VolundrLogParticipant[];
-  }>({ lines: [], participants: [] });
-  const [loading, setLoading] = useState(true);
   const [level, setLevel] = useState('DEBUG');
+  const requestKey = `${sessionId}:${level}`;
+  const [logState, setLogState] = useState<{
+    key: string;
+    loading: boolean;
+    logs: {
+      lines: VolundrAggregatedLog[];
+      participants: VolundrLogParticipant[];
+    };
+  }>({
+    key: requestKey,
+    loading: true,
+    logs: { lines: [], participants: [] },
+  });
+  const logs =
+    logState.key === requestKey ? logState.logs : { lines: [], participants: [] };
+  const loading = logState.key === requestKey ? logState.loading : true;
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
 
     void volundr
       .getAggregatedLogs(sessionId, { limit: 400, level })
       .then((payload) => {
         if (!active) return;
-        setLogs(payload);
-        setLoading(false);
+        setLogState({ key: requestKey, logs: payload, loading: false });
       })
       .catch(() => {
         if (!active) return;
-        setLogs({ lines: [], participants: [] });
-        setLoading(false);
+        setLogState({
+          key: requestKey,
+          logs: { lines: [], participants: [] },
+          loading: false,
+        });
       });
 
     const unsubscribe = volundr.subscribeAggregatedLogs(
@@ -2682,8 +2683,7 @@ function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolu
       { limit: 400, level },
       (payload) => {
         if (!active) return;
-        setLogs(payload);
-        setLoading(false);
+        setLogState({ key: requestKey, logs: payload, loading: false });
       },
     );
 
@@ -2691,7 +2691,7 @@ function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolu
       active = false;
       unsubscribe();
     };
-  }, [level, sessionId, volundr]);
+  }, [level, requestKey, sessionId, volundr]);
 
   const participants = useMemo<VolundrLogParticipant[]>(() => {
     if (logs.participants.length > 0) return logs.participants;
@@ -2734,21 +2734,24 @@ function LiveChroniclesTab({
   session: VolundrSession | null;
   volundr: IVolundrService;
 }) {
-  const [chronicle, setChronicle] = useState<SessionChronicle | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [chronicleState, setChronicleState] = useState<{
+    key: string;
+    loading: boolean;
+    chronicle: SessionChronicle | null;
+  }>({ key: sessionId, loading: true, chronicle: null });
+  const chronicle = chronicleState.key === sessionId ? chronicleState.chronicle : null;
+  const loading = chronicleState.key === sessionId ? chronicleState.loading : true;
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
     void volundr.getChronicle(sessionId).then((payload) => {
       if (!active) return;
-      setChronicle(payload);
-      setLoading(false);
+      setChronicleState({ key: sessionId, chronicle: payload, loading: false });
     });
     const unsubscribe = volundr.subscribeChronicle(sessionId, (payload) => {
-      setChronicle(payload);
-      setLoading(false);
+      if (!active) return;
+      setChronicleState({ key: sessionId, chronicle: payload, loading: false });
     });
     return () => {
       active = false;
@@ -3134,7 +3137,9 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
   }, []);
 
   useEffect(() => {
-    void fetchFiles();
+    queueMicrotask(() => {
+      void fetchFiles();
+    });
   }, [fetchFiles]);
 
   return {
@@ -3377,6 +3382,17 @@ export function LiveSessionDetailPage({
   readOnly?: boolean;
   initialTab?: SessionTab;
 }) {
+  return <LiveSessionDetailPageInner key={sessionId} sessionId={sessionId} readOnly={readOnly} />;
+}
+
+function LiveSessionDetailPageInner({
+  sessionId,
+  readOnly = false,
+}: {
+  sessionId: string;
+  readOnly?: boolean;
+  initialTab?: SessionTab;
+}) {
   const [activeTab, setActiveTab] = useState<SessionTab>('chat');
   const [tabWasManuallySelected, setTabWasManuallySelected] = useState(false);
   const [actionBusy, setActionBusy] = useState<
@@ -3549,14 +3565,11 @@ export function LiveSessionDetailPage({
     }
     return { label: 'Forge', value: sessionForgeLabel(liveSession) };
   }, [costValue, forgeBadgeLabel, liveSession]);
-  const tabCounts = useMemo<Partial<Record<SessionTab, number>>>(
-    () => ({
-      chat: liveSession?.messageCount || replayMessages.length || undefined,
-      diffs: fileChangeCount(sessionDetail?.files),
-      chronicles: sessionDetail?.events.length ? sessionDetail.events.length : undefined,
-    }),
-    [liveSession?.messageCount, replayMessages.length, sessionDetail?.events, sessionDetail?.files],
-  );
+  const tabCounts: Partial<Record<SessionTab, number>> = {
+    chat: liveSession?.messageCount || replayMessages.length || undefined,
+    diffs: fileChangeCount(sessionDetail?.files),
+    chronicles: sessionDetail?.events.length ? sessionDetail.events.length : undefined,
+  };
   const headerMessageCount = useMemo(() => {
     if (visibleMessageCount != null) return visibleMessageCount;
     if (canReplayTranscript) return replayMessages.length;
@@ -3597,14 +3610,6 @@ export function LiveSessionDetailPage({
     return visible;
   }, [featurePrefs, sessionFeatures, terminalUrl]);
 
-  useEffect(() => {
-    setTabWasManuallySelected(false);
-    setActiveTab('chat');
-    setDismissedHumanGateIds(new Set());
-    setShowInternalMessages(false);
-    setVisibleMessageCount(null);
-  }, [sessionId]);
-
   const handleToggleInternalMessages = useCallback(() => {
     const next = !showInternalMessages;
     setShowInternalMessages(next);
@@ -3644,15 +3649,12 @@ export function LiveSessionDetailPage({
     [activeHumanGate, chat, queryClient, sessionId, volundr],
   );
 
-  useEffect(() => {
-    if (!tabs.some((tab) => tab.id === activeTab)) {
-      setActiveTab(tabs.find((tab) => tab.id === 'chat')?.id ?? tabs[0]?.id ?? 'chat');
-      return;
-    }
-    if (!tabWasManuallySelected && tabs.some((tab) => tab.id === 'chat') && activeTab !== 'chat') {
-      setActiveTab('chat');
-    }
-  }, [activeTab, tabWasManuallySelected, tabs]);
+  const resolvedActiveTab =
+    !tabWasManuallySelected && tabs.some((tab) => tab.id === 'chat')
+      ? 'chat'
+      : tabs.some((tab) => tab.id === activeTab)
+        ? activeTab
+        : (tabs.find((tab) => tab.id === 'chat')?.id ?? tabs[0]?.id ?? 'chat');
 
   const evaluatePermissionAutoApproval = useCallback(
     (permission: (typeof chat.pendingPermissions)[number]) =>
@@ -3865,14 +3867,14 @@ export function LiveSessionDetailPage({
                     key={tab.id}
                     id={`tab-${tab.id}`}
                     role="tab"
-                    aria-selected={activeTab === tab.id}
+                    aria-selected={resolvedActiveTab === tab.id}
                     onClick={() => {
                       setTabWasManuallySelected(true);
                       setActiveTab(tab.id);
                     }}
                     className={cn(
                       'niuu-live-session__tab',
-                      activeTab === tab.id && 'niuu-live-session__tab--active',
+                      resolvedActiveTab === tab.id && 'niuu-live-session__tab--active',
                     )}
                   >
                     <TabIcon className="niuu-live-session__tab-icon" />
@@ -3950,7 +3952,7 @@ export function LiveSessionDetailPage({
       </div>
 
       <div className="niuu-min-h-0 niuu-flex-1 niuu-overflow-hidden">
-        {activeTab === 'chat' && (
+        {resolvedActiveTab === 'chat' && (
           <div role="tabpanel" className="niuu-flex niuu-h-full niuu-min-h-0 niuu-flex-col">
             {isReady && chatEndpoint ? (
               <>
@@ -4054,7 +4056,7 @@ export function LiveSessionDetailPage({
           </div>
         )}
 
-        {activeTab === 'terminal' && (
+        {resolvedActiveTab === 'terminal' && (
           <div role="tabpanel" className="niuu-h-full niuu-min-h-0">
             {isReady ? (
               <SessionTerminalLive url={terminalUrl} readOnly={readOnly} />
@@ -4070,19 +4072,19 @@ export function LiveSessionDetailPage({
           </div>
         )}
 
-        {activeTab === 'diffs' && (
+        {resolvedActiveTab === 'diffs' && (
           <div role="tabpanel" className="niuu-h-full niuu-min-h-0">
             <LiveDiffsTab chatEndpoint={chatEndpoint} />
           </div>
         )}
 
-        {activeTab === 'files' && (
+        {resolvedActiveTab === 'files' && (
           <div role="tabpanel" className="niuu-h-full niuu-min-h-0">
             <SessionFilesWorkspace sessionId={sessionId} filesystem={filesystem} />
           </div>
         )}
 
-        {activeTab === 'chronicles' && (
+        {resolvedActiveTab === 'chronicles' && (
           <div role="tabpanel" className="niuu-h-full niuu-min-h-0">
             <LiveChroniclesTab
               sessionId={sessionId}
@@ -4093,7 +4095,7 @@ export function LiveSessionDetailPage({
           </div>
         )}
 
-        {activeTab === 'telemetry' && (
+        {resolvedActiveTab === 'telemetry' && (
           <div
             role="tabpanel"
             className="niuu-live-telemetry-panel niuu-h-full niuu-min-h-0 niuu-overflow-auto"
@@ -4108,7 +4110,7 @@ export function LiveSessionDetailPage({
           </div>
         )}
 
-        {activeTab === 'logs' && (
+        {resolvedActiveTab === 'logs' && (
           <div role="tabpanel" className="niuu-h-full niuu-min-h-0">
             <LiveLogsTab sessionId={sessionId} volundr={volundr} />
           </div>

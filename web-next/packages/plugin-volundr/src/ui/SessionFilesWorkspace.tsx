@@ -15,6 +15,7 @@ interface BrowserNode extends FileTreeNode {
 }
 
 interface UploadItem {
+  id: string;
   file: File;
   status: 'pending' | 'uploading' | 'done' | 'error';
   error?: string;
@@ -129,21 +130,36 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
     if (incoming.length === 0) return;
 
     const targetDir = currentNode?.kind === 'directory' ? currentNode.path : currentRoot.path;
-    const nextUploads: UploadItem[] = incoming.map((file) => ({ file, status: 'pending' }));
+    const nextUploads: UploadItem[] = incoming.map((file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      file,
+      status: 'pending',
+    }));
     setUploads((prev) => [...prev, ...nextUploads]);
 
     for (const item of nextUploads) {
-      item.status = 'uploading';
-      setUploads((prev) => [...prev]);
+      setUploads((prev) =>
+        prev.map((upload) => (upload.id === item.id ? { ...upload, status: 'uploading' } : upload)),
+      );
       try {
         const content = await item.file.text();
         await filesystem.writeFile(sessionId, joinPath(targetDir, item.file.name), content);
-        item.status = 'done';
+        setUploads((prev) =>
+          prev.map((upload) => (upload.id === item.id ? { ...upload, status: 'done' } : upload)),
+        );
       } catch (err) {
-        item.status = 'error';
-        item.error = err instanceof Error ? err.message : 'Upload failed';
+        setUploads((prev) =>
+          prev.map((upload) =>
+            upload.id === item.id
+              ? {
+                  ...upload,
+                  status: 'error',
+                  error: err instanceof Error ? err.message : 'Upload failed',
+                }
+              : upload,
+          ),
+        );
       }
-      setUploads((prev) => [...prev]);
     }
 
     setShowUploadDialog(false);

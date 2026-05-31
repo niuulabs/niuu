@@ -39,7 +39,7 @@ const TABS: { id: SessionTab; label: string }[] = [
   { id: 'logs', label: 'Logs' },
 ];
 
-function tabIcon(id: SessionTab): string {
+export function tabIcon(id: SessionTab): string {
   switch (id) {
     case 'chat':
       return '\u25AD';
@@ -66,23 +66,23 @@ export interface SessionDetailPageProps {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function truncate(s: string | undefined, n: number): string {
+export function truncate(s: string | undefined, n: number): string {
   if (!s) return '';
   return s.length > n ? s.slice(0, n - 1) + '\u2026' : s;
 }
 
-function formatTimestamp(ts: number): string {
+export function formatTimestamp(ts: number): string {
   const d = new Date(ts);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
 }
 
-function tabCount(tab: SessionTab, session: Session): number | undefined {
+export function tabCount(tab: SessionTab, session: Session): number | undefined {
   switch (tab) {
     case 'chat':
       return session.events.length;
@@ -152,6 +152,7 @@ function SessionHeader({
   readOnly: boolean;
   showRes: boolean;
 }) {
+  const [renderedAt] = useState(() => Date.now());
   const r = session.resources;
 
   // Derive a mock source and cluster from session data
@@ -167,7 +168,7 @@ function SessionHeader({
   };
 
   // Duration since startedAt
-  const elapsedMs = Date.now() - new Date(session.startedAt).getTime();
+  const elapsedMs = renderedAt - new Date(session.startedAt).getTime();
   const durationMin = Math.floor(elapsedMs / 60_000);
   const duration =
     durationMin >= 60 ? `${Math.floor(durationMin / 60)}h ${durationMin % 60}m` : `${durationMin}m`;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -62,7 +62,7 @@ const SESSION_DOT: Record<SessionState, DotState> = {
   failed: 'failed',
 };
 
-function looksLikeRepoLabel(value: string): boolean {
+export function looksLikeRepoLabel(value: string): boolean {
   return (
     value.includes('#') ||
     value.startsWith('~/') ||
@@ -71,7 +71,7 @@ function looksLikeRepoLabel(value: string): boolean {
   );
 }
 
-function compactSourceParts(value: string): { label: string; branch?: string } {
+export function compactSourceParts(value: string): { label: string; branch?: string } {
   if (value.includes('#')) {
     const [repo, branch] = value.split('#');
     return { label: shortenRepoLabel(repo ?? value), branch: branch || undefined };
@@ -79,29 +79,29 @@ function compactSourceParts(value: string): { label: string; branch?: string } {
   return { label: shortenRepoLabel(value) };
 }
 
-function shortenRepoLabel(value: string): string {
+export function shortenRepoLabel(value: string): string {
   if (value.startsWith('~/') || value.startsWith('/')) return value;
   const trimmed = value.replace(/\/+$/, '');
   const slug = trimmed.split('/').pop() ?? trimmed;
   return slug.replace(/\.git$/, '') || value;
 }
 
-function toGroupTestId(label: string): string {
+export function toGroupTestId(label: string): string {
   return label
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 }
 
-function sessionActivityTs(session: Session): number {
+export function sessionActivityTs(session: Session): number {
   return new Date(session.lastActivityAt ?? session.startedAt).getTime();
 }
 
-function compareSessionsByActivity(a: Session, b: Session): number {
+export function compareSessionsByActivity(a: Session, b: Session): number {
   return sessionActivityTs(b) - sessionActivityTs(a);
 }
 
-function repoGroupLabel(session: Session): string {
+export function repoGroupLabel(session: Session): string {
   if (session.preview && looksLikeRepoLabel(session.preview)) {
     return compactSourceParts(session.preview).label;
   }
@@ -111,7 +111,7 @@ function repoGroupLabel(session: Session): string {
   return 'other';
 }
 
-function groupByRepo(sessions: Session[]): SessionSection[] {
+export function groupByRepo(sessions: Session[]): SessionSection[] {
   const grouped = new Map<string, Session[]>();
 
   for (const session of sessions) {
@@ -132,11 +132,11 @@ function groupByRepo(sessions: Session[]): SessionSection[] {
     }));
 }
 
-function forgeGroupLabel(session: Session): string {
+export function forgeGroupLabel(session: Session): string {
   return session.clusterName ?? session.clusterId ?? 'unknown forge';
 }
 
-function groupByForge(sessions: Session[]): SessionSection[] {
+export function groupByForge(sessions: Session[]): SessionSection[] {
   const grouped = new Map<string, Session[]>();
 
   for (const session of sessions) {
@@ -420,40 +420,24 @@ export function SessionsPage() {
       sessions: g.states.flatMap((st) => grouped[st]),
     }));
   }, [filteredSessions, grouped, sidebarMode]);
-
-  // Auto-select first running session on load
-  useEffect(() => {
-    if (!sessionsQuery.data) return;
-
-    const requestedSessionId = typeof routeSessionId === 'string' ? routeSessionId : null;
+  const requestedSessionId = typeof routeSessionId === 'string' ? routeSessionId : null;
+  const resolvedSelectedSessionId = useMemo(() => {
+    if (allSessions.length === 0) return null;
     if (requestedSessionId) {
-      const matchingSession = sessionsQuery.data.find(
-        (session) => session.id === requestedSessionId,
-      );
-      if (matchingSession) {
-        if (selectedSessionId !== matchingSession.id) {
-          setSelectedSessionId(matchingSession.id);
-        }
-        return;
-      }
+      const matchingSession = allSessions.find((session) => session.id === requestedSessionId);
+      if (matchingSession) return matchingSession.id;
     }
-
-    if (selectedSessionId) return;
-
-    const running = sessionsQuery.data.filter((s) => s.state === 'running');
-    if (running.length > 0) {
-      setSelectedSessionId(running[0]!.id);
-    } else if (sessionsQuery.data.length > 0) {
-      setSelectedSessionId(sessionsQuery.data[0]!.id);
+    if (selectedSessionId) {
+      const matchingSession = allSessions.find((session) => session.id === selectedSessionId);
+      if (matchingSession) return matchingSession.id;
     }
-  }, [routeSessionId, selectedSessionId, sessionsQuery.data]);
-
-  useEffect(() => {
-    setSelectedStoppedIds((current) => {
-      const next = new Set([...current].filter((id) => stoppedSessionIds.has(id)));
-      return next.size === current.size ? current : next;
-    });
-  }, [stoppedSessionIds]);
+    const running = allSessions.find((session) => session.state === 'running');
+    return running?.id ?? allSessions[0]?.id ?? null;
+  }, [allSessions, requestedSessionId, selectedSessionId]);
+  const resolvedSelectedStoppedIds = useMemo(
+    () => new Set([...selectedStoppedIds].filter((id) => stoppedSessionIds.has(id))),
+    [selectedStoppedIds, stoppedSessionIds],
+  );
 
   function handleSelectSession(id: string) {
     setSelectedSessionId(id);
@@ -499,12 +483,12 @@ export function SessionsPage() {
   }
 
   async function handleDeleteSelectedStopped() {
-    if (deleteBusy || selectedStoppedIds.size === 0) return;
-    const ids = [...selectedStoppedIds];
+    if (deleteBusy || resolvedSelectedStoppedIds.size === 0) return;
+    const ids = [...resolvedSelectedStoppedIds];
     setDeleteBusy(true);
     try {
       await Promise.all(ids.map((id) => volundr.deleteSession(id)));
-      if (selectedSessionId && ids.includes(selectedSessionId)) {
+      if (resolvedSelectedSessionId && ids.includes(resolvedSelectedSessionId)) {
         setSelectedSessionId(null);
         await navigate({ to: '/volundr/sessions', replace: true });
       }
@@ -521,9 +505,9 @@ export function SessionsPage() {
     }
   }
 
-  const deleteSelectionCount = selectedStoppedIds.size;
+  const deleteSelectionCount = resolvedSelectedStoppedIds.size;
   const deleteSelectionPreview = filteredStoppedSessions.filter((session) =>
-    selectedStoppedIds.has(session.id),
+    resolvedSelectedStoppedIds.has(session.id),
   );
 
   return (
@@ -571,7 +555,7 @@ export function SessionsPage() {
                     key={g.label}
                     label={g.label}
                     sessions={g.sessions}
-                    selectedId={selectedSessionId}
+                    selectedId={resolvedSelectedSessionId}
                     onSelect={handleSelectSession}
                     collapsed
                   />
@@ -751,10 +735,10 @@ export function SessionsPage() {
                     key={g.label}
                     label={g.label}
                     sessions={g.sessions}
-                    selectedId={selectedSessionId}
+                    selectedId={resolvedSelectedSessionId}
                     onSelect={handleSelectSession}
                     selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
-                    selectedSessionIds={selectedStoppedIds}
+                    selectedSessionIds={resolvedSelectedStoppedIds}
                     onToggleSelection={handleToggleStoppedSelection}
                   />
                 ))}
@@ -784,14 +768,17 @@ export function SessionsPage() {
               }
             />
           )}
-          {sessionsQuery.data && !selectedSessionId && (
+          {sessionsQuery.data && !resolvedSelectedSessionId && (
             <EmptyState
               title="No session selected"
               description="Select a session from the sidebar."
             />
           )}
-          {sessionsQuery.data && selectedSessionId && (
-            <LiveSessionDetailPage key={selectedSessionId} sessionId={selectedSessionId} />
+          {sessionsQuery.data && resolvedSelectedSessionId && (
+            <LiveSessionDetailPage
+              key={resolvedSelectedSessionId}
+              sessionId={resolvedSelectedSessionId}
+            />
           )}
         </div>
       </div>

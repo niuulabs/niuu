@@ -27,11 +27,11 @@ const C = {
   device: [130, 155, 185] as const,
 };
 
-function rgba([r, g, b]: readonly [number, number, number], a: number): string {
+export function rgba([r, g, b]: readonly [number, number, number], a: number): string {
   return `rgba(${r},${g},${b},${a})`;
 }
 
-function nodeColour(typeId: string): readonly [number, number, number] {
+export function nodeColour(typeId: string): readonly [number, number, number] {
   switch (typeId) {
     case 'ting':
     case 'ravn_run':
@@ -70,7 +70,7 @@ function nodeColour(typeId: string): readonly [number, number, number] {
   }
 }
 
-function identityRune(typeId: string): string {
+export function identityRune(typeId: string): string {
   const direct = SERVICE_RUNES[typeId as keyof typeof SERVICE_RUNES];
   if (direct) return direct;
 
@@ -129,7 +129,7 @@ function drawServiceBadge(
   ctx.stroke();
 }
 
-function workflowLabelPlacement(
+export function workflowLabelPlacement(
   node: TopologyNode,
   size: number,
 ): { dx: number; dy: number; align: CanvasTextAlign; baseline: CanvasTextBaseline } {
@@ -152,7 +152,7 @@ function workflowLabelPlacement(
   return { dx: 0, dy: size + 13, align: 'center', baseline: 'top' };
 }
 
-function structureLabel(node: TopologyNode): string {
+export function structureLabel(node: TopologyNode): string {
   return humanizeObservatoryText(node.label);
 }
 
@@ -415,7 +415,7 @@ export function drawZones(
 
 // ── Edges (5 kinds) ───────────────────────────────────────────────────────────
 
-function edgeHash(id: string): number {
+export function edgeHash(id: string): number {
   let hash = 5381;
   for (let index = 0; index < id.length; index += 1) {
     hash = (((hash << 5) + hash) ^ id.charCodeAt(index)) >>> 0;
@@ -423,7 +423,7 @@ function edgeHash(id: string): number {
   return hash;
 }
 
-function nodeEdgeRadius(node: TopologyNode | undefined): number {
+export function nodeEdgeRadius(node: TopologyNode | undefined): number {
   if (!node) return 8;
   if (node.typeId === 'mimir') return LAYOUT.MIMIR_RADIUS;
   if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H);
@@ -431,7 +431,7 @@ function nodeEdgeRadius(node: TopologyNode | undefined): number {
   return (NODE_SIZE[node.typeId] ?? 6) + 3;
 }
 
-function trimToNodeBoundary(
+export function trimToNodeBoundary(
   node: TopologyNode | undefined,
   from: NodePosition,
   toward: NodePosition,
@@ -462,7 +462,7 @@ function trimToNodeBoundary(
   };
 }
 
-function parentChain(
+export function parentChain(
   node: TopologyNode | undefined,
   nodeById: Map<string, TopologyNode>,
 ): TopologyNode[] {
@@ -477,7 +477,7 @@ function parentChain(
   return chain;
 }
 
-function sharedAncestor(
+export function sharedAncestor(
   srcNode: TopologyNode | undefined,
   dstNode: TopologyNode | undefined,
   nodeById: Map<string, TopologyNode>,
@@ -490,7 +490,7 @@ function sharedAncestor(
   return parentChain(dstNode, nodeById).find((node) => srcAncestors.has(node.id));
 }
 
-function bundleWaypoint(
+export function bundleWaypoint(
   start: NodePosition,
   end: NodePosition,
   anchor: NodePosition,
@@ -502,7 +502,7 @@ function bundleWaypoint(
   };
 }
 
-function edgeProfile(kind: EdgeKind | string | undefined, now: number) {
+export function edgeProfile(kind: EdgeKind | string | undefined, now: number) {
   switch (kind) {
     case 'solid':
       return {

@@ -537,6 +537,98 @@ One manifest should name the durable set.
   ],
 ]);
 
+const reviewMemoryCampaign: ResearchCampaignDetail = {
+  ...campaign,
+  id: '11111111-1111-4111-8111-111111111119',
+  slug: 'memory-review-ready',
+  name: 'Memory review-ready branches',
+  sessionId: 'run/c8-folkvangr',
+  sessionName: 'Memory review-ready branches',
+  artifacts: [
+    {
+      path: 'research/campaigns/memory-review-ready/final.md',
+      title: 'Final synthesis',
+      updatedAt: now,
+      kind: 'final',
+      publishState: 'published',
+      sourceIds: [],
+      summary: 'Published final answer',
+    },
+    {
+      path: 'research/campaigns/memory-review-ready/manifest.md',
+      title: 'Manifest',
+      updatedAt: now,
+      kind: 'manifest',
+      publishState: 'unpublished',
+      sourceIds: [],
+      summary: 'Queued for review',
+    },
+    {
+      path: 'learnings/research/memory-review-ready.md',
+      title: 'Learnings',
+      updatedAt: now,
+      kind: 'learnings',
+      publishState: 'published',
+      sourceIds: [],
+      summary: 'Durable learnings',
+    },
+    {
+      path: 'followups/research/memory-review-ready.md',
+      title: 'Follow-ups',
+      updatedAt: now,
+      kind: 'followups',
+      publishState: 'unknown',
+      sourceIds: [],
+      summary: 'Open follow-ups',
+    },
+  ],
+  canonicalArtifacts: {
+    final: 'research/campaigns/memory-review-ready/final.md',
+    manifest: 'research/campaigns/memory-review-ready/manifest.md',
+  },
+};
+
+const reviewMemoryArtifactDetails = new Map<string, CampaignArtifactDetail>([
+  [
+    'research/campaigns/memory-review-ready/final.md',
+    {
+      ...reviewMemoryCampaign.artifacts[0]!,
+      content: `# Final synthesis
+
+Published final answer for durable memory testing.`,
+    },
+  ],
+  [
+    'research/campaigns/memory-review-ready/manifest.md',
+    {
+      ...reviewMemoryCampaign.artifacts[1]!,
+      content: `# Manifest
+
+Pending publish review.`,
+    },
+  ],
+  [
+    'learnings/research/memory-review-ready.md',
+    {
+      ...reviewMemoryCampaign.artifacts[2]!,
+      content: `# Learnings
+
+## Durable branch
+Open the learnings artifact from here.`,
+    },
+  ],
+  [
+    'followups/research/memory-review-ready.md',
+    {
+      ...reviewMemoryCampaign.artifacts[3]!,
+      content: `# Follow-ups
+
+## Next branch
+Open the follow-up artifact from here.`,
+    },
+  ],
+]);
+
 function makeResearchService(
   detail: ResearchCampaignDetail,
   artifacts: Map<string, CampaignArtifactDetail>,
@@ -633,6 +725,21 @@ const richMimirService = {
   },
 };
 
+function makeDispatcherService(activityLog: Array<Record<string, unknown>> = []): IDispatcherService {
+  const base = createMockDispatcherService();
+  return {
+    ...base,
+    async getActivityLog(limit?: number) {
+      const all = (activityLog.length > 0
+        ? activityLog
+        : await base.getActivityLog(limit)) as Awaited<
+        ReturnType<IDispatcherService['getActivityLog']>
+      >;
+      return all.slice(0, limit ?? all.length ?? 100);
+    },
+  };
+}
+
 function wrap(services: Record<string, unknown>, pluginCtx?: PluginCtx) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const ctx: PluginCtx = pluginCtx ?? { tweaks: {}, setTweak: mockSetTweak };
@@ -652,6 +759,7 @@ describe('ResearchCampaignPage', () => {
     mockNavigate.mockClear();
     mockSetTweak.mockClear();
     mockSlug = 'local-model-serving';
+    window.history.replaceState({}, '', '/');
     vi.stubGlobal('EventSource', MockEventSource);
     vi.stubGlobal(
       'confirm',
@@ -660,6 +768,8 @@ describe('ResearchCampaignPage', () => {
   });
 
   it('renders the final synthesis state and opens source drawers', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
     render(<ResearchCampaignPage />, {
       wrapper: wrap({
         'ting.research': makeResearchService(campaign, artifactDetails),
@@ -684,11 +794,45 @@ describe('ResearchCampaignPage', () => {
     expect(screen.getByText(/^arxiv\.org$/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /open external/i })).toBeInTheDocument();
 
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /\[s2\]SGLang: Efficient Execution of Structured Language Model Programs/i,
+      }),
+    );
+    await waitFor(() => expect(screen.getByText(/Source · \[s2\]/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /open external/i }));
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://example.com/sglang',
+      '_blank',
+      'noopener,noreferrer',
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /research\/campaigns\/local-model-serving\/final\.md/i,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(/research\/campaigns\/local-model-serving\/final\.md/i),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^critique\.md$/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/research\/campaigns\/local-model-serving\/critique\.md/i),
+      ).toBeInTheDocument(),
+    );
+
     fireEvent.click(screen.getAllByRole('button', { name: /open in Mímir/i })[0]!);
     expect(mockSetTweak).toHaveBeenCalledWith(
       'mimir.selectedPagePath',
       'research/campaigns/local-model-serving/final.md',
     );
+
+    openSpy.mockRestore();
   });
 
   it('renders the running challenge state and opens notebook plus critique drawers', async () => {
@@ -697,7 +841,30 @@ describe('ResearchCampaignPage', () => {
     render(<ResearchCampaignPage />, {
       wrapper: wrap({
         'ting.research': makeResearchService(runningCampaign, runningArtifactDetails),
-        'ting.dispatcher': createMockDispatcherService() as IDispatcherService,
+        'ting.dispatcher': makeDispatcherService([
+          {
+            id: 'evt-running-1',
+            event: 'workflow.campaign.updated',
+            ownerId: 'lars',
+            timestamp: now,
+            data: {
+              slug: 'homelab-running',
+              persona: 'research-skeptic',
+              summary: 'challenging throughput assumptions',
+            },
+          },
+          {
+            id: 'evt-running-2',
+            event: 'workflow.campaign.updated',
+            ownerId: 'lars',
+            timestamp: now,
+            data: {
+              session_id: runningCampaign.sessionId,
+              raven: 'publisher',
+              message: 'queued publish follow-up',
+            },
+          },
+        ]),
         mimir: mimirService,
       }),
     });
@@ -709,6 +876,9 @@ describe('ResearchCampaignPage', () => {
     );
     expect(screen.getByText(/Current stage/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open notebook/i })).toBeInTheDocument();
+    expect(screen.getAllByText(/research-skeptic/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/challenging throughput assumptions/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /2 sessions/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Open notebook/i }));
     await waitFor(() =>
@@ -721,6 +891,29 @@ describe('ResearchCampaignPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Throughput numbers are aspirational/i }));
     await waitFor(() => expect(screen.getByText(/Critique · \[c1\]/i)).toBeInTheDocument());
     expect(screen.getAllByText(/We still need measured benchmarks/i).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /research\/campaigns\/homelab-running\/critique\.md/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/research\/campaigns\/homelab-running\/critique\.md/i)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Operator ▸/i }));
+    await waitFor(() => expect(screen.getByText(/queued publish follow-up/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(screen.getByText(/Run id/i)).toBeInTheDocument());
+    expect(screen.getByText(runningCampaign.sessionId)).toBeInTheDocument();
+    expect(screen.getByText(/^2$/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Actions$/i }));
+    await waitFor(() => expect(screen.getByText(/Open final synthesis/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Open final synthesis/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/research\/campaigns\/homelab-running\/critique\.md/i),
+      ).toBeInTheDocument(),
+    );
   });
 
   it('renders the review-ready publish state and opens the manifest plus operator actions', async () => {
@@ -753,6 +946,20 @@ describe('ResearchCampaignPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Send back for revision/i }));
     await waitFor(() => expect(screen.getByText(/Open in Völundr/i)).toBeInTheDocument());
     expect(screen.getByText(/Delete campaign/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Open manifest/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/research\/campaigns\/skuld-fanout-options\/manifest\.md/i),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Operator ▸/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Actions$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Open final synthesis/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/research\/campaigns\/skuld-fanout-options\/final\.md/i)).toBeInTheDocument(),
+    );
   });
 
   it('renders the blocked state and can pivot into operator activity and actions', async () => {
@@ -836,6 +1043,35 @@ describe('ResearchCampaignPage', () => {
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/research' });
   });
 
+  it('does not delete a campaign when confirmation is cancelled', async () => {
+    const deleteCampaign = vi.fn(async () => undefined);
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => false),
+    );
+
+    render(<ResearchCampaignPage />, {
+      wrapper: wrap({
+        'ting.research': makeResearchService(campaign, artifactDetails, {
+          deleteCampaign,
+        }),
+        'ting.dispatcher': makeDispatcherService(),
+        mimir: mimirService,
+      }),
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { level: 1, name: 'Local model serving on the homelab' }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^Delete$/i }));
+
+    await waitFor(() => expect(deleteCampaign).not.toHaveBeenCalled());
+    expect(mockNavigate).not.toHaveBeenCalledWith({ to: '/ting/research' });
+  });
+
   it('supports deep-linked drawers, fallback citations, and durable learnings', async () => {
     mockSlug = 'durable-memory-proof';
     window.history.replaceState({}, '', '/?drawer=sources&n=src_feed');
@@ -864,6 +1100,16 @@ describe('ResearchCampaignPage', () => {
     );
     expect(screen.getByText(/^ops\.example\.com$/i)).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole('button', { name: /^Files 4$/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/research\/campaigns\/durable-memory-proof\/final\.md/i),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '×' }));
+    await waitFor(() => expect(screen.queryByLabelText(/Research drawer/i)).toBeNull());
+
     fireEvent.click(screen.getByRole('button', { name: /Learnings & follow-ups/i }));
     await waitFor(() => expect(screen.getByText(/Durable learnings/i)).toBeInTheDocument());
     expect(screen.getByText(/Open follow-ups/i)).toBeInTheDocument();
@@ -882,6 +1128,21 @@ describe('ResearchCampaignPage', () => {
     expect(
       screen.getAllByText(/One manifest should name the durable set\./i).length,
     ).toBeGreaterThan(1);
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Durable memory.*2 published · 0 review-ready · 1 notebook/i,
+      }),
+    );
+    fireEvent.click(screen.getByText(/Local notebook only/i));
+    fireEvent.click(
+      screen.getByText(/followups\/research\/durable-memory-proof\.md/i).closest('button')!,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(/followups\/research\/durable-memory-proof\.md/i).length,
+      ).toBeGreaterThan(0),
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /Evidence freshness is unclear/i }));
     await waitFor(() => expect(screen.getByText(/Critique · \[c1\]/i)).toBeInTheDocument());
@@ -908,5 +1169,234 @@ describe('ResearchCampaignPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Complete brief → dispatch/i }));
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/research/new' });
+  });
+
+  it('supports critique drawer row selection and operator drawer actions', async () => {
+    const deleteCampaign = vi.fn(async () => undefined);
+    const originalLocation = window.location;
+    const assign = vi.fn();
+    Object.defineProperty(window, 'location', {
+      value: { ...originalLocation, assign },
+      writable: true,
+    });
+
+    mockSlug = 'homelab-running';
+
+    render(<ResearchCampaignPage />, {
+      wrapper: wrap({
+        'ting.research': makeResearchService(runningCampaign, runningArtifactDetails, {
+          deleteCampaign,
+        }),
+        'ting.dispatcher': makeDispatcherService(),
+        mimir: mimirService,
+      }),
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { level: 1, name: 'Local model serving in progress' }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Open all in side panel →/i })[1]!);
+    await waitFor(() => expect(screen.getByText(/Critique · \[c1\]/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Sglang case is undersold/i })[1]!);
+    await waitFor(() => expect(screen.getByText(/Critique · \[c2\]/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Operator ▸/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Actions$/i }));
+    await waitFor(() => expect(screen.getByText(/Open in Völundr/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Open in Völundr/i }));
+    expect(assign).toHaveBeenCalledWith(
+      `/volundr/sessions/${encodeURIComponent(runningCampaign.sessionId)}`,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Delete campaign/i }));
+    await waitFor(() => expect(deleteCampaign).toHaveBeenCalledWith(runningCampaign.slug));
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/research' });
+
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+  });
+
+  it('handles file-based sources without external links and falls back to the final artifact for Mímir open', async () => {
+    mockSlug = 'durable-memory-proof';
+    window.history.replaceState({}, '', '/?drawer=sources&n=src_file');
+
+    render(<ResearchCampaignPage />, {
+      wrapper: wrap({
+        'ting.research': makeResearchService(richPublishedCampaign, richArtifactDetails),
+        'ting.dispatcher': createMockDispatcherService() as IDispatcherService,
+        mimir: richMimirService,
+      }),
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByText(/Cluster inventory snapshot/i).length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByRole('button', { name: /open external/i })).toBeNull();
+
+    fireEvent.click(screen.getAllByRole('button', { name: /open in Mímir/i })[1]!);
+    expect(mockSetTweak).toHaveBeenCalledWith(
+      'mimir.selectedPagePath',
+      'research/campaigns/durable-memory-proof/final.md',
+    );
+  });
+
+  it('toggles evidence and skeptic sections and opens a source from the evidence table', async () => {
+    render(<ResearchCampaignPage />, {
+      wrapper: wrap({
+        'ting.research': makeResearchService(campaign, artifactDetails),
+        'ting.dispatcher': createMockDispatcherService() as IDispatcherService,
+        mimir: mimirService,
+      }),
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1, name: 'Local model serving on the homelab' })).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Evidence/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', {
+          name: /\[s1\]Efficient Memory Management for Large Language Model Serving with PagedAttention/i,
+        }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /\[s1\]Efficient Memory Management for Large Language Model Serving with PagedAttention/i,
+      }),
+    );
+    await waitFor(() => expect(screen.getByLabelText(/Research drawer/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: '×' }));
+    await waitFor(() => expect(screen.queryByLabelText(/Research drawer/i)).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: /Skeptic's pass/i }));
+    await waitFor(() => expect(screen.queryByText(/Throughput numbers are aspirational/i)).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: /Skeptic's pass/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Throughput numbers are aspirational/i })).toBeInTheDocument(),
+    );
+  });
+
+  it('opens learnings, follow-ups, published memory, and review-ready memory cards', async () => {
+    mockSlug = 'memory-review-ready';
+
+    render(<ResearchCampaignPage />, {
+      wrapper: wrap({
+        'ting.research': makeResearchService(reviewMemoryCampaign, reviewMemoryArtifactDetails),
+        'ting.dispatcher': createMockDispatcherService() as IDispatcherService,
+        mimir: { pages: { async listSources() { return []; } } },
+      }),
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { level: 1, name: 'Memory review-ready branches' }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Learnings & follow-ups/i }));
+
+    const learningsHeading = screen.getByText(/Durable learnings/i);
+    const learningsColumn = learningsHeading.closest('.ting-research-detail__lf-column');
+    const learningsOpenButton = learningsColumn?.querySelector<HTMLButtonElement>(
+      '.ting-research-detail__lf-action',
+    );
+    expect(learningsOpenButton).not.toBeNull();
+
+    fireEvent.click(learningsOpenButton!);
+    await waitFor(() =>
+      expect(screen.getByText(/learnings\/research\/memory-review-ready\.md/i)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '×' }));
+    await waitFor(() => expect(screen.queryByLabelText(/Research drawer/i)).toBeNull());
+
+    const followupsHeading = screen.getByText(/Open follow-ups/i);
+    const followupsColumn = followupsHeading.closest('.ting-research-detail__lf-column');
+    const followupsOpenButton = followupsColumn?.querySelectorAll<HTMLButtonElement>(
+      '.ting-research-detail__lf-action',
+    )[0];
+    expect(followupsOpenButton).not.toBeNull();
+
+    fireEvent.click(followupsOpenButton!);
+    await waitFor(() =>
+      expect(screen.getByText(/followups\/research\/memory-review-ready\.md/i)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '×' }));
+    await waitFor(() => expect(screen.queryByLabelText(/Research drawer/i)).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: /Durable memory/i }));
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Final synthesisresearch\/campaigns\/memory-review-ready\/final\.md/i,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(/research\/campaigns\/memory-review-ready\/final\.md/i).length,
+      ).toBeGreaterThan(0),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '×' }));
+    await waitFor(() => expect(screen.queryByLabelText(/Research drawer/i)).toBeNull());
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Manifestresearch\/campaigns\/memory-review-ready\/manifest\.md/i,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(/research\/campaigns\/memory-review-ready\/manifest\.md/i).length,
+      ).toBeGreaterThan(0),
+    );
+  });
+
+  it('shows loading and error states for slow or failed campaign fetches', async () => {
+    const unresolvedResearch = makeResearchService(campaign, artifactDetails, {
+      async getCampaign() {
+        return new Promise<ResearchCampaignDetail | null>(() => {});
+      },
+    });
+
+    const loadingView = render(<ResearchCampaignPage />, {
+      wrapper: wrap({
+        'ting.research': unresolvedResearch,
+        'ting.dispatcher': createMockDispatcherService() as IDispatcherService,
+        mimir: mimirService,
+      }),
+    });
+
+    expect(screen.getByText(/Loading campaign…/i)).toBeInTheDocument();
+    loadingView.unmount();
+
+    const failingResearch = makeResearchService(campaign, artifactDetails, {
+      async getCampaign() {
+        throw new Error('boom');
+      },
+    });
+
+    render(<ResearchCampaignPage />, {
+      wrapper: wrap({
+        'ting.research': failingResearch,
+        'ting.dispatcher': createMockDispatcherService() as IDispatcherService,
+        mimir: mimirService,
+      }),
+    });
+
+    await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument());
   });
 });
