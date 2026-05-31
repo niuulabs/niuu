@@ -40,18 +40,18 @@ interface ToggleRowProps {
 
 function ToggleRow({ id, name, label, defaultChecked }: ToggleRowProps) {
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-py-2 niuu-border-b niuu-border-border-subtle">
+    <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:py-2 niuu:border-b niuu:border-border-subtle">
       <input
         type="checkbox"
         id={id}
         name={name}
         value="true"
         defaultChecked={defaultChecked}
-        className="niuu-accent-brand niuu-shrink-0"
+        className="niuu:accent-brand niuu:shrink-0"
       />
       <label
         htmlFor={id}
-        className="niuu-text-sm niuu-text-text-primary niuu-select-none niuu-flex-1"
+        className="niuu:text-sm niuu:text-text-primary niuu:select-none niuu:flex-1"
       >
         {label}
       </label>
@@ -96,9 +96,9 @@ export function NotificationsSection() {
 
   if (isLoading) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2" role="status">
+      <div className="niuu:flex niuu:items-center niuu:gap-2" role="status">
         <StateDot state="processing" pulse />
-        <span className="niuu-text-sm niuu-text-text-secondary">
+        <span className="niuu:text-sm niuu:text-text-secondary">
           loading notification settings…
         </span>
       </div>
@@ -107,9 +107,9 @@ export function NotificationsSection() {
 
   if (isError) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2" role="alert">
+      <div className="niuu:flex niuu:items-center niuu:gap-2" role="alert">
         <StateDot state="failed" />
-        <span className="niuu-text-sm niuu-text-critical">
+        <span className="niuu:text-sm niuu:text-critical">
           {error instanceof Error ? error.message : 'failed to load'}
         </span>
       </div>
@@ -118,17 +118,17 @@ export function NotificationsSection() {
 
   return (
     <section aria-label="Notification settings">
-      <h3 className="niuu-text-base niuu-font-semibold niuu-text-text-primary niuu-mb-1">
+      <h3 className="niuu:text-base niuu:font-semibold niuu:text-text-primary niuu:mb-1">
         Notifications
       </h3>
-      <p className="niuu-text-sm niuu-text-text-secondary niuu-mb-4">
+      <p className="niuu:text-sm niuu:text-text-secondary niuu:mb-4">
         Configure how and when Ting sends notifications for run and dispatcher events.
       </p>
 
       <form
         onSubmit={(e) => void handleSubmit(e)}
         noValidate
-        className="niuu-flex niuu-flex-col niuu-gap-4 niuu-max-w-lg"
+        className="niuu:flex niuu:flex-col niuu:gap-4 niuu:max-w-lg"
         aria-label="Notification settings form"
       >
         {errors.length > 0 && <ValidationSummary errors={errors} />}
@@ -153,8 +153,8 @@ export function NotificationsSection() {
           </Field>
         )}
 
-        <div className="niuu-border niuu-border-border niuu-rounded-md niuu-px-3 niuu-py-2">
-          <h4 className="niuu-text-sm niuu-font-semibold niuu-text-text-primary niuu-mb-2">
+        <div className="niuu:border niuu:border-border niuu:rounded-md niuu:px-3 niuu:py-2">
+          <h4 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary niuu:mb-2">
             Event triggers
           </h4>
 
@@ -190,16 +190,16 @@ export function NotificationsSection() {
           />
         </div>
 
-        <div className="niuu-flex niuu-items-center niuu-gap-3">
+        <div className="niuu:flex niuu:items-center niuu:gap-3">
           <button
             type="submit"
             disabled={isSaving}
-            className="niuu-px-4 niuu-py-2 niuu-bg-brand niuu-text-white niuu-rounded-md niuu-text-sm niuu-font-medium niuu-transition-opacity disabled:niuu-opacity-50"
+            className="niuu:px-4 niuu:py-2 niuu:bg-brand niuu:text-white niuu:rounded-md niuu:text-sm niuu:font-medium niuu:transition-opacity niuu:disabled:opacity-50"
           >
             {isSaving ? 'Saving…' : 'Save'}
           </button>
           {saved && (
-            <span className="niuu-text-sm niuu-text-accent-emerald" aria-live="polite">
+            <span className="niuu:text-sm niuu:text-accent-emerald" aria-live="polite">
               Saved
             </span>
           )}

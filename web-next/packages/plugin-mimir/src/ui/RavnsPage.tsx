@@ -34,23 +34,23 @@ interface PersonaCatalogService {
 }
 
 const STATE_PILL: Record<RavnBinding['state'], string> = {
-  active: 'niuu-bg-bg-tertiary niuu-text-brand-200',
-  idle: 'niuu-bg-bg-tertiary niuu-text-text-muted',
-  offline: 'niuu-bg-critical-bg niuu-text-critical',
+  active: 'niuu:bg-bg-tertiary niuu:text-brand-200',
+  idle: 'niuu:bg-bg-tertiary niuu:text-text-muted',
+  offline: 'niuu:bg-critical-bg niuu:text-critical',
 };
 
 const INPUT_BASE =
-  'niuu-flex-1 niuu-py-2 niuu-px-3 niuu-bg-bg-primary niuu-border niuu-border-solid niuu-border-border ' +
-  'niuu-rounded-md niuu-text-text-primary niuu-font-sans niuu-text-sm niuu-outline-none niuu-box-border ' +
-  'focus:niuu-border-brand';
+  'niuu:flex-1 niuu:py-2 niuu:px-3 niuu:bg-bg-primary niuu:border niuu:border-solid niuu:border-border ' +
+  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:outline-none niuu-box-border ' +
+  'niuu:focus:border-brand';
 
 const BTN_BASE =
-  'niuu-py-2 niuu-px-4 niuu-bg-bg-secondary niuu-border niuu-border-solid niuu-border-border ' +
-  'niuu-rounded-md niuu-text-text-primary niuu-font-sans niuu-text-sm niuu-cursor-pointer ' +
-  'disabled:niuu-opacity-50 disabled:niuu-cursor-not-allowed';
+  'niuu:py-2 niuu:px-4 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border ' +
+  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:cursor-pointer ' +
+  'niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed';
 
-const BTN_PRIMARY = `${BTN_BASE} niuu-bg-brand niuu-border-brand niuu-text-bg-primary niuu-font-medium`;
-const CHECKBOX_BASE = 'niuu-h-4 niuu-w-4 niuu-shrink-0 niuu-cursor-pointer';
+const BTN_PRIMARY = `${BTN_BASE} niuu:bg-brand niuu:border-brand niuu:text-bg-primary niuu:font-medium`;
+const CHECKBOX_BASE = 'niuu:h-4 niuu:w-4 niuu:shrink-0 niuu:cursor-pointer';
 const CHECKBOX_STYLE = {
   appearance: 'auto',
   WebkitAppearance: 'checkbox',
@@ -80,11 +80,11 @@ interface PlacementField {
 }
 
 const OBSERVATION_PILL: Record<'running' | 'idle' | 'missing' | 'degraded' | 'unknown', string> = {
-  running: 'niuu-bg-bg-tertiary niuu-text-brand-200',
-  idle: 'niuu-bg-bg-tertiary niuu-text-text-muted',
-  missing: 'niuu-bg-critical-bg niuu-text-critical',
-  degraded: 'niuu-bg-warning-bg niuu-text-warning',
-  unknown: 'niuu-bg-bg-tertiary niuu-text-text-muted',
+  running: 'niuu:bg-bg-tertiary niuu:text-brand-200',
+  idle: 'niuu:bg-bg-tertiary niuu:text-text-muted',
+  missing: 'niuu:bg-critical-bg niuu:text-critical',
+  degraded: 'niuu:bg-warning-bg niuu:text-warning',
+  unknown: 'niuu:bg-bg-tertiary niuu:text-text-muted',
 };
 
 export function normalizeDeployment(value: string): DeploymentKind | 'unknown' {
@@ -506,23 +506,23 @@ function CreateWardenForm({
 
   return (
     <form
-      className="niuu-p-4 niuu-mb-6 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-flex niuu-flex-col niuu-gap-3"
+      className="niuu:p-4 niuu:mb-6 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:flex niuu:flex-col niuu:gap-3"
       onSubmit={handleSubmit}
       aria-label="Create warden form"
     >
-      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
         <div>
-          <h3 className="niuu-m-0 niuu-text-base niuu-font-semibold niuu-text-text-primary">
+          <h3 className="niuu:m-0 niuu:text-base niuu:font-semibold niuu:text-text-primary">
             Create warden
           </h3>
-          <p className="niuu-m-0 niuu-text-sm niuu-text-text-secondary">
+          <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">
             Seed a local Ravn warden that can then be installed and started.
           </p>
         </div>
       </div>
 
-      <label className="niuu-flex niuu-flex-col niuu-gap-1">
-        <span className="niuu-text-xs niuu-text-text-muted">Name</span>
+      <label className="niuu:flex niuu:flex-col niuu:gap-1">
+        <span className="niuu:text-xs niuu:text-text-muted">Name</span>
         <input
           className={INPUT_BASE}
           value={name}
@@ -533,9 +533,9 @@ function CreateWardenForm({
         />
       </label>
 
-      <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
-        <label className="niuu-flex niuu-flex-col niuu-gap-1">
-          <span className="niuu-text-xs niuu-text-text-muted">Persona</span>
+      <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
+        <label className="niuu:flex niuu:flex-col niuu:gap-1">
+          <span className="niuu:text-xs niuu:text-text-muted">Persona</span>
           <select
             className={INPUT_BASE}
             value={selectedPersona}
@@ -550,13 +550,13 @@ function CreateWardenForm({
               </option>
             ))}
           </select>
-          <span className="niuu-text-xs niuu-text-text-secondary">
+          <span className="niuu:text-xs niuu:text-text-secondary">
             {selectedPersonaMeta?.summary ||
               'Long-lived Warden persona for curation, refresh, and dream cycles.'}
           </span>
         </label>
-        <label className="niuu-flex niuu-flex-col niuu-gap-1">
-          <span className="niuu-text-xs niuu-text-text-muted">Model</span>
+        <label className="niuu:flex niuu:flex-col niuu:gap-1">
+          <span className="niuu:text-xs niuu:text-text-muted">Model</span>
           <select
             className={INPUT_BASE}
             value={selectedModel}
@@ -574,8 +574,8 @@ function CreateWardenForm({
         </label>
       </div>
 
-      <label className="niuu-flex niuu-flex-col niuu-gap-1">
-        <span className="niuu-text-xs niuu-text-text-muted">Deployment target</span>
+      <label className="niuu:flex niuu:flex-col niuu:gap-1">
+        <span className="niuu:text-xs niuu:text-text-muted">Deployment target</span>
         <select
           className={INPUT_BASE}
           value={deployment}
@@ -590,13 +590,13 @@ function CreateWardenForm({
       </label>
 
       {(deployment === 'k8s-apply' || deployment === 'k8s-gitops') && (
-        <div className="niuu-p-3 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-md niuu-flex niuu-flex-col niuu-gap-3">
-          <div className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+        <div className="niuu:p-3 niuu:bg-bg-primary niuu:border niuu:border-border-subtle niuu:rounded-md niuu:flex niuu:flex-col niuu:gap-3">
+          <div className="niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
             Kubernetes settings
           </div>
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
-            <label className="niuu-flex niuu-flex-col niuu-gap-1">
-              <span className="niuu-text-xs niuu-text-text-muted">Namespace</span>
+          <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
+            <label className="niuu:flex niuu:flex-col niuu:gap-1">
+              <span className="niuu:text-xs niuu:text-text-muted">Namespace</span>
               <input
                 className={INPUT_BASE}
                 value={namespace}
@@ -605,8 +605,8 @@ function CreateWardenForm({
                 aria-label="Kubernetes namespace"
               />
             </label>
-            <label className="niuu-flex niuu-flex-col niuu-gap-1">
-              <span className="niuu-text-xs niuu-text-text-muted">Image</span>
+            <label className="niuu:flex niuu:flex-col niuu:gap-1">
+              <span className="niuu:text-xs niuu:text-text-muted">Image</span>
               <input
                 className={INPUT_BASE}
                 value={image}
@@ -615,8 +615,8 @@ function CreateWardenForm({
                 aria-label="Kubernetes image"
               />
             </label>
-            <label className="niuu-flex niuu-flex-col niuu-gap-1 niuu-col-span-2">
-              <span className="niuu-text-xs niuu-text-text-muted">Service account</span>
+            <label className="niuu:flex niuu:flex-col niuu:gap-1 niuu:col-span-2">
+              <span className="niuu:text-xs niuu:text-text-muted">Service account</span>
               <input
                 className={INPUT_BASE}
                 value={serviceAccountName}
@@ -627,7 +627,7 @@ function CreateWardenForm({
             </label>
           </div>
 
-          <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
+          <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary">
             <input
               type="checkbox"
               className={CHECKBOX_BASE}
@@ -640,9 +640,9 @@ function CreateWardenForm({
           </label>
 
           {deployment === 'k8s-gitops' && (
-            <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
-              <label className="niuu-flex niuu-flex-col niuu-gap-1 niuu-col-span-2">
-                <span className="niuu-text-xs niuu-text-text-muted">GitOps repo path</span>
+            <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
+              <label className="niuu:flex niuu:flex-col niuu:gap-1 niuu:col-span-2">
+                <span className="niuu:text-xs niuu:text-text-muted">GitOps repo path</span>
                 <input
                   className={INPUT_BASE}
                   value={repoPath}
@@ -652,8 +652,8 @@ function CreateWardenForm({
                   required
                 />
               </label>
-              <label className="niuu-flex niuu-flex-col niuu-gap-1">
-                <span className="niuu-text-xs niuu-text-text-muted">Manifests subdir</span>
+              <label className="niuu:flex niuu:flex-col niuu:gap-1">
+                <span className="niuu:text-xs niuu:text-text-muted">Manifests subdir</span>
                 <input
                   className={INPUT_BASE}
                   value={manifestsSubdir}
@@ -662,8 +662,8 @@ function CreateWardenForm({
                   aria-label="GitOps manifests subdir"
                 />
               </label>
-              <div className="niuu-flex niuu-flex-col niuu-gap-2 niuu-justify-end">
-                <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
+              <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:justify-end">
+                <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary">
                   <input
                     type="checkbox"
                     className={CHECKBOX_BASE}
@@ -674,7 +674,7 @@ function CreateWardenForm({
                   />
                   Auto commit
                 </label>
-                <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
+                <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary">
                   <input
                     type="checkbox"
                     className={CHECKBOX_BASE}
@@ -691,27 +691,27 @@ function CreateWardenForm({
         </div>
       )}
 
-      <div className="niuu-p-3 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-md niuu-flex niuu-flex-col niuu-gap-3">
-        <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
+      <div className="niuu:p-3 niuu:bg-bg-primary niuu:border niuu:border-border-subtle niuu:rounded-md niuu:flex niuu:flex-col niuu:gap-3">
+        <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
           <div>
-            <div className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+            <div className="niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
               Mimir mounts
             </div>
-            <div className="niuu-text-sm niuu-text-text-secondary">
+            <div className="niuu:text-sm niuu:text-text-secondary">
               Select which registered mounts this Warden can read and write.
             </div>
           </div>
-          <div className="niuu-text-xs niuu-text-text-muted">
+          <div className="niuu:text-xs niuu:text-text-muted">
             {availableMounts.length} available
           </div>
         </div>
-        <div className="niuu-grid niuu-grid-cols-[minmax(0,1fr)_minmax(0,1fr)] niuu-gap-3">
-          <div className="niuu-flex niuu-flex-col niuu-gap-2">
-            <div className="niuu-text-xs niuu-text-text-muted">Read mounts</div>
+        <div className="niuu:grid niuu:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] niuu:gap-3">
+          <div className="niuu:flex niuu:flex-col niuu:gap-2">
+            <div className="niuu:text-xs niuu:text-text-muted">Read mounts</div>
             {availableMounts.map((mount) => (
               <label
                 key={`read-${mount.name}`}
-                className="niuu-flex niuu-items-start niuu-gap-2 niuu-text-sm niuu-text-text-secondary"
+                className="niuu:flex niuu:items-start niuu:gap-2 niuu:text-sm niuu:text-text-secondary"
               >
                 <input
                   type="checkbox"
@@ -725,21 +725,21 @@ function CreateWardenForm({
                   }
                   aria-label={`Read mount ${mount.name}`}
                 />
-                <span className="niuu-flex niuu-flex-col niuu-gap-0.5">
-                  <span className="niuu-font-mono niuu-text-text-primary">{mount.name}</span>
-                  <span className="niuu-text-xs niuu-text-text-muted">
+                <span className="niuu:flex niuu:flex-col niuu:gap-0.5">
+                  <span className="niuu:font-mono niuu:text-text-primary">{mount.name}</span>
+                  <span className="niuu:text-xs niuu:text-text-muted">
                     {mount.desc || mount.host || mount.role}
                   </span>
                 </span>
               </label>
             ))}
           </div>
-          <div className="niuu-flex niuu-flex-col niuu-gap-2">
-            <div className="niuu-text-xs niuu-text-text-muted">Write mounts</div>
+          <div className="niuu:flex niuu:flex-col niuu:gap-2">
+            <div className="niuu:text-xs niuu:text-text-muted">Write mounts</div>
             {availableMounts.map((mount) => (
               <label
                 key={`write-${mount.name}`}
-                className="niuu-flex niuu-items-start niuu-gap-2 niuu-text-sm niuu-text-text-secondary"
+                className="niuu:flex niuu:items-start niuu:gap-2 niuu:text-sm niuu:text-text-secondary"
               >
                 <input
                   type="checkbox"
@@ -753,9 +753,9 @@ function CreateWardenForm({
                   }
                   aria-label={`Write mount ${mount.name}`}
                 />
-                <span className="niuu-flex niuu-flex-col niuu-gap-0.5">
-                  <span className="niuu-font-mono niuu-text-text-primary">{mount.name}</span>
-                  <span className="niuu-text-xs niuu-text-text-muted">
+                <span className="niuu:flex niuu:flex-col niuu:gap-0.5">
+                  <span className="niuu:font-mono niuu:text-text-primary">{mount.name}</span>
+                  <span className="niuu:text-xs niuu:text-text-muted">
                     {mount.desc || mount.host || mount.role}
                   </span>
                 </span>
@@ -765,13 +765,13 @@ function CreateWardenForm({
         </div>
       </div>
 
-      <div className="niuu-p-3 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-md niuu-flex niuu-flex-col niuu-gap-3">
-        <div className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+      <div className="niuu:p-3 niuu:bg-bg-primary niuu:border niuu:border-border-subtle niuu:rounded-md niuu:flex niuu:flex-col niuu:gap-3">
+        <div className="niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
           Trigger schedules
         </div>
-        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
-          <label className="niuu-flex niuu-flex-col niuu-gap-1 niuu-col-span-2">
-            <span className="niuu-text-xs niuu-text-text-muted">Dream cycle cron</span>
+        <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
+          <label className="niuu:flex niuu:flex-col niuu:gap-1 niuu:col-span-2">
+            <span className="niuu:text-xs niuu:text-text-muted">Dream cycle cron</span>
             <input
               className={INPUT_BASE}
               value={dreamCycleCronExpression}
@@ -780,8 +780,8 @@ function CreateWardenForm({
               aria-label="Dream cycle cron"
             />
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1">
-            <span className="niuu-text-xs niuu-text-text-muted">Dream cycle poll (seconds)</span>
+          <label className="niuu:flex niuu:flex-col niuu:gap-1">
+            <span className="niuu:text-xs niuu:text-text-muted">Dream cycle poll (seconds)</span>
             <input
               className={INPUT_BASE}
               type="number"
@@ -791,8 +791,8 @@ function CreateWardenForm({
               aria-label="Dream cycle poll interval"
             />
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1">
-            <span className="niuu-text-xs niuu-text-text-muted">Source trigger poll (seconds)</span>
+          <label className="niuu:flex niuu:flex-col niuu:gap-1">
+            <span className="niuu:text-xs niuu:text-text-muted">Source trigger poll (seconds)</span>
             <input
               className={INPUT_BASE}
               type="number"
@@ -802,8 +802,8 @@ function CreateWardenForm({
               aria-label="Source trigger poll interval"
             />
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1">
-            <span className="niuu-text-xs niuu-text-text-muted">Staleness cadence (hours)</span>
+          <label className="niuu:flex niuu:flex-col niuu:gap-1">
+            <span className="niuu:text-xs niuu:text-text-muted">Staleness cadence (hours)</span>
             <input
               className={INPUT_BASE}
               type="number"
@@ -816,11 +816,11 @@ function CreateWardenForm({
         </div>
       </div>
 
-      <div className="niuu-p-3 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-md niuu-flex niuu-flex-col niuu-gap-3">
-        <div className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+      <div className="niuu:p-3 niuu:bg-bg-primary niuu:border niuu:border-border-subtle niuu:rounded-md niuu:flex niuu:flex-col niuu:gap-3">
+        <div className="niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
           Console
         </div>
-        <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
+        <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary">
           <input
             type="checkbox"
             className={CHECKBOX_BASE}
@@ -831,9 +831,9 @@ function CreateWardenForm({
           />
           Enable live console gateway
         </label>
-        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
-          <label className="niuu-flex niuu-flex-col niuu-gap-1">
-            <span className="niuu-text-xs niuu-text-text-muted">Bind host</span>
+        <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
+          <label className="niuu:flex niuu:flex-col niuu:gap-1">
+            <span className="niuu:text-xs niuu:text-text-muted">Bind host</span>
             <input
               className={INPUT_BASE}
               value={consoleHost}
@@ -842,8 +842,8 @@ function CreateWardenForm({
               aria-label="Console host"
             />
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1">
-            <span className="niuu-text-xs niuu-text-text-muted">Port</span>
+          <label className="niuu:flex niuu:flex-col niuu:gap-1">
+            <span className="niuu:text-xs niuu:text-text-muted">Port</span>
             <input
               className={INPUT_BASE}
               type="number"
@@ -854,8 +854,8 @@ function CreateWardenForm({
               aria-label="Console port"
             />
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1">
-            <span className="niuu-text-xs niuu-text-text-muted">Public host</span>
+          <label className="niuu:flex niuu:flex-col niuu:gap-1">
+            <span className="niuu:text-xs niuu:text-text-muted">Public host</span>
             <input
               className={INPUT_BASE}
               value={consolePublicHost}
@@ -864,8 +864,8 @@ function CreateWardenForm({
               aria-label="Console public host"
             />
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1">
-            <span className="niuu-text-xs niuu-text-text-muted">Auth mode</span>
+          <label className="niuu:flex niuu:flex-col niuu:gap-1">
+            <span className="niuu:text-xs niuu:text-text-muted">Auth mode</span>
             <select
               className={INPUT_BASE}
               value={consoleAuthMode}
@@ -879,7 +879,7 @@ function CreateWardenForm({
         </div>
       </div>
 
-      <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
+      <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary">
         <input
           type="checkbox"
           className={CHECKBOX_BASE}
@@ -892,12 +892,12 @@ function CreateWardenForm({
       </label>
 
       {errorMessage && (
-        <div className="niuu-text-sm niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-3 niuu-py-2">
+        <div className="niuu:text-sm niuu:text-critical niuu:bg-critical-bg niuu:border niuu:border-critical-bo niuu:rounded-sm niuu:px-3 niuu:py-2">
           {errorMessage}
         </div>
       )}
 
-      <div className="niuu-flex niuu-gap-2">
+      <div className="niuu:flex niuu:gap-2">
         <button type="submit" className={BTN_PRIMARY} disabled={isCreating}>
           {isCreating ? 'creating…' : 'Create warden'}
         </button>
@@ -917,7 +917,7 @@ interface RavnCardProps {
 function RavnCard({ ravn, onClick }: RavnCardProps) {
   return (
     <article
-      className="niuu-p-4 niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-bg-bg-secondary niuu-flex niuu-flex-col niuu-gap-3 niuu-cursor-pointer niuu-transition-colors hover:niuu-border-border focus-visible:niuu-outline focus-visible:niuu-outline-2 focus-visible:niuu-outline-brand focus-visible:niuu-outline-offset-2"
+      className="niuu:p-4 niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:bg-bg-secondary niuu:flex niuu:flex-col niuu:gap-3 niuu:cursor-pointer niuu:transition-colors niuu:hover:border-border niuu:focus-visible:outline niuu:focus-visible:outline-2 niuu:focus-visible:outline-brand niuu:focus-visible:outline-offset-2"
       onClick={onClick}
       role="button"
       tabIndex={0}
@@ -927,21 +927,21 @@ function RavnCard({ ravn, onClick }: RavnCardProps) {
       data-testid="ravn-item"
       aria-label={`Warden ${ravn.ravnId}`}
     >
-      <div className="niuu-flex niuu-items-center niuu-gap-3">
+      <div className="niuu:flex niuu:items-center niuu:gap-3">
         <span
-          className="niuu-inline-flex niuu-items-center niuu-justify-center niuu-font-mono niuu-text-sm niuu-font-bold niuu-text-text-secondary niuu-bg-bg-tertiary niuu-border niuu-border-border-subtle niuu-uppercase niuu-shrink-0"
+          className="niuu:inline-flex niuu:items-center niuu:justify-center niuu:font-mono niuu:text-sm niuu:font-bold niuu:text-text-secondary niuu:bg-bg-tertiary niuu:border niuu:border-border-subtle niuu:uppercase niuu:shrink-0"
           style={{ width: 36, height: 36, borderRadius: 'var(--radius-sm)' }}
           aria-hidden
         >
           {ravn.ravnId.charAt(0)}
           {ravn.ravnId.charAt(ravn.ravnId.length - 1)}
         </span>
-        <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-flex-1 niuu-min-w-0">
-          <span className="niuu-font-mono niuu-text-sm niuu-font-semibold niuu-text-text-primary niuu-truncate">
+        <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:flex-1 niuu:min-w-0">
+          <span className="niuu:font-mono niuu:text-sm niuu:font-semibold niuu:text-text-primary niuu:truncate">
             {ravn.ravnId}
           </span>
           <span
-            className={`niuu-text-xs niuu-font-mono niuu-px-2 niuu-rounded-sm niuu-shrink-0 ${STATE_PILL[ravn.state]}`}
+            className={`niuu:text-xs niuu:font-mono niuu:px-2 niuu:rounded-sm niuu:shrink-0 ${STATE_PILL[ravn.state]}`}
             data-testid="ravn-state"
           >
             {ravn.state}
@@ -949,18 +949,18 @@ function RavnCard({ ravn, onClick }: RavnCardProps) {
         </div>
       </div>
 
-      <div className="niuu-flex niuu-gap-1">
+      <div className="niuu:flex niuu:gap-1">
         <Chip tone="muted">{ravn.role}</Chip>
       </div>
 
       <p
-        className="niuu-text-xs niuu-text-text-secondary niuu-m-0 niuu-line-clamp-2"
+        className="niuu:text-xs niuu:text-text-secondary niuu:m-0 niuu-line-clamp-2"
         data-testid="ravn-bio"
       >
         {ravn.bio}
       </p>
 
-      <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+      <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
         {ravn.mountNames.map((m) => (
           <Chip key={m} tone={m === ravn.writeMount ? 'brand' : 'muted'}>
             {m === ravn.writeMount ? `✎ ${m}` : m}
@@ -968,25 +968,25 @@ function RavnCard({ ravn, onClick }: RavnCardProps) {
         ))}
       </div>
 
-      <div className="niuu-flex niuu-items-center niuu-gap-4 niuu-pt-2 niuu-border-t niuu-border-border-subtle niuu-text-xs niuu-font-mono">
-        <span className="niuu-text-text-secondary">
-          <strong className="niuu-text-text-primary">{ravn.pagesTouched}</strong> pages touched
+      <div className="niuu:flex niuu:items-center niuu:gap-4 niuu:pt-2 niuu:border-t niuu:border-border-subtle niuu:text-xs niuu:font-mono">
+        <span className="niuu:text-text-secondary">
+          <strong className="niuu:text-text-primary">{ravn.pagesTouched}</strong> pages touched
         </span>
         {ravn.lastDream ? (
-          <span className="niuu-text-text-muted" data-testid="ravn-dream">
+          <span className="niuu:text-text-muted" data-testid="ravn-dream">
             last dream {formatTimestamp(ravn.lastDream.timestamp)}
           </span>
         ) : (
-          <span className="niuu-text-text-muted niuu-italic" data-testid="ravn-no-dream">
+          <span className="niuu:text-text-muted niuu:italic" data-testid="ravn-no-dream">
             no dream cycles yet
           </span>
         )}
       </div>
 
       {ravn.lastDream && (
-        <div className="niuu-text-xs niuu-text-text-secondary">
-          <strong className="niuu-text-text-primary">{ravn.lastDream.pagesUpdated}</strong> pages ·{' '}
-          <strong className="niuu-text-text-primary">{ravn.lastDream.entitiesCreated}</strong>{' '}
+        <div className="niuu:text-xs niuu:text-text-secondary">
+          <strong className="niuu:text-text-primary">{ravn.lastDream.pagesUpdated}</strong> pages ·{' '}
+          <strong className="niuu:text-text-primary">{ravn.lastDream.entitiesCreated}</strong>{' '}
           entities · {formatDuration(ravn.lastDream.durationMs)}
         </div>
       )}
@@ -1078,31 +1078,31 @@ function RavnProfile({
   const [activeTab, setActiveTab] = useState<'overview' | 'console' | 'logs'>('overview');
 
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-6" data-testid="ravn-profile">
+    <div className="niuu:flex niuu:flex-col niuu:gap-6" data-testid="ravn-profile">
       <button
         type="button"
-        className="niuu-self-start niuu-bg-transparent niuu-border-none niuu-text-text-muted niuu-text-sm niuu-cursor-pointer niuu-p-0 hover:niuu-text-text-secondary"
+        className="niuu:self-start niuu:bg-transparent niuu:border-none niuu:text-text-muted niuu:text-sm niuu:cursor-pointer niuu:p-0 niuu:hover:text-text-secondary"
         onClick={onBack}
         aria-label="Back to wardens list"
       >
         ← Wardens
       </button>
 
-      <div className="niuu-flex niuu-items-center niuu-gap-4 niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
+      <div className="niuu:flex niuu:items-center niuu:gap-4 niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg">
         <span
-          className="niuu-inline-flex niuu-items-center niuu-justify-center niuu-font-mono niuu-text-xl niuu-font-bold niuu-text-text-secondary niuu-bg-bg-tertiary niuu-border niuu-border-border-subtle niuu-uppercase niuu-shrink-0"
+          className="niuu:inline-flex niuu:items-center niuu:justify-center niuu:font-mono niuu:text-xl niuu:font-bold niuu:text-text-secondary niuu:bg-bg-tertiary niuu:border niuu:border-border-subtle niuu:uppercase niuu:shrink-0"
           style={{ width: 48, height: 48, borderRadius: 'var(--radius-sm)' }}
           aria-hidden
         >
           {ravn.ravnId.charAt(0)}
           {ravn.ravnId.charAt(ravn.ravnId.length - 1)}
         </span>
-        <div className="niuu-flex niuu-flex-col niuu-gap-2 niuu-flex-1">
-          <h2 className="niuu-m-0 niuu-text-xl niuu-font-mono">{warden.name}</h2>
-          <div className="niuu-flex niuu-items-center niuu-gap-2">
+        <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:flex-1">
+          <h2 className="niuu:m-0 niuu:text-xl niuu:font-mono">{warden.name}</h2>
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
             <Chip tone="muted">{ravn.role}</Chip>
             <span
-              className={`niuu-text-xs niuu-font-mono niuu-px-2 niuu-rounded-sm ${STATE_PILL[ravn.state]}`}
+              className={`niuu:text-xs niuu:font-mono niuu:px-2 niuu:rounded-sm ${STATE_PILL[ravn.state]}`}
               data-testid="ravn-state"
             >
               {ravn.state}
@@ -1113,7 +1113,7 @@ function RavnProfile({
           </div>
           {ravn.tools.length > 0 && (
             <span
-              className="niuu-text-xs niuu-font-mono niuu-text-text-muted"
+              className="niuu:text-xs niuu:font-mono niuu:text-text-muted"
               data-testid="ravn-tools"
             >
               tools: {ravn.tools.join(' · ')}
@@ -1123,7 +1123,7 @@ function RavnProfile({
       </div>
 
       <div
-        className="niuu-flex niuu-flex-nowrap niuu-items-center niuu-gap-1 niuu-overflow-x-auto niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-px-3"
+        className="niuu:flex niuu:flex-nowrap niuu:items-center niuu:gap-1 niuu:overflow-x-auto niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:px-3"
         role="tablist"
         aria-label="Warden detail tabs"
       >
@@ -1141,8 +1141,8 @@ function RavnProfile({
             aria-selected={activeTab === tabId}
             className={
               activeTab === tabId
-                ? 'niuu-flex niuu-items-center niuu-gap-2 niuu-border-b-2 niuu-border-brand niuu-px-3 niuu-py-2.5 niuu-font-mono niuu-text-[13px] niuu-font-medium niuu-text-brand'
-                : 'niuu-flex niuu-items-center niuu-gap-2 niuu-border-b-2 niuu-border-transparent niuu-px-3 niuu-py-2.5 niuu-font-mono niuu-text-[13px] niuu-text-text-muted hover:niuu-text-text-secondary'
+                ? 'niuu:flex niuu:items-center niuu:gap-2 niuu:border-b-2 niuu:border-brand niuu:px-3 niuu:py-2.5 niuu:font-mono niuu:text-[13px] niuu:font-medium niuu:text-brand'
+                : 'niuu:flex niuu:items-center niuu:gap-2 niuu:border-b-2 niuu:border-transparent niuu:px-3 niuu:py-2.5 niuu:font-mono niuu:text-[13px] niuu:text-text-muted niuu:hover:text-text-secondary'
             }
             onClick={() => setActiveTab(tabId)}
           >
@@ -1153,17 +1153,17 @@ function RavnProfile({
 
       {activeTab === 'overview' && (
         <>
-          <section className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
-            <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-mb-3">
+          <section className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg">
+            <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:mb-3">
               <div>
-                <h4 className="niuu-m-0 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                <h4 className="niuu:m-0 niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                   Lifecycle
                 </h4>
-                <p className="niuu-m-0 niuu-text-sm niuu-text-text-secondary">
+                <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">
                   {lifecycleCopy(warden.deployment)}
                 </p>
               </div>
-              <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+              <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
                 <button
                   type="button"
                   className={BTN_BASE}
@@ -1199,31 +1199,31 @@ function RavnProfile({
               </div>
             </div>
 
-            <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-text-sm">
+            <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3 niuu:text-sm">
               <div>
-                <div className="niuu-text-text-muted">deployment</div>
-                <div className="niuu-font-mono niuu-text-text-primary">
+                <div className="niuu:text-text-muted">deployment</div>
+                <div className="niuu:font-mono niuu:text-text-primary">
                   {deploymentLabel(warden.deployment)}
                 </div>
               </div>
               <div>
-                <div className="niuu-text-text-muted">persona</div>
-                <div className="niuu-font-mono niuu-text-text-primary">{warden.persona}</div>
+                <div className="niuu:text-text-muted">persona</div>
+                <div className="niuu:font-mono niuu:text-text-primary">{warden.persona}</div>
               </div>
               {deploymentEntries.length > 0 && (
-                <div className="niuu-col-span-2">
-                  <div className="niuu-text-text-muted">deployment options</div>
+                <div className="niuu:col-span-2">
+                  <div className="niuu:text-text-muted">deployment options</div>
                   <div
-                    className="niuu-mt-2 niuu-grid niuu-grid-cols-2 niuu-gap-2 niuu-text-xs"
+                    className="niuu:mt-2 niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:text-xs"
                     data-testid="warden-deployment-config"
                   >
                     {deploymentEntries.map(([key, value]) => (
                       <div
                         key={key}
-                        className="niuu-p-2 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-sm"
+                        className="niuu:p-2 niuu:bg-bg-primary niuu:border niuu:border-border-subtle niuu:rounded-sm"
                       >
-                        <div className="niuu-text-text-muted">{toTitleCase(key)}</div>
-                        <div className="niuu-font-mono niuu-text-text-primary niuu-break-all">
+                        <div className="niuu:text-text-muted">{toTitleCase(key)}</div>
+                        <div className="niuu:font-mono niuu:text-text-primary niuu:break-all">
                           {formatDeploymentValue(value)}
                         </div>
                       </div>
@@ -1234,39 +1234,39 @@ function RavnProfile({
             </div>
 
             {actionError && (
-              <div className="niuu-mt-3 niuu-text-sm niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-3 niuu-py-2">
+              <div className="niuu:mt-3 niuu:text-sm niuu:text-critical niuu:bg-critical-bg niuu:border niuu:border-critical-bo niuu:rounded-sm niuu:px-3 niuu:py-2">
                 {actionError}
               </div>
             )}
           </section>
 
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-4">
+          <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4">
             <section
-              className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-col-span-2"
+              className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:col-span-2"
               data-testid="warden-observed-placement"
             >
-              <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3 niuu-mb-3">
+              <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3 niuu:mb-3">
                 <div>
-                  <h4 className="niuu-m-0 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                  <h4 className="niuu:m-0 niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                     Observed placement
                   </h4>
                   {observation?.detail && (
-                    <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-secondary">
+                    <p className="niuu:m-0 niuu:mt-1 niuu:text-sm niuu:text-text-secondary">
                       {observation.detail}
                     </p>
                   )}
                   {!observation?.detail && !isObserving && !observationError && (
-                    <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-secondary">
+                    <p className="niuu:m-0 niuu:mt-1 niuu:text-sm niuu:text-text-secondary">
                       Live backend updates stream here over SSE while this profile is open.
                     </p>
                   )}
                 </div>
-                <div className="niuu-flex niuu-items-center niuu-gap-2">
+                <div className="niuu:flex niuu:items-center niuu:gap-2">
                   {isObserving && (
-                    <span className="niuu-text-xs niuu-text-text-muted">refreshing…</span>
+                    <span className="niuu:text-xs niuu:text-text-muted">refreshing…</span>
                   )}
                   <span
-                    className={`niuu-text-xs niuu-font-mono niuu-px-2 niuu-rounded-sm ${
+                    className={`niuu:text-xs niuu:font-mono niuu:px-2 niuu:rounded-sm ${
                       OBSERVATION_PILL[observation?.status ?? 'unknown']
                     }`}
                     data-testid="warden-observation-status"
@@ -1277,7 +1277,7 @@ function RavnProfile({
               </div>
               {observation?.source && (
                 <div
-                  className="niuu-text-xs niuu-text-text-muted niuu-mb-2"
+                  className="niuu:text-xs niuu:text-text-muted niuu:mb-2"
                   data-testid="warden-observation-source"
                 >
                   source: {observation.source}
@@ -1287,18 +1287,18 @@ function RavnProfile({
                 </div>
               )}
               {observationError && (
-                <div className="niuu-mb-3 niuu-text-sm niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-3 niuu-py-2">
+                <div className="niuu:mb-3 niuu:text-sm niuu:text-critical niuu:bg-critical-bg niuu:border niuu:border-critical-bo niuu:rounded-sm niuu:px-3 niuu:py-2">
                   {observationError}
                 </div>
               )}
-              <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2 niuu-text-xs">
+              <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:text-xs">
                 {observation?.fields?.map((field) => (
                   <div
                     key={`observed-${field.label}`}
-                    className="niuu-p-2 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-sm"
+                    className="niuu:p-2 niuu:bg-bg-primary niuu:border niuu:border-border-subtle niuu:rounded-sm"
                   >
-                    <div className="niuu-text-text-muted">{field.label}</div>
-                    <div className="niuu-font-mono niuu-text-text-primary niuu-break-all">
+                    <div className="niuu:text-text-muted">{field.label}</div>
+                    <div className="niuu:font-mono niuu:text-text-primary niuu:break-all">
                       {field.value}
                     </div>
                   </div>
@@ -1306,11 +1306,11 @@ function RavnProfile({
                 {placementFields.map((field) => (
                   <div
                     key={field.label}
-                    className="niuu-p-2 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-sm"
+                    className="niuu:p-2 niuu:bg-bg-primary niuu:border niuu:border-border-subtle niuu:rounded-sm"
                   >
-                    <div className="niuu-text-text-muted">{field.label}</div>
+                    <div className="niuu:text-text-muted">{field.label}</div>
                     <div
-                      className="niuu-font-mono niuu-text-text-primary niuu-break-all"
+                      className="niuu:font-mono niuu:text-text-primary niuu:break-all"
                       data-testid={
                         field.label.includes('label') || field.label === 'deployment resource'
                           ? 'warden-service-label'
@@ -1324,58 +1324,58 @@ function RavnProfile({
               </div>
             </section>
 
-            <section className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
-              <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+            <section className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg">
+              <h4 className="niuu:m-0 niuu:mb-3 niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                 Runtime config
               </h4>
-              <div className="niuu-flex niuu-flex-col niuu-gap-2 niuu-text-sm">
-                <div className="niuu-flex niuu-justify-between niuu-gap-3">
-                  <span className="niuu-text-text-muted">model</span>
-                  <span className="niuu-font-mono niuu-text-text-primary">
+              <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:text-sm">
+                <div className="niuu:flex niuu:justify-between niuu:gap-3">
+                  <span className="niuu:text-text-muted">model</span>
+                  <span className="niuu:font-mono niuu:text-text-primary">
                     {warden.model || 'claude-sonnet-4-6'}
                   </span>
                 </div>
-                <div className="niuu-flex niuu-justify-between niuu-gap-3">
-                  <span className="niuu-text-text-muted">dream cycle cron</span>
-                  <span className="niuu-font-mono niuu-text-text-primary">
+                <div className="niuu:flex niuu:justify-between niuu:gap-3">
+                  <span className="niuu:text-text-muted">dream cycle cron</span>
+                  <span className="niuu:font-mono niuu:text-text-primary">
                     {schedules.dreamCycleCronExpression}
                   </span>
                 </div>
-                <div className="niuu-flex niuu-justify-between niuu-gap-3">
-                  <span className="niuu-text-text-muted">source poll</span>
-                  <span className="niuu-font-mono niuu-text-text-primary">
+                <div className="niuu:flex niuu:justify-between niuu:gap-3">
+                  <span className="niuu:text-text-muted">source poll</span>
+                  <span className="niuu:font-mono niuu:text-text-primary">
                     {schedules.sourceTriggerPollIntervalSeconds}s
                   </span>
                 </div>
-                <div className="niuu-flex niuu-justify-between niuu-gap-3">
-                  <span className="niuu-text-text-muted">staleness cadence</span>
-                  <span className="niuu-font-mono niuu-text-text-primary">
+                <div className="niuu:flex niuu:justify-between niuu:gap-3">
+                  <span className="niuu:text-text-muted">staleness cadence</span>
+                  <span className="niuu:font-mono niuu:text-text-primary">
                     every {schedules.stalenessTriggerScheduleHours}h
                   </span>
                 </div>
-                <div className="niuu-flex niuu-justify-between niuu-gap-3">
-                  <span className="niuu-text-text-muted">console</span>
-                  <span className="niuu-font-mono niuu-text-text-primary">
+                <div className="niuu:flex niuu:justify-between niuu:gap-3">
+                  <span className="niuu:text-text-muted">console</span>
+                  <span className="niuu:font-mono niuu:text-text-primary">
                     {consoleConfig.enabled ? consoleAddress : 'disabled'}
                   </span>
                 </div>
-                <div className="niuu-flex niuu-justify-between niuu-gap-3">
-                  <span className="niuu-text-text-muted">auth mode</span>
-                  <span className="niuu-font-mono niuu-text-text-primary">
+                <div className="niuu:flex niuu:justify-between niuu:gap-3">
+                  <span className="niuu:text-text-muted">auth mode</span>
+                  <span className="niuu:font-mono niuu:text-text-primary">
                     {consoleConfig.authMode}
                   </span>
                 </div>
               </div>
             </section>
 
-            <section className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg">
-              <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+            <section className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg">
+              <h4 className="niuu:m-0 niuu:mb-3 niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                 Mount bindings
               </h4>
-              <div className="niuu-flex niuu-flex-col niuu-gap-3">
+              <div className="niuu:flex niuu:flex-col niuu:gap-3">
                 <div>
-                  <div className="niuu-text-xs niuu-text-text-muted niuu-mb-2">Read mounts</div>
-                  <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+                  <div className="niuu:text-xs niuu:text-text-muted niuu:mb-2">Read mounts</div>
+                  <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
                     {readMountNames.map((mount) => (
                       <Chip key={`read-${mount}`} tone="muted">
                         {mount}
@@ -1384,8 +1384,8 @@ function RavnProfile({
                   </div>
                 </div>
                 <div>
-                  <div className="niuu-text-xs niuu-text-text-muted niuu-mb-2">Write mounts</div>
-                  <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+                  <div className="niuu:text-xs niuu:text-text-muted niuu:mb-2">Write mounts</div>
+                  <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
                     {writeMountNames.map((mount) => (
                       <Chip key={`write-${mount}`} tone="brand">
                         ✎ {mount}
@@ -1397,14 +1397,14 @@ function RavnProfile({
             </section>
 
             <section
-              className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
+              className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg"
               data-testid="ravn-expertise"
             >
-              <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+              <h4 className="niuu:m-0 niuu:mb-3 niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                 Areas of expertise
               </h4>
               {ravn.expertise.length > 0 ? (
-                <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+                <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
                   {ravn.expertise.map((e) => (
                     <Chip key={e} tone="brand">
                       {e}
@@ -1412,7 +1412,7 @@ function RavnProfile({
                   ))}
                 </div>
               ) : (
-                <p className="niuu-text-sm niuu-text-text-muted niuu-italic niuu-m-0">
+                <p className="niuu:text-sm niuu:text-text-muted niuu:italic niuu:m-0">
                   no expertise defined
                 </p>
               )}
@@ -1420,13 +1420,13 @@ function RavnProfile({
 
             {ravn.lastDream ? (
               <section
-                className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
+                className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg"
                 data-testid="ravn-dream"
               >
-                <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                <h4 className="niuu:m-0 niuu:mb-3 niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                   Last dream
                 </h4>
-                <div className="niuu-flex niuu-flex-col niuu-gap-2">
+                <div className="niuu:flex niuu:flex-col niuu:gap-2">
                   {(
                     [
                       ['time', formatTimestamp(ravn.lastDream.timestamp), false],
@@ -1438,13 +1438,13 @@ function RavnProfile({
                   ).map(([label, value, bold]) => (
                     <div
                       key={label}
-                      className="niuu-flex niuu-justify-between niuu-items-baseline niuu-py-[3px] niuu-border-b niuu-border-border-subtle niuu-text-xs last:niuu-border-b-0"
+                      className="niuu:flex niuu:justify-between niuu:items-baseline niuu:py-[3px] niuu:border-b niuu:border-border-subtle niuu:text-xs niuu:last:border-b-0"
                     >
-                      <span className="niuu-text-text-muted">{label}</span>
+                      <span className="niuu:text-text-muted">{label}</span>
                       {bold ? (
-                        <strong className="niuu-text-text-primary">{value}</strong>
+                        <strong className="niuu:text-text-primary">{value}</strong>
                       ) : (
-                        <span className="niuu-font-mono niuu-text-text-secondary">{value}</span>
+                        <span className="niuu:font-mono niuu:text-text-secondary">{value}</span>
                       )}
                     </div>
                   ))}
@@ -1452,13 +1452,13 @@ function RavnProfile({
               </section>
             ) : (
               <section
-                className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
+                className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg"
                 data-testid="ravn-no-dream"
               >
-                <h4 className="niuu-m-0 niuu-mb-3 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+                <h4 className="niuu:m-0 niuu:mb-3 niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                   Last dream
                 </h4>
-                <p className="niuu-text-sm niuu-text-text-muted niuu-italic niuu-m-0">
+                <p className="niuu:text-sm niuu:text-text-muted niuu:italic niuu:m-0">
                   no dream cycles yet
                 </p>
               </section>
@@ -1469,26 +1469,26 @@ function RavnProfile({
 
       {activeTab === 'console' && (
         <section
-          className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg"
+          className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg"
           data-testid="warden-live-console"
         >
-          <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3 niuu-mb-3">
+          <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3 niuu:mb-3">
             <div>
-              <h4 className="niuu-m-0 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+              <h4 className="niuu:m-0 niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                 Live console
               </h4>
-              <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-secondary">
+              <p className="niuu:m-0 niuu:mt-1 niuu:text-sm niuu:text-text-secondary">
                 Join the Warden&apos;s own gateway in-page. This is a live operator connection to
                 the daemon, not a Völundr session.
               </p>
             </div>
             <span
-              className={`niuu-text-xs niuu-font-mono niuu-px-2 niuu-rounded-sm ${
+              className={`niuu:text-xs niuu:font-mono niuu:px-2 niuu:rounded-sm ${
                 !consoleWsUrl
-                  ? 'niuu-bg-bg-tertiary niuu-text-text-muted'
+                  ? 'niuu:bg-bg-tertiary niuu:text-text-muted'
                   : consoleChat.connected
-                    ? 'niuu-bg-bg-tertiary niuu-text-brand-200'
-                    : 'niuu-bg-bg-tertiary niuu-text-warning'
+                    ? 'niuu:bg-bg-tertiary niuu:text-brand-200'
+                    : 'niuu:bg-bg-tertiary niuu:text-warning'
               }`}
             >
               {!consoleWsUrl ? 'disabled' : consoleChat.connected ? 'connected' : 'connecting'}
@@ -1496,7 +1496,7 @@ function RavnProfile({
           </div>
 
           {consoleWsUrl ? (
-            <div className="niuu-h-[640px] niuu-overflow-hidden niuu-rounded-md niuu-border niuu-border-border-subtle">
+            <div className="niuu:h-[640px] niuu:overflow-hidden niuu:rounded-md niuu:border niuu:border-border-subtle">
               <SessionChat
                 messages={consoleChat.messages}
                 streamingContent={consoleChat.streamingContent}
@@ -1523,7 +1523,7 @@ function RavnProfile({
               />
             </div>
           ) : (
-            <p className="niuu-m-0 niuu-text-sm niuu-text-text-muted">
+            <p className="niuu:m-0 niuu:text-sm niuu:text-text-muted">
               Enable the live console gateway and assign a port to connect here.
             </p>
           )}
@@ -1531,37 +1531,37 @@ function RavnProfile({
       )}
 
       {activeTab === 'logs' && (
-        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-4">
+        <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4">
           <section
-            className="niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-col-span-2"
+            className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:col-span-2"
             data-testid="warden-daemon-log"
           >
-            <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-mb-3">
-              <h4 className="niuu-m-0 niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+            <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:mb-3">
+              <h4 className="niuu:m-0 niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                 Daemon logs
               </h4>
-              <div className="niuu-flex niuu-flex-col niuu-items-end niuu-gap-1">
+              <div className="niuu:flex niuu:flex-col niuu:items-end niuu:gap-1">
                 {warden.supervisor?.stdoutLog && (
-                  <span className="niuu-text-[11px] niuu-font-mono niuu-text-text-faint">
+                  <span className="niuu:text-[11px] niuu:font-mono niuu:text-text-faint">
                     stdout: {warden.supervisor.stdoutLog}
                   </span>
                 )}
                 {warden.supervisor?.stderrLog && (
-                  <span className="niuu-text-[11px] niuu-font-mono niuu-text-text-faint">
+                  <span className="niuu:text-[11px] niuu:font-mono niuu:text-text-faint">
                     stderr: {warden.supervisor.stderrLog}
                   </span>
                 )}
               </div>
             </div>
-            <p className="niuu-m-0 niuu-mb-3 niuu-text-sm niuu-text-text-secondary">
+            <p className="niuu:m-0 niuu:mb-3 niuu:text-sm niuu:text-text-secondary">
               One merged viewer with source filters for stdout and stderr.
             </p>
             {logsError && (
-              <div className="niuu-mb-3 niuu-text-sm niuu-text-critical niuu-bg-critical-bg niuu-border niuu-border-critical-bo niuu-rounded-sm niuu-px-3 niuu-py-2">
+              <div className="niuu:mb-3 niuu:text-sm niuu:text-critical niuu:bg-critical-bg niuu:border niuu:border-critical-bo niuu:rounded-sm niuu:px-3 niuu:py-2">
                 {logsError}
               </div>
             )}
-            <div className="niuu-h-[320px] niuu-overflow-hidden niuu-rounded-md niuu-border niuu-border-border-subtle">
+            <div className="niuu:h-[320px] niuu:overflow-hidden niuu:rounded-md niuu:border niuu:border-border-subtle">
               <StructuredLogViewer
                 logs={mergedStructuredLogs}
                 participants={[stdoutParticipant, stderrParticipant]}
@@ -1755,7 +1755,7 @@ export function RavnsPage() {
 
   if (profileWarden && selectedRavn) {
     return (
-      <div className="niuu-p-6">
+      <div className="niuu:p-6">
         <RavnProfile
           ravn={selectedRavn}
           warden={profileWarden}
@@ -1789,18 +1789,18 @@ export function RavnsPage() {
   }
 
   return (
-    <div className="niuu-p-6">
-      <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-4 niuu-mb-6">
+    <div className="niuu:p-6">
+      <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-4 niuu:mb-6">
         <div>
-          <h2 className="niuu-m-0 niuu-mb-2 niuu-text-2xl niuu-font-semibold niuu-text-text-primary">
+          <h2 className="niuu:m-0 niuu:mb-2 niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
             Wardens
           </h2>
-          <p className="niuu-m-0 niuu-text-sm niuu-text-text-secondary">
+          <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">
             Wardens are long-lived Ravn daemons that watch Mimir mounts, react to new sources, run
             scheduled dream cycles, and keep curated knowledge fresh without needing a Volundr
             session.
           </p>
-          <p className="niuu-m-0 niuu-mt-2 niuu-text-sm niuu-text-text-secondary">
+          <p className="niuu:m-0 niuu:mt-2 niuu:text-sm niuu:text-text-secondary">
             Use this control surface to choose the persona, model, schedules, console, and Mimir
             bindings for each Warden, then install it locally or onto a cluster.
           </p>
@@ -1833,25 +1833,25 @@ export function RavnsPage() {
       )}
 
       {isLoading && (
-        <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
+        <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary">
           <StateDot state="processing" pulse />
           <span>loading wardens…</span>
         </div>
       )}
 
       {isError && (
-        <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary">
+        <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary">
           <StateDot state="failed" />
           <span>{error instanceof Error ? error.message : 'wardens load failed'}</span>
         </div>
       )}
 
       {!isLoading && !isError && ravns.length === 0 && (
-        <p className="niuu-text-sm niuu-text-text-muted">No wardens found.</p>
+        <p className="niuu:text-sm niuu:text-text-muted">No wardens found.</p>
       )}
 
       {ravns.length > 0 && (
-        <div className="niuu-grid niuu-grid-cols-[repeat(auto-fill,minmax(280px,1fr))] niuu-gap-4">
+        <div className="niuu:grid niuu:grid-cols-[repeat(auto-fill,minmax(280px,1fr))] niuu:gap-4">
           {ravns.map((ravn) => (
             <RavnCard key={ravn.ravnId} ravn={ravn} onClick={() => setSelectedId(ravn.ravnId)} />
           ))}

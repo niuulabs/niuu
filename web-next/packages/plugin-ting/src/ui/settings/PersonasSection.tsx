@@ -25,11 +25,11 @@ function PersonaRow({ persona, selected, onSelect }: PersonaRowProps) {
       role="option"
       tabIndex={0}
       className={cn(
-        'niuu-w-full niuu-text-left niuu-px-3 niuu-py-2 niuu-rounded-md niuu-transition-colors niuu-cursor-pointer',
-        'niuu-flex niuu-items-center niuu-gap-3 niuu-border niuu-border-transparent',
+        'niuu:w-full niuu:text-left niuu:px-3 niuu:py-2 niuu:rounded-md niuu:transition-colors niuu:cursor-pointer',
+        'niuu:flex niuu:items-center niuu:gap-3 niuu:border niuu:border-transparent',
         selected
-          ? 'niuu-bg-bg-elevated niuu-border-border'
-          : 'hover:niuu-bg-bg-secondary niuu-text-text-primary',
+          ? 'niuu:bg-bg-elevated niuu:border-border'
+          : 'niuu:hover:bg-bg-secondary niuu:text-text-primary',
       )}
       onClick={() => onSelect(persona.name)}
       onKeyDown={handleKeyDown}
@@ -40,31 +40,31 @@ function PersonaRow({ persona, selected, onSelect }: PersonaRowProps) {
         letter={persona.name.charAt(0)}
         size={22}
       />
-      <div className="niuu-flex-1 niuu-min-w-0">
-        <span className="niuu-font-mono niuu-text-sm niuu-text-text-primary niuu-truncate niuu-block">
+      <div className="niuu:flex-1 niuu:min-w-0">
+        <span className="niuu:font-mono niuu:text-sm niuu:text-text-primary niuu:truncate niuu:block">
           {persona.name}
         </span>
         {persona.producesEvent && (
-          <span className="niuu-text-xs niuu-font-mono niuu-text-text-muted niuu-block niuu-mt-0.5 niuu-truncate">
+          <span className="niuu:text-xs niuu:font-mono niuu:text-text-muted niuu:block niuu:mt-0.5 niuu:truncate">
             produces · {persona.producesEvent}
           </span>
         )}
       </div>
       <span
-        className="niuu-text-xs niuu-px-1.5 niuu-py-0.5 niuu-rounded niuu-bg-bg-secondary niuu-text-text-secondary niuu-shrink-0"
+        className="niuu:text-xs niuu:px-1.5 niuu:py-0.5 niuu:rounded niuu:bg-bg-secondary niuu:text-text-secondary niuu:shrink-0"
         data-testid="budget-chip"
       >
         budget {persona.iterationBudget}
       </span>
       {persona.isBuiltin && (
-        <span className="niuu-text-xs niuu-text-text-muted niuu-shrink-0">builtin</span>
+        <span className="niuu:text-xs niuu:text-text-muted niuu:shrink-0">builtin</span>
       )}
       {persona.isBuiltin && persona.hasOverride && (
-        <span className="niuu-text-xs niuu-text-accent-amber niuu-shrink-0">overridden</span>
+        <span className="niuu:text-xs niuu:text-accent-amber niuu:shrink-0">overridden</span>
       )}
       <button
         type="button"
-        className="niuu-text-xs niuu-px-2 niuu-py-1 niuu-rounded-md niuu-border niuu-border-border niuu-text-text-secondary hover:niuu-bg-bg-secondary niuu-transition-colors niuu-shrink-0"
+        className="niuu:text-xs niuu:px-2 niuu:py-1 niuu:rounded-md niuu:border niuu:border-border niuu:text-text-secondary niuu:hover:bg-bg-secondary niuu:transition-colors niuu:shrink-0"
         data-testid="edit-persona"
         onClick={(e) => e.stopPropagation()}
       >
@@ -83,18 +83,18 @@ function YamlViewer({ personaName }: YamlViewerProps) {
 
   if (isLoading) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-4" role="status">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-4" role="status">
         <StateDot state="processing" pulse />
-        <span className="niuu-text-sm niuu-text-text-secondary">loading YAML…</span>
+        <span className="niuu:text-sm niuu:text-text-secondary">loading YAML…</span>
       </div>
     );
   }
 
   if (isError) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-4" role="alert">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-4" role="alert">
         <StateDot state="failed" />
-        <span className="niuu-text-sm niuu-text-critical">
+        <span className="niuu:text-sm niuu:text-critical">
           {error instanceof Error ? error.message : 'failed to load YAML'}
         </span>
       </div>
@@ -102,7 +102,7 @@ function YamlViewer({ personaName }: YamlViewerProps) {
   }
 
   return (
-    <pre className="niuu-overflow-auto niuu-p-4 niuu-m-0 niuu-text-xs niuu-font-mono niuu-text-text-primary niuu-bg-bg-secondary niuu-rounded-md niuu-leading-relaxed niuu-whitespace-pre-wrap">
+    <pre className="niuu:overflow-auto niuu:p-4 niuu:m-0 niuu:text-xs niuu:font-mono niuu:text-text-primary niuu:bg-bg-secondary niuu:rounded-md niuu:leading-relaxed niuu:whitespace-pre-wrap">
       {yaml}
     </pre>
   );
@@ -126,15 +126,15 @@ export function PersonasSection() {
 
   return (
     <section aria-label="Persona overrides">
-      <h3 className="niuu-text-base niuu-font-semibold niuu-text-text-primary niuu-mb-1">
+      <h3 className="niuu:text-base niuu:font-semibold niuu:text-text-primary niuu:mb-1">
         Persona overrides
       </h3>
-      <p className="niuu-text-sm niuu-text-text-secondary niuu-mb-4">
+      <p className="niuu:text-sm niuu:text-text-secondary niuu:mb-4">
         Workspace-level defaults applied to every workflow. Workflows can override further.
       </p>
 
       {/* Filter tabs */}
-      <div className="niuu-flex niuu-gap-1 niuu-mb-3" role="tablist" aria-label="Persona filter">
+      <div className="niuu:flex niuu:gap-1 niuu:mb-3" role="tablist" aria-label="Persona filter">
         {FILTER_TABS.map((tab) => (
           <button
             key={tab.value}
@@ -142,10 +142,10 @@ export function PersonasSection() {
             role="tab"
             aria-selected={filter === tab.value}
             className={cn(
-              'niuu-px-3 niuu-py-1 niuu-rounded-md niuu-text-sm niuu-transition-colors',
+              'niuu:px-3 niuu:py-1 niuu:rounded-md niuu:text-sm niuu:transition-colors',
               filter === tab.value
-                ? 'niuu-bg-bg-elevated niuu-text-text-primary'
-                : 'niuu-text-text-secondary hover:niuu-text-text-primary',
+                ? 'niuu:bg-bg-elevated niuu:text-text-primary'
+                : 'niuu:text-text-secondary niuu:hover:text-text-primary',
             )}
             onClick={() => {
               setFilter(tab.value);
@@ -157,25 +157,25 @@ export function PersonasSection() {
         ))}
       </div>
 
-      <div className="niuu-grid niuu-grid-cols-[240px_1fr] niuu-gap-4 niuu-min-h-[320px]">
+      <div className="niuu:grid niuu:grid-cols-[240px_1fr] niuu:gap-4 niuu:min-h-[320px]">
         {/* Persona list */}
         <div
-          className="niuu-border niuu-border-border niuu-rounded-md niuu-overflow-y-auto niuu-flex niuu-flex-col niuu-gap-0.5 niuu-p-1"
+          className="niuu:border niuu:border-border niuu:rounded-md niuu:overflow-y-auto niuu:flex niuu:flex-col niuu:gap-0.5 niuu:p-1"
           role="listbox"
           aria-label="Persona list"
           aria-multiselectable="false"
         >
           {isLoading && (
-            <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-3" role="status">
+            <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-3" role="status">
               <StateDot state="processing" pulse />
-              <span className="niuu-text-sm niuu-text-text-secondary">loading personas…</span>
+              <span className="niuu:text-sm niuu:text-text-secondary">loading personas…</span>
             </div>
           )}
 
           {isError && (
-            <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-3" role="alert">
+            <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-3" role="alert">
               <StateDot state="failed" />
-              <span className="niuu-text-sm niuu-text-critical">
+              <span className="niuu:text-sm niuu:text-critical">
                 {error instanceof Error ? error.message : 'failed to load'}
               </span>
             </div>
@@ -191,17 +191,17 @@ export function PersonasSection() {
           ))}
 
           {personas?.length === 0 && !isLoading && (
-            <p className="niuu-text-sm niuu-text-text-muted niuu-p-3">No personas found.</p>
+            <p className="niuu:text-sm niuu:text-text-muted niuu:p-3">No personas found.</p>
           )}
         </div>
 
         {/* YAML viewer */}
-        <div className="niuu-border niuu-border-border niuu-rounded-md niuu-overflow-hidden niuu-bg-bg-secondary">
+        <div className="niuu:border niuu:border-border niuu:rounded-md niuu:overflow-hidden niuu:bg-bg-secondary">
           {selected ? (
             <YamlViewer personaName={selected} />
           ) : (
-            <div className="niuu-flex niuu-items-center niuu-justify-center niuu-h-full niuu-p-6">
-              <p className="niuu-text-sm niuu-text-text-muted">
+            <div className="niuu:flex niuu:items-center niuu:justify-center niuu:h-full niuu:p-6">
+              <p className="niuu:text-sm niuu:text-text-muted">
                 Select a persona to view its YAML source.
               </p>
             </div>
@@ -210,7 +210,7 @@ export function PersonasSection() {
       </div>
 
       {personas && (
-        <p className="niuu-text-xs niuu-text-text-muted niuu-mt-2">
+        <p className="niuu:text-xs niuu:text-text-muted niuu:mt-2">
           {personas.length} persona{personas.length !== 1 ? 's' : ''}
         </p>
       )}

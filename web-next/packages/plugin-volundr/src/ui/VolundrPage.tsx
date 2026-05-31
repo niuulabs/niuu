@@ -22,22 +22,22 @@ function memPct(cluster: Cluster): number {
 function UsageBar({ value, label }: { value: number; label: string }) {
   const pct = Math.min(1, value) * 100;
   const colorClass =
-    value > 0.85 ? 'niuu-bg-critical' : value > 0.6 ? 'niuu-bg-state-warn' : 'niuu-bg-brand';
+    value > 0.85 ? 'niuu:bg-critical' : value > 0.6 ? 'niuu:bg-state-warn' : 'niuu:bg-brand';
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-1">
-      <div className="niuu-flex niuu-justify-between niuu-text-xs niuu-text-text-muted">
+    <div className="niuu:flex niuu:flex-col niuu:gap-1">
+      <div className="niuu:flex niuu:justify-between niuu:text-xs niuu:text-text-muted">
         <span>{label}</span>
         <span>{pct.toFixed(0)}%</span>
       </div>
       <div
-        className="niuu-h-1.5 niuu-rounded-full niuu-bg-bg-elevated"
+        className="niuu:h-1.5 niuu:rounded-full niuu:bg-bg-elevated"
         role="progressbar"
         aria-valuenow={Math.round(pct)}
         aria-valuemax={100}
         aria-label={label}
       >
         <div
-          className={`niuu-h-full niuu-rounded-full ${colorClass}`}
+          className={`niuu:h-full niuu:rounded-full ${colorClass}`}
           style={{ width: `${pct.toFixed(1)}%` }}
         />
       </div>
@@ -49,23 +49,23 @@ function ClusterCard({ cluster }: { cluster: Cluster }) {
   const allReady = cluster.nodes.every((n) => n.status === 'ready');
   return (
     <div
-      className="niuu-flex niuu-flex-col niuu-gap-3 niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4"
+      className="niuu:flex niuu:flex-col niuu:gap-3 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4"
       data-testid="cluster-card"
     >
-      <div className="niuu-flex niuu-items-center niuu-justify-between">
-        <span className="niuu-font-medium niuu-text-sm niuu-text-text-primary">{cluster.name}</span>
+      <div className="niuu:flex niuu:items-center niuu:justify-between">
+        <span className="niuu:font-medium niuu:text-sm niuu:text-text-primary">{cluster.name}</span>
         <span
-          className={`niuu-rounded-full niuu-px-2 niuu-py-0.5 niuu-text-xs ${allReady ? 'niuu-bg-state-ok-bg niuu-text-state-ok' : 'niuu-bg-state-warn-bg niuu-text-state-warn'}`}
+          className={`niuu:rounded-full niuu:px-2 niuu:py-0.5 niuu:text-xs ${allReady ? 'niuu:bg-state-ok-bg niuu:text-state-ok' : 'niuu:bg-state-warn-bg niuu:text-state-warn'}`}
         >
           {cluster.nodes.length} nodes
         </span>
       </div>
       <UsageBar value={cpuPct(cluster)} label="CPU" />
       <UsageBar value={memPct(cluster)} label="Mem" />
-      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-text-xs niuu-text-text-muted">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:text-xs niuu:text-text-muted">
         <span>{cluster.runningSessions} running</span>
         {cluster.queuedProvisions > 0 && (
-          <span className="niuu-text-state-warn">{cluster.queuedProvisions} queued</span>
+          <span className="niuu:text-state-warn">{cluster.queuedProvisions} queued</span>
         )}
       </div>
     </div>
@@ -119,15 +119,15 @@ export function VolundrPage() {
     domainSessions.data?.filter((s) => s.state === 'terminated' || s.state === 'failed') ?? [];
 
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-8 niuu-p-6" data-testid="volundr-overview">
+    <div className="niuu:flex niuu:flex-col niuu:gap-8 niuu:p-6" data-testid="volundr-overview">
       {/* Header */}
-      <div className="niuu-flex niuu-items-center niuu-gap-3">
+      <div className="niuu:flex niuu:items-center niuu:gap-3">
         <Rune glyph="ᚲ" size={32} />
         <div>
-          <h2 className="niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+          <h2 className="niuu:text-lg niuu:font-semibold niuu:text-text-primary">
             Völundr · session forge
           </h2>
-          <p className="niuu-text-sm niuu-text-text-muted">
+          <p className="niuu:text-sm niuu:text-text-muted">
             Provisions and manages remote dev pods.
           </p>
         </div>
@@ -167,8 +167,8 @@ export function VolundrPage() {
       </section>
 
       {/* Active sessions */}
-      <section className="niuu-flex niuu-flex-col niuu-gap-3" aria-label="Active sessions">
-        <h3 className="niuu-text-sm niuu-font-medium niuu-text-text-secondary">Active sessions</h3>
+      <section className="niuu:flex niuu:flex-col niuu:gap-3" aria-label="Active sessions">
+        <h3 className="niuu:text-sm niuu:font-medium niuu:text-text-secondary">Active sessions</h3>
         {domainSessions.isLoading && <LoadingState label="Loading sessions…" />}
         {domainSessions.isError && (
           <ErrorState
@@ -179,7 +179,7 @@ export function VolundrPage() {
           />
         )}
         {domainSessions.data && activeSessions.length === 0 && (
-          <p className="niuu-text-sm niuu-text-text-muted" data-testid="no-active-sessions">
+          <p className="niuu:text-sm niuu:text-text-muted" data-testid="no-active-sessions">
             No active sessions. Start one to get going.
           </p>
         )}
@@ -189,17 +189,17 @@ export function VolundrPage() {
       </section>
 
       {/* Cluster health grid */}
-      <section className="niuu-flex niuu-flex-col niuu-gap-3" aria-label="Cluster health">
-        <h3 className="niuu-text-sm niuu-font-medium niuu-text-text-secondary">Cluster health</h3>
+      <section className="niuu:flex niuu:flex-col niuu:gap-3" aria-label="Cluster health">
+        <h3 className="niuu:text-sm niuu:font-medium niuu:text-text-secondary">Cluster health</h3>
         {clusters.isLoading && <LoadingState label="Loading clusters…" />}
         {clusters.isError && (
           <ErrorState title="Failed to load clusters" message="Could not reach the cluster API." />
         )}
         {clusters.data && clusters.data.length === 0 && (
-          <p className="niuu-text-sm niuu-text-text-muted">No clusters registered.</p>
+          <p className="niuu:text-sm niuu:text-text-muted">No clusters registered.</p>
         )}
         {clusters.data && clusters.data.length > 0 && (
-          <div className="niuu-grid niuu-grid-cols-[repeat(auto-fill,minmax(240px,1fr))] niuu-gap-4">
+          <div className="niuu:grid niuu:grid-cols-[repeat(auto-fill,minmax(240px,1fr))] niuu:gap-4">
             {clusters.data.map((c) => (
               <ClusterCard key={c.id} cluster={c} />
             ))}
@@ -209,8 +209,8 @@ export function VolundrPage() {
 
       {/* Recent terminations */}
       {recentTerminations.length > 0 && (
-        <section className="niuu-flex niuu-flex-col niuu-gap-3" aria-label="Recent terminations">
-          <h3 className="niuu-text-sm niuu-font-medium niuu-text-text-secondary">
+        <section className="niuu:flex niuu:flex-col niuu:gap-3" aria-label="Recent terminations">
+          <h3 className="niuu:text-sm niuu:font-medium niuu:text-text-secondary">
             Recent terminations
           </h3>
           <Table<Session>
@@ -223,13 +223,13 @@ export function VolundrPage() {
 
       {/* Stats footer */}
       {stats.data && (
-        <p className="niuu-text-xs niuu-text-text-muted">
+        <p className="niuu:text-xs niuu:text-text-muted">
           Tokens today:{' '}
-          <span className="niuu-font-mono niuu-text-text-secondary">
+          <span className="niuu:font-mono niuu:text-text-secondary">
             {stats.data.tokensToday.toLocaleString()}
           </span>{' '}
           · Cost:{' '}
-          <span className="niuu-font-mono niuu-text-text-secondary">
+          <span className="niuu:font-mono niuu:text-text-secondary">
             ${stats.data.costToday.toFixed(2)}
           </span>
         </p>

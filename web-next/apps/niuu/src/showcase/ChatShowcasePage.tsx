@@ -79,7 +79,7 @@ export function ChatShowcasePage() {
   }, []);
 
   return (
-    <div className="niuu-h-screen niuu-flex niuu-flex-col" data-testid="chat-showcase">
+    <div className="niuu:h-screen niuu:flex niuu:flex-col" data-testid="chat-showcase">
       <SessionChat
         messages={messages}
         streamingContent={streamingContent}

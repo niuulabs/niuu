@@ -729,8 +729,8 @@ describe('WorkflowDetailPanel', () => {
   });
 
   it('covers exported detail-panel helpers', () => {
-    expect(issueTone('error')).toContain('niuu-text-critical');
-    expect(issueTone('warning')).toContain('niuu-text-status-amber');
+    expect(issueTone('error')).toContain('niuu:text-critical');
+    expect(issueTone('warning')).toContain('niuu:text-status-amber');
 
     expect(personaGlyph('plan')).toBe('D');
     expect(personaGlyph('build')).toBe('C');

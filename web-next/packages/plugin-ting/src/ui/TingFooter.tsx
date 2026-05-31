@@ -15,7 +15,7 @@ export function TingFooter() {
   const apiLabel = state ? 'connected' : 'connecting';
 
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-1" data-testid="ting-footer">
+    <div className="niuu:flex niuu:items-center niuu:gap-1" data-testid="ting-footer">
       <FooterChip name="api" state={apiState} value={apiLabel} />
       <FooterChipSep />
       <FooterChip

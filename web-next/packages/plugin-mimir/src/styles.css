@@ -4,7 +4,7 @@
  * Build: tsup onSuccess → postcss (postcss-import + tailwindcss + autoprefixer).
  */
 
-@import 'tailwindcss';
+@import 'tailwindcss' prefix(niuu);
 @config "../tailwind.config.ts";
 
 @import './ui/MimirPage.css';

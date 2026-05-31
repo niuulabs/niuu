@@ -207,12 +207,12 @@ describe('LiveSessionDetailPage helpers', () => {
   });
 
   it('maps chronicle event types, truncates paths, and formats repo links', async () => {
-    expect(eventTone('message')).toMatchObject({ dot: 'niuu-bg-sky-400' });
-    expect(eventTone('file')).toMatchObject({ dot: 'niuu-bg-emerald-400' });
-    expect(eventTone('git')).toMatchObject({ dot: 'niuu-bg-violet-400' });
-    expect(eventTone('terminal')).toMatchObject({ dot: 'niuu-bg-amber-400' });
-    expect(eventTone('error')).toMatchObject({ dot: 'niuu-bg-rose-400' });
-    expect(eventTone('other' as never)).toMatchObject({ dot: 'niuu-bg-text-muted' });
+    expect(eventTone('message')).toMatchObject({ dot: 'niuu:bg-sky-400' });
+    expect(eventTone('file')).toMatchObject({ dot: 'niuu:bg-emerald-400' });
+    expect(eventTone('git')).toMatchObject({ dot: 'niuu:bg-violet-400' });
+    expect(eventTone('terminal')).toMatchObject({ dot: 'niuu:bg-amber-400' });
+    expect(eventTone('error')).toMatchObject({ dot: 'niuu:bg-rose-400' });
+    expect(eventTone('other' as never)).toMatchObject({ dot: 'niuu:bg-text-muted' });
 
     expect(eventIcon('message')).toBe(MessageSquareText);
     expect(eventIcon('file')).toBe(FilePenLine);

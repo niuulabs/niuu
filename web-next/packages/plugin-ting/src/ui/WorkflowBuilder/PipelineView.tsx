@@ -32,12 +32,12 @@ const KIND_LABEL: Record<WorkflowNode['kind'], string> = {
 };
 
 const KIND_BADGE_CLASS: Record<WorkflowNode['kind'], string> = {
-  trigger: 'niuu-text-status-cyan',
-  stage: 'niuu-text-brand',
-  gate: 'niuu-text-status-amber',
-  cond: 'niuu-text-status-cyan',
-  end: 'niuu-text-status-emerald',
-  resource: 'niuu-text-text-secondary',
+  trigger: 'niuu:text-status-cyan',
+  stage: 'niuu:text-brand',
+  gate: 'niuu:text-status-amber',
+  cond: 'niuu:text-status-cyan',
+  end: 'niuu:text-status-emerald',
+  resource: 'niuu:text-text-secondary',
 };
 
 function stageSummary(node: WorkflowStageNode) {
@@ -74,7 +74,7 @@ export function PipelineView({
     return (
       <div
         data-testid="pipeline-view"
-        className="niuu-flex-1 niuu-flex niuu-items-center niuu-justify-center niuu-text-text-muted niuu-text-sm niuu-font-sans"
+        className="niuu:flex-1 niuu:flex niuu:items-center niuu:justify-center niuu:text-text-muted niuu:text-sm niuu:font-sans"
       >
         No nodes — add stages in the Graph view.
       </div>
@@ -84,17 +84,17 @@ export function PipelineView({
   return (
     <div
       data-testid="pipeline-view"
-      className="niuu-flex-1 niuu-overflow-y-auto niuu-p-6 niuu-font-sans niuu-bg-bg-primary"
+      className="niuu:flex-1 niuu:overflow-y-auto niuu:p-6 niuu:font-sans niuu:bg-bg-primary"
     >
       {layers.map((layer, layerIdx) => (
         <div key={layer.depth}>
           {/* Layer label */}
-          <div className="niuu-text-xs niuu-text-text-muted niuu-uppercase niuu-tracking-widest niuu-mb-1.5">
+          <div className="niuu:text-xs niuu:text-text-muted niuu:uppercase niuu:tracking-widest niuu:mb-1.5">
             Layer {layer.depth}
           </div>
 
           {/* Nodes in this layer */}
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-2 niuu-mb-2">
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-2 niuu:mb-2">
             {layer.nodeIds.map((id) => {
               const node = nodeById.get(id);
               if (!node) return null;
@@ -106,25 +106,25 @@ export function PipelineView({
                   data-selected={isSelected ? 'true' : undefined}
                   onClick={() => onSelectNode?.(id)}
                   className={cn(
-                    'niuu-rounded-sm niuu-px-3.5 niuu-py-2 niuu-cursor-pointer niuu-flex niuu-flex-col niuu-items-start niuu-gap-0.5 niuu-min-w-[120px] niuu-font-sans niuu-border',
+                    'niuu:rounded-sm niuu:px-3.5 niuu:py-2 niuu:cursor-pointer niuu:flex niuu:flex-col niuu:items-start niuu:gap-0.5 niuu:min-w-[120px] niuu:font-sans niuu:border',
                     isSelected
-                      ? 'niuu-bg-bg-elevated niuu-border-brand'
-                      : 'niuu-bg-bg-secondary niuu-border-border',
+                      ? 'niuu:bg-bg-elevated niuu:border-brand'
+                      : 'niuu:bg-bg-secondary niuu:border-border',
                   )}
                 >
                   <span
                     className={cn(
-                      'niuu-text-[9px] niuu-font-semibold niuu-uppercase niuu-tracking-wide',
+                      'niuu:text-[9px] niuu:font-semibold niuu:uppercase niuu:tracking-wide',
                       KIND_BADGE_CLASS[node.kind],
                     )}
                   >
                     {KIND_LABEL[node.kind]}
                   </span>
-                  <span className="niuu-text-sm niuu-text-text-primary niuu-font-medium">
+                  <span className="niuu:text-sm niuu:text-text-primary niuu:font-medium">
                     {node.label}
                   </span>
                   {node.kind === 'trigger' && (
-                    <span className="niuu-text-xs niuu-text-text-muted">
+                    <span className="niuu:text-xs niuu:text-text-muted">
                       {node.source ?? 'manual dispatch'}
                     </span>
                   )}
@@ -133,15 +133,15 @@ export function PipelineView({
                       const summary = stageSummary(node);
                       return (
                         <>
-                          <span className="niuu-text-xs niuu-text-text-muted">
+                          <span className="niuu:text-xs niuu:text-text-muted">
                             {summary.members.length} persona
                             {summary.members.length !== 1 ? 's' : ''} · {summary.members.length}{' '}
                             ravn{summary.members.length !== 1 ? 's' : ''} · {summary.mode}
                           </span>
-                          <span className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
+                          <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
                             join {summary.joinMode} · max {summary.maxConcurrent}
                           </span>
-                          <span className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
+                          <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
                             {[
                               ...new Set(
                                 summary.members
@@ -156,13 +156,13 @@ export function PipelineView({
                       );
                     })()}
                   {node.kind === 'gate' && (
-                    <span className="niuu-text-xs niuu-text-text-muted">
+                    <span className="niuu:text-xs niuu:text-text-muted">
                       {(node.mode ?? 'human_approval').replaceAll('_', ' ')} ·{' '}
                       {(node.pendingBehavior ?? 'help_needed').replaceAll('_', ' ')}
                     </span>
                   )}
                   {node.kind === 'cond' && (
-                    <span className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint niuu-max-w-[180px] niuu-truncate">
+                    <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint niuu:max-w-[180px] niuu:truncate">
                       {node.predicate || 'expr …'}
                     </span>
                   )}
@@ -173,7 +173,7 @@ export function PipelineView({
 
           {/* Connector arrow between layers */}
           {layerIdx < layers.length - 1 && (
-            <div className="niuu-ml-4 niuu-mb-2 niuu-text-border niuu-text-lg niuu-leading-none">
+            <div className="niuu:ml-4 niuu:mb-2 niuu:text-border niuu:text-lg niuu:leading-none">
               ↓
             </div>
           )}
@@ -182,17 +182,17 @@ export function PipelineView({
 
       {/* Cycle nodes (excluded from topological sort) */}
       {cycleNodes.length > 0 && (
-        <div className="niuu-mt-4">
-          <div className="niuu-text-xs niuu-text-critical niuu-uppercase niuu-tracking-widest niuu-mb-1.5">
+        <div className="niuu:mt-4">
+          <div className="niuu:text-xs niuu:text-critical niuu:uppercase niuu:tracking-widest niuu:mb-1.5">
             ⚠ Cycle nodes (excluded)
           </div>
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
             {cycleNodes.map((node) => (
               <button
                 key={node.id}
                 data-testid={`pipeline-node-${node.id}`}
                 onClick={() => onSelectNode?.(node.id)}
-                className="niuu-bg-critical-bg niuu-border niuu-border-critical niuu-rounded-sm niuu-px-3.5 niuu-py-2 niuu-cursor-pointer niuu-font-sans niuu-text-critical-fg niuu-text-sm"
+                className="niuu:bg-critical-bg niuu:border niuu:border-critical niuu:rounded-sm niuu:px-3.5 niuu:py-2 niuu:cursor-pointer niuu:font-sans niuu:text-critical-fg niuu:text-sm"
               >
                 {node.label}
               </button>

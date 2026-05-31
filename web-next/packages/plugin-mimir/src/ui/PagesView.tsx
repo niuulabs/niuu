@@ -135,27 +135,27 @@ export function PagesView() {
 
   return (
     <div
-      className="niuu-grid niuu-h-full niuu-overflow-hidden"
+      className="niuu:grid niuu:h-full niuu:overflow-hidden"
       style={{ gridTemplateColumns: `${sidebarCollapsed ? 54 : 280}px minmax(0, 1fr) 380px` }}
     >
       {/* ── File tree sidebar ──────────────────────────────────── */}
       <aside
-        className="niuu-bg-bg-secondary niuu-border-r niuu-border-border-subtle niuu-flex niuu-flex-col niuu-overflow-hidden"
+        className="niuu:bg-bg-secondary niuu:border-r niuu:border-border-subtle niuu:flex niuu:flex-col niuu:overflow-hidden"
         aria-label="page tree"
       >
         {sidebarCollapsed ? (
-          <div className="niuu-flex niuu-h-full niuu-flex-col niuu-overflow-hidden">
-            <div className="niuu-flex niuu-items-center niuu-justify-center niuu-border-b niuu-border-border-subtle niuu-py-3">
+          <div className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-hidden">
+            <div className="niuu:flex niuu:items-center niuu:justify-center niuu:border-b niuu:border-border-subtle niuu:py-3">
               <button
                 type="button"
                 onClick={() => ctx.setTweak('mimir.pagesSidebarCollapsed', false)}
-                className="niuu-font-mono niuu-text-sm niuu-text-text-muted"
+                className="niuu:font-mono niuu:text-sm niuu:text-text-muted"
                 aria-label="Expand pages sidebar"
               >
                 ›
               </button>
             </div>
-            <div className="niuu-flex-1 niuu-overflow-y-auto niuu-py-2">
+            <div className="niuu:flex-1 niuu:overflow-y-auto niuu:py-2">
               {Object.values(tree.children).map((child) => {
                 const targetPath = child.isDir ? collectLeaves(child)[0]?.path : child.path;
                 const isActive = child.isDir
@@ -168,10 +168,10 @@ export function PagesView() {
                     type="button"
                     onClick={() => handleSelectCollapsedItem(targetPath)}
                     className={[
-                      'niuu-mx-auto niuu-mb-2 niuu-flex niuu-h-8 niuu-w-8 niuu-items-center niuu-justify-center niuu-rounded-sm niuu-border niuu-font-mono niuu-text-[10px] niuu-uppercase',
+                      'niuu:mx-auto niuu:mb-2 niuu:flex niuu:h-8 niuu:w-8 niuu:items-center niuu:justify-center niuu:rounded-sm niuu:border niuu:font-mono niuu:text-[10px] niuu:uppercase',
                       isActive
-                        ? 'niuu-border-brand niuu-bg-[color-mix(in_srgb,var(--brand-300)_14%,transparent)] niuu-text-brand-200'
-                        : 'niuu-border-border-subtle niuu-text-text-secondary hover:niuu-bg-bg-tertiary',
+                        ? 'niuu:border-brand niuu:bg-[color-mix(in_srgb,var(--brand-300)_14%,transparent)] niuu:text-brand-200'
+                        : 'niuu:border-border-subtle niuu:text-text-secondary niuu:hover:bg-bg-tertiary',
                     ].join(' ')}
                     aria-label={child.isDir ? `${child.name} directory` : child.name}
                     title={child.isDir ? `${child.name}/` : child.name}
@@ -184,30 +184,30 @@ export function PagesView() {
           </div>
         ) : (
           <>
-            <div className="niuu-flex niuu-items-start niuu-justify-between niuu-px-4 niuu-py-3 niuu-border-b niuu-border-border-subtle niuu-flex-shrink-0">
-              <div className="niuu-flex niuu-flex-col niuu-gap-0.5">
-                <span className="niuu-text-xs niuu-uppercase niuu-tracking-widest niuu-text-text-muted">
+            <div className="niuu:flex niuu:items-start niuu:justify-between niuu:px-4 niuu:py-3 niuu:border-b niuu:border-border-subtle niuu:flex-shrink-0">
+              <div className="niuu:flex niuu:flex-col niuu:gap-0.5">
+                <span className="niuu:text-xs niuu:uppercase niuu:tracking-widest niuu:text-text-muted">
                   Pages
                 </span>
-                <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint">
+                <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-faint">
                   {activeMount === 'all' ? 'merged mount tree' : `${activeMount} mount tree`}
                 </span>
               </div>
-              <div className="niuu-flex niuu-items-center niuu-gap-3">
-                <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">
+              <div className="niuu:flex niuu:items-center niuu:gap-3">
+                <span className="niuu:font-mono niuu:text-xs niuu:text-text-muted">
                   {allPages.length}
                 </span>
                 <button
                   type="button"
                   onClick={() => ctx.setTweak('mimir.pagesSidebarCollapsed', true)}
-                  className="niuu-font-mono niuu-text-lg niuu-text-text-muted"
+                  className="niuu:font-mono niuu:text-lg niuu:text-text-muted"
                   aria-label="Collapse pages sidebar"
                 >
                   ‹
                 </button>
               </div>
             </div>
-            <div className="niuu-overflow-y-auto niuu-flex-1">
+            <div className="niuu:overflow-y-auto niuu:flex-1">
               {Object.values(tree.children).map((child) => (
                 <TreeNode
                   key={child.path}
@@ -224,18 +224,18 @@ export function PagesView() {
       </aside>
 
       {/* ── Page reader ────────────────────────────────────────── */}
-      <main className="niuu-overflow-hidden niuu-flex niuu-flex-col niuu-border-r niuu-border-border-subtle">
+      <main className="niuu:overflow-hidden niuu:flex niuu:flex-col niuu:border-r niuu:border-border-subtle">
         {page ? (
           <>
             {/* Reader layout toggle */}
-            <div className="niuu-flex niuu-items-center niuu-gap-1 niuu-px-6 niuu-py-2.5 niuu-border-b niuu-border-border-subtle niuu-flex-shrink-0">
+            <div className="niuu:flex niuu:items-center niuu:gap-1 niuu:px-6 niuu:py-2.5 niuu:border-b niuu:border-border-subtle niuu:flex-shrink-0">
               <button
                 type="button"
                 className={[
-                  'niuu-px-3 niuu-py-1 niuu-text-xs niuu-rounded-sm niuu-border',
+                  'niuu:px-3 niuu:py-1 niuu:text-xs niuu:rounded-sm niuu:border',
                   readerLayout === 'structured'
-                    ? 'niuu-bg-bg-tertiary niuu-text-text-primary niuu-border-border'
-                    : 'niuu-bg-transparent niuu-text-text-muted niuu-border-transparent',
+                    ? 'niuu:bg-bg-tertiary niuu:text-text-primary niuu:border-border'
+                    : 'niuu:bg-transparent niuu:text-text-muted niuu:border-transparent',
                 ].join(' ')}
                 onClick={() => setReaderLayout('structured')}
                 aria-pressed={readerLayout === 'structured'}
@@ -245,10 +245,10 @@ export function PagesView() {
               <button
                 type="button"
                 className={[
-                  'niuu-px-3 niuu-py-1 niuu-text-xs niuu-rounded-sm niuu-border',
+                  'niuu:px-3 niuu:py-1 niuu:text-xs niuu:rounded-sm niuu:border',
                   readerLayout === 'split'
-                    ? 'niuu-bg-bg-tertiary niuu-text-text-primary niuu-border-border'
-                    : 'niuu-bg-transparent niuu-text-text-muted niuu-border-transparent',
+                    ? 'niuu:bg-bg-tertiary niuu:text-text-primary niuu:border-border'
+                    : 'niuu:bg-transparent niuu:text-text-muted niuu:border-transparent',
                 ].join(' ')}
                 onClick={() => setReaderLayout('split')}
                 aria-pressed={readerLayout === 'split'}
@@ -259,9 +259,9 @@ export function PagesView() {
 
             {/* Main content area */}
             {readerLayout === 'split' ? (
-              <div className="niuu-grid niuu-grid-cols-[1.2fr_1fr] niuu-flex-1 niuu-overflow-hidden">
+              <div className="niuu:grid niuu:grid-cols-[1.2fr_1fr] niuu:flex-1 niuu:overflow-hidden">
                 {/* Left: structured zones */}
-                <div className="niuu-overflow-y-auto niuu-border-r niuu-border-border-subtle">
+                <div className="niuu:overflow-y-auto niuu:border-r niuu:border-border-subtle">
                   <PageContent
                     page={page}
                     breadcrumbs={breadcrumbs}
@@ -278,12 +278,12 @@ export function PagesView() {
                   />
                 </div>
                 {/* Right: raw sources */}
-                <div className="niuu-overflow-y-auto niuu-bg-bg-secondary">
+                <div className="niuu:overflow-y-auto niuu:bg-bg-secondary">
                   <RawSourcePane sources={pageSources} onNavigate={handleNavigate} />
                 </div>
               </div>
             ) : (
-              <div className="niuu-overflow-y-auto niuu-flex-1">
+              <div className="niuu:overflow-y-auto niuu:flex-1">
                 <PageContent
                   page={page}
                   breadcrumbs={breadcrumbs}
@@ -302,7 +302,7 @@ export function PagesView() {
             )}
           </>
         ) : (
-          <div className="niuu-flex niuu-items-center niuu-justify-center niuu-h-full niuu-text-sm niuu-text-text-muted">
+          <div className="niuu:flex niuu:items-center niuu:justify-center niuu:h-full niuu:text-sm niuu:text-text-muted">
             Select a page from the tree
           </div>
         )}
@@ -357,30 +357,30 @@ function PageContent({
   onCite,
 }: PageContentProps) {
   return (
-    <div className="niuu-p-6">
+    <div className="niuu:p-6">
       {/* breadcrumbs */}
       <div
-        className="niuu-flex niuu-items-center niuu-gap-1 niuu-font-mono niuu-text-xs niuu-text-text-muted niuu-mb-3"
+        className="niuu:flex niuu:items-center niuu:gap-1 niuu:font-mono niuu:text-xs niuu:text-text-muted niuu:mb-3"
         aria-label="breadcrumb"
       >
         {breadcrumbs.slice(0, -1).map((part, i) => (
           <Fragment key={i}>
             <span>{part}</span>
-            <span className="niuu-text-border">/</span>
+            <span className="niuu:text-border">/</span>
           </Fragment>
         ))}
-        <span className="niuu-text-brand-300">{breadcrumbs[breadcrumbs.length - 1]}</span>
+        <span className="niuu:text-brand-300">{breadcrumbs[breadcrumbs.length - 1]}</span>
       </div>
 
-      <h1 className="niuu-text-3xl niuu-font-semibold niuu-text-text-primary niuu-m-0 niuu-mb-2 niuu-tracking-tight">
+      <h1 className="niuu:text-3xl niuu:font-semibold niuu:text-text-primary niuu:m-0 niuu:mb-2 niuu:tracking-tight">
         {page.title}
       </h1>
-      <p className="niuu-text-base niuu-leading-relaxed niuu-text-text-secondary niuu-m-0 niuu-mb-4">
+      <p className="niuu:text-base niuu:leading-relaxed niuu:text-text-secondary niuu:m-0 niuu:mb-4">
         {page.summary}
       </p>
 
       {/* action bar — matches web2 layout: actions first, then chips */}
-      <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-mb-4 niuu-flex-wrap">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:mb-4 niuu:flex-wrap">
         <button
           type="button"
           className="mm-btn"
@@ -401,10 +401,10 @@ function PageContent({
         >
           Promote confidence
         </button>
-        <div className="niuu-flex-1" />
+        <div className="niuu:flex-1" />
         <button
           type="button"
-          className="mm-btn niuu-font-mono"
+          className="mm-btn niuu:font-mono"
           onClick={onCite}
           aria-label="cite page"
         >
@@ -442,7 +442,7 @@ function PageContent({
       ))}
 
       {(!page.zones || page.zones.length === 0) && (
-        <p className="niuu-text-sm niuu-text-text-muted niuu-italic">
+        <p className="niuu:text-sm niuu:text-text-muted niuu:italic">
           No zones — page will be populated on the next dream cycle.
         </p>
       )}

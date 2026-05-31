@@ -201,9 +201,9 @@ type RepoCatalogService = {
   getBranches(repoUrl: string): Promise<string[]>;
 };
 const SECONDARY_BUTTON_CLASS =
-  'niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-primary hover:niuu-border-brand hover:niuu-bg-bg-tertiary';
+  'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-primary niuu:hover:border-brand niuu:hover:bg-bg-tertiary';
 const MUTED_BUTTON_CLASS =
-  'niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-primary hover:niuu-border-brand hover:niuu-bg-bg-tertiary';
+  'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-primary niuu:hover:border-brand niuu:hover:bg-bg-tertiary';
 
 function WizardSelect({
   options,
@@ -224,7 +224,7 @@ function WizardSelect({
       onChange={(event) => onChange(event.target.value)}
       data-testid={testId}
       aria-label={placeholder}
-      className="niuu-form-control niuu-w-full niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary outline-none focus:niuu-border-brand"
+      className="niuu-form-control niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary outline-none niuu:focus:border-brand"
     >
       {options.map((option) => (
         <option key={option.value} value={option.value}>
@@ -586,29 +586,29 @@ export function hasPresetBackedRuntime(form: WizardForm): boolean {
 export function StepIndicator({ current, steps }: { current: WizardStep; steps: WizardStep[] }) {
   const idx = steps.indexOf(current);
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-py-4" data-testid="step-indicator">
+    <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:py-4" data-testid="step-indicator">
       {steps.map((step, i) => (
-        <div key={step} className="niuu-flex niuu-items-center niuu-gap-2">
+        <div key={step} className="niuu:flex niuu:items-center niuu:gap-2">
           <div
-            className={`niuu-flex niuu-h-6 niuu-w-6 niuu-items-center niuu-justify-center niuu-rounded-full niuu-font-mono niuu-text-xs ${
+            className={`niuu:flex niuu:h-6 niuu:w-6 niuu:items-center niuu:justify-center niuu:rounded-full niuu:font-mono niuu:text-xs ${
               i < idx
-                ? 'niuu-bg-brand niuu-text-bg-primary'
+                ? 'niuu:bg-brand niuu:text-bg-primary'
                 : i === idx
-                  ? 'niuu-border-2 niuu-border-brand niuu-text-brand'
-                  : 'niuu-border niuu-border-border-subtle niuu-text-text-faint'
+                  ? 'niuu:border-2 niuu:border-brand niuu:text-brand'
+                  : 'niuu:border niuu:border-border-subtle niuu:text-text-faint'
             }`}
             data-testid={`step-${step}`}
           >
             {i < idx ? '\u2713' : i + 1}
           </div>
           <span
-            className={`niuu-text-xs ${i === idx ? 'niuu-text-text-primary' : 'niuu-text-text-faint'}`}
+            className={`niuu:text-xs ${i === idx ? 'niuu:text-text-primary' : 'niuu:text-text-faint'}`}
           >
             {STEP_LABELS[step]}
           </span>
           {i < steps.length - 1 && (
             <div
-              className={`niuu-h-px niuu-w-8 ${i < idx ? 'niuu-bg-brand' : 'niuu-bg-border-subtle'}`}
+              className={`niuu:h-px niuu:w-8 ${i < idx ? 'niuu:bg-brand' : 'niuu:bg-border-subtle'}`}
             />
           )}
         </div>
@@ -631,25 +631,25 @@ export function TemplateStep({
   onSelect: (id: string) => void;
 }) {
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-3" data-testid="step-template-content">
-      <h3 className="niuu-text-sm niuu-font-medium niuu-text-text-secondary">Choose a template</h3>
-      <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
+    <div className="niuu:flex niuu:flex-col niuu:gap-3" data-testid="step-template-content">
+      <h3 className="niuu:text-sm niuu:font-medium niuu:text-text-secondary">Choose a template</h3>
+      <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
         {templates.map((t) => (
           <button
             key={t.id}
-            className={`niuu-flex niuu-flex-col niuu-gap-1 niuu-rounded-lg niuu-border niuu-p-3 niuu-text-left ${
+            className={`niuu:flex niuu:flex-col niuu:gap-1 niuu:rounded-lg niuu:border niuu:p-3 niuu:text-left ${
               selectedId === t.id
-                ? 'niuu-border-brand niuu-bg-bg-tertiary'
-                : 'niuu-border-border-subtle niuu-bg-bg-secondary hover:niuu-border-brand'
+                ? 'niuu:border-brand niuu:bg-bg-tertiary'
+                : 'niuu:border-border-subtle niuu:bg-bg-secondary niuu:hover:border-brand'
             }`}
             onClick={() => onSelect(t.id)}
             data-testid="wizard-template-card"
           >
-            <span className="niuu-font-mono niuu-text-sm niuu-text-text-primary">{t.name}</span>
-            <span className="niuu-text-xs niuu-text-text-muted">
+            <span className="niuu:font-mono niuu:text-sm niuu:text-text-primary">{t.name}</span>
+            <span className="niuu:text-xs niuu:text-text-muted">
               {t.spec.image}:{t.spec.tag}
             </span>
-            <span className="niuu-font-mono niuu-text-xs niuu-text-text-faint">
+            <span className="niuu:font-mono niuu:text-xs niuu:text-text-faint">
               {t.spec.resources.cpuRequest}c · {t.spec.resources.memRequestMi}Mi
             </span>
           </button>
@@ -669,14 +669,14 @@ export function SectionCard({
   children: ReactNode;
 }) {
   return (
-    <section className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4">
-      <div className="niuu-mb-4 niuu-border-b niuu-border-border-subtle niuu-pb-3">
-        <h3 className="niuu-text-sm niuu-font-medium niuu-text-text-primary">{title}</h3>
+    <section className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
+      <div className="niuu:mb-4 niuu:border-b niuu:border-border-subtle niuu:pb-3">
+        <h3 className="niuu:text-sm niuu:font-medium niuu:text-text-primary">{title}</h3>
         {description ? (
-          <p className="niuu-mt-1 niuu-text-xs niuu-text-text-faint">{description}</p>
+          <p className="niuu:mt-1 niuu:text-xs niuu:text-text-faint">{description}</p>
         ) : null}
       </div>
-      <div className="niuu-flex niuu-flex-col niuu-gap-4">{children}</div>
+      <div className="niuu:flex niuu:flex-col niuu:gap-4">{children}</div>
     </section>
   );
 }
@@ -691,14 +691,14 @@ export function RuntimePanel({
   children: ReactNode;
 }) {
   return (
-    <div className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-4">
-      <div className="niuu-mb-3">
-        <div className="niuu-text-sm niuu-font-medium niuu-text-text-primary">{title}</div>
+    <div className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-4">
+      <div className="niuu:mb-3">
+        <div className="niuu:text-sm niuu:font-medium niuu:text-text-primary">{title}</div>
         {description ? (
-          <div className="niuu-mt-1 niuu-text-xs niuu-text-text-faint">{description}</div>
+          <div className="niuu:mt-1 niuu:text-xs niuu:text-text-faint">{description}</div>
         ) : null}
       </div>
-      <div className="niuu-flex niuu-flex-col niuu-gap-4">{children}</div>
+      <div className="niuu:flex niuu:flex-col niuu:gap-4">{children}</div>
     </div>
   );
 }
@@ -725,19 +725,19 @@ export function SourceStep({
   const currentRepo = repos.find((repo) => repo.cloneUrl === form.repo);
 
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-4" data-testid="step-source-content">
+    <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="step-source-content">
       <SectionCard
         title="Workspace source"
         description="Choose where the session should start from and attach tracker context if needed."
       >
-        <div className="niuu-flex niuu-gap-2">
+        <div className="niuu:flex niuu:gap-2">
           {(['git', 'local_mount', 'blank'] as const).map((t) => (
             <button
               key={t}
-              className={`niuu-rounded-md niuu-border niuu-px-3 niuu-py-2 niuu-text-xs ${
+              className={`niuu:rounded-md niuu:border niuu:px-3 niuu:py-2 niuu:text-xs ${
                 form.sourcetype === t
-                  ? 'niuu-border-brand niuu-bg-bg-tertiary niuu-text-text-primary'
-                  : 'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-secondary hover:niuu-border-brand'
+                  ? 'niuu:border-brand niuu:bg-bg-tertiary niuu:text-text-primary'
+                  : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-secondary niuu:hover:border-brand'
               }`}
               onClick={() => update({ sourcetype: t })}
               data-testid={`source-tab-${t}`}
@@ -747,7 +747,7 @@ export function SourceStep({
           ))}
         </div>
         {form.sourcetype === 'git' ? (
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-4">
+          <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4">
             <Field label="Repository">
               {repos.length > 0 ? (
                 <RepoSelect
@@ -812,7 +812,7 @@ export function SourceStep({
           </Field>
         ) : null}
         {form.sourcetype === 'blank' ? (
-          <p className="niuu-font-mono niuu-text-xs niuu-text-text-faint">
+          <p className="niuu:font-mono niuu:text-xs niuu:text-text-faint">
             Pod will boot with empty /workspace
           </p>
         ) : null}
@@ -823,7 +823,7 @@ export function SourceStep({
             placeholder="auto-generated from branch if blank"
           />
         </Field>
-        <div className="niuu-flex niuu-flex-col niuu-gap-2">
+        <div className="niuu:flex niuu:flex-col niuu:gap-2">
           <Field label="Tracker issue (optional)">
             <Input
               value={form.trackerQuery}
@@ -832,12 +832,12 @@ export function SourceStep({
             />
           </Field>
           {form.trackerIssue ? (
-            <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-secondary">
-              linked: <span className="niuu-font-mono">{form.trackerIssue.identifier}</span> ·{' '}
+            <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-secondary">
+              linked: <span className="niuu:font-mono">{form.trackerIssue.identifier}</span> ·{' '}
               {form.trackerIssue.title}
               <button
                 type="button"
-                className="niuu-ml-3 niuu-text-text-faint hover:niuu-text-text-primary"
+                className="niuu:ml-3 niuu:text-text-faint niuu:hover:text-text-primary"
                 onClick={() => update({ trackerIssue: null, trackerQuery: '' })}
               >
                 clear
@@ -845,18 +845,18 @@ export function SourceStep({
             </div>
           ) : null}
           {trackerLoading ? (
-            <div className="niuu-text-xs niuu-text-text-faint">searching…</div>
+            <div className="niuu:text-xs niuu:text-text-faint">searching…</div>
           ) : trackerResults.length > 0 ? (
-            <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+            <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
               {trackerResults.slice(0, 6).map((issue) => (
                 <button
                   key={issue.id}
                   type="button"
-                  className={`${SECONDARY_BUTTON_CLASS} niuu-text-left`}
+                  className={`${SECONDARY_BUTTON_CLASS} niuu:text-left`}
                   onClick={() => update({ trackerIssue: issue, trackerQuery: issue.identifier })}
                 >
-                  <div className="niuu-font-mono niuu-text-text-primary">{issue.identifier}</div>
-                  <div className="niuu-text-text-muted">{issue.title}</div>
+                  <div className="niuu:font-mono niuu:text-text-primary">{issue.identifier}</div>
+                  <div className="niuu:text-text-muted">{issue.title}</div>
                 </button>
               ))}
             </div>
@@ -1040,10 +1040,10 @@ export function RuntimeStep({
   ]);
 
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-4" data-testid="step-runtime-content">
+    <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="step-runtime-content">
       {presets.length > 0 ? (
         <SectionCard title="Preset" description="Load and save reusable forge configurations.">
-          <div className="niuu-grid niuu-grid-cols-[2fr_1fr] niuu-gap-4">
+          <div className="niuu:grid niuu:grid-cols-[2fr_1fr] niuu:gap-4">
             <Field label="Load preset">
               <WizardSelect
                 options={[
@@ -1057,7 +1057,7 @@ export function RuntimeStep({
                 onChange={(value) => onApplyPreset(value === NO_PRESET_VALUE ? '' : value)}
               />
             </Field>
-            <div className="niuu-flex niuu-items-end niuu-gap-2">
+            <div className="niuu:flex niuu:items-end niuu:gap-2">
               <Input
                 value={presetName}
                 onChange={(e) => setPresetName(e.target.value)}
@@ -1076,13 +1076,13 @@ export function RuntimeStep({
             </div>
           </div>
           {selectedPreset ? (
-            <div className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-3 niuu-text-xs niuu-text-text-faint">
+            <div className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-faint">
               loaded{' '}
-              <span className="niuu-font-mono niuu-text-text-primary">{selectedPreset.name}</span>
+              <span className="niuu:font-mono niuu:text-text-primary">{selectedPreset.name}</span>
               {selectedPreset.description ? ` · ${selectedPreset.description}` : ''}
             </div>
           ) : (
-            <div className="niuu-rounded-lg niuu-border niuu-border-dashed niuu-border-border-subtle niuu-bg-bg-primary niuu-p-3 niuu-text-xs niuu-text-text-faint">
+            <div className="niuu:rounded-lg niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-faint">
               No preset loaded. Advanced runtime values will be materialized into a preset at launch
               if needed.
             </div>
@@ -1090,19 +1090,19 @@ export function RuntimeStep({
         </SectionCard>
       ) : null}
 
-      <div className="niuu-grid niuu-grid-cols-[1.2fr_0.8fr] niuu-gap-6">
+      <div className="niuu:grid niuu:grid-cols-[1.2fr_0.8fr] niuu:gap-6">
         <SectionCard
           title="Runtime"
           description="Choose the CLI agent, model, workspace, and launch prompts."
         >
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
             {sessionDefinitions.map((def) => (
               <button
                 key={def.key}
-                className={`niuu-flex niuu-items-center niuu-gap-1.5 niuu-rounded-md niuu-border niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-primary ${
+                className={`niuu:flex niuu:items-center niuu:gap-1.5 niuu:rounded-md niuu:border niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-primary ${
                   form.definition === def.key
-                    ? 'niuu-border-brand niuu-bg-bg-tertiary'
-                    : 'niuu-border-border-subtle niuu-bg-bg-primary hover:niuu-border-brand hover:niuu-bg-bg-tertiary'
+                    ? 'niuu:border-brand niuu:bg-bg-tertiary'
+                    : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:hover:border-brand niuu:hover:bg-bg-tertiary'
                 }`}
                 onClick={() => {
                   const patch: Partial<WizardForm> = { definition: def.key };
@@ -1114,12 +1114,12 @@ export function RuntimeStep({
                 data-testid={`cli-option-${deriveCliTool(def.key)}`}
                 title={def.description || undefined}
               >
-                <span className="niuu-font-mono niuu-text-base">{getDefinitionRune(def.key)}</span>
-                <span className="niuu-font-mono">{def.displayName}</span>
+                <span className="niuu:font-mono niuu:text-base">{getDefinitionRune(def.key)}</span>
+                <span className="niuu:font-mono">{def.displayName}</span>
               </button>
             ))}
           </div>
-          <div className="niuu-grid niuu-grid-cols-1 niuu-gap-4">
+          <div className="niuu:grid niuu:grid-cols-1 niuu:gap-4">
             <Field label="Model">
               {modelOptions.length > 0 ? (
                 <WizardSelect
@@ -1190,12 +1190,12 @@ export function RuntimeStep({
               placeholder="2"
             />
             {resourceCapacities.get('cpu') ? (
-              <div className="niuu-mt-1 niuu-text-xs niuu-text-text-faint">
+              <div className="niuu:mt-1 niuu:text-xs niuu:text-text-faint">
                 available {formatResourceValue(resourceCapacities.get('cpu')!.total, 'cores')}
               </div>
             ) : null}
             {resourceErrors.cpu ? (
-              <div className="niuu-mt-1 niuu-text-xs niuu-text-danger">{resourceErrors.cpu}</div>
+              <div className="niuu:mt-1 niuu:text-xs niuu:text-danger">{resourceErrors.cpu}</div>
             ) : null}
           </Field>
           <Field label="Memory">
@@ -1205,12 +1205,12 @@ export function RuntimeStep({
               placeholder="8Gi"
             />
             {resourceCapacities.get('memory') ? (
-              <div className="niuu-mt-1 niuu-text-xs niuu-text-text-faint">
+              <div className="niuu:mt-1 niuu:text-xs niuu:text-text-faint">
                 available {formatResourceValue(resourceCapacities.get('memory')!.total, 'bytes')}
               </div>
             ) : null}
             {resourceErrors.memory ? (
-              <div className="niuu-mt-1 niuu-text-xs niuu-text-danger">{resourceErrors.memory}</div>
+              <div className="niuu:mt-1 niuu:text-xs niuu:text-danger">{resourceErrors.memory}</div>
             ) : null}
           </Field>
           <Field label="GPU">
@@ -1220,12 +1220,12 @@ export function RuntimeStep({
               placeholder="0"
             />
             {resourceCapacities.get('gpu') ? (
-              <div className="niuu-mt-1 niuu-text-xs niuu-text-text-faint">
+              <div className="niuu:mt-1 niuu:text-xs niuu:text-text-faint">
                 available {formatResourceValue(resourceCapacities.get('gpu')!.total, 'count')}
               </div>
             ) : null}
             {resourceErrors.gpu ? (
-              <div className="niuu-mt-1 niuu-text-xs niuu-text-danger">{resourceErrors.gpu}</div>
+              <div className="niuu:mt-1 niuu:text-xs niuu:text-danger">{resourceErrors.gpu}</div>
             ) : null}
           </Field>
           {/* TODO(niu-758): bring cluster selection back once the canonical forge cluster surface is finalized. */}
@@ -1236,12 +1236,12 @@ export function RuntimeStep({
         title="Access"
         description="Attach credentials and enabled integrations to the session."
       >
-        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-6">
-          <div className="niuu-flex niuu-flex-col niuu-gap-2">
-            <span className="niuu-text-sm niuu-font-medium niuu-text-text-secondary">
+        <div className="niuu:grid niuu:grid-cols-2 niuu:gap-6">
+          <div className="niuu:flex niuu:flex-col niuu:gap-2">
+            <span className="niuu:text-sm niuu:font-medium niuu:text-text-secondary">
               Credentials
             </span>
-            <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+            <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
               {credentials.map((credential) => (
                 <label
                   key={credential.name}
@@ -1267,16 +1267,16 @@ export function RuntimeStep({
                   <span className="vol-launch-wizard__access-option-box" aria-hidden="true">
                     {form.selectedCredentials.includes(credential.name) ? '✓' : ''}
                   </span>
-                  <span className="niuu-font-mono">{credential.name}</span>
+                  <span className="niuu:font-mono">{credential.name}</span>
                 </label>
               ))}
             </div>
           </div>
-          <div className="niuu-flex niuu-flex-col niuu-gap-2">
-            <span className="niuu-text-sm niuu-font-medium niuu-text-text-secondary">
+          <div className="niuu:flex niuu:flex-col niuu:gap-2">
+            <span className="niuu:text-sm niuu:font-medium niuu:text-text-secondary">
               Integrations
             </span>
-            <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+            <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
               {integrations.map((integration) => (
                 <label
                   key={integration.id}
@@ -1302,10 +1302,10 @@ export function RuntimeStep({
                   <span className="vol-launch-wizard__access-option-box" aria-hidden="true">
                     {form.selectedIntegrations.includes(integration.id) ? '✓' : ''}
                   </span>
-                  <span className="niuu-flex niuu-flex-col">
+                  <span className="niuu:flex niuu:flex-col">
                     <span>{formatIntegrationLabel(integration)}</span>
                     {formatIntegrationMeta(integration) ? (
-                      <span className="niuu-text-[11px] niuu-text-text-faint">
+                      <span className="niuu:text-[11px] niuu:text-text-faint">
                         {formatIntegrationMeta(integration)}
                       </span>
                     ) : null}
@@ -1321,10 +1321,10 @@ export function RuntimeStep({
         title="Advanced"
         description="Prompts, MCP wiring, environment variables, and setup scripts."
       >
-        <div className="niuu-flex niuu-items-center niuu-gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
           <button
             type="button"
-            className={`niuu-self-start ${SECONDARY_BUTTON_CLASS}`}
+            className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
             onClick={() => setShowAdvanced((value) => !value)}
           >
             {showAdvanced ? 'hide advanced' : 'show advanced'}
@@ -1332,7 +1332,7 @@ export function RuntimeStep({
           {showAdvanced ? (
             <button
               type="button"
-              className={`niuu-self-start ${SECONDARY_BUTTON_CLASS}`}
+              className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
               onClick={handleToggleYaml}
             >
               {form.yamlMode ? 'form view' : 'edit as yaml'}
@@ -1340,7 +1340,7 @@ export function RuntimeStep({
           ) : null}
         </div>
         {showAdvanced && form.yamlMode ? (
-          <div className="niuu-flex niuu-flex-col niuu-gap-2">
+          <div className="niuu:flex niuu:flex-col niuu:gap-2">
             <Textarea
               value={form.yamlContent}
               onChange={(e) => update({ yamlContent: e.target.value })}
@@ -1348,11 +1348,11 @@ export function RuntimeStep({
               spellCheck={false}
               placeholder="Preset YAML"
             />
-            {yamlError ? <div className="niuu-text-xs niuu-text-danger">{yamlError}</div> : null}
+            {yamlError ? <div className="niuu:text-xs niuu:text-danger">{yamlError}</div> : null}
           </div>
         ) : null}
         {showAdvanced && !form.yamlMode ? (
-          <div className="niuu-flex niuu-flex-col niuu-gap-6">
+          <div className="niuu:flex niuu:flex-col niuu:gap-6">
             <RuntimePanel
               title="System prompt"
               description="Override the default agent behavior for this run."
@@ -1369,21 +1369,21 @@ export function RuntimeStep({
               title="MCP servers"
               description="Attach preset-backed tools and custom MCP definitions."
             >
-              <div className="niuu-flex niuu-flex-col niuu-gap-2">
+              <div className="niuu:flex niuu:flex-col niuu:gap-2">
                 {form.mcpServers.length > 0 ? (
-                  <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+                  <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
                     {form.mcpServers.map((server) => (
                       <div
                         key={server.name}
-                        className="niuu-flex niuu-flex-col niuu-gap-1 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-xs"
+                        className="niuu:flex niuu:flex-col niuu:gap-1 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-xs"
                       >
-                        <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-2">
-                          <span className="niuu-font-mono niuu-text-text-primary">
+                        <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
+                          <span className="niuu:font-mono niuu:text-text-primary">
                             {server.name}
                           </span>
                           <button
                             type="button"
-                            className="niuu-text-text-faint hover:niuu-text-text-primary"
+                            className="niuu:text-text-faint niuu:hover:text-text-primary"
                             onClick={() =>
                               update({
                                 mcpServers: form.mcpServers.filter(
@@ -1395,7 +1395,7 @@ export function RuntimeStep({
                             remove
                           </button>
                         </div>
-                        <span className="niuu-text-text-faint">
+                        <span className="niuu:text-text-faint">
                           {server.type === 'stdio'
                             ? [server.command, ...(server.args ?? [])].filter(Boolean).join(' ')
                             : (server.url ?? server.type)}
@@ -1404,26 +1404,26 @@ export function RuntimeStep({
                     ))}
                   </div>
                 ) : (
-                  <div className="niuu-rounded-md niuu-border niuu-border-dashed niuu-border-border-subtle niuu-bg-bg-primary niuu-p-3 niuu-text-xs niuu-text-text-faint">
+                  <div className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-faint">
                     No MCP servers selected.
                   </div>
                 )}
                 {availablePresetServers.length > 0 ? (
-                  <div className="niuu-grid niuu-grid-cols-2 niuu-gap-2">
+                  <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
                     {availablePresetServers.map((server) => (
                       <button
                         key={server.name}
                         type="button"
-                        className={`${SECONDARY_BUTTON_CLASS} niuu-text-left`}
+                        className={`${SECONDARY_BUTTON_CLASS} niuu:text-left`}
                         onClick={() => update({ mcpServers: [...form.mcpServers, server] })}
                       >
-                        <div className="niuu-font-mono niuu-text-text-primary">{server.name}</div>
-                        <div className="niuu-text-text-faint">{server.type}</div>
+                        <div className="niuu:font-mono niuu:text-text-primary">{server.name}</div>
+                        <div className="niuu:text-text-faint">{server.type}</div>
                       </button>
                     ))}
                   </div>
                 ) : null}
-                <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+                <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
                   <button
                     type="button"
                     className={SECONDARY_BUTTON_CLASS}
@@ -1433,7 +1433,7 @@ export function RuntimeStep({
                   </button>
                 </div>
                 {showCustomMcp ? (
-                  <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-3">
+                  <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3">
                     <Field label="Name">
                       <Input
                         value={customMcpName}
@@ -1478,12 +1478,12 @@ export function RuntimeStep({
                         />
                       </Field>
                     )}
-                    <div className="niuu-col-span-2 niuu-flex niuu-flex-col niuu-gap-2">
-                      <span className="niuu-text-xs niuu-text-text-faint">Custom environment</span>
+                    <div className="niuu:col-span-2 niuu:flex niuu:flex-col niuu:gap-2">
+                      <span className="niuu:text-xs niuu:text-text-faint">Custom environment</span>
                       {Object.entries(customMcpEnv).map(([key, value]) => (
                         <div
                           key={key}
-                          className="niuu-grid niuu-grid-cols-[1fr_1fr_auto] niuu-gap-2"
+                          className="niuu:grid niuu:grid-cols-[1fr_1fr_auto] niuu:gap-2"
                         >
                           <Input value={key} readOnly />
                           <Input value={value} readOnly />
@@ -1500,7 +1500,7 @@ export function RuntimeStep({
                           </button>
                         </div>
                       ))}
-                      <div className="niuu-grid niuu-grid-cols-[1fr_1fr_auto] niuu-gap-2">
+                      <div className="niuu:grid niuu:grid-cols-[1fr_1fr_auto] niuu:gap-2">
                         <Input
                           value={customMcpEnvKey}
                           onChange={(e) => setCustomMcpEnvKey(e.target.value)}
@@ -1527,7 +1527,7 @@ export function RuntimeStep({
                           add
                         </button>
                       </div>
-                      <div className="niuu-flex niuu-gap-2">
+                      <div className="niuu:flex niuu:gap-2">
                         <button
                           type="button"
                           className={MUTED_BUTTON_CLASS}
@@ -1555,21 +1555,21 @@ export function RuntimeStep({
               </div>
             </RuntimePanel>
 
-            <div className="niuu-grid niuu-grid-cols-2 niuu-gap-6">
+            <div className="niuu:grid niuu:grid-cols-2 niuu:gap-6">
               <RuntimePanel
                 title="Environment variables"
                 description="Inline env overrides for the launched session."
               >
                 {form.envVars.length === 0 ? (
-                  <div className="niuu-rounded-md niuu-border niuu-border-dashed niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-3 niuu-text-xs niuu-text-text-faint">
+                  <div className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3 niuu:text-xs niuu:text-text-faint">
                     No environment variables yet. Add one below.
                   </div>
                 ) : null}
-                <div className="niuu-flex niuu-flex-col niuu-gap-2">
+                <div className="niuu:flex niuu:flex-col niuu:gap-2">
                   {form.envVars.map((entry, index) => (
                     <div
                       key={`${entry.key}-${index}`}
-                      className="niuu-grid niuu-grid-cols-[1fr_1fr_auto] niuu-gap-2"
+                      className="niuu:grid niuu:grid-cols-[1fr_1fr_auto] niuu:gap-2"
                     >
                       <Input
                         value={entry.key}
@@ -1609,7 +1609,7 @@ export function RuntimeStep({
                 </div>
                 <button
                   type="button"
-                  className={`niuu-self-start ${SECONDARY_BUTTON_CLASS}`}
+                  className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
                   onClick={() => update({ envVars: [...form.envVars, { key: '', value: '' }] })}
                 >
                   add env var
@@ -1620,15 +1620,15 @@ export function RuntimeStep({
                 description="Commands to run before the first prompt hits the pod."
               >
                 {form.setupScripts.length === 0 ? (
-                  <div className="niuu-rounded-md niuu-border niuu-border-dashed niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-3 niuu-text-xs niuu-text-text-faint">
+                  <div className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3 niuu:text-xs niuu:text-text-faint">
                     No setup scripts yet. Add one below.
                   </div>
                 ) : null}
-                <div className="niuu-flex niuu-flex-col niuu-gap-2">
+                <div className="niuu:flex niuu:flex-col niuu:gap-2">
                   {form.setupScripts.map((script, index) => (
                     <div
                       key={`${index}-${script}`}
-                      className="niuu-grid niuu-grid-cols-[1fr_auto] niuu-gap-2"
+                      className="niuu:grid niuu:grid-cols-[1fr_auto] niuu:gap-2"
                     >
                       <Input
                         value={script}
@@ -1659,7 +1659,7 @@ export function RuntimeStep({
                 </div>
                 <button
                   type="button"
-                  className={`niuu-self-start ${SECONDARY_BUTTON_CLASS}`}
+                  className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
                   onClick={() => update({ setupScripts: [...form.setupScripts, ''] })}
                 >
                   add script
@@ -1703,12 +1703,12 @@ export function ConfirmStep({
     return integration ? formatIntegrationLabel(integration) : id;
   });
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-4" data-testid="step-confirm-content">
+    <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="step-confirm-content">
       <SectionCard
         title="Launch summary"
         description="Final review before Forge provisions the session."
       >
-        <div className="niuu-flex niuu-flex-col niuu-divide-y niuu-divide-border-subtle">
+        <div className="niuu:flex niuu:flex-col niuu:divide-y niuu:divide-border-subtle">
           <ConfirmRow label="session" value={deriveSessionName(form, tpl)} />
           <ConfirmRow label="template" value={tpl?.name ?? form.templateId} />
           <ConfirmRow label="forge" value={targetLabel} />
@@ -1740,7 +1740,7 @@ export function ConfirmStep({
         </div>
       </SectionCard>
 
-      <div className="niuu-grid niuu-grid-cols-2 niuu-gap-4">
+      <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4">
         <SectionCard
           title="Attached access"
           description="Secrets and integrations that will be available immediately."
@@ -1779,17 +1779,17 @@ export function ConfirmStep({
             emptyLabel="No setup scripts"
           />
           {form.systemPrompt.trim() || form.initialPrompt.trim() ? (
-            <div className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-3">
-              <div className="niuu-text-xs niuu-text-text-faint">Prompt overrides</div>
+            <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3">
+              <div className="niuu:text-xs niuu:text-text-faint">Prompt overrides</div>
               {form.systemPrompt.trim() ? (
-                <div className="niuu-mt-2 niuu-text-xs niuu-text-text-secondary">
-                  <span className="niuu-font-mono niuu-text-text-primary">system</span> ·{' '}
+                <div className="niuu:mt-2 niuu:text-xs niuu:text-text-secondary">
+                  <span className="niuu:font-mono niuu:text-text-primary">system</span> ·{' '}
                   {form.systemPrompt}
                 </div>
               ) : null}
               {form.initialPrompt.trim() ? (
-                <div className="niuu-mt-2 niuu-text-xs niuu-text-text-secondary">
-                  <span className="niuu-font-mono niuu-text-text-primary">initial</span> ·{' '}
+                <div className="niuu:mt-2 niuu:text-xs niuu:text-text-secondary">
+                  <span className="niuu:font-mono niuu:text-text-primary">initial</span> ·{' '}
                   {form.initialPrompt}
                 </div>
               ) : null}
@@ -1803,9 +1803,9 @@ export function ConfirmStep({
 
 export function ConfirmRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-4 niuu-py-2" data-testid="confirm-row">
-      <span className="niuu-w-24 niuu-font-mono niuu-text-xs niuu-text-text-faint">{label}</span>
-      <span className="niuu-font-mono niuu-text-sm niuu-text-text-primary">{value}</span>
+    <div className="niuu:flex niuu:items-center niuu:gap-4 niuu:py-2" data-testid="confirm-row">
+      <span className="niuu:w-24 niuu:font-mono niuu:text-xs niuu:text-text-faint">{label}</span>
+      <span className="niuu:font-mono niuu:text-sm niuu:text-text-primary">{value}</span>
     </div>
   );
 }
@@ -1820,21 +1820,21 @@ export function ConfirmChipList({
   emptyLabel: string;
 }) {
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-2">
-      <div className="niuu-text-xs niuu-text-text-faint">{title}</div>
+    <div className="niuu:flex niuu:flex-col niuu:gap-2">
+      <div className="niuu:text-xs niuu:text-text-faint">{title}</div>
       {items.length > 0 ? (
-        <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+        <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
           {items.map((item) => (
             <span
               key={item}
-              className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-2.5 niuu-py-1 niuu-font-mono niuu-text-xs niuu-text-text-secondary"
+              className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-2.5 niuu:py-1 niuu:font-mono niuu:text-xs niuu:text-text-secondary"
             >
               {item}
             </span>
           ))}
         </div>
       ) : (
-        <div className="niuu-text-xs niuu-text-text-faint">{emptyLabel}</div>
+        <div className="niuu:text-xs niuu:text-text-faint">{emptyLabel}</div>
       )}
     </div>
   );
@@ -1847,11 +1847,11 @@ export function ConfirmChipList({
 export function BootingStep({ bootStep, progress }: { bootStep: number; progress: number }) {
   return (
     <div
-      className="niuu-flex niuu-flex-col niuu-items-center niuu-gap-6 niuu-py-4"
+      className="niuu:flex niuu:flex-col niuu:items-center niuu:gap-6 niuu:py-4"
       data-testid="step-booting-content"
     >
       {/* Anvil SVG */}
-      <svg viewBox="0 0 200 80" className="niuu-h-20 niuu-w-48" aria-hidden>
+      <svg viewBox="0 0 200 80" className="niuu:h-20 niuu:w-48" aria-hidden>
         <rect x="70" y="48" width="60" height="10" rx="1" fill="var(--brand-500)" />
         <rect
           x="80"
@@ -1887,34 +1887,34 @@ export function BootingStep({ bootStep, progress }: { bootStep: number; progress
       </svg>
       {/* Progress bar */}
       <div
-        className="niuu-w-full niuu-h-1.5 niuu-rounded-full niuu-bg-bg-elevated"
+        className="niuu:w-full niuu:h-1.5 niuu:rounded-full niuu:bg-bg-elevated"
         role="progressbar"
         aria-valuenow={Math.round(progress * 100)}
         aria-valuemax={100}
       >
         <div
-          className="niuu-h-full niuu-rounded-full niuu-bg-brand niuu-transition-all"
+          className="niuu:h-full niuu:rounded-full niuu:bg-brand niuu:transition-all"
           style={{ width: `${(progress * 100).toFixed(0)}%` }}
         />
       </div>
       {/* Step list */}
-      <div className="niuu-flex niuu-flex-col niuu-gap-2 niuu-w-full">
+      <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:w-full">
         {BOOT_STEPS.map((step, i) => (
           <div
             key={step.id}
-            className={`niuu-flex niuu-items-center niuu-gap-2 niuu-text-xs ${
+            className={`niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs ${
               i < bootStep
-                ? 'niuu-text-text-muted'
+                ? 'niuu:text-text-muted'
                 : i === bootStep
-                  ? 'niuu-text-brand'
-                  : 'niuu-text-text-faint'
+                  ? 'niuu:text-brand'
+                  : 'niuu:text-text-faint'
             }`}
             data-testid="boot-step"
           >
-            <span className="niuu-w-4 niuu-text-center niuu-font-mono">
+            <span className="niuu:w-4 niuu:text-center niuu:font-mono">
               {i < bootStep ? '\u2713' : i === bootStep ? '\u2026' : '\u25CB'}
             </span>
-            <span className="niuu-font-mono">{step.label}</span>
+            <span className="niuu:font-mono">{step.label}</span>
           </div>
         ))}
       </div>
@@ -2373,7 +2373,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         className="vol-launch-wizard"
         data-testid="launch-wizard"
       >
-        <div className="niuu-flex niuu-flex-col niuu-gap-4 vol-launch-wizard__body">
+        <div className="niuu:flex niuu:flex-col niuu:gap-4 vol-launch-wizard__body">
           {/* Step indicator */}
           {step !== 'booting' && <StepIndicator current={step} steps={STEPS} />}
 
@@ -2434,7 +2434,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
           {step === 'booting' && <BootingStep bootStep={bootStep} progress={bootProgress} />}
           {launchError ? (
             <div
-              className="niuu-rounded niuu-border niuu-border-danger niuu-bg-bg-secondary niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-danger"
+              className="niuu:rounded niuu:border niuu:border-danger niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-danger"
               data-testid="wizard-error"
             >
               {launchError}
@@ -2442,10 +2442,10 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
           ) : null}
 
           {/* Footer */}
-          <div className="niuu-flex niuu-items-center niuu-justify-between niuu-pt-4 niuu-border-t niuu-border-border-subtle">
+          <div className="niuu:flex niuu:items-center niuu:justify-between niuu:pt-4 niuu:border-t niuu:border-border-subtle">
             {canGoBack ? (
               <button
-                className="niuu-rounded niuu-px-4 niuu-py-2 niuu-text-sm niuu-text-text-secondary hover:niuu-text-text-primary"
+                className="niuu:rounded niuu:px-4 niuu:py-2 niuu:text-sm niuu:text-text-secondary niuu:hover:text-text-primary"
                 onClick={handleBack}
                 data-testid="wizard-back"
               >
@@ -2456,7 +2456,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
             )}
             {step === 'booting' ? (
               <button
-                className="niuu-py-1 niuu-px-3 niuu-bg-brand niuu-text-bg-primary niuu-border niuu-border-brand niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs disabled:niuu-opacity-50"
+                className="niuu:py-1 niuu:px-3 niuu:bg-brand niuu:text-bg-primary niuu:border niuu:border-brand niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs niuu:disabled:opacity-50"
                 disabled={bootProgress < 1 || !createdSessionId || launching}
                 onClick={() => {
                   if (!createdSessionId) return;
@@ -2474,7 +2474,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
               </button>
             ) : (
               <button
-                className="niuu-py-1 niuu-px-3 niuu-bg-brand niuu-text-bg-primary niuu-border niuu-border-brand niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs disabled:niuu-opacity-50"
+                className="niuu:py-1 niuu:px-3 niuu:bg-brand niuu:text-bg-primary niuu:border niuu:border-brand niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs niuu:disabled:opacity-50"
                 onClick={handleNext}
                 disabled={isLastStep && !canLaunch}
                 data-testid="wizard-next"

@@ -522,7 +522,7 @@ describe('GraphView', () => {
 
     rerender(<GraphView {...idleProps} />);
     const idleStageGroup = screen.getByTestId('workflow-node-stage-1');
-    const outputPorts = idleStageGroup.querySelectorAll('circle.niuu-cursor-pointer');
+    const outputPorts = idleStageGroup.querySelectorAll('circle.niuu\\:cursor-pointer');
     expect(outputPorts).toHaveLength(2);
 
     fireEvent.click(outputPorts[1]!);

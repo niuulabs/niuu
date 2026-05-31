@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import 'tailwindcss' prefix(niuu);
 @config "../tailwind.config.ts";
 
 .niuu-volundr-terminal-root .xterm {

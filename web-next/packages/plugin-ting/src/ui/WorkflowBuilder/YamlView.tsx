@@ -18,10 +18,10 @@ export function YamlView({ workflow }: YamlViewProps) {
   const yaml = workflowToYaml(workflow);
 
   return (
-    <div data-testid="yaml-view" className="niuu-flex-1 niuu-overflow-auto niuu-bg-bg-primary">
+    <div data-testid="yaml-view" className="niuu:flex-1 niuu:overflow-auto niuu:bg-bg-primary">
       <pre
         data-testid="yaml-content"
-        className="niuu-m-0 niuu-p-6 niuu-font-mono niuu-text-xs niuu-leading-relaxed niuu-text-text-secondary niuu-whitespace-pre"
+        className="niuu:m-0 niuu:p-6 niuu:font-mono niuu:text-xs niuu:leading-relaxed niuu:text-text-secondary niuu:whitespace-pre"
       >
         {yaml}
       </pre>

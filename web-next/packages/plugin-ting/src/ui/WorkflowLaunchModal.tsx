@@ -106,32 +106,32 @@ export function WorkflowLaunchModal({
         },
       ]}
     >
-      <div className="niuu-mt-4 niuu-flex niuu-flex-col niuu-gap-4">
-        <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-          <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">Prompt</span>
+      <div className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-4">
+        <label className="niuu:flex niuu:flex-col niuu:gap-1.5">
+          <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">Prompt</span>
           <textarea
             value={current.prompt}
             onChange={(event) => updateDraft({ prompt: event.target.value })}
             rows={6}
             placeholder="Describe what this workflow should do."
-            className="niuu-min-h-[132px] niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+            className="niuu:min-h-[132px] niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
           />
         </label>
 
-        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
-          <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-            <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">
+        <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
+          <label className="niuu:flex niuu:flex-col niuu:gap-1.5">
+            <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">
               Session name
             </span>
             <input
               value={current.sessionName}
               onChange={(event) => updateDraft({ sessionName: event.target.value })}
               placeholder="Optional override"
-              className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
             />
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-            <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">Repo</span>
+          <label className="niuu:flex niuu:flex-col niuu:gap-1.5">
+            <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">Repo</span>
             {repos.length > 0 ? (
               <RepoSelect
                 repos={repos}
@@ -149,12 +149,12 @@ export function WorkflowLaunchModal({
                 value={current.repo}
                 onChange={(event) => updateDraft({ repo: event.target.value })}
                 placeholder="Optional repo or org/repo"
-                className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
               />
             )}
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-            <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">Branch</span>
+          <label className="niuu:flex niuu:flex-col niuu:gap-1.5">
+            <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">Branch</span>
             {current.repo && repos.length > 0 ? (
               <BranchSelect
                 repos={repos}
@@ -169,14 +169,14 @@ export function WorkflowLaunchModal({
                 value={current.branch}
                 onChange={(event) => updateDraft({ branch: event.target.value })}
                 placeholder="Optional branch"
-                className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
               />
             )}
           </label>
         </div>
 
         {current.error ? (
-          <p className="niuu-m-0 niuu-text-sm niuu-text-critical" role="alert">
+          <p className="niuu:m-0 niuu:text-sm niuu:text-critical" role="alert">
             {current.error}
           </p>
         ) : null}

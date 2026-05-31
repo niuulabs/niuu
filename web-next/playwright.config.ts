@@ -35,7 +35,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'pnpm --filter @niuulabs/niuu dev',
+    // The app consumes package dist CSS artifacts in workspace mode, so build
+    // package outputs before starting Vite to keep E2E styles in sync with source.
+    command: 'pnpm dev:playwright',
     url: 'http://localhost:5173',
     reuseExistingServer: !process.env.CI,
   },

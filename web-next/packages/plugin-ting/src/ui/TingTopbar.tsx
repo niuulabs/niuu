@@ -7,7 +7,7 @@ function DispatcherStats() {
 
   if (!state) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2" data-testid="ting-topbar">
+      <div className="niuu:flex niuu:items-center niuu:gap-2" data-testid="ting-topbar">
         <TopbarChip kind="dim" icon="◌" label="dispatcher …" testId="ting-chip-dispatcher-…" />
       </div>
     );
@@ -16,7 +16,7 @@ function DispatcherStats() {
   const thresholdDisplay = formatThreshold(state.threshold);
 
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-2" data-testid="ting-topbar">
+    <div className="niuu:flex niuu:items-center niuu:gap-2" data-testid="ting-topbar">
       <TopbarChip
         kind={state.running ? 'ok' : 'dim'}
         icon="●"

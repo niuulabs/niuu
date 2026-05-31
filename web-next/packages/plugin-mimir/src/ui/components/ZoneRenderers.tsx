@@ -128,9 +128,9 @@ function RichInlineText({
 
 function KeyFactsZone({ zone, pages, onNavigate }: ZoneRendererProps & { zone: ZoneKeyFacts }) {
   return (
-    <ul className="niuu-m-0 niuu-pl-5">
+    <ul className="niuu:m-0 niuu:pl-5">
       {zone.items.map((item, i) => (
-        <li key={i} className="niuu-text-sm niuu-text-text-secondary niuu-py-[2px]">
+        <li key={i} className="niuu:text-sm niuu:text-text-secondary niuu:py-[2px]">
           <RichInlineText text={item} pages={pages} onNavigate={onNavigate} />
         </li>
       ))}
@@ -144,14 +144,14 @@ function RelationshipsZone({
   onNavigate,
 }: ZoneRendererProps & { zone: ZoneRelationships }) {
   return (
-    <ul className="niuu-m-0 niuu-pl-5">
+    <ul className="niuu:m-0 niuu:pl-5">
       {zone.items.map((rel, i) => {
         const target = resolveWikilink(rel.slug, pages);
         return (
-          <li key={i} className="niuu-text-sm niuu-text-text-secondary niuu-py-[2px]">
+          <li key={i} className="niuu:text-sm niuu:text-text-secondary niuu:py-[2px]">
             <WikilinkPill slug={rel.slug} broken={target.broken} onNavigate={onNavigate} />
             {rel.note && (
-              <span className="niuu-text-text-secondary niuu-ml-2">
+              <span className="niuu:text-text-secondary niuu:ml-2">
                 — <RichInlineText text={rel.note} pages={pages} onNavigate={onNavigate} />
               </span>
             )}
@@ -164,7 +164,7 @@ function RelationshipsZone({
 
 function AssessmentZone({ zone }: { zone: ZoneAssessment }) {
   return (
-    <div className="niuu-text-sm niuu-text-text-secondary">
+    <div className="niuu:text-sm niuu:text-text-secondary">
       <MarkdownContent content={zone.text} />
     </div>
   );
@@ -177,18 +177,18 @@ function TimelineZone({ zone, pages, onNavigate }: ZoneRendererProps & { zone: Z
       {sorted.map((entry, i) => (
         <div
           key={i}
-          className="niuu-grid niuu-grid-cols-[100px_1fr] niuu-gap-2 niuu-py-2 niuu-border-b niuu-border-border-subtle last:niuu-border-b-0"
+          className="niuu:grid niuu:grid-cols-[100px_1fr] niuu:gap-2 niuu:py-2 niuu:border-b niuu:border-border-subtle niuu:last:border-b-0"
         >
-          <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted niuu-pt-[2px]">
+          <span className="niuu:font-mono niuu:text-xs niuu:text-text-muted niuu:pt-[2px]">
             {entry.date}
           </span>
-          <span className="niuu-text-sm niuu-text-text-secondary">
+          <span className="niuu:text-sm niuu:text-text-secondary">
             <RichInlineText text={entry.note} pages={pages} onNavigate={onNavigate} />
           </span>
         </div>
       ))}
       {zone.items.length === 0 && (
-        <p className="niuu-text-text-muted niuu-text-xs niuu-italic niuu-m-0">
+        <p className="niuu:text-text-muted niuu:text-xs niuu:italic niuu:m-0">
           No timeline entries yet
         </p>
       )}

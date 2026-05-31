@@ -34,12 +34,12 @@ export function TreeNode({ node, depth, selectedPath, onSelect, knownPaths }: Tr
       <button
         type="button"
         className={[
-          'niuu-flex niuu-items-center niuu-gap-1.5 niuu-py-[2px] niuu-pr-2',
-          'niuu-text-[11px] niuu-font-mono niuu-text-text-secondary',
-          'niuu-cursor-pointer niuu-border-none niuu-bg-transparent niuu-w-full niuu-text-left',
-          'hover:niuu-bg-bg-tertiary hover:niuu-text-text-primary',
+          'niuu:flex niuu:items-center niuu:gap-1.5 niuu:py-[2px] niuu:pr-2',
+          'niuu:text-[11px] niuu:font-mono niuu:text-text-secondary',
+          'niuu:cursor-pointer niuu:border-none niuu:bg-transparent niuu:w-full niuu:text-left',
+          'niuu:hover:bg-bg-tertiary niuu:hover:text-text-primary',
           isActive
-            ? 'niuu-bg-[color-mix(in_srgb,var(--brand-300)_14%,transparent)] niuu-text-text-primary'
+            ? 'niuu:bg-[color-mix(in_srgb,var(--brand-300)_14%,transparent)] niuu:text-text-primary'
             : '',
         ]
           .filter(Boolean)
@@ -49,12 +49,12 @@ export function TreeNode({ node, depth, selectedPath, onSelect, knownPaths }: Tr
         aria-current={isActive ? 'page' : undefined}
       >
         <span className={`mm-conf-dot mm-conf-dot--${conf}`} aria-label={`confidence: ${conf}`} />
-        <span className="niuu-flex-1 niuu-overflow-hidden niuu-text-ellipsis niuu-whitespace-nowrap">
+        <span className="niuu:flex-1 niuu:overflow-hidden niuu:text-ellipsis niuu:whitespace-nowrap">
           {node.name}
         </span>
         {hasBrokenLinks && (
           <span
-            className="niuu-inline-block niuu-w-1.5 niuu-h-1.5 niuu-rounded-full niuu-bg-brand-400 niuu-flex-shrink-0"
+            className="niuu:inline-block niuu:w-1.5 niuu:h-1.5 niuu:rounded-full niuu:bg-brand-400 niuu:flex-shrink-0"
             aria-label="page has broken wikilinks"
             title="This page has broken wikilinks"
           />
@@ -67,9 +67,9 @@ export function TreeNode({ node, depth, selectedPath, onSelect, knownPaths }: Tr
   const childCount = countLeaves(node);
 
   return (
-    <div className="niuu-select-none">
+    <div className="niuu:select-none">
       <div
-        className="niuu-flex niuu-items-center niuu-gap-1.5 niuu-py-[2px] niuu-pr-2 niuu-text-[11px] niuu-font-mono niuu-text-text-muted niuu-font-medium niuu-cursor-pointer hover:niuu-text-text-secondary"
+        className="niuu:flex niuu:items-center niuu:gap-1.5 niuu:py-[2px] niuu:pr-2 niuu:text-[11px] niuu:font-mono niuu:text-text-muted niuu:font-medium niuu:cursor-pointer niuu:hover:text-text-secondary"
         style={{ paddingLeft: `calc(${depth * TREE_INDENT_STEP_PX}px + 4px)` }}
         onClick={() => setOpen((o) => !o)}
         role="button"
@@ -77,9 +77,9 @@ export function TreeNode({ node, depth, selectedPath, onSelect, knownPaths }: Tr
         tabIndex={0}
         onKeyDown={(e) => e.key === 'Enter' && setOpen((o) => !o)}
       >
-        <span className="niuu-text-[8px] niuu-w-[10px] niuu-text-center">{open ? '▾' : '▸'}</span>
+        <span className="niuu:text-[8px] niuu:w-[10px] niuu:text-center">{open ? '▾' : '▸'}</span>
         <span>{node.name}/</span>
-        <span className="niuu-ml-auto niuu-font-mono niuu-text-[9px] niuu-text-text-faint">
+        <span className="niuu:ml-auto niuu:font-mono niuu:text-[9px] niuu:text-text-faint">
           {childCount}
         </span>
       </div>

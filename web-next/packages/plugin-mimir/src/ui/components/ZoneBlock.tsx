@@ -34,14 +34,14 @@ function EditZoneBody({
 }) {
   const text = zoneToEditableText(zone);
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-2 niuu-pt-2">
+    <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:pt-2">
       <textarea
         ref={textareaRef}
-        className="niuu-w-full niuu-min-h-[120px] niuu-p-3 niuu-bg-bg-primary niuu-border niuu-border-border niuu-rounded-sm niuu-text-text-primary niuu-text-sm niuu-font-mono niuu-resize-y"
+        className="niuu:w-full niuu:min-h-[120px] niuu:p-3 niuu:bg-bg-primary niuu:border niuu:border-border niuu:rounded-sm niuu:text-text-primary niuu:text-sm niuu:font-mono niuu:resize-y"
         defaultValue={text}
         aria-label="zone edit area"
       />
-      <p className="niuu-text-xs niuu-text-text-muted niuu-m-0">
+      <p className="niuu:text-xs niuu:text-text-muted niuu:m-0">
         Editing {zone.kind} zone — changes will be written to the destination mount.
       </p>
     </div>
@@ -76,17 +76,17 @@ export function ZoneBlock({
   const label = ZONE_LABELS[zone.kind] ?? zone.kind;
 
   return (
-    <div className="niuu-mb-6 niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-overflow-hidden">
+    <div className="niuu:mb-6 niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:overflow-hidden">
       <div
         className={[
-          'niuu-flex niuu-items-center niuu-justify-between niuu-px-4 niuu-py-3 niuu-border-b niuu-border-border-subtle',
-          isEditingThis ? 'mm-zone-head--editing' : 'niuu-bg-bg-secondary',
+          'niuu:flex niuu:items-center niuu:justify-between niuu:px-4 niuu:py-3 niuu:border-b niuu:border-border-subtle',
+          isEditingThis ? 'mm-zone-head--editing' : 'niuu:bg-bg-secondary',
         ].join(' ')}
       >
-        <span className="niuu-text-xs niuu-uppercase niuu-tracking-[0.07em] niuu-text-text-muted">
+        <span className="niuu:text-xs niuu:uppercase niuu:tracking-[0.07em] niuu:text-text-muted">
           {label}
         </span>
-        <div className="niuu-flex niuu-items-center niuu-gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
           {isSavingThis && <StateDot state="processing" pulse />}
           {canEdit && !isEditingThis && !isTimeline && (
             <button
@@ -116,7 +116,7 @@ export function ZoneBlock({
         </div>
       </div>
 
-      <div className="niuu-p-4">
+      <div className="niuu:p-4">
         {isSaved && (
           <div className="mm-save-banner">
             ✓ saved →{' '}

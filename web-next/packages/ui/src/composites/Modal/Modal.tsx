@@ -22,10 +22,10 @@ export interface ModalProps {
 }
 
 const VARIANT_CLASSES: Record<NonNullable<ModalAction['variant']>, string> = {
-  primary: 'niuu-bg-brand niuu-text-bg-primary hover:niuu-bg-brand-600 niuu-font-medium',
+  primary: 'niuu:bg-brand niuu:text-bg-primary niuu:hover:bg-brand-600 niuu:font-medium',
   secondary:
-    'niuu-border niuu-border-border niuu-text-text-secondary hover:niuu-text-text-primary niuu-bg-transparent',
-  destructive: 'niuu-bg-critical niuu-text-bg-primary hover:niuu-opacity-90 niuu-font-medium',
+    'niuu:border niuu:border-border niuu:text-text-secondary niuu:hover:text-text-primary niuu:bg-transparent',
+  destructive: 'niuu:bg-critical niuu:text-bg-primary niuu:hover:opacity-90 niuu:font-medium',
 };
 
 /**
@@ -46,7 +46,7 @@ export function Modal({
       <DialogContent title={title} description={description} className={className}>
         <div className="niuu-modal-body">{children}</div>
         {actions && actions.length > 0 && (
-          <div className="niuu-flex niuu-justify-end niuu-gap-3 niuu-mt-5 niuu-pt-4 niuu-border-t niuu-border-border-subtle">
+          <div className="niuu:flex niuu:justify-end niuu:gap-3 niuu:mt-5 niuu:pt-4 niuu:border-t niuu:border-border-subtle">
             {actions.map((action) => {
               const variant = action.variant ?? 'secondary';
               const closes = action.closes ?? true;
@@ -57,9 +57,9 @@ export function Modal({
                   onClick={action.onClick}
                   disabled={action.disabled}
                   className={cn(
-                    'niuu-rounded-md niuu-px-4 niuu-py-2 niuu-text-sm niuu-transition-colors',
+                    'niuu:rounded-md niuu:px-4 niuu:py-2 niuu:text-sm niuu:transition-colors',
                     VARIANT_CLASSES[variant],
-                    action.disabled && 'niuu-opacity-50 niuu-cursor-not-allowed',
+                    action.disabled && 'niuu:opacity-50 niuu:cursor-not-allowed',
                   )}
                 >
                   {action.label}

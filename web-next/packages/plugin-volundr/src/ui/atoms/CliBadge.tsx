@@ -18,12 +18,12 @@ export function CliBadge({ cli, compact = false, className }: CliBadgeProps) {
 
   return (
     <span
-      className={`niuu-inline-flex niuu-items-center niuu-gap-1 niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-1.5 niuu-py-0.5 niuu-text-xs ${className ?? ''}`}
+      className={`niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-1.5 niuu:py-0.5 niuu:text-xs ${className ?? ''}`}
       data-testid="cli-badge"
       title={meta.label}
     >
-      <span className="niuu-font-mono niuu-text-text-secondary">{meta.rune}</span>
-      {!compact && <span className="niuu-text-text-secondary">{meta.label}</span>}
+      <span className="niuu:font-mono niuu:text-text-secondary">{meta.rune}</span>
+      {!compact && <span className="niuu:text-text-secondary">{meta.label}</span>}
     </span>
   );
 }

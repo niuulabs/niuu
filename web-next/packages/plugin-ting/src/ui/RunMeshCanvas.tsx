@@ -370,20 +370,20 @@ export function RunMeshCanvas({
       />
       {hover?.node.kind === 'raven' && (
         <MeshTooltip x={hover.x} y={hover.y}>
-          <div className="niuu-font-mono niuu-text-xs niuu-font-medium niuu-text-text-primary">
+          <div className="niuu:font-mono niuu:text-xs niuu:font-medium niuu:text-text-primary">
             {hover.node.persona}
           </div>
-          <div className="niuu-font-mono niuu-text-xs niuu-mt-0.5 niuu-text-text-muted">
+          <div className="niuu:font-mono niuu:text-xs niuu:mt-0.5 niuu:text-text-muted">
             {hover.node.cluster.runName} · {hover.node.cluster.phaseName}
           </div>
         </MeshTooltip>
       )}
       {hover?.node.kind === 'cluster' && (
         <MeshTooltip x={hover.x} y={hover.y}>
-          <div className="niuu-text-xs niuu-font-medium niuu-text-text-primary">
+          <div className="niuu:text-xs niuu:font-medium niuu:text-text-primary">
             {hover.node.cluster.runName}
           </div>
-          <div className="niuu-font-mono niuu-text-xs niuu-mt-0.5 niuu-text-text-muted">
+          <div className="niuu:font-mono niuu:text-xs niuu:mt-0.5 niuu:text-text-muted">
             {hover.node.cluster.phaseName} · conf {hover.node.cluster.confidence}%
           </div>
         </MeshTooltip>
@@ -405,7 +405,7 @@ interface MeshTooltipProps {
 function MeshTooltip({ x, y, children }: MeshTooltipProps) {
   return (
     <div
-      className="niuu-absolute niuu-bg-bg-elevated niuu-border niuu-border-border niuu-rounded niuu-px-2 niuu-py-1 niuu-pointer-events-none niuu-z-10"
+      className="niuu:absolute niuu:bg-bg-elevated niuu:border niuu:border-border niuu:rounded niuu:px-2 niuu:py-1 niuu:pointer-events-none niuu:z-10"
       style={{ left: x + 12, top: y + 12 }}
     >
       {children}

@@ -143,7 +143,7 @@ function GraphSvg({ graph, focusId, onNodeClick, categories }: GraphSvgProps) {
               stroke="var(--color-border)"
               strokeWidth={1}
               strokeDasharray={isWikilink ? '4 3' : undefined}
-              className={isFocusEdge ? 'niuu-opacity-50' : 'niuu-opacity-15'}
+              className={isFocusEdge ? 'niuu:opacity-50' : 'niuu:opacity-15'}
             />
           );
         })}
@@ -160,7 +160,7 @@ function GraphSvg({ graph, focusId, onNodeClick, categories }: GraphSvgProps) {
               key={node.id}
               transform={`translate(${x},${y})`}
               onClick={() => onNodeClick(node.id)}
-              className="niuu-graph-node niuu-cursor-pointer"
+              className="niuu-graph-node niuu:cursor-pointer"
               role="button"
               aria-pressed={isFocus}
               tabIndex={0}
@@ -195,30 +195,30 @@ function GraphLegend({ categories }: LegendProps) {
   if (categories.length === 0) return null;
   return (
     <div className="niuu-graph-overlay niuu-graph-overlay--legend" aria-label="Graph legend">
-      <span className="niuu-text-[10px] niuu-uppercase niuu-tracking-widest niuu-text-text-muted niuu-font-semibold niuu-mb-1">
+      <span className="niuu:text-[10px] niuu:uppercase niuu:tracking-widest niuu:text-text-muted niuu:font-semibold niuu:mb-1">
         Category
       </span>
       {categories.map((cat, i) => (
-        <div key={cat} className="niuu-flex niuu-items-center niuu-gap-2">
+        <div key={cat} className="niuu:flex niuu:items-center niuu:gap-2">
           <span
-            className="niuu-graph-legend-dot niuu-w-2 niuu-h-2 niuu-rounded-full niuu-shrink-0"
+            className="niuu-graph-legend-dot niuu:w-2 niuu:h-2 niuu:rounded-full niuu:shrink-0"
             data-color-idx={String(i % CATEGORY_COLORS.length)}
             aria-hidden
           />
-          <span className="niuu-text-xs niuu-text-text-secondary niuu-font-mono">{cat}</span>
+          <span className="niuu:text-xs niuu:text-text-secondary niuu:font-mono">{cat}</span>
         </div>
       ))}
-      <span className="niuu-text-[10px] niuu-uppercase niuu-tracking-widest niuu-text-text-muted niuu-font-semibold niuu-mt-2 niuu-mb-1">
+      <span className="niuu:text-[10px] niuu:uppercase niuu:tracking-widest niuu:text-text-muted niuu:font-semibold niuu:mt-2 niuu:mb-1">
         Edges
       </span>
-      <div className="niuu-flex niuu-items-center niuu-gap-2">
-        <svg width="20" height="2" className="niuu-shrink-0">
+      <div className="niuu:flex niuu:items-center niuu:gap-2">
+        <svg width="20" height="2" className="niuu:shrink-0">
           <line x1="0" y1="1" x2="20" y2="1" stroke="var(--color-border)" strokeWidth="1.5" />
         </svg>
-        <span className="niuu-text-xs niuu-text-text-secondary niuu-font-mono">shared source</span>
+        <span className="niuu:text-xs niuu:text-text-secondary niuu:font-mono">shared source</span>
       </div>
-      <div className="niuu-flex niuu-items-center niuu-gap-2">
-        <svg width="20" height="2" className="niuu-shrink-0">
+      <div className="niuu:flex niuu:items-center niuu:gap-2">
+        <svg width="20" height="2" className="niuu:shrink-0">
           <line
             x1="0"
             y1="1"
@@ -229,7 +229,7 @@ function GraphLegend({ categories }: LegendProps) {
             strokeDasharray="4 3"
           />
         </svg>
-        <span className="niuu-text-xs niuu-text-text-secondary niuu-font-mono">wikilink</span>
+        <span className="niuu:text-xs niuu:text-text-secondary niuu:font-mono">wikilink</span>
       </div>
     </div>
   );
@@ -248,13 +248,13 @@ interface InfoCardProps {
 function GraphInfo({ nodeCount, edgeCount, mountLabel }: InfoCardProps) {
   return (
     <div className="niuu-graph-overlay niuu-graph-overlay--info" data-testid="graph-info">
-      <span className="niuu-text-[10px] niuu-uppercase niuu-tracking-widest niuu-text-text-muted niuu-font-semibold">
+      <span className="niuu:text-[10px] niuu:uppercase niuu:tracking-widest niuu:text-text-muted niuu:font-semibold">
         Graph
       </span>
-      <span className="niuu-text-sm niuu-font-semibold niuu-text-text-primary niuu-font-mono">
+      <span className="niuu:text-sm niuu:font-semibold niuu:text-text-primary niuu:font-mono">
         {nodeCount} pages · {edgeCount} edges
       </span>
-      <span className="niuu-text-xs niuu-text-brand-300 niuu-font-mono">{mountLabel}</span>
+      <span className="niuu:text-xs niuu:text-brand-300 niuu:font-mono">{mountLabel}</span>
     </div>
   );
 }
@@ -275,7 +275,7 @@ export function GraphPage() {
 
   if (isLoading) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-text-secondary niuu-text-sm niuu-p-6">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-text-secondary niuu:text-sm niuu:p-6">
         <StateDot state="processing" pulse />
         <span>loading graph…</span>
       </div>
@@ -284,7 +284,7 @@ export function GraphPage() {
 
   if (isError) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-text-secondary niuu-text-sm niuu-p-6">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-text-secondary niuu:text-sm niuu:p-6">
         <StateDot state="failed" />
         <span>{error instanceof Error ? error.message : 'graph load failed'}</span>
       </div>

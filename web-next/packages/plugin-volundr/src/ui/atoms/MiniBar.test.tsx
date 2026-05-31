@@ -10,18 +10,18 @@ describe('MiniBar', () => {
       'aria-valuenow',
       '40',
     );
-    expect(container.querySelector('.niuu-bg-brand')).toHaveStyle({ width: '40%' });
+    expect(container.querySelector('.niuu\\:bg-brand')).toHaveStyle({ width: '40%' });
   });
 
   it('renders a warning bar for medium utilization', () => {
     const { container } = render(<MiniBar value={0.7} label="Memory" />);
 
-    expect(container.querySelector('.niuu-bg-state-warn')).toHaveStyle({ width: '70%' });
+    expect(container.querySelector('.niuu\\:bg-state-warn')).toHaveStyle({ width: '70%' });
   });
 
   it('renders a critical bar for high utilization', () => {
     const { container } = render(<MiniBar value={0.9} label="GPU" />);
 
-    expect(container.querySelector('.niuu-bg-critical')).toHaveStyle({ width: '90%' });
+    expect(container.querySelector('.niuu\\:bg-critical')).toHaveStyle({ width: '90%' });
   });
 });

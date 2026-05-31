@@ -20,7 +20,7 @@ function GuildTopbar() {
         window.dispatchEvent(new Event('guild:open-register'));
       },
       className:
-        'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-lg niuu-border niuu-border-brand/35 niuu-bg-brand/12 niuu-px-3 niuu-py-1.5 niuu-text-[12px] niuu-font-medium niuu-text-brand hover:niuu-bg-brand/18',
+        'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-lg niuu:border niuu:border-brand/35 niuu:bg-brand/12 niuu:px-3 niuu:py-1.5 niuu:text-[12px] niuu:font-medium niuu:text-brand niuu:hover:bg-brand/18',
     },
     '+ register',
   );

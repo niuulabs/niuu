@@ -157,16 +157,16 @@ interface SectionProps {
 
 function Section({ title, subtitle, children }: SectionProps & { subtitle?: string }) {
   return (
-    <section className="niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-overflow-hidden">
-      <div className="niuu-px-4 niuu-py-2 niuu-bg-bg-secondary niuu-border-b niuu-border-border-subtle niuu-flex niuu-items-baseline niuu-gap-3">
-        <h3 className="niuu-m-0 niuu-text-xs niuu-font-mono niuu-font-medium niuu-text-text-muted niuu-uppercase niuu-tracking-widest">
+    <section className="niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:overflow-hidden">
+      <div className="niuu:px-4 niuu:py-2 niuu:bg-bg-secondary niuu:border-b niuu:border-border-subtle niuu:flex niuu:items-baseline niuu:gap-3">
+        <h3 className="niuu:m-0 niuu:text-xs niuu:font-mono niuu:font-medium niuu:text-text-muted niuu:uppercase niuu:tracking-widest">
           {title}
         </h3>
         {subtitle && (
-          <span className="niuu-text-xs niuu-font-mono niuu-text-text-muted">{subtitle}</span>
+          <span className="niuu:text-xs niuu:font-mono niuu:text-text-muted">{subtitle}</span>
         )}
       </div>
-      <div className="niuu-p-4 niuu-flex niuu-flex-col niuu-gap-3 niuu-bg-bg-primary">
+      <div className="niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3 niuu:bg-bg-primary">
         {children}
       </div>
     </section>
@@ -181,10 +181,10 @@ interface FieldRowProps {
 
 function FieldRow({ label, htmlFor, children }: FieldRowProps) {
   return (
-    <div className="niuu-grid niuu-grid-cols-[140px_1fr] niuu-gap-3 niuu-items-start">
+    <div className="niuu:grid niuu:grid-cols-[140px_1fr] niuu:gap-3 niuu:items-start">
       <label
         htmlFor={htmlFor}
-        className="niuu-pt-2 niuu-text-sm niuu-text-text-muted niuu-font-sans"
+        className="niuu:pt-2 niuu:text-sm niuu:text-text-muted niuu:font-sans"
       >
         {label}
       </label>
@@ -260,13 +260,13 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
     <div className="rv-persona-form" data-testid="persona-form">
       {/* Save bar */}
       {dirty && (
-        <div className="niuu-flex niuu-items-center niuu-justify-between niuu-px-4 niuu-py-2 niuu-bg-bg-secondary niuu-border-b niuu-border-border">
-          <span className="niuu-text-sm niuu-text-text-muted">Unsaved changes</span>
-          <div className="niuu-flex niuu-gap-2">
+        <div className="niuu:flex niuu:items-center niuu:justify-between niuu:px-4 niuu:py-2 niuu:bg-bg-secondary niuu:border-b niuu:border-border">
+          <span className="niuu:text-sm niuu:text-text-muted">Unsaved changes</span>
+          <div className="niuu:flex niuu:gap-2">
             <button
               type="button"
               onClick={handleReset}
-              className="niuu-px-3 niuu-py-1 niuu-text-sm niuu-text-text-secondary niuu-bg-transparent niuu-border niuu-border-border niuu-rounded-md niuu-cursor-pointer hover:niuu-bg-bg-tertiary"
+              className="niuu:px-3 niuu:py-1 niuu:text-sm niuu:text-text-secondary niuu:bg-transparent niuu:border niuu:border-border niuu:rounded-md niuu:cursor-pointer niuu:hover:bg-bg-tertiary"
             >
               Reset
             </button>
@@ -275,7 +275,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
               onClick={() => void handleSave()}
               disabled={isSaving || validationErrors.length > 0}
               aria-label="Save persona"
-              className="niuu-px-3 niuu-py-1 niuu-text-sm niuu-text-text-primary niuu-bg-brand niuu-border niuu-border-transparent niuu-rounded-md niuu-cursor-pointer disabled:niuu-opacity-50"
+              className="niuu:px-3 niuu:py-1 niuu:text-sm niuu:text-text-primary niuu:bg-brand niuu:border niuu:border-transparent niuu:rounded-md niuu:cursor-pointer niuu:disabled:opacity-50"
             >
               {isSaving ? 'Saving…' : 'Save'}
             </button>
@@ -298,12 +298,12 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
         <Section title="Identity" subtitle="What this persona is for.">
           <label className="rv-pf-field">
             <span className="rv-pf-field__label">name</span>
-            <input className="niuu-form-control niuu-font-mono" value={form.name} readOnly />
+            <input className="niuu-form-control niuu:font-mono" value={form.name} readOnly />
           </label>
           <label className="rv-pf-field">
             <span className="rv-pf-field__label">role</span>
             <input
-              className="niuu-form-control niuu-font-mono"
+              className="niuu-form-control niuu:font-mono"
               value={form.role}
               onChange={(e) => update('role', e.target.value as PersonaRole)}
             />
@@ -327,7 +327,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
           <label className="rv-pf-field">
             <span className="rv-pf-field__label">system_prompt_template</span>
             <textarea
-              className="niuu-form-control niuu-font-mono"
+              className="niuu-form-control niuu:font-mono"
               value={form.systemPromptTemplate}
               onChange={(e) => update('systemPromptTemplate', e.target.value)}
               rows={10}
@@ -346,7 +346,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
               <span className="rv-pf-field__label">iteration_budget</span>
               <input
                 type="number"
-                className="niuu-form-control niuu-font-mono"
+                className="niuu-form-control niuu:font-mono"
                 value={form.iterationBudget}
                 min={1}
                 max={500}
@@ -356,7 +356,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
             <label className="rv-pf-field">
               <span className="rv-pf-field__label">permission_mode</span>
               <select
-                className="niuu-form-control niuu-font-mono"
+                className="niuu-form-control niuu:font-mono"
                 value={form.permissionMode}
                 onChange={(e) => update('permissionMode', e.target.value)}
               >
@@ -386,7 +386,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
               <span className="rv-pf-field__label">llm.max_tokens</span>
               <input
                 type="number"
-                className="niuu-form-control niuu-font-mono"
+                className="niuu-form-control niuu:font-mono"
                 value={form.llmMaxTokens}
                 min={1}
                 step={1024}
@@ -402,21 +402,21 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
           subtitle={`Enforced at dispatch. Destructive tools (${form.allowedTools.filter((t) => SEED_TOOL_REGISTRY.find((r) => r.id === t)?.destructive).length} granted) require permission_mode ≥ normal.`}
         >
           <FieldRow label={`allowed (${form.allowedTools.length})`}>
-            <div className="niuu-flex niuu-flex-wrap niuu-gap-1 niuu-mb-2">
+            <div className="niuu:flex niuu:flex-wrap niuu:gap-1 niuu:mb-2">
               {form.allowedTools.map((toolId) => {
                 const tool = SEED_TOOL_REGISTRY.find((t) => t.id === toolId);
                 return (
                   <span
                     key={toolId}
                     className={cn(
-                      'niuu-inline-flex niuu-items-center niuu-gap-1 niuu-px-2 niuu-py-0 niuu-rounded niuu-text-xs niuu-font-mono',
+                      'niuu:inline-flex niuu:items-center niuu:gap-1 niuu:px-2 niuu:py-0 niuu:rounded niuu:text-xs niuu:font-mono',
                       tool?.destructive
-                        ? 'niuu-bg-critical/10 niuu-text-critical niuu-border niuu-border-critical/30'
-                        : 'niuu-bg-bg-tertiary niuu-text-text-secondary niuu-border niuu-border-border',
+                        ? 'niuu:bg-critical/10 niuu:text-critical niuu:border niuu:border-critical/30'
+                        : 'niuu:bg-bg-tertiary niuu:text-text-secondary niuu:border niuu:border-border',
                     )}
                   >
                     {tool?.destructive && (
-                      <span className="niuu-inline-block niuu-w-1.5 niuu-h-1.5 niuu-rounded-full niuu-bg-critical" />
+                      <span className="niuu:inline-block niuu:w-1.5 niuu:h-1.5 niuu:rounded-full niuu:bg-critical" />
                     )}
                     {toolId}
                     <button
@@ -428,7 +428,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
                           form.allowedTools.filter((t) => t !== toolId),
                         )
                       }
-                      className="niuu-ml-0.5 niuu-text-text-muted hover:niuu-text-text-primary niuu-border-0 niuu-bg-transparent niuu-cursor-pointer"
+                      className="niuu:ml-0.5 niuu:text-text-muted niuu:hover:text-text-primary niuu:border-0 niuu:bg-transparent niuu:cursor-pointer"
                     >
                       ×
                     </button>
@@ -439,17 +439,17 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
             <button
               type="button"
               onClick={() => setShowAllowPicker(true)}
-              className="niuu-text-sm niuu-text-text-secondary niuu-border niuu-border-dashed niuu-border-border niuu-px-2 niuu-py-0.5 niuu-rounded niuu-cursor-pointer hover:niuu-border-brand hover:niuu-text-text-primary niuu-bg-transparent"
+              className="niuu:text-sm niuu:text-text-secondary niuu:border niuu:border-dashed niuu:border-border niuu:px-2 niuu:py-0.5 niuu:rounded niuu:cursor-pointer niuu:hover:border-brand niuu:hover:text-text-primary niuu:bg-transparent"
             >
               + grant tool
             </button>
           </FieldRow>
           <FieldRow label={`forbidden (${form.forbiddenTools.length})`}>
-            <div className="niuu-flex niuu-flex-wrap niuu-gap-1 niuu-mb-2">
+            <div className="niuu:flex niuu:flex-wrap niuu:gap-1 niuu:mb-2">
               {form.forbiddenTools.map((toolId) => (
                 <span
                   key={toolId}
-                  className="niuu-inline-flex niuu-items-center niuu-gap-1 niuu-px-2 niuu-py-0 niuu-rounded niuu-text-xs niuu-font-mono niuu-bg-bg-tertiary niuu-text-text-secondary niuu-border niuu-border-border"
+                  className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:px-2 niuu:py-0 niuu:rounded niuu:text-xs niuu:font-mono niuu:bg-bg-tertiary niuu:text-text-secondary niuu:border niuu:border-border"
                 >
                   {toolId}
                   <button
@@ -461,7 +461,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
                         form.forbiddenTools.filter((t) => t !== toolId),
                       )
                     }
-                    className="niuu-ml-0.5 niuu-text-text-muted hover:niuu-text-text-primary niuu-border-0 niuu-bg-transparent niuu-cursor-pointer"
+                    className="niuu:ml-0.5 niuu:text-text-muted niuu:hover:text-text-primary niuu:border-0 niuu:bg-transparent niuu:cursor-pointer"
                   >
                     ×
                   </button>
@@ -471,7 +471,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
             <button
               type="button"
               onClick={() => setShowDenyPicker(true)}
-              className="niuu-text-sm niuu-text-text-secondary niuu-border niuu-border-dashed niuu-border-border niuu-px-2 niuu-py-0.5 niuu-rounded niuu-cursor-pointer hover:niuu-border-brand hover:niuu-text-text-primary niuu-bg-transparent"
+              className="niuu:text-sm niuu:text-text-secondary niuu:border niuu:border-dashed niuu:border-border niuu:px-2 niuu:py-0.5 niuu:rounded niuu:cursor-pointer niuu:hover:border-brand niuu:hover:text-text-primary niuu:bg-transparent"
             >
               + deny tool
             </button>
@@ -507,20 +507,20 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
           title="Consumes"
           subtitle="Events this persona listens for, and the structured inputs it expects."
         >
-          <div className="niuu-flex niuu-flex-col niuu-gap-3">
+          <div className="niuu:flex niuu:flex-col niuu:gap-3">
             {form.consumesEvents.map((ev, i) => (
               <div
                 key={i}
-                className="niuu-flex niuu-items-start niuu-gap-2 niuu-p-3 niuu-bg-bg-secondary niuu-rounded-md niuu-border niuu-border-border-subtle"
+                className="niuu:flex niuu:items-start niuu:gap-2 niuu:p-3 niuu:bg-bg-secondary niuu:rounded-md niuu:border niuu:border-border-subtle"
               >
-                <div className="niuu-flex-1 niuu-flex niuu-flex-col niuu-gap-2">
+                <div className="niuu:flex-1 niuu:flex niuu:flex-col niuu:gap-2">
                   <EventPicker
                     value={ev.name}
                     onChange={(v) => updateConsumedEvent(i, { name: v })}
                     catalog={SEED_EVENT_CATALOG}
                   />
                   <input
-                    className="niuu-form-control niuu-font-mono niuu-text-xs"
+                    className="niuu-form-control niuu:font-mono niuu:text-xs"
                     value={ev.injects?.join(', ') ?? ''}
                     onChange={(e) => {
                       const injects = e.target.value
@@ -536,7 +536,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
                   />
                   <input
                     type="number"
-                    className="niuu-form-control niuu-w-28"
+                    className="niuu-form-control niuu:w-28"
                     value={ev.trust ?? ''}
                     min={0}
                     max={1}
@@ -553,7 +553,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
                   type="button"
                   onClick={() => removeConsumedEvent(i)}
                   aria-label={`Remove consumed event ${ev.name}`}
-                  className="niuu-border-0 niuu-bg-transparent niuu-cursor-pointer niuu-text-text-muted hover:niuu-text-critical niuu-mt-1 niuu-p-1"
+                  className="niuu:border-0 niuu:bg-transparent niuu:cursor-pointer niuu:text-text-muted niuu:hover:text-critical niuu:mt-1 niuu:p-1"
                 >
                   ✕
                 </button>
@@ -562,7 +562,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
             <button
               type="button"
               onClick={addConsumedEvent}
-              className="niuu-text-sm niuu-text-text-secondary niuu-border niuu-border-dashed niuu-border-border niuu-px-3 niuu-py-1.5 niuu-rounded niuu-cursor-pointer hover:niuu-border-brand hover:niuu-text-text-primary niuu-bg-transparent niuu-self-start"
+              className="niuu:text-sm niuu:text-text-secondary niuu:border niuu:border-dashed niuu:border-border niuu:px-3 niuu:py-1.5 niuu:rounded niuu:cursor-pointer niuu:hover:border-brand niuu:hover:text-text-primary niuu:bg-transparent niuu:self-start"
             >
               + Add consumed event
             </button>
@@ -608,9 +608,9 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
             type="button"
             onClick={() => update('fanInStrategy', undefined)}
             className={cn(
-              'niuu-mt-2 niuu-text-xs niuu-text-text-muted niuu-bg-transparent niuu-border-0',
-              'niuu-cursor-pointer niuu-px-0 hover:niuu-text-text-secondary niuu-self-start',
-              !form.fanInStrategy && 'niuu-underline',
+              'niuu:mt-2 niuu:text-xs niuu:text-text-muted niuu:bg-transparent niuu:border-0',
+              'niuu:cursor-pointer niuu:px-0 niuu:hover:text-text-secondary niuu:self-start',
+              !form.fanInStrategy && 'niuu:underline',
             )}
           >
             {form.fanInStrategy ? 'Clear strategy (none)' : '— no strategy selected —'}
@@ -618,17 +618,17 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
 
           {/* Quorum params */}
           {form.fanInStrategy === 'quorum' && (
-            <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-mt-2">
+            <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:mt-2">
               <label
                 htmlFor="pf-fanin-quorum"
-                className="niuu-text-sm niuu-text-text-muted niuu-font-sans"
+                className="niuu:text-sm niuu:text-text-muted niuu:font-sans"
               >
                 Quorum count
               </label>
               <input
                 id="pf-fanin-quorum"
                 type="number"
-                className="niuu-form-control niuu-w-24"
+                className="niuu-form-control niuu:w-24"
                 min={1}
                 value={(form.fanInParams as Record<string, number> | undefined)?.quorum ?? 2}
                 onChange={(e) =>
@@ -643,17 +643,17 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
 
           {/* Weighted score params */}
           {form.fanInStrategy === 'weighted_score' && (
-            <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-mt-2">
+            <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:mt-2">
               <label
                 htmlFor="pf-fanin-threshold"
-                className="niuu-text-sm niuu-text-text-muted niuu-font-sans"
+                className="niuu:text-sm niuu:text-text-muted niuu:font-sans"
               >
                 Min score threshold
               </label>
               <input
                 id="pf-fanin-threshold"
                 type="number"
-                className="niuu-form-control niuu-w-24"
+                className="niuu-form-control niuu:w-24"
                 min={0}
                 max={1}
                 step={0.1}
@@ -672,11 +672,11 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
         {/* Mímir write routing */}
         <Section title="Mímir write routing">
           <FieldRow label="Route writes to">
-            <div className="niuu-flex niuu-items-center niuu-gap-2">
+            <div className="niuu:flex niuu:items-center niuu:gap-2">
               {MIMIR_ROUTINGS.map((r) => (
                 <label
                   key={r}
-                  className="niuu-flex niuu-items-center niuu-gap-1.5 niuu-cursor-pointer niuu-select-none"
+                  className="niuu:flex niuu:items-center niuu:gap-1.5 niuu:cursor-pointer niuu:select-none"
                 >
                   <input
                     type="radio"
@@ -684,21 +684,21 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
                     value={r}
                     checked={form.mimirWriteRouting === r}
                     onChange={() => update('mimirWriteRouting', r)}
-                    className="niuu-w-3.5 niuu-h-3.5"
+                    className="niuu:w-3.5 niuu:h-3.5"
                   />
                   <MountChip name={r} role={r} />
                 </label>
               ))}
-              <label className="niuu-flex niuu-items-center niuu-gap-1.5 niuu-cursor-pointer niuu-select-none">
+              <label className="niuu:flex niuu:items-center niuu:gap-1.5 niuu:cursor-pointer niuu:select-none">
                 <input
                   type="radio"
                   name="mimir-routing"
                   value=""
                   checked={form.mimirWriteRouting === undefined}
                   onChange={() => update('mimirWriteRouting', undefined)}
-                  className="niuu-w-3.5 niuu-h-3.5"
+                  className="niuu:w-3.5 niuu:h-3.5"
                 />
-                <span className="niuu-text-sm niuu-text-text-muted">inherit global default</span>
+                <span className="niuu:text-sm niuu:text-text-muted">inherit global default</span>
               </label>
             </div>
           </FieldRow>

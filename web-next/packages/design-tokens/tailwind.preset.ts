@@ -13,7 +13,6 @@ import type { Config } from 'tailwindcss';
  *     export default { presets: [preset], content: ['src/**\/*.{ts,tsx,css}'] };
  */
 const preset = {
-  prefix: 'niuu',
   darkMode: 'class',
   theme: {
     extend: {

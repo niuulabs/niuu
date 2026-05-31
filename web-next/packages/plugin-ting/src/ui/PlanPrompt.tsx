@@ -40,28 +40,28 @@ export function PlanPrompt({ onSubmit, loading, error }: PlanPromptProps) {
     <form
       onSubmit={handleSubmit}
       aria-label="Plan prompt form"
-      className="ting-plan-card niuu-flex niuu-flex-col niuu-gap-4"
+      className="ting-plan-card niuu:flex niuu:flex-col niuu:gap-4"
     >
       <div className="ting-plan-step-head">
         <div className="ting-plan-step-index">1</div>
-        <div className="niuu-flex niuu-flex-col niuu-gap-1">
-          <h2 className="niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+        <div className="niuu:flex niuu:flex-col niuu:gap-1">
+          <h2 className="niuu:text-lg niuu:font-semibold niuu:text-text-primary">
             Describe your goal
           </h2>
-          <p className="niuu-text-sm niuu-text-text-secondary">
+          <p className="niuu:text-sm niuu:text-text-secondary">
             Rough is fine. A tracker ID, sentence, or paragraph all work; the planning run will
             sharpen it next.
           </p>
         </div>
       </div>
 
-      <div className="niuu-flex niuu-flex-col niuu-gap-1">
+      <div className="niuu:flex niuu:flex-col niuu:gap-1">
         <label
           htmlFor="plan-prompt"
-          className="niuu-text-sm niuu-font-medium niuu-text-text-secondary"
+          className="niuu:text-sm niuu:font-medium niuu:text-text-secondary"
         >
           Goal description
-          <span className="niuu-ml-1 niuu-text-critical" aria-hidden="true">
+          <span className="niuu:ml-1 niuu:text-critical" aria-hidden="true">
             *
           </span>
         </label>
@@ -76,7 +76,7 @@ export function PlanPrompt({ onSubmit, loading, error }: PlanPromptProps) {
           aria-describedby={error ? 'plan-prompt-error' : undefined}
           className="ting-plan-input ting-plan-textarea"
         />
-        <div className="niuu-flex niuu-flex-wrap niuu-gap-2 niuu-mt-2" aria-label="Example prompts">
+        <div className="niuu:flex niuu:flex-wrap niuu:gap-2 niuu:mt-2" aria-label="Example prompts">
           {HINT_CHIPS.map((chip) => (
             <button
               key={chip.label}
@@ -90,10 +90,10 @@ export function PlanPrompt({ onSubmit, loading, error }: PlanPromptProps) {
         </div>
       </div>
 
-      <div className="niuu-flex niuu-flex-col niuu-gap-1">
+      <div className="niuu:flex niuu:flex-col niuu:gap-1">
         <label
           htmlFor="plan-repo"
-          className="niuu-text-sm niuu-font-medium niuu-text-text-secondary"
+          className="niuu:text-sm niuu:font-medium niuu:text-text-secondary"
         >
           Target repository
         </label>
@@ -108,16 +108,16 @@ export function PlanPrompt({ onSubmit, loading, error }: PlanPromptProps) {
       </div>
 
       {error && (
-        <p id="plan-prompt-error" role="alert" className="niuu-text-sm niuu-text-critical">
+        <p id="plan-prompt-error" role="alert" className="niuu:text-sm niuu:text-critical">
           {error}
         </p>
       )}
 
-      <div className="niuu-flex niuu-justify-end">
+      <div className="niuu:flex niuu:justify-end">
         <button
           type="submit"
           disabled={!canSubmit}
-          className="ting-plan-primary-btn disabled:niuu-opacity-50 disabled:niuu-cursor-not-allowed"
+          className="ting-plan-primary-btn niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed"
         >
           {loading ? 'Starting…' : 'Next →'}
         </button>

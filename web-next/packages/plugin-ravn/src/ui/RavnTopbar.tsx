@@ -24,7 +24,7 @@ export function RavnTopbar() {
   const openSessions = (sessions ?? []).filter((s) => s.status === 'running').length;
 
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-2" data-testid="ravn-topbar">
+    <div className="niuu:flex niuu:items-center niuu:gap-2" data-testid="ravn-topbar">
       <TopbarChip kind="ok" icon="●" label={`${activeRavens} active`} />
       {failedRavens > 0 && <TopbarChip kind="err" icon="●" label={`${failedRavens} failed`} />}
       <TopbarChip kind="dim" icon="◷" label={`${openSessions} sessions`} />

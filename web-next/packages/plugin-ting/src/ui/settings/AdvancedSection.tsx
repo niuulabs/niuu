@@ -53,24 +53,24 @@ export function AdvancedSection({ onAction }: AdvancedSectionProps = {}) {
 
   return (
     <section aria-label="Advanced settings">
-      <h3 className="niuu-text-base niuu-font-semibold niuu-text-text-primary niuu-mb-1">
+      <h3 className="niuu:text-base niuu:font-semibold niuu:text-text-primary niuu:mb-1">
         Advanced
       </h3>
-      <p className="niuu-text-sm niuu-text-text-secondary niuu-mb-4">
+      <p className="niuu:text-sm niuu:text-text-secondary niuu:mb-4">
         Danger zone. These actions can disrupt running sagas and runs.
       </p>
 
-      <div className="niuu-flex niuu-flex-col niuu-gap-3 niuu-max-w-lg">
+      <div className="niuu:flex niuu:flex-col niuu:gap-3 niuu:max-w-lg">
         {ACTIONS.map((action) => (
           <div
             key={action.label}
-            className="niuu-flex niuu-items-center niuu-justify-between niuu-py-2 niuu-border-b niuu-border-border-subtle"
+            className="niuu:flex niuu:items-center niuu:justify-between niuu:py-2 niuu:border-b niuu:border-border-subtle"
           >
-            <span className="niuu-text-sm niuu-text-text-primary">{action.label}</span>
-            <div className="niuu-flex niuu-items-center niuu-gap-2">
+            <span className="niuu:text-sm niuu:text-text-primary">{action.label}</span>
+            <div className="niuu:flex niuu:items-center niuu:gap-2">
               {confirming === action.label && (
                 <span
-                  className="niuu-text-xs niuu-text-text-muted niuu-max-w-[220px]"
+                  className="niuu:text-xs niuu:text-text-muted niuu:max-w-[220px]"
                   aria-live="polite"
                   data-testid={`confirm-msg-${action.label.toLowerCase().replace(/\s+/g, '-')}`}
                 >
@@ -81,12 +81,12 @@ export function AdvancedSection({ onAction }: AdvancedSectionProps = {}) {
                 type="button"
                 onClick={() => handleClick(action)}
                 className={cn(
-                  'niuu-px-3 niuu-py-1.5 niuu-rounded-md niuu-text-xs niuu-font-medium niuu-transition-colors',
+                  'niuu:px-3 niuu:py-1.5 niuu:rounded-md niuu:text-xs niuu:font-medium niuu:transition-colors',
                   action.danger
                     ? confirming === action.label
-                      ? 'niuu-bg-critical niuu-text-white'
-                      : 'niuu-border niuu-border-critical niuu-text-critical hover:niuu-bg-critical hover:niuu-text-white'
-                    : 'niuu-border niuu-border-border niuu-text-text-secondary hover:niuu-bg-bg-secondary',
+                      ? 'niuu:bg-critical niuu:text-white'
+                      : 'niuu:border niuu:border-critical niuu:text-critical niuu:hover:bg-critical niuu:hover:text-white'
+                    : 'niuu:border niuu:border-border niuu:text-text-secondary niuu:hover:bg-bg-secondary',
                 )}
                 data-testid={`action-${action.label.toLowerCase().replace(/\s+/g, '-')}`}
               >

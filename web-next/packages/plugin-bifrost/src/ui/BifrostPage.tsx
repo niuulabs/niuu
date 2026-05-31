@@ -64,13 +64,13 @@ function formatInteger(value: number): string {
 function healthTone(state: BifrostProvider['state']): string {
   switch (state) {
     case 'healthy':
-      return 'niuu-text-brand-200 niuu-bg-bg-tertiary';
+      return 'niuu:text-brand-200 niuu:bg-bg-tertiary';
     case 'degraded':
-      return 'niuu-text-warning niuu-bg-warning-bg';
+      return 'niuu:text-warning niuu:bg-warning-bg';
     case 'unreachable':
-      return 'niuu-text-critical niuu-bg-critical-bg';
+      return 'niuu:text-critical niuu:bg-critical-bg';
     default:
-      return 'niuu-text-text-muted niuu-bg-bg-tertiary';
+      return 'niuu:text-text-muted niuu:bg-bg-tertiary';
   }
 }
 
@@ -86,7 +86,7 @@ function HealthPill({ state }: { state: BifrostProvider['state'] }) {
 
   return (
     <span
-      className={`niuu-inline-flex niuu-items-center niuu-gap-1.5 niuu-rounded-full niuu-px-2.5 niuu-py-1 niuu-text-[11px] niuu-font-medium ${healthTone(state)}`}
+      className={`niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:px-2.5 niuu:py-1 niuu:text-[11px] niuu:font-medium ${healthTone(state)}`}
     >
       <StateDot state={dotState} />
       {state}
@@ -255,15 +255,15 @@ function ModelsTab({ models }: { models: BifrostModel[] }) {
       header: 'Model',
       width: '32%',
       render: (model) => (
-        <div className="niuu-min-w-0">
-          <div className="niuu-flex niuu-items-center niuu-gap-2">
+        <div className="niuu:min-w-0">
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
             <span
-              className="niuu-inline-block niuu-size-2.5 niuu-rounded-full"
+              className="niuu:inline-block niuu:size-2.5 niuu:rounded-full"
               style={{ backgroundColor: model.color }}
             />
-            <span className="niuu-font-semibold niuu-text-text-primary">{model.name}</span>
+            <span className="niuu:font-semibold niuu:text-text-primary">{model.name}</span>
           </div>
-          <p className="niuu-m-0 niuu-mt-1 niuu-text-xs niuu-text-text-muted">
+          <p className="niuu:m-0 niuu:mt-1 niuu:text-xs niuu:text-text-muted">
             {model.description || model.id}
           </p>
         </div>
@@ -274,12 +274,12 @@ function ModelsTab({ models }: { models: BifrostModel[] }) {
       header: 'Vendor',
       width: '18%',
       render: (model) => (
-        <div className="niuu-flex niuu-flex-col niuu-gap-1">
-          <span className="niuu-text-sm niuu-text-text-secondary">
+        <div className="niuu:flex niuu:flex-col niuu:gap-1">
+          <span className="niuu:text-sm niuu:text-text-secondary">
             {model.vendor || model.provider}
           </span>
           {model.providerKeys.length > 0 ? (
-            <span className="niuu-text-xs niuu-text-text-faint">
+            <span className="niuu:text-xs niuu:text-text-faint">
               {model.providerKeys.join(', ')}
             </span>
           ) : null}
@@ -291,7 +291,7 @@ function ModelsTab({ models }: { models: BifrostModel[] }) {
       header: 'Tier',
       width: '12%',
       render: (model) => (
-        <span className="niuu-text-sm niuu-text-text-secondary">{model.tier}</span>
+        <span className="niuu:text-sm niuu:text-text-secondary">{model.tier}</span>
       ),
     },
     {
@@ -299,7 +299,7 @@ function ModelsTab({ models }: { models: BifrostModel[] }) {
       header: 'Runtime',
       width: '18%',
       render: (model) => (
-        <span className="niuu-text-sm niuu-text-text-secondary">
+        <span className="niuu:text-sm niuu:text-text-secondary">
           {model.sessionDefinition ?? 'provider default'}
         </span>
       ),
@@ -310,7 +310,7 @@ function ModelsTab({ models }: { models: BifrostModel[] }) {
       width: '20%',
       render: (model) =>
         model.aliases.length > 0 ? (
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
             {model.aliases.map((alias) => (
               <Chip key={alias} tone="default">
                 {alias}
@@ -318,13 +318,13 @@ function ModelsTab({ models }: { models: BifrostModel[] }) {
             ))}
           </div>
         ) : (
-          <span className="niuu-text-sm niuu-text-text-faint">none</span>
+          <span className="niuu:text-sm niuu:text-text-faint">none</span>
         ),
     },
   ];
 
   return (
-    <div className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-overflow-hidden">
+    <div className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:overflow-hidden">
       <Table<BifrostModel> columns={columns} rows={models} aria-label="Model inventory" />
     </div>
   );
@@ -332,45 +332,45 @@ function ModelsTab({ models }: { models: BifrostModel[] }) {
 
 function ProvidersTab({ providers }: { providers: BifrostProvider[] }) {
   return (
-    <div className="niuu-grid niuu-grid-cols-1 xl:niuu-grid-cols-2 niuu-gap-4">
+    <div className="niuu:grid niuu:grid-cols-1 niuu:xl:grid-cols-2 niuu:gap-4">
       {providers.map((provider) => (
         <section
           key={provider.key}
-          className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4"
+          className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4"
         >
-          <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3">
+          <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
             <div>
-              <h3 className="niuu-m-0 niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+              <h3 className="niuu:m-0 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
                 {provider.key}
               </h3>
-              <p className="niuu-m-0 niuu-mt-1 niuu-text-sm niuu-text-text-muted">
+              <p className="niuu:m-0 niuu:mt-1 niuu:text-sm niuu:text-text-muted">
                 {provider.baseUrl}
               </p>
             </div>
             <HealthPill state={provider.state} />
           </div>
-          <p className="niuu-m-0 niuu-mt-3 niuu-text-sm niuu-text-text-secondary">
+          <p className="niuu:m-0 niuu:mt-3 niuu:text-sm niuu:text-text-secondary">
             {provider.detail}
           </p>
-          <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3 niuu-mt-4">
-            <div className="niuu-rounded-lg niuu-bg-bg-tertiary niuu-p-3">
-              <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
+          <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3 niuu:mt-4">
+            <div className="niuu:rounded-lg niuu:bg-bg-tertiary niuu:p-3">
+              <p className="niuu:m-0 niuu:text-[11px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted">
                 Models
               </p>
-              <p className="niuu-m-0 niuu-mt-2 niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+              <p className="niuu:m-0 niuu:mt-2 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
                 {provider.modelIds.length}
               </p>
             </div>
-            <div className="niuu-rounded-lg niuu-bg-bg-tertiary niuu-p-3">
-              <p className="niuu-m-0 niuu-text-[11px] niuu-uppercase niuu-tracking-[0.14em] niuu-text-text-muted">
+            <div className="niuu:rounded-lg niuu:bg-bg-tertiary niuu:p-3">
+              <p className="niuu:m-0 niuu:text-[11px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted">
                 Timeout
               </p>
-              <p className="niuu-m-0 niuu-mt-2 niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+              <p className="niuu:m-0 niuu:mt-2 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
                 {provider.timeoutSeconds}s
               </p>
             </div>
           </div>
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-2 niuu-mt-4">
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-2 niuu:mt-4">
             {provider.modelIds.map((modelId) => (
               <Chip key={modelId} tone="default">
                 {modelId}
@@ -385,23 +385,23 @@ function ProvidersTab({ providers }: { providers: BifrostProvider[] }) {
 
 function UsageTab({ usage }: { usage: BifrostUsageResponse }) {
   return (
-    <div className="niuu-grid niuu-gap-4">
-      <section className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4">
-        <h3 className="niuu-m-0 niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+    <div className="niuu:grid niuu:gap-4">
+      <section className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4">
+        <h3 className="niuu:m-0 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
           Top model spend
         </h3>
-        <div className="niuu-grid niuu-gap-3 niuu-mt-4">
+        <div className="niuu:grid niuu:gap-3 niuu:mt-4">
           {Object.entries(usage.summary.byModel)
             .sort((left, right) => right[1].costUsd - left[1].costUsd)
             .slice(0, 5)
             .map(([model, bucket]) => (
               <div
                 key={model}
-                className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-rounded-lg niuu-bg-bg-tertiary niuu-p-3"
+                className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:rounded-lg niuu:bg-bg-tertiary niuu:p-3"
               >
                 <div>
-                  <p className="niuu-m-0 niuu-font-semibold niuu-text-text-primary">{model}</p>
-                  <p className="niuu-m-0 niuu-mt-1 niuu-text-xs niuu-text-text-muted">
+                  <p className="niuu:m-0 niuu:font-semibold niuu:text-text-primary">{model}</p>
+                  <p className="niuu:m-0 niuu:mt-1 niuu:text-xs niuu:text-text-muted">
                     {formatInteger(bucket.requests)} requests ·{' '}
                     {formatInteger(bucket.inputTokens + bucket.outputTokens)} tokens
                   </p>
@@ -412,22 +412,22 @@ function UsageTab({ usage }: { usage: BifrostUsageResponse }) {
         </div>
       </section>
 
-      <section className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-overflow-hidden">
-        <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-px-4 niuu-py-3 niuu-border-b niuu-border-border">
-          <h3 className="niuu-m-0 niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+      <section className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:overflow-hidden">
+        <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:px-4 niuu:py-3 niuu:border-b niuu:border-border">
+          <h3 className="niuu:m-0 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
             Recent requests
           </h3>
           <Chip tone="default">{formatInteger(usage.records.length)} shown</Chip>
         </div>
-        <div className="niuu-divide-y niuu-divide-border-subtle">
+        <div className="niuu:divide-y niuu:divide-border-subtle">
           {usage.records.map((record) => (
-            <div key={record.requestId} className="niuu-px-4 niuu-py-3">
-              <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
+            <div key={record.requestId} className="niuu:px-4 niuu:py-3">
+              <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
                 <div>
-                  <p className="niuu-m-0 niuu-font-semibold niuu-text-text-primary">
+                  <p className="niuu:m-0 niuu:font-semibold niuu:text-text-primary">
                     {record.model}
                   </p>
-                  <p className="niuu-m-0 niuu-mt-1 niuu-text-xs niuu-text-text-muted">
+                  <p className="niuu:m-0 niuu:mt-1 niuu:text-xs niuu:text-text-muted">
                     {record.provider} · {record.agentId} ·{' '}
                     {new Date(record.timestamp).toLocaleString()}
                   </p>
@@ -509,18 +509,18 @@ export function BifrostPage({ defaultTab = 'overview' }: { defaultTab?: BifrostT
           <p className="bf-page__title">Bifröst</p>
           <p className="bf-page__copy">{TAB_COPY[activeTab]}</p>
         </div>
-        <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+        <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
           <Chip tone="brand">{formatInteger(models.length)} models</Chip>
           <Chip tone="default">{formatInteger(providers.length)} providers</Chip>
           <Chip tone="default">{formatInteger(aliases.length)} aliases</Chip>
         </div>
       </div>
       {loading ? (
-        <div className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-6 niuu-text-text-secondary">
+        <div className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-6 niuu:text-text-secondary">
           Loading Bifröst…
         </div>
       ) : error ? (
-        <div className="niuu-rounded-xl niuu-border niuu-border-critical niuu-bg-critical-bg niuu-p-6 niuu-text-critical">
+        <div className="niuu:rounded-xl niuu:border niuu:border-critical niuu:bg-critical-bg niuu:p-6 niuu:text-critical">
           {error instanceof Error ? error.message : 'Failed to load Bifröst'}
         </div>
       ) : activeTab === 'overview' ? (

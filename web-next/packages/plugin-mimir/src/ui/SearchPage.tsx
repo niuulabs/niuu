@@ -68,11 +68,11 @@ export function SearchPage() {
   }
 
   return (
-    <div className="niuu-flex niuu-flex-col niuu-h-full">
+    <div className="niuu:flex niuu:flex-col niuu:h-full">
       {/* Search header bar */}
-      <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-px-5 niuu-py-4 niuu-border-b niuu-border-border-subtle">
+      <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:px-5 niuu:py-4 niuu:border-b niuu:border-border-subtle">
         <input
-          className="niuu-flex-1 niuu-px-3 niuu-py-2.5 niuu-bg-bg-secondary niuu-rounded-sm niuu-text-text-primary niuu-font-mono niuu-text-[13px] niuu-outline-none"
+          className="niuu:flex-1 niuu:px-3 niuu:py-2.5 niuu:bg-bg-secondary niuu:rounded-sm niuu:text-text-primary niuu:font-mono niuu:text-[13px] niuu:outline-none"
           style={{ border: 'none' }}
           type="search"
           placeholder={placeholder}
@@ -82,7 +82,7 @@ export function SearchPage() {
         />
 
         <div
-          className="niuu-flex niuu-items-center niuu-gap-[2px] niuu-bg-bg-tertiary niuu-p-[2px] niuu-rounded-sm niuu-border niuu-border-border-subtle"
+          className="niuu:flex niuu:items-center niuu:gap-[2px] niuu:bg-bg-tertiary niuu:p-[2px] niuu:rounded-sm niuu:border niuu:border-border-subtle"
           role="group"
           aria-label="Search mode"
         >
@@ -90,10 +90,10 @@ export function SearchPage() {
             <button
               key={m}
               className={[
-                'niuu-px-2.5 niuu-py-1 niuu-rounded-[calc(var(--radius-sm)-2px)] niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-wider niuu-cursor-pointer niuu-border-none niuu-transition-colors',
+                'niuu:px-2.5 niuu:py-1 niuu:rounded-[calc(var(--radius-sm)-2px)] niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-wider niuu:cursor-pointer niuu:border-none niuu:transition-colors',
                 m === mode
-                  ? 'niuu-bg-bg-elevated niuu-text-brand-300'
-                  : 'niuu-bg-transparent niuu-text-text-muted hover:niuu-text-text-secondary',
+                  ? 'niuu:bg-bg-elevated niuu:text-brand-300'
+                  : 'niuu:bg-transparent niuu:text-text-muted niuu:hover:text-text-secondary',
               ].join(' ')}
               onClick={() => setMode(m)}
               aria-pressed={m === mode}
@@ -103,32 +103,32 @@ export function SearchPage() {
             </button>
           ))}
         </div>
-        <div className="niuu-flex niuu-flex-col niuu-items-end niuu-gap-0.5">
-          <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-muted">
+        <div className="niuu:flex niuu:flex-col niuu:items-end niuu:gap-0.5">
+          <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
             {results.length} results
           </span>
-          <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint">{mountLabel}</span>
+          <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-faint">{mountLabel}</span>
         </div>
       </div>
 
       {isLoading && (
-        <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-5">
+        <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-5">
           <StateDot state="processing" pulse />
-          <span className="niuu-text-sm niuu-text-text-secondary">searching…</span>
+          <span className="niuu:text-sm niuu:text-text-secondary">searching…</span>
         </div>
       )}
 
       {isError && (
-        <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-5">
+        <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-5">
           <StateDot state="failed" />
-          <span className="niuu-text-sm niuu-text-text-secondary">
+          <span className="niuu:text-sm niuu:text-text-secondary">
             {error instanceof Error ? error.message : 'search failed'}
           </span>
         </div>
       )}
 
       {!isLoading && query.trim().length > 0 && results.length === 0 && !isError && (
-        <p className="niuu-text-sm niuu-text-text-muted niuu-p-5">
+        <p className="niuu:text-sm niuu:text-text-muted niuu:p-5">
           No results found for &ldquo;{query}&rdquo;
         </p>
       )}
@@ -136,41 +136,41 @@ export function SearchPage() {
       {/* Results list */}
       {results.length > 0 && (
         <div
-          className="niuu-flex niuu-flex-col niuu-overflow-y-auto niuu-flex-1"
+          className="niuu:flex niuu:flex-col niuu:overflow-y-auto niuu:flex-1"
           aria-label="Search results"
         >
           {results.map((result) => (
             <button
               type="button"
               key={result.path}
-              className="niuu-w-full niuu-py-3 niuu-px-5 niuu-border-b niuu-border-border niuu-cursor-pointer hover:niuu-bg-bg-tertiary niuu-text-left niuu-bg-transparent niuu-border-x-0 niuu-border-t-0"
+              className="niuu:w-full niuu:py-3 niuu:px-5 niuu:border-b niuu:border-border niuu:cursor-pointer niuu:hover:bg-bg-tertiary niuu:text-left niuu:bg-transparent niuu:border-x-0 niuu:border-t-0"
               data-testid="search-result"
               onClick={() => openResult(result.path, result.mounts)}
             >
               {/* Title + score */}
-              <div className="niuu-flex niuu-items-baseline niuu-gap-3">
-                <span className="niuu-font-medium niuu-text-sm niuu-text-text-primary niuu-flex-1">
+              <div className="niuu:flex niuu:items-baseline niuu:gap-3">
+                <span className="niuu:font-medium niuu:text-sm niuu:text-text-primary niuu:flex-1">
                   {highlightText(result.title, query)}
                 </span>
                 {result.score !== undefined && (
-                  <span className="niuu-font-mono niuu-text-[10px] niuu-text-text-faint niuu-shrink-0">
+                  <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-faint niuu:shrink-0">
                     score {result.score.toFixed(2)}
                   </span>
                 )}
               </div>
 
               {/* Path on its own line */}
-              <div className="niuu-font-mono niuu-text-[10px] niuu-text-text-muted niuu-mt-[2px]">
+              <div className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted niuu:mt-[2px]">
                 {result.path}
               </div>
 
               {/* Summary */}
-              <p className="niuu-text-xs niuu-leading-normal niuu-text-text-secondary niuu-m-0 niuu-mt-1">
+              <p className="niuu:text-xs niuu:leading-normal niuu:text-text-secondary niuu:m-0 niuu:mt-1">
                 {highlightText(result.summary, query)}
               </p>
 
               {/* Chips row */}
-              <div className="niuu-flex niuu-items-center niuu-gap-1 niuu-mt-1.5">
+              <div className="niuu:flex niuu:items-center niuu:gap-1 niuu:mt-1.5">
                 <span className="mm-chip accent">
                   <span className="mm-chip-k">type</span>{' '}
                   {result.type?.toUpperCase() ?? result.category?.toUpperCase()}

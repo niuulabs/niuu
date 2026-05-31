@@ -28,19 +28,19 @@ export function buildSessionColumns({
       key: 'id',
       header: 'Session',
       render: (s) => (
-        <span className="niuu-font-mono niuu-text-xs niuu-text-text-primary">{s.id}</span>
+        <span className="niuu:font-mono niuu:text-xs niuu:text-text-primary">{s.id}</span>
       ),
     },
     persona: {
       key: 'persona',
       header: 'Persona',
-      render: (s) => <span className="niuu-text-sm niuu-text-text-secondary">{s.personaName}</span>,
+      render: (s) => <span className="niuu:text-sm niuu:text-text-secondary">{s.personaName}</span>,
     },
     cluster: {
       key: 'cluster',
       header: 'Forge',
       render: (s) => (
-        <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">
+        <span className="niuu:font-mono niuu:text-xs niuu:text-text-muted">
           {s.clusterName ?? s.clusterId}
         </span>
       ),
@@ -54,7 +54,7 @@ export function buildSessionColumns({
       key: 'started',
       header: 'Started',
       render: (s) => (
-        <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">
+        <span className="niuu:font-mono niuu:text-xs niuu:text-text-muted">
           {new Date(s.startedAt).toLocaleString()}
         </span>
       ),
@@ -64,7 +64,7 @@ export function buildSessionColumns({
       header: '',
       render: (s) => (
         <button
-          className="niuu-rounded niuu-px-2 niuu-py-1 niuu-text-xs niuu-text-brand hover:niuu-bg-bg-elevated"
+          className="niuu:rounded niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-brand niuu:hover:bg-bg-elevated"
           onClick={() => onView(s.id)}
           data-testid={`${testIdPrefix}-${s.id}`}
           aria-label={`${actionLabel} session ${s.id}`}

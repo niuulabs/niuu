@@ -17,7 +17,7 @@ export function StepDots({ steps, current }: StepDotsProps) {
   return (
     <nav
       aria-label="Plan wizard steps"
-      className="niuu-flex niuu-items-center niuu-gap-2 niuu-mb-6"
+      className="niuu:flex niuu:items-center niuu:gap-2 niuu:mb-6"
     >
       {steps.map((step, idx) => {
         const isCompleted = idx < currentIndex;
@@ -27,19 +27,19 @@ export function StepDots({ steps, current }: StepDotsProps) {
         return (
           <div
             key={step}
-            className="niuu-flex niuu-items-center niuu-gap-2"
+            className="niuu:flex niuu:items-center niuu:gap-2"
             aria-current={isActive ? 'step' : undefined}
           >
-            <div className="niuu-flex niuu-flex-col niuu-items-center niuu-gap-1">
+            <div className="niuu:flex niuu:flex-col niuu:items-center niuu:gap-1">
               <span
                 className={[
-                  'niuu-inline-flex niuu-items-center niuu-justify-center',
-                  'niuu-w-2 niuu-h-2 niuu-rounded-full niuu-transition-all',
+                  'niuu:inline-flex niuu:items-center niuu:justify-center',
+                  'niuu:w-2 niuu:h-2 niuu:rounded-full niuu:transition-all',
                   isCompleted
-                    ? 'niuu-bg-brand-400'
+                    ? 'niuu:bg-brand-400'
                     : isActive
-                      ? 'niuu-bg-brand-500 niuu-ring-2 niuu-ring-brand-500/30'
-                      : 'niuu-bg-bg-elevated',
+                      ? 'niuu:bg-brand-500 niuu:ring-2 niuu:ring-brand-500/30'
+                      : 'niuu:bg-bg-elevated',
                 ]
                   .filter(Boolean)
                   .join(' ')}
@@ -48,12 +48,12 @@ export function StepDots({ steps, current }: StepDotsProps) {
               />
               <span
                 className={[
-                  'niuu-text-xs niuu-font-medium niuu-transition-colors',
+                  'niuu:text-xs niuu:font-medium niuu:transition-colors',
                   isActive
-                    ? 'niuu-text-text-primary'
+                    ? 'niuu:text-text-primary'
                     : isCompleted
-                      ? 'niuu-text-text-secondary'
-                      : 'niuu-text-text-muted',
+                      ? 'niuu:text-text-secondary'
+                      : 'niuu:text-text-muted',
                 ]
                   .filter(Boolean)
                   .join(' ')}
@@ -65,8 +65,8 @@ export function StepDots({ steps, current }: StepDotsProps) {
             {idx < steps.length - 1 && (
               <span
                 className={[
-                  'niuu-flex-1 niuu-h-px niuu-min-w-6 niuu-mb-4',
-                  idx < currentIndex ? 'niuu-bg-brand-400' : 'niuu-bg-border',
+                  'niuu:flex-1 niuu:h-px niuu:min-w-6 niuu:mb-4',
+                  idx < currentIndex ? 'niuu:bg-brand-400' : 'niuu:bg-border',
                 ].join(' ')}
                 aria-hidden="true"
               />

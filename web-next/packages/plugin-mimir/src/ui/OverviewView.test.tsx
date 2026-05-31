@@ -314,7 +314,7 @@ describe('OverviewView', () => {
 
     wrap(<OverviewView />, unknownKindService);
     await waitFor(() => expect(screen.getByText('unknown-kind')).toBeInTheDocument());
-    expect(screen.getByText('unknown-kind').className).toContain('niuu-text-text-secondary');
+    expect(screen.getByText('unknown-kind').className).toContain('niuu:text-text-secondary');
   });
 
   it('renders error banner on mount fetch failure', async () => {

@@ -110,17 +110,17 @@ export function WorkflowBuilderPage() {
   return (
     <div
       data-testid="workflow-builder-page"
-      className="niuu-flex niuu-h-full niuu-font-sans niuu-bg-bg-primary"
+      className="niuu:flex niuu:h-full niuu:font-sans niuu:bg-bg-primary"
     >
       {/* Templates sidebar */}
-      <aside className="niuu-w-[244px] niuu-shrink-0 niuu-border-r niuu-border-border niuu-bg-bg-secondary niuu-flex niuu-flex-col niuu-overflow-hidden">
+      <aside className="niuu:w-[244px] niuu:shrink-0 niuu:border-r niuu:border-border niuu:bg-bg-secondary niuu:flex niuu:flex-col niuu:overflow-hidden">
         {/* Header */}
-        <div className="niuu-flex niuu-items-start niuu-justify-between niuu-px-4 niuu-pt-3 niuu-pb-1">
-          <div className="niuu-flex niuu-flex-col niuu-gap-0.5">
-            <span className="niuu-text-[10px] niuu-font-semibold niuu-uppercase niuu-tracking-[0.24em] niuu-text-text-muted niuu-font-sans">
+        <div className="niuu:flex niuu:items-start niuu:justify-between niuu:px-4 niuu:pt-3 niuu:pb-1">
+          <div className="niuu:flex niuu:flex-col niuu:gap-0.5">
+            <span className="niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.24em] niuu:text-text-muted niuu:font-sans">
               Templates
             </span>
-            <span className="niuu-text-[11px] niuu-font-semibold niuu-text-text-primary niuu-font-sans">
+            <span className="niuu:text-[11px] niuu:font-semibold niuu:text-text-primary niuu:font-sans">
               Saved workflow catalog
             </span>
           </div>
@@ -128,31 +128,31 @@ export function WorkflowBuilderPage() {
             data-testid="new-workflow"
             onClick={handleNew}
             disabled={createMutation.isPending}
-            className="niuu-rounded-md niuu-px-2.5 niuu-py-1 niuu-text-[10px] niuu-border niuu-border-border niuu-bg-bg-elevated niuu-text-text-secondary niuu-cursor-pointer hover:niuu-text-text-primary niuu-transition-colors niuu-font-sans disabled:niuu-opacity-50"
+            className="niuu:rounded-md niuu:px-2.5 niuu:py-1 niuu:text-[10px] niuu:border niuu:border-border niuu:bg-bg-elevated niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:transition-colors niuu:font-sans niuu:disabled:opacity-50"
           >
             + new
           </button>
         </div>
-        <div className="niuu-px-4 niuu-pb-2 niuu-flex niuu-items-end niuu-justify-between niuu-gap-3">
-          <p className="niuu-text-[10px] niuu-text-text-faint niuu-font-mono niuu-m-0 niuu-leading-snug">
+        <div className="niuu:px-4 niuu:pb-2 niuu:flex niuu:items-end niuu:justify-between niuu:gap-3">
+          <p className="niuu:text-[10px] niuu:text-text-faint niuu:font-mono niuu:m-0 niuu:leading-snug">
             Reusable saga pipelines.{'\n'}Versioned, used by dispatch.
           </p>
-          <span className="niuu-text-[10px] niuu-text-text-faint niuu-font-mono niuu-shrink-0">
+          <span className="niuu:text-[10px] niuu:text-text-faint niuu:font-mono niuu:shrink-0">
             {activeCount} total
           </span>
         </div>
 
         {/* Template list */}
-        <div className="niuu-flex-1 niuu-overflow-y-auto niuu-px-2.5 niuu-pb-3">
+        <div className="niuu:flex-1 niuu:overflow-y-auto niuu:px-2.5 niuu:pb-3">
           {isLoading && (
-            <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-text-secondary niuu-text-xs niuu-px-2 niuu-py-3">
+            <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-text-secondary niuu:text-xs niuu:px-2 niuu:py-3">
               <StateDot state="processing" pulse />
               <span>Loading…</span>
             </div>
           )}
 
           {isError && (
-            <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-critical niuu-text-xs niuu-px-2 niuu-py-3">
+            <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-critical niuu:text-xs niuu:px-2 niuu:py-3">
               <StateDot state="failed" />
               <span>{error instanceof Error ? error.message : 'Load failed'}</span>
             </div>
@@ -166,23 +166,23 @@ export function WorkflowBuilderPage() {
                 data-testid={`workflow-tab-${wf.id}`}
                 onClick={() => setActiveWorkflow(wf)}
                 className={cn(
-                  'niuu-flex niuu-items-start niuu-gap-2.5 niuu-w-full niuu-px-3 niuu-py-2.5 niuu-rounded-md niuu-border niuu-text-left niuu-font-sans niuu-text-xs niuu-cursor-pointer niuu-transition-colors',
+                  'niuu:flex niuu:items-start niuu:gap-2.5 niuu:w-full niuu:px-3 niuu:py-2.5 niuu:rounded-md niuu:border niuu:text-left niuu:font-sans niuu:text-xs niuu:cursor-pointer niuu:transition-colors',
                   isActive
-                    ? 'niuu-bg-bg-elevated niuu-border-border niuu-text-text-primary'
-                    : 'niuu-bg-transparent niuu-border-transparent niuu-text-text-secondary hover:niuu-bg-bg-tertiary hover:niuu-border-border-subtle',
+                    ? 'niuu:bg-bg-elevated niuu:border-border niuu:text-text-primary'
+                    : 'niuu:bg-transparent niuu:border-transparent niuu:text-text-secondary niuu:hover:bg-bg-tertiary niuu:hover:border-border-subtle',
                 )}
               >
-                <span className="niuu-text-brand niuu-text-sm niuu-leading-none niuu-mt-0.5">
+                <span className="niuu:text-brand niuu:text-sm niuu:leading-none niuu:mt-0.5">
                   ◇
                 </span>
-                <span className="niuu-flex-1 niuu-min-w-0 niuu-flex niuu-flex-col niuu-gap-1">
-                  <span className="niuu-truncate niuu-font-semibold niuu-text-text-primary">
+                <span className="niuu:flex-1 niuu:min-w-0 niuu:flex niuu:flex-col niuu:gap-1">
+                  <span className="niuu:truncate niuu:font-semibold niuu:text-text-primary">
                     {wf.name.length > 22 ? wf.name.slice(0, 20) + '…' : wf.name}
                   </span>
-                  <span className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-[10px] niuu-font-mono niuu-text-text-faint">
-                    {wf.version && <span className="niuu-shrink-0">v{wf.version}</span>}
-                    <span className="niuu-shrink-0">{wf.nodes.length} nodes</span>
-                    <span className="niuu-shrink-0">{wf.edges.length} edges</span>
+                  <span className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
+                    {wf.version && <span className="niuu:shrink-0">v{wf.version}</span>}
+                    <span className="niuu:shrink-0">{wf.nodes.length} nodes</span>
+                    <span className="niuu:shrink-0">{wf.edges.length} edges</span>
                   </span>
                 </span>
               </button>
@@ -191,16 +191,16 @@ export function WorkflowBuilderPage() {
         </div>
 
         {/* Working copy */}
-        <div className="niuu-border-t niuu-border-border niuu-px-4 niuu-py-2.5">
-          <span className="niuu-text-[10px] niuu-font-semibold niuu-uppercase niuu-tracking-[0.24em] niuu-text-text-muted niuu-font-sans">
+        <div className="niuu:border-t niuu:border-border niuu:px-4 niuu:py-2.5">
+          <span className="niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.24em] niuu:text-text-muted niuu:font-sans">
             Working Copy
           </span>
-          <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-mt-1.5">
-            <span className="niuu-text-brand niuu-text-xs">◆</span>
-            <span className="niuu-text-xs niuu-text-text-primary niuu-font-sans niuu-font-semibold">
+          <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:mt-1.5">
+            <span className="niuu:text-brand niuu:text-xs">◆</span>
+            <span className="niuu:text-xs niuu:text-text-primary niuu:font-sans niuu:font-semibold">
               Current draft
             </span>
-            <span className="niuu-text-[10px] niuu-text-text-faint niuu-font-mono niuu-ml-auto niuu-uppercase niuu-tracking-wide">
+            <span className="niuu:text-[10px] niuu:text-text-faint niuu:font-mono niuu:ml-auto niuu:uppercase niuu:tracking-wide">
               unsaved
             </span>
           </div>
@@ -208,11 +208,11 @@ export function WorkflowBuilderPage() {
 
         {/* Delete active */}
         {displayed && (
-          <div className="niuu-border-t niuu-border-border niuu-px-4 niuu-py-2">
+          <div className="niuu:border-t niuu:border-border niuu:px-4 niuu:py-2">
             <button
               data-testid={`delete-workflow-${displayed.id}`}
               onClick={() => handleDelete(displayed.id)}
-              className="niuu-text-[10px] niuu-text-text-faint niuu-bg-transparent niuu-border-none niuu-cursor-pointer niuu-p-0 hover:niuu-text-critical niuu-transition-colors niuu-font-sans"
+              className="niuu:text-[10px] niuu:text-text-faint niuu:bg-transparent niuu:border-none niuu:cursor-pointer niuu:p-0 niuu:hover:text-critical niuu:transition-colors niuu:font-sans"
             >
               Delete workflow
             </button>
@@ -222,7 +222,7 @@ export function WorkflowBuilderPage() {
 
       {/* Workflow builder */}
       {displayed && (
-        <div className="niuu-flex-1 niuu-flex niuu-flex-col niuu-min-h-0 niuu-min-w-0">
+        <div className="niuu:flex-1 niuu:flex niuu:flex-col niuu:min-h-0 niuu:min-w-0">
           <WorkflowBuilder
             key={displayed.id}
             initialWorkflow={displayed}
@@ -249,7 +249,7 @@ export function WorkflowBuilderPage() {
       )}
 
       {!isLoading && !isError && !displayed && (
-        <div className="niuu-flex-1 niuu-flex niuu-items-center niuu-justify-center niuu-text-text-muted niuu-text-sm">
+        <div className="niuu:flex-1 niuu:flex niuu:items-center niuu:justify-center niuu:text-text-muted niuu:text-sm">
           No workflows found.
         </div>
       )}

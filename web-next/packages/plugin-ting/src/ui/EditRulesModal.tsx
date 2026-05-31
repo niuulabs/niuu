@@ -49,7 +49,7 @@ export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesM
   }
 
   const inputClass =
-    'niuu-w-24 niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-2 niuu-py-1 niuu-text-right niuu-font-mono niuu-text-sm niuu-text-text-primary';
+    'niuu:w-24 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-right niuu:font-mono niuu:text-sm niuu:text-text-primary';
 
   return (
     <Modal
@@ -61,9 +61,9 @@ export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesM
         { label: 'Save', variant: 'primary', onClick: handleSave, closes: false },
       ]}
     >
-      <div className="niuu-mt-2 niuu-flex niuu-flex-col niuu-gap-3">
-        <div className="niuu-flex niuu-items-center niuu-justify-between">
-          <label className="niuu-text-sm niuu-text-text-secondary">Confidence threshold</label>
+      <div className="niuu:mt-2 niuu:flex niuu:flex-col niuu:gap-3">
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <label className="niuu:text-sm niuu:text-text-secondary">Confidence threshold</label>
           <input
             type="number"
             min="0"
@@ -75,8 +75,8 @@ export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesM
           />
         </div>
 
-        <div className="niuu-flex niuu-items-center niuu-justify-between">
-          <label className="niuu-text-sm niuu-text-text-secondary">Max concurrent runs</label>
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <label className="niuu:text-sm niuu:text-text-secondary">Max concurrent runs</label>
           <input
             type="number"
             min="1"
@@ -87,26 +87,26 @@ export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesM
           />
         </div>
 
-        <div className="niuu-flex niuu-items-center niuu-justify-between">
-          <label className="niuu-text-sm niuu-text-text-secondary">Auto-continue</label>
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <label className="niuu:text-sm niuu:text-text-secondary">Auto-continue</label>
           <button
             type="button"
             onClick={() => updateDraft({ autoContinue: !current.autoContinue })}
             aria-pressed={current.autoContinue}
             aria-label="Toggle auto-continue"
             className={cn(
-              'niuu-rounded-md niuu-px-3 niuu-py-1 niuu-text-sm niuu-font-medium niuu-transition-colors',
+              'niuu:rounded-md niuu:px-3 niuu:py-1 niuu:text-sm niuu:font-medium niuu:transition-colors',
               current.autoContinue
-                ? 'niuu-bg-brand niuu-text-bg-primary'
-                : 'niuu-border niuu-border-border niuu-bg-transparent niuu-text-text-muted',
+                ? 'niuu:bg-brand niuu:text-bg-primary'
+                : 'niuu:border niuu:border-border niuu:bg-transparent niuu:text-text-muted',
             )}
           >
             {current.autoContinue ? 'on' : 'off'}
           </button>
         </div>
 
-        <div className="niuu-flex niuu-items-center niuu-justify-between">
-          <label className="niuu-text-sm niuu-text-text-secondary">Retry count</label>
+        <div className="niuu:flex niuu:items-center niuu:justify-between">
+          <label className="niuu:text-sm niuu:text-text-secondary">Retry count</label>
           <input
             type="number"
             min="0"

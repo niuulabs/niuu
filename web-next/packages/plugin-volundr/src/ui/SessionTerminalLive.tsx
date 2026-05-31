@@ -447,7 +447,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
 
   if (!url) {
     return (
-      <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-text-sm niuu-text-text-muted">
+      <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
         terminal unavailable
       </div>
     );
@@ -455,38 +455,38 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
 
   if (unavailable) {
     return (
-      <div className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-p-6 niuu-text-center niuu-text-sm niuu-text-text-muted">
+      <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:p-6 niuu:text-center niuu:text-sm niuu:text-text-muted">
         This backend does not expose the legacy terminal transport yet.
       </div>
     );
   }
 
   return (
-    <div className="niuu-flex niuu-h-full niuu-min-h-0 niuu-flex-col niuu-bg-bg-primary">
-      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-3 niuu-py-2">
-        <div className="niuu-flex niuu-items-center niuu-gap-1.5" role="tablist">
+    <div className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col niuu:bg-bg-primary">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-1.5" role="tablist">
           {tabs.map((tab) => (
-            <div key={tab.id} className="niuu-flex niuu-items-center niuu-gap-1">
+            <div key={tab.id} className="niuu:flex niuu:items-center niuu:gap-1">
               <button
                 type="button"
                 role="tab"
                 aria-selected={activeTabId === tab.id}
                 onClick={() => handleSelectTab(tab.id)}
                 className={cn(
-                  'niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px]',
+                  'niuu:flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px]',
                   activeTabId === tab.id
-                    ? 'niuu-border-border niuu-bg-bg-elevated niuu-text-text-primary'
-                    : 'niuu-border-transparent niuu-text-text-muted hover:niuu-border-border-subtle hover:niuu-text-text-secondary',
+                    ? 'niuu:border-border niuu:bg-bg-elevated niuu:text-text-primary'
+                    : 'niuu:border-transparent niuu:text-text-muted niuu:hover:border-border-subtle niuu:hover:text-text-secondary',
                 )}
               >
-                <span className="niuu-text-brand">{'>_'}</span>
+                <span className="niuu:text-brand">{'>_'}</span>
                 <span>{tab.label}</span>
               </button>
               {tabs.length > 1 && (
                 <button
                   type="button"
                   aria-label={`Close ${tab.label}`}
-                  className="niuu-rounded niuu-px-1.5 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-muted hover:niuu-bg-bg-elevated hover:niuu-text-text-primary"
+                  className="niuu:rounded niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:hover:bg-bg-elevated niuu:hover:text-text-primary"
                   onClick={() => void handleCloseTab(tab.id)}
                 >
                   x
@@ -494,13 +494,13 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
               )}
             </div>
           ))}
-          <div className="niuu-relative" ref={menuRef}>
+          <div className="niuu:relative" ref={menuRef}>
             <button
               type="button"
               aria-label="New terminal"
               aria-expanded={menuOpen}
               aria-haspopup="menu"
-              className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-2.5 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-muted hover:niuu-text-text-primary"
+              className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:hover:text-text-primary"
               onClick={() => setMenuOpen((prev) => !prev)}
             >
               +
@@ -508,14 +508,14 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
             {menuOpen && (
               <div
                 role="menu"
-                className="niuu-absolute niuu-left-0 niuu-top-[calc(100%+6px)] niuu-z-20 niuu-min-w-32 niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-p-1 niuu-shadow-lg"
+                className="niuu:absolute niuu:left-0 niuu:top-[calc(100%+6px)] niuu:z-20 niuu:min-w-32 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:p-1 niuu:shadow-lg"
               >
                 {CLI_OPTIONS.map((option) => (
                   <button
                     key={option.id}
                     type="button"
                     role="menuitem"
-                    className="niuu-flex niuu-w-full niuu-items-center niuu-justify-start niuu-rounded-sm niuu-px-2.5 niuu-py-1.5 niuu-text-left niuu-text-xs niuu-text-text-secondary hover:niuu-bg-bg-secondary hover:niuu-text-text-primary"
+                    className="niuu:flex niuu:w-full niuu:items-center niuu:justify-start niuu:rounded-sm niuu:px-2.5 niuu:py-1.5 niuu:text-left niuu:text-xs niuu:text-text-secondary niuu:hover:bg-bg-secondary niuu:hover:text-text-primary"
                     onClick={() => void handleAddCliTab(option.id)}
                   >
                     {option.label}
@@ -525,7 +525,7 @@ export function SessionTerminalLive({ url, readOnly = false }: SessionTerminalLi
             )}
           </div>
         </div>
-        <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+        <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
           {connected ? 'connected' : 'connecting…'}
         </div>
       </div>

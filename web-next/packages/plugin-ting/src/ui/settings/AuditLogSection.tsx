@@ -59,24 +59,24 @@ function formatDate(iso: string): string {
 
 function kindBadgeClass(kind: AuditEntryKind): string {
   if (kind === 'run.failed' || kind === 'run.escalated') {
-    return 'niuu-text-critical niuu-bg-critical/10';
+    return 'niuu:text-critical niuu:bg-critical/10';
   }
   if (kind === 'run.merged' || kind === 'saga.completed') {
-    return 'niuu-text-accent-emerald niuu-bg-accent-emerald/10';
+    return 'niuu:text-accent-emerald niuu:bg-accent-emerald/10';
   }
   if (kind === 'dispatcher.started' || kind === 'run.dispatched') {
-    return 'niuu-text-accent-cyan niuu-bg-accent-cyan/10';
+    return 'niuu:text-accent-cyan niuu:bg-accent-cyan/10';
   }
-  return 'niuu-text-text-secondary niuu-bg-bg-elevated';
+  return 'niuu:text-text-secondary niuu:bg-bg-elevated';
 }
 
 const ACTOR_COLORS: Record<string, string> = {
-  system: 'niuu-text-text-muted',
-  dispatcher: 'niuu-text-accent-purple',
+  system: 'niuu:text-text-muted',
+  dispatcher: 'niuu:text-accent-purple',
 };
 
 function actorClass(actor: string): string {
-  return ACTOR_COLORS[actor] ?? 'niuu-text-text-secondary';
+  return ACTOR_COLORS[actor] ?? 'niuu:text-text-secondary';
 }
 
 export function AuditLogSection() {
@@ -97,22 +97,22 @@ export function AuditLogSection() {
 
   return (
     <section aria-label="Audit log">
-      <h3 className="niuu-text-base niuu-font-semibold niuu-text-text-primary niuu-mb-1">
+      <h3 className="niuu:text-base niuu:font-semibold niuu:text-text-primary niuu:mb-1">
         Audit Log
       </h3>
-      <p className="niuu-text-sm niuu-text-text-secondary niuu-mb-4">
+      <p className="niuu:text-sm niuu:text-text-secondary niuu:mb-4">
         Immutable record of settings changes and dispatcher events.
       </p>
 
       {/* Kind filters */}
-      <div className="niuu-mb-4" role="group" aria-label="Filter by event type">
-        <div className="niuu-flex niuu-flex-wrap niuu-gap-4">
+      <div className="niuu:mb-4" role="group" aria-label="Filter by event type">
+        <div className="niuu:flex niuu:flex-wrap niuu:gap-4">
           {KIND_GROUPS.map((group) => (
             <div key={group.label}>
-              <p className="niuu-text-xs niuu-text-text-muted niuu-mb-1 niuu-uppercase niuu-tracking-wide">
+              <p className="niuu:text-xs niuu:text-text-muted niuu:mb-1 niuu:uppercase niuu:tracking-wide">
                 {group.label}
               </p>
-              <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+              <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
                 {group.kinds.map((kind) => (
                   <button
                     key={kind}
@@ -120,10 +120,10 @@ export function AuditLogSection() {
                     aria-pressed={activeKinds.includes(kind)}
                     onClick={() => toggleKind(kind)}
                     className={cn(
-                      'niuu-px-2 niuu-py-0.5 niuu-rounded-full niuu-text-xs niuu-transition-colors niuu-border',
+                      'niuu:px-2 niuu:py-0.5 niuu:rounded-full niuu:text-xs niuu:transition-colors niuu:border',
                       activeKinds.includes(kind)
-                        ? 'niuu-border-brand niuu-bg-brand/10 niuu-text-brand'
-                        : 'niuu-border-border niuu-text-text-secondary hover:niuu-border-border-subtle',
+                        ? 'niuu:border-brand niuu:bg-brand/10 niuu:text-brand'
+                        : 'niuu:border-border niuu:text-text-secondary niuu:hover:border-border-subtle',
                     )}
                   >
                     {KIND_LABELS[kind]}
@@ -138,7 +138,7 @@ export function AuditLogSection() {
           <button
             type="button"
             onClick={clearFilters}
-            className="niuu-mt-2 niuu-text-xs niuu-text-text-secondary hover:niuu-text-text-primary niuu-transition-colors"
+            className="niuu:mt-2 niuu:text-xs niuu:text-text-secondary niuu:hover:text-text-primary niuu:transition-colors"
           >
             Clear filters ({activeKinds.length} active)
           </button>
@@ -147,47 +147,47 @@ export function AuditLogSection() {
 
       {/* Log table */}
       <div
-        className="niuu-border niuu-border-border niuu-rounded-md niuu-overflow-hidden"
+        className="niuu:border niuu:border-border niuu:rounded-md niuu:overflow-hidden"
         role="log"
         aria-label="Audit log entries"
         aria-live="polite"
       >
         {isLoading && (
-          <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-4" role="status">
+          <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-4" role="status">
             <StateDot state="processing" pulse />
-            <span className="niuu-text-sm niuu-text-text-secondary">loading audit log…</span>
+            <span className="niuu:text-sm niuu:text-text-secondary">loading audit log…</span>
           </div>
         )}
 
         {isError && (
-          <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-4" role="alert">
+          <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-4" role="alert">
             <StateDot state="failed" />
-            <span className="niuu-text-sm niuu-text-critical">
+            <span className="niuu:text-sm niuu:text-critical">
               {error instanceof Error ? error.message : 'failed to load'}
             </span>
           </div>
         )}
 
         {entries?.length === 0 && !isLoading && (
-          <p className="niuu-text-sm niuu-text-text-muted niuu-p-4">
+          <p className="niuu:text-sm niuu:text-text-muted niuu:p-4">
             No entries match the current filter.
           </p>
         )}
 
         {entries && entries.length > 0 && (
-          <table className="niuu-w-full niuu-text-sm niuu-border-collapse">
+          <table className="niuu:w-full niuu:text-sm niuu:border-collapse">
             <thead>
-              <tr className="niuu-border-b niuu-border-border niuu-bg-bg-secondary">
-                <th className="niuu-text-left niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-muted niuu-font-medium niuu-w-40">
+              <tr className="niuu:border-b niuu:border-border niuu:bg-bg-secondary">
+                <th className="niuu:text-left niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-muted niuu:font-medium niuu:w-40">
                   Time
                 </th>
-                <th className="niuu-text-left niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-muted niuu-font-medium niuu-w-40">
+                <th className="niuu:text-left niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-muted niuu:font-medium niuu:w-40">
                   Event
                 </th>
-                <th className="niuu-text-left niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-muted niuu-font-medium">
+                <th className="niuu:text-left niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-muted niuu:font-medium">
                   Summary
                 </th>
-                <th className="niuu-text-left niuu-px-3 niuu-py-2 niuu-text-xs niuu-text-text-muted niuu-font-medium niuu-w-24">
+                <th className="niuu:text-left niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-muted niuu:font-medium niuu:w-24">
                   Actor
                 </th>
               </tr>
@@ -196,21 +196,21 @@ export function AuditLogSection() {
               {entries.map((entry) => (
                 <tr
                   key={entry.id}
-                  className="niuu-border-b niuu-border-border-subtle hover:niuu-bg-bg-secondary niuu-transition-colors"
+                  className="niuu:border-b niuu:border-border-subtle niuu:hover:bg-bg-secondary niuu:transition-colors"
                 >
-                  <td className="niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-xs niuu-text-text-muted niuu-whitespace-nowrap">
+                  <td className="niuu:px-3 niuu:py-2 niuu:font-mono niuu:text-xs niuu:text-text-muted niuu:whitespace-nowrap">
                     {formatDate(entry.createdAt)}
                   </td>
-                  <td className="niuu-px-3 niuu-py-2">
+                  <td className="niuu:px-3 niuu:py-2">
                     <span
-                      className={`niuu-px-1.5 niuu-py-0.5 niuu-rounded niuu-text-xs niuu-font-mono ${kindBadgeClass(entry.kind)}`}
+                      className={`niuu:px-1.5 niuu:py-0.5 niuu:rounded niuu:text-xs niuu:font-mono ${kindBadgeClass(entry.kind)}`}
                     >
                       {entry.kind}
                     </span>
                   </td>
-                  <td className="niuu-px-3 niuu-py-2 niuu-text-text-primary">{entry.summary}</td>
+                  <td className="niuu:px-3 niuu:py-2 niuu:text-text-primary">{entry.summary}</td>
                   <td
-                    className={`niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-xs ${actorClass(entry.actor)}`}
+                    className={`niuu:px-3 niuu:py-2 niuu:font-mono niuu:text-xs ${actorClass(entry.actor)}`}
                   >
                     {entry.actor}
                   </td>
@@ -222,7 +222,7 @@ export function AuditLogSection() {
       </div>
 
       {entries && (
-        <p className="niuu-text-xs niuu-text-text-muted niuu-mt-2">
+        <p className="niuu:text-xs niuu:text-text-muted niuu:mt-2">
           {entries.length} entr{entries.length !== 1 ? 'ies' : 'y'}
           {activeKinds.length > 0 ? ' (filtered)' : ''}
         </p>

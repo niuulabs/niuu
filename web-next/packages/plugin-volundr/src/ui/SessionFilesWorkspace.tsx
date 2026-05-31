@@ -214,7 +214,7 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
 
   return (
     <div
-      className="niuu-relative niuu-flex niuu-h-full niuu-min-h-0 niuu-flex-col niuu-overflow-hidden niuu-bg-bg-primary"
+      className="niuu:relative niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col niuu:overflow-hidden niuu:bg-bg-primary"
       data-testid="session-files-workspace"
       onDragOver={(e) => {
         e.preventDefault();
@@ -242,8 +242,8 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
         }}
       />
 
-      <div className="niuu-flex niuu-flex-nowrap niuu-items-center niuu-gap-3 niuu-overflow-x-auto niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-3 niuu-py-2">
-        <div className="niuu-flex niuu-flex-shrink-0 niuu-overflow-hidden niuu-rounded niuu-border niuu-border-border-subtle">
+      <div className="niuu:flex niuu:flex-nowrap niuu:items-center niuu:gap-3 niuu:overflow-x-auto niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2">
+        <div className="niuu:flex niuu:flex-shrink-0 niuu:overflow-hidden niuu:rounded niuu:border niuu:border-border-subtle">
           {rootOptions.map((root) => {
             const active = currentRoot.path === root.path;
             return (
@@ -252,8 +252,8 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
                 type="button"
                 className={
                   active
-                    ? 'niuu-border-r niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-primary last:niuu-border-r-0'
-                    : 'niuu-border-r niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-muted hover:niuu-bg-bg-tertiary last:niuu-border-r-0'
+                    ? 'niuu:border-r niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-text-primary niuu:last:border-r-0'
+                    : 'niuu:border-r niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:hover:bg-bg-tertiary niuu:last:border-r-0'
                 }
                 onClick={() => {
                   setCurrentDir(root.path);
@@ -267,7 +267,7 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
           })}
         </div>
 
-        <div className="niuu-ml-auto niuu-flex niuu-flex-shrink-0 niuu-items-center niuu-gap-2">
+        <div className="niuu:ml-auto niuu:flex niuu:flex-shrink-0 niuu:items-center niuu:gap-2">
           <ActionButton label="upload" onClick={() => setShowUploadDialog(true)} />
           <ActionButton
             label="download"
@@ -284,10 +284,10 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
         </div>
       </div>
 
-      <div className="niuu-flex niuu-flex-nowrap niuu-items-center niuu-gap-2 niuu-overflow-x-auto niuu-border-b niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+      <div className="niuu:flex niuu:flex-nowrap niuu:items-center niuu:gap-2 niuu:overflow-x-auto niuu:border-b niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
         <button
           type="button"
-          className="niuu-inline-flex niuu-items-center niuu-gap-1 niuu-rounded-md niuu-px-1.5 niuu-py-1 hover:niuu-bg-bg-secondary hover:niuu-text-text-primary"
+          className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:px-1.5 niuu:py-1 niuu:hover:bg-bg-secondary niuu:hover:text-text-primary"
           onClick={() => {
             setCurrentDir(currentRoot.path);
             clearSelection();
@@ -299,11 +299,11 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
         {breadcrumbs
           .filter((crumb) => crumb.path !== currentRoot.path)
           .map((crumb) => (
-            <span key={crumb.path} className="niuu-flex niuu-items-center niuu-gap-1">
+            <span key={crumb.path} className="niuu:flex niuu:items-center niuu:gap-1">
               <span>›</span>
               <button
                 type="button"
-                className="niuu-rounded-md niuu-px-1.5 niuu-py-1 hover:niuu-bg-bg-secondary hover:niuu-text-text-primary"
+                className="niuu:rounded-md niuu:px-1.5 niuu:py-1 niuu:hover:bg-bg-secondary niuu:hover:text-text-primary"
                 onClick={() => {
                   setCurrentDir(crumb.path);
                   clearSelection();
@@ -316,40 +316,40 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
           ))}
       </div>
 
-      <div className="niuu-flex niuu-flex-nowrap niuu-items-center niuu-justify-between niuu-gap-4 niuu-border-b niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2">
-        <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-whitespace-nowrap">
-          <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+      <div className="niuu:flex niuu:flex-nowrap niuu:items-center niuu:justify-between niuu:gap-4 niuu:border-b niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:whitespace-nowrap">
+          <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
             {entries.length} item{entries.length === 1 ? '' : 's'}
           </div>
         </div>
-        <div className="niuu-flex-shrink-0 niuu-whitespace-nowrap niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+        <div className="niuu:flex-shrink-0 niuu:whitespace-nowrap niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
           {selectedPaths.length === 0 ? 'no selection' : `${selectedPaths.length} selected`}
         </div>
       </div>
 
-      <section className="niuu-min-h-0 niuu-flex niuu-flex-1 niuu-flex-col niuu-overflow-hidden">
+      <section className="niuu:min-h-0 niuu:flex niuu:flex-1 niuu:flex-col niuu:overflow-hidden">
         <div
-          className="niuu-grid niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.16em] niuu-text-text-muted"
+          className="niuu:grid niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.16em] niuu:text-text-muted"
           style={{ gridTemplateColumns: 'minmax(0, 1.9fr) 128px 112px' }}
         >
           <div>Name</div>
           <div>Kind</div>
-          <div className="niuu-text-right">Size</div>
+          <div className="niuu:text-right">Size</div>
         </div>
 
-        <div className="niuu-min-h-0 niuu-flex-1 niuu-overflow-auto">
+        <div className="niuu:min-h-0 niuu:flex-1 niuu:overflow-auto">
           {treeQuery.isLoading && (
-            <div className="niuu-p-4 niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+            <div className="niuu:p-4 niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
               loading files…
             </div>
           )}
           {treeQuery.isError && (
-            <div className="niuu-p-4 niuu-font-mono niuu-text-[11px] niuu-text-critical">
+            <div className="niuu:p-4 niuu:font-mono niuu:text-[11px] niuu:text-critical">
               failed to load files
             </div>
           )}
           {!treeQuery.isLoading && !treeQuery.isError && (
-            <table className="niuu-session-files-table niuu-w-full niuu-table-fixed">
+            <table className="niuu-session-files-table niuu:w-full niuu-table-fixed">
               <colgroup>
                 <col />
                 <col style={{ width: '128px' }} />
@@ -361,45 +361,45 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
                   return (
                     <tr
                       key={node.path}
-                      className="niuu-session-files-row niuu-cursor-pointer niuu-border-b niuu-border-border-subtle niuu-transition-colors"
+                      className="niuu-session-files-row niuu:cursor-pointer niuu:border-b niuu:border-border-subtle niuu:transition-colors"
                       data-selected={selected ? 'true' : 'false'}
                       data-testid={`file-browser-row-${node.path}`}
                       onClick={(e) => handleRowClick(node, e.metaKey || e.ctrlKey || e.shiftKey)}
                       onDoubleClick={() => void handleRowDoubleClick(node)}
                     >
-                      <td className="niuu-session-files-cell niuu-session-files-cell--name niuu-px-2 niuu-py-1">
-                        <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-overflow-hidden">
+                      <td className="niuu-session-files-cell niuu-session-files-cell--name niuu:px-2 niuu:py-1">
+                        <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:overflow-hidden">
                           <span
                             aria-hidden="true"
                             className={cn(
-                              'niuu-h-2 niuu-w-2 niuu-flex-shrink-0 niuu-rounded-full niuu-transition-colors',
-                              selected ? 'niuu-bg-brand' : 'niuu-bg-transparent',
+                              'niuu:h-2 niuu:w-2 niuu:flex-shrink-0 niuu:rounded-full niuu:transition-colors',
+                              selected ? 'niuu:bg-brand' : 'niuu:bg-transparent',
                             )}
                           />
-                          <span className="niuu-inline-flex niuu-h-4 niuu-w-4 niuu-flex-shrink-0 niuu-items-center niuu-justify-center">
+                          <span className="niuu:inline-flex niuu:h-4 niuu:w-4 niuu:flex-shrink-0 niuu:items-center niuu:justify-center">
                             <NodeGlyph kind={node.kind} />
                           </span>
                           <span
                             className={cn(
-                              'niuu-truncate niuu-font-mono niuu-text-[14px] niuu-leading-5',
-                              selected ? 'niuu-text-text-primary' : 'niuu-text-text-primary',
+                              'niuu:truncate niuu:font-mono niuu:text-[14px] niuu:leading-5',
+                              selected ? 'niuu:text-text-primary' : 'niuu:text-text-primary',
                             )}
                           >
                             {node.name}
                           </span>
                           {node.isSecret && (
-                            <span className="niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-1.5 niuu-py-0.5 niuu-font-mono niuu-text-[10px] niuu-text-text-muted">
+                            <span className="niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
                               secret
                             </span>
                           )}
                         </div>
                       </td>
-                      <td className="niuu-session-files-cell niuu-px-2 niuu-py-1">
-                        <span className="niuu-inline-flex niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-2 niuu-py-0.5 niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-tracking-[0.12em] niuu-text-text-muted">
+                      <td className="niuu-session-files-cell niuu:px-2 niuu:py-1">
+                        <span className="niuu:inline-flex niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-2 niuu:py-0.5 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-muted">
                           {node.kind === 'directory' ? 'folder' : 'file'}
                         </span>
                       </td>
-                      <td className="niuu-session-files-cell niuu-px-2 niuu-py-1 niuu-whitespace-nowrap niuu-text-right niuu-font-mono niuu-text-[12px] niuu-text-text-muted">
+                      <td className="niuu-session-files-cell niuu:px-2 niuu:py-1 niuu:whitespace-nowrap niuu:text-right niuu:font-mono niuu:text-[12px] niuu:text-text-muted">
                         {node.kind === 'file' && node.size != null ? formatSize(node.size) : '—'}
                       </td>
                     </tr>
@@ -410,15 +410,15 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
           )}
 
           {!treeQuery.isLoading && !treeQuery.isError && entries.length === 0 && (
-            <div className="niuu-p-6 niuu-text-center niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+            <div className="niuu:p-6 niuu:text-center niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
               empty directory
             </div>
           )}
         </div>
       </section>
 
-      <div className="niuu-border-t niuu-border-border-subtle niuu-bg-bg-primary">
-        <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+      <div className="niuu:border-t niuu:border-border-subtle niuu:bg-bg-primary">
+        <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
           <span>
             {selectedPaths.length === 0 ? 'no files selected' : `${selectedPaths.length} selected`}
           </span>
@@ -427,13 +427,13 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
         </div>
         {uploads.length > 0 && (
           <>
-            <div className="niuu-flex niuu-items-center niuu-justify-between niuu-border-t niuu-border-border-subtle niuu-px-3 niuu-py-2">
-              <span className="niuu-font-mono niuu-text-[11px] niuu-text-text-secondary">
+            <div className="niuu:flex niuu:items-center niuu:justify-between niuu:border-t niuu:border-border-subtle niuu:px-3 niuu:py-2">
+              <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
                 uploads ({uploads.filter((u) => u.status === 'done').length}/{uploads.length})
               </span>
               <button
                 type="button"
-                className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted"
+                className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted"
                 onClick={() =>
                   setUploads((prev) =>
                     prev.filter((u) => u.status !== 'done' && u.status !== 'error'),
@@ -443,21 +443,21 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
                 clear
               </button>
             </div>
-            <div className="niuu-max-h-28 niuu-overflow-auto niuu-border-t niuu-border-border-subtle">
+            <div className="niuu:max-h-28 niuu:overflow-auto niuu:border-t niuu:border-border-subtle">
               {uploads.map((item, index) => (
                 <div
                   key={`${item.file.name}-${index}`}
-                  className="niuu-grid niuu-grid-cols-[1fr_72px_96px] niuu-gap-3 niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary"
+                  className="niuu:grid niuu:grid-cols-[1fr_72px_96px] niuu:gap-3 niuu:px-3 niuu:py-2 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary"
                 >
-                  <span className="niuu-truncate">{item.file.name}</span>
-                  <span className="niuu-text-text-muted">{formatSize(item.file.size)}</span>
+                  <span className="niuu:truncate">{item.file.name}</span>
+                  <span className="niuu:text-text-muted">{formatSize(item.file.size)}</span>
                   <span
                     className={
                       item.status === 'error'
-                        ? 'niuu-text-critical'
+                        ? 'niuu:text-critical'
                         : item.status === 'done'
-                          ? 'niuu-text-emerald-400'
-                          : 'niuu-text-text-muted'
+                          ? 'niuu:text-emerald-400'
+                          : 'niuu:text-text-muted'
                     }
                   >
                     {item.status === 'done'
@@ -474,18 +474,18 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
       </div>
 
       {dropActive && (
-        <div className="niuu-pointer-events-none niuu-absolute niuu-inset-0 niuu-z-20 niuu-flex niuu-flex-col niuu-items-center niuu-justify-center niuu-gap-2 niuu-bg-bg-primary/80">
-          <div className="niuu-font-mono niuu-text-[18px] niuu-text-brand">upload</div>
-          <div className="niuu-font-mono niuu-text-[12px] niuu-text-brand">
+        <div className="niuu:pointer-events-none niuu:absolute niuu:inset-0 niuu:z-20 niuu:flex niuu:flex-col niuu:items-center niuu:justify-center niuu:gap-2 niuu:bg-bg-primary/80">
+          <div className="niuu:font-mono niuu:text-[18px] niuu:text-brand">upload</div>
+          <div className="niuu:font-mono niuu:text-[12px] niuu:text-brand">
             drop files to upload
           </div>
         </div>
       )}
 
       {errorMessage && (
-        <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-border-t niuu-border-critical niuu-bg-critical/10 niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-[11px] niuu-text-critical">
+        <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:border-t niuu:border-critical niuu:bg-critical/10 niuu:px-3 niuu:py-2 niuu:font-mono niuu:text-[11px] niuu:text-critical">
           <span>{errorMessage}</span>
-          <button type="button" className="niuu-ml-auto" onClick={() => setErrorMessage(undefined)}>
+          <button type="button" className="niuu:ml-auto" onClick={() => setErrorMessage(undefined)}>
             dismiss
           </button>
         </div>
@@ -493,13 +493,13 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
 
       {showUploadDialog && (
         <DialogShell title="Upload files" onClose={() => setShowUploadDialog(false)}>
-          <div className="niuu-space-y-3">
-            <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+          <div className="niuu:space-y-3">
+            <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
               target: {currentDir}
             </div>
             <button
               type="button"
-              className="niuu-w-full niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-3 niuu-font-mono niuu-text-[12px] niuu-text-text-primary"
+              className="niuu:w-full niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-3 niuu:font-mono niuu:text-[12px] niuu:text-text-primary"
               onClick={() => uploadRef.current?.click()}
             >
               choose files…
@@ -510,24 +510,24 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
 
       {showDownloadDialog && (
         <DialogShell title="Download selected files" onClose={() => setShowDownloadDialog(false)}>
-          <div className="niuu-space-y-3">
-            <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+          <div className="niuu:space-y-3">
+            <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
               {selectedNodes.length} selected
             </div>
-            <div className="niuu-max-h-40 niuu-space-y-1 niuu-overflow-auto niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-2">
+            <div className="niuu:max-h-40 niuu:space-y-1 niuu:overflow-auto niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-2">
               {selectedNodes.map((node) => (
                 <div
                   key={node.path}
-                  className="niuu-font-mono niuu-text-[11px] niuu-text-text-secondary"
+                  className="niuu:font-mono niuu:text-[11px] niuu:text-text-secondary"
                 >
                   {node.name}
                 </div>
               ))}
             </div>
-            <div className="niuu-flex niuu-justify-end">
+            <div className="niuu:flex niuu:justify-end">
               <button
                 type="button"
-                className="niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-primary"
+                className="niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-text-primary"
                 onClick={() => void handleDownloadSelected()}
               >
                 download
@@ -539,14 +539,14 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
 
       {showDeleteDialog && (
         <DialogShell title="Delete selected files" onClose={() => setShowDeleteDialog(false)}>
-          <div className="niuu-space-y-3">
-            <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
+          <div className="niuu:space-y-3">
+            <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
               This will remove {selectedNodes.length} item{selectedNodes.length === 1 ? '' : 's'}.
             </div>
-            <div className="niuu-flex niuu-justify-end">
+            <div className="niuu:flex niuu:justify-end">
               <button
                 type="button"
-                className="niuu-rounded niuu-border niuu-border-critical niuu-bg-critical/10 niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-critical"
+                className="niuu:rounded niuu:border niuu:border-critical niuu:bg-critical/10 niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-critical"
                 onClick={() => void handleDeleteSelected()}
               >
                 delete
@@ -558,9 +558,9 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
 
       {showMkdirDialog && (
         <DialogShell title="Create folder" onClose={() => setShowMkdirDialog(false)}>
-          <div className="niuu-space-y-3">
+          <div className="niuu:space-y-3">
             <input
-              className="niuu-w-full niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-font-mono niuu-text-[12px] niuu-text-text-primary"
+              className="niuu:w-full niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:font-mono niuu:text-[12px] niuu:text-text-primary"
               value={mkdirName}
               onChange={(e) => setMkdirName(e.target.value)}
               placeholder="folder-name"
@@ -570,10 +570,10 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
                 if (e.key === 'Escape') setShowMkdirDialog(false);
               }}
             />
-            <div className="niuu-flex niuu-justify-end">
+            <div className="niuu:flex niuu:justify-end">
               <button
                 type="button"
-                className="niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-elevated niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-primary"
+                className="niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-text-primary"
                 onClick={() => void handleCreateDirectory()}
               >
                 create
@@ -584,8 +584,8 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
       )}
 
       {viewerPath && (
-        <div className="niuu-absolute niuu-inset-0 niuu-z-30 niuu-bg-black/40">
-          <div className="niuu-absolute niuu-inset-x-8 niuu-bottom-8 niuu-top-8 niuu-overflow-hidden niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-primary">
+        <div className="niuu:absolute niuu:inset-0 niuu:z-30 niuu:bg-black/40">
+          <div className="niuu:absolute niuu:inset-x-8 niuu:bottom-8 niuu:top-8 niuu:overflow-hidden niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-primary">
             <FileViewer
               path={viewerPath}
               content={viewerContent}
@@ -612,7 +612,7 @@ function ActionButton({
   return (
     <button
       type="button"
-      className="niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-2.5 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary hover:niuu-bg-bg-tertiary disabled:niuu-opacity-40"
+      className="niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-2.5 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary niuu:hover:bg-bg-tertiary niuu:disabled:opacity-40"
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
@@ -629,7 +629,7 @@ function NodeGlyph({ kind }: { kind: BrowserNode['kind'] }) {
       <svg
         aria-hidden="true"
         viewBox="0 0 12 12"
-        className="niuu-h-3.5 niuu-w-3.5"
+        className="niuu:h-3.5 niuu:w-3.5"
         style={{ color: 'var(--color-text-secondary)' }}
       >
         <path d="M3 2.5L9 6L3 9.5V2.5Z" fill="currentColor" />
@@ -640,7 +640,7 @@ function NodeGlyph({ kind }: { kind: BrowserNode['kind'] }) {
   return (
     <span
       aria-hidden="true"
-      className="niuu-inline-block niuu-h-1.5 niuu-w-1.5 niuu-rounded-full niuu-bg-text-faint"
+      className="niuu:inline-block niuu:h-1.5 niuu:w-1.5 niuu:rounded-full niuu:bg-text-faint"
     />
   );
 }
@@ -657,16 +657,16 @@ function DialogShell({
   return (
     <>
       <div
-        className="niuu-absolute niuu-inset-0 niuu-z-30 niuu-bg-black/40"
+        className="niuu:absolute niuu:inset-0 niuu:z-30 niuu:bg-black/40"
         onClick={onClose}
         role="presentation"
       />
-      <div className="niuu-absolute niuu-left-1/2 niuu-top-1/2 niuu-z-40 niuu-w-[360px] niuu--translate-x-1/2 niuu--translate-y-1/2 niuu-rounded niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4">
-        <div className="niuu-mb-3 niuu-flex niuu-items-center niuu-justify-between">
-          <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-primary">{title}</div>
+      <div className="niuu:absolute niuu:left-1/2 niuu:top-1/2 niuu:z-40 niuu:w-[360px] niuu:-translate-x-1/2 niuu:-translate-y-1/2 niuu:rounded niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
+        <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between">
+          <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-primary">{title}</div>
           <button
             type="button"
-            className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted"
+            className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted"
             onClick={onClose}
           >
             close

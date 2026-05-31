@@ -58,7 +58,7 @@ export function ThresholdOverrideModal({
         { label: 'Apply', variant: 'primary', onClick: handleApply, closes: false },
       ]}
     >
-      <div className="niuu-mt-4 niuu-flex niuu-items-center niuu-gap-4">
+      <div className="niuu:mt-4 niuu:flex niuu:items-center niuu:gap-4">
         <input
           type="range"
           min={THRESHOLD_MIN}
@@ -66,10 +66,10 @@ export function ThresholdOverrideModal({
           step={THRESHOLD_STEP}
           value={value}
           onChange={(e) => setDraft({ key: thresholdKey, value: parseFloat(e.target.value) })}
-          className="niuu-flex-1"
+          className="niuu:flex-1"
           aria-label="Threshold value"
         />
-        <span className="niuu-min-w-[3.5rem] niuu-text-right niuu-font-mono niuu-text-xl niuu-text-brand">
+        <span className="niuu:min-w-[3.5rem] niuu:text-right niuu:font-mono niuu:text-xl niuu:text-brand">
           {value.toFixed(2)}
         </span>
       </div>
