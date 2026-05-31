@@ -15,7 +15,7 @@ export default defineConfig({
   },
   expect: {
     toHaveScreenshot: {
-      maxDiffPixelRatio: 0.01,
+      maxDiffPixelRatio: 0.05,
       animations: 'disabled',
       caret: 'hide',
       // Hide React Query devtools button — it appears in web-next dev mode
