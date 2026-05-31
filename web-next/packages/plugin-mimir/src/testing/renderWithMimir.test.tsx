@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
 import { createMimirMockAdapter } from '../adapters/mock';
 import { createStatefulWardenService, renderWithMimir, slugify } from './renderWithMimir';

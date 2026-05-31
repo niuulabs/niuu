@@ -2,14 +2,16 @@ import { useMemo, useState } from 'react';
 import { cn } from '@niuulabs/ui';
 import type { VolundrAggregatedLog, VolundrLogParticipant } from '../../models/volundr.model';
 
+type StructuredLogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
+
 interface StructuredLogViewerProps {
   logs: VolundrAggregatedLog[];
   participants?: VolundrLogParticipant[];
   loading?: boolean;
   emptyText?: string;
-  initialLevel?: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
-  level?: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
-  onLevelChange?: (level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR') => void;
+  initialLevel?: StructuredLogLevel;
+  level?: StructuredLogLevel;
+  onLevelChange?: (level: StructuredLogLevel) => void;
   showParticipantFilters?: boolean;
   showDownload?: boolean;
   downloadFilename?: string;
@@ -62,7 +64,9 @@ export function StructuredLogViewer({
   toolbarTestId = 'structured-log-toolbar',
 }: StructuredLogViewerProps) {
   const [selectedParticipant, setSelectedParticipant] = useState('all');
-  const [internalLevelOverride, setInternalLevelOverride] = useState<LogLevel | null>(null);
+  const [internalLevelOverride, setInternalLevelOverride] = useState<StructuredLogLevel | null>(
+    null,
+  );
   const [search, setSearch] = useState('');
   const selectedLevel = level ?? internalLevelOverride ?? initialLevel;
 
@@ -87,7 +91,12 @@ export function StructuredLogViewer({
       : 'all';
 
   const levelFilteredLogs = useMemo(() => {
-    const order = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3 } as const;
+    const order: Record<StructuredLogLevel, number> = {
+      DEBUG: 0,
+      INFO: 1,
+      WARNING: 2,
+      ERROR: 3,
+    };
     return logs.filter((line) => {
       const normalized =
         line.level === 'error'
@@ -191,7 +200,7 @@ export function StructuredLogViewer({
                 className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-2 niuu-py-1 niuu-text-[11px] niuu-text-text-secondary"
                 value={selectedLevel}
                 onChange={(event) => {
-                  const next = event.target.value as 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
+                  const next = event.target.value as StructuredLogLevel;
                   if (onLevelChange) onLevelChange(next);
                   else setInternalLevelOverride(next);
                 }}
