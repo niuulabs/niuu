@@ -40,5 +40,6 @@ export default defineConfig({
     command: 'pnpm dev:playwright',
     url: 'http://localhost:5173',
     reuseExistingServer: !process.env.CI,
+    timeout: 300_000,
   },
 });
