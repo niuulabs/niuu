@@ -6,13 +6,13 @@ the entire startup.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import logging
 import os
 import shutil
 import socket
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING

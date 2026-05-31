@@ -1,8 +1,8 @@
 """Admin page — user/tenant tables and stats dashboard with search."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 

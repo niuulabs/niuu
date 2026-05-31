@@ -1,11 +1,11 @@
 """Tests for DriveLoop, SilentChannel, triggers, and initiative prompt."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import json
 import time
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch

@@ -1,6 +1,7 @@
 """TabBar — layout preset tab switcher between StatusBar and the split container."""
 
 from __future__ import annotations
+
 from contextlib import suppress
 
 from textual.app import ComposeResult

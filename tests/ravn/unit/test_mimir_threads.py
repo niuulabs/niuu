@@ -26,8 +26,8 @@ Tests cover:
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch

@@ -1,12 +1,12 @@
 """Filesystem-backed persistence for Ravn wardens."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import os
 import re
 import zlib
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 

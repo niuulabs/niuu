@@ -11,12 +11,12 @@ Design principles:
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
 import os
 import uuid
+from contextlib import suppress
 from typing import Any
 from urllib.parse import quote
 

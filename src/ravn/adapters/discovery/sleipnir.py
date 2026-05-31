@@ -24,12 +24,12 @@ SPIFFE JWT-SVID validation is used for trust — no separate handshake socket.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import json
 import logging
 import os
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 

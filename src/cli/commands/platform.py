@@ -6,12 +6,12 @@ automatically — no code changes needed here.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import inspect
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 

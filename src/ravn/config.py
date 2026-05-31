@@ -25,9 +25,9 @@ without modifying the global ravn.yaml.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import os
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal

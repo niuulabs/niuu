@@ -17,7 +17,6 @@ running.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import fcntl
@@ -28,6 +27,7 @@ import re
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path

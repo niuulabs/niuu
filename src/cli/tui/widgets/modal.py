@@ -1,6 +1,7 @@
 """Modal widget — generic centered dialog with title and content."""
 
 from __future__ import annotations
+
 from contextlib import suppress
 
 from textual.app import ComposeResult

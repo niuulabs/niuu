@@ -1,6 +1,7 @@
 """MetricCard widget — bordered box with icon, value, and label."""
 
 from __future__ import annotations
+
 from contextlib import suppress
 
 from textual.app import ComposeResult

@@ -1,9 +1,9 @@
 """MimirView — navigable wiki browser with search, page content, and instance switching."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
+from contextlib import suppress
 from typing import Any
 
 from textual.app import ComposeResult

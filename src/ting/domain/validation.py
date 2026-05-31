@@ -5,10 +5,10 @@ against the SagaStructure schema and returns typed domain objects.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import json
 import re
+from contextlib import suppress
 
 from ting.domain.models import PhaseSpec, RunSpec, SagaStructure
 

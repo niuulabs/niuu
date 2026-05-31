@@ -10,11 +10,11 @@ Design principles:
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from typing import Any
 
 import httpx

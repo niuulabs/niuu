@@ -7,11 +7,11 @@ chat bubble to the RichLog.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import json
 import re
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult

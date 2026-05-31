@@ -1,8 +1,8 @@
 """Settings page — tabbed configuration for connection, profile, integrations, appearance."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 

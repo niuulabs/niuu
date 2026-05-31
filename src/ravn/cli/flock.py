@@ -22,7 +22,6 @@ State files
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import json
@@ -32,6 +31,7 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path

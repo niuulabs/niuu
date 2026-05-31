@@ -41,8 +41,6 @@ on:
         type: string
         default: ghcr.io
 
-permissions: read-all
-
 jobs:
   build:
     name: "Build ${{ matrix.container }} (${{ matrix.platform }})"

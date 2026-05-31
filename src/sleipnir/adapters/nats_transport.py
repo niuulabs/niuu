@@ -62,11 +62,11 @@ Configuration example
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
 from collections import deque
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 

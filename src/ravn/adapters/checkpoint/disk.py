@@ -15,13 +15,13 @@ Old snapshots are pruned when ``max_snapshots_per_task`` is exceeded.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import gzip
 import json
 import logging
 import os
 import tempfile
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 

@@ -4,8 +4,8 @@ Uses the zinc theme, 4-mode keybinding system, and widget library.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult

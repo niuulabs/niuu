@@ -1,8 +1,8 @@
 """PaneWidget — leaf node of the split tree with a unified pane header bar."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult

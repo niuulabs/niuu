@@ -15,12 +15,12 @@ polling when not set.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
 import os
 import time
+from contextlib import suppress
 from typing import Any
 
 import httpx

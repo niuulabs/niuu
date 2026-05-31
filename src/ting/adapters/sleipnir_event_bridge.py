@@ -22,10 +22,10 @@ Event mapping
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.domain.registry import (

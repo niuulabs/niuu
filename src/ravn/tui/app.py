@@ -1,10 +1,10 @@
 """RavnTUI — main Textual application for the Ravn terminal operator interface."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 

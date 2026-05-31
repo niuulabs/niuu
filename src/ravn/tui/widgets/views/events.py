@@ -1,8 +1,8 @@
 """EventStreamView — live SSE event stream with colour-coded type badges."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 

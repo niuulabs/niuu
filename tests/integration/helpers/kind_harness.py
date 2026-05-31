@@ -41,7 +41,6 @@ Usage example::
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import json
 import logging
@@ -52,6 +51,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 

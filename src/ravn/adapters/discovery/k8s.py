@@ -13,10 +13,10 @@ for subsequent Sleipnir communication — no handshake socket is opened.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 

@@ -9,10 +9,10 @@ LLM-powered review that understands code context, architecture, and quality.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import json
 import logging
+from contextlib import suppress
 from dataclasses import dataclass
 
 from ting.config import ReviewConfig

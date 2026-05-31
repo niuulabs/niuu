@@ -16,7 +16,6 @@ Constructor accepts plain kwargs (dynamic adapter pattern):
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import json
@@ -28,6 +27,7 @@ import signal
 import socket
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path

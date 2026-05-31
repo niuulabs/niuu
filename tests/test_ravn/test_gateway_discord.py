@@ -1,10 +1,10 @@
 """Tests for the Discord gateway adapter."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import json
+from contextlib import suppress
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 

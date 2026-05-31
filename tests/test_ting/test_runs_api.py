@@ -1,8 +1,8 @@
 """Tests for run review REST API endpoints."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4

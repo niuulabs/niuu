@@ -25,7 +25,6 @@ Rule evaluation order
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import fnmatch
 import logging
@@ -33,6 +32,7 @@ import re
 import shlex
 import time
 from collections import deque
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
