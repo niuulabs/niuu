@@ -4,6 +4,7 @@
  * Build: tsup onSuccess → postcss (postcss-import + tailwindcss + autoprefixer).
  */
 
+@import 'tailwindcss';
 @config "../tailwind.config.ts";
 
 @import './ui/MimirPage.css';
@@ -12,5 +13,3 @@
 @import './ui/LintBadge.css';
 @import './ui/GraphPage.css';
 @import './ui/mimir-views.css';
-
-@import 'tailwindcss';

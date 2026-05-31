@@ -1,5 +1,4 @@
+@import 'tailwindcss';
 @config "../tailwind.config.ts";
 
 @import './ui/DashboardPage.css';
-
-@import 'tailwindcss';

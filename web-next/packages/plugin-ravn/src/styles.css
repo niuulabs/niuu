@@ -3,6 +3,5 @@
  * Tailwind utilities, driven by @niuulabs/design-tokens preset.
  */
 
-@config "../tailwind.config.ts";
-
 @import 'tailwindcss';
+@config "../tailwind.config.ts";

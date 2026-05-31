@@ -4,6 +4,7 @@
  * Build: tsup onSuccess → postcss-cli reads postcss.config.cjs → dist/styles.css.
  */
 
+@import 'tailwindcss';
 @config "../tailwind.config.ts";
 
 @import './primitives/Chip/Chip.css';
@@ -67,5 +68,3 @@
 @import './chat/components/SlashCommandMenu/SlashCommandMenu.css';
 @import './chat/components/ThreadGroup/ThreadGroup.css';
 @import './chat/components/ToolBlock/ToolBlock.css';
-
-@import 'tailwindcss';

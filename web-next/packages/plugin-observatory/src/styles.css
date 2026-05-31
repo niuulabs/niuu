@@ -1,6 +1,5 @@
-@config "../tailwind.config.ts";
-
 @import 'tailwindcss';
+@config "../tailwind.config.ts";
 
 @layer components {
   /* Section headers in TypePreviewDrawer */
