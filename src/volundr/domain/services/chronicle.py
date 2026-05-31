@@ -1,9 +1,9 @@
 """Domain service for session chronicles."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -48,8 +48,8 @@ def _detect_git_info(path: str) -> dict[str, str]:
     Uses GitPython to inspect the repo. Returns empty dict if not a git repo.
     """
     result: dict[str, str] = {}
-    with suppress(InvalidGitRepositoryError, Exception):
-        from git import InvalidGitRepositoryError, Repo
+    with suppress(Exception):
+        from git import Repo
 
         repo = Repo(path, search_parent_directories=True)
 

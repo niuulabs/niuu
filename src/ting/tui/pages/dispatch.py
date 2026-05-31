@@ -1,8 +1,8 @@
 """Dispatch TUI page — queue view with bulk dispatch and activity log."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult

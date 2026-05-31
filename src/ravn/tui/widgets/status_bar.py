@@ -1,8 +1,8 @@
 """StatusBar — top bar: ᚱ RAVN · flokk tag · active ravn · clock."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 

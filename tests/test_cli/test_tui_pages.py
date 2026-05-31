@@ -253,7 +253,6 @@ class TestSessionsPage:
     async def test_sessions_action_messages(self) -> None:
         sessions = _sample_sessions()
         app = PageTestApp(SessionsPage, sessions=sessions)
-        messages: list[SessionsPage.SessionAction] = []
         async with app.run_test() as pilot:
             await pilot.pause()
             page = app.query_one(SessionsPage)

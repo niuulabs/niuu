@@ -15,11 +15,11 @@ Usage::
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 

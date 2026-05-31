@@ -12,7 +12,6 @@ Design principles:
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import hashlib
@@ -20,6 +19,7 @@ import hmac
 import json
 import logging
 import os
+from contextlib import suppress
 from typing import Any
 
 import httpx

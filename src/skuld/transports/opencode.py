@@ -9,11 +9,11 @@ deltas, plus ``question.asked`` for permission requests and ``session.idle``
 for turn completion.
 """
 
-from contextlib import suppress
 import asyncio
 import json
 import logging
 import os
+from contextlib import suppress
 
 import httpx
 

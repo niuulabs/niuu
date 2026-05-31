@@ -1,12 +1,12 @@
 """Deployment adapters for long-lived Ravn wardens."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import os
 import subprocess
 import threading
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 

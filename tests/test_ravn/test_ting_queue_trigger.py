@@ -9,10 +9,10 @@ Covers:
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import importlib
+from contextlib import suppress
 from unittest.mock import AsyncMock, patch
 
 import httpx

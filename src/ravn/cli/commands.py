@@ -1,7 +1,6 @@
 """Ravn CLI entry point."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import importlib
@@ -12,6 +11,7 @@ import signal
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 

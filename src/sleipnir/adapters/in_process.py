@@ -8,10 +8,10 @@ Overflow evicts the oldest event with a warning log (ring buffer semantics).
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from sleipnir.adapters._subscriber_support import (
     DEFAULT_RING_BUFFER_DEPTH,

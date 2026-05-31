@@ -10,10 +10,10 @@ Typical deployments:
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from ravn.domain.models import RavnCandidate, RavnIdentity, RavnPeer
 from ravn.ports.discovery import PeerCallback

@@ -7,9 +7,9 @@ milestones, issues) is fetched live from the tracker at read time.
 from __future__ import annotations
 
 import logging
-from inspect import isawaitable
 from dataclasses import replace
 from datetime import UTC, datetime
+from inspect import isawaitable
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status

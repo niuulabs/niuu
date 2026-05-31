@@ -11,7 +11,6 @@ daemon instances.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import contextvars
@@ -19,6 +18,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path

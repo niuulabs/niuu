@@ -8,11 +8,11 @@ HTTPTransport — simpler request/response: POST JSON-RPC, receive JSON reply.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from typing import Any
 
 from ravn.adapters.mcp.transport import MCPTransport, MCPTransportError

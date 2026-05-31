@@ -12,13 +12,13 @@ itself performs no safety checks.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
 import shlex
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 from ravn.domain.models import ToolResult

@@ -6,11 +6,11 @@ and event dispatch logic without duplicating code.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 
 from sleipnir.domain.events import SleipnirEvent, match_event_type
 from sleipnir.ports.events import EventHandler, Subscription

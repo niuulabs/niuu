@@ -43,12 +43,12 @@ Configuration example
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import json
 import logging
 import os
+from contextlib import suppress
 
 from sleipnir.adapters._subscriber_support import (
     DEFAULT_RING_BUFFER_DEPTH,

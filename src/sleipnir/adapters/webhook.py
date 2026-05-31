@@ -46,10 +46,10 @@ See ``docs/site/ravn/operations/sleipnir-transports.md`` for the full ladder.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
+from contextlib import suppress
 
 try:
     import httpx

@@ -11,7 +11,6 @@ Binary search order:
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import hashlib
@@ -21,6 +20,7 @@ import re
 import socket
 import subprocess
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from niuu.ports.embedded_database import ConnectionInfo, EmbeddedDatabasePort

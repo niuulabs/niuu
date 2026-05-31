@@ -20,12 +20,12 @@ Example config::
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 
 from sleipnir.adapters._subscriber_support import (
     _BaseSubscription,

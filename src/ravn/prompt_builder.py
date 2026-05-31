@@ -19,12 +19,12 @@ Two-layer cache
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import hashlib
 import json
 import logging
 from collections import OrderedDict
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 

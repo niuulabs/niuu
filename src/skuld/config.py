@@ -14,9 +14,9 @@ Environment variable override format:
   SESSION_ID, MODEL, HOST, PORT, VOLUNDR_API_URL, SERVICE_USER_ID, WORKSPACE_DIR
 """
 
-from contextlib import suppress
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 

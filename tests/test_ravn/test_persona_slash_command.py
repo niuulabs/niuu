@@ -9,6 +9,7 @@ import pytest
 from ravn.adapters.slash_commands import PersonaCommand, SlashCommandContext, default_registry
 from ravn.domain.models import Session
 
+
 def _ctx() -> SlashCommandContext:
     return SlashCommandContext(session=Session())
 

@@ -28,12 +28,12 @@ registers/unregisters entries as agents start and stop.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 
 logger = logging.getLogger(__name__)
 

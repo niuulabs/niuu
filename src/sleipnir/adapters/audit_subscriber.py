@@ -8,10 +8,10 @@ has elapsed.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 from sleipnir.domain.events import SleipnirEvent

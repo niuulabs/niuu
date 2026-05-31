@@ -30,7 +30,6 @@ Peers are evicted when ``last_heartbeat`` is older than ``peer_ttl_s`` (default 
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import dataclasses
@@ -40,6 +39,7 @@ import json
 import logging
 import secrets
 import socket
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 

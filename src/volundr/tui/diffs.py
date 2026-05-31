@@ -1,8 +1,8 @@
 """Diffs page — split view with file tree (left) and diff viewer (right)."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 

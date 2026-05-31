@@ -1,6 +1,7 @@
 """BottomBar — contextual keybinding hints with kbd-style key boxes."""
 
 from __future__ import annotations
+
 from contextlib import suppress
 
 from textual.app import ComposeResult

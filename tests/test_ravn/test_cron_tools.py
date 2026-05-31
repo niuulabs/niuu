@@ -1,10 +1,10 @@
 """Tests for NIU-437 cron scheduling: CronJobStore, cron tools, CronTrigger."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import stat
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch

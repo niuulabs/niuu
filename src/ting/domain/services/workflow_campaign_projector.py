@@ -1,10 +1,10 @@
 """Background projector that keeps workflow campaigns in sync with Volundr."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime
 
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus

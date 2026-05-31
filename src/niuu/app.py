@@ -1,7 +1,6 @@
 """Niuu composition root for shared HTTP hosting and mount selection."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import inspect
@@ -9,7 +8,7 @@ import json
 import logging
 import os
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path

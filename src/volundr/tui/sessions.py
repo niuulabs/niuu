@@ -1,8 +1,8 @@
 """Sessions page — DataTable with status badges, filters, search, and actions."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 

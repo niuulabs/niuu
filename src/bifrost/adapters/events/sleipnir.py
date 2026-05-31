@@ -13,10 +13,10 @@ when the broker is unreachable.
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import json
 import logging
+from contextlib import suppress
 from dataclasses import asdict
 
 from bifrost.ports.events import (

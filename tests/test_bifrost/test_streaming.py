@@ -1,10 +1,10 @@
 """Tests for the streaming translation layer."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import json
 from collections.abc import AsyncIterator
+from contextlib import suppress
 
 import pytest
 

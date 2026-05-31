@@ -1,8 +1,8 @@
 """Chat page — WebSocket streaming messages with markdown and mention menus."""
 
 from __future__ import annotations
-from contextlib import suppress
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 

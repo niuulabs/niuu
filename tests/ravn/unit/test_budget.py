@@ -1,10 +1,10 @@
 """Tests for DailyBudgetTracker and DriveLoop budget integration (NIU-570)."""
 
 from __future__ import annotations
-from contextlib import suppress
 
 import asyncio
 import time
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch

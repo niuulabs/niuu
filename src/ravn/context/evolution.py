@@ -32,11 +32,11 @@ Usage::
 """
 
 from __future__ import annotations
-from contextlib import suppress
 
 import json
 import logging
 from collections import defaultdict
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
