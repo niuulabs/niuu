@@ -25,7 +25,7 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
-    "react": "^19.0.0"
+    "react": "^19.2.6"
   },
   "dependencies": {
     "@niuulabs/plugin-sdk": "workspace:*",
@@ -33,9 +33,9 @@
     "oidc-client-ts": "^3.5.0"
   },
   "devDependencies": {
-    "@types/react": "^19.0.7",
-    "react": "^19.0.0",
+    "@types/react": "^19.2.15",
+    "react": "^19.2.6",
     "tsup": "^8.3.5",
-    "typescript": "^5.7.3"
+    "typescript": "^6.0.3"
   }
 }
