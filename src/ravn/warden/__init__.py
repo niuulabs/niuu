@@ -13,7 +13,6 @@ from ravn.warden.models import (
     WardenSpec,
     WardenSupervisor,
 )
-from ravn.warden.store import WardenStore
 
 
 def resolve_deployment_adapter(deployment: str) -> str:
@@ -36,6 +35,8 @@ def build_warden_store(root=None):
 
 def __getattr__(name: str):
     if name == "WardenStore":
+        from ravn.warden.store import WardenStore
+
         return WardenStore
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)
